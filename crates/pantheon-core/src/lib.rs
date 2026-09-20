@@ -1,0 +1,12 @@
+//! Pantheon core: events, structured errors, capabilities, model policy.
+//!
+//! Locked decisions:
+//! - The model is not the runtime. Agents never choose models.
+//! - No model routing. There is a default model, an ordered fallback list
+//!   (runtime-controlled, failure-only), and auxiliary models for scoped
+//!   capabilities (embeddings, rerank, STT/TTS, vision, extraction...).
+
+pub mod capability;
+pub mod error;
+pub mod events;
+pub mod model;

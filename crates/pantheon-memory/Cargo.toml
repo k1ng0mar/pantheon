@@ -1,0 +1,12 @@
+[package]
+name = "pantheon-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+pantheon-core = { path = "../pantheon-core" }
+serde = { version = "1", features = ["derive"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+

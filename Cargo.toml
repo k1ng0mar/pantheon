@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/pantheon-core",
+  "crates/pantheon-storage",
+  "crates/pantheon-runtime",
+  "crates/pantheon-api",
+  "crates/pantheon-cli",
+  "crates/pantheon-agent",
+  "crates/pantheon-swarm",
+  "crates/pantheon-exec",
+  "crates/pantheon-capability",
+  "crates/pantheon-sandbox",
+  "crates/pantheon-memory",
+  "crates/pantheon-secrets",
+  "crates/pantheon-providers",
+  "crates/pantheon-mcp",
+  "crates/pantheon-extensions",
+  "crates/pantheon-scheduler",
+  "crates/pantheon-gateway",
+  "crates/pantheon-otel",
+  "crates/pantheon-migrate",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Pantheon"]
+
+[profile.release]
+lto = true
+codegen-units = 1
