@@ -1,0 +1,195 @@
+{
+  "version": 1,
+  "description": "Pantheon regression eval. Cases derive from real Pantheon wave-1 features and Hermes-history behaviors (run lifecycle, dedup, time-gap, compaction, doctor). Every command is expected to exit 0 unless expect_fail is true.",
+  "cases": [
+    {
+      "id": "run-completes-and-logs",
+      "title": "A run persists RunStarted/progress/RunCompleted to the ledger",
+      "origin": "wave1: supervisor run lifecycle; Hermes session runs",
+      "skip": "needs binary",
+      "commands": [
+        ["run", "--id", "eval-run-1", "--say", "hello from eval"]
+      ],
+      "expect": {
+        "run-completes-and-logs": [
+          "eval-run-1"
+        ]
+      },
+      "post": [
+        ["explain", "eval-run-1", "contains:started"],
+        ["explain", "eval-run-1", "contains:completed"],
+        ["explain", "eval-run-1", "contains:hello from eval"],
+        ["status", "eval-run-1", "equals:completed"]
+      ]
+    },
+    {
+      "id": "explain-unknown-run-is-empty",
+      "title": "Explain of an unknown run says so instead of erroring",
+      "origin": "wave1: /explain offline path",
+      "skip": "needs binary",
+      "commands": [
+        ["explain", "eval-never-ran"]
+      ],
+      "expect": {
+        "explain-unknown-run-is-empty": [
+          "no events recorded"
+        ]
+      },
+      "post": []
+    },
+    {
+      "id": "run-failure-records-code",
+      "title": "A failed run records the failure code in the ledger",
+      "origin": "wave1: structured errors (§20 recovery classes)",
+      "skip": "needs binary",
+      "commands": [
+        ["run", "--id", "eval-run-fail", "--fail", "EVAL_CAP_DENIED"]
+      ],
+      "expect": {
+        "run-failure-records-code": [
+          "eval-run-fail"
+        ]
+      },
+      "post": [
+        ["explain", "eval-run-fail", "contains:FAILED (EVAL_CAP_DENIED)"],
+        ["status", "eval-run-fail", "equals:failed"]
+      ]
+    },
+    {
+      "id": "rerun-of-completed-run-keeps-history",
+      "title": "Re-running a completed run appends events without breaking history",
+      "origin": "wave1: append-only ledger semantics",
+      "skip": "needs binary",
+      "commands": [
+        ["run", "--id", "eval-run-twice", "--say", "first pass"],
+        ["run", "--id", "eval-run-twice", "--say", "second pass"]
+      ],
+      "expect": {
+        "rerun-of-completed-run-keeps-history": [
+          "eval-run-twice"
+        ],
+        "rerun-of-completed-run-keeps-history__1": [
+          "eval-run-twice"
+        ]
+      },
+      "post": [
+        ["explain", "eval-run-twice", "contains:first pass"],
+        ["explain", "eval-run-twice", "contains:second pass"],
+        ["status", "eval-run-twice", "equals:completed"]
+      ]
+    },
+    {
+      "id": "hook-fires-and-dedups-per-session",
+      "title": "Hook fires fresh, then stays silent for the same session",
+      "origin": "Hermes history: once-per-session plugins (anti-ai-writing)",
+      "skip": "needs binary",
+      "commands": [
+        ["hook", "pre_llm_call", "--session", "eval-dedup"]
+      ],
+      "expect": {
+        "hook-fires-and-dedups-per-session": [
+          "ANY"
+        ]
+      },
+      "post": [
+        ["hook", "pre_llm_call", "--session", "eval-dedup", "equals:(silent)"]
+      ]
+    },
+    {
+      "id": "timegap-ages-and-injects",
+      "title": "Time-gap injects after the configured gap and dedups after",
+      "origin": "Hermes port: time-gap plugin",
+      "skip": "needs binary",
+      "commands": [
+        ["hook", "pre_llm_call", "--session", "eval-timegap"]
+      ],
+      "expect": {
+        "timegap-ages-and-injects": [
+          "ANY"
+        ]
+      },
+      "post": [
+        ["hook", "pre_llm_call", "--session", "eval-timegap", "equals:(silent)"]
+      ]
+    },
+    {
+      "id": "doctor-rejects-missing-manifest",
+      "title": "Doctor loudly reports a plugin dir without plugin.yaml",
+      "origin": "Hermes history: OpenClaw silent-death preflights",
+      "commands": [
+        ["doctor", "<TMP>/no-manifest"]
+      ],
+      "expect": {
+        "doctor-rejects-missing-manifest": [
+          "NO_MANIFEST"
+        ]
+      },
+      "expect_fail": [0],
+      "post": [],
+      "setup": {
+        "dirs": ["no-manifest"]
+      }
+    },
+    {
+      "id": "doctor-flags-ts-entry-with-warning",
+      "title": "Doctor warns on a TypeScript entry but does not reject the plugin",
+      "origin": "WAVE2 notes: doctor already flags TS_ENTRY",
+      "commands": [
+        ["doctor", "<TMP>/ts-entry"]
+      ],
+      "expect": {
+        "doctor-flags-ts-entry-with-warning": [
+          "TS_ENTRY",
+          "\"level\": \"warn\"",
+          "\"ok\": true"
+        ]
+      },
+      "post": [],
+      "setup": {
+        "dirs": ["ts-entry"],
+        "files": {
+          "ts-entry/index.ts": "// OpenClaw-style TS entry\n",
+          "ts-entry/plugin.yaml": "name: ts-entry\nversion: \"1.0.0\"\nprovides_hooks:\n  - pre_llm_call\n"
+        }
+      }
+    },
+    {
+      "id": "doctor-accepts-valid-plugin",
+      "title": "Doctor accepts a well-formed Python plugin",
+      "origin": "vendor/time-gap-pantheon",
+      "commands": [
+        ["doctor", "<VENDOR>/time-gap-pantheon"]
+      ],
+      "expect": {
+        "doctor-accepts-valid-plugin": [
+          "\"ok\": true",
+          "\"plugin\": \"time-gap\""
+        ]
+      },
+      "post": []
+    },
+    {
+      "id": "compaction-keeps-head-and-tail",
+      "title": "Deterministic compaction keeps head+tail and drops the middle",
+      "origin": "wave1: noisegate-style compaction in pantheon-exec",
+      "skip": "needs binary",
+      "commands": [
+        ["_compact", "<TMP>/noisegate.log"]
+      ],
+      "expect": {
+        "compaction-keeps-head-and-tail": [
+          "line 0",
+          "line 499",
+          "compacted: dropped",
+          "not:line 250"
+        ]
+      },
+      "post": [],
+      "setup": {
+        "files": {
+          "noisegate.log": "#GENERATE_LINES:500"
+        }
+      }
+    }
+  ]
+}

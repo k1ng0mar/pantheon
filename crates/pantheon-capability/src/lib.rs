@@ -1,0 +1,60 @@
+//! Capability plane: Policy lives in pantheon-core; this crate enforces it
+//! at the execution boundary (check-then-act, default-deny).
+use pantheon_core::capability::{Capability, Decision, Policy};
+use pantheon_core::error::{Layer, PantheonError};
+
+fn cerr(code: &str, cause: String, retryable: bool) -> PantheonError {
+    PantheonError::new(code, Layer::Capability, retryable, cause,
+        "request approval or narrow the capability grant", "")
+}
+
+/// Enforcement outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    Allow,
+    NeedsApproval { capability: Capability },
+    Deny { capability: Capability },
+}
+
+/// Check a capability against a policy. Never panics, never defaults to allow.
+pub fn check(policy: &Policy, cap: &Capability) -> Verdict {
+    match policy.check(cap) {
+        Decision::Allow => Verdict::Allow,
+        Decision::Approval => Verdict::NeedsApproval { capability: cap.clone() },
+        Decision::Deny => Verdict::Deny { capability: cap.clone() },
+    }
+}
+
+/// Enforce: Allow passes, anything else becomes a structured error.
+pub fn enforce(policy: &Policy, cap: &Capability) -> Result<(), PantheonError> {
+    match check(policy, cap) {
+        Verdict::Allow => Ok(()),
+        Verdict::NeedsApproval { capability } => Err(cerr(
+            "CAP_APPROVAL_REQUIRED",
+            format!("capability {capability:?} needs approval"), false)),
+        Verdict::Deny { capability } => Err(cerr(
+            "CAP_DENIED", format!("capability {capability:?} denied by policy"), false)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn coder_push_needs_approval() {
+        let p = Policy::coder();
+        assert_eq!(check(&p, &Capability::ShellExecute), Verdict::Allow);
+        assert!(matches!(check(&p, &Capability::GitPush),
+            Verdict::NeedsApproval { .. }));
+        assert!(matches!(check(&p, &Capability::Browser),
+            Verdict::Deny { .. }));
+        assert!(enforce(&p, &Capability::Browser).is_err());
+    }
+    #[test]
+    fn researcher_is_readonly() {
+        let p = Policy::researcher_readonly();
+        assert_eq!(check(&p, &Capability::FilesystemRead), Verdict::Allow);
+        assert!(matches!(check(&p, &Capability::FilesystemWrite),
+            Verdict::Deny { .. }));
+    }
+}
