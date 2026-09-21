@@ -12,5 +12,5 @@
 pub mod engine;
 pub mod tool;
 
-pub use engine::{AgentLoop, AgentSpawner, Budget, LoopOutcome, ModelTurn, TurnOutcome, ToolCall};
-pub use tool::{EventSink, GateOutcome, ToolRunner};
+pub use engine::{AgentLoop, AgentSpawner, Budget, LoopOutcome, ModelTurn, ToolCall, TurnOutcome};
+pub use tool::{gate, EventSink, GateOutcome, ToolRunner};

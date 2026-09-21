@@ -46,12 +46,22 @@ pub fn capability_from_token(token: &str) -> Capability {
 /// allowed is still listed but marked `allowed: false` so `/explain` can
 /// show why it never ran.
 pub fn project(server: &str, tools: &[McpTool], policy: &Policy) -> Vec<ProjectedTool> {
-    tools.iter().map(|t| {
-        let capability = capability_from_token(&t.requires);
-        let allowed = matches!(policy.check(&capability),
-            pantheon_core::capability::Decision::Allow);
-        ProjectedTool { server: server.into(), name: t.name.clone(), capability, allowed }
-    }).collect()
+    tools
+        .iter()
+        .map(|t| {
+            let capability = capability_from_token(&t.requires);
+            let allowed = matches!(
+                policy.check(&capability),
+                pantheon_core::capability::Decision::Allow
+            );
+            ProjectedTool {
+                server: server.into(),
+                name: t.name.clone(),
+                capability,
+                allowed,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -59,7 +69,10 @@ mod tests {
     use super::*;
     #[test]
     fn tokens_map_and_unknowns_stay_gated() {
-        assert_eq!(capability_from_token("shell.execute"), Capability::ShellExecute);
+        assert_eq!(
+            capability_from_token("shell.execute"),
+            Capability::ShellExecute
+        );
         match capability_from_token("weird.thing") {
             Capability::Other(n) => assert_eq!(n, "weird.thing"),
             other => panic!("expected Other, got {other:?}"),
@@ -68,8 +81,16 @@ mod tests {
     #[test]
     fn listing_shows_denied_tools_as_denied() {
         let tools = vec![
-            McpTool { name: "read".into(), description: String::new(), requires: "filesystem.read".into() },
-            McpTool { name: "browse".into(), description: String::new(), requires: "browser".into() },
+            McpTool {
+                name: "read".into(),
+                description: String::new(),
+                requires: "filesystem.read".into(),
+            },
+            McpTool {
+                name: "browse".into(),
+                description: String::new(),
+                requires: "browser".into(),
+            },
         ];
         let projected = project("demo", &tools, &Policy::coder());
         assert!(projected[0].allowed);

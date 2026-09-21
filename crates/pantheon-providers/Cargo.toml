@@ -7,4 +7,7 @@ authors.workspace = true
 
 [dependencies]
 pantheon-core = { path = "../pantheon-core" }
+pantheon-agent = { path = "../pantheon-agent" }
+serde_json = "1"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 

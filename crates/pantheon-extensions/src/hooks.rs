@@ -37,7 +37,11 @@ impl Hook {
     }
     /// All known hooks (for doctor + docs).
     pub fn all() -> &'static [Hook] {
-        &[Hook::PreLlmCall, Hook::PreApiRequest,
-          Hook::PostApiRequest, Hook::PreGatewayDispatch]
+        &[
+            Hook::PreLlmCall,
+            Hook::PreApiRequest,
+            Hook::PostApiRequest,
+            Hook::PreGatewayDispatch,
+        ]
     }
 }

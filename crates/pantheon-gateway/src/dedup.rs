@@ -28,7 +28,11 @@ impl DedupWindow {
     /// A window that remembers the last `capacity` messages. Zero capacity
     /// dedups nothing, which is only correct for a non-redelivering surface.
     pub fn new(capacity: usize) -> Self {
-        Self { capacity, order: VecDeque::new(), seen: HashSet::new() }
+        Self {
+            capacity,
+            order: VecDeque::new(),
+            seen: HashSet::new(),
+        }
     }
 
     /// Record a message. `true` means it is new and should be processed;
@@ -65,7 +69,10 @@ mod tests {
     use super::*;
 
     fn joe() -> Identity {
-        Identity { gateway: "discord".into(), user: "joe".into() }
+        Identity {
+            gateway: "discord".into(),
+            user: "joe".into(),
+        }
     }
 
     #[test]
@@ -79,8 +86,14 @@ mod tests {
 
     #[test]
     fn the_same_id_on_a_different_surface_is_a_different_message() {
-        let telegram = Identity { gateway: "telegram".into(), user: "joe".into() };
-        let discord = Identity { gateway: "discord".into(), user: "joe".into() };
+        let telegram = Identity {
+            gateway: "telegram".into(),
+            user: "joe".into(),
+        };
+        let discord = Identity {
+            gateway: "discord".into(),
+            user: "joe".into(),
+        };
         let mut window = DedupWindow::new(16);
         assert!(window.observe(&telegram, "42"));
         assert!(
@@ -91,8 +104,14 @@ mod tests {
 
     #[test]
     fn the_same_id_from_a_different_user_is_not_collapsed() {
-        let a = Identity { gateway: "discord".into(), user: "a".into() };
-        let b = Identity { gateway: "discord".into(), user: "b".into() };
+        let a = Identity {
+            gateway: "discord".into(),
+            user: "a".into(),
+        };
+        let b = Identity {
+            gateway: "discord".into(),
+            user: "b".into(),
+        };
         let mut window = DedupWindow::new(16);
         assert!(window.observe(&a, "1"));
         assert!(window.observe(&b, "1"));
@@ -107,7 +126,10 @@ mod tests {
         assert_eq!(window.len(), 2, "oldest entry is evicted");
         // m1 has aged out, so a very late redelivery of it looks new again.
         assert!(window.observe(&joe(), "m1"));
-        assert!(!window.observe(&joe(), "m3"), "recent entries are still held");
+        assert!(
+            !window.observe(&joe(), "m3"),
+            "recent entries are still held"
+        );
     }
 
     #[test]

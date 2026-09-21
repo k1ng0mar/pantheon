@@ -11,8 +11,14 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 fn xerr(code: &str, cause: String, retryable: bool) -> PantheonError {
-    PantheonError::new(code, Layer::Extension, retryable, cause,
-        "check plugin dir, python3, and hook timeout", "")
+    PantheonError::new(
+        code,
+        Layer::Extension,
+        retryable,
+        cause,
+        "check plugin dir, python3, and hook timeout",
+        "",
+    )
 }
 
 /// What the runner sends to the plugin process.
@@ -42,9 +48,16 @@ impl PythonPlugin {
     pub fn load(dir: &Path) -> Result<Self, PantheonError> {
         let manifest = PluginManifest::load(&dir.join("plugin.yaml"))?;
         if !dir.join("__init__.py").exists() {
-            return Err(xerr("EXT_NO_ENTRY", format!("{} has no __init__.py", dir.display()), false));
+            return Err(xerr(
+                "EXT_NO_ENTRY",
+                format!("{} has no __init__.py", dir.display()),
+                false,
+            ));
         }
-        Ok(Self { dir: dir.to_path_buf(), manifest })
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            manifest,
+        })
     }
     pub fn provides(&self, hook: Hook) -> bool {
         self.manifest.hook_list().0.contains(&hook)
@@ -60,7 +73,10 @@ pub struct RunnerConfig {
 
 impl Default for RunnerConfig {
     fn default() -> Self {
-        Self { python: "python3".into(), timeout: Duration::from_secs(10) }
+        Self {
+            python: "python3".into(),
+            timeout: Duration::from_secs(10),
+        }
     }
 }
 
@@ -103,8 +119,8 @@ pub fn fire_hook(
     input: &HookInput,
     cfg: &RunnerConfig,
 ) -> Result<Option<String>, PantheonError> {
-    let payload = serde_json::to_string(input)
-        .map_err(|e| xerr("EXT_INPUT_ENCODE", e.to_string(), false))?;
+    let payload =
+        serde_json::to_string(input).map_err(|e| xerr("EXT_INPUT_ENCODE", e.to_string(), false))?;
     let mut child = Command::new(&cfg.python)
         .arg("-c")
         .arg(SHIM)

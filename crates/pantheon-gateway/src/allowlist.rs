@@ -78,12 +78,18 @@ pub struct Pairing {
 
 impl Pairing {
     pub fn new(code: &str) -> Self {
-        Self { code: Some(code.to_string()), used: false }
+        Self {
+            code: Some(code.to_string()),
+            used: false,
+        }
     }
 
     /// A pairing that accepts nobody (the default posture).
     pub fn closed() -> Self {
-        Self { code: None, used: false }
+        Self {
+            code: None,
+            used: false,
+        }
     }
 
     /// Redeem a presented code. `None` means wrong, already used, or closed.
@@ -108,7 +114,10 @@ mod tests {
     use super::*;
 
     fn joe() -> Identity {
-        Identity { gateway: "telegram".into(), user: "joe".into() }
+        Identity {
+            gateway: "telegram".into(),
+            user: "joe".into(),
+        }
     }
 
     #[test]

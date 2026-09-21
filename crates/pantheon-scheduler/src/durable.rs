@@ -53,7 +53,7 @@ impl DurableClaimLedger {
         self.store.release(key)
     }
 
-            pub fn prune_before(&self, cutoff_ms: i64) -> Result<usize, PantheonError> {
+    pub fn prune_before(&self, cutoff_ms: i64) -> Result<usize, PantheonError> {
         self.store.prune_before(cutoff_ms)
     }
 
@@ -76,12 +76,20 @@ mod tests {
     use tempfile::tempdir;
 
     fn job() -> Job {
-        Job::new("nightly", ScheduleKind::Cron { expr: "30 14 * * *".into() }, "nyx")
+        Job::new(
+            "nightly",
+            ScheduleKind::Cron {
+                expr: "30 14 * * *".into(),
+            },
+            "nyx",
+        )
     }
 
     fn now_ms() -> i64 {
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
     }
 
     #[test]
@@ -161,6 +169,9 @@ mod tests {
 
         let key = crate::idempotency::occurrence_key(&job, &now.to_string());
         assert!(ledger.claim(&key).unwrap());
-        assert!(!ledger.claim(&key).unwrap(), "restart inside the same minute must not run twice");
+        assert!(
+            !ledger.claim(&key).unwrap(),
+            "restart inside the same minute must not run twice"
+        );
     }
 }

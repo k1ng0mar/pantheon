@@ -9,11 +9,17 @@ use std::path::Path;
 
 /// Which system we are importing from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SourceKind { Hermes, OpenClaw }
+pub enum SourceKind {
+    Hermes,
+    OpenClaw,
+}
 
 impl SourceKind {
     pub fn name(&self) -> &'static str {
-        match self { SourceKind::Hermes => "hermes", SourceKind::OpenClaw => "openclaw" }
+        match self {
+            SourceKind::Hermes => "hermes",
+            SourceKind::OpenClaw => "openclaw",
+        }
     }
 }
 
@@ -36,7 +42,10 @@ pub struct Detected {
 
 /// What a dry-run would do, item by item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Action { Import { target: String }, Archive { reason: String } }
+pub enum Action {
+    Import { target: String },
+    Archive { reason: String },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanItem {
@@ -54,16 +63,25 @@ pub struct MigrationPlan {
 
 impl MigrationPlan {
     pub fn imports(&self) -> usize {
-        self.items.iter().filter(|i| matches!(i.action, Action::Import { .. })).count()
+        self.items
+            .iter()
+            .filter(|i| matches!(i.action, Action::Import { .. }))
+            .count()
     }
     pub fn archived(&self) -> usize {
-        self.items.iter().filter(|i| matches!(i.action, Action::Archive { .. })).count()
+        self.items
+            .iter()
+            .filter(|i| matches!(i.action, Action::Archive { .. }))
+            .count()
     }
 }
 
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Detect a source root without assuming a fixed absolute layout.
@@ -85,9 +103,13 @@ pub fn detect(root: &Path) -> Vec<SourceKind> {
 
 fn plugins_are_openclaw(root: &Path) -> bool {
     let dir = root.join("plugins");
-    let Ok(rd) = std::fs::read_dir(&dir) else { return false; };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return false;
+    };
     for e in rd.flatten() {
-        if e.path().join("openclaw.plugin.json").exists() { return true; }
+        if e.path().join("openclaw.plugin.json").exists() {
+            return true;
+        }
     }
     false
 }
@@ -102,7 +124,9 @@ pub fn analyze(root: &Path, kind: SourceKind) -> Vec<Detected> {
             if let Ok(rd) = std::fs::read_dir(&plugins) {
                 for e in rd.flatten() {
                     let p = e.path();
-                    if !p.is_dir() { continue; }
+                    if !p.is_dir() {
+                        continue;
+                    }
                     let has_manifest = p.join("plugin.yaml").exists();
                     let has_ts = p.join("index.ts").exists();
                     let mappable = has_manifest && p.join("__init__.py").exists() && !has_ts;
@@ -131,7 +155,9 @@ pub fn analyze(root: &Path, kind: SourceKind) -> Vec<Detected> {
                         mappable: is_dir && p.join("SKILL.md").exists(),
                         note: if is_dir && p.join("SKILL.md").exists() {
                             "portable SKILL.md; Tier 1 drop-in".into()
-                        } else { "no SKILL.md; archive".into() },
+                        } else {
+                            "no SKILL.md; archive".into()
+                        },
                     });
                 }
             }
@@ -139,7 +165,8 @@ pub fn analyze(root: &Path, kind: SourceKind) -> Vec<Detected> {
                 let p = root.join(extra);
                 if p.exists() {
                     out.push(Detected {
-                        kind: "memory".into(), path: p.to_string_lossy().to_string(),
+                        kind: "memory".into(),
+                        path: p.to_string_lossy().to_string(),
                         mappable: true,
                         note: "memory file; imports into the memory plane with provenance".into(),
                     });
@@ -151,7 +178,9 @@ pub fn analyze(root: &Path, kind: SourceKind) -> Vec<Detected> {
             if let Ok(rd) = std::fs::read_dir(&plugins) {
                 for e in rd.flatten() {
                     let p = e.path();
-                    if !p.is_dir() { continue; }
+                    if !p.is_dir() {
+                        continue;
+                    }
                     let has_manifest = p.join("openclaw.plugin.json").exists();
                     out.push(Detected {
                         kind: "openclaw-plugin".into(),
@@ -159,7 +188,9 @@ pub fn analyze(root: &Path, kind: SourceKind) -> Vec<Detected> {
                         mappable: !has_manifest,
                         note: if has_manifest {
                             "openclaw.plugin.json; goes through the compat adapter".into()
-                        } else { "no openclaw.plugin.json; archive".into() },
+                        } else {
+                            "no openclaw.plugin.json; archive".into()
+                        },
                     });
                 }
             }
@@ -176,17 +207,33 @@ pub fn plan(root: &Path, kind: SourceKind, target_root: &Path) -> MigrationPlan 
     let mut items = Vec::new();
     for d in detected {
         let file_name = Path::new(&d.path)
-            .file_name().map(|s| s.to_string_lossy().to_string())
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "item".into());
         let action = if d.mappable {
-            Action::Import { target: target_root.join(&d.kind).join(&file_name)
-                .to_string_lossy().to_string() }
+            Action::Import {
+                target: target_root
+                    .join(&d.kind)
+                    .join(&file_name)
+                    .to_string_lossy()
+                    .to_string(),
+            }
         } else {
-            Action::Archive { reason: d.note.clone() }
+            Action::Archive {
+                reason: d.note.clone(),
+            }
         };
-        items.push(PlanItem { kind: d.kind, path: d.path, action });
+        items.push(PlanItem {
+            kind: d.kind,
+            path: d.path,
+            action,
+        });
     }
-    MigrationPlan { source: kind.name().into(), root: root.to_string_lossy().to_string(), items }
+    MigrationPlan {
+        source: kind.name().into(),
+        root: root.to_string_lossy().to_string(),
+        items,
+    }
 }
 
 /// Provenance for everything the plan would import.
@@ -201,11 +248,20 @@ pub fn provenance(root: &Path, kind: SourceKind) -> Provenance {
 /// Render a plan for humans (dry-run output).
 pub fn render(p: &MigrationPlan) -> String {
     let mut s = format!("migrate {} from {}\n", p.source, p.root);
-    s.push_str(&format!("  {} to import, {} to archive\n", p.imports(), p.archived()));
+    s.push_str(&format!(
+        "  {} to import, {} to archive\n",
+        p.imports(),
+        p.archived()
+    ));
     for i in &p.items {
         match &i.action {
-            Action::Import { target } => s.push_str(&format!("  + {:<10} {} -> {}\n", i.kind, i.path, target)),
-            Action::Archive { reason } => s.push_str(&format!("  ~ {:<10} {} (archive: {})\n", i.kind, i.path, reason)),
+            Action::Import { target } => {
+                s.push_str(&format!("  + {:<10} {} -> {}\n", i.kind, i.path, target))
+            }
+            Action::Archive { reason } => s.push_str(&format!(
+                "  ~ {:<10} {} (archive: {})\n",
+                i.kind, i.path, reason
+            )),
         }
     }
     s
@@ -213,12 +269,13 @@ pub fn render(p: &MigrationPlan) -> String {
 
 #[cfg(test)]
 mod tests {
-        use super::*;
+    use super::*;
     use std::fs;
     use std::path::PathBuf;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("pantheon-migrate-{}-{}", name, std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("pantheon-migrate-{}-{}", name, std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d

@@ -80,10 +80,7 @@ impl SecretsBroker {
     /// Redacted one-line description for logs/events: presence, never value.
     pub fn describe(&self, name: &str) -> String {
         match self.resolve(name) {
-            Ok(Some(v)) => format!(
-                "secret:{name} present ({} bytes)",
-                v.len()
-            ),
+            Ok(Some(v)) => format!("secret:{name} present ({} bytes)", v.len()),
             Ok(None) => format!("secret:{name} absent"),
             Err(e) => format!("secret:{name} error={e}"),
         }
@@ -104,14 +101,22 @@ mod tests {
                 ("PANTHEON_SECRET_API_KEY", "from-env"),
                 ("PANTHEON_SECRET_EXTRA_WEBHOOK", "from-env-extra"),
             ]));
-        broker.set("api.key", SecretValue::new("from-vault")).unwrap();
+        broker
+            .set("api.key", SecretValue::new("from-vault"))
+            .unwrap();
         assert_eq!(
-            broker.inject("api.key").unwrap().map(|s| s.expose().to_string()),
+            broker
+                .inject("api.key")
+                .unwrap()
+                .map(|s| s.expose().to_string()),
             Some("from-vault".into())
         );
         // Not in the vault => environment fallback kicks in.
         assert_eq!(
-            broker.inject("extra.webhook").unwrap().map(|s| s.expose().to_string()),
+            broker
+                .inject("extra.webhook")
+                .unwrap()
+                .map(|s| s.expose().to_string()),
             Some("from-env-extra".into())
         );
     }
@@ -124,16 +129,27 @@ mod tests {
                 EncryptedFileVault::open(dir.path().join("v.json"), dir.path().join("v.key"))
                     .unwrap(),
             ))
-            .with_env(EnvVault::from_map([("PANTHEON_SECRET_DB_PASSWORD", "env-pw")]));
+            .with_env(EnvVault::from_map([(
+                "PANTHEON_SECRET_DB_PASSWORD",
+                "env-pw",
+            )]));
 
         assert_eq!(
-            broker.inject("db.password").unwrap().map(|s| s.expose().to_string()),
+            broker
+                .inject("db.password")
+                .unwrap()
+                .map(|s| s.expose().to_string()),
             Some("env-pw".into())
         );
-        broker.set("db.password", SecretValue::new("vault-pw")).unwrap();
+        broker
+            .set("db.password", SecretValue::new("vault-pw"))
+            .unwrap();
         // Durable vault now shadows the environment.
         assert_eq!(
-            broker.inject("db.password").unwrap().map(|s| s.expose().to_string()),
+            broker
+                .inject("db.password")
+                .unwrap()
+                .map(|s| s.expose().to_string()),
             Some("vault-pw".into())
         );
         // Stored value must be recoverable by a fresh broker too.
@@ -141,7 +157,10 @@ mod tests {
             EncryptedFileVault::open(dir.path().join("v.json"), dir.path().join("v.key")).unwrap(),
         ));
         assert_eq!(
-            fresh.inject("db.password").unwrap().map(|s| s.expose().to_string()),
+            fresh
+                .inject("db.password")
+                .unwrap()
+                .map(|s| s.expose().to_string()),
             Some("vault-pw".into())
         );
     }
@@ -156,7 +175,10 @@ mod tests {
     fn describe_never_leaks_value() {
         let broker = SecretsBroker::new()
             .with_vault(Box::new(MemoryVault::new()))
-            .with_env(EnvVault::from_map([("PANTHEON_SECRET_TOKEN", "dont-leak-me")]));
+            .with_env(EnvVault::from_map([(
+                "PANTHEON_SECRET_TOKEN",
+                "dont-leak-me",
+            )]));
 
         let present = broker.describe("token");
         assert!(present.contains("present"));

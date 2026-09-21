@@ -122,11 +122,17 @@ mod tests {
     fn resolves_namespaced_env_var() {
         let vault = EnvVault::from_map([("PANTHEON_SECRET_API_KEY", "sk-live-1")]);
         assert_eq!(
-            vault.get("api.key").unwrap().map(|s| s.expose().to_string()),
+            vault
+                .get("api.key")
+                .unwrap()
+                .map(|s| s.expose().to_string()),
             Some("sk-live-1".into())
         );
         assert_eq!(
-            vault.get("api-key").unwrap().map(|s| s.expose().to_string()),
+            vault
+                .get("api-key")
+                .unwrap()
+                .map(|s| s.expose().to_string()),
             Some("sk-live-1".into())
         );
     }
@@ -135,7 +141,10 @@ mod tests {
     fn resolves_literal_env_reference() {
         let vault = EnvVault::from_map([("FOO", "bar")]);
         assert_eq!(
-            vault.get("env:FOO").unwrap().map(|s| s.expose().to_string()),
+            vault
+                .get("env:FOO")
+                .unwrap()
+                .map(|s| s.expose().to_string()),
             Some("bar".into())
         );
     }
@@ -162,7 +171,10 @@ mod tests {
     #[test]
     fn env_key_mapping() {
         assert_eq!(EnvVault::env_key("api.key"), "PANTHEON_SECRET_API_KEY");
-        assert_eq!(EnvVault::env_key("db-password"), "PANTHEON_SECRET_DB_PASSWORD");
+        assert_eq!(
+            EnvVault::env_key("db-password"),
+            "PANTHEON_SECRET_DB_PASSWORD"
+        );
         assert_eq!(EnvVault::env_key("env:RAW_NAME"), "RAW_NAME");
     }
 }

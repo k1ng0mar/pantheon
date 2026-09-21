@@ -1,15 +1,22 @@
 //! Providers (spec section 5 + 14): default model, ordered fallbacks
 //! (failure-only, runtime-controlled), auxiliary models for scoped
 //! capabilities. NO routing — locked decision.
+
+pub mod http;
+
 use pantheon_core::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, ModelPolicy};
 
 /// Select the model for a run: always the default.
-pub fn for_run(policy: &ModelPolicy) -> &DefaultModel { &policy.default }
+pub fn for_run(policy: &ModelPolicy) -> &DefaultModel {
+    &policy.default
+}
 
 /// After a retryable default failure at `failed_index`, the next fallback.
 /// `None` failed_index starts the chain; `None` return exhausts it.
-pub fn on_retryable_failure<'a>(policy: &'a ModelPolicy, failed_index: Option<usize>)
-    -> Option<(usize, &'a DefaultModel)> {
+pub fn on_retryable_failure<'a>(
+    policy: &'a ModelPolicy,
+    failed_index: Option<usize>,
+) -> Option<(usize, &'a DefaultModel)> {
     policy.fallbacks.next_after(failed_index)
 }
 
@@ -18,7 +25,7 @@ pub fn auxiliary<'a>(policy: &'a ModelPolicy, kind: &AuxiliaryKind) -> Option<&'
     policy.auxiliary(kind)
 }
 
-pub use pantheon_core::model::{ModelPolicy as Policy};
+pub use pantheon_core::model::ModelPolicy as Policy;
 
 #[cfg(test)]
 mod tests {
@@ -26,12 +33,21 @@ mod tests {
     use pantheon_core::model::FallbackChain;
     fn pol() -> ModelPolicy {
         ModelPolicy {
-            default: DefaultModel { provider: "anthropic".into(), model: "sonnet".into() },
-            fallbacks: FallbackChain { fallbacks: vec![
-                DefaultModel { provider: "openai".into(), model: "gpt".into() },
-            ] },
+            default: DefaultModel {
+                provider: "anthropic".into(),
+                model: "sonnet".into(),
+            },
+            fallbacks: FallbackChain {
+                fallbacks: vec![DefaultModel {
+                    provider: "openai".into(),
+                    model: "gpt".into(),
+                }],
+            },
             auxiliaries: vec![AuxiliaryModel {
-                kind: AuxiliaryKind::Embeddings, provider: "local".into(), model: "e5".into() }],
+                kind: AuxiliaryKind::Embeddings,
+                provider: "local".into(),
+                model: "e5".into(),
+            }],
         }
     }
     #[test]

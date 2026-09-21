@@ -38,7 +38,11 @@ pub struct RpcError {
 
 impl RpcError {
     pub fn new(code: i32, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), data: None }
+        Self {
+            code,
+            message: message.into(),
+            data: None,
+        }
     }
 
     pub fn with_data(mut self, data: Value) -> Self {
@@ -47,11 +51,17 @@ impl RpcError {
     }
 
     pub fn parse_error() -> Self {
-        Self::new(PARSE_ERROR_CODE, "parse error: the message was not valid JSON-RPC 2.0")
+        Self::new(
+            PARSE_ERROR_CODE,
+            "parse error: the message was not valid JSON-RPC 2.0",
+        )
     }
 
     pub fn invalid_request() -> Self {
-        Self::new(INVALID_REQUEST_CODE, "invalid request: expected a JSON-RPC 2.0 request object")
+        Self::new(
+            INVALID_REQUEST_CODE,
+            "invalid request: expected a JSON-RPC 2.0 request object",
+        )
     }
 
     pub fn method_not_found(method: &str) -> Self {
@@ -90,11 +100,21 @@ pub struct Response {
 
 impl Response {
     pub fn ok(id: Id, result: Value) -> Self {
-        Self { jsonrpc: "2.0".into(), id, result: Some(result), error: None }
+        Self {
+            jsonrpc: "2.0".into(),
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
 
     pub fn err(id: Id, error: RpcError) -> Self {
-        Self { jsonrpc: "2.0".into(), id, result: None, error: Some(error) }
+        Self {
+            jsonrpc: "2.0".into(),
+            id,
+            result: None,
+            error: Some(error),
+        }
     }
 
     pub fn is_success(&self) -> bool {
@@ -122,7 +142,9 @@ impl Default for Dispatcher {
 
 impl Dispatcher {
     pub fn new() -> Self {
-        Self { methods: Arc::new(RwLock::new(HashMap::new())) }
+        Self {
+            methods: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     /// A dispatcher with the transport-agnostic built-ins:
@@ -130,23 +152,39 @@ impl Dispatcher {
     pub fn with_builtins() -> Self {
         let d = Self::new();
         d.register("system.ping", Ping);
-        d.register("system.methods", MethodList { methods: Arc::clone(&d.methods) });
+        d.register(
+            "system.methods",
+            MethodList {
+                methods: Arc::clone(&d.methods),
+            },
+        );
         d
     }
 
     pub fn register<H: MethodHandler + 'static>(&self, name: impl Into<String>, handler: H) {
-        self.methods.write().expect("dispatcher lock poisoned")
+        self.methods
+            .write()
+            .expect("dispatcher lock poisoned")
             .insert(name.into(), Arc::new(handler));
     }
 
     pub fn unregister(&self, name: &str) -> bool {
-        self.methods.write().expect("dispatcher lock poisoned").remove(name).is_some()
+        self.methods
+            .write()
+            .expect("dispatcher lock poisoned")
+            .remove(name)
+            .is_some()
     }
 
     /// Registered method names, sorted.
     pub fn methods(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.methods.read().expect("dispatcher lock poisoned")
-            .keys().cloned().collect();
+        let mut names: Vec<String> = self
+            .methods
+            .read()
+            .expect("dispatcher lock poisoned")
+            .keys()
+            .cloned()
+            .collect();
         names.sort();
         names
     }
@@ -154,12 +192,20 @@ impl Dispatcher {
     /// Dispatch one request. Notifications (`id: null`) return `None`.
     pub fn dispatch(&self, req: &Request) -> Option<Response> {
         let response = self.invoke(req);
-        if req.id == Id::Null { None } else { Some(response) }
+        if req.id == Id::Null {
+            None
+        } else {
+            Some(response)
+        }
     }
 
     fn invoke(&self, req: &Request) -> Response {
-        let Some(handler) = self.methods.read().expect("dispatcher lock poisoned")
-            .get(&req.method).cloned()
+        let Some(handler) = self
+            .methods
+            .read()
+            .expect("dispatcher lock poisoned")
+            .get(&req.method)
+            .cloned()
         else {
             return Response::err(req.id.clone(), RpcError::method_not_found(&req.method));
         };
@@ -212,8 +258,13 @@ struct MethodList {
 }
 impl MethodHandler for MethodList {
     fn call(&self, _params: Option<Value>) -> Result<Value, RpcError> {
-        let mut names: Vec<String> =
-            self.methods.read().expect("dispatcher lock poisoned").keys().cloned().collect();
+        let mut names: Vec<String> = self
+            .methods
+            .read()
+            .expect("dispatcher lock poisoned")
+            .keys()
+            .cloned()
+            .collect();
         names.sort();
         Ok(Value::Array(names.into_iter().map(Value::String).collect()))
     }
@@ -230,18 +281,27 @@ mod tests {
     #[test]
     fn ping_round_trips_id_and_result() {
         let d = Dispatcher::with_builtins();
-        let out = one_line(&d, r#"{"jsonrpc":"2.0","id":7,"method":"system.ping","params":null}"#);
+        let out = one_line(
+            &d,
+            r#"{"jsonrpc":"2.0","id":7,"method":"system.ping","params":null}"#,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, Id::Number(7));
         assert!(out[0].is_success());
-        assert_eq!(out[0].result.as_ref().unwrap().get("pong").unwrap(), &json!(true));
+        assert_eq!(
+            out[0].result.as_ref().unwrap().get("pong").unwrap(),
+            &json!(true)
+        );
         assert!(out[0].error.is_none());
     }
 
     #[test]
     fn string_ids_and_objects_echo_exactly() {
         let d = Dispatcher::with_builtins();
-        let out = one_line(&d, r#"{"jsonrpc":"2.0","id":"run_1","method":"system.ping"}"#);
+        let out = one_line(
+            &d,
+            r#"{"jsonrpc":"2.0","id":"run_1","method":"system.ping"}"#,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, Id::Str("run_1".into()));
         assert!(out[0].is_success());
@@ -289,9 +349,15 @@ mod tests {
     fn handler_errors_become_invalid_params_when_params_are_wrong() {
         let d = Dispatcher::new();
         d.register("echo", Echo);
-        let ok = one_line(&d, r#"{"jsonrpc":"2.0","id":3,"method":"echo","params":{"text":"hi"}}"#);
+        let ok = one_line(
+            &d,
+            r#"{"jsonrpc":"2.0","id":3,"method":"echo","params":{"text":"hi"}}"#,
+        );
         assert_eq!(ok[0].result.as_ref().unwrap(), &json!({"text": "hi"}));
-        let bad = one_line(&d, r#"{"jsonrpc":"2.0","id":3,"method":"echo","params":{}}"#);
+        let bad = one_line(
+            &d,
+            r#"{"jsonrpc":"2.0","id":3,"method":"echo","params":{}}"#,
+        );
         assert_eq!(bad[0].error.as_ref().unwrap().code, INVALID_PARAMS_CODE);
     }
 
@@ -312,8 +378,10 @@ mod tests {
     struct Echo;
     impl MethodHandler for Echo {
         fn call(&self, params: Option<Value>) -> Result<Value, RpcError> {
-            let params = params.ok_or_else(|| RpcError::invalid_params("params object required"))?;
-            let text = params.get("text")
+            let params =
+                params.ok_or_else(|| RpcError::invalid_params("params object required"))?;
+            let text = params
+                .get("text")
                 .ok_or_else(|| RpcError::invalid_params("field \"text\" is required"))?;
             Ok(json!({ "text": text }))
         }

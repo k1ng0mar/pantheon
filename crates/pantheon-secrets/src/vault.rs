@@ -42,9 +42,7 @@ impl MemoryVault {
     }
 
     fn state(&self) -> MutexGuard<'_, HashMap<String, SecretValue>> {
-        self.secrets
-            .lock()
-            .expect("MemoryVault mutex poisoned")
+        self.secrets.lock().expect("MemoryVault mutex poisoned")
     }
 }
 
@@ -81,11 +79,12 @@ mod tests {
     fn get_set_delete_roundtrip() {
         let vault = MemoryVault::new();
         assert_eq!(vault.get("api.key").unwrap(), None);
-        vault
-            .set("api.key", SecretValue::new("v"))
-            .unwrap();
+        vault.set("api.key", SecretValue::new("v")).unwrap();
         assert_eq!(
-            vault.get("api.key").unwrap().map(|s| s.expose().to_string()),
+            vault
+                .get("api.key")
+                .unwrap()
+                .map(|s| s.expose().to_string()),
             Some("v".into())
         );
         vault.delete("api.key").unwrap();

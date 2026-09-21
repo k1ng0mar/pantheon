@@ -15,6 +15,7 @@ pub struct ToolCall {
 }
 
 /// What one model turn produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnOutcome {
     /// Plain text response.
     Text(String),
@@ -22,7 +23,11 @@ pub enum TurnOutcome {
     Tools(Vec<ToolCall>),
     /// Delegate to a specialist sub-agent.
     /// The loop checks swarm caps and emits AgentSpawned/AgentCompleted.
-    Delegate { agent: String, model: String, task: String },
+    Delegate {
+        agent: String,
+        model: String,
+        task: String,
+    },
 }
 
 /// The model, behind one method. Providers implement this; the loop does not
@@ -40,7 +45,10 @@ pub struct Budget {
 
 impl Default for Budget {
     fn default() -> Self {
-        Self { max_turns: 16, max_tool_calls: 32 }
+        Self {
+            max_turns: 16,
+            max_tool_calls: 32,
+        }
     }
 }
 
@@ -64,19 +72,35 @@ pub enum LoopOutcome {
 pub trait AgentSpawner {
     /// Return a transcript fragment from the spawned agent, or a structured
     /// error if swarm caps refuse the spawn.
-    fn spawn(&self, agent: &str, model: &str, task: &str, depth: u32)
-        -> Result<String, PantheonError>;
+    fn spawn(
+        &self,
+        agent: &str,
+        model: &str,
+        task: &str,
+        depth: u32,
+    ) -> Result<String, PantheonError>;
 }
 
 fn sberr(msg: String) -> PantheonError {
-    PantheonError::new("SWARM_SPAWN_DENIED", Layer::Agent, false, msg,
-        "reduce delegation depth or raise the swarm cap", "")
+    PantheonError::new(
+        "SWARM_SPAWN_DENIED",
+        Layer::Agent,
+        false,
+        msg,
+        "reduce delegation depth or raise the swarm cap",
+        "",
+    )
 }
 
 fn berr(cap: &'static str) -> PantheonError {
-    PantheonError::new("BUDGET_EXHAUSTED", Layer::Agent, false,
+    PantheonError::new(
+        "BUDGET_EXHAUSTED",
+        Layer::Agent,
+        false,
         format!("{cap} cap reached"),
-        "raise the budget explicitly or simplify the task", "")
+        "raise the budget explicitly or simplify the task",
+        "",
+    )
 }
 
 pub struct AgentLoop<'a> {
@@ -93,8 +117,12 @@ pub struct AgentLoop<'a> {
 
 impl<'a> AgentLoop<'a> {
     /// Drive the loop to a terminal outcome. Every transition is emitted.
-    pub fn run(&self, model: &dyn ModelTurn, task: &str,
-               transcript: &mut Vec<String>) -> Result<LoopOutcome, PantheonError> {
+    pub fn run(
+        &self,
+        model: &dyn ModelTurn,
+        task: &str,
+        transcript: &mut Vec<String>,
+    ) -> Result<LoopOutcome, PantheonError> {
         transcript.push(format!("user: {task}"));
         let mut turns = 0u32;
         let mut calls = 0u32;
@@ -105,13 +133,16 @@ impl<'a> AgentLoop<'a> {
             }
             turns += 1;
             self.sink.emit(Event::ModelRequested {
-                run_id: self.run_id.clone(), model: "default".into(),
+                run_id: self.run_id.clone(),
+                model: "default".into(),
             });
 
             let outcome = model.turn(transcript)?;
-            self.sink.emit(Event::ModelCompleted { run_id: self.run_id.clone() });
+            self.sink.emit(Event::ModelCompleted {
+                run_id: self.run_id.clone(),
+            });
 
-                        match outcome {
+            match outcome {
                 TurnOutcome::Text(text) => {
                     transcript.push(format!("assistant: {text}"));
                     if turns > 1 {
@@ -125,7 +156,9 @@ impl<'a> AgentLoop<'a> {
                 TurnOutcome::Tools(tool_calls) => {
                     for call in tool_calls {
                         if calls >= self.budget.max_tool_calls {
-                            return Ok(LoopOutcome::BudgetExhausted { cap: "max_tool_calls" });
+                            return Ok(LoopOutcome::BudgetExhausted {
+                                cap: "max_tool_calls",
+                            });
                         }
                         match gate(&self.policy, &call.capability)? {
                             GateOutcome::Allow => {}
@@ -139,19 +172,23 @@ impl<'a> AgentLoop<'a> {
                         }
                         calls += 1;
                         self.sink.emit(Event::ToolRequested {
-                            run_id: self.run_id.clone(), tool: call.name.clone(),
+                            run_id: self.run_id.clone(),
+                            tool: call.name.clone(),
                         });
                         self.sink.emit(Event::ToolStarted {
-                            run_id: self.run_id.clone(), tool: call.name.clone(),
+                            run_id: self.run_id.clone(),
+                            tool: call.name.clone(),
                         });
                         let out = self.tools.run(&call.name, &call.args)?;
                         self.sink.emit(Event::ToolOutput {
-                            run_id: self.run_id.clone(), tool: call.name.clone(),
+                            run_id: self.run_id.clone(),
+                            tool: call.name.clone(),
                             truncated: false,
                         });
                         transcript.push(format!("tool[{}]: {out}", call.name));
                         self.sink.emit(Event::ToolCompleted {
-                            run_id: self.run_id.clone(), tool: call.name.clone(),
+                            run_id: self.run_id.clone(),
+                            tool: call.name.clone(),
                         });
                     }
                 }
@@ -160,8 +197,9 @@ impl<'a> AgentLoop<'a> {
                         run_id: self.run_id.clone(),
                         agent: agent.clone(),
                     });
-                    let spawner = self.spawner.ok_or_else(||
-                        sberr("no spawner configured for delegation".into()))?;
+                    let spawner = self
+                        .spawner
+                        .ok_or_else(|| sberr("no spawner configured for delegation".into()))?;
                     match spawner.spawn(&agent, &model, &task, self.depth) {
                         Ok(result) => {
                             transcript.push(format!("delegate[{agent}]: {result}"));
@@ -194,26 +232,42 @@ mod tests {
     impl EventSink for Collector {
         fn emit(&self, ev: Event) {
             let s = format!("{ev:?}");
-            self.0.borrow_mut().push(s.chars().take(24).collect::<String>());
+            self.0
+                .borrow_mut()
+                .push(s.chars().take(24).collect::<String>());
         }
     }
 
     struct NoTools;
     impl ToolRunner for NoTools {
-        fn run(&self, _n: &str, _a: &str) -> Result<String, PantheonError> { Ok("ok".into()) }
+        fn run(&self, _n: &str, _a: &str) -> Result<String, PantheonError> {
+            Ok("ok".into())
+        }
     }
 
-    struct Scripted { steps: RefCell<Vec<TurnOutcome>> }
+    struct Scripted {
+        steps: RefCell<Vec<TurnOutcome>>,
+    }
     impl ModelTurn for Scripted {
         fn turn(&self, _t: &[String]) -> Result<TurnOutcome, PantheonError> {
             let mut s = self.steps.borrow_mut();
-            if s.is_empty() { return Ok(TurnOutcome::Text("done".into())); }
+            if s.is_empty() {
+                return Ok(TurnOutcome::Text("done".into()));
+            }
             Ok(s.remove(0))
         }
     }
 
-        fn loop_with<'a>(policy: Policy, sink: &'a Collector, tools: &'a NoTools) -> AgentLoop<'a> {
-        AgentLoop { run_id: "run_t".into(), policy, budget: Budget::default(), sink, tools, spawner: None, depth: 0 }
+    fn loop_with<'a>(policy: Policy, sink: &'a Collector, tools: &'a NoTools) -> AgentLoop<'a> {
+        AgentLoop {
+            run_id: "run_t".into(),
+            policy,
+            budget: Budget::default(),
+            sink,
+            tools,
+            spawner: None,
+            depth: 0,
+        }
     }
 
     /// A spawner that simulates swarm cap enforcement without the swarm crate
@@ -222,12 +276,22 @@ mod tests {
         max_depth: u32,
     }
     impl AgentSpawner for CappedSpawner {
-        fn spawn(&self, _agent: &str, _model: &str, _task: &str, depth: u32)
-            -> Result<String, PantheonError> {
+        fn spawn(
+            &self,
+            _agent: &str,
+            _model: &str,
+            _task: &str,
+            depth: u32,
+        ) -> Result<String, PantheonError> {
             if depth + 1 > self.max_depth {
-                return Err(PantheonError::new("SWARM_SPAWN_DENIED", Layer::Agent, false,
+                return Err(PantheonError::new(
+                    "SWARM_SPAWN_DENIED",
+                    Layer::Agent,
+                    false,
                     format!("depth {depth}+1 exceeds max {}", self.max_depth),
-                    "reduce delegation depth or raise the swarm cap", ""));
+                    "reduce delegation depth or raise the swarm cap",
+                    "",
+                ));
             }
             Ok("spawned-sub-agent-result".into())
         }
@@ -238,19 +302,31 @@ mod tests {
         let sink = Collector(RefCell::new(vec![]));
         let tools = NoTools;
         let spawner = CappedSpawner { max_depth: 2 };
-        let model = Scripted { steps: RefCell::new(vec![
-            TurnOutcome::Delegate {
-                agent: "researcher".into(), model: "kimi".into(), task: "find X".into()
-            },
-        ]) };
+        let model = Scripted {
+            steps: RefCell::new(vec![TurnOutcome::Delegate {
+                agent: "researcher".into(),
+                model: "kimi".into(),
+                task: "find X".into(),
+            }]),
+        };
         let mut t = vec![];
         let loop_ = AgentLoop {
-            run_id: "run_d".into(), policy: Policy::coder(), budget: Budget::default(),
-            sink: &sink, tools: &tools, spawner: Some(&spawner), depth: 0,
+            run_id: "run_d".into(),
+            policy: Policy::coder(),
+            budget: Budget::default(),
+            sink: &sink,
+            tools: &tools,
+            spawner: Some(&spawner),
+            depth: 0,
         };
         let out = loop_.run(&model, "go", &mut t).unwrap();
         // Loop returns Delegated immediately after a successful spawn.
-        assert_eq!(out, LoopOutcome::Delegated { agent: "researcher".into() });
+        assert_eq!(
+            out,
+            LoopOutcome::Delegated {
+                agent: "researcher".into()
+            }
+        );
         assert!(t.iter().any(|l| l.contains("delegate[researcher]")));
         assert!(t.iter().any(|l| l.contains("spawned-sub-agent-result")));
         // AgentMessage event emitted.
@@ -262,18 +338,25 @@ mod tests {
         let sink = Collector(RefCell::new(vec![]));
         let tools = NoTools;
         let spawner = CappedSpawner { max_depth: 0 };
-        let model = Scripted { steps: RefCell::new(vec![
-            TurnOutcome::Delegate {
-                agent: "researcher".into(), model: "kimi".into(), task: "find X".into()
-            },
-        ]) };
+        let model = Scripted {
+            steps: RefCell::new(vec![TurnOutcome::Delegate {
+                agent: "researcher".into(),
+                model: "kimi".into(),
+                task: "find X".into(),
+            }]),
+        };
         let mut t = vec![];
         let loop_ = AgentLoop {
-            run_id: "run_d2".into(), policy: Policy::coder(), budget: Budget::default(),
-            sink: &sink, tools: &tools, spawner: Some(&spawner), depth: 0,
+            run_id: "run_d2".into(),
+            policy: Policy::coder(),
+            budget: Budget::default(),
+            sink: &sink,
+            tools: &tools,
+            spawner: Some(&spawner),
+            depth: 0,
         };
         let err = loop_.run(&model, "go", &mut t).unwrap_err();
-                assert_eq!(err.code, "SWARM_SPAWN_DENIED");
+        assert_eq!(err.code, "SWARM_SPAWN_DENIED");
         // Transcript has the initial "user:" but no delegate entry appended.
         assert!(!t.iter().any(|l| l.starts_with("delegate[")));
         // AgentMessage was emitted before the spawn attempt.
@@ -284,14 +367,18 @@ mod tests {
     fn delegate_without_spawner_fails_loud() {
         let sink = Collector(RefCell::new(vec![]));
         let tools = NoTools;
-        let model = Scripted { steps: RefCell::new(vec![
-            TurnOutcome::Delegate {
-                agent: "x".into(), model: "y".into(), task: "z".into()
-            },
-        ]) };
+        let model = Scripted {
+            steps: RefCell::new(vec![TurnOutcome::Delegate {
+                agent: "x".into(),
+                model: "y".into(),
+                task: "z".into(),
+            }]),
+        };
         let mut t = vec![];
         // loop_with sets spawner: None.
-        let err = loop_with(Policy::coder(), &sink, &tools).run(&model, "go", &mut t).unwrap_err();
+        let err = loop_with(Policy::coder(), &sink, &tools)
+            .run(&model, "go", &mut t)
+            .unwrap_err();
         assert_eq!(err.code, "SWARM_SPAWN_DENIED");
     }
 
@@ -299,12 +386,17 @@ mod tests {
     fn scripted_two_turn_run_completes() {
         let sink = Collector(RefCell::new(vec![]));
         let tools = NoTools;
-        let model = Scripted { steps: RefCell::new(vec![
-            TurnOutcome::Tools(vec![ToolCall {
-                name: "shell".into(), capability: Capability::ShellExecute, args: "ls".into() }]),
-        ]) };
+        let model = Scripted {
+            steps: RefCell::new(vec![TurnOutcome::Tools(vec![ToolCall {
+                name: "shell".into(),
+                capability: Capability::ShellExecute,
+                args: "ls".into(),
+            }])]),
+        };
         let mut t = vec![];
-        let out = loop_with(Policy::coder(), &sink, &tools).run(&model, "go", &mut t).unwrap();
+        let out = loop_with(Policy::coder(), &sink, &tools)
+            .run(&model, "go", &mut t)
+            .unwrap();
         assert_eq!(out, LoopOutcome::Answered("done".into()));
         assert!(t.iter().any(|l| l.starts_with("tool[shell]")));
         assert!(sink.0.borrow().len() >= 6, "expected model/tool events");
@@ -314,12 +406,17 @@ mod tests {
     fn denied_capability_stops_the_run() {
         let sink = Collector(RefCell::new(vec![]));
         let tools = NoTools;
-        let model = Scripted { steps: RefCell::new(vec![
-            TurnOutcome::Tools(vec![ToolCall {
-                name: "browse".into(), capability: Capability::Browser, args: "".into() }]),
-        ]) };
+        let model = Scripted {
+            steps: RefCell::new(vec![TurnOutcome::Tools(vec![ToolCall {
+                name: "browse".into(),
+                capability: Capability::Browser,
+                args: "".into(),
+            }])]),
+        };
         let mut t = vec![];
-        let err = loop_with(Policy::coder(), &sink, &tools).run(&model, "go", &mut t).unwrap_err();
+        let err = loop_with(Policy::coder(), &sink, &tools)
+            .run(&model, "go", &mut t)
+            .unwrap_err();
         assert_eq!(err.code, "CAP_DENIED");
     }
 
@@ -327,13 +424,23 @@ mod tests {
     fn approval_parks_instead_of_running() {
         let sink = Collector(RefCell::new(vec![]));
         let tools = NoTools;
-        let model = Scripted { steps: RefCell::new(vec![
-            TurnOutcome::Tools(vec![ToolCall {
-                name: "push".into(), capability: Capability::GitPush, args: "origin main".into() }]),
-        ]) };
+        let model = Scripted {
+            steps: RefCell::new(vec![TurnOutcome::Tools(vec![ToolCall {
+                name: "push".into(),
+                capability: Capability::GitPush,
+                args: "origin main".into(),
+            }])]),
+        };
         let mut t = vec![];
-        let out = loop_with(Policy::coder(), &sink, &tools).run(&model, "go", &mut t).unwrap();
-        assert_eq!(out, LoopOutcome::AwaitingApproval { capability: Capability::GitPush });
+        let out = loop_with(Policy::coder(), &sink, &tools)
+            .run(&model, "go", &mut t)
+            .unwrap();
+        assert_eq!(
+            out,
+            LoopOutcome::AwaitingApproval {
+                capability: Capability::GitPush
+            }
+        );
         assert!(!t.iter().any(|l| l.starts_with("tool[push]")));
     }
 
@@ -345,11 +452,17 @@ mod tests {
         impl ModelTurn for NeverAnswers {
             fn turn(&self, _t: &[String]) -> Result<TurnOutcome, PantheonError> {
                 Ok(TurnOutcome::Tools(vec![ToolCall {
-                    name: "shell".into(), capability: Capability::ShellExecute, args: "".into() }]))
+                    name: "shell".into(),
+                    capability: Capability::ShellExecute,
+                    args: "".into(),
+                }]))
             }
         }
         let mut l = loop_with(Policy::coder(), &sink, &tools);
-        l.budget = Budget { max_turns: 3, max_tool_calls: 32 };
+        l.budget = Budget {
+            max_turns: 3,
+            max_tool_calls: 32,
+        };
         let mut t = vec![];
         let err = l.run(&NeverAnswers, "go", &mut t).unwrap_err();
         assert_eq!(err.code, "BUDGET_EXHAUSTED");
