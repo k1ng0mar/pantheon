@@ -4,8 +4,14 @@ use pantheon_core::capability::{Capability, Decision, Policy};
 use pantheon_core::error::{Layer, PantheonError};
 
 fn cerr(code: &str, cause: String, retryable: bool) -> PantheonError {
-    PantheonError::new(code, Layer::Capability, retryable, cause,
-        "request approval or narrow the capability grant", "")
+    PantheonError::new(
+        code,
+        Layer::Capability,
+        retryable,
+        cause,
+        "request approval or narrow the capability grant",
+        "",
+    )
 }
 
 /// Enforcement outcome.
@@ -20,8 +26,12 @@ pub enum Verdict {
 pub fn check(policy: &Policy, cap: &Capability) -> Verdict {
     match policy.check(cap) {
         Decision::Allow => Verdict::Allow,
-        Decision::Approval => Verdict::NeedsApproval { capability: cap.clone() },
-        Decision::Deny => Verdict::Deny { capability: cap.clone() },
+        Decision::Approval => Verdict::NeedsApproval {
+            capability: cap.clone(),
+        },
+        Decision::Deny => Verdict::Deny {
+            capability: cap.clone(),
+        },
     }
 }
 
@@ -31,9 +41,14 @@ pub fn enforce(policy: &Policy, cap: &Capability) -> Result<(), PantheonError> {
         Verdict::Allow => Ok(()),
         Verdict::NeedsApproval { capability } => Err(cerr(
             "CAP_APPROVAL_REQUIRED",
-            format!("capability {capability:?} needs approval"), false)),
+            format!("capability {capability:?} needs approval"),
+            false,
+        )),
         Verdict::Deny { capability } => Err(cerr(
-            "CAP_DENIED", format!("capability {capability:?} denied by policy"), false)),
+            "CAP_DENIED",
+            format!("capability {capability:?} denied by policy"),
+            false,
+        )),
     }
 }
 
@@ -44,17 +59,23 @@ mod tests {
     fn coder_push_needs_approval() {
         let p = Policy::coder();
         assert_eq!(check(&p, &Capability::ShellExecute), Verdict::Allow);
-        assert!(matches!(check(&p, &Capability::GitPush),
-            Verdict::NeedsApproval { .. }));
-        assert!(matches!(check(&p, &Capability::Browser),
-            Verdict::Deny { .. }));
+        assert!(matches!(
+            check(&p, &Capability::GitPush),
+            Verdict::NeedsApproval { .. }
+        ));
+        assert!(matches!(
+            check(&p, &Capability::Browser),
+            Verdict::Deny { .. }
+        ));
         assert!(enforce(&p, &Capability::Browser).is_err());
     }
     #[test]
     fn researcher_is_readonly() {
         let p = Policy::researcher_readonly();
         assert_eq!(check(&p, &Capability::FilesystemRead), Verdict::Allow);
-        assert!(matches!(check(&p, &Capability::FilesystemWrite),
-            Verdict::Deny { .. }));
+        assert!(matches!(
+            check(&p, &Capability::FilesystemWrite),
+            Verdict::Deny { .. }
+        ));
     }
 }

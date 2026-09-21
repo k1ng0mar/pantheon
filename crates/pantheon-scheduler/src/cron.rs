@@ -70,12 +70,18 @@ impl CronSchedule {
 
     /// Does this expression select the given minute?
     pub fn matches(&self, at: CivilTime) -> bool {
-        if !self.minute.matches(at.minute) || !self.hour.matches(at.hour) || !self.month.matches(at.month) {
+        if !self.minute.matches(at.minute)
+            || !self.hour.matches(at.hour)
+            || !self.month.matches(at.month)
+        {
             return false;
         }
         let dom = self.day_of_month.matches(at.day);
         let dow = self.day_of_week.matches(at.weekday);
-        match (self.day_of_month.is_wildcard(), self.day_of_week.is_wildcard()) {
+        match (
+            self.day_of_month.is_wildcard(),
+            self.day_of_week.is_wildcard(),
+        ) {
             (true, true) => true,
             (false, true) => dom,
             (true, false) => dow,
@@ -136,7 +142,10 @@ impl Field {
         for item in raw.split(',') {
             let item = item.trim();
             if item.is_empty() {
-                return Err(CronError { field: name, cause: "empty list item".into() });
+                return Err(CronError {
+                    field: name,
+                    cause: "empty list item".into(),
+                });
             }
             let (range_part, step) = match item.split_once('/') {
                 Some((r, s)) => {
@@ -145,7 +154,10 @@ impl Field {
                         cause: format!("bad step '{s}'"),
                     })?;
                     if step == 0 {
-                        return Err(CronError { field: name, cause: "step must be > 0".into() });
+                        return Err(CronError {
+                            field: name,
+                            cause: "step must be > 0".into(),
+                        });
                     }
                     (r, step)
                 }
@@ -174,7 +186,11 @@ impl Field {
         }
         allowed.sort_unstable();
         allowed.dedup();
-        Ok(Self { allowed, range: (min, max), wildcard })
+        Ok(Self {
+            allowed,
+            range: (min, max),
+            wildcard,
+        })
     }
 
     fn matches(&self, value: u32) -> bool {
@@ -199,10 +215,10 @@ impl Field {
 }
 
 fn parse_val(raw: &str, name: &'static str, min: u32, max: u32) -> Result<u32, CronError> {
-    let v: u32 = raw
-        .trim()
-        .parse()
-        .map_err(|_| CronError { field: name, cause: format!("'{raw}' is not a number") })?;
+    let v: u32 = raw.trim().parse().map_err(|_| CronError {
+        field: name,
+        cause: format!("'{raw}' is not a number"),
+    })?;
     if v < min || v > max {
         return Err(CronError {
             field: name,
@@ -225,7 +241,10 @@ mod tests {
     #[test]
     fn civil_conversion_matches_known_instants() {
         let t = civil_from_ms(0);
-        assert_eq!((t.year, t.month, t.day, t.hour, t.minute), (1970, 1, 1, 0, 0));
+        assert_eq!(
+            (t.year, t.month, t.day, t.hour, t.minute),
+            (1970, 1, 1, 0, 0)
+        );
         assert_eq!(t.weekday, 4, "1970-01-01 was a Thursday");
 
         let t = civil_from_ms(sunday_1430());
@@ -264,9 +283,21 @@ mod tests {
     fn steps_and_ranges() {
         let c = CronSchedule::parse("*/15 9-17 * * *").unwrap();
         assert!(c.matches(civil_from_ms(sunday_1430())), "14:30 is in range");
-        assert!(c.matches(CivilTime { hour: 9, minute: 45, ..civil_from_ms(sunday_1430()) }));
-        assert!(!c.matches(CivilTime { hour: 8, minute: 0, ..civil_from_ms(sunday_1430()) }));
-        assert!(!c.matches(CivilTime { hour: 14, minute: 31, ..civil_from_ms(sunday_1430()) }));
+        assert!(c.matches(CivilTime {
+            hour: 9,
+            minute: 45,
+            ..civil_from_ms(sunday_1430())
+        }));
+        assert!(!c.matches(CivilTime {
+            hour: 8,
+            minute: 0,
+            ..civil_from_ms(sunday_1430())
+        }));
+        assert!(!c.matches(CivilTime {
+            hour: 14,
+            minute: 31,
+            ..civil_from_ms(sunday_1430())
+        }));
     }
 
     #[test]
@@ -274,7 +305,11 @@ mod tests {
         let sunday = CronSchedule::parse("0 3 * * 0").unwrap();
         let sunday_seven = CronSchedule::parse("0 3 * * 7").unwrap();
         let monday = CronSchedule::parse("0 3 * * 1").unwrap();
-        let at = CivilTime { hour: 3, minute: 0, ..civil_from_ms(sunday_1430()) };
+        let at = CivilTime {
+            hour: 3,
+            minute: 0,
+            ..civil_from_ms(sunday_1430())
+        };
         assert!(sunday.matches(at));
         assert!(sunday_seven.matches(at), "7 is an alias for Sunday");
         assert!(!monday.matches(at));
@@ -284,9 +319,30 @@ mod tests {
     fn day_fields_are_or_ed_when_both_are_restricted() {
         // Vixie cron: the 1st OR any Sunday.
         let c = CronSchedule::parse("0 0 1 * 0").unwrap();
-        let sunday_not_first = CivilTime { year: 2026, month: 9, day: 20, hour: 0, minute: 0, weekday: 0 };
-        let tuesday_first = CivilTime { year: 2026, month: 9, day: 1, hour: 0, minute: 0, weekday: 2 };
-        let tuesday_second = CivilTime { year: 2026, month: 9, day: 2, hour: 0, minute: 0, weekday: 3 };
+        let sunday_not_first = CivilTime {
+            year: 2026,
+            month: 9,
+            day: 20,
+            hour: 0,
+            minute: 0,
+            weekday: 0,
+        };
+        let tuesday_first = CivilTime {
+            year: 2026,
+            month: 9,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            weekday: 2,
+        };
+        let tuesday_second = CivilTime {
+            year: 2026,
+            month: 9,
+            day: 2,
+            hour: 0,
+            minute: 0,
+            weekday: 3,
+        };
         assert!(c.matches(sunday_not_first));
         assert!(c.matches(tuesday_first));
         assert!(!c.matches(tuesday_second));
@@ -294,19 +350,40 @@ mod tests {
 
     #[test]
     fn bad_expressions_are_rejected_with_a_field_name() {
-        assert_eq!(CronSchedule::parse("* * * *").unwrap_err().field, "expression");
-        assert_eq!(CronSchedule::parse("60 * * * *").unwrap_err().field, "minute");
+        assert_eq!(
+            CronSchedule::parse("* * * *").unwrap_err().field,
+            "expression"
+        );
+        assert_eq!(
+            CronSchedule::parse("60 * * * *").unwrap_err().field,
+            "minute"
+        );
         assert_eq!(CronSchedule::parse("* 24 * * *").unwrap_err().field, "hour");
-        assert_eq!(CronSchedule::parse("* * * 13 *").unwrap_err().field, "month");
-        assert_eq!(CronSchedule::parse("*/0 * * * *").unwrap_err().field, "minute");
-        assert_eq!(CronSchedule::parse("5-2 * * * *").unwrap_err().field, "minute");
+        assert_eq!(
+            CronSchedule::parse("* * * 13 *").unwrap_err().field,
+            "month"
+        );
+        assert_eq!(
+            CronSchedule::parse("*/0 * * * *").unwrap_err().field,
+            "minute"
+        );
+        assert_eq!(
+            CronSchedule::parse("5-2 * * * *").unwrap_err().field,
+            "minute"
+        );
         assert!(CronSchedule::parse("0 0 1 1 0").is_ok());
     }
 
     #[test]
     fn cron_job_fires_once_per_matching_minute() {
         // The gap this closes: a Cron arm that never fired at all.
-        let job = Job::new("nightly", ScheduleKind::Cron { expr: "30 14 * * *".into() }, "nyx");
+        let job = Job::new(
+            "nightly",
+            ScheduleKind::Cron {
+                expr: "30 14 * * *".into(),
+            },
+            "nyx",
+        );
         let now = sunday_1430();
 
         assert!(job.due(now, None), "must fire on the matching minute");
@@ -325,14 +402,26 @@ mod tests {
 
     #[test]
     fn paused_cron_job_never_fires() {
-        let mut job = Job::new("nightly", ScheduleKind::Cron { expr: "* * * * *".into() }, "nyx");
+        let mut job = Job::new(
+            "nightly",
+            ScheduleKind::Cron {
+                expr: "* * * * *".into(),
+            },
+            "nyx",
+        );
         job.paused = true;
         assert!(!job.due(sunday_1430(), None));
     }
 
     #[test]
     fn invalid_expression_never_fires_instead_of_panicking() {
-        let job = Job::new("broken", ScheduleKind::Cron { expr: "not a cron".into() }, "nyx");
+        let job = Job::new(
+            "broken",
+            ScheduleKind::Cron {
+                expr: "not a cron".into(),
+            },
+            "nyx",
+        );
         assert!(!job.due(sunday_1430(), None));
         assert!(job.validate().is_err());
     }

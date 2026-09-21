@@ -11,8 +11,14 @@ use std::path::Path;
 use std::sync::Mutex;
 
 fn serr(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(code, Layer::Memory, false, cause,
-        "check the memory database path and disk space", "")
+    PantheonError::new(
+        code,
+        Layer::Memory,
+        false,
+        cause,
+        "check the memory database path and disk space",
+        "",
+    )
 }
 
 /// A recall hit: the record plus its rank.
@@ -80,69 +86,109 @@ impl MemoryStore {
             }
         }
         let conn = Connection::open(path).map_err(|e| serr("MEM_OPEN", e.to_string()))?;
-        conn.execute_batch(SCHEMA).map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
-        Ok(Self { conn: Mutex::new(conn) })
+        conn.execute_batch(SCHEMA)
+            .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn open_in_memory() -> Result<Self, PantheonError> {
         let conn = Connection::open_in_memory().map_err(|e| serr("MEM_OPEN", e.to_string()))?;
-        conn.execute_batch(SCHEMA).map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
-        Ok(Self { conn: Mutex::new(conn) })
+        conn.execute_batch(SCHEMA)
+            .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Upsert one validated proposal. Validation happened upstream; this is
     /// the provider step only.
     pub fn put(&self, p: &Proposal) -> Result<MemoryRecord, PantheonError> {
-        let conn = self.conn.lock().map_err(|e| serr("MEM_LOCK", e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
         conn.execute(
             "INSERT INTO memories (layer, namespace, key, value, source, origin, recorded_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(layer, namespace, key) DO UPDATE SET
                value=excluded.value, source=excluded.source,
                origin=excluded.origin, recorded_at_ms=excluded.recorded_at_ms",
-            params![layer_str(p.layer), p.namespace, p.key, p.value,
-                p.provenance.source, p.provenance.origin, p.provenance.recorded_at_ms],
-        ).map_err(|e| serr("MEM_PUT", e.to_string()))?;
+            params![
+                layer_str(p.layer),
+                p.namespace,
+                p.key,
+                p.value,
+                p.provenance.source,
+                p.provenance.origin,
+                p.provenance.recorded_at_ms
+            ],
+        )
+        .map_err(|e| serr("MEM_PUT", e.to_string()))?;
         Ok(MemoryRecord {
-            layer: p.layer, namespace: p.namespace.clone(), key: p.key.clone(),
-            value: p.value.clone(), provenance: p.provenance.clone(),
+            layer: p.layer,
+            namespace: p.namespace.clone(),
+            key: p.key.clone(),
+            value: p.value.clone(),
+            provenance: p.provenance.clone(),
         })
     }
 
     /// FTS recall across the given layers, narrowest-first ordering applied
     /// by the caller passing layers in priority order.
-    pub fn search(&self, layers: &[LayerKind], query: &str, limit: usize)
-        -> Result<Vec<Recalled>, PantheonError> {
+    pub fn search(
+        &self,
+        layers: &[LayerKind],
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Recalled>, PantheonError> {
         if query.trim().is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn.lock().map_err(|e| serr("MEM_LOCK", e.to_string()))?;
-        let mut stmt = conn.prepare(
-            "SELECT m.layer, m.namespace, m.key, m.value, m.source, m.origin,
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.layer, m.namespace, m.key, m.value, m.source, m.origin,
                     m.recorded_at_ms, bm25(memories_fts) AS rank
              FROM memories_fts f
              JOIN memories m ON m.id = f.rowid
              WHERE memories_fts MATCH ?1
-             ORDER BY rank LIMIT ?2")
+             ORDER BY rank LIMIT ?2",
+            )
             .map_err(|e| serr("MEM_SEARCH", e.to_string()))?;
-        let rows = stmt.query_map(params![query, limit as i64], |r| {
-            Ok(Recalled {
-                record: MemoryRecord {
-                    layer: layer_from(&r.get::<_, String>(0)?),
-                    namespace: r.get(1)?, key: r.get(2)?, value: r.get(3)?,
-                    provenance: Provenance {
-                        source: r.get(4)?, origin: r.get(5)?, recorded_at_ms: r.get(6)?,
+        let rows = stmt
+            .query_map(params![query, limit as i64], |r| {
+                Ok(Recalled {
+                    record: MemoryRecord {
+                        layer: layer_from(&r.get::<_, String>(0)?),
+                        namespace: r.get(1)?,
+                        key: r.get(2)?,
+                        value: r.get(3)?,
+                        provenance: Provenance {
+                            source: r.get(4)?,
+                            origin: r.get(5)?,
+                            recorded_at_ms: r.get(6)?,
+                        },
                     },
-                },
-                rank: r.get(7)?,
+                    rank: r.get(7)?,
+                })
             })
-        }).map_err(|e| serr("MEM_SEARCH", e.to_string()))?;
+            .map_err(|e| serr("MEM_SEARCH", e.to_string()))?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row.map_err(|e| serr("MEM_SEARCH", e.to_string()))?);
         }
         // Narrowest layers first: stable sort by layer priority.
-        out.sort_by_key(|r| layers.iter().position(|l| *l == r.record.layer).unwrap_or(usize::MAX));
+        out.sort_by_key(|r| {
+            layers
+                .iter()
+                .position(|l| *l == r.record.layer)
+                .unwrap_or(usize::MAX)
+        });
         Ok(out)
     }
 }

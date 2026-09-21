@@ -1,5 +1,7 @@
 //! Supervisor: run lifecycle, quotas, recovery, checkpointing (D decision).
 //! Runs persist every event; a killed run resumes as RunRecovered.
+pub mod session;
+
 use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::events::Event;
 use pantheon_storage::Ledger;
@@ -7,8 +9,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 fn rerr(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(code, Layer::Runtime, false, cause,
-        "check runtime state and ledger", "")
+    PantheonError::new(
+        code,
+        Layer::Runtime,
+        false,
+        cause,
+        "check runtime state and ledger",
+        "",
+    )
 }
 
 /// Supervisor handle. Cheap to clone, safe to share.
@@ -24,20 +32,29 @@ struct SupervisorInner {
 
 impl Supervisor {
     pub fn open(data_dir: PathBuf) -> Result<Self, PantheonError> {
-        std::fs::create_dir_all(&data_dir)
-            .map_err(|e| rerr("RT_MKDIR", e.to_string()))?;
+        std::fs::create_dir_all(&data_dir).map_err(|e| rerr("RT_MKDIR", e.to_string()))?;
         let ledger = Ledger::open(&data_dir.join("ledger.db"))?;
-        Ok(Self { inner: Arc::new(SupervisorInner { ledger, data_dir }) })
+        Ok(Self {
+            inner: Arc::new(SupervisorInner { ledger, data_dir }),
+        })
     }
-    fn ledger(&self) -> &Ledger { &self.inner.ledger }
-    pub fn data_dir(&self) -> &PathBuf { &self.inner.data_dir }
+    fn ledger(&self) -> &Ledger {
+        &self.inner.ledger
+    }
+    pub fn data_dir(&self) -> &PathBuf {
+        &self.inner.data_dir
+    }
     /// Start a run. If a previous ledger shows it unfinished, emit RunRecovered.
     pub fn start_run(&self, run_id: &str) -> Result<bool, PantheonError> {
         let status = self.ledger().status(run_id)?;
         let recovered = matches!(status.as_deref(), Some("running"));
-        self.ledger().append(&Event::RunStarted { run_id: run_id.into() })?;
+        self.ledger().append(&Event::RunStarted {
+            run_id: run_id.into(),
+        })?;
         if recovered {
-            self.ledger().append(&Event::RunRecovered { run_id: run_id.into() })?;
+            self.ledger().append(&Event::RunRecovered {
+                run_id: run_id.into(),
+            })?;
         }
         Ok(recovered)
     }
@@ -46,11 +63,16 @@ impl Supervisor {
         Ok(())
     }
     pub fn complete(&self, run_id: &str) -> Result<(), PantheonError> {
-        self.ledger().append(&Event::RunCompleted { run_id: run_id.into() })?;
+        self.ledger().append(&Event::RunCompleted {
+            run_id: run_id.into(),
+        })?;
         Ok(())
     }
     pub fn fail(&self, run_id: &str, code: &str) -> Result<(), PantheonError> {
-        self.ledger().append(&Event::RunFailed { run_id: run_id.into(), code: code.into() })?;
+        self.ledger().append(&Event::RunFailed {
+            run_id: run_id.into(),
+            code: code.into(),
+        })?;
         Ok(())
     }
     pub fn explain(&self, run_id: &str) -> Result<String, PantheonError> {
@@ -65,8 +87,10 @@ impl Supervisor {
 /// Run IDs: run_<epochms>_<rand4>. No external deps.
 pub fn new_run_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let ms = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis()).unwrap_or(0);
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     let r = Mutex::new(0u32);
     let n = {
         let mut g = r.lock().unwrap();
@@ -87,7 +111,11 @@ mod tests {
         let sup = Supervisor::open(dir).unwrap();
         let id = "run_test_1";
         assert!(!sup.start_run(id).unwrap());
-        sup.emit(Event::ToolStarted { run_id: id.into(), tool: "shell".into() }).unwrap();
+        sup.emit(Event::ToolStarted {
+            run_id: id.into(),
+            tool: "shell".into(),
+        })
+        .unwrap();
         sup.complete(id).unwrap();
         assert!(sup.explain(id).unwrap().contains("completed"));
     }

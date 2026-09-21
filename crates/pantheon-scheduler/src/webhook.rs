@@ -119,7 +119,13 @@ mod tests {
 
     #[test]
     fn clock_jobs_are_never_webhook_targets() {
-        let job = Job::new("nightly", ScheduleKind::Cron { expr: "0 3 * * *".into() }, "nyx");
+        let job = Job::new(
+            "nightly",
+            ScheduleKind::Cron {
+                expr: "0 3 * * *".into(),
+            },
+            "nyx",
+        );
         let mut ledger = ClaimLedger::new();
         assert!(accept(&job, "hook/deploy", "req-1", &mut ledger).is_none());
 

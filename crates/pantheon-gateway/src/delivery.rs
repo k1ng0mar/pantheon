@@ -12,9 +12,14 @@ use crate::OutboundMessage;
 pub enum DeliveryOutcome {
     Delivered,
     /// Try again in `after_ms`.
-    Retry { attempt: u32, after_ms: u64 },
+    Retry {
+        attempt: u32,
+        after_ms: u64,
+    },
     /// Do not retry; report why (bad target, blocked, message too large).
-    Dropped { reason: String },
+    Dropped {
+        reason: String,
+    },
 }
 
 /// Cap on backoff so a long outage does not push retries hours out.
@@ -41,7 +46,10 @@ pub fn plan_delivery(attempt: u32, max_attempts: u32, retryable: bool) -> Delive
             reason: format!("gave up after {attempt} attempts"),
         };
     }
-    DeliveryOutcome::Retry { attempt, after_ms: backoff_ms(attempt) }
+    DeliveryOutcome::Retry {
+        attempt,
+        after_ms: backoff_ms(attempt),
+    }
 }
 
 /// Messages waiting for a surface to come back.
@@ -82,18 +90,27 @@ mod tests {
     use super::*;
 
     fn msg(text: &str) -> OutboundMessage {
-        OutboundMessage { to_conversation: "c1".into(), text: text.into() }
+        OutboundMessage {
+            to_conversation: "c1".into(),
+            text: text.into(),
+        }
     }
 
     #[test]
     fn retryable_failures_back_off_exponentially_then_stop() {
         assert_eq!(
             plan_delivery(1, 5, true),
-            DeliveryOutcome::Retry { attempt: 1, after_ms: 2_000 }
+            DeliveryOutcome::Retry {
+                attempt: 1,
+                after_ms: 2_000
+            }
         );
         assert_eq!(
             plan_delivery(3, 5, true),
-            DeliveryOutcome::Retry { attempt: 3, after_ms: 8_000 }
+            DeliveryOutcome::Retry {
+                attempt: 3,
+                after_ms: 8_000
+            }
         );
         match plan_delivery(5, 5, true) {
             DeliveryOutcome::Dropped { reason } => assert!(reason.contains("5 attempts")),

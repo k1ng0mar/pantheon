@@ -7,8 +7,14 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 fn xerr(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(code, Layer::Extension, false, cause,
-        "fix plugin.yaml and reload", "")
+    PantheonError::new(
+        code,
+        Layer::Extension,
+        false,
+        cause,
+        "fix plugin.yaml and reload",
+        "",
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,8 +43,8 @@ pub struct PluginManifest {
 
 impl PluginManifest {
     pub fn load(path: &Path) -> Result<Self, PantheonError> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| xerr("EXT_MANIFEST_READ", e.to_string()))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| xerr("EXT_MANIFEST_READ", e.to_string()))?;
         serde_yaml::from_str(&text).map_err(|e| xerr("EXT_MANIFEST_PARSE", e.to_string()))
     }
     /// Union of both hook spellings, parsed. Unknown names are reported, not fatal.
@@ -47,7 +53,9 @@ impl PluginManifest {
         let mut unknown = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for raw in self.provides_hooks.iter().chain(self.hooks.iter()) {
-            if !seen.insert(raw.clone()) { continue; }
+            if !seen.insert(raw.clone()) {
+                continue;
+            }
             match Hook::parse(raw) {
                 Some(h) => known.push(h),
                 None => unknown.push(raw.clone()),

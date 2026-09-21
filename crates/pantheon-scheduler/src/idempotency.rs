@@ -79,7 +79,13 @@ mod tests {
     use crate::ScheduleKind;
 
     fn job() -> Job {
-        Job::new("nightly", ScheduleKind::Cron { expr: "30 14 * * *".into() }, "nyx")
+        Job::new(
+            "nightly",
+            ScheduleKind::Cron {
+                expr: "30 14 * * *".into(),
+            },
+            "nyx",
+        )
     }
 
     #[test]
@@ -89,7 +95,10 @@ mod tests {
         let key = occurrence_key(&job, "1789914600000");
 
         assert!(ledger.claim(&key), "first fire must run");
-        assert!(!ledger.claim(&key), "replay of the same fire must be skipped");
+        assert!(
+            !ledger.claim(&key),
+            "replay of the same fire must be skipped"
+        );
         assert!(ledger.is_claimed(&key));
         assert_eq!(ledger.len(), 1);
     }
@@ -145,6 +154,9 @@ mod tests {
 
         assert!(ledger.claim(&key), "the fire runs");
         // Process dies mid-run and restarts a second later in the same minute.
-        assert!(!ledger.claim(&key), "the recovery replay must not run again");
+        assert!(
+            !ledger.claim(&key),
+            "the recovery replay must not run again"
+        );
     }
 }

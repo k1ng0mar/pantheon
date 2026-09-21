@@ -19,7 +19,11 @@ pub struct Conversation {
 
 impl Conversation {
     pub fn new(gateway: &str, id: &str) -> Self {
-        Self { gateway: gateway.into(), id: id.into(), thread: None }
+        Self {
+            gateway: gateway.into(),
+            id: id.into(),
+            thread: None,
+        }
     }
 
     pub fn in_thread(mut self, thread: &str) -> Self {
@@ -140,10 +144,17 @@ mod tests {
         let conv = Conversation::new("telegram", "c7").in_thread("t1");
         let msg = InboundMessage {
             id: "m1".into(),
-            from: Identity { gateway: "telegram".into(), user: "joe".into() },
+            from: Identity {
+                gateway: "telegram".into(),
+                user: "joe".into(),
+            },
             conversation: conv.clone(),
             text: "hi".into(),
-            attachments: vec![Attachment { name: "a.txt".into(), mime: "text/plain".into(), bytes: 3 }],
+            attachments: vec![Attachment {
+                name: "a.txt".into(),
+                mime: "text/plain".into(),
+                bytes: 3,
+            }],
         };
         assert_eq!(
             Canonical::Message(msg).conversation_key().as_deref(),

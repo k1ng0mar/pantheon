@@ -23,31 +23,55 @@ pub struct DoctorReport {
 }
 
 fn f(level: &str, code: &str, detail: String) -> DoctorFinding {
-    DoctorFinding { level: level.into(), code: code.into(), detail }
+    DoctorFinding {
+        level: level.into(),
+        code: code.into(),
+        detail,
+    }
 }
 
 /// Inspect a plugin dir without executing it.
 pub fn doctor(dir: &Path) -> DoctorReport {
     let mut findings = Vec::new();
-    let label = dir.file_name().map(|s| s.to_string_lossy().to_string())
+    let label = dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| dir.display().to_string());
     if !dir.exists() {
-        return DoctorReport { plugin: label, ok: false, hooks: vec![],
+        return DoctorReport {
+            plugin: label,
+            ok: false,
+            hooks: vec![],
             unknown_hooks: vec![],
-            findings: vec![f("error", "NO_DIR", format!("{} does not exist", dir.display()))] };
+            findings: vec![f(
+                "error",
+                "NO_DIR",
+                format!("{} does not exist", dir.display()),
+            )],
+        };
     }
     let man_path = dir.join("plugin.yaml");
     if !man_path.exists() {
         findings.push(f("error", "NO_MANIFEST", "plugin.yaml missing".into()));
-        return DoctorReport { plugin: label, ok: false, hooks: vec![],
-            unknown_hooks: vec![], findings };
+        return DoctorReport {
+            plugin: label,
+            ok: false,
+            hooks: vec![],
+            unknown_hooks: vec![],
+            findings,
+        };
     }
     let man = match PluginManifest::load(&man_path) {
         Ok(m) => m,
         Err(e) => {
             findings.push(f("error", "BAD_MANIFEST", e.to_string()));
-            return DoctorReport { plugin: label, ok: false, hooks: vec![],
-                unknown_hooks: vec![], findings };
+            return DoctorReport {
+                plugin: label,
+                ok: false,
+                hooks: vec![],
+                unknown_hooks: vec![],
+                findings,
+            };
         }
     };
     if man.name.trim().is_empty() {
@@ -56,19 +80,30 @@ pub fn doctor(dir: &Path) -> DoctorReport {
     let entry_py = dir.join("__init__.py").exists();
     let entry_ts = dir.join("index.ts").exists();
     if !entry_py && !entry_ts {
-        findings.push(f("error", "NO_ENTRY",
-            "neither __init__.py nor index.ts found".into()));
+        findings.push(f(
+            "error",
+            "NO_ENTRY",
+            "neither __init__.py nor index.ts found".into(),
+        ));
     }
     if entry_ts && !entry_py {
-        findings.push(f("warn", "TS_ENTRY",
-            "TypeScript entry: needs OpenClaw-compat adapter (Soul path), not the Python runner".into()));
+        findings.push(f(
+            "warn",
+            "TS_ENTRY",
+            "TypeScript entry: needs OpenClaw-compat adapter (Soul path), not the Python runner"
+                .into(),
+        ));
     }
     let (hooks, unknown) = man.hook_list();
     for u in &unknown {
         findings.push(f("warn", "UNKNOWN_HOOK", format!("unknown hook '{u}'")));
     }
     if hooks.is_empty() {
-        findings.push(f("warn", "NO_HOOKS", "manifest declares no known hooks".into()));
+        findings.push(f(
+            "warn",
+            "NO_HOOKS",
+            "manifest declares no known hooks".into(),
+        ));
     }
     let names: Vec<String> = hooks.iter().map(|h| h.name().to_string()).collect();
     // Static scan of __init__.py for suspicious imports (loud, not blocking).
@@ -76,14 +111,22 @@ pub fn doctor(dir: &Path) -> DoctorReport {
         if let Ok(text) = std::fs::read_to_string(dir.join("__init__.py")) {
             for pat in ["os.system", "subprocess", "socket", "urllib", "requests"] {
                 if text.contains(pat) {
-                    findings.push(f("info", "USES_NET_OR_EXEC",
-                        format!("__init__.py mentions '{pat}' (review sandbox level)")));
+                    findings.push(f(
+                        "info",
+                        "USES_NET_OR_EXEC",
+                        format!("__init__.py mentions '{pat}' (review sandbox level)"),
+                    ));
                 }
             }
         }
     }
     let ok = !findings.iter().any(|x| x.level == "error");
     let _ = Hook::all();
-    DoctorReport { plugin: man.name.clone(), ok, hooks: names,
-        unknown_hooks: unknown, findings }
+    DoctorReport {
+        plugin: man.name.clone(),
+        ok,
+        hooks: names,
+        unknown_hooks: unknown,
+        findings,
+    }
 }

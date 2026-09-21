@@ -4,6 +4,10 @@
 //! Rule: noisy tool output is compacted deterministically BEFORE it reaches
 //! model context. No model summarization, no vibe-truncation. Keep exact
 //! head/tail, hash the dropped middle, record what was dropped in the ledger.
+
+pub mod builtins;
+pub mod tools;
+
 use serde::{Deserialize, Serialize};
 
 /// Compaction policy for one tool's output.
@@ -19,7 +23,11 @@ pub struct CompactionPolicy {
 
 impl Default for CompactionPolicy {
     fn default() -> Self {
-        Self { max_lines: 200, head_lines: 60, max_bytes: 64 * 1024 }
+        Self {
+            max_lines: 200,
+            head_lines: 60,
+            max_bytes: 64 * 1024,
+        }
     }
 }
 
@@ -62,17 +70,24 @@ pub fn compact_output(raw: &str, policy: &CompactionPolicy) -> Compacted {
     }
     let tail_lines = policy.max_lines.saturating_sub(policy.head_lines);
     let head: Vec<&str> = lines.iter().take(policy.head_lines).copied().collect();
-    let tail: Vec<&str> = if tail_lines == 0 { vec![] } else {
+    let tail: Vec<&str> = if tail_lines == 0 {
+        vec![]
+    } else {
         lines.iter().rev().take(tail_lines).rev().copied().collect()
     };
-    let dropped: Vec<&str> = lines.iter().skip(head.len())
+    let dropped: Vec<&str> = lines
+        .iter()
+        .skip(head.len())
         .take(lines.len().saturating_sub(head.len() + tail.len()))
-        .copied().collect();
+        .copied()
+        .collect();
     let dropped_text = dropped.join("\n");
     let mut text = head.join("\n");
     text.push_str(&format!(
         "\n[... compacted: dropped {} lines, {} bytes, hash {} ...]\n",
-        dropped.len(), dropped_text.len(), fnv1a_hex(dropped_text.as_bytes())
+        dropped.len(),
+        dropped_text.len(),
+        fnv1a_hex(dropped_text.as_bytes())
     ));
     text.push_str(&tail.join("\n"));
     if text.len() > policy.max_bytes {
@@ -101,7 +116,10 @@ mod tests {
     }
     #[test]
     fn wall_compacted_with_marker() {
-        let raw: String = (0..1000).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let raw: String = (0..1000)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let c = compact_output(&raw, &CompactionPolicy::default());
         assert!(c.truncated);
         assert!(c.text.contains("line 0"));

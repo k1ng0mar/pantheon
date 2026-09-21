@@ -135,9 +135,15 @@ mod tests {
     fn strong_boundaries_are_hardened() {
         for level in [SandboxLevel::High, SandboxLevel::VeryHigh] {
             let profile = level.profile();
-            assert!(profile.drop_capabilities, "{level:?} must drop capabilities");
+            assert!(
+                profile.drop_capabilities,
+                "{level:?} must drop capabilities"
+            );
             assert!(profile.no_new_privs, "{level:?} must set no-new-privs");
-            assert!(profile.max_memory_mb.is_some(), "{level:?} needs a memory cap");
+            assert!(
+                profile.max_memory_mb.is_some(),
+                "{level:?} needs a memory cap"
+            );
             assert!(profile.max_pids.is_some(), "{level:?} needs a pids cap");
         }
     }

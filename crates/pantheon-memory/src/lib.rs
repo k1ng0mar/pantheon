@@ -95,7 +95,10 @@ pub fn validate(p: &Proposal, max_bytes: usize) -> Result<(), WriteRefusal> {
         return Err(WriteRefusal::Empty);
     }
     if p.value.len() > max_bytes {
-        return Err(WriteRefusal::TooLarge { bytes: p.value.len(), max: max_bytes });
+        return Err(WriteRefusal::TooLarge {
+            bytes: p.value.len(),
+            max: max_bytes,
+        });
     }
     if p.provenance.origin.trim().is_empty() {
         return Err(WriteRefusal::NoProvenance);
@@ -113,15 +116,22 @@ pub fn propose_write(
     // 1. policy — memory.write must be granted explicitly.
     if !matches!(policy.check(&Capability::MemoryWrite), Decision::Allow) {
         let r = WriteRefusal::MissingCapability;
-        return Err(merr(r.code(),
-            format!("memory.write not granted for origin {}", proposal.provenance.origin),
-            "grant memory.write in the agent policy"));
+        return Err(merr(
+            r.code(),
+            format!(
+                "memory.write not granted for origin {}",
+                proposal.provenance.origin
+            ),
+            "grant memory.write in the agent policy",
+        ));
     }
     // 2. validation (provenance is checked here too).
     if let Err(r) = validate(&proposal, max_bytes) {
-        return Err(merr(r.code(),
+        return Err(merr(
+            r.code(),
             format!("proposal failed validation: {r:?}"),
-            "fix the proposal; nothing was stored"));
+            "fix the proposal; nothing was stored",
+        ));
     }
     // 3. provider.
     store.put(&proposal)
@@ -136,9 +146,11 @@ pub fn recall(
     limit: usize,
 ) -> Result<Vec<Recalled>, PantheonError> {
     if !matches!(policy.check(&Capability::MemoryRead), Decision::Allow) {
-        return Err(merr("MEM_NO_READ_CAPABILITY",
+        return Err(merr(
+            "MEM_NO_READ_CAPABILITY",
             "memory.read not granted".into(),
-            "grant memory.read in the agent policy"));
+            "grant memory.read in the agent policy",
+        ));
     }
     store.search(layers, query, limit)
 }
@@ -148,7 +160,11 @@ mod tests {
     use super::*;
 
     fn prov(origin: &str) -> Provenance {
-        Provenance { source: "import".into(), origin: origin.into(), recorded_at_ms: 1 }
+        Provenance {
+            source: "import".into(),
+            origin: origin.into(),
+            recorded_at_ms: 1,
+        }
     }
 
     /// `coder()` grants `MemoryRead` but deliberately not `MemoryWrite`
@@ -159,8 +175,13 @@ mod tests {
     }
 
     fn proposal(layer: LayerKind, ns: &str, k: &str, v: &str, origin: &str) -> Proposal {
-        Proposal { layer, namespace: ns.into(), key: k.into(), value: v.into(),
-            provenance: prov(origin) }
+        Proposal {
+            layer,
+            namespace: ns.into(),
+            key: k.into(),
+            value: v.into(),
+            provenance: prov(origin),
+        }
     }
 
     #[test]
@@ -194,11 +215,32 @@ mod tests {
     fn recall_returns_provenance_and_narrowest_first() {
         let store = MemoryStore::open_in_memory().unwrap();
         let policy = writer_policy();
-        propose_write(&store, &policy,
-            proposal(LayerKind::Global, "g", "stack", "rust runtime", "user"), 4096).unwrap();
-        propose_write(&store, &policy,
-            proposal(LayerKind::TaskSession, "s1", "fix", "rust parser bug", "tool:cargo"), 4096).unwrap();
-        let layers = [LayerKind::TaskSession, LayerKind::Agent, LayerKind::Project, LayerKind::Global];
+        propose_write(
+            &store,
+            &policy,
+            proposal(LayerKind::Global, "g", "stack", "rust runtime", "user"),
+            4096,
+        )
+        .unwrap();
+        propose_write(
+            &store,
+            &policy,
+            proposal(
+                LayerKind::TaskSession,
+                "s1",
+                "fix",
+                "rust parser bug",
+                "tool:cargo",
+            ),
+            4096,
+        )
+        .unwrap();
+        let layers = [
+            LayerKind::TaskSession,
+            LayerKind::Agent,
+            LayerKind::Project,
+            LayerKind::Global,
+        ];
         let hits = recall(&store, &policy, &layers, "rust", 10).unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].record.layer, LayerKind::TaskSession);
@@ -211,10 +253,20 @@ mod tests {
     fn upsert_replaces_value_and_keeps_provenance_fresh() {
         let store = MemoryStore::open_in_memory().unwrap();
         let policy = writer_policy();
-        propose_write(&store, &policy,
-            proposal(LayerKind::Agent, "nyx", "tz", "UTC", "user"), 4096).unwrap();
-        let rec = propose_write(&store, &policy,
-            proposal(LayerKind::Agent, "nyx", "tz", "Africa/Lagos", "tool:system"), 4096).unwrap();
+        propose_write(
+            &store,
+            &policy,
+            proposal(LayerKind::Agent, "nyx", "tz", "UTC", "user"),
+            4096,
+        )
+        .unwrap();
+        let rec = propose_write(
+            &store,
+            &policy,
+            proposal(LayerKind::Agent, "nyx", "tz", "Africa/Lagos", "tool:system"),
+            4096,
+        )
+        .unwrap();
         assert_eq!(rec.value, "Africa/Lagos");
         assert_eq!(rec.provenance.origin, "tool:system");
         let hits = recall(&store, &policy, &[LayerKind::Agent], "tz", 10).unwrap();

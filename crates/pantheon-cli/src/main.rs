@@ -6,27 +6,37 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 fn data_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("PANTHEON_DATA_DIR") { return PathBuf::from(d); }
-    if let Ok(h) = std::env::var("HOME") { return PathBuf::from(h).join(".pantheon"); }
+    if let Ok(d) = std::env::var("PANTHEON_DATA_DIR") {
+        return PathBuf::from(d);
+    }
+    if let Ok(h) = std::env::var("HOME") {
+        return PathBuf::from(h).join(".pantheon");
+    }
     PathBuf::from(".pantheon-data")
 }
 fn ext_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("PANTHEON_EXT_DIR") { return PathBuf::from(d); }
+    if let Ok(d) = std::env::var("PANTHEON_EXT_DIR") {
+        return PathBuf::from(d);
+    }
     data_dir().join("extensions")
 }
 fn usage() -> String {
-    "pantheon <run|explain|status|extensions|hook|doctor> ...\n\
+    "pantheon <chat|run|explain|status|extensions|hook|doctor> ...\n\
+     \u{20} chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n\
      \u{20} run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n\
      \u{20} explain <run_id>\n\
      \u{20} status <run_id>\n\
      \u{20} extensions  list loaded extensions\n\
      \u{20} hook <name> [--session S] [--platform P]  fire a hook\n\
-     \u{20} doctor <plugin_dir>  loud preflight report\n".into()
+     \u{20} doctor <plugin_dir>  loud preflight report\n"
+        .into()
 }
 fn load_mgr() -> ExtensionManager {
     let mut m = ExtensionManager::new(RunnerConfig::default());
     let d = ext_dir();
-    if d.exists() { let _ = m.load_dir(&d); }
+    if d.exists() {
+        let _ = m.load_dir(&d);
+    }
     m
 }
 
@@ -39,7 +49,9 @@ fn seen_file() -> PathBuf {
 
 fn read_seen() -> HashSet<(String, String, String)> {
     let mut out = HashSet::new();
-    let Ok(text) = std::fs::read_to_string(seen_file()) else { return out; };
+    let Ok(text) = std::fs::read_to_string(seen_file()) else {
+        return out;
+    };
     if let Ok(arr) = serde_json::from_str::<Vec<Vec<String>>>(&text) {
         for row in arr {
             if row.len() == 3 {
@@ -51,7 +63,10 @@ fn read_seen() -> HashSet<(String, String, String)> {
 }
 
 fn write_seen(keys: &HashSet<(String, String, String)>) {
-    let mut arr: Vec<Vec<String>> = keys.iter().map(|(a, b, c)| vec![a.clone(), b.clone(), c.clone()]).collect();
+    let mut arr: Vec<Vec<String>> = keys
+        .iter()
+        .map(|(a, b, c)| vec![a.clone(), b.clone(), c.clone()])
+        .collect();
     arr.sort();
     if let Some(parent) = seen_file().parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -70,8 +85,91 @@ fn cli_fire(hook: Hook, session: &str, platform: &str) -> Option<String> {
 }
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 { eprint!("{}", usage()); std::process::exit(2); }
+    if args.len() < 2 {
+        eprint!("{}", usage());
+        std::process::exit(2);
+    }
     match args[1].as_str() {
+        "chat" => {
+            let mut id: Option<String> = None;
+            let mut model: Option<String> = None;
+            let mut provider: Option<String> = None;
+            let mut key: Option<String> = None;
+            let mut message = String::new();
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--id" => {
+                        i += 1;
+                        if i < args.len() {
+                            id = Some(args[i].clone());
+                        }
+                    }
+                    "--model" => {
+                        i += 1;
+                        if i < args.len() {
+                            model = Some(args[i].clone());
+                        }
+                    }
+                    "--provider" => {
+                        i += 1;
+                        if i < args.len() {
+                            provider = Some(args[i].clone());
+                        }
+                    }
+                    "--key" => {
+                        i += 1;
+                        if i < args.len() {
+                            key = Some(args[i].clone());
+                        }
+                    }
+                    _ if message.is_empty() => message = args[i].clone(),
+                    _ => {}
+                }
+                i += 1;
+            }
+            if message.is_empty() {
+                eprintln!("usage: pantheon chat [--id ID] [--model M] [--provider P] \"message\"");
+                std::process::exit(2);
+            }
+            // Model policy: default from env or flags. No routing.
+            let default = pantheon_core::model::DefaultModel {
+                provider: provider
+                    .or_else(|| std::env::var("PANTHEON_PROVIDER").ok())
+                    .unwrap_or_else(|| "local".into()),
+                model: model
+                    .or_else(|| std::env::var("PANTHEON_MODEL").ok())
+                    .unwrap_or_else(|| "llama3.2".into()),
+            };
+            let model_policy = pantheon_core::model::ModelPolicy {
+                default,
+                fallbacks: pantheon_core::model::FallbackChain::default(),
+                auxiliaries: vec![],
+            };
+            let api_key = key
+                .or_else(|| std::env::var("PANTHEON_API_KEY").ok())
+                .unwrap_or_default();
+            let session = match pantheon_runtime::session::Session::new(
+                data_dir(),
+                pantheon_core::capability::Policy::coder(),
+                model_policy,
+                api_key,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("open session: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let run_id = id.unwrap_or_else(pantheon_runtime::new_run_id);
+            match session.chat(&run_id, &message) {
+                Ok(_) => eprintln!("[run {run_id}]"),
+                Err(e) => {
+                    eprintln!("run failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         "run" => {
             let mut id: Option<String> = None;
             let mut say: Option<String> = None;
@@ -82,23 +180,58 @@ fn main() {
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--id" => { i += 1; if i < args.len() { id = Some(args[i].clone()); } }
-                    "--say" => { i += 1; if i < args.len() { say = Some(args[i].clone()); } }
-                    "--tool" => { i += 1; if i < args.len() { tool = Some(args[i].clone()); } }
-                    "--fail" => { i += 1; if i < args.len() { fail = Some(args[i].clone()); } }
-                    "--ext" => { with_ext = true; }
-                    "--platform" => { i += 1; if i < args.len() { platform = args[i].clone(); } }
+                    "--id" => {
+                        i += 1;
+                        if i < args.len() {
+                            id = Some(args[i].clone());
+                        }
+                    }
+                    "--say" => {
+                        i += 1;
+                        if i < args.len() {
+                            say = Some(args[i].clone());
+                        }
+                    }
+                    "--tool" => {
+                        i += 1;
+                        if i < args.len() {
+                            tool = Some(args[i].clone());
+                        }
+                    }
+                    "--fail" => {
+                        i += 1;
+                        if i < args.len() {
+                            fail = Some(args[i].clone());
+                        }
+                    }
+                    "--ext" => {
+                        with_ext = true;
+                    }
+                    "--platform" => {
+                        i += 1;
+                        if i < args.len() {
+                            platform = args[i].clone();
+                        }
+                    }
                     _ => {}
                 }
                 i += 1;
             }
             let sup = match Supervisor::open(data_dir()) {
-                Ok(s) => s, Err(e) => { eprintln!("open runtime: {e}"); std::process::exit(1); }
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("open runtime: {e}");
+                    std::process::exit(1);
+                }
             };
             let run_id = id.unwrap_or_else(new_run_id);
             let recovered = sup.start_run(&run_id).unwrap_or_else(|e| {
-                eprintln!("start: {e}"); std::process::exit(1); });
-            if recovered { println!("(recovered unfinished run {run_id})"); }
+                eprintln!("start: {e}");
+                std::process::exit(1);
+            });
+            if recovered {
+                println!("(recovered unfinished run {run_id})");
+            }
             if with_ext {
                 let mgr = load_mgr();
                 mgr.preseed_seen(read_seen());
@@ -108,56 +241,103 @@ fn main() {
                     sup.emit(Event::RunProgress {
                         run_id: run_id.clone(),
                         detail: format!("ext pre_llm_call injected {} chars", ctx.len()),
-                    }).unwrap();
+                    })
+                    .unwrap();
                     println!("--- injected context ---\n{ctx}\n--- end ---");
                 } else {
                     println!("(no extension context)");
                 }
             }
             if let Some(t) = tool {
-                sup.emit(Event::ToolStarted { run_id: run_id.clone(), tool: t }).unwrap();
+                sup.emit(Event::ToolStarted {
+                    run_id: run_id.clone(),
+                    tool: t,
+                })
+                .unwrap();
             }
             if let Some(s) = say {
-                sup.emit(Event::RunProgress { run_id: run_id.clone(), detail: s }).unwrap();
+                sup.emit(Event::RunProgress {
+                    run_id: run_id.clone(),
+                    detail: s,
+                })
+                .unwrap();
             }
-            if let Some(code) = fail { sup.fail(&run_id, &code).unwrap(); }
-            else { sup.complete(&run_id).unwrap(); }
+            if let Some(code) = fail {
+                sup.fail(&run_id, &code).unwrap();
+            } else {
+                sup.complete(&run_id).unwrap();
+            }
             println!("{run_id}");
         }
         "explain" => {
-            if args.len() < 3 { eprintln!("usage: pantheon explain <run_id>"); std::process::exit(2); }
+            if args.len() < 3 {
+                eprintln!("usage: pantheon explain <run_id>");
+                std::process::exit(2);
+            }
             let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
-                eprintln!("open runtime: {e}"); std::process::exit(1); });
+                eprintln!("open runtime: {e}");
+                std::process::exit(1);
+            });
             match sup.explain(&args[2]) {
                 Ok(t) => println!("{t}"),
-                Err(e) => { eprintln!("explain: {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("explain: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         "status" => {
-            if args.len() < 3 { eprintln!("usage: pantheon status <run_id>"); std::process::exit(2); }
+            if args.len() < 3 {
+                eprintln!("usage: pantheon status <run_id>");
+                std::process::exit(2);
+            }
             let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
-                eprintln!("open runtime: {e}"); std::process::exit(1); });
+                eprintln!("open runtime: {e}");
+                std::process::exit(1);
+            });
             match sup.ledger_status(&args[2]) {
                 Ok(s) => println!("{}", s.as_deref().unwrap_or("unknown")),
-                Err(e) => { eprintln!("status: {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("status: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         "extensions" => {
             let mgr = load_mgr();
-            for n in mgr.names() { println!("{n}"); }
+            for n in mgr.names() {
+                println!("{n}");
+            }
         }
         "hook" => {
-            if args.len() < 3 { eprintln!("usage: pantheon hook <name> [--session S]"); std::process::exit(2); }
+            if args.len() < 3 {
+                eprintln!("usage: pantheon hook <name> [--session S]");
+                std::process::exit(2);
+            }
             let hook = match Hook::parse(&args[2]) {
-                Some(h) => h, None => { eprintln!("unknown hook {}", args[2]); std::process::exit(2); }
+                Some(h) => h,
+                None => {
+                    eprintln!("unknown hook {}", args[2]);
+                    std::process::exit(2);
+                }
             };
             let mut session = String::from("default");
             let mut platform = String::from("cli");
             let mut i = 3;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--session" => { i += 1; if i < args.len() { session = args[i].clone(); } }
-                    "--platform" => { i += 1; if i < args.len() { platform = args[i].clone(); } }
+                    "--session" => {
+                        i += 1;
+                        if i < args.len() {
+                            session = args[i].clone();
+                        }
+                    }
+                    "--platform" => {
+                        i += 1;
+                        if i < args.len() {
+                            platform = args[i].clone();
+                        }
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -168,11 +348,19 @@ fn main() {
             }
         }
         "doctor" => {
-            if args.len() < 3 { eprintln!("usage: pantheon doctor <plugin_dir>"); std::process::exit(2); }
+            if args.len() < 3 {
+                eprintln!("usage: pantheon doctor <plugin_dir>");
+                std::process::exit(2);
+            }
             let rep = doctor(std::path::Path::new(&args[2]));
             println!("{}", serde_json::to_string_pretty(&rep).unwrap());
-            if !rep.ok { std::process::exit(1); }
+            if !rep.ok {
+                std::process::exit(1);
+            }
         }
-        _ => { eprint!("{}", usage()); std::process::exit(2); }
+        _ => {
+            eprint!("{}", usage());
+            std::process::exit(2);
+        }
     }
 }

@@ -50,10 +50,14 @@ impl From<serde_json::Error> for SecretsError {
 /// Name validation shared by vaults and the broker.
 pub(crate) fn validate_name(name: &str) -> Result<(), SecretsError> {
     if name.is_empty() {
-        return Err(SecretsError::Invalid("secret name must not be empty".into()));
+        return Err(SecretsError::Invalid(
+            "secret name must not be empty".into(),
+        ));
     }
     if name.len() > 256 {
-        return Err(SecretsError::Invalid("secret name exceeds 256 chars".into()));
+        return Err(SecretsError::Invalid(
+            "secret name exceeds 256 chars".into(),
+        ));
     }
     Ok(())
 }

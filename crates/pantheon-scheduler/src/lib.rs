@@ -15,10 +15,21 @@ pub use idempotency::{occurrence_key, runs_for_missed, ClaimLedger};
 pub use webhook::{accept as accept_webhook, route as route_webhook, Fire};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ScheduleKind { Cron { expr: String }, OneShot { at_ms: i64 }, Interval { every_ms: u64 }, Webhook { path: String }, Conditional { expr: String }, Manual }
+pub enum ScheduleKind {
+    Cron { expr: String },
+    OneShot { at_ms: i64 },
+    Interval { every_ms: u64 },
+    Webhook { path: String },
+    Conditional { expr: String },
+    Manual,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MissedPolicy { Skip, RunOnce, CatchUp }
+pub enum MissedPolicy {
+    Skip,
+    RunOnce,
+    CatchUp,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -32,14 +43,24 @@ pub struct Job {
 
 impl Job {
     pub fn new(id: &str, kind: ScheduleKind, target: &str) -> Self {
-        Self { id: id.into(), kind, target_agent: target.into(),
-            idempotency_key: format!("job:{id}:"), paused: false, missed: MissedPolicy::RunOnce }
+        Self {
+            id: id.into(),
+            kind,
+            target_agent: target.into(),
+            idempotency_key: format!("job:{id}:"),
+            paused: false,
+            missed: MissedPolicy::RunOnce,
+        }
     }
     /// Next fire decision: pure function of now vs last fire (testable).
     pub fn due(&self, now_ms: i64, last_fire_ms: Option<i64>) -> bool {
-        if self.paused { return false; }
+        if self.paused {
+            return false;
+        }
         match &self.kind {
-            ScheduleKind::Manual | ScheduleKind::Webhook { .. } | ScheduleKind::Conditional { .. } => false,
+            ScheduleKind::Manual
+            | ScheduleKind::Webhook { .. }
+            | ScheduleKind::Conditional { .. } => false,
             ScheduleKind::OneShot { at_ms } => now_ms >= *at_ms && last_fire_ms.is_none(),
             ScheduleKind::Interval { every_ms } => match last_fire_ms {
                 None => true,

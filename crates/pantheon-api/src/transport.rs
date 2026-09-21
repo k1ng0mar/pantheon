@@ -115,10 +115,16 @@ mod tests {
         let d = Dispatcher::with_builtins();
 
         let server = std::thread::spawn(move || tx.serve_once(&d));
-        let resp = ask(&sock, r#"{"jsonrpc":"2.0","id":7,"method":"system.ping","params":null}"#);
+        let resp = ask(
+            &sock,
+            r#"{"jsonrpc":"2.0","id":7,"method":"system.ping","params":null}"#,
+        );
         assert_eq!(resp.id, Id::Number(7));
         assert!(resp.is_success());
-        assert_eq!(resp.result.unwrap().get("pong").unwrap().as_bool(), Some(true));
+        assert_eq!(
+            resp.result.unwrap().get("pong").unwrap().as_bool(),
+            Some(true)
+        );
         assert!(server.join().is_ok(), "server thread panicked");
     }
 
@@ -130,7 +136,10 @@ mod tests {
         let d = Dispatcher::with_builtins();
 
         let server = std::thread::spawn(move || tx.serve_once(&d));
-        let resp = ask(&sock, r#"{"jsonrpc":"2.0","id":1,"method":"agent.run","params":{}}"#);
+        let resp = ask(
+            &sock,
+            r#"{"jsonrpc":"2.0","id":1,"method":"agent.run","params":{}}"#,
+        );
         assert_eq!(resp.id, Id::Number(1));
         assert!(!resp.is_success());
         assert_eq!(resp.error.unwrap().code, crate::rpc::METHOD_NOT_FOUND_CODE);
@@ -146,17 +155,24 @@ mod tests {
 
         let server = std::thread::spawn(move || tx.serve_once(&d));
         let mut client = UnixStream::connect(&sock).unwrap();
-        client.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.ping\"}\n").unwrap();
-        client.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"system.ping\"}\n").unwrap();
+        client
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.ping\"}\n")
+            .unwrap();
+        client
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"system.ping\"}\n")
+            .unwrap();
         // Scope the reader so its cloned socket handle is dropped before join:
         // the server only returns when it sees EOF.
-                let (r1, r2) = {
+        let (r1, r2) = {
             let mut reader = BufReader::new(client.try_clone().unwrap());
             let mut line1 = String::new();
             reader.read_line(&mut line1).unwrap();
             let mut line2 = String::new();
             reader.read_line(&mut line2).unwrap();
-            (serde_json::from_str::<Response>(&line1).unwrap(), serde_json::from_str::<Response>(&line2).unwrap())
+            (
+                serde_json::from_str::<Response>(&line1).unwrap(),
+                serde_json::from_str::<Response>(&line2).unwrap(),
+            )
         };
         drop(client);
         assert_eq!(r1.id, Id::Number(1));

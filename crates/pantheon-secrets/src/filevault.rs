@@ -48,7 +48,10 @@ const ENVELOPE_VERSION: u32 = 1;
 impl EncryptedFileVault {
     /// Open (creating if missing) the vault at `data_path`, using/creating
     /// a 0600 key file at `key_path`.
-    pub fn open(data_path: impl AsRef<Path>, key_path: impl AsRef<Path>) -> Result<Self, SecretsError> {
+    pub fn open(
+        data_path: impl AsRef<Path>,
+        key_path: impl AsRef<Path>,
+    ) -> Result<Self, SecretsError> {
         let data_path = data_path.as_ref().to_path_buf();
         let key = load_or_create_key(key_path.as_ref())?;
         let cache = Mutex::new(decrypt_file(&data_path, &key)?);
@@ -60,7 +63,9 @@ impl EncryptedFileVault {
     }
 
     fn state(&self) -> MutexGuard<'_, HashMap<String, SecretValue>> {
-        self.cache.lock().expect("EncryptedFileVault mutex poisoned")
+        self.cache
+            .lock()
+            .expect("EncryptedFileVault mutex poisoned")
     }
 
     fn persist(&self, map: &HashMap<String, SecretValue>) -> Result<(), SecretsError> {
@@ -155,7 +160,10 @@ fn set_private_perms(_file: &fs::File) -> Result<(), SecretsError> {
 }
 
 /// Decrypt the vault file; a missing file decrypts to an empty vault.
-pub(crate) fn decrypt_file(path: &Path, key: &[u8; 32]) -> Result<HashMap<String, SecretValue>, SecretsError> {
+pub(crate) fn decrypt_file(
+    path: &Path,
+    key: &[u8; 32],
+) -> Result<HashMap<String, SecretValue>, SecretsError> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
@@ -260,7 +268,9 @@ mod tests {
         // Fresh instance, same key file: data must come back intact.
         let v2 = EncryptedFileVault::open(&data, &key).unwrap();
         assert_eq!(
-            v2.get("db.password").unwrap().map(|s| s.expose().to_string()),
+            v2.get("db.password")
+                .unwrap()
+                .map(|s| s.expose().to_string()),
             Some("p@ss".into())
         );
         assert_eq!(
@@ -321,7 +331,8 @@ mod tests {
         let data = dir.path().join("vault.json");
         let key = dir.path().join("vault.key");
         let v = EncryptedFileVault::open(&data, &key).unwrap();
-        v.set("db.password", SecretValue::new("supersecret")).unwrap();
+        v.set("db.password", SecretValue::new("supersecret"))
+            .unwrap();
         let raw = fs::read_to_string(&data).unwrap();
         assert!(!raw.contains("supersecret"));
     }

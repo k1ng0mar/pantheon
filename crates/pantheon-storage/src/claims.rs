@@ -37,65 +37,90 @@ fn now_ms() -> i64 {
 }
 
 fn err(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(code, Layer::Storage, false, cause,
-        "check the storage path permissions and disk space", "")
+    PantheonError::new(
+        code,
+        Layer::Storage,
+        false,
+        cause,
+        "check the storage path permissions and disk space",
+        "",
+    )
 }
 
 impl ClaimStore {
     pub fn open(path: &Path) -> Result<Self, PantheonError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| err("CLAIM_MKDIR", e.to_string()))?;
+                std::fs::create_dir_all(parent).map_err(|e| err("CLAIM_MKDIR", e.to_string()))?;
             }
         }
         let conn = Connection::open(path).map_err(|e| err("CLAIM_OPEN", e.to_string()))?;
-        conn.execute_batch(SCHEMA).map_err(|e| err("CLAIM_SCHEMA", e.to_string()))?;
-        Ok(Self { conn: Mutex::new(conn) })
+        conn.execute_batch(SCHEMA)
+            .map_err(|e| err("CLAIM_SCHEMA", e.to_string()))?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn open_in_memory() -> Result<Self, PantheonError> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| err("CLAIM_OPEN", e.to_string()))?;
-        conn.execute_batch(SCHEMA).map_err(|e| err("CLAIM_SCHEMA", e.to_string()))?;
-        Ok(Self { conn: Mutex::new(conn) })
+        let conn = Connection::open_in_memory().map_err(|e| err("CLAIM_OPEN", e.to_string()))?;
+        conn.execute_batch(SCHEMA)
+            .map_err(|e| err("CLAIM_SCHEMA", e.to_string()))?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Claim an occurrence. `true` means this call won the claim and the run
     /// should start; `false` means the key was already claimed (a replay)
     /// and no second run may start.
     pub fn claim(&self, key: &str) -> Result<bool, PantheonError> {
-        let conn = self.conn.lock().map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
-        let inserted = conn.execute(
-            "INSERT OR IGNORE INTO occurrence_claims (key, claimed_ms) VALUES (?1, ?2)",
-            params![key, now_ms()],
-        ).map_err(|e| err("CLAIM_INSERT", e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
+        let inserted = conn
+            .execute(
+                "INSERT OR IGNORE INTO occurrence_claims (key, claimed_ms) VALUES (?1, ?2)",
+                params![key, now_ms()],
+            )
+            .map_err(|e| err("CLAIM_INSERT", e.to_string()))?;
         Ok(inserted == 1)
     }
 
     /// Release a claim after its run ends. `true` means a claim existed and
     /// was removed; `false` means there was nothing to release.
     pub fn release(&self, key: &str) -> Result<bool, PantheonError> {
-        let conn = self.conn.lock().map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
-        let removed = conn.execute(
-            "DELETE FROM occurrence_claims WHERE key = ?1",
-            params![key],
-        ).map_err(|e| err("CLAIM_DELETE", e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
+        let removed = conn
+            .execute("DELETE FROM occurrence_claims WHERE key = ?1", params![key])
+            .map_err(|e| err("CLAIM_DELETE", e.to_string()))?;
         Ok(removed == 1)
     }
 
     pub fn is_claimed(&self, key: &str) -> Result<bool, PantheonError> {
-        let conn = self.conn.lock().map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
         conn.query_row(
-            "SELECT 1 FROM occurrence_claims WHERE key = ?1", params![key],
+            "SELECT 1 FROM occurrence_claims WHERE key = ?1",
+            params![key],
             |_| Ok(()),
-        ).optional()
-            .map(|row| row.is_some())
-            .map_err(|e| err("CLAIM_QUERY", e.to_string()))
+        )
+        .optional()
+        .map(|row| row.is_some())
+        .map_err(|e| err("CLAIM_QUERY", e.to_string()))
     }
 
     pub fn len(&self) -> Result<usize, PantheonError> {
-        let conn = self.conn.lock().map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
         conn.query_row("SELECT COUNT(*) FROM occurrence_claims", [], |r| r.get(0))
             .map_err(|e| err("CLAIM_QUERY", e.to_string()))
     }
@@ -110,21 +135,31 @@ impl ClaimStore {
     /// window makes. Set the window comfortably above the longest redelivery
     /// backlog a sender can replay.
     pub fn prune_before(&self, cutoff_ms: i64) -> Result<usize, PantheonError> {
-        let conn = self.conn.lock().map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
-        let pruned = conn.execute(
-            "DELETE FROM occurrence_claims WHERE claimed_ms < ?1",
-            params![cutoff_ms],
-        ).map_err(|e| err("CLAIM_DELETE", e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
+        let pruned = conn
+            .execute(
+                "DELETE FROM occurrence_claims WHERE claimed_ms < ?1",
+                params![cutoff_ms],
+            )
+            .map_err(|e| err("CLAIM_DELETE", e.to_string()))?;
         Ok(pruned)
     }
 
     /// All currently claimed keys, sorted. Used to rebuild the in-memory
     /// ledger of a recovered process.
     pub fn names(&self) -> Result<Vec<String>, PantheonError> {
-        let conn = self.conn.lock().map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
-        let mut stmt = conn.prepare("SELECT key FROM occurrence_claims ORDER BY key")
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare("SELECT key FROM occurrence_claims ORDER BY key")
             .map_err(|e| err("CLAIM_QUERY", e.to_string()))?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
             .map_err(|e| err("CLAIM_QUERY", e.to_string()))?;
         let mut keys = Vec::new();
         for row in rows {
@@ -163,7 +198,10 @@ mod tests {
         assert!(store.claim("k").unwrap());
         assert!(store.release("k").unwrap());
         assert!(!store.release("k").unwrap(), "second release is a no-op");
-        assert!(store.claim("k").unwrap(), "released keys are claimable again");
+        assert!(
+            store.claim("k").unwrap(),
+            "released keys are claimable again"
+        );
         assert_eq!(store.len().unwrap(), 1);
     }
 

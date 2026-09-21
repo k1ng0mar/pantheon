@@ -26,8 +26,14 @@ pub enum GateOutcome {
 }
 
 fn aerr(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(code, Layer::Agent, false, cause,
-        "adjust the policy or grant the capability explicitly", "")
+    PantheonError::new(
+        code,
+        Layer::Agent,
+        false,
+        cause,
+        "adjust the policy or grant the capability explicitly",
+        "",
+    )
 }
 
 /// Check one capability against a policy, mapping a denial to a structured
@@ -39,7 +45,9 @@ pub fn gate(policy: &Policy, cap: &Capability) -> Result<GateOutcome, PantheonEr
             // enforce() folds both Deny and Approval into errors; re-check to
             // distinguish so approval does not look like a hard denial.
             match pantheon_capability::check(policy, cap) {
-                Verdict::NeedsApproval { capability } => Ok(GateOutcome::NeedsApproval { capability }),
+                Verdict::NeedsApproval { capability } => {
+                    Ok(GateOutcome::NeedsApproval { capability })
+                }
                 Verdict::Deny { capability } => Err(aerr(
                     "CAP_DENIED",
                     format!("capability {capability:?} denied by policy"),
