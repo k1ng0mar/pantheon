@@ -30,6 +30,7 @@ pub struct Recalled {
 
 pub struct MemoryStore {
     conn: Mutex<Connection>,
+    path: Option<std::path::PathBuf>,
 }
 
 const SCHEMA: &str = "
@@ -90,6 +91,7 @@ impl MemoryStore {
             .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
         Ok(Self {
             conn: Mutex::new(conn),
+            path: Some(path.to_path_buf()),
         })
     }
 
@@ -99,11 +101,37 @@ impl MemoryStore {
             .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
         Ok(Self {
             conn: Mutex::new(conn),
+            path: None,
         })
     }
 
-    /// Upsert one validated proposal. Validation happened upstream; this is
-    /// the provider step only.
+    /// List Agent-layer records for a namespace in stable write order.
+    pub fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT key, value FROM memories
+                 WHERE layer='agent' AND namespace=?1
+                 ORDER BY recorded_at_ms, id",
+            )
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        let rows = stmt
+            .query_map([namespace], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| serr("MEM_QUERY", e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// Return the backing path, if this store is file-backed.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
     pub fn put(&self, p: &Proposal) -> Result<MemoryRecord, PantheonError> {
         let conn = self
             .conn
@@ -160,8 +188,23 @@ impl MemoryStore {
              ORDER BY rank LIMIT ?2",
             )
             .map_err(|e| serr("MEM_SEARCH", e.to_string()))?;
+        let fts_query = query
+            .split_whitespace()
+            .map(|token| {
+                token
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                    .collect::<String>()
+            })
+            .filter(|token| !token.is_empty())
+            .map(|token| format!("\"{token}\""))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        if fts_query.is_empty() {
+            return Ok(Vec::new());
+        }
         let rows = stmt
-            .query_map(params![query, limit as i64], |r| {
+            .query_map(params![fts_query, limit as i64], |r| {
                 Ok(Recalled {
                     record: MemoryRecord {
                         layer: layer_from(&r.get::<_, String>(0)?),

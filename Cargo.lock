@@ -455,6 +455,7 @@ dependencies = [
  "pantheon-core",
  "pantheon-exec",
  "pantheon-extensions",
+ "pantheon-memory",
  "pantheon-runtime",
  "serde_json",
 ]
@@ -543,6 +544,7 @@ dependencies = [
  "pantheon-agent",
  "pantheon-core",
  "pantheon-exec",
+ "pantheon-memory",
  "pantheon-providers",
  "pantheon-storage",
 ]

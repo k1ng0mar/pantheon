@@ -11,8 +11,55 @@ use pantheon_core::capability::{Capability, Decision, Policy};
 use pantheon_core::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 
+pub mod markdown;
 pub mod store;
 pub use store::{MemoryStore, Recalled};
+
+/// Backend boundary for external memory providers such as GalaxyMem,
+/// Mnemosyne, Honcho, or Hindsight. Providers implement recall and writes;
+/// policy and provenance stay at this boundary instead of being delegated
+/// blindly to a plugin.
+pub trait MemoryBackend: Send + Sync {
+    fn recall(
+        &self,
+        policy: &Policy,
+        layers: &[LayerKind],
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Recalled>, PantheonError>;
+    fn write(
+        &self,
+        policy: &Policy,
+        proposal: Proposal,
+        max_bytes: usize,
+    ) -> Result<MemoryRecord, PantheonError>;
+    fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError>;
+}
+
+impl MemoryBackend for MemoryStore {
+    fn recall(
+        &self,
+        policy: &Policy,
+        layers: &[LayerKind],
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Recalled>, PantheonError> {
+        recall(self, policy, layers, query, limit)
+    }
+
+    fn write(
+        &self,
+        policy: &Policy,
+        proposal: Proposal,
+        max_bytes: usize,
+    ) -> Result<MemoryRecord, PantheonError> {
+        propose_write(self, policy, proposal, max_bytes)
+    }
+
+    fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError> {
+        self.list_agent(namespace)
+    }
+}
 
 fn merr(code: &str, cause: String, remediation: &str) -> PantheonError {
     PantheonError::new(code, Layer::Memory, false, cause, remediation, "")
