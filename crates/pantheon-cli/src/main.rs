@@ -92,6 +92,86 @@ fn cli_fire(hook: Hook, session: &str, platform: &str) -> Option<String> {
     write_seen(&mgr.seen_snapshot());
     out
 }
+
+/// Interactive model picker. Lists all cataloged provider/model pairs,
+/// lets the user filter by typing, then selects by number. Returns
+/// (provider_id, model_name) or None if cancelled.
+fn pick_model() -> Option<(String, String)> {
+    use std::io::{self, BufRead, Write};
+    let stdin = io::stdin();
+    let mut filter = String::new();
+
+    loop {
+        // Build the filtered list each iteration.
+        let all: Vec<(String, String, String)> = pantheon_core::catalog::providers()
+            .iter()
+            .flat_map(|p| {
+                p.models
+                    .iter()
+                    .map(move |m| {
+                        (
+                            p.id.clone(),
+                            m.model.clone(),
+                            format!("{} / {}", p.label, m.model),
+                        )
+                    })
+                    .chain(std::iter::once((
+                        p.id.clone(),
+                        String::new(),
+                        format!("{} / (any)", p.label),
+                    )))
+            })
+            .filter(|(_, _, label)| {
+                filter.is_empty() || label.to_lowercase().contains(&filter.to_lowercase())
+            })
+            .collect();
+
+        // Terminal display: list + prompt.
+        print!("\x1b[2J\x1b[H"); // clear screen
+        println!("Pantheon model picker — type to filter, <Enter> on a number to select, /clear to reset, /q to cancel\n");
+        if !filter.is_empty() {
+            println!("filter: {}\n", filter);
+        }
+        if all.is_empty() {
+            println!("(no matches)");
+        }
+        for (i, (_, _, label)) in all.iter().enumerate() {
+            println!("  {:>3}  {}", i, label);
+        }
+        print!("\n> ");
+        io::stdout().flush().ok()?;
+
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line).ok() == Some(0) {
+            return None; // EOF
+        }
+        let line = line.trim();
+
+        if line.is_empty() {
+            continue;
+        }
+        if line == "/q" || line == "q" {
+            return None;
+        }
+        if line == "/clear" || line == "c" {
+            filter.clear();
+            continue;
+        }
+
+        // Try to parse as a number (selection).
+        if let Ok(n) = line.parse::<usize>() {
+            if n < all.len() {
+                let (pid, model, _) = &all[n];
+                return Some((pid.clone(), model.clone()));
+            }
+            eprintln!("out of range");
+            continue;
+        }
+
+        // Otherwise treat as a search filter.
+        filter = line.to_string();
+    }
+}
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -104,6 +184,7 @@ fn main() {
             let mut model: Option<String> = None;
             let mut provider: Option<String> = None;
             let mut key: Option<String> = None;
+            let mut choose = false;
             let mut message = String::new();
             let mut i = 2;
             while i < args.len() {
@@ -132,13 +213,37 @@ fn main() {
                             key = Some(args[i].clone());
                         }
                     }
+                    "--choose" => {
+                        choose = true;
+                    }
                     _ if message.is_empty() => message = args[i].clone(),
                     _ => {}
                 }
                 i += 1;
             }
+            // Interactive model picker: search/filter the catalog, then
+            // select by number. Falls back to message arg if stdin not a tty.
+            if choose {
+                match pick_model() {
+                    Some((p, m)) => {
+                        provider = Some(p);
+                        model = Some(m);
+                        // If no message on the command line, read from --say or prompt.
+                    }
+                    None => std::process::exit(0),
+                }
+            }
+            if message.is_empty() && choose {
+                // After picking, read message from stdin if available.
+                use std::io::Read;
+                let mut buf = String::new();
+                if std::io::stdin().read_to_string(&mut buf).is_ok() {
+                    message = buf.trim().to_string();
+                }
+            }
             if message.is_empty() {
-                eprintln!("usage: pantheon chat [--id ID] [--model M] [--provider P] \"message\"");
+                eprintln!("usage: pantheon chat [--id ID] [--model M] [--provider P] [--choose] \"message\"");
+                eprintln!("  --choose: interactive catalog picker (searchable)");
                 std::process::exit(2);
             }
             // Model policy: default from env or flags. No routing.
@@ -563,18 +668,23 @@ fn main() {
             // List cataloged providers and their models, plus the
             // custom-provider passthrough (any URL used with --provider URL).
             println!("cataloged providers:");
-            for p in pantheon_core::catalog::PROVIDERS {
-                let models: Vec<&str> = pantheon_core::catalog::table()
-                    .iter()
-                    .filter(|m| m.provider == p.id)
-                    .map(|m| m.model.as_str())
-                    .collect();
+            for p in pantheon_core::catalog::providers() {
+                let models: Vec<&str> = p.models.iter().map(|m| m.model.as_str()).collect();
                 let mode = match p.api_mode {
                     pantheon_core::catalog::ApiMode::OpenAi => "OpenAI",
                     pantheon_core::catalog::ApiMode::Anthropic => "Anthropic",
                 };
-                println!("  {} ({}): {} -- {}", p.label, p.id, mode, p.base_url);
+                let tag = if p.prominent { "⭐" } else { " " };
+                let label = if p.models.is_empty() {
+                    format!("({} only)", p.label)
+                } else {
+                    p.label.clone()
+                };
+                println!("  {tag} {} ({}): {} -- {}", label, p.id, mode, p.base_url);
                 println!("    models: {}", models.join(", "));
+                if !p.tag.is_empty() {
+                    println!("    tag: {}", p.tag);
+                }
             }
             println!();
             println!("custom: --provider <base-url> uses that URL directly (OpenAI shape)");
