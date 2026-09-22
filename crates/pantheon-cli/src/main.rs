@@ -46,7 +46,7 @@ fn save_backend_selection(data_dir: &Path, sel: &BackendSelection) {
     });
 }
 fn usage() -> String {
-    "pantheon <chat|run|explain|status|providers|extensions|hook|doctor|preview|stage|apply|checkpoint|rollback> ...\n\
+    "pantheon <chat|run|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback> ...\n\
      \u{20} chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n\
      \u{20} run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n\
      \u{20} explain <run_id>\n\
@@ -511,6 +511,53 @@ fn main() {
                 }
                 _ => {
                     memory_help();
+                    std::process::exit(2);
+                }
+            }
+        }
+        "plugins" => {
+            let dd = data_dir();
+            let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            match args.get(2).map(|s| s.as_str()) {
+                Some("list") | None => {
+                    let found = pantheon_exec::plugins::discover_plugins(&dd, &project_root);
+                    if found.is_empty() {
+                        println!("no plugins installed");
+                    }
+                    for p in &found {
+                        let src = match p.location {
+                            pantheon_exec::plugins::PluginLocation::User => "user",
+                            pantheon_exec::plugins::PluginLocation::Project => "project",
+                        };
+                        let status = if p.manifest.enabled { "on" } else { "off" };
+                        println!(
+                            "{:30} {}\t{} ({} tools)",
+                            p.manifest.name,
+                            status,
+                            src,
+                            p.manifest.capabilities.len(),
+                        );
+                    }
+                }
+                Some("install") => {
+                    if args.len() < 4 {
+                        eprintln!("usage: pantheon plugins install <name>");
+                        eprintln!(
+                            "catalog plugins: {}",
+                            pantheon_exec::plugins::catalog_names().join(", ")
+                        );
+                        std::process::exit(2);
+                    }
+                    let name = &args[3];
+                    pantheon_exec::plugins::install_catalog(name, &dd, &project_root)
+                        .unwrap_or_else(|e| {
+                            eprintln!("plugins install: {e}");
+                            std::process::exit(1);
+                        });
+                    println!("installed {}", name);
+                }
+                _ => {
+                    eprintln!("usage: pantheon plugins <list|install>");
                     std::process::exit(2);
                 }
             }
