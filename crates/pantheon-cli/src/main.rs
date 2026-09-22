@@ -1,7 +1,9 @@
 //! pantheon CLI: thin surface over the runtime. No business logic here.
+use pantheon_core::capability::Policy;
 use pantheon_core::events::Event;
 use pantheon_exec::safewrite::{preview_edit, SafeWriter};
 use pantheon_extensions::{doctor, ExtensionManager, Hook, RunnerConfig};
+use pantheon_memory::{markdown, LayerKind, MemoryStore, Proposal, Provenance};
 use pantheon_runtime::{new_run_id, Supervisor};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -172,6 +174,31 @@ fn pick_model() -> Option<(String, String)> {
         filter = line.to_string();
     }
 }
+fn memory_file() -> PathBuf {
+    std::env::var_os("PANTHEON_MEMORY_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("MEMORY.md")
+        })
+}
+
+fn open_memory() -> MemoryStore {
+    MemoryStore::open(&data_dir().join("memory.db")).unwrap_or_else(|e| {
+        eprintln!("open memory: {e}");
+        std::process::exit(1);
+    })
+}
+
+fn memory_help() {
+    eprintln!("usage: pantheon memory <import|export|recall|put> ...");
+    eprintln!("  import [FILE]       import MEMORY.md into native memory");
+    eprintln!("  export [FILE]       export native agent memory to MEMORY.md");
+    eprintln!("  recall QUERY        search native memory");
+    eprintln!("  put KEY VALUE       store an agent memory (explicit write)");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -281,6 +308,103 @@ fn main() {
                 Err(e) => {
                     eprintln!("run failed: {e}");
                     std::process::exit(1);
+                }
+            }
+        }
+        "memory" => {
+            if args.len() < 3 {
+                memory_help();
+                std::process::exit(2);
+            }
+            let store = open_memory();
+            let namespace =
+                std::env::var("PANTHEON_MEMORY_NAMESPACE").unwrap_or_else(|_| "nyx".into());
+            match args[2].as_str() {
+                "import" => {
+                    let path = args.get(3).map(PathBuf::from).unwrap_or_else(memory_file);
+                    let n = markdown::import_agent(
+                        &store,
+                        &Policy::coder_with_memory(),
+                        &namespace,
+                        &path,
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("memory import: {e}");
+                        std::process::exit(1);
+                    });
+                    println!("imported {n} memories from {}", path.display());
+                }
+                "export" => {
+                    let path = args.get(3).map(PathBuf::from).unwrap_or_else(memory_file);
+                    markdown::export_agent(&store, &namespace, &path).unwrap_or_else(|e| {
+                        eprintln!("memory export: {e}");
+                        std::process::exit(1);
+                    });
+                    println!("exported agent memory to {}", path.display());
+                }
+                "recall" => {
+                    if args.len() < 4 {
+                        memory_help();
+                        std::process::exit(2);
+                    }
+                    let hits = pantheon_memory::recall(
+                        &store,
+                        &Policy::coder(),
+                        &[
+                            LayerKind::TaskSession,
+                            LayerKind::Project,
+                            LayerKind::Agent,
+                            LayerKind::Global,
+                        ],
+                        &args[3..].join(" "),
+                        20,
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("memory recall: {e}");
+                        std::process::exit(1);
+                    });
+                    for hit in hits {
+                        println!(
+                            "[{:?}] {} = {} ({})",
+                            hit.record.layer,
+                            hit.record.key,
+                            hit.record.value,
+                            hit.record.provenance.origin
+                        );
+                    }
+                }
+                "put" => {
+                    if args.len() < 5 {
+                        memory_help();
+                        std::process::exit(2);
+                    }
+                    let key = args[3].clone();
+                    let value = args[4..].join(" ");
+                    let record = pantheon_memory::propose_write(
+                        &store,
+                        &Policy::coder_with_memory(),
+                        Proposal {
+                            layer: LayerKind::Agent,
+                            namespace,
+                            key,
+                            value,
+                            provenance: Provenance {
+                                source: "cli".into(),
+                                origin: "user".into(),
+                                recorded_at_ms: 0,
+                            },
+                        },
+                        4096,
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("memory put: {e}");
+                        std::process::exit(1);
+                    });
+                    println!("stored {}", record.key);
+                }
+                _ => {
+                    memory_help();
+                    std::process::exit(2);
                 }
             }
         }

@@ -11,4 +11,5 @@ pantheon-storage = { path = "../pantheon-storage" }
 pantheon-agent = { path = "../pantheon-agent" }
 pantheon-exec = { path = "../pantheon-exec" }
 pantheon-providers = { path = "../pantheon-providers" }
+pantheon-memory = { path = "../pantheon-memory" }
 

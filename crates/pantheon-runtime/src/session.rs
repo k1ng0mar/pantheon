@@ -15,6 +15,7 @@ use pantheon_core::model_event::{ModelEvent, ModelEventSink};
 use pantheon_exec::builtins::{register_builtins_with, BuiltinOptions};
 use pantheon_exec::safewrite::register_safewrite;
 use pantheon_exec::tools::ToolRegistry;
+use pantheon_memory::{recall as mem_recall, LayerKind, MemoryStore};
 use pantheon_providers::http::HttpTransport;
 use pantheon_providers::ProviderChain;
 
@@ -80,6 +81,12 @@ pub struct Session {
     pub api_key: String,
     pub budget: Budget,
     pub system_prompt: String,
+    /// Native SQLite + FTS5 memory store. Optional so a session can run
+    /// without it; when present, recall runs before each model turn and
+    /// writes go through propose -> policy -> provenance -> validation.
+    pub memory: Option<MemoryStore>,
+    /// Default namespace for memory writes (agent name or project id).
+    pub memory_namespace: String,
 }
 
 impl Session {
@@ -89,6 +96,7 @@ impl Session {
         model_policy: ModelPolicy,
         api_key: String,
     ) -> Result<Self, PantheonError> {
+        let memory = MemoryStore::open(&data_dir.join("memory.db")).ok();
         Ok(Self {
             supervisor: Supervisor::open(data_dir)?,
             policy,
@@ -96,7 +104,15 @@ impl Session {
             api_key,
             budget: Budget::default(),
             system_prompt: String::new(),
+            memory,
+            memory_namespace: "nyx".into(),
         })
+    }
+
+    /// Set the namespace used for memory writes (agent name, project, etc).
+    pub fn with_memory_namespace(mut self, ns: impl Into<String>) -> Self {
+        self.memory_namespace = ns.into();
+        self
     }
 
     /// Run one task end to end. Returns the terminal outcome.
@@ -127,8 +143,35 @@ impl Session {
             Vec::new()
         };
         if messages.is_empty() {
+            // Memory recall: project + agent layers, narrowest first.
+            // Skip for recovered runs — they have full transcript context.
+            let mut recall_block = String::new();
+            if let Some(mem) = &self.memory {
+                if matches!(
+                    self.policy
+                        .check(&pantheon_core::capability::Capability::MemoryRead),
+                    pantheon_core::capability::Decision::Allow
+                ) {
+                    let layers = [LayerKind::Project, LayerKind::Agent, LayerKind::Global];
+                    if let Ok(hits) = mem_recall(mem, &self.policy, &layers, user_message, 8) {
+                        for h in hits {
+                            recall_block.push_str(&format!(
+                                "- {}: {}
+",
+                                h.record.key, h.record.value
+                            ));
+                        }
+                    }
+                }
+            }
             if !self.system_prompt.is_empty() {
                 messages.push(Message::system(&self.system_prompt));
+            }
+            if !recall_block.is_empty() {
+                messages.push(Message::system(format!(
+                    "<memory_recall>
+{recall_block}</memory_recall>"
+                )));
             }
             messages.push(Message::user(user_message));
             self.supervisor.emit(Event::AssistantMessage {
