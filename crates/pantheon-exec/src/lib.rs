@@ -7,6 +7,7 @@
 
 pub mod builtins;
 pub mod memory_tools;
+pub mod plugins;
 pub mod safewrite;
 pub mod tools;
 
