@@ -105,6 +105,26 @@ impl MemoryStore {
         })
     }
 
+    /// Delete a record. Returns whether a row was removed.
+    pub fn forget(
+        &self,
+        layer: LayerKind,
+        namespace: &str,
+        key: &str,
+    ) -> Result<bool, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
+        let n = conn
+            .execute(
+                "DELETE FROM memories WHERE layer=?1 AND namespace=?2 AND key=?3",
+                params![layer_str(layer), namespace, key],
+            )
+            .map_err(|e| serr("MEM_DELETE", e.to_string()))?;
+        Ok(n > 0)
+    }
+
     /// List Agent-layer records for a namespace in stable write order.
     pub fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError> {
         let conn = self

@@ -13,17 +13,81 @@ use pantheon_core::message::{Message, ToolCallRef};
 use pantheon_core::model::ModelPolicy;
 use pantheon_core::model_event::{ModelEvent, ModelEventSink};
 use pantheon_exec::builtins::{register_builtins_with, BuiltinOptions};
+use pantheon_exec::memory_tools::{
+    register_memory_tools, MemoryToolEvent, MemoryToolOptions, MemoryToolSink,
+};
 use pantheon_exec::safewrite::register_safewrite;
 use pantheon_exec::tools::ToolRegistry;
 use pantheon_memory::{recall as mem_recall, LayerKind, MemoryStore};
 use pantheon_providers::http::HttpTransport;
 use pantheon_providers::ProviderChain;
+use std::sync::Arc;
 
 /// Adapter: supervisor as the loop's event sink.
 struct SupSink<'a>(&'a Supervisor);
 impl<'a> pantheon_agent::EventSink for SupSink<'a> {
     fn emit(&self, event: Event) {
         if let Err(e) = self.0.emit(event) {
+            eprintln!("ledger write failed: {e}");
+        }
+    }
+}
+
+/// Adapter: projects memory tool events into the run's ledger as
+/// `MemoryProposed` rows plus `RunProgress` annotations. The runtime
+/// keeps the ledger event enum thin; this is the only place tool-layer
+/// facts cross into the durable stream.
+///
+/// Owned (Arc<Supervisor>, run_id) so it can live in an `Arc<dyn
+/// MemoryToolSink>` with a `'static` bound. The supervisor is shared
+/// cheaply; the `run_id` is cloned once at construction.
+struct LedgerMemorySink {
+    sup: Arc<Supervisor>,
+    run_id: String,
+}
+impl MemoryToolSink for LedgerMemorySink {
+    fn record(&self, event: MemoryToolEvent) {
+        let detail = match &event {
+            MemoryToolEvent::Recalled { query, hits } => {
+                format!("memory_recall query={query:?} hits={hits}")
+            }
+            MemoryToolEvent::Listed { namespace, rows } => {
+                format!("memory_list ns={namespace} rows={rows}")
+            }
+            MemoryToolEvent::Proposed {
+                layer,
+                namespace,
+                key,
+                value_len,
+                origin,
+            } => format!(
+                "memory_propose layer={layer:?} ns={namespace} key={key} bytes={value_len} origin={origin}"
+            ),
+            MemoryToolEvent::Written {
+                layer,
+                namespace,
+                key,
+                backend,
+            } => format!("memory_write layer={layer:?} ns={namespace} key={key} backend={backend}"),
+            MemoryToolEvent::Forgotten {
+                layer,
+                namespace,
+                key,
+            } => format!("memory_forget layer={layer:?} ns={namespace} key={key}"),
+            MemoryToolEvent::Denied { code, cause } => {
+                format!("memory_denied code={code} cause={cause}")
+            }
+        };
+        if let Err(e) = self.sup.emit(Event::MemoryProposed {
+            run_id: self.run_id.clone(),
+        }) {
+            eprintln!("ledger write failed: {e}");
+            return;
+        }
+        if let Err(e) = self.sup.emit(Event::RunProgress {
+            run_id: self.run_id.clone(),
+            detail,
+        }) {
             eprintln!("ledger write failed: {e}");
         }
     }
@@ -84,7 +148,7 @@ pub struct Session {
     /// Native SQLite + FTS5 memory store. Optional so a session can run
     /// without it; when present, recall runs before each model turn and
     /// writes go through propose -> policy -> provenance -> validation.
-    pub memory: Option<MemoryStore>,
+    pub memory: Option<Arc<MemoryStore>>,
     /// Default namespace for memory writes (agent name or project id).
     pub memory_namespace: String,
 }
@@ -96,7 +160,9 @@ impl Session {
         model_policy: ModelPolicy,
         api_key: String,
     ) -> Result<Self, PantheonError> {
-        let memory = MemoryStore::open(&data_dir.join("memory.db")).ok();
+        let memory = MemoryStore::open(&data_dir.join("memory.db"))
+            .ok()
+            .map(Arc::new);
         Ok(Self {
             supervisor: Supervisor::open(data_dir)?,
             policy,
@@ -189,6 +255,23 @@ impl Session {
             },
         );
         register_safewrite(&mut reg, safewrite_dir);
+        if let Some(mem) = self.memory.clone() {
+            let mem_sink = LedgerMemorySink {
+                sup: Arc::new(self.supervisor.clone()),
+                run_id: run_id.to_string(),
+            };
+            register_memory_tools(
+                &mut reg,
+                MemoryToolOptions {
+                    store: mem,
+                    policy: Arc::new(self.policy.clone()),
+                    namespace: self.memory_namespace.clone(),
+                    max_bytes: 4096,
+                    sink: Arc::new(mem_sink),
+                    backend_label: "native".into(),
+                },
+            );
+        }
         let chain = ProviderChain::new(
             self.model_policy.clone(),
             HttpTransport::default(),
