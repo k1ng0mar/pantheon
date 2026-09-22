@@ -474,6 +474,7 @@ name = "pantheon-exec"
 version = "0.1.0"
 dependencies = [
  "pantheon-core",
+ "pantheon-memory",
  "serde",
  "serde_json",
 ]
