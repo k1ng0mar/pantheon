@@ -2,6 +2,7 @@
 //! Each maps to its capability and compacts output before it hits context.
 
 use crate::compact_output;
+use crate::safewrite::atomic_write;
 use crate::tools::{parse_args, ToolRegistry};
 use pantheon_core::capability::Capability;
 use pantheon_core::error::{Layer, PantheonError};
@@ -71,7 +72,7 @@ pub fn register_builtins(reg: &mut ToolRegistry) {
     reg.register(
         ToolSchema {
             name: "write_file".into(),
-            description: "Write a text file (creates parents, truncates).".into(),
+            description: "Write a text file atomically (tmp+fsync+rename, creates parents).".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -86,12 +87,7 @@ pub fn register_builtins(reg: &mut ToolRegistry) {
             let v = parse_args(args)?;
             let path = arg_str(&v, "path")?;
             let content = arg_str(&v, "content")?;
-            if let Some(parent) = Path::new(&path).parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| berr("TOOL_FS", format!("mkdir {path}: {e}"), false))?;
-            }
-            std::fs::write(&path, &content)
-                .map_err(|e| berr("TOOL_FS", format!("write {path}: {e}"), false))?;
+            atomic_write(Path::new(&path), content.as_bytes())?;
             Ok(format!("wrote {} bytes to {path}", content.len()))
         },
     );

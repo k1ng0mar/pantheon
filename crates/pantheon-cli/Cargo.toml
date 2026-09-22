@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 pantheon-core = { path = "../pantheon-core" }
 pantheon-runtime = { path = "../pantheon-runtime" }
+pantheon-exec = { path = "../pantheon-exec" }
 pantheon-extensions = { path = "../pantheon-extensions" }
 serde_json = "1"
 

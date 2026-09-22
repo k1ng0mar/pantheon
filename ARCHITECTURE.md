@@ -114,7 +114,7 @@ Specialists: `inherit` | `kimi-k3` | `configured-model`. Fallbacks are policy-co
 - **fallback models** — ordered list, failure-only, runtime-controlled; never agent-chosen
 - **auxiliary models** — scoped helpers (embeddings, rerank, STT/TTS, vision, extraction, search synthesis), selected by runtime capability need
 
-**Implemented:** `pantheon-providers` — default + failure-only fallback + auxiliaries. No live HTTP adapters yet.
+**Implemented:** `pantheon-providers` — default + failure-only fallback + auxiliaries. Live HTTP adapters: OpenAI-compatible + Anthropic Messages behind `ModelTurn`, both emitting normalized `ModelEvent`s (core) for complete + streaming paths; fallback chain (`chain.rs`) is the only fallback logic and sits outside the agent loop; provider/model metadata (base URL, wire mode, context limits, tools, vision, reasoning, streaming, cost) lives in the core catalog. Streaming integration tests run against the local llm-router when `PANTHEON_KEY_ROUTER` is set.
 
 ## 6. Coding engine
 
@@ -209,7 +209,7 @@ StorageProvider → SQLite | PostgreSQL | future
 
 Execution history is event-sourced. Derived data is mutable.
 
-**Implemented:** `pantheon-storage` — SQLite ledger, event sourcing, `/explain`, `/status`, crash recovery (`RunRecovered`), durable occurrence claims (`ClaimStore`). Scheduler durable path uses `ClaimStore`; `Ledger::claim` also exists on a separate table (review: pick one).
+**Implemented:** `pantheon-storage` — SQLite ledger, event sourcing, `/explain`, `/status`, crash recovery (`RunRecovered`), durable occurrence claims (`ClaimStore`), global `max_seq` anchor for file checkpoints. Scheduler durable path uses `ClaimStore`; `Ledger::claim` also exists on a separate table (review: pick one). Safe file writes live in `pantheon-exec::safewrite` (CLI: `preview` / `stage` / `apply` / `checkpoint` / `rollback`): preview is read-only, every apply snapshots a checkpoint first, multi-file batches publish atomically (tmp+fsync+rename), stale `expected_hash` fails with `SAFE_STALE`, rollback restores by checkpoint id or ledger seq, and a hash-chained journal replays torn applies at startup.
 
 ## 13. Secrets
 
@@ -238,7 +238,7 @@ models, search, browser, vision, STT, TTS, embeddings, rerank, extraction.
 
 Swap `SearchProvider` / `BrowserProvider` / etc. without rewriting agents.
 
-**Implemented:** logic layer in `pantheon-providers` (default + failure-only fallback + auxiliaries, no routing). No live HTTP providers yet.
+**Implemented:** logic layer in `pantheon-providers` (default + failure-only fallback + auxiliaries, no routing) plus live OpenAI-compat and Anthropic adapters with normalized `ModelEvent` emission (single-shot + SSE streaming) and catalog-driven capability/cost metadata.
 
 ## 15. MCP
 
@@ -411,7 +411,7 @@ Imported items retain provenance: `source`, `source_version`, `imported_at`. Unm
 | `pantheon-secrets` | vaults + broker (inject at boundary) |
 | `pantheon-scheduler` | cron/interval/webhook + durable claims |
 | `pantheon-gateway` | canonical messages, allowlist, dedup, delivery |
-| `pantheon-providers` | default + fallback + auxiliaries (no routing) |
+| `pantheon-providers` | default + fallback + auxiliaries (no routing); OpenAI-compat + Anthropic adapters, streaming, `ModelEvent`s |
 | `pantheon-extensions` | hooks, manifest, python runner, manager, doctor |
 | `pantheon-memory` | 5-layer memory + write path + provenance |
 | `pantheon-api` | JSON-RPC 2.0 + Unix socket transport |
@@ -425,7 +425,6 @@ Eval: `eval/run.py` + `eval/cases.json` — regression harness driving the real 
 
 ## Open gaps
 
-- Provider HTTP adapters (OpenAI-compatible + Anthropic) behind `ModelTurn`
 - Agent loop wired through Runtime API command handlers + CLI
 - Sandbox container/VM enforcement (profiles are policy values today)
 - Durable agent identity configs

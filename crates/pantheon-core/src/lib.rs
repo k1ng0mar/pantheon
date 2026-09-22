@@ -7,7 +7,9 @@
 //!   capabilities (embeddings, rerank, STT/TTS, vision, extraction...).
 
 pub mod capability;
+pub mod catalog;
 pub mod error;
 pub mod events;
 pub mod message;
 pub mod model;
+pub mod model_event;

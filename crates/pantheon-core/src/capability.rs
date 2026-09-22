@@ -48,6 +48,11 @@ impl Policy {
         self
     }
 
+    pub fn deny(mut self, cap: Capability) -> Self {
+        self.rules.insert(cap, Decision::Deny);
+        self
+    }
+
     pub fn check(&self, cap: &Capability) -> Decision {
         self.rules.get(cap).copied().unwrap_or(Decision::Deny)
     }
@@ -81,6 +86,16 @@ impl Policy {
         self.rules
             .iter()
             .filter(|(_, d)| **d == Decision::Allow)
+            .map(|(c, _)| c.clone())
+            .collect()
+    }
+
+    /// Capabilities parked on approval. Resume treats scopes recorded in
+    /// ApprovalGranted events as one-shot allows for the matching call.
+    pub fn approval_caps(&self) -> HashSet<Capability> {
+        self.rules
+            .iter()
+            .filter(|(_, d)| **d == Decision::Approval)
             .map(|(c, _)| c.clone())
             .collect()
     }

@@ -52,10 +52,10 @@ pub fn span_for(ev: &Event) -> Option<SpanRecord> {
         Event::RunFailed { run_id, code } => {
             mk(run_id, format!("run:{code}"), SpanKind::Run, "error")
         }
-        Event::ToolStarted { run_id, tool } => {
+        Event::ToolStarted { run_id, tool, .. } => {
             mk(run_id, format!("tool:{tool}"), SpanKind::Tool, "started")
         }
-        Event::ToolCompleted { run_id, tool } => {
+        Event::ToolCompleted { run_id, tool, .. } => {
             mk(run_id, format!("tool:{tool}"), SpanKind::Tool, "ok")
         }
         Event::ModelRequested { run_id, model } => {
@@ -91,7 +91,9 @@ pub fn span_for(ev: &Event) -> Option<SpanRecord> {
         | Event::ModelDelta { .. }
         | Event::ToolRequested { .. }
         | Event::ToolOutput { .. }
-        | Event::AgentMessage { .. } => None,
+        | Event::AgentMessage { .. }
+        | Event::AssistantMessage { .. }
+        | Event::ToolMessage { .. } => None,
     }
 }
 
@@ -129,7 +131,9 @@ mod tests {
     fn tool_events_become_tool_spans() {
         let s = span_for(&Event::ToolStarted {
             run_id: "r".into(),
+            call_id: "call_0_0".into(),
             tool: "shell".into(),
+            args: String::new(),
         })
         .unwrap();
         assert_eq!(s.kind, SpanKind::Tool);
@@ -149,7 +153,9 @@ mod tests {
             Event::RunStarted { run_id: "r".into() },
             Event::ToolStarted {
                 run_id: "r".into(),
+                call_id: "call_0_0".into(),
                 tool: "a".into(),
+                args: String::new(),
             },
             Event::ModelCompleted { run_id: "r".into() },
             Event::RunCompleted { run_id: "r".into() },
