@@ -110,7 +110,33 @@ impl BackendRegistry {
             "native".into(),
             BackendEntry {
                 info,
-                factory: Arc::new(|| Ok(Arc::new(MemoryStore::open_in_memory()?))),
+                factory: Arc::new(|| {
+                    Ok(Arc::new(MemoryStore::open_in_memory()?) as Arc<dyn MemoryBackend>)
+                }),
+            },
+        );
+        let http_info = BackendInfo {
+            name: "http".into(),
+            label: "External memory backend over HTTP (GalaxyMem, Mnemosyne, Honcho, Hindsight)"
+                .into(),
+            kind: BackendKind::Http,
+            capabilities: vec!["memory.read".into(), "memory.write".into()],
+        };
+        r.entries.insert(
+            "http".into(),
+            BackendEntry {
+                info: http_info,
+                factory: Arc::new(|| {
+                    let base = std::env::var("PANTHEON_MEMORY_HTTP_URL").map_err(|_| {
+                        merr(
+                            "MEM_HTTP_NO_URL",
+                            "PANTHEON_MEMORY_HTTP_URL is not set".to_string(),
+                        )
+                    })?;
+                    let key = std::env::var("PANTHEON_MEMORY_HTTP_KEY").ok();
+                    Ok(Arc::new(crate::http_backend::HttpBackend::new(base, key))
+                        as Arc<dyn MemoryBackend>)
+                }),
             },
         );
         r
@@ -168,11 +194,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_include_native() {
+    fn defaults_include_native_and_http() {
         let r = BackendRegistry::with_defaults();
         let names: Vec<String> = r.list().iter().map(|b| b.name.clone()).collect();
         assert!(names.contains(&"native".to_string()), "names: {names:?}");
+        assert!(names.contains(&"http".to_string()), "names: {names:?}");
         assert!(r.contains("native"));
+        assert!(r.contains("http"));
     }
 
     #[test]

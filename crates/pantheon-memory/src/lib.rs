@@ -12,6 +12,7 @@ use pantheon_core::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 
 pub mod backend;
+pub mod http_backend;
 pub mod markdown;
 pub mod store;
 pub use backend::{BackendInfo, BackendRegistry, BackendSelection};
