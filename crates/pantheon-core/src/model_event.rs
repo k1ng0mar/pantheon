@@ -70,6 +70,11 @@ impl ModelEvent {
     /// high-frequency or provider-internal events the ledger should not
     /// store (deltas are logged via `ModelDelta` only for visible text;
     /// reasoning/tool/usage rows stay provider-plane).
+    ///
+    /// `Exhausted` deliberately does NOT map to `RunFailed`. The chain's
+    /// exhaustion is a provider-plane fact; whether to fail the run is a
+    /// caller decision. The caller observes `Some(Event::RunProgress)`
+    /// when `Exhausted` fires and chooses whether to mark the run failed.
     pub fn to_event(&self, run_id: &str) -> Option<crate::events::Event> {
         use crate::events::Event;
         match self {
@@ -97,9 +102,9 @@ impl ModelEvent {
                 run_id: run_id.to_string(),
                 detail: format!("model attempt failed: {code}"),
             }),
-            ModelEvent::Exhausted { code } => Some(Event::RunFailed {
+            ModelEvent::Exhausted { code } => Some(Event::RunProgress {
                 run_id: run_id.to_string(),
-                code: code.clone(),
+                detail: format!("provider chain exhausted: {code}"),
             }),
             ModelEvent::ReasoningDelta { .. }
             | ModelEvent::ToolCall { .. }
