@@ -93,6 +93,22 @@ impl Supervisor {
                 return Err(rerr("RT_NO_RUN", format!("no run {run_id} in ledger")));
             }
         }
+        let entries = self.ledger().replay(run_id)?;
+        let mut requested = false;
+        for e in &entries {
+            if let Event::ApprovalRequested { scope: s, .. } = &e.event {
+                if s == scope {
+                    requested = true;
+                    break;
+                }
+            }
+        }
+        if !requested {
+            return Err(rerr(
+                "RT_APPROVAL_UNKNOWN",
+                format!("run {run_id} has no pending approval for scope {scope}"),
+            ));
+        }
         self.ledger().append(&Event::ApprovalGranted {
             run_id: run_id.into(),
             scope: scope.into(),
@@ -219,5 +235,82 @@ mod tests {
             crate::session::unfinished_calls(&entries),
             vec!["call_0_0".to_string()]
         );
+    }
+
+    #[test]
+    fn grant_rejects_unknown_scope() {
+        let dir = std::env::temp_dir().join(format!("pantheon-rt5-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sup = Supervisor::open(dir).unwrap();
+        sup.start_run("run_unknown").unwrap();
+        // Park the run on approval so grant() reaches the scope check.
+        sup.emit(Event::ApprovalRequested {
+            run_id: "run_unknown".into(),
+            scope: "real_scope".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            sup.ledger_status("run_unknown").unwrap().as_deref(),
+            Some("awaiting_approval")
+        );
+        // Grant a different scope: must refuse as unknown.
+        let err = sup.grant("run_unknown", "other_scope").unwrap_err();
+        assert_eq!(err.code, "RT_APPROVAL_UNKNOWN");
+    }
+
+    #[test]
+    fn grant_rejects_duplicate_scope() {
+        let dir = std::env::temp_dir().join(format!("pantheon-rt6-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sup = Supervisor::open(dir).unwrap();
+        sup.start_run("run_dup").unwrap();
+        sup.emit(Event::ApprovalRequested {
+            run_id: "run_dup".into(),
+            scope: "call_0_0".into(),
+        })
+        .unwrap();
+        sup.grant("run_dup", "call_0_0").unwrap();
+        // First grant unparked the run. Second grant must refuse because
+        // the run is no longer parked — the duplicate is caught by the
+        // status gate, not the scope check.
+        let err = sup.grant("run_dup", "call_0_0").unwrap_err();
+        assert_eq!(err.code, "RT_NOT_PARKED");
+    }
+
+    #[test]
+    fn chat_on_parked_run_is_refused() {
+        use std::path::PathBuf;
+        let dir = std::env::temp_dir().join(format!("pantheon-rt7-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sup = Supervisor::open(dir.clone()).unwrap();
+        // Park the run synthetically.
+        sup.start_run("run_park").unwrap();
+        sup.emit(Event::ApprovalRequested {
+            run_id: "run_park".into(),
+            scope: "call_0_0".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            sup.ledger_status("run_park").unwrap().as_deref(),
+            Some("awaiting_approval")
+        );
+        // Build a session whose chat() must refuse before talking to any model.
+        // Use an unreachable endpoint to prove the refusal happens pre-flight.
+        let session = crate::session::Session::new(
+            PathBuf::from(dir),
+            pantheon_core::capability::Policy::coder(),
+            pantheon_core::model::ModelPolicy {
+                default: pantheon_core::model::DefaultModel {
+                    provider: "unreachable.test".into(),
+                    model: "x".into(),
+                },
+                fallbacks: pantheon_core::model::FallbackChain::default(),
+                auxiliaries: vec![],
+            },
+            String::new(),
+        )
+        .unwrap();
+        let err = session.chat("run_park", "again").unwrap_err();
+        assert_eq!(err.code, "RUN_PARKED");
     }
 }

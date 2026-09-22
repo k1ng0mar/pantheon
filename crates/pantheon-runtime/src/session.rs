@@ -7,11 +7,11 @@
 use crate::Supervisor;
 use pantheon_agent::{AgentLoop, Budget, LoopOutcome};
 use pantheon_core::capability::Policy;
-use pantheon_core::error::PantheonError;
+use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::events::Event;
 use pantheon_core::message::{Message, ToolCallRef};
 use pantheon_core::model::ModelPolicy;
-use pantheon_exec::builtins::register_builtins;
+use pantheon_exec::builtins::{register_builtins_with, BuiltinOptions};
 use pantheon_exec::safewrite::register_safewrite;
 use pantheon_exec::tools::ToolRegistry;
 use pantheon_providers::http::HttpTransport;
@@ -28,10 +28,10 @@ impl<'a> pantheon_agent::EventSink for SupSink<'a> {
 }
 
 /// Adapter: project normalized provider `ModelEvent`s into the run's
-/// ledger `Event`s (Attempt→ModelRequested, TextDelta→ModelDelta,
-/// Completed→ModelCompleted, Fallback/AttemptFailed→RunProgress,
-/// Exhausted→RunFailed). The agent loop never sees providers; this is the
-/// only place the provider plane meets the ledger.
+/// ledger `Event`s. The agent loop never sees providers; this is the
+/// only place the provider plane meets the ledger. Exhaustion is a
+/// provider-plane fact: the mapper records it as `RunProgress`; the
+/// caller decides whether the run is failed.
 struct LedgerModelSink<'a> {
     sup: &'a Supervisor,
     run_id: &'a str,
@@ -84,6 +84,21 @@ impl Session {
 
     /// Run one task end to end. Returns the terminal outcome.
     pub fn chat(&self, run_id: &str, user_message: &str) -> Result<LoopOutcome, PantheonError> {
+        match self.supervisor.ledger_status(run_id)?.as_deref() {
+            Some("awaiting_approval") => {
+                return Err(aerr(
+                    "RUN_PARKED",
+                    format!("run {run_id} is parked on approval; grant then resume"),
+                ));
+            }
+            Some("completed") | Some("failed") => {
+                return Err(aerr(
+                    "RUN_TERMINAL",
+                    format!("run {run_id} already finished; start a new id"),
+                ));
+            }
+            _ => {}
+        }
         let recovered = self.supervisor.start_run(run_id)?;
         let mut messages: Vec<Message> = if recovered {
             self.supervisor.emit(Event::RunProgress {
@@ -104,9 +119,16 @@ impl Session {
                 message: Message::user(user_message),
             })?;
         }
+
         let mut reg = ToolRegistry::new();
-        register_builtins(&mut reg);
-        register_safewrite(&mut reg, self.supervisor.data_dir().join("safewrite"));
+        let safewrite_dir = self.supervisor.data_dir().join("safewrite");
+        register_builtins_with(
+            &mut reg,
+            BuiltinOptions {
+                safewrite_state_dir: Some(safewrite_dir.clone()),
+            },
+        );
+        register_safewrite(&mut reg, safewrite_dir);
         let chain = ProviderChain::new(
             self.model_policy.clone(),
             HttpTransport::default(),
@@ -127,9 +149,45 @@ impl Session {
             depth: 0,
         };
 
+        // Crashed-mid-tool: rebuild pending calls from the ledger. The
+        // session replays their results from persisted ToolMessage rows when
+        // present, and re-runs the rest before the next model call.
+        let entries = self.supervisor.replay(run_id)?;
+        let pending = if recovered {
+            unfinished_calls(&entries)
+        } else {
+            Vec::new()
+        };
+        let grants: Vec<String> = entries
+            .iter()
+            .filter_map(|e| match &e.event {
+                Event::ApprovalGranted { scope, .. } => Some(scope.clone()),
+                _ => None,
+            })
+            .collect();
+
         // Drive the loop through the canonical-message path: each turn feeds
         // messages to the provider, appends assistant/tool rows, repeats.
-        let outcome = self.drive(&loop_, &chain, &mut messages, run_id, 0, &reg)?;
+        let outcome = match self.drive(
+            &loop_,
+            &chain,
+            &mut messages,
+            run_id,
+            0,
+            &reg,
+            pending,
+            &grants,
+        ) {
+            Ok(o) => o,
+            Err(e) => {
+                // Provider failures bubble up before any terminal outcome is
+                // emitted. Mark the run failed so the ledger is honest about
+                // why the run didn't complete; the structured error is
+                // surfaced to the caller verbatim.
+                let _ = self.supervisor.fail(run_id, &e.code);
+                return Err(e);
+            }
+        };
 
         match &outcome {
             LoopOutcome::Answered(text) => {
@@ -162,6 +220,8 @@ impl Session {
     }
 
     /// Canonical-message driver: replaces the legacy string-transcript loop.
+    /// `pending` holds tool calls that crashed mid-execution; `grants`
+    /// records scopes the user has already approved.
     fn drive(
         &self,
         loop_: &AgentLoop,
@@ -170,6 +230,8 @@ impl Session {
         run_id: &str,
         turn: u32,
         reg: &ToolRegistry,
+        pending: Vec<String>,
+        grants: &[String],
     ) -> Result<LoopOutcome, PantheonError> {
         if turn >= loop_.budget.max_turns {
             return Err(PantheonError::new(
@@ -180,6 +242,40 @@ impl Session {
                 "raise the budget or simplify the task",
                 "",
             ));
+        }
+        // Recovered pending tool calls settle first, before the next model
+        // call. Tools already completed (matching ToolMessage rows in the
+        // ledger) are skipped; tools that crashed before completing run.
+        if !pending.is_empty() {
+            let pending_set: std::collections::BTreeSet<String> = pending.into_iter().collect();
+            let mut not_done: Vec<String> = Vec::new();
+            for cid in &pending_set {
+                // If a ToolMessage row exists for this call id, it's done.
+                let done = messages.iter().any(|m| {
+                    m.role == pantheon_core::message::Role::Tool
+                        && m.tool_call_id.as_deref() == Some(cid.as_str())
+                });
+                if !done {
+                    not_done.push(cid.clone());
+                }
+            }
+            for cid in not_done {
+                if grants.iter().any(|s| s == &cid) {
+                    // Already approved via ApprovalGranted.
+                } else {
+                    // Pending re-execution without a grant: surface as
+                    // approval-needed. We do not know the capability from
+                    // the ledger alone (calls are anonymous until re-run),
+                    // so we ask with the conservative "Other" capability.
+                    let cap =
+                        pantheon_core::capability::Capability::Other(format!("recover:{cid}"));
+                    self.supervisor.emit(Event::ApprovalRequested {
+                        run_id: run_id.into(),
+                        scope: cid.clone(),
+                    })?;
+                    return Ok(LoopOutcome::AwaitingApproval { capability: cap });
+                }
+            }
         }
         // Chain events (Attempt/Usage/Completed/Fallback/…) project into the
         // ledger through one sink — no manual model lifecycle emissions here.
@@ -227,9 +323,12 @@ impl Session {
                     match pantheon_agent::gate(&loop_.policy, &gated.capability)? {
                         pantheon_agent::GateOutcome::Allow => {}
                         pantheon_agent::GateOutcome::NeedsApproval { capability } => {
+                            // Approval scope MUST be the call id, not the
+                            // capability: granting one shell call must not
+                            // automatically grant the next one.
                             self.supervisor.emit(Event::ApprovalRequested {
                                 run_id: run_id.into(),
-                                scope: format!("{capability:?}"),
+                                scope: r.id.clone(),
                             })?;
                             return Ok(LoopOutcome::AwaitingApproval { capability });
                         }
@@ -259,7 +358,16 @@ impl Session {
                         tool: gated.name.clone(),
                     })?;
                 }
-                self.drive(loop_, chain, messages, run_id, turn + 1, reg)
+                self.drive(
+                    loop_,
+                    chain,
+                    messages,
+                    run_id,
+                    turn + 1,
+                    reg,
+                    Vec::new(),
+                    grants,
+                )
             }
             pantheon_agent::TurnOutcome::Delegate { .. } => {
                 // Spawner not wired in v1; treat as structured denial.
@@ -274,6 +382,10 @@ impl Session {
             }
         }
     }
+}
+
+fn aerr(code: &str, cause: String) -> PantheonError {
+    PantheonError::new(code, Layer::Agent, false, cause, "see ledger status", "")
 }
 
 /// Rebuild the canonical transcript from persisted message events.
