@@ -119,7 +119,7 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     },
 ];
 
-fn table() -> &'static [ModelMeta] {
+pub fn table() -> &'static [ModelMeta] {
     static TABLE: std::sync::OnceLock<Vec<ModelMeta>> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {
         vec![
