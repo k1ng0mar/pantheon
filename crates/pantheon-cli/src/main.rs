@@ -3,10 +3,10 @@ use pantheon_core::capability::Policy;
 use pantheon_core::events::Event;
 use pantheon_exec::safewrite::{preview_edit, SafeWriter};
 use pantheon_extensions::{doctor, ExtensionManager, Hook, RunnerConfig};
-use pantheon_memory::{markdown, LayerKind, MemoryStore, Proposal, Provenance};
+use pantheon_memory::{markdown, BackendSelection, LayerKind, MemoryStore, Proposal, Provenance};
 use pantheon_runtime::{new_run_id, Supervisor};
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 fn data_dir() -> PathBuf {
     if let Ok(d) = std::env::var("PANTHEON_DATA_DIR") {
@@ -25,6 +25,25 @@ fn ext_dir() -> PathBuf {
 }
 fn safewrite_dir() -> PathBuf {
     data_dir().join("safewrite")
+}
+fn backend_selection_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("memory-backend.toml")
+}
+fn load_backend_selection(data_dir: &Path) -> BackendSelection {
+    let path = backend_selection_path(data_dir);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| toml::from_str::<BackendSelection>(&s).ok())
+        .unwrap_or_default()
+}
+fn save_backend_selection(data_dir: &Path, sel: &BackendSelection) {
+    let path = backend_selection_path(data_dir);
+    if let Err(e) = std::fs::create_dir_all(data_dir) {
+        eprintln!("memory backend: data dir failed: {e}");
+    }
+    std::fs::write(path, toml::to_string(sel).unwrap_or_default()).unwrap_or_else(|e| {
+        eprintln!("memory backend: write failed: {e}");
+    });
 }
 fn usage() -> String {
     "pantheon <chat|run|explain|status|providers|extensions|hook|doctor|preview|stage|apply|checkpoint|rollback> ...\n\
@@ -192,12 +211,14 @@ fn open_memory() -> MemoryStore {
 }
 
 fn memory_help() {
-    eprintln!("usage: pantheon memory <import|export|recall|put|sync> ...");
+    eprintln!("usage: pantheon memory <import|export|recall|put|sync|backend> ...");
     eprintln!("  import [FILE]       import MEMORY.md into native memory");
     eprintln!("  export [FILE]       export native agent memory to MEMORY.md");
     eprintln!("  sync [FILE]         reconcile MEMORY.md and the native store");
     eprintln!("  recall QUERY        search native memory");
     eprintln!("  put KEY VALUE       store an agent memory (explicit write)");
+    eprintln!("  backend list        show registered memory backends");
+    eprintln!("  backend select NAME choose the active backend");
 }
 
 fn main() {
@@ -435,6 +456,50 @@ fn main() {
                         std::process::exit(1);
                     });
                     println!("stored {}", record.key);
+                }
+                "backend" => {
+                    let registry = pantheon_memory::BackendRegistry::with_defaults();
+                    match args.get(3).map(|s| s.as_str()) {
+                        Some("list") => {
+                            let dd = data_dir();
+                            let sel = load_backend_selection(&dd);
+                            for b in registry.list() {
+                                let mark = if sel.name == b.name { " *" } else { "" };
+                                println!("{}{}\t{}", b.name, mark, b.label);
+                            }
+                        }
+                        Some("select") => {
+                            if args.len() < 5 {
+                                eprintln!("memory backend select <NAME>");
+                                eprintln!(
+                                    "registered: {}",
+                                    registry
+                                        .list()
+                                        .iter()
+                                        .map(|b| b.name.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                );
+                                std::process::exit(2);
+                            }
+                            let name = &args[4];
+                            if !registry.contains(name) {
+                                eprintln!("memory backend select: unknown backend '{name}'");
+                                std::process::exit(1);
+                            }
+                            let sel = BackendSelection {
+                                name: name.clone(),
+                                options: HashMap::new(),
+                            };
+                            let dd = data_dir();
+                            save_backend_selection(&dd, &sel);
+                            println!("active backend: {}", name);
+                        }
+                        _ => {
+                            memory_help();
+                            std::process::exit(2);
+                        }
+                    }
                 }
                 _ => {
                     memory_help();

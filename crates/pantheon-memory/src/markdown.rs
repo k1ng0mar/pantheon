@@ -99,7 +99,6 @@ pub fn sync(
     };
 
     let mut imported = false;
-    let mut exported = false;
 
     // Step 1: file changes since last sync?
     let file_changed = last_known_hash
@@ -132,7 +131,7 @@ pub fn sync(
     let md = render_agent(&rows);
     std::fs::write(&tmp, md).map_err(|e| merr("MEM_SYNC_WRITE", format!("{e}")))?;
     std::fs::rename(&tmp, path).map_err(|e| merr("MEM_SYNC_RENAME", format!("{e}")))?;
-    exported = true;
+    let exported = true;
 
     Ok(SyncReport {
         imported,
