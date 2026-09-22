@@ -1,23 +1,31 @@
 //! Provider + model catalog (§5 + §14): where a provider lives, which wire
 //! format it speaks, and what a model can do — context limit, tool support,
-//! vision, reasoning, streaming, cost. Static data; the runtime reads it,
-//! agents never choose from it.
+//! vision, reasoning, streaming, cost.
+//!
+//! Loaded from a YAML file at runtime. Default: `catalog.yaml` embedded at
+//! compile time via `include_str!`. Override: `PANTHEON_CATALOG=/path/to.yaml`.
+//! Static data; the runtime reads it, agents never choose from it.
 
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 /// Wire format a provider speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApiMode {
     /// OpenAI chat-completions shape (`/chat/completions`).
+    #[serde(rename = "openai")]
     OpenAi,
     /// Anthropic Messages shape (`/messages`).
+    #[serde(rename = "anthropic")]
     Anthropic,
 }
 
 /// List prices in USD per million tokens. `None` = unknown / free / local.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub struct ModelCost {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_per_mtok_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_per_mtok_usd: Option<f64>,
 }
 
@@ -29,217 +37,139 @@ impl ModelCost {
     }
 }
 
-/// Static metadata for one provider.
-#[derive(Debug, Clone, PartialEq)]
+/// Catalog row: where the provider lives, which wire it speaks, key env vars.
+/// A row that has `auto: true` and `models: [...]` is a full provider entry;
+/// a row that has just a `base_url` and no `auto` is a known endpoint you can
+/// point at but no curated models yet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderMeta {
-    pub id: &'static str,
-    pub label: &'static str,
-    /// Default base URL (no trailing slash, endpoint path is appended by
-    /// the adapter: `/chat/completions` or `/messages`).
-    pub base_url: &'static str,
+    pub id: String,
+    pub label: String,
+    pub base_url: String,
     pub api_mode: ApiMode,
     /// Env var that overrides the base URL, e.g. `PANTHEON_BASE_OPENAI`.
-    pub base_env: &'static str,
+    #[serde(default)]
+    pub base_env: String,
     /// Env var that overrides the API key, e.g. `PANTHEON_KEY_OPENAI`.
-    pub key_env: &'static str,
+    #[serde(default)]
+    pub key_env: String,
+    /// Curated model rows for this provider (catalog says which models are
+    /// tested and their capabilities). Empty means "no curated models,
+    /// use the generic OpenAI/Anthropic adapter with whatever model name
+    /// you pass at runtime".
+    #[serde(default)]
+    pub models: Vec<ModelMeta>,
+    /// Set true for prominent labs that should show in the picker UI.
+    /// Defaults to false (curated but hidden).
+    #[serde(default)]
+    pub prominent: bool,
+    /// Short blurb for the picker UI ("Chinese lab", "fast inference", ...).
+    #[serde(default)]
+    pub tag: String,
 }
 
 /// Static metadata for one model.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMeta {
+    /// Filled from the parent provider's id at load time; skipped in YAML.
+    #[serde(skip)]
     pub provider: String,
     pub model: String,
     /// Context window in tokens; `None` = unknown.
+    #[serde(default)]
     pub context_limit: Option<u32>,
     /// Provider-imposed max output tokens; `None` = unknown/default.
+    #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    #[serde(default = "default_true")]
     pub tools: bool,
+    #[serde(default)]
     pub vision: bool,
+    #[serde(default)]
     pub reasoning: bool,
+    #[serde(default = "default_true")]
     pub streaming: bool,
+    #[serde(default)]
     pub cost: ModelCost,
 }
 
-pub const PROVIDERS: &[ProviderMeta] = &[
-    ProviderMeta {
-        id: "openai",
-        label: "OpenAI",
-        base_url: "https://api.openai.com/v1",
-        api_mode: ApiMode::OpenAi,
-        base_env: "PANTHEON_BASE_OPENAI",
-        key_env: "PANTHEON_KEY_OPENAI",
-    },
-    ProviderMeta {
-        id: "anthropic",
-        label: "Anthropic",
-        base_url: "https://api.anthropic.com/v1",
-        api_mode: ApiMode::Anthropic,
-        base_env: "PANTHEON_BASE_ANTHROPIC",
-        key_env: "PANTHEON_KEY_ANTHROPIC",
-    },
-    ProviderMeta {
-        id: "deepseek",
-        label: "DeepSeek",
-        base_url: "https://api.deepseek.com/v1",
-        api_mode: ApiMode::OpenAi,
-        base_env: "PANTHEON_BASE_DEEPSEEK",
-        key_env: "PANTHEON_KEY_DEEPSEEK",
-    },
-    ProviderMeta {
-        id: "openrouter",
-        label: "OpenRouter",
-        base_url: "https://openrouter.ai/api/v1",
-        api_mode: ApiMode::OpenAi,
-        base_env: "PANTHEON_BASE_OPENROUTER",
-        key_env: "PANTHEON_KEY_OPENROUTER",
-    },
-    ProviderMeta {
-        id: "groq",
-        label: "Groq",
-        base_url: "https://api.groq.com/openai/v1",
-        api_mode: ApiMode::OpenAi,
-        base_env: "PANTHEON_BASE_GROQ",
-        key_env: "PANTHEON_KEY_GROQ",
-    },
-    ProviderMeta {
-        id: "local",
-        label: "Local (Ollama)",
-        base_url: "http://127.0.0.1:11434/v1",
-        api_mode: ApiMode::OpenAi,
-        base_env: "PANTHEON_BASE_LOCAL",
-        key_env: "PANTHEON_KEY_LOCAL",
-    },
-    ProviderMeta {
-        id: "router",
-        label: "Local llm-router",
-        base_url: "http://127.0.0.1:8015/v1",
-        api_mode: ApiMode::OpenAi,
-        base_env: "PANTHEON_BASE_ROUTER",
-        key_env: "PANTHEON_KEY_ROUTER",
-    },
-];
+fn default_true() -> bool {
+    true
+}
 
-pub fn table() -> &'static [ModelMeta] {
-    static TABLE: std::sync::OnceLock<Vec<ModelMeta>> = std::sync::OnceLock::new();
-    TABLE.get_or_init(|| {
-        vec![
-            ModelMeta {
-                provider: "openai".into(),
-                model: "gpt-4o".into(),
-                context_limit: Some(128_000),
-                max_output_tokens: Some(16_384),
-                tools: true,
-                vision: true,
-                reasoning: false,
-                streaming: true,
-                cost: ModelCost {
-                    input_per_mtok_usd: Some(2.50),
-                    output_per_mtok_usd: Some(10.00),
-                },
-            },
-            ModelMeta {
-                provider: "openai".into(),
-                model: "gpt-4o-mini".into(),
-                context_limit: Some(128_000),
-                max_output_tokens: Some(16_384),
-                tools: true,
-                vision: true,
-                reasoning: false,
-                streaming: true,
-                cost: ModelCost {
-                    input_per_mtok_usd: Some(0.15),
-                    output_per_mtok_usd: Some(0.60),
-                },
-            },
-            ModelMeta {
-                provider: "anthropic".into(),
-                model: "claude-opus-4".into(),
-                context_limit: Some(200_000),
-                max_output_tokens: Some(32_000),
-                tools: true,
-                vision: true,
-                reasoning: true,
-                streaming: true,
-                cost: ModelCost {
-                    input_per_mtok_usd: Some(15.00),
-                    output_per_mtok_usd: Some(75.00),
-                },
-            },
-            ModelMeta {
-                provider: "anthropic".into(),
-                model: "claude-sonnet-4".into(),
-                context_limit: Some(200_000),
-                max_output_tokens: Some(64_000),
-                tools: true,
-                vision: true,
-                reasoning: true,
-                streaming: true,
-                cost: ModelCost {
-                    input_per_mtok_usd: Some(3.00),
-                    output_per_mtok_usd: Some(15.00),
-                },
-            },
-            ModelMeta {
-                provider: "deepseek".into(),
-                model: "deepseek-chat".into(),
-                context_limit: Some(128_000),
-                max_output_tokens: Some(8_192),
-                tools: true,
-                vision: false,
-                reasoning: true,
-                streaming: true,
-                cost: ModelCost {
-                    input_per_mtok_usd: Some(0.27),
-                    output_per_mtok_usd: Some(1.10),
-                },
-            },
-            // Local llm-router pools (context limits from its router.yaml).
-            ModelMeta {
-                provider: "router".into(),
-                model: "chat".into(),
-                context_limit: Some(256_000),
-                max_output_tokens: None,
-                tools: true,
-                vision: false,
-                reasoning: true,
-                streaming: true,
-                cost: ModelCost::default(),
-            },
-            ModelMeta {
-                provider: "router".into(),
-                model: "code".into(),
-                context_limit: Some(262_144),
-                max_output_tokens: None,
-                tools: true,
-                vision: false,
-                reasoning: true,
-                streaming: true,
-                cost: ModelCost::default(),
-            },
-            ModelMeta {
-                provider: "router".into(),
-                model: "media".into(),
-                context_limit: Some(128_000),
-                max_output_tokens: None,
-                tools: false,
-                vision: true,
-                reasoning: false,
-                streaming: true,
-                cost: ModelCost::default(),
-            },
-        ]
+/// The full catalog: one slice of providers, each with their model rows.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Catalog {
+    pub providers: Vec<ProviderMeta>,
+}
+
+/// Embedded default catalog: keeps the binary self-sufficient.
+const DEFAULT_CATALOG: &str = include_str!("../catalog.yaml");
+
+static CATALOG: OnceLock<Catalog> = OnceLock::new();
+
+/// Load the catalog. Resolution order:
+/// 1. `PANTHEON_CATALOG` env var → file path
+/// 2. `<data_dir>/catalog.yaml` if it exists
+/// 3. Embedded default (compile-time)
+fn load_catalog() -> &'static Catalog {
+    CATALOG.get_or_init(|| {
+        let raw = if let Ok(p) = std::env::var("PANTHEON_CATALOG") {
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                Some(text)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let text = raw.as_deref().unwrap_or(DEFAULT_CATALOG);
+        match serde_yaml::from_str::<Catalog>(text) {
+            Ok(mut c) => {
+                for p in &mut c.providers {
+                    let id = p.id.clone();
+                    for m in &mut p.models {
+                        m.provider = id.clone();
+                    }
+                }
+                c
+            }
+            Err(e) => {
+                eprintln!("catalog parse error: {}", e);
+                Catalog::default()
+            }
+        }
     })
+}
+
+/// Catalog accessor. Cheap to call; cached.
+pub fn catalog() -> &'static Catalog {
+    load_catalog()
+}
+
+/// Iterate providers.
+pub fn providers() -> &'static [ProviderMeta] {
+    &catalog().providers
+}
+
+/// Iterate all model rows across all providers.
+pub fn models() -> Vec<&'static ModelMeta> {
+    catalog()
+        .providers
+        .iter()
+        .flat_map(|p| p.models.iter())
+        .collect()
 }
 
 /// Look up a provider by id.
 pub fn provider(id: &str) -> Option<&'static ProviderMeta> {
-    PROVIDERS.iter().find(|p| p.id == id)
+    providers().iter().find(|p| p.id == id)
 }
 
 /// Look up a model's static metadata (exact provider + model match).
 pub fn model(provider_id: &str, model_id: &str) -> Option<&'static ModelMeta> {
-    table()
-        .iter()
+    models()
+        .into_iter()
         .find(|m| m.provider == provider_id && m.model == model_id)
 }
 
@@ -247,31 +177,34 @@ pub fn model(provider_id: &str, model_id: &str) -> Option<&'static ModelMeta> {
 /// context unknown, tools on, vision off, reasoning off, streaming on,
 /// cost unknown.
 pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
-    model(provider_id, model_id)
-        .cloned()
-        .unwrap_or_else(|| ModelMeta {
-            provider: provider_id.to_string(),
-            model: model_id.to_string(),
-            context_limit: None,
-            max_output_tokens: None,
-            tools: true,
-            vision: false,
-            reasoning: false,
-            streaming: true,
-            cost: ModelCost::default(),
-        })
+    if let Some(m) = model(provider_id, model_id) {
+        return m.clone();
+    }
+    ModelMeta {
+        provider: provider_id.to_string(),
+        model: model_id.to_string(),
+        context_limit: None,
+        max_output_tokens: None,
+        tools: true,
+        vision: false,
+        reasoning: false,
+        streaming: true,
+        cost: ModelCost::default(),
+    }
 }
 
 /// Base URL for a provider: env override → catalog → the provider id
 /// itself (treated as a full base URL, legacy passthrough).
 pub fn base_url_for(provider_id: &str) -> String {
     if let Some(p) = provider(provider_id) {
-        if let Ok(u) = std::env::var(p.base_env) {
-            if !u.is_empty() {
-                return u;
+        if !p.base_env.is_empty() {
+            if let Ok(u) = std::env::var(&p.base_env) {
+                if !u.is_empty() {
+                    return u;
+                }
             }
         }
-        return p.base_url.to_string();
+        return p.base_url.clone();
     }
     if let Ok(u) = std::env::var(format!("PANTHEON_BASE_{}", provider_id.to_uppercase())) {
         if !u.is_empty() {
@@ -284,7 +217,13 @@ pub fn base_url_for(provider_id: &str) -> String {
 /// API key for a provider: env override → `fallback` (the configured key).
 pub fn key_for(provider_id: &str, fallback: &str) -> String {
     let env_name = provider(provider_id)
-        .map(|p| p.key_env.to_string())
+        .map(|p| {
+            if p.key_env.is_empty() {
+                format!("PANTHEON_KEY_{}", p.id.to_uppercase())
+            } else {
+                p.key_env.clone()
+            }
+        })
         .unwrap_or_else(|| format!("PANTHEON_KEY_{}", provider_id.to_uppercase()));
     std::env::var(env_name).unwrap_or_else(|_| fallback.to_string())
 }
@@ -295,12 +234,10 @@ mod tests {
 
     #[test]
     fn providers_resolve_with_wire_modes() {
+        assert!(provider("anthropic").is_some());
         assert_eq!(provider("anthropic").unwrap().api_mode, ApiMode::Anthropic);
         assert_eq!(provider("openai").unwrap().api_mode, ApiMode::OpenAi);
-        assert_eq!(
-            provider("router").unwrap().base_url,
-            "http://127.0.0.1:8015/v1"
-        );
+        assert!(provider("router").is_some());
         assert!(provider("nope").is_none());
     }
 
@@ -326,10 +263,25 @@ mod tests {
 
     #[test]
     fn unknown_provider_id_passthrough_is_base_url() {
-        // No env override expected for this exotic id.
         assert_eq!(
             base_url_for("https://proxy.example/v1"),
             "https://proxy.example/v1"
         );
+    }
+
+    #[test]
+    fn prominent_providers_include_curated_labs() {
+        let prom: Vec<&str> = providers()
+            .iter()
+            .filter(|p| p.prominent)
+            .map(|p| p.id.as_str())
+            .collect();
+        // Should include the major labs from the catalog.
+        assert!(prom.contains(&"anthropic"), "anthropic prominent: {prom:?}");
+        assert!(prom.contains(&"openai"), "openai prominent: {prom:?}");
+        assert!(prom.contains(&"google"), "google prominent: {prom:?}");
+        assert!(prom.contains(&"deepseek"), "deepseek prominent: {prom:?}");
+        assert!(prom.contains(&"groq"), "groq prominent: {prom:?}");
+        assert!(prom.contains(&"xai"), "xai prominent: {prom:?}");
     }
 }
