@@ -192,9 +192,10 @@ fn open_memory() -> MemoryStore {
 }
 
 fn memory_help() {
-    eprintln!("usage: pantheon memory <import|export|recall|put> ...");
+    eprintln!("usage: pantheon memory <import|export|recall|put|sync> ...");
     eprintln!("  import [FILE]       import MEMORY.md into native memory");
     eprintln!("  export [FILE]       export native agent memory to MEMORY.md");
+    eprintln!("  sync [FILE]         reconcile MEMORY.md and the native store");
     eprintln!("  recall QUERY        search native memory");
     eprintln!("  put KEY VALUE       store an agent memory (explicit write)");
 }
@@ -341,6 +342,39 @@ fn main() {
                         std::process::exit(1);
                     });
                     println!("exported agent memory to {}", path.display());
+                }
+                "sync" => {
+                    let path = args.get(3).map(PathBuf::from).unwrap_or_else(memory_file);
+                    let last_hash_path = path.with_extension("md.sync-hash");
+                    let last_hash = std::fs::read_to_string(&last_hash_path).ok();
+                    let policy = pantheon_core::capability::Policy::coder_with_memory();
+                    if markdown::detect_conflict(&store, &namespace, &path, last_hash.as_deref())
+                        .unwrap_or(None)
+                        .is_some()
+                    {
+                        eprintln!(
+                            "memory sync: conflict between file and store; resolve manually before syncing"
+                        );
+                        std::process::exit(2);
+                    }
+                    let report =
+                        markdown::sync(&store, &policy, &namespace, &path, last_hash.as_deref())
+                            .unwrap_or_else(|e| {
+                                eprintln!("memory sync: {e}");
+                                std::process::exit(1);
+                            });
+                    if let Err(e) = std::fs::write(&last_hash_path, &report.file_hash) {
+                        eprintln!("memory sync: writing hash file failed: {e}");
+                    }
+                    if report.imported {
+                        println!("imported MEMORY.md changes into the store");
+                    }
+                    if report.exported {
+                        println!("wrote MEMORY.md from the store");
+                    }
+                    if !report.imported && !report.exported {
+                        println!("already in sync");
+                    }
                 }
                 "recall" => {
                     if args.len() < 4 {
