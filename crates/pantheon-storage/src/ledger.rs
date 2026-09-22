@@ -60,7 +60,9 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::AgentCompleted { run_id, .. }
         | Event::MemoryProposed { run_id }
         | Event::ApprovalRequested { run_id, .. }
-        | Event::ApprovalGranted { run_id, .. } => run_id,
+        | Event::ApprovalGranted { run_id, .. }
+        | Event::AssistantMessage { run_id, .. }
+        | Event::ToolMessage { run_id, .. } => run_id,
     }
 }
 
@@ -125,6 +127,20 @@ impl Ledger {
             )
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
         }
+        if matches!(event, Event::ApprovalRequested { .. }) {
+            conn.execute(
+                "UPDATE runs SET status = 'awaiting_approval' WHERE run_id = ?1",
+                params![run_id],
+            )
+            .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
+        }
+        if matches!(event, Event::ApprovalGranted { .. }) {
+            conn.execute(
+                "UPDATE runs SET status = 'running' WHERE run_id = ?1",
+                params![run_id],
+            )
+            .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
+        }
         if matches!(event, Event::RunCompleted { .. }) {
             conn.execute(
                 "UPDATE runs SET status = 'completed' WHERE run_id = ?1",
@@ -133,14 +149,15 @@ impl Ledger {
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
         }
         conn.execute(
-            "INSERT INTO events (run_id, seq, ts_ms, event_json) VALUES (?1, ?2, ?3, ?4)",
-            params![run_id, ts, ts, json],
+            "INSERT INTO events (run_id, seq, ts_ms, event_json) VALUES (?1, (SELECT COALESCE(MAX(seq),0)+1 FROM events), ?2, ?3)",
+            params![run_id, ts, json],
         )
         .map_err(|e| err("LEDGER_APPEND", e.to_string()))?;
+        let id: i64 = conn.last_insert_rowid();
         Ok(LedgerEntry {
-            id: 0,
+            id,
             run_id,
-            seq: ts,
+            seq: id,
             ts_ms: ts,
             event: event.clone(),
         })
@@ -153,15 +170,15 @@ impl Ledger {
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, run_id, ts_ms, event_json FROM events WHERE run_id = ?1 ORDER BY id",
+                "SELECT id, run_id, seq, ts_ms, event_json FROM events WHERE run_id = ?1 ORDER BY id",
             )
             .map_err(|e| err("LEDGER_REPLAY", e.to_string()))?;
         let rows = stmt
             .query_map(params![run_id], |row| {
-                let json: String = row.get(3)?;
+                let json: String = row.get(4)?;
                 let event: Event = serde_json::from_str(&json).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
-                        3,
+                        4,
                         rusqlite::types::Type::Text,
                         e.into(),
                     )
@@ -169,8 +186,8 @@ impl Ledger {
                 Ok(LedgerEntry {
                     id: row.get(0)?,
                     run_id: row.get(1)?,
-                    seq: 0,
-                    ts_ms: row.get(2)?,
+                    seq: row.get(2)?,
+                    ts_ms: row.get(3)?,
                     event,
                 })
             })
@@ -229,6 +246,16 @@ impl Ledger {
         .optional()
         .map_err(|e| err("LEDGER_STATUS", e.to_string()))
     }
+    /// Highest global ledger sequence (== highest event id). Checkpoints
+    /// anchor to this, so `rollback --seq N` maps to a real position.
+    pub fn max_seq(&self) -> Result<i64, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.query_row("SELECT COALESCE(MAX(seq),0) FROM events", [], |r| r.get(0))
+            .map_err(|e| err("LEDGER_STATUS", e.to_string()))
+    }
     pub fn explain(&self, run_id: &str) -> Result<String, PantheonError> {
         let entries = self.replay(run_id)?;
         if entries.is_empty() {
@@ -267,6 +294,18 @@ fn describe(ev: &Event) -> String {
         Event::MemoryProposed { .. } => String::from("memory write proposed"),
         Event::ApprovalRequested { scope, .. } => format!("approval requested: {scope}"),
         Event::ApprovalGranted { scope, .. } => format!("approval granted: {scope}"),
+        Event::AssistantMessage { message, .. } => {
+            format!(
+                "assistant: {}",
+                message.content.chars().take(120).collect::<String>()
+            )
+        }
+        Event::ToolMessage { message, .. } => {
+            format!(
+                "tool result: {}",
+                message.content.chars().take(120).collect::<String>()
+            )
+        }
     }
 }
 
@@ -284,7 +323,9 @@ mod tests {
         ledger
             .append(&Event::ToolStarted {
                 run_id: "r1".into(),
+                call_id: "call_0_0".into(),
                 tool: "shell".into(),
+                args: String::new(),
             })
             .unwrap();
         ledger

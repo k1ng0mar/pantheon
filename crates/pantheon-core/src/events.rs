@@ -1,6 +1,7 @@
 //! Agent-engine event enum. Every meaningful transition becomes an event,
 //! giving replayability, debugging, and crash recovery.
 
+use crate::message::Message;
 use serde::{Deserialize, Serialize};
 
 /// Canonical runtime events (§2 agent engine + §18 runtime API).
@@ -40,16 +41,32 @@ pub enum Event {
     },
     ToolStarted {
         run_id: String,
+        /// Stable per-call id (`call_{turn}_{i}`); resume keys grants on this.
+        call_id: String,
         tool: String,
+        /// Tool arguments as issued (persisted so resume re-executes exactly).
+        args: String,
     },
     ToolOutput {
         run_id: String,
+        call_id: String,
         tool: String,
         truncated: bool,
     },
     ToolCompleted {
         run_id: String,
+        call_id: String,
         tool: String,
+    },
+    /// Assistant turn persisted so resume rebuilds messages without a model call.
+    AssistantMessage {
+        run_id: String,
+        message: Message,
+    },
+    /// Tool result persisted so resume rebuilds messages without re-running tools.
+    ToolMessage {
+        run_id: String,
+        message: Message,
     },
     AgentSpawned {
         run_id: String,

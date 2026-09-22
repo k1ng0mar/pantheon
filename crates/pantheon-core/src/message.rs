@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// One conversation message.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,
@@ -29,7 +29,7 @@ pub enum Role {
 }
 
 /// A tool request from the model.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCallRef {
     pub id: String,
     pub name: String,
@@ -81,7 +81,7 @@ impl Message {
 }
 
 /// Tool schema in OpenAI wire format: {"type":"function","function":{...}}.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,
     pub description: String,

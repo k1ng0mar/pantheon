@@ -1,5 +1,6 @@
 //! pantheon CLI: thin surface over the runtime. No business logic here.
 use pantheon_core::events::Event;
+use pantheon_exec::safewrite::{preview_edit, SafeWriter};
 use pantheon_extensions::{doctor, ExtensionManager, Hook, RunnerConfig};
 use pantheon_runtime::{new_run_id, Supervisor};
 use std::collections::HashSet;
@@ -20,15 +21,23 @@ fn ext_dir() -> PathBuf {
     }
     data_dir().join("extensions")
 }
+fn safewrite_dir() -> PathBuf {
+    data_dir().join("safewrite")
+}
 fn usage() -> String {
-    "pantheon <chat|run|explain|status|extensions|hook|doctor> ...\n\
+    "pantheon <chat|run|explain|status|extensions|hook|doctor|preview|stage|apply|checkpoint|rollback> ...\n\
      \u{20} chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n\
      \u{20} run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n\
      \u{20} explain <run_id>\n\
      \u{20} status <run_id>\n\
      \u{20} extensions  list loaded extensions\n\
      \u{20} hook <name> [--session S] [--platform P]  fire a hook\n\
-     \u{20} doctor <plugin_dir>  loud preflight report\n"
+     \u{20} doctor <plugin_dir>  loud preflight report\n\
+     \u{20} preview <path> <file-with-new-content>  read-only diff preview\n\
+     \u{20} stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n\
+     \u{20} apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n\
+     \u{20} checkpoint <path>... [--run ID]  snapshot pre-images\n\
+     \u{20} rollback (--ckpt ID | --seq N)  restore a checkpoint\n"
         .into()
 }
 fn load_mgr() -> ExtensionManager {
@@ -251,7 +260,9 @@ fn main() {
             if let Some(t) = tool {
                 sup.emit(Event::ToolStarted {
                     run_id: run_id.clone(),
+                    call_id: "cli".into(),
                     tool: t,
+                    args: String::new(),
                 })
                 .unwrap();
             }
@@ -356,6 +367,196 @@ fn main() {
             println!("{}", serde_json::to_string_pretty(&rep).unwrap());
             if !rep.ok {
                 std::process::exit(1);
+            }
+        }
+        "preview" => {
+            if args.len() < 4 {
+                eprintln!("usage: pantheon preview <path> <file-with-new-content>");
+                std::process::exit(2);
+            }
+            let new_bytes = std::fs::read(&args[3]).unwrap_or_else(|e| {
+                eprintln!("read new content {}: {e}", args[3]);
+                std::process::exit(1);
+            });
+            match preview_edit(std::path::Path::new(&args[2]), &new_bytes) {
+                Ok(pv) => println!("{}", serde_json::to_string_pretty(&pv).unwrap()),
+                Err(e) => {
+                    eprintln!("preview: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "stage" => {
+            if args.len() < 4 {
+                eprintln!("usage: pantheon stage <path> <file-with-new-content> [--expect HASH]");
+                std::process::exit(2);
+            }
+            let mut expect: Option<String> = None;
+            let mut i = 4;
+            while i < args.len() {
+                if args[i] == "--expect" && i + 1 < args.len() {
+                    expect = Some(args[i + 1].clone());
+                    i += 1;
+                }
+                i += 1;
+            }
+            let new_bytes = std::fs::read(&args[3]).unwrap_or_else(|e| {
+                eprintln!("read new content {}: {e}", args[3]);
+                std::process::exit(1);
+            });
+            let w = SafeWriter::new(safewrite_dir()).unwrap_or_else(|e| {
+                eprintln!("open safewrite state: {e}");
+                std::process::exit(1);
+            });
+            let edit = pantheon_exec::safewrite::FileEdit {
+                path: PathBuf::from(&args[2]),
+                new_content: new_bytes,
+                expected_hash: expect,
+            };
+            match w.stage_edits(vec![edit]) {
+                Ok(b) => println!("{}", serde_json::to_string_pretty(&b).unwrap()),
+                Err(e) => {
+                    eprintln!("stage: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "apply" => {
+            if args.len() < 4 {
+                eprintln!("usage: pantheon apply <path> <file-with-new-content> [--expect HASH] [--run ID]");
+                std::process::exit(2);
+            }
+            let mut expect: Option<String> = None;
+            let mut run_id: Option<String> = None;
+            let mut i = 4;
+            while i < args.len() {
+                if args[i] == "--expect" && i + 1 < args.len() {
+                    expect = Some(args[i + 1].clone());
+                    i += 1;
+                } else if args[i] == "--run" && i + 1 < args.len() {
+                    run_id = Some(args[i + 1].clone());
+                    i += 1;
+                }
+                i += 1;
+            }
+            let new_bytes = std::fs::read(&args[3]).unwrap_or_else(|e| {
+                eprintln!("read new content {}: {e}", args[3]);
+                std::process::exit(1);
+            });
+            let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
+                eprintln!("open runtime: {e}");
+                std::process::exit(1);
+            });
+            let seq = sup.max_seq().unwrap_or(0);
+            let w = SafeWriter::new(safewrite_dir()).unwrap_or_else(|e| {
+                eprintln!("open safewrite state: {e}");
+                std::process::exit(1);
+            });
+            let edit = pantheon_exec::safewrite::FileEdit {
+                path: PathBuf::from(&args[2]),
+                new_content: new_bytes,
+                expected_hash: expect,
+            };
+            match w.apply_edits(vec![edit], seq) {
+                Ok(r) => {
+                    let rid = run_id.unwrap_or_else(pantheon_runtime::new_run_id);
+                    let _ = sup.emit(Event::RunProgress {
+                        run_id: rid,
+                        detail: format!(
+                            "safewrite apply ckpt={} files={}",
+                            r.checkpoint_id,
+                            r.files.len()
+                        ),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&r).unwrap());
+                }
+                Err(e) => {
+                    eprintln!("apply: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "checkpoint" => {
+            if args.len() < 3 {
+                eprintln!("usage: pantheon checkpoint <path>... [--run ID]");
+                std::process::exit(2);
+            }
+            let mut paths: Vec<PathBuf> = vec![];
+            let mut i = 2;
+            while i < args.len() {
+                if args[i] == "--run" {
+                    i += 2;
+                    continue;
+                }
+                paths.push(PathBuf::from(&args[i]));
+                i += 1;
+            }
+            let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
+                eprintln!("open runtime: {e}");
+                std::process::exit(1);
+            });
+            let seq = sup.max_seq().unwrap_or(0);
+            let w = SafeWriter::new(safewrite_dir()).unwrap_or_else(|e| {
+                eprintln!("open safewrite state: {e}");
+                std::process::exit(1);
+            });
+            match w.checkpoint(&paths, seq) {
+                Ok(cp) => println!("{}", serde_json::to_string_pretty(&cp).unwrap()),
+                Err(e) => {
+                    eprintln!("checkpoint: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "rollback" => {
+            let mut ckpt: Option<String> = None;
+            let mut seq: Option<i64> = None;
+            let mut i = 2;
+            while i < args.len() {
+                if args[i] == "--ckpt" && i + 1 < args.len() {
+                    ckpt = Some(args[i + 1].clone());
+                    i += 1;
+                } else if args[i] == "--seq" && i + 1 < args.len() {
+                    seq = args[i + 1].parse().ok();
+                    i += 1;
+                }
+                i += 1;
+            }
+            let w = SafeWriter::new(safewrite_dir()).unwrap_or_else(|e| {
+                eprintln!("open safewrite state: {e}");
+                std::process::exit(1);
+            });
+            if let Some(id) = ckpt {
+                match w.restore_checkpoint(&id) {
+                    Ok(paths) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(
+                            &serde_json::json!({"checkpoint": id, "restored": paths})
+                        )
+                        .unwrap()
+                    ),
+                    Err(e) => {
+                        eprintln!("rollback: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if let Some(n) = seq {
+                match w.rollback_to_seq(n) {
+                    Ok((id, paths)) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(
+                            &serde_json::json!({"checkpoint": id, "restored": paths})
+                        )
+                        .unwrap()
+                    ),
+                    Err(e) => {
+                        eprintln!("rollback: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                eprintln!("usage: pantheon rollback (--ckpt ID | --seq N)");
+                std::process::exit(2);
             }
         }
         _ => {

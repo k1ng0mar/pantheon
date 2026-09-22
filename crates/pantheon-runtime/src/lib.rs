@@ -45,6 +45,8 @@ impl Supervisor {
         &self.inner.data_dir
     }
     /// Start a run. If a previous ledger shows it unfinished, emit RunRecovered.
+    /// A run parked on approval is NOT recoverable into a fresh chat: the
+    /// caller must resume() or grant() first, never start over it.
     pub fn start_run(&self, run_id: &str) -> Result<bool, PantheonError> {
         let status = self.ledger().status(run_id)?;
         let recovered = matches!(status.as_deref(), Some("running"));
@@ -75,12 +77,47 @@ impl Supervisor {
         })?;
         Ok(())
     }
+
+    /// Record an approval grant for a parked run. Emits ApprovalGranted and
+    /// flips the run back to running so resume() can continue it.
+    pub fn grant(&self, run_id: &str, scope: &str) -> Result<(), PantheonError> {
+        match self.ledger().status(run_id)?.as_deref() {
+            Some("awaiting_approval") => {}
+            Some(other) => {
+                return Err(rerr(
+                    "RT_NOT_PARKED",
+                    format!("run {run_id} is {other}, not parked on approval"),
+                ));
+            }
+            None => {
+                return Err(rerr("RT_NO_RUN", format!("no run {run_id} in ledger")));
+            }
+        }
+        self.ledger().append(&Event::ApprovalGranted {
+            run_id: run_id.into(),
+            scope: scope.into(),
+        })?;
+        self.ledger().append(&Event::RunProgress {
+            run_id: run_id.into(),
+            detail: format!("approval granted for {scope}, run resumable"),
+        })?;
+        Ok(())
+    }
     pub fn explain(&self, run_id: &str) -> Result<String, PantheonError> {
         self.ledger().explain(run_id)
     }
 
     pub fn ledger_status(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
         self.ledger().status(run_id)
+    }
+    pub fn replay(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<pantheon_storage::LedgerEntry>, PantheonError> {
+        self.ledger().replay(run_id)
+    }
+    pub fn max_seq(&self) -> Result<i64, PantheonError> {
+        self.ledger().max_seq()
     }
 }
 
@@ -113,7 +150,9 @@ mod tests {
         assert!(!sup.start_run(id).unwrap());
         sup.emit(Event::ToolStarted {
             run_id: id.into(),
+            call_id: "t".into(),
             tool: "shell".into(),
+            args: String::new(),
         })
         .unwrap();
         sup.complete(id).unwrap();
@@ -129,5 +168,56 @@ mod tests {
         let sup2 = Supervisor::open(dir).unwrap();
         assert!(sup2.start_run("run_crash").unwrap());
         assert!(sup2.explain("run_crash").unwrap().contains("recovered"));
+    }
+
+    #[test]
+    fn grant_flips_parked_run_back_to_running() {
+        let dir = std::env::temp_dir().join(format!("pantheon-rt3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sup = Supervisor::open(dir).unwrap();
+        sup.start_run("run_park").unwrap();
+        sup.emit(Event::ApprovalRequested {
+            run_id: "run_park".into(),
+            scope: "call_0_0".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            sup.ledger_status("run_park").unwrap().as_deref(),
+            Some("awaiting_approval")
+        );
+        sup.grant("run_park", "call_0_0").unwrap();
+        assert_eq!(
+            sup.ledger_status("run_park").unwrap().as_deref(),
+            Some("running")
+        );
+    }
+
+    #[test]
+    fn replay_rebuilds_transcript_and_unfinished_calls() {
+        use pantheon_core::message::Message;
+        let dir = std::env::temp_dir().join(format!("pantheon-rt4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sup = Supervisor::open(dir).unwrap();
+        sup.start_run("run_replay").unwrap();
+        sup.emit(Event::AssistantMessage {
+            run_id: "run_replay".into(),
+            message: Message::user("do the thing"),
+        })
+        .unwrap();
+        sup.emit(Event::ToolStarted {
+            run_id: "run_replay".into(),
+            call_id: "call_0_0".into(),
+            tool: "shell".into(),
+            args: "{\"cmd\":\"ls\"}".into(),
+        })
+        .unwrap();
+        let entries = sup.replay("run_replay").unwrap();
+        let msgs = crate::session::rebuild_messages(entries.clone());
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "do the thing");
+        assert_eq!(
+            crate::session::unfinished_calls(&entries),
+            vec!["call_0_0".to_string()]
+        );
     }
 }

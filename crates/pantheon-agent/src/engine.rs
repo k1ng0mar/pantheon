@@ -177,17 +177,21 @@ impl<'a> AgentLoop<'a> {
                         });
                         self.sink.emit(Event::ToolStarted {
                             run_id: self.run_id.clone(),
+                            call_id: call.name.clone(),
                             tool: call.name.clone(),
+                            args: call.args.clone(),
                         });
                         let out = self.tools.run(&call.name, &call.args)?;
                         self.sink.emit(Event::ToolOutput {
                             run_id: self.run_id.clone(),
+                            call_id: call.name.clone(),
                             tool: call.name.clone(),
                             truncated: false,
                         });
                         transcript.push(format!("tool[{}]: {out}", call.name));
                         self.sink.emit(Event::ToolCompleted {
                             run_id: self.run_id.clone(),
+                            call_id: call.name.clone(),
                             tool: call.name.clone(),
                         });
                     }

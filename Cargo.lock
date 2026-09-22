@@ -453,6 +453,7 @@ name = "pantheon-cli"
 version = "0.1.0"
 dependencies = [
  "pantheon-core",
+ "pantheon-exec",
  "pantheon-extensions",
  "pantheon-runtime",
  "serde_json",
