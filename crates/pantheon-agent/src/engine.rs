@@ -154,18 +154,19 @@ impl<'a> AgentLoop<'a> {
                     return Ok(LoopOutcome::Answered(text));
                 }
                 TurnOutcome::Tools(tool_calls) => {
-                    for call in tool_calls {
+                    for (i, call) in tool_calls.into_iter().enumerate() {
                         if calls >= self.budget.max_tool_calls {
                             return Ok(LoopOutcome::BudgetExhausted {
                                 cap: "max_tool_calls",
                             });
                         }
+                        let call_id = format!("call_{}_{}", turns, i);
                         match gate(&self.policy, &call.capability)? {
                             GateOutcome::Allow => {}
                             GateOutcome::NeedsApproval { capability } => {
                                 self.sink.emit(Event::ApprovalRequested {
                                     run_id: self.run_id.clone(),
-                                    scope: format!("{capability:?}"),
+                                    scope: call_id.clone(),
                                 });
                                 return Ok(LoopOutcome::AwaitingApproval { capability });
                             }
@@ -177,21 +178,21 @@ impl<'a> AgentLoop<'a> {
                         });
                         self.sink.emit(Event::ToolStarted {
                             run_id: self.run_id.clone(),
-                            call_id: call.name.clone(),
+                            call_id: call_id.clone(),
                             tool: call.name.clone(),
                             args: call.args.clone(),
                         });
                         let out = self.tools.run(&call.name, &call.args)?;
                         self.sink.emit(Event::ToolOutput {
                             run_id: self.run_id.clone(),
-                            call_id: call.name.clone(),
+                            call_id: call_id.clone(),
                             tool: call.name.clone(),
                             truncated: false,
                         });
                         transcript.push(format!("tool[{}]: {out}", call.name));
                         self.sink.emit(Event::ToolCompleted {
                             run_id: self.run_id.clone(),
-                            call_id: call.name.clone(),
+                            call_id,
                             tool: call.name.clone(),
                         });
                     }
