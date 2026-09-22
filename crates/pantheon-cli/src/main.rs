@@ -312,9 +312,17 @@ fn main() {
             let api_key = key
                 .or_else(|| std::env::var("PANTHEON_API_KEY").ok())
                 .unwrap_or_default();
+            let allow_memory = std::env::var("PANTHEON_ALLOW_MEMORY")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false);
+            let policy = if allow_memory {
+                pantheon_core::capability::Policy::coder_with_memory()
+            } else {
+                pantheon_core::capability::Policy::coder()
+            };
             let session = match pantheon_runtime::session::Session::new(
                 data_dir(),
-                pantheon_core::capability::Policy::coder(),
+                policy,
                 model_policy,
                 api_key,
             ) {
