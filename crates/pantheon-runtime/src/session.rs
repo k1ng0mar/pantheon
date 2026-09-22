@@ -11,6 +11,7 @@ use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::events::Event;
 use pantheon_core::message::{Message, ToolCallRef};
 use pantheon_core::model::ModelPolicy;
+use pantheon_core::model_event::{ModelEvent, ModelEventSink};
 use pantheon_exec::builtins::{register_builtins_with, BuiltinOptions};
 use pantheon_exec::safewrite::register_safewrite;
 use pantheon_exec::tools::ToolRegistry;
@@ -36,11 +37,27 @@ struct LedgerModelSink<'a> {
     sup: &'a Supervisor,
     run_id: &'a str,
 }
-impl<'a> pantheon_core::model_event::ModelEventSink for LedgerModelSink<'a> {
-    fn emit(&self, event: pantheon_core::model_event::ModelEvent) {
-        if let Some(ev) = event.to_event(self.run_id) {
-            if let Err(e) = self.sup.emit(ev) {
-                eprintln!("ledger write failed: {e}");
+impl<'a> ModelEventSink for LedgerModelSink<'a> {
+    fn emit(&self, event: ModelEvent) {
+        match event.to_event(self.run_id) {
+            Some(ev) => {
+                if let Err(e) = self.sup.emit(ev) {
+                    eprintln!("ledger write failed: {e}");
+                }
+            }
+            None => {
+                // Delta / tool-call / usage rows are provider-plane only:
+                // the ledger projects visible text deltas so a crash mid-stream
+                // still leaves a transcript to rebuild from, but does not
+                // store high-frequency internal events.
+                if let ModelEvent::TextDelta { text } = &event {
+                    if let Err(e) = self.sup.emit(Event::ModelDelta {
+                        run_id: self.run_id.to_string(),
+                        delta: text.clone(),
+                    }) {
+                        eprintln!("ledger write failed: {e}");
+                    }
+                }
             }
         }
     }
@@ -418,4 +435,78 @@ pub fn unfinished_calls(entries: &[pantheon_storage::LedgerEntry]) -> Vec<String
         }
     }
     started.difference(&done).cloned().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pantheon_core::model_event::ModelEvent;
+
+    #[test]
+    fn streaming_deltas_persist_as_model_delta_rows() {
+        // The sink must persist TextDelta events as ModelDelta rows even
+        // though to_event() returns None for them (high-frequency provider-plane
+        // events are not full Event variants).
+        let dir = std::env::temp_dir().join(format!("pantheon-rt-sess-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sup = Supervisor::open(dir).unwrap();
+        sup.start_run("run_stream").unwrap();
+        let sink = LedgerModelSink {
+            sup: &sup,
+            run_id: "run_stream",
+        };
+        sink.emit(ModelEvent::Attempt {
+            provider: "router".into(),
+            model: "chat".into(),
+            chain_index: 0,
+            streaming: true,
+        });
+        sink.emit(ModelEvent::TextDelta {
+            text: "part1".into(),
+        });
+        sink.emit(ModelEvent::TextDelta {
+            text: "part2".into(),
+        });
+        sink.emit(ModelEvent::Usage {
+            usage: pantheon_core::model_event::ModelUsage {
+                input_tokens: 3,
+                output_tokens: 6,
+                total_tokens: 9,
+                cost_usd: None,
+            },
+        });
+        sink.emit(ModelEvent::Completed {
+            finish_reason: Some("stop".into()),
+        });
+
+        let entries = sup.replay("run_stream").unwrap();
+        let deltas: Vec<String> = entries
+            .iter()
+            .filter_map(|e| match &e.event {
+                Event::ModelDelta { delta, .. } => Some(delta.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deltas, vec!["part1".to_string(), "part2".to_string()]);
+        // Other events also projected.
+        // Event order: RunStarted (from start_run) -> Attempt/ModelRequested,
+        // two TextDelta->ModelDelta, then Completed->ModelCompleted.
+        // Usage events are provider-plane only (to_event returns None) and
+        // are NOT persisted to the ledger -- by design.
+        let kinds: Vec<&str> = entries
+            .iter()
+            .map(|e| match &e.event {
+                Event::RunStarted { .. } => "start",
+                Event::ModelRequested { .. } => "req",
+                Event::ModelDelta { .. } => "delta",
+                Event::ModelCompleted { .. } => "done",
+                _ => "skip",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["start", "req", "delta", "delta", "done"]);
+        // rebuild_messages skips deltas (they are not full messages), but
+        // the transcript still has the persisted content for inspection.
+        let msgs = rebuild_messages(entries);
+        assert!(msgs.is_empty(), "no full assistant/user rows emitted");
+    }
 }
