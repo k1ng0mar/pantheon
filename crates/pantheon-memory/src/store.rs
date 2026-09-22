@@ -28,6 +28,7 @@ pub struct Recalled {
     pub rank: f64,
 }
 
+#[derive(Debug)]
 pub struct MemoryStore {
     conn: Mutex<Connection>,
     path: Option<std::path::PathBuf>,

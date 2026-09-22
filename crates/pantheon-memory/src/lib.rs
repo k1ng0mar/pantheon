@@ -11,15 +11,17 @@ use pantheon_core::capability::{Capability, Decision, Policy};
 use pantheon_core::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 
+pub mod backend;
 pub mod markdown;
 pub mod store;
+pub use backend::{BackendInfo, BackendRegistry, BackendSelection};
 pub use store::{MemoryStore, Recalled};
 
 /// Backend boundary for external memory providers such as GalaxyMem,
 /// Mnemosyne, Honcho, or Hindsight. Providers implement recall and writes;
 /// policy and provenance stay at this boundary instead of being delegated
 /// blindly to a plugin.
-pub trait MemoryBackend: Send + Sync {
+pub trait MemoryBackend: Send + Sync + std::fmt::Debug {
     fn recall(
         &self,
         policy: &Policy,
