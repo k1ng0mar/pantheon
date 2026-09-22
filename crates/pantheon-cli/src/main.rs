@@ -25,7 +25,7 @@ fn safewrite_dir() -> PathBuf {
     data_dir().join("safewrite")
 }
 fn usage() -> String {
-    "pantheon <chat|run|explain|status|extensions|hook|doctor|preview|stage|apply|checkpoint|rollback> ...\n\
+    "pantheon <chat|run|explain|status|providers|extensions|hook|doctor|preview|stage|apply|checkpoint|rollback> ...\n\
      \u{20} chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n\
      \u{20} run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n\
      \u{20} explain <run_id>\n\
@@ -558,6 +558,29 @@ fn main() {
                 eprintln!("usage: pantheon rollback (--ckpt ID | --seq N)");
                 std::process::exit(2);
             }
+        }
+        "providers" => {
+            // List cataloged providers and their models, plus the
+            // custom-provider passthrough (any URL used with --provider URL).
+            println!("cataloged providers:");
+            for p in pantheon_core::catalog::PROVIDERS {
+                let models: Vec<&str> = pantheon_core::catalog::table()
+                    .iter()
+                    .filter(|m| m.provider == p.id)
+                    .map(|m| m.model.as_str())
+                    .collect();
+                let mode = match p.api_mode {
+                    pantheon_core::catalog::ApiMode::OpenAi => "OpenAI",
+                    pantheon_core::catalog::ApiMode::Anthropic => "Anthropic",
+                };
+                println!("  {} ({}): {} -- {}", p.label, p.id, mode, p.base_url);
+                println!("    models: {}", models.join(", "));
+            }
+            println!();
+            println!("custom: --provider <base-url> uses that URL directly (OpenAI shape)");
+            println!(
+                "example: pantheon chat --provider http://127.0.0.1:8015/v1 --model chat \"hi\""
+            );
         }
         _ => {
             eprint!("{}", usage());
