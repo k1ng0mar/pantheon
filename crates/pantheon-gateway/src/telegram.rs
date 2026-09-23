@@ -13,6 +13,12 @@ pub const TELEGRAM_MESSAGE_LIMIT: usize = 4_096;
 /// adapter only owns Telegram's inline keyboard and message limit semantics.
 pub trait TelegramTransport: Send + Sync {
     fn send_message(&self, chat_id: &str, payload: &Value) -> Result<(), ChannelError>;
+    /// Long-poll `getUpdates`. Returns raw update objects; normalization is
+    /// shared with the webhook path via `parse_event`.
+    fn get_updates(&self, offset: i64, timeout_secs: u64) -> Result<Vec<Value>, ChannelError> {
+        let _ = (offset, timeout_secs);
+        Ok(Vec::new())
+    }
     fn poll_events(&self) -> Vec<ChannelEvent> {
         Vec::new()
     }
@@ -52,6 +58,32 @@ impl TelegramTransport for TelegramRestTransport {
             .send_json(body)
             .map_err(|e| ChannelError::new("TELEGRAM_HTTP", e.to_string()))?;
         Ok(())
+    }
+    fn get_updates(&self, offset: i64, timeout_secs: u64) -> Result<Vec<Value>, ChannelError> {
+        let url = format!("{}/bot{}/getUpdates", self.api_base, self.bot_token);
+        let body: Value = self
+            .agent
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(timeout_secs + 5))
+            .send_json(json!({
+                "offset": offset,
+                "timeout": timeout_secs,
+                "allowed_updates": ["message", "callback_query"],
+            }))
+            .map_err(|e| ChannelError::new("TELEGRAM_HTTP", e.to_string()))?
+            .into_json()
+            .map_err(|e| ChannelError::new("TELEGRAM_HTTP", e.to_string()))?;
+        if body.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(ChannelError::new(
+                "TELEGRAM_HTTP",
+                format!("getUpdates not ok: {body}"),
+            ));
+        }
+        Ok(body
+            .get("result")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
     }
 }
 

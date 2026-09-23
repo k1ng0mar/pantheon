@@ -55,10 +55,9 @@ pub struct RunLeaseGuard {
 }
 
 impl RunLeaseGuard {
-    pub fn new(supervisor: Supervisor, run_id: impl Into<String>) -> Self {
-        Self::try_new(supervisor, run_id).expect("run lease guard requires an owned lease")
-    }
-
+    /// Acquire a run lease or fail. There is deliberately no panicking
+    /// constructor: a busy lease is a normal operational condition, not a
+    /// programmer error, and callers must handle it.
     pub fn try_new(
         supervisor: Supervisor,
         run_id: impl Into<String>,
@@ -578,7 +577,10 @@ impl Supervisor {
     /// Cancel a run and all process groups registered by its current lease.
     /// TERM/KILL escalation is performed only after the cancellation intent is
     /// recorded in the ledger.
-    pub fn cancel_run(&self, run_id: &str, reason: &str) -> Result<(), PantheonError> {
+    /// Phase 1 of cancellation: record intent (RunCanceled event + operation
+    /// cancel requests) without touching any process. Safe to call from a
+    /// request handler thread; it only writes to the ledger.
+    pub fn cancel_run_intent(&self, run_id: &str, reason: &str) -> Result<(), PantheonError> {
         match self.ledger().status(run_id)?.as_deref() {
             Some("canceled") => {
                 self.settle_run_operation_cancellations(run_id, reason)?;
@@ -593,17 +595,32 @@ impl Supervisor {
             Some(_) => {}
             None => return Err(rerr("RT_NO_RUN", format!("no run {run_id} in ledger"))),
         }
-        let owns_lease = self.assert_lease_owned(run_id).is_ok();
         self.ledger().append(&Event::RunCanceled {
             run_id: run_id.into(),
             reason: reason.to_string(),
         })?;
         self.request_run_operation_cancellations(run_id, reason)?;
-        if owns_lease {
+        Ok(())
+    }
+
+    /// Phase 2 of cancellation: terminate process groups owned by this
+    /// supervisor's lease and settle the canceled operations. Blocking (up
+    /// to the TERM grace per group); call from a worker thread.
+    pub fn finish_cancel(&self, run_id: &str, reason: &str) -> Result<(), PantheonError> {
+        if self.assert_lease_owned(run_id).is_ok() {
             self.terminate_owned_process_groups(run_id)?;
-            self.settle_run_operation_cancellations(run_id, "process groups terminated")?;
+            self.settle_run_operation_cancellations(run_id, reason)?;
         }
         Ok(())
+    }
+
+    /// Cancel a run and all process groups registered by its current lease.
+    /// TERM/KILL escalation is performed only after the cancellation intent is
+    /// recorded in the ledger. Blocking form; prefer the two-phase
+    /// `cancel_run_intent` + `finish_cancel` from request handlers.
+    pub fn cancel_run(&self, run_id: &str, reason: &str) -> Result<(), PantheonError> {
+        self.cancel_run_intent(run_id, reason)?;
+        self.finish_cancel(run_id, "process groups terminated")
     }
 
     pub fn explain(&self, run_id: &str) -> Result<String, PantheonError> {
