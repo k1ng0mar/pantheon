@@ -296,6 +296,36 @@ impl RunLeaseStore {
         }
         Ok(lease)
     }
+
+    /// Every unexpired lease. Used by destructive maintenance (reset) to
+    /// refuse deleting state under a live session.
+    pub fn list_active(&self) -> Result<Vec<RunLease>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEASE_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT run_id, lease_id, lease_until_ms, heartbeat_ms
+                 FROM run_leases WHERE lease_until_ms > ?1",
+            )
+            .map_err(|e| err("LEASE_LIST", e.to_string()))?;
+        let rows = stmt
+            .query_map(params![now_ms()], |r| {
+                Ok(RunLease {
+                    run_id: r.get(0)?,
+                    lease_id: r.get(1)?,
+                    lease_until_ms: r.get(2)?,
+                    heartbeat_ms: r.get(3)?,
+                })
+            })
+            .map_err(|e| err("LEASE_LIST", e.to_string()))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| err("LEASE_LIST", e.to_string()))?);
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]

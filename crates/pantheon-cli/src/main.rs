@@ -69,7 +69,13 @@ fn usage() -> String {
         .into()
 }
 mod agui_cli;
+mod config_doc;
+mod config_schema;
+mod doctor_cli;
 mod gateway_cli;
+mod reset_cli;
+mod setup_cli;
+mod setup_entry;
 
 fn load_mgr() -> ExtensionManager {
     let mut m = ExtensionManager::new(RunnerConfig::default());
@@ -305,26 +311,64 @@ fn main() {
                 eprintln!("  --choose: interactive catalog picker (searchable)");
                 std::process::exit(2);
             }
-            // Model policy: default from env or flags. No routing.
+            // Config file (from setup) provides defaults; flags and env win.
+            let file_cfg = config_doc::Config::load(&data_dir()).ok();
+            let cfg_model = file_cfg
+                .as_ref()
+                .and_then(|c| c.model.clone())
+                .map(|m| (Some(m.provider), Some(m.model)));
+            // Model policy: default from flags > env > config > fallback.
             let default = pantheon_core::model::DefaultModel {
                 provider: provider
-                    .or_else(|| std::env::var("PANTHEON_PROVIDER").ok())
+                    .or(cfg_model
+                        .as_ref()
+                        .and_then(|(p, _)| p.clone())
+                        .or_else(|| std::env::var("PANTHEON_PROVIDER").ok()))
                     .unwrap_or_else(|| "local".into()),
                 model: model
-                    .or_else(|| std::env::var("PANTHEON_MODEL").ok())
+                    .or(cfg_model
+                        .as_ref()
+                        .and_then(|(_, m)| m.clone())
+                        .or_else(|| std::env::var("PANTHEON_MODEL").ok()))
                     .unwrap_or_else(|| "llama3.2".into()),
             };
+            let mut chain = pantheon_core::model::FallbackChain::default();
+            if let Some(fallbacks) = file_cfg
+                .as_ref()
+                .and_then(|c| c.model.as_ref())
+                .map(|m| m.fallbacks.clone())
+            {
+                for f in fallbacks {
+                    chain.fallbacks.push(pantheon_core::model::DefaultModel {
+                        provider: f.provider,
+                        model: f.model,
+                    });
+                }
+            }
             let model_policy = pantheon_core::model::ModelPolicy {
                 default,
-                fallbacks: pantheon_core::model::FallbackChain::default(),
+                fallbacks: chain,
                 auxiliaries: vec![],
             };
             let api_key = key
+                .or_else(|| {
+                    // Config names the env var; resolve it at runtime.
+                    file_cfg
+                        .as_ref()
+                        .and_then(|c| c.model.as_ref())
+                        .and_then(|m| m.api_key_env.clone())
+                        .and_then(|env| std::env::var(env).ok())
+                })
                 .or_else(|| std::env::var("PANTHEON_API_KEY").ok())
                 .unwrap_or_default();
-            let allow_memory = std::env::var("PANTHEON_ALLOW_MEMORY")
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or(false);
+            let allow_memory = file_cfg
+                .as_ref()
+                .map(|c| c.policy == Some(config_schema::PolicyPreset::CoderMemory))
+                .unwrap_or_else(|| {
+                    std::env::var("PANTHEON_ALLOW_MEMORY")
+                        .map(|v| v == "1" || v == "true")
+                        .unwrap_or(false)
+                });
             let policy = if allow_memory {
                 pantheon_core::capability::Policy::coder_with_memory()
             } else {
@@ -810,14 +854,20 @@ fn main() {
             }
         }
         "doctor" => {
-            if args.len() < 3 {
-                eprintln!("usage: pantheon doctor <plugin_dir>");
-                std::process::exit(2);
-            }
-            let rep = doctor(std::path::Path::new(&args[2]));
-            println!("{}", serde_json::to_string_pretty(&rep).unwrap());
-            if !rep.ok {
-                std::process::exit(1);
+            if args.len() >= 3 {
+                // Plugin-dir form: keep the original extension doctor.
+                let rep = doctor(std::path::Path::new(&args[2]));
+                println!("{}", serde_json::to_string_pretty(&rep).unwrap());
+                if !rep.ok {
+                    std::process::exit(1);
+                }
+            } else {
+                // System doctor: config, model, ledger, memory, plugins.
+                let rep = doctor_cli::run_system_doctor(&data_dir());
+                println!("{}", serde_json::to_string_pretty(&rep).unwrap());
+                if !rep.ok {
+                    std::process::exit(1);
+                }
             }
         }
         "preview" => {
@@ -1030,6 +1080,12 @@ fn main() {
         }
         "gateway" => {
             gateway_cli::cmd_gateway(&args);
+        }
+        "setup" => {
+            setup_entry::cmd_setup(&args);
+        }
+        "reset" => {
+            reset_cli::cmd_reset(&args);
         }
         "providers" => {
             // List cataloged providers and their models, plus the

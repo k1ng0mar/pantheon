@@ -1015,6 +1015,7 @@ dependencies = [
  "pantheon-memory",
  "pantheon-runtime",
  "pantheon-storage",
+ "serde",
  "serde_json",
  "toml",
 ]

@@ -14,7 +14,6 @@
 
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::Message;
@@ -39,7 +38,7 @@ const EV_RESUMED: &str = "RESUMED";
 
 /// Result of driving the socket until an error or a reconnect signal.
 #[derive(Debug, PartialEq, Eq)]
-enum LoopExit {
+pub enum LoopExit {
     /// Socket died; reconnect (with resume data if any).
     Reconnect,
     /// Invalid session: drop resume data, back off, re-IDENTIFY.
@@ -50,7 +49,7 @@ enum LoopExit {
 
 /// One gateway connection's state. `seq` is the last dispatched sequence
 /// number, needed for RESUME after a reconnect.
-struct GatewayState {
+pub struct GatewayState {
     seq: AtomicI64,
     session_id: Mutex2<Option<String>>,
     resume_gateway_url: Mutex2<Option<String>>,
@@ -149,7 +148,6 @@ impl DiscordGateway {
         let mut heartbeat_interval = Duration::from_secs(41); // default; HELLO overrides
         let mut last_heartbeat = std::time::Instant::now();
         let mut acked = true;
-        let mut identified = false;
 
         loop {
             if stop() {
@@ -179,12 +177,8 @@ impl DiscordGateway {
                         .set_read_timeout(Some(Duration::from_millis(500)))
                         .ok();
                 }
-                #[cfg(feature = "native-tls")]
-                tungstenite::stream::MaybeTlsStream::NativeTls(s) => {
-                    s.get_ref()
-                        .set_read_timeout(Some(Duration::from_millis(500)))
-                        .ok();
-                }
+                #[cfg(any())] // native-tls feature not enabled in this build
+                tungstenite::stream::MaybeTlsStream::NativeTls(_) => {}
                 #[allow(unreachable_patterns)]
                 _ => {}
             }
@@ -226,7 +220,6 @@ impl DiscordGateway {
                     let hello = if state.can_resume() {
                         self.resume(state)
                     } else {
-                        identified = true;
                         self.identify()
                     };
                     if socket
