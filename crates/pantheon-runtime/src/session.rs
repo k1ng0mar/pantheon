@@ -394,7 +394,14 @@ impl Session {
             // Hook: pre_llm_call. Extensions may inject context (fail-open:
             // a broken hook never blocks the turn). Emitted per fresh run.
             let mgr = load_mgr();
-            let hook_ctx = mgr.fire(pantheon_extensions::Hook::PreLlmCall, run_id, "cli");
+            let hook_ctx = mgr.fire(
+                pantheon_extensions::Hook::PreLlmCall,
+                run_id,
+                "cli",
+                [("message".to_string(), user_message.to_string())]
+                    .into_iter()
+                    .collect(),
+            );
             if let Some(ctx) = hook_ctx {
                 if !ctx.is_empty() {
                     messages.push(Message::system(format!(
@@ -505,6 +512,18 @@ impl Session {
         // whole chain runs against the fixture — deterministic evals, zero
         // network. Unset = real HTTP transport.
         let mock_file = std::env::var("PANTHEON_MOCK_FILE").ok();
+        if mock_file.is_none() && self.model_policy.default.provider == "mock" {
+            return Err(PantheonError::new(
+                "MOCK_PROVIDER_UNCONFIGURED",
+                Layer::Provider,
+                false,
+                "provider \"mock\" requires PANTHEON_MOCK_FILE pointing at a fixture JSON"
+                    .to_string(),
+                "set PANTHEON_MOCK_FILE=<fixture.json> (see eval/cases.json for the shape)"
+                    .to_string(),
+                "",
+            ));
+        }
         let transport: Box<dyn pantheon_providers::ChatTransport> = if let Some(f) = mock_file {
             Box::new(
                 pantheon_providers::MockTransport::from_file(std::path::Path::new(&f)).map_err(

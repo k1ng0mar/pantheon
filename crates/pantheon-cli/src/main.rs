@@ -69,6 +69,7 @@ fn usage() -> String {
         .into()
 }
 mod agui_cli;
+mod cli_args;
 mod config_doc;
 mod config_schema;
 mod doctor_cli;
@@ -126,7 +127,7 @@ fn write_seen(keys: &HashSet<(String, String, String)>) {
 fn cli_fire(hook: Hook, session: &str, platform: &str) -> Option<String> {
     let mgr = load_mgr();
     mgr.preseed_seen(read_seen());
-    let out = mgr.fire(hook, session, platform);
+    let out = mgr.fire(hook, session, platform, Default::default());
     write_seen(&mgr.seen_snapshot());
     out
 }
@@ -714,7 +715,7 @@ fn main() {
             if with_ext {
                 let mgr = load_mgr();
                 mgr.preseed_seen(read_seen());
-                let fired = mgr.fire(Hook::PreLlmCall, &run_id, &platform);
+                let fired = mgr.fire(Hook::PreLlmCall, &run_id, &platform, Default::default());
                 write_seen(&mgr.seen_snapshot());
                 if let Some(ctx) = fired {
                     sup.emit(Event::RunProgress {

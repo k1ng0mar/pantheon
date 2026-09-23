@@ -164,13 +164,42 @@ impl ChannelDaemon {
                     progressed = true;
                 }
             }
-            // Flush outbound messages in order.
+            // Deliver outbound messages. The thread id is the channel
+            // address (Discord channel id / Telegram chat id), so the
+            // first bound channel is authoritative; multi-surface routing
+            // needs the per-thread map plumbed in by the caller.
             {
                 let mut out = outbound.lock().unwrap_or_else(|e| e.into_inner());
                 for msg in out.drain(..) {
-                    // Delivery planning (backoff/drop) is the caller's job;
-                    // the daemon only guarantees ordering.
-                    let _ = &msg;
+                    let delivered = channels.first().cloned();
+                    match delivered {
+                        Some(channel) => {
+                            let envelope = crate::channel::ChannelEnvelope {
+                                thread_id: msg.to_conversation.clone(),
+                                frame: crate::stream::UiFrame {
+                                    id: 0,
+                                    kind: crate::stream::UiFrameKind::Text,
+                                    run_id: String::new(),
+                                    thread_id: msg.to_conversation.clone(),
+                                    name: "delta".into(),
+                                    text: msg.text.clone(),
+                                    interrupt: false,
+                                    genui: None,
+                                },
+                            };
+                            if let Err(e) = channel.send(envelope) {
+                                eprintln!("daemon: deliver to {} failed: {e}", channel.name());
+                            } else {
+                                progressed = true;
+                            }
+                        }
+                        None => {
+                            eprintln!(
+                                "daemon: no channel bound for thread {}; message dropped",
+                                msg.to_conversation
+                            );
+                        }
+                    }
                 }
             }
             if progressed {

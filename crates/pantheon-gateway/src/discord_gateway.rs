@@ -153,8 +153,14 @@ impl DiscordGateway {
             if stop() {
                 return LoopExit::Stopped;
             }
-            // Heartbeat when due (only after HELLO set the interval).
-            if last_heartbeat.elapsed() >= heartbeat_interval && acked {
+            // Heartbeat when due (only after HELLO set the interval). A
+            // missed ACK escalates to reconnect: Discord tears down
+            // zombied connections after ~2 missed acks; we reconnect on
+            // the first one rather than trust a half-dead socket.
+            if last_heartbeat.elapsed() >= heartbeat_interval {
+                if !acked {
+                    return LoopExit::Reconnect;
+                }
                 let payload = json!({"op": OP_HEARTBEAT, "d": state.last_seq()});
                 if socket
                     .send(Message::Text(payload.to_string().into()))

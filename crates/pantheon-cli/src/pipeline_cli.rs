@@ -109,12 +109,14 @@ fn open_session(
 }
 
 pub fn cmd_pipeline(args: &[String]) {
-    // args[2] is a positional run id only when it is not a flag.
-    let positional = args.get(2).filter(|a| !a.starts_with("--")).cloned();
-    let run_id = positional.unwrap_or_else(|| format!("pipe-{}", pantheon_runtime::new_run_id()));
-    let approve = flag_of(args, "--approve");
-    let deny = flag_of(args, "--deny");
-    let spec = flag_of(args, "--spec");
+    let parsed = crate::cli_args::Args::parse(&args[2.min(args.len())..]);
+    // First positional (if any) is the run id.
+    let run_id = parsed
+        .positional(0)
+        .unwrap_or_else(|| format!("pipe-{}", pantheon_runtime::new_run_id()));
+    let approve = parsed.flag("approve");
+    let deny = parsed.flag("deny");
+    let spec = parsed.flag("spec");
 
     let data_dir = crate::data_dir();
     let sup = Supervisor::open(data_dir.clone()).unwrap_or_else(|e| {
@@ -210,6 +212,7 @@ pub fn cmd_pipeline(args: &[String]) {
         }
         Err(e) => match e.code.as_str() {
             "PIPELINE_GATE" => {
+                println!("run id: {run_id}");
                 println!("pipeline parked: {e}");
                 println!("approve with: pantheon pipeline {run_id} --approve <stage>");
                 println!("deny with:    pantheon pipeline {run_id} --deny <stage>");
@@ -223,15 +226,4 @@ pub fn cmd_pipeline(args: &[String]) {
             }
         },
     }
-}
-
-fn flag_of(args: &[String], name: &str) -> Option<String> {
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == name {
-            return args.get(i + 1).cloned();
-        }
-        i += 1;
-    }
-    None
 }

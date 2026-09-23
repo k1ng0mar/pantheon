@@ -249,10 +249,17 @@ fn route_is(path: &str, route: &str) -> bool {
     path == route || path.starts_with(&format!("{route}?"))
 }
 
+/// Request-body cap. JSON-RPC payloads and artifact uploads are small; a
+/// bigger Content-Length is rejected before allocation (413).
+const MAX_BODY: usize = 1024 * 1024;
+
 fn handle_one(stream: TcpStream, cfg: ServeConfig) {
     let mut s = stream;
     let (method, path, headers, body) = {
-        let mut reader = BufReader::new(s.try_clone().unwrap());
+        let mut reader = match s.try_clone() {
+            Ok(r) => BufReader::new(r),
+            Err(_) => return, // fd exhaustion or closed socket: nothing to serve
+        };
         let mut request_line = String::new();
         if reader.read_line(&mut request_line).is_err() {
             return;
@@ -280,7 +287,16 @@ fn handle_one(stream: TcpStream, cfg: ServeConfig) {
                 headers.insert(k, v);
             }
         }
-        let mut body = vec![0u8; content_len];
+        let mut body = vec![0u8; content_len.min(MAX_BODY)];
+        if content_len > MAX_BODY {
+            respond(
+                &mut s,
+                413,
+                "application/json",
+                br#"{"error":"request body too large"}"#,
+            );
+            return;
+        }
         if content_len > 0 && reader.read_exact(&mut body).is_err() {
             return;
         }

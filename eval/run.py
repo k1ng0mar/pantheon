@@ -205,6 +205,11 @@ def run_case(case, bin_path, py3):
                 ok, detail = audit_check(path)
                 code = 0 if ok else 1
                 stdout, stderr = detail, "" if ok else detail
+            elif cmd and cmd[0] == "_break_config":
+                # Probe: corrupt the sandbox config to exercise failure paths.
+                path = sandbox / "data" / "config.toml"
+                path.write_text(cmd[1])
+                code, stdout, stderr = 0, "config broken", ""
             else:
                 argv = [str(bin_path)] + [resolve(a, sandbox) for a in cmd]
                 code, stdout, stderr = run_cmd(argv, env)

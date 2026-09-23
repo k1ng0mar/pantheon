@@ -272,6 +272,74 @@
         "plugins-list-reports-empty": ["no plugins installed"]
       },
       "post": []
+    },
+    {
+      "id": "setup-writes-complete-config",
+      "title": "pantheon setup --yes writes a config.toml that doctor validates",
+      "origin": "phase10: onboarding",
+      "commands": [
+        ["setup", "--yes", "--profile", "eval", "--provider", "local", "--model", "llama3.2"]
+      ],
+      "expect": {
+        "setup-writes-complete-config": ["config written"]
+      },
+      "post": [
+        ["doctor", "contains:\"ok\": true"]
+      ]
+    },
+    {
+      "id": "doctor-system-form-fails-without-config",
+      "title": "System doctor reports a config failure with a setup hint on a fresh dir",
+      "origin": "phase10: system doctor",
+      "commands": [
+        ["doctor"]
+      ],
+      "expect": {
+        "doctor-system-form-fails-without-config": [
+          "\"section\": \"config\"",
+          "\"status\": \"fail\""
+        ]
+      },
+      "expect_fail": [0],
+      "post": []
+    },
+    {
+      "id": "setup-reset-roundtrip",
+      "title": "setup then reset --state keeps the config but removes the ledger",
+      "origin": "phase10: scoped reset",
+      "commands": [
+        ["setup", "--yes", "--provider", "local", "--model", "llama3.2"],
+        ["run", "--id", "eval-reset-run", "--say", "state maker"],
+        ["reset", "--state", "--yes"]
+      ],
+      "expect": {
+        "setup-reset-roundtrip": ["ANY"],
+        "setup-reset-roundtrip__1": ["eval-reset-run"],
+        "setup-reset-roundtrip__2": ["deleted"]
+      },
+      "post": [
+        ["status", "eval-reset-run", "contains:unknown"]
+      ]
+    },
+    {
+      "id": "config-invalid-toml-is-reported-loudly",
+      "title": "A broken config.toml fails doctor with the file path and a setup hint",
+      "origin": "phase10: config validation",
+      "commands": [
+        ["setup", "--yes", "--provider", "local", "--model", "llama3.2"],
+        ["_break_config", "not toml at all [[["],
+        ["doctor"]
+      ],
+      "expect": {
+        "config-invalid-toml-is-reported-loudly": ["ANY"],
+        "config-invalid-toml-is-reported-loudly__1": ["ANY"],
+        "config-invalid-toml-is-reported-loudly__2": [
+          "TOML parse error",
+          "run `pantheon setup`"
+        ]
+      },
+      "expect_fail": [2],
+      "post": []
     }
   ]
 }
