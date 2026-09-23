@@ -18,8 +18,7 @@ api_key_env = "OPENAI_API_KEY"   # env var NAME; the value never lands here
 provider = "local"
 model = "llama3.2"
 
-[policy]
-policy = "coder"             # reader | coder | coder_memory
+policy = "coder"             # reader | coder | coder_memory  (top-level key)
 
 [memory]
 backend = "native"           # native | http (options below)
@@ -85,20 +84,13 @@ order.
 
 ## Memory backend selection
 
-`native` is the bundled SQLite store; it has no options. The `http`
-backend points at a remote memory service:
-
-```toml
-[memory]
-backend = "http"
-[memory.options]
-url = "http://127.0.0.1:9200"
-```
-
-`pantheon memory backend list` shows what the current build knows. The
-selected backend is also mirrored in `memory-backend.toml` because that
-file predates config.toml and is still read first by the memory verbs;
-setup keeps the two in sync.
+`native` is the bundled SQLite store; it has no options. Backends are
+registered in a registry (`pantheon-memory/src/backend.rs`); the http
+kind is defined but no HTTP memory backend is constructed by the CLI
+today, so `native` is the practical choice. `pantheon memory backend
+list` shows what the running build actually registered. The selected
+backend is mirrored in `memory-backend.toml` because that file is what
+the memory verbs read; setup keeps the two in sync.
 
 ## Validation
 

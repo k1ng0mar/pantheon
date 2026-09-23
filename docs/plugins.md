@@ -20,11 +20,15 @@ version: "1.0.0"
 provides_hooks:            # which hooks this plugin implements
   - pre_llm_call
 # optional:
-timeout_ms: 10000          # hook timeout (default 10000)
 once_per_session: true     # fire once per session id, not every turn
 ```
 
-Both Hermes manifest spellings load. Canonical is `provides_hooks`.
+Both Hermes manifest spellings load (`provides_hooks` and `hooks`).
+Canonical is `provides_hooks`.
+
+Hook timeout is global (`RunnerConfig`, default 10 seconds), not
+per-manifest. Plugins that need longer than 10s per call should do their
+work asynchronously and answer immediately.
 
 ## Hooks
 

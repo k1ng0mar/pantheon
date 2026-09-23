@@ -10,7 +10,7 @@ what to do.
 |---|---|---|
 | `PROVIDER_EXHAUSTED` | Default and all fallbacks failed | Check the first failure's cause above it in the log; usually key, base URL, or network |
 | `MOCK_PROVIDER_UNCONFIGURED` | `--provider mock` without `PANTHEON_MOCK_FILE` | Point `PANTHEON_MOCK_FILE` at a fixture JSON (shape in eval/cases.json) |
-| `MOCK_MISMATCH` | Fixture has no response matching the turn | Add a `{"match": "...", "content": "..."}` entry |
+| `MOCK_EXHAUSTED` | Fixture has no response matching the turn | Add a `{"match": "...", "content": "..."}` entry |
 | `MODEL_HTTP_*` | Transport error from the provider | The cause names the HTTP status; 401/403 = key, 429 = quota, 5xx = provider side |
 
 ## Run lifecycle
@@ -42,7 +42,6 @@ what to do.
 | `PLUGIN_TIMEOUT` | Plugin missed the per-call deadline | The group was killed; fix the plugin's latency or raise timeout_ms |
 | `PLUGIN_DEAD` / `PLUGIN_EOF` | Plugin process died or closed stdout | Run it manually to see the crash |
 | `PLUGIN_PROTOCOL` | Invalid JSON or wrong call_id | Plugin's stdio contract is broken; one JSON line in/out |
-| `TOOL_ARGS_TOO_LARGE` | (planned) oversized arguments | Reserved by the args-size cap decision |
 
 ## Files and storage
 
