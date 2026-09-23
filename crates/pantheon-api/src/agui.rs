@@ -201,16 +201,35 @@ impl MethodHandler for Cancel {
         let run_id = p
             .get("run_id")
             .and_then(|x| x.as_str())
-            .ok_or_else(|| RpcError::invalid_params("field \"run_id\" is required"))?;
+            .ok_or_else(|| RpcError::invalid_params("field \"run_id\" is required"))?
+            .to_string();
         let reason = p
             .get("reason")
             .and_then(|x| x.as_str())
-            .unwrap_or("user requested cancel");
+            .unwrap_or("user requested cancel")
+            .to_string();
         let dir = self.data_dir.clone();
-        sup_for(&dir)?
-            .cancel_run(run_id, reason)
+        let sup = sup_for(&dir)?;
+        // Phase 1: record cancellation intent synchronously so the run
+        // stops taking new work immediately. This is fast (ledger writes).
+        sup.cancel_run_intent(&run_id, &reason)
             .map_err(|e| RpcError::internal(e.to_string()))?;
-        Ok(json!({"run_id": run_id, "canceled": true}))
+        // Phase 2: process-group TERM/KILL can block up to the grace period
+        // per group, so it runs off the HTTP thread. The heartbeat in the
+        // lease guard also watches for the canceled status.
+        let worker_run = run_id.clone();
+        let worker_reason = reason.clone();
+        let worker = std::thread::spawn(move || {
+            let _ = sup.finish_cancel(&worker_run, &worker_reason);
+        });
+        // Do not wait for termination: the RPC replies the moment intent is
+        // durable. Join detached-style; a stuck TERM escalates to KILL.
+        std::mem::forget(worker);
+        Ok(json!({
+            "run_id": run_id,
+            "canceled": true,
+            "terminating": true
+        }))
     }
 }
 

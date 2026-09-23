@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 pub mod allowlist;
 pub mod canonical;
 pub mod channel;
+pub mod daemon;
 pub mod dedup;
 pub mod delivery;
 pub mod discord;
@@ -25,6 +26,7 @@ pub use channel::{
     chunk_text, fanout, format_text, ApprovalButtons, Channel, ChannelEnvelope, ChannelError,
     ChannelEvent, MemoryChannel, ThreadRunMap,
 };
+pub use daemon::{poll_telegram_once, route_event, ChannelDaemon, EventSink, UpdateCursor};
 pub use dedup::{dedup_key, DedupWindow};
 pub use delivery::{backoff_ms, plan_delivery, DeliveryOutcome, Outbox};
 pub use discord::{
