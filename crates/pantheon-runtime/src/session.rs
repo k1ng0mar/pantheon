@@ -246,9 +246,19 @@ impl Session {
             }
             if !recall_block.is_empty() {
                 messages.push(Message::system(format!(
-                    "<memory_recall>
-{recall_block}</memory_recall>"
+                    "<memory_recall>\n{recall_block}</memory_recall>"
                 )));
+            }
+            // Hook: pre_llm_call. Extensions may inject context (fail-open:
+            // a broken hook never blocks the turn). Emitted per fresh run.
+            let mgr = load_mgr();
+            let hook_ctx = mgr.fire(pantheon_extensions::Hook::PreLlmCall, run_id, "cli");
+            if let Some(ctx) = hook_ctx {
+                if !ctx.is_empty() {
+                    messages.push(Message::system(format!(
+                        "<extension_context>\n{ctx}</extension_context>"
+                    )));
+                }
             }
             messages.push(Message::user(user_message));
             self.supervisor.emit(Event::AssistantMessage {
@@ -266,6 +276,13 @@ impl Session {
             },
         );
         register_safewrite(&mut reg, safewrite_dir);
+        // Skill tools: SKILL.md capabilities from both scopes, gated on
+        // FilesystemRead. Empty skill list registers nothing.
+        let skill_list = pantheon_exec::skills::discover_skills(
+            &self.supervisor.data_dir(),
+            &std::env::current_dir().unwrap_or_else(|_| self.supervisor.data_dir().clone()),
+        );
+        pantheon_exec::skills::register_skill_tools(&mut reg, skill_list);
         if let Some(mem) = self.memory.clone() {
             let mem_sink = LedgerMemorySink {
                 sup: Arc::new(self.supervisor.clone()),
@@ -654,6 +671,22 @@ impl Session {
 
 fn aerr(code: &str, cause: String) -> PantheonError {
     PantheonError::new(code, Layer::Agent, false, cause, "see ledger status", "")
+}
+
+/// Load extension plugins from the default extension dir. Fail-open:
+/// a missing or unreadable dir means zero plugins, never an error.
+fn load_mgr() -> pantheon_extensions::ExtensionManager {
+    let mut mgr =
+        pantheon_extensions::ExtensionManager::new(pantheon_extensions::RunnerConfig::default());
+    let dir = std::env::var("PANTHEON_EXT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::var("PANTHEON_DATA_DIR")
+                .map(|d| std::path::PathBuf::from(d).join("extensions"))
+                .unwrap_or_else(|_| std::path::PathBuf::from(".pantheon-extensions"))
+        });
+    let _ = mgr.load_dir(&dir);
+    mgr
 }
 
 /// Rebuild the canonical transcript from persisted message events.
