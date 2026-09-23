@@ -40,9 +40,6 @@ fn open_session(
 }
 
 impl RuntimeSink {
-    fn frame_to_text(frame: &pantheon_gateway::UiFrame) -> String {
-        pantheon_gateway::format_text(frame)
-    }
     fn push_outbound(&self, thread: &str, text: String) {
         self.outbound
             .lock()
