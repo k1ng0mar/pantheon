@@ -49,6 +49,9 @@ pub fn frame_for_event(
         }
         Event::RunCompleted { .. } => vec![mk(UiFrameKind::Run, "completed", String::new(), false)],
         Event::RunFailed { code, .. } => vec![mk(UiFrameKind::Run, "failed", code.clone(), false)],
+        Event::RunCanceled { reason, .. } => {
+            vec![mk(UiFrameKind::Run, "canceled", reason.clone(), false)]
+        }
         Event::RunRecovered { .. } => vec![mk(UiFrameKind::Run, "recovered", String::new(), false)],
         Event::ModelDelta { delta, .. } => {
             vec![mk(UiFrameKind::Text, "delta", delta.clone(), false)]
@@ -97,6 +100,9 @@ pub fn frame_for_event(
         }
         Event::ApprovalGranted { scope, .. } => {
             vec![mk(UiFrameKind::Approval, "granted", scope.clone(), false)]
+        }
+        Event::ApprovalDenied { scope, .. } => {
+            vec![mk(UiFrameKind::Approval, "denied", scope.clone(), false)]
         }
         _ => vec![],
     }

@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(store.prune_before(now - 1000).unwrap(), 0);
         assert_eq!(store.len().unwrap(), 2);
         // A cutoff ahead of now evicts everything claimed before it.
-        assert_eq!(store.prune_before(now + 1).unwrap(), 2);
+        assert_eq!(store.prune_before(now + 1_000).unwrap(), 2);
         assert_eq!(store.len().unwrap(), 0);
         assert_eq!(store.names().unwrap(), Vec::<String>::new());
     }

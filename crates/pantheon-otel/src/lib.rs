@@ -52,6 +52,9 @@ pub fn span_for(ev: &Event) -> Option<SpanRecord> {
         Event::RunFailed { run_id, code } => {
             mk(run_id, format!("run:{code}"), SpanKind::Run, "error")
         }
+        Event::RunCanceled { run_id, .. } => {
+            mk(run_id, "run:canceled".into(), SpanKind::Run, "canceled")
+        }
         Event::ToolStarted { run_id, tool, .. } => {
             mk(run_id, format!("tool:{tool}"), SpanKind::Tool, "started")
         }
@@ -79,6 +82,12 @@ pub fn span_for(ev: &Event) -> Option<SpanRecord> {
             format!("approval:{scope}"),
             SpanKind::Approval,
             "granted",
+        ),
+        Event::ApprovalDenied { run_id, scope } => mk(
+            run_id,
+            format!("approval:{scope}"),
+            SpanKind::Approval,
+            "denied",
         ),
         Event::MemoryProposed { run_id } => mk(
             run_id,

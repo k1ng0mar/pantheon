@@ -1,7 +1,7 @@
 //! AG-UI CLI verbs: serve / stream / grant / deny / sign. Thin surface over
 //! pantheon-api + pantheon-gateway; no business logic here.
 use super::{data_dir, ext_dir};
-use pantheon_gateway::{GenUiSigner, SseEncoder};
+use pantheon_gateway::{valid_task_id, GenUiSigner, SseEncoder};
 use std::path::PathBuf;
 fn flag(args: &[String], name: &str) -> Option<String> {
     let mut i = 0;
@@ -76,12 +76,42 @@ pub fn cmd_deny(args: &[String]) {
         eprintln!("usage: pantheon deny <run_id> [scope]");
         std::process::exit(2);
     }
-    let scope = args.get(3).cloned().unwrap_or_default();
     let sup = pantheon_runtime::Supervisor::open(data_dir()).unwrap_or_else(|e| {
         eprintln!("open runtime: {e}");
         std::process::exit(1);
     });
-    match sup.fail(&args[2], &format!("APPROVAL_DENIED:{scope}")) {
+    let scope = if let Some(scope) = args.get(3) {
+        scope.clone()
+    } else {
+        let entries = sup.replay(&args[2]).unwrap_or_else(|e| {
+            eprintln!("replay: {e}");
+            std::process::exit(1);
+        });
+        let resolved: std::collections::HashSet<String> = entries
+            .iter()
+            .filter_map(|entry| match &entry.event {
+                pantheon_core::events::Event::ApprovalGranted { scope, .. }
+                | pantheon_core::events::Event::ApprovalDenied { scope, .. } => Some(scope.clone()),
+                _ => None,
+            })
+            .collect();
+        entries
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.event {
+                pantheon_core::events::Event::ApprovalRequested { scope, .. }
+                    if !resolved.contains(scope) =>
+                {
+                    Some(scope.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                eprintln!("deny: no pending approval scope; pass one explicitly");
+                std::process::exit(1);
+            })
+    };
+    match sup.deny(&args[2], &scope) {
         Ok(()) => println!("denied {}", args[2]),
         Err(e) => {
             eprintln!("deny: {e}");
@@ -95,7 +125,7 @@ pub fn cmd_sign(args: &[String]) {
         std::process::exit(2);
     }
     let task = &args[2];
-    if task.contains('/') || task.contains('.') || task.is_empty() {
+    if !valid_task_id(task) {
         eprintln!("sign: bad task_id");
         std::process::exit(2);
     }
@@ -103,6 +133,10 @@ pub fn cmd_sign(args: &[String]) {
     let ttl: i64 = flag(args, "--ttl")
         .and_then(|v| v.parse().ok())
         .unwrap_or(3600_000);
+    if ttl <= 0 {
+        eprintln!("sign: ttl_ms must be positive");
+        std::process::exit(2);
+    }
     let base = std::env::var("PANTHEON_GENUI_BASE")
         .unwrap_or_else(|_| "http://127.0.0.1:18789/agui/blob".into());
     let secret = std::env::var("PANTHEON_GENUI_SECRET")

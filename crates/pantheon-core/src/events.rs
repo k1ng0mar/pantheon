@@ -21,6 +21,12 @@ pub enum Event {
         run_id: String,
         code: String,
     },
+    /// Cancellation is terminal but distinct from failure: a user requested
+    /// it, so replay and metrics can tell the two apart.
+    RunCanceled {
+        run_id: String,
+        reason: String,
+    },
     RunRecovered {
         run_id: String,
     },
@@ -88,6 +94,12 @@ pub enum Event {
         scope: String,
     },
     ApprovalGranted {
+        run_id: String,
+        scope: String,
+    },
+    /// A denial is scoped to one approval request. It must not turn the
+    /// entire run into a failed run; another tool call may still proceed.
+    ApprovalDenied {
         run_id: String,
         scope: String,
     },

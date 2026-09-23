@@ -2,10 +2,11 @@
 //! `/explain run_X` replays them. History is append-only.
 use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::events::Event;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 
 /// One persisted row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +30,18 @@ pub struct Artifact {
 
 pub struct Ledger {
     conn: Mutex<Connection>,
+}
+
+fn valid_artifact_id(task_id: &str) -> bool {
+    !task_id.is_empty()
+        && task_id.len() <= 128
+        && task_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+}
+
+fn valid_mime(mime: &str) -> bool {
+    !mime.is_empty() && mime.len() <= 256 && mime.bytes().all(|b| b >= 0x20 && b != 0x7f)
 }
 
 fn now_ms() -> i64 {
@@ -109,6 +122,38 @@ CREATE TABLE IF NOT EXISTS run_process_groups (
   PRIMARY KEY (run_id, pgid)
 );";
 
+fn has_pending_approval(
+    conn: &Connection,
+    run_id: &str,
+    resolved_scope: Option<&str>,
+) -> Result<bool, PantheonError> {
+    let mut stmt = conn
+        .prepare("SELECT event_json FROM events WHERE run_id=?1 ORDER BY id")
+        .map_err(|e| err("LEDGER_APPROVAL", e.to_string()))?;
+    let rows = stmt
+        .query_map(params![run_id], |r| r.get::<_, String>(0))
+        .map_err(|e| err("LEDGER_APPROVAL", e.to_string()))?;
+    let mut requested = std::collections::HashSet::new();
+    let mut resolved = std::collections::HashSet::new();
+    for row in rows {
+        let raw = row.map_err(|e| err("LEDGER_APPROVAL", e.to_string()))?;
+        let event: Event =
+            serde_json::from_str(&raw).map_err(|e| err("LEDGER_APPROVAL", e.to_string()))?;
+        match event {
+            Event::ApprovalRequested { scope, .. } => {
+                requested.insert(scope);
+            }
+            Event::ApprovalGranted { scope, .. } | Event::ApprovalDenied { scope, .. } => {
+                resolved.insert(scope);
+            }
+            _ => {}
+        }
+    }
+    Ok(requested
+        .iter()
+        .any(|scope| Some(scope.as_str()) != resolved_scope && !resolved.contains(scope)))
+}
+
 impl Ledger {
     pub fn open(path: &Path) -> Result<Self, PantheonError> {
         if let Some(parent) = path.parent() {
@@ -117,6 +162,8 @@ impl Ledger {
             }
         }
         let conn = Connection::open(path).map_err(|e| err("LEDGER_OPEN", e.to_string()))?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .map_err(|e| err("LEDGER_BUSY_TIMEOUT", e.to_string()))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| err("LEDGER_SCHEMA", e.to_string()))?;
         Ok(Self {
@@ -125,6 +172,8 @@ impl Ledger {
     }
     pub fn open_in_memory() -> Result<Self, PantheonError> {
         let conn = Connection::open_in_memory().map_err(|e| err("LEDGER_OPEN", e.to_string()))?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .map_err(|e| err("LEDGER_BUSY_TIMEOUT", e.to_string()))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| err("LEDGER_SCHEMA", e.to_string()))?;
         Ok(Self {
@@ -135,10 +184,13 @@ impl Ledger {
         let run_id = run_id_of(event).to_string();
         let json = serde_json::to_string(event).map_err(|e| err("LEDGER_SER", e.to_string()))?;
         let ts = now_ms();
-        let conn = self
+        let mut raw_conn = self
             .conn
             .lock()
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let conn = raw_conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| err("LEDGER_APPEND", e.to_string()))?;
         if matches!(event, Event::RunStarted { .. }) {
             conn.execute(
                 "INSERT OR IGNORE INTO runs (run_id, created_ms, status) VALUES (?1, ?2, 'running')",
@@ -147,21 +199,21 @@ impl Ledger {
         }
         if matches!(event, Event::RunFailed { .. }) {
             conn.execute(
-                "UPDATE runs SET status = 'failed' WHERE run_id = ?1",
+                "UPDATE runs SET status = 'failed' WHERE run_id = ?1 AND status NOT IN ('completed','failed','canceled')",
                 params![run_id],
             )
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
         }
         if matches!(event, Event::RunCanceled { .. }) {
             conn.execute(
-                "UPDATE runs SET status = 'canceled' WHERE run_id = ?1",
+                "UPDATE runs SET status = 'canceled' WHERE run_id = ?1 AND status NOT IN ('completed','failed','canceled')",
                 params![run_id],
             )
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
         }
         if matches!(event, Event::ApprovalRequested { .. }) {
             conn.execute(
-                "UPDATE runs SET status = 'awaiting_approval' WHERE run_id = ?1",
+                "UPDATE runs SET status = 'awaiting_approval' WHERE run_id = ?1 AND status NOT IN ('completed','failed','canceled')",
                 params![run_id],
             )
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
@@ -170,15 +222,26 @@ impl Ledger {
             event,
             Event::ApprovalGranted { .. } | Event::ApprovalDenied { .. }
         ) {
+            let resolved_scope = match event {
+                Event::ApprovalGranted { scope, .. } | Event::ApprovalDenied { scope, .. } => {
+                    Some(scope.as_str())
+                }
+                _ => None,
+            };
+            let status = if has_pending_approval(&conn, &run_id, resolved_scope)? {
+                "awaiting_approval"
+            } else {
+                "running"
+            };
             conn.execute(
-                "UPDATE runs SET status = 'running' WHERE run_id = ?1",
-                params![run_id],
+                "UPDATE runs SET status = ?2 WHERE run_id = ?1 AND status NOT IN ('completed','failed','canceled')",
+                params![run_id, status],
             )
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
         }
         if matches!(event, Event::RunCompleted { .. }) {
             conn.execute(
-                "UPDATE runs SET status = 'completed' WHERE run_id = ?1",
+                "UPDATE runs SET status = 'completed' WHERE run_id = ?1 AND status NOT IN ('completed','failed','canceled')",
                 params![run_id],
             )
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
@@ -189,6 +252,8 @@ impl Ledger {
         )
         .map_err(|e| err("LEDGER_APPEND", e.to_string()))?;
         let id: i64 = conn.last_insert_rowid();
+        conn.commit()
+            .map_err(|e| err("LEDGER_APPEND", e.to_string()))?;
         Ok(LedgerEntry {
             id,
             run_id,
@@ -259,14 +324,16 @@ impl Ledger {
         mime: &str,
         bytes: &[u8],
     ) -> Result<Artifact, PantheonError> {
-        if task_id.is_empty()
-            || task_id.contains('/')
-            || task_id.contains('\\')
-            || task_id.contains('.')
-        {
+        if !valid_artifact_id(task_id) {
             return Err(err(
                 "ARTIFACT_ID",
                 "artifact task id is not a safe path component".into(),
+            ));
+        }
+        if !valid_mime(mime) {
+            return Err(err(
+                "ARTIFACT_MIME",
+                "artifact mime type contains invalid header characters".into(),
             ));
         }
         let conn = self
@@ -359,6 +426,24 @@ impl Ledger {
         conn.execute(
             "DELETE FROM run_process_groups WHERE run_id=?1 AND pgid=?2",
             params![run_id, pgid],
+        )
+        .map_err(|e| err("LEDGER_PGID", e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn unregister_process_group_owned(
+        &self,
+        run_id: &str,
+        pgid: i32,
+        lease_id: &str,
+    ) -> Result<(), PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.execute(
+            "DELETE FROM run_process_groups WHERE run_id=?1 AND pgid=?2 AND lease_id=?3",
+            params![run_id, pgid, lease_id],
         )
         .map_err(|e| err("LEDGER_PGID", e.to_string()))?;
         Ok(())
@@ -463,6 +548,53 @@ fn describe(ev: &Event) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn artifacts_are_stored_in_the_ledger_database() {
+        let ledger = Ledger::open_in_memory().unwrap();
+        ledger
+            .put_artifact("task-1", "image/png", &[1, 2, 3])
+            .unwrap();
+        let a = ledger.artifact("task-1").unwrap().unwrap();
+        assert_eq!(a.mime, "image/png");
+        assert_eq!(a.bytes, vec![1, 2, 3]);
+        assert!(ledger.artifact("task-2").unwrap().is_none());
+        assert_eq!(
+            ledger
+                .put_artifact("bad", "text/plain\r\nX-Test: yes", b"x")
+                .unwrap_err()
+                .code,
+            "ARTIFACT_MIME"
+        );
+        assert_eq!(
+            ledger
+                .put_artifact("bad/id", "text/plain", b"x")
+                .unwrap_err()
+                .code,
+            "ARTIFACT_ID"
+        );
+    }
+
+    #[test]
+    fn terminal_run_status_cannot_be_overwritten() {
+        let ledger = Ledger::open_in_memory().unwrap();
+        ledger
+            .append(&Event::RunStarted { run_id: "r".into() })
+            .unwrap();
+        ledger
+            .append(&Event::RunCanceled {
+                run_id: "r".into(),
+                reason: "stop".into(),
+            })
+            .unwrap();
+        ledger
+            .append(&Event::RunFailed {
+                run_id: "r".into(),
+                code: "late".into(),
+            })
+            .unwrap();
+        assert_eq!(ledger.status("r").unwrap().as_deref(), Some("canceled"));
+    }
+
     #[test]
     fn round_trip_and_explain() {
         let ledger = Ledger::open_in_memory().unwrap();

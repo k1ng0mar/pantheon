@@ -226,7 +226,6 @@ pub fn list_agent_records(
 /// the document header and skipped, so a literal key named `Agent memory`
 /// in a v1 file round-trips.
 pub fn parse_md(content: &str) -> Vec<(String, String)> {
-    let has_sentinel = content.starts_with("<!-- pantheon:agent-memory");
     let mut out = Vec::new();
     let mut current: Option<(String, String)> = None;
     let mut seen_header = false;

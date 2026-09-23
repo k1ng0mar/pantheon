@@ -17,6 +17,17 @@ pub struct SignedUrl {
     pub url: String,
     pub expires_ms: i64,
 }
+/// Task ids are single URL path components. Keeping the alphabet explicit
+/// prevents query/header injection and makes signed URLs portable across the
+/// stdlib HTTP shim and external clients.
+pub fn valid_task_id(task_id: &str) -> bool {
+    !task_id.is_empty()
+        && task_id.len() <= 128
+        && task_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+}
+
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -156,7 +167,7 @@ impl GenUiSigner {
     }
     /// Verify a minted URL. Checks task id, expiry, and signature (constant-time-ish).
     pub fn verify(&self, task_id: &str, expires_ms: i64, sig_hex: &str) -> bool {
-        if expires_ms < now_ms() {
+        if !valid_task_id(task_id) || expires_ms < now_ms() {
             return false;
         }
         let msg = format!("{task_id}.{expires_ms}");
@@ -174,6 +185,14 @@ impl GenUiSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn task_ids_are_safe_path_components() {
+        assert!(valid_task_id("task-1_A"));
+        assert!(!valid_task_id("task/1"));
+        assert!(!valid_task_id("task?x"));
+        assert!(!valid_task_id(""));
+    }
+
     #[test]
     fn sha256_matches_nist_vector() {
         assert_eq!(

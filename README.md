@@ -31,6 +31,21 @@ cargo test --workspace
 ./target/debug/pantheon
 ```
 
+## AG-UI and channels
+
+The local AG-UI server exposes a small SSE web client at `/`, JSON-RPC at
+`/agui/rpc`, and signed generative-UI artifacts at `/agui/blob/<task_id>`:
+
+```sh
+pantheon serve --host 127.0.0.1 --port 18789
+pantheon stream <run_id>
+pantheon sign <task_id> --mime text/plain --ttl 3600000
+```
+
+Discord and Telegram adapters implement the `Channel` seam with platform
+message limits, Unicode-safe chunking, and approval actions. Their REST
+transports are enabled by the existing gateway `ureq` dependency.
+
 ## CLI
 
 ```
