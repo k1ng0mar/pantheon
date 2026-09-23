@@ -75,7 +75,8 @@ line one
 ## Sync semantics
 
 `memory sync` compares three hashes: the file's current hash, the store's
-current hash, and the last-synced hash (stored in `<path>.sync-hash`).
+current hash, and the last-synced hash (stored in `<path>.sync-hash`,
+e.g. `MEMORY.md.sync-hash`).
 
 | File changed | Store changed | Result |
 |---|---|---|
