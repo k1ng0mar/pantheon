@@ -17,6 +17,16 @@ pub struct LedgerEntry {
     pub event: Event,
 }
 
+/// An artifact stored in the ledger database and served through a signed
+/// generative-UI URL. Bytes never need to be reconstructed from event JSON.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    pub task_id: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
+    pub created_ms: i64,
+}
+
 pub struct Ledger {
     conn: Mutex<Connection>,
 }
@@ -47,6 +57,7 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::RunProgress { run_id, .. }
         | Event::RunCompleted { run_id }
         | Event::RunFailed { run_id, .. }
+        | Event::RunCanceled { run_id, .. }
         | Event::RunRecovered { run_id }
         | Event::ModelRequested { run_id, .. }
         | Event::ModelDelta { run_id, .. }
@@ -61,6 +72,7 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::MemoryProposed { run_id }
         | Event::ApprovalRequested { run_id, .. }
         | Event::ApprovalGranted { run_id, .. }
+        | Event::ApprovalDenied { run_id, .. }
         | Event::AssistantMessage { run_id, .. }
         | Event::ToolMessage { run_id, .. } => run_id,
     }
@@ -82,6 +94,19 @@ CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq);
 CREATE TABLE IF NOT EXISTS claims (
   key TEXT PRIMARY KEY,
   ts_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS artifacts (
+  task_id TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  bytes BLOB NOT NULL,
+  created_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS run_process_groups (
+  run_id TEXT NOT NULL,
+  pgid INTEGER NOT NULL,
+  lease_id TEXT NOT NULL,
+  created_ms INTEGER NOT NULL,
+  PRIMARY KEY (run_id, pgid)
 );";
 
 impl Ledger {
@@ -127,6 +152,13 @@ impl Ledger {
             )
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
         }
+        if matches!(event, Event::RunCanceled { .. }) {
+            conn.execute(
+                "UPDATE runs SET status = 'canceled' WHERE run_id = ?1",
+                params![run_id],
+            )
+            .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
+        }
         if matches!(event, Event::ApprovalRequested { .. }) {
             conn.execute(
                 "UPDATE runs SET status = 'awaiting_approval' WHERE run_id = ?1",
@@ -134,7 +166,10 @@ impl Ledger {
             )
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
         }
-        if matches!(event, Event::ApprovalGranted { .. }) {
+        if matches!(
+            event,
+            Event::ApprovalGranted { .. } | Event::ApprovalDenied { .. }
+        ) {
             conn.execute(
                 "UPDATE runs SET status = 'running' WHERE run_id = ?1",
                 params![run_id],
@@ -215,6 +250,120 @@ impl Ledger {
         Ok(n == 1)
     }
 
+    /// Store generative-UI bytes by task id.  `INSERT OR REPLACE` makes
+    /// retries of the same task deterministic while the signed URL remains
+    /// the only client-visible locator.
+    pub fn put_artifact(
+        &self,
+        task_id: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<Artifact, PantheonError> {
+        if task_id.is_empty()
+            || task_id.contains('/')
+            || task_id.contains('\\')
+            || task_id.contains('.')
+        {
+            return Err(err(
+                "ARTIFACT_ID",
+                "artifact task id is not a safe path component".into(),
+            ));
+        }
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let ts = now_ms();
+        conn.execute(
+            "INSERT INTO artifacts (task_id, mime, bytes, created_ms) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(task_id) DO UPDATE SET mime=excluded.mime, bytes=excluded.bytes, created_ms=excluded.created_ms",
+            params![task_id, mime, bytes, ts],
+        )
+        .map_err(|e| err("LEDGER_ARTIFACT", e.to_string()))?;
+        Ok(Artifact {
+            task_id: task_id.to_string(),
+            mime: mime.to_string(),
+            bytes: bytes.to_vec(),
+            created_ms: ts,
+        })
+    }
+
+    pub fn artifact(&self, task_id: &str) -> Result<Option<Artifact>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.query_row(
+            "SELECT task_id, mime, bytes, created_ms FROM artifacts WHERE task_id=?1",
+            params![task_id],
+            |r| {
+                Ok(Artifact {
+                    task_id: r.get(0)?,
+                    mime: r.get(1)?,
+                    bytes: r.get(2)?,
+                    created_ms: r.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| err("LEDGER_ARTIFACT", e.to_string()))
+    }
+
+    /// Associate a process group with a run and the lease that owns it.
+    pub fn register_process_group(
+        &self,
+        run_id: &str,
+        pgid: i32,
+        lease_id: &str,
+    ) -> Result<(), PantheonError> {
+        if pgid <= 1 {
+            return Err(err("LEDGER_PGID", "invalid process group id".into()));
+        }
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO run_process_groups (run_id, pgid, lease_id, created_ms) VALUES (?1, ?2, ?3, ?4)",
+            params![run_id, pgid, lease_id, now_ms()],
+        )
+        .map_err(|e| err("LEDGER_PGID", e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn process_groups(&self, run_id: &str, lease_id: &str) -> Result<Vec<i32>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT pgid FROM run_process_groups WHERE run_id=?1 AND lease_id=?2 ORDER BY pgid",
+            )
+            .map_err(|e| err("LEDGER_PGID", e.to_string()))?;
+        let rows = stmt
+            .query_map(params![run_id, lease_id], |r| r.get(0))
+            .map_err(|e| err("LEDGER_PGID", e.to_string()))?;
+        let mut out = vec![];
+        for row in rows {
+            out.push(row.map_err(|e| err("LEDGER_PGID", e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    pub fn unregister_process_group(&self, run_id: &str, pgid: i32) -> Result<(), PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.execute(
+            "DELETE FROM run_process_groups WHERE run_id=?1 AND pgid=?2",
+            params![run_id, pgid],
+        )
+        .map_err(|e| err("LEDGER_PGID", e.to_string()))?;
+        Ok(())
+    }
+
     /// Does a durable claim already exist for this key?
     pub fn is_claimed(&self, key: &str) -> Result<bool, PantheonError> {
         let conn = self
@@ -275,6 +424,7 @@ fn describe(ev: &Event) -> String {
         Event::RunProgress { detail, .. } => format!("progress: {detail}"),
         Event::RunCompleted { .. } => String::from("completed"),
         Event::RunFailed { code, .. } => format!("FAILED ({code})"),
+        Event::RunCanceled { reason, .. } => format!("canceled ({reason})"),
         Event::RunRecovered { .. } => String::from("recovered after restart"),
         Event::ModelRequested { model, .. } => format!("model requested: {model}"),
         Event::ModelDelta { .. } => String::from("model streamed output"),
@@ -294,6 +444,7 @@ fn describe(ev: &Event) -> String {
         Event::MemoryProposed { .. } => String::from("memory write proposed"),
         Event::ApprovalRequested { scope, .. } => format!("approval requested: {scope}"),
         Event::ApprovalGranted { scope, .. } => format!("approval granted: {scope}"),
+        Event::ApprovalDenied { scope, .. } => format!("approval denied: {scope}"),
         Event::AssistantMessage { message, .. } => {
             format!(
                 "assistant: {}",
