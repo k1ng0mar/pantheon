@@ -167,6 +167,22 @@ pub fn load_plugin(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugin>
     }
 }
 
+/// Enable or disable a plugin by rewriting its manifest in place. The YAML
+/// is re-serialized from the parsed manifest, so comments are lost but all
+/// declared fields survive.
+pub fn set_enabled(plugin: &DiscoveredPlugin, enabled: bool) -> Result<(), PantheonError> {
+    let mut manifest = plugin.manifest.clone();
+    manifest.enabled = enabled;
+    let yaml = serde_yaml::to_string(&manifest)
+        .map_err(|e| merr("PLUGIN_MANIFEST_WRITE", format!("serialize: {e}")))?;
+    let path = plugin.root.join("manifest.yaml");
+    // Atomic: write tmp then rename.
+    let tmp = plugin.root.join("manifest.yaml.tmp");
+    std::fs::write(&tmp, yaml).map_err(|e| merr("PLUGIN_MANIFEST_WRITE", format!("{e}")))?;
+    std::fs::rename(&tmp, &path).map_err(|e| merr("PLUGIN_MANIFEST_WRITE", format!("{e}")))?;
+    Ok(())
+}
+
 /// Install boundary. Verifies the manifest, resolves the runner path, and
 /// confirms the plugin directory is self-contained before enabling.
 ///

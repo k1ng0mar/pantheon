@@ -1,16 +1,33 @@
 //! Gateways (spec section 16): Telegram/Discord/Custom normalized into
 //! canonical messages. The agent never knows which surface sent it.
+//!
+//! The interactive path (AG-UI) lives here too:
+//! `stream` maps ledger events to UI frames, `sse` encodes frames as
+//! `text/event-stream` bytes, `channel` is the transport seam every
+//! surface (discord/slack/web/…) consumes, and `genui` mints
+//! task-id + signed-URL references (never embedded payloads).
 use serde::{Deserialize, Serialize};
 
 pub mod allowlist;
 pub mod canonical;
+pub mod channel;
 pub mod dedup;
 pub mod delivery;
+pub mod genui;
+pub mod sse;
+pub mod stream;
 
 pub use allowlist::{Admission, Allowlist, Pairing};
 pub use canonical::{Canonical, Command, Conversation, Reaction};
+pub use channel::{
+    fanout, format_text, Channel, ChannelEnvelope, ChannelError, ChannelEvent, MemoryChannel,
+    ThreadRunMap,
+};
 pub use dedup::{dedup_key, DedupWindow};
 pub use delivery::{backoff_ms, plan_delivery, DeliveryOutcome, Outbox};
+pub use genui::{GenUiRef, GenUiSigner, SignedUrl};
+pub use sse::{parse_last_event_id, SseEncoder};
+pub use stream::{frame_for_event, frames_for_entries, UiFrame, UiFrameKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Identity {

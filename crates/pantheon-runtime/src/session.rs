@@ -290,8 +290,12 @@ impl Session {
         // ones, register their tools behind the capability gate. A plugin
         // spawn failure is non-fatal: log it and continue without that plugin.
         let dd = self.supervisor.data_dir();
-        let project_root = self.supervisor.data_dir(); // project-root detection can refine this later
-        let discovered = pantheon_exec::plugins::discover_plugins(&dd, &project_root);
+        // Project-scoped plugins live in <cwd>/.pantheon/plugins/. If the
+        // session's data dir IS the cwd (single-dir use), discovery would
+        // scan the same tree twice; harmless, dedup by root below.
+        let project_root = std::env::current_dir().unwrap_or_else(|_| dd.clone());
+        let mut discovered = pantheon_exec::plugins::discover_plugins(&dd, &project_root);
+        discovered.dedup_by(|a, b| a.root == b.root);
         for plugin in &discovered {
             if !plugin.manifest.enabled {
                 continue;
@@ -312,7 +316,7 @@ impl Session {
                 &dd,
                 timeout,
             ) {
-                Ok(mut sup) => {
+                Ok(sup) => {
                     let label = format!("plugin:{}", plugin.manifest.name);
                     let sup_arc = Arc::new(Mutex::new(sup));
                     pantheon_exec::supervisor::register_plugin_tools(

@@ -46,7 +46,7 @@ fn save_backend_selection(data_dir: &Path, sel: &BackendSelection) {
     });
 }
 fn usage() -> String {
-    "pantheon <chat|run|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback> ...\n\
+    "pantheon <chat|run|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback|serve|stream|grant|deny|sign> ...\n\
      \u{20} chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n\
      \u{20} run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n\
      \u{20} explain <run_id>\n\
@@ -58,9 +58,17 @@ fn usage() -> String {
      \u{20} stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n\
      \u{20} apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n\
      \u{20} checkpoint <path>... [--run ID]  snapshot pre-images\n\
-     \u{20} rollback (--ckpt ID | --seq N)  restore a checkpoint\n"
+     \u{20} rollback (--ckpt ID | --seq N)  restore a checkpoint
+     serve [--port N] [--host H]  AG-UI SSE + RPC server (cline-style interactive)
+     stream <run_id> [--thread T] [--after N]  print SSE frames for a run
+     grant <run_id> <scope>  approve a parked tool call
+     deny <run_id> [scope]  refuse a parked tool call
+     sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n\
+     channel <run_id> [--thread T]  replay frames through the transport seam\n"
         .into()
 }
+mod agui_cli;
+
 fn load_mgr() -> ExtensionManager {
     let mut m = ExtensionManager::new(RunnerConfig::default());
     let d = ext_dir();
@@ -556,6 +564,38 @@ fn main() {
                         });
                     println!("installed {}", name);
                 }
+                Some(cmd @ ("enable" | "disable")) => {
+                    if args.len() < 4 {
+                        eprintln!("usage: pantheon plugins {cmd} <name>");
+                        std::process::exit(2);
+                    }
+                    let name = &args[3];
+                    // Find the plugin in either scope; enable/disable only
+                    // touches the manifest in place.
+                    let found = pantheon_exec::plugins::discover_plugins(&dd, &project_root);
+                    let plugin = found
+                        .iter()
+                        .find(|p| p.manifest.name == *name)
+                        .unwrap_or_else(|| {
+                            eprintln!("plugins {cmd}: no plugin named '{name}'");
+                            std::process::exit(1);
+                        });
+                    pantheon_exec::plugins::set_enabled(plugin, cmd == "enable").unwrap_or_else(
+                        |e| {
+                            eprintln!("plugins {cmd}: {e}");
+                            std::process::exit(1);
+                        },
+                    );
+                    println!(
+                        "{} {}",
+                        if cmd == "enable" {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        },
+                        name
+                    );
+                }
                 _ => {
                     eprintln!("usage: pantheon plugins <list|install>");
                     std::process::exit(2);
@@ -941,6 +981,24 @@ fn main() {
                 eprintln!("usage: pantheon rollback (--ckpt ID | --seq N)");
                 std::process::exit(2);
             }
+        }
+        "serve" => {
+            agui_cli::cmd_serve(&args);
+        }
+        "stream" => {
+            agui_cli::cmd_stream(&args);
+        }
+        "grant" => {
+            agui_cli::cmd_grant(&args);
+        }
+        "deny" => {
+            agui_cli::cmd_deny(&args);
+        }
+        "sign" => {
+            agui_cli::cmd_sign(&args);
+        }
+        "channel" => {
+            agui_cli::cmd_channel(&args);
         }
         "providers" => {
             // List cataloged providers and their models, plus the
