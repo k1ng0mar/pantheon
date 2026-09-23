@@ -15,6 +15,7 @@ pub mod daemon;
 pub mod dedup;
 pub mod delivery;
 pub mod discord;
+pub mod discord_gateway;
 pub mod genui;
 pub mod sse;
 pub mod stream;

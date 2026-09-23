@@ -64,10 +64,12 @@ fn usage() -> String {
      grant <run_id> <scope>  approve a parked tool call
      deny <run_id> [scope]  refuse a parked tool call
      sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n\
-     channel <run_id> [--thread T]  replay frames through the transport seam\n"
+     channel <run_id> [--thread T]  replay frames through the transport seam\n\
+     gateway                    run Discord/Telegram surfaces (env tokens)\n"
         .into()
 }
 mod agui_cli;
+mod gateway_cli;
 
 fn load_mgr() -> ExtensionManager {
     let mut m = ExtensionManager::new(RunnerConfig::default());
@@ -1025,6 +1027,9 @@ fn main() {
         }
         "channel" => {
             agui_cli::cmd_channel(&args);
+        }
+        "gateway" => {
+            gateway_cli::cmd_gateway(&args);
         }
         "providers" => {
             // List cataloged providers and their models, plus the
