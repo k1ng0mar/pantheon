@@ -936,6 +936,10 @@ dependencies = [
 name = "pantheon-api"
 version = "0.1.0"
 dependencies = [
+ "pantheon-core",
+ "pantheon-gateway",
+ "pantheon-runtime",
+ "pantheon-storage",
  "serde",
  "serde_json",
  "tempfile",
@@ -952,9 +956,11 @@ dependencies = [
 name = "pantheon-cli"
 version = "0.1.0"
 dependencies = [
+ "pantheon-api",
  "pantheon-core",
  "pantheon-exec",
  "pantheon-extensions",
+ "pantheon-gateway",
  "pantheon-memory",
  "pantheon-runtime",
  "serde_json",
@@ -998,7 +1004,10 @@ dependencies = [
 name = "pantheon-gateway"
 version = "0.1.0"
 dependencies = [
+ "pantheon-core",
+ "pantheon-storage",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

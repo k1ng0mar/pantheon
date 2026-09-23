@@ -10,6 +10,8 @@ name = "pantheon"
 path = "src/main.rs"
 
 [dependencies]
+pantheon-api = { path = "../pantheon-api" }
+pantheon-gateway = { path = "../pantheon-gateway" }
 pantheon-core = { path = "../pantheon-core" }
 pantheon-runtime = { path = "../pantheon-runtime" }
 pantheon-exec = { path = "../pantheon-exec" }

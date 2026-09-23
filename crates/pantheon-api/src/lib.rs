@@ -13,8 +13,12 @@
 //! trait. Events stream out as `pantheon_core::events::Event` — there is no
 //! second event type.
 
+pub mod agui;
 pub mod rpc;
+pub mod serve;
 pub mod transport;
 
+pub use agui::dispatcher_for;
 pub use rpc::{Dispatcher, Id, MethodHandler, Request, Response, RpcError};
+pub use serve::{remember_thread, serve, snapshot_frames, ServeConfig};
 pub use transport::{ApiTransport, UnixSocketTransport};
