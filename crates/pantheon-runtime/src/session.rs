@@ -17,11 +17,13 @@ use pantheon_exec::memory_tools::{
     register_memory_tools, MemoryToolEvent, MemoryToolOptions, MemoryToolSink,
 };
 use pantheon_exec::safewrite::register_safewrite;
+use pantheon_exec::supervisor::PluginSupervisor;
 use pantheon_exec::tools::ToolRegistry;
 use pantheon_memory::{recall as mem_recall, LayerKind, MemoryStore};
 use pantheon_providers::http::HttpTransport;
 use pantheon_providers::ProviderChain;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Adapter: supervisor as the loop's event sink.
 struct SupSink<'a>(&'a Supervisor);
@@ -181,6 +183,15 @@ impl Session {
         self
     }
 
+    /// Per-call timeout for plugin tool calls. Overridable via env.
+    fn plugin_timeout(&self) -> Duration {
+        std::env::var("PANTHEON_PLUGIN_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::from_secs(30))
+    }
+
     /// Run one task end to end. Returns the terminal outcome.
     pub fn chat(&self, run_id: &str, user_message: &str) -> Result<LoopOutcome, PantheonError> {
         match self.supervisor.ledger_status(run_id)?.as_deref() {
@@ -272,6 +283,55 @@ impl Session {
                 },
             );
         }
+        // Plugin supervisors spawned for this run. They get group-killed at
+        // the end of the call to avoid orphaned processes.
+        let mut plugin_supers: Vec<(String, Arc<std::sync::Mutex<PluginSupervisor>>)> = Vec::new();
+        // Plugin tools: discover installed plugins, verify + spawn the enabled
+        // ones, register their tools behind the capability gate. A plugin
+        // spawn failure is non-fatal: log it and continue without that plugin.
+        let dd = self.supervisor.data_dir();
+        let project_root = self.supervisor.data_dir(); // project-root detection can refine this later
+        let discovered = pantheon_exec::plugins::discover_plugins(&dd, &project_root);
+        for plugin in &discovered {
+            if !plugin.manifest.enabled {
+                continue;
+            }
+            let runner_path = plugin.root.join(&plugin.manifest.runner);
+            // Verify the manifest + runner before spawning.
+            if let Err(e) = pantheon_exec::plugins::verify_plugin(plugin) {
+                eprintln!(
+                    "plugin '{}': verification failed, skipping: {e}",
+                    plugin.manifest.name
+                );
+                continue;
+            }
+            let timeout = self.plugin_timeout();
+            match pantheon_exec::supervisor::PluginSupervisor::spawn(
+                &runner_path,
+                &plugin.manifest,
+                &dd,
+                timeout,
+            ) {
+                Ok(mut sup) => {
+                    let label = format!("plugin:{}", plugin.manifest.name);
+                    let sup_arc = Arc::new(Mutex::new(sup));
+                    pantheon_exec::supervisor::register_plugin_tools(
+                        &mut reg,
+                        &plugin.manifest,
+                        sup_arc.clone(),
+                    );
+                    // Stash the supervisor so it gets stopped (group-kill) on
+                    // session end instead of leaking children.
+                    plugin_supers.push((label, sup_arc));
+                }
+                Err(e) => {
+                    eprintln!(
+                        "plugin '{}': spawn failed, skipping: {e}",
+                        plugin.manifest.name
+                    );
+                }
+            }
+        }
         let chain = ProviderChain::new(
             self.model_policy.clone(),
             HttpTransport::default(),
@@ -358,6 +418,11 @@ impl Session {
                 })?;
                 self.supervisor.complete(run_id)?;
             }
+        }
+
+        // Clean up plugin supervisors: group-kill children before return.
+        for (_, sup) in &plugin_supers {
+            sup.lock().unwrap().stop();
         }
         Ok(outcome)
     }
