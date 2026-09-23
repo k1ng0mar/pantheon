@@ -12,6 +12,7 @@ pantheon-core = { path = "../pantheon-core" }
 pantheon-memory = { path = "../pantheon-memory" }
 serde_yaml = "0.9"
 ureq = { version = "2", features = ["json"] }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
