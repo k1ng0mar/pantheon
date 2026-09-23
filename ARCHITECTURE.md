@@ -197,7 +197,7 @@ propose → policy → provenance → validation → provider
 
 No silent prompt-injection writes. Provenance: source, imported_at.
 
-**Implemented:** `pantheon-memory` — five layers, write path with policy + provenance checks, ephemeral never hits the store, recall returns provenance, narrowest-first. Not yet wired into the agent loop.
+**Implemented:** `pantheon-memory` — five layers, write path with policy + provenance checks, ephemeral never hits the store, recall returns provenance, narrowest-first. Wired into the agent loop (session recall block) and the model-facing memory tools (propose/recall through the gate). Markdown sync (MEMORY.md) with sentinel-header v1 format, heading escaping, and conflict detection. Backend selection (native/http) validated at selection time.
 
 ## 12. Storage
 
@@ -261,13 +261,13 @@ Telegram, Discord, Custom first. Normalized shapes:
 
 Agent sees a canonical event. Gateway handles auth, allowlist, pairing, delivery, dedup, attachments, reconnects.
 
-**Implemented:** `pantheon-gateway` — canonical shapes (conversation key includes thread), default-deny allowlist + one-shot pairing, redelivery dedup, retry backoff + reconnect outbox. Live Telegram/Discord surfaces not wired.
+**Implemented:** `pantheon-gateway` — canonical shapes (conversation key includes thread), default-deny allowlist + one-shot pairing, redelivery dedup, retry backoff + reconnect outbox. Live surfaces: Telegram long-poll daemon with persisted update cursor; Discord gateway websocket (tungstenite, blocking, IDENTIFY/RESUME, heartbeat with missed-ACK reconnect) plus webhook-bridge inbound; approval buttons (Grant/Deny custom_ids) resolve parked runs; `pantheon gateway` runs both surfaces against the runtime with a thread->run map. Rate-limit (429) handling is a known gap.
 
 ## 17. Interfaces
 
 One runtime. CLI / GUI / TUI + Gateways all talk to the same Runtime API. No duplicated business logic.
 
-**Implemented:** CLI only (`run`, `explain`, `status`, `extensions`, `hook`, `doctor`). GUI/TUI absent.
+**Implemented:** CLI (26 verbs: chat, run, explain, status, audit, grant, deny, memory, plugins, extensions, hook, doctor, preview, stage, apply, checkpoint, rollback, serve, stream, sign, channel, gateway, setup, reset, pipeline, providers) plus the AG-UI local web client (`pantheon serve` at `/`). TUI/GUI absent; the web client is a smoke-test surface. See docs/cli.md for the full reference.
 
 ## 18. Runtime API
 
@@ -288,7 +288,7 @@ package.install/update/rollback
 
 Events stream as the core `Event` enum (no second event type). Transports: HTTP / WebSocket / Unix socket.
 
-**Implemented:** `pantheon-api` — JSON-RPC 2.0 protocol + dispatcher + `UnixSocketTransport` (newline-delimited, one request-id → one response-id). Builtins: `system.ping`, `system.methods`. Runtime command handlers attach when the agent loop is wired into the supervisor.
+**Implemented:** `pantheon-api` — JSON-RPC 2.0 dispatcher + `UnixSocketTransport` + stdlib HTTP server (`pantheon serve`) with SSE streams and signed blob routes. Methods: `system.ping`, `system.methods`, `agui.send/grant/deny/cancel/frames/sign/artifact.put/serve_hint`. Request bodies capped at 1 MiB (413). The aspirational command list below is the long-term protocol, not the current surface.
 
 ## 19. Observability
 
@@ -425,13 +425,22 @@ Eval: `eval/run.py` + `eval/cases.json` — regression harness driving the real 
 
 ## Open gaps
 
-- Agent loop wired through Runtime API command handlers + CLI
+- ~~Agent loop wired through Runtime API command handlers + CLI~~ (done: session drive loop + agui.* methods)
+- ~~Live gateways (Telegram/Discord)~~ (done: daemon + gateway websocket; 429 handling pending)
 - Sandbox container/VM enforcement (profiles are policy values today)
 - Durable agent identity configs
 - Tier 1 skill import
 - OpenClaw Soul adapter + full plugin compat
-- Live gateways (Telegram/Discord) and live MCP servers
 - Package ecosystem (manifest, trust levels, lifecycle)
 - `pantheon migrate` CLI surface
-- Grow eval toward 20–30 Hermes-history cases
-- Pick one claim store (`ClaimStore` vs embedded `Ledger::claim`)
+- Scheduler CLI surface (durable scheduling logic is implemented and tested)
+- Secrets broker wiring into chat's api_key path
+- Pick one claim store (`ClaimStore` vs embedded `Ledger::claim`) — audit recommendation: keep ClaimStore, deprecate Ledger::claim
+- Wire swarm Caps into the delegate path (session denies all delegation today)
+- OTel export target (span mapping exists; no exporter)
+
+## Audit trail
+
+Full per-crate audit (September 2026): docs/audit/group-A.md,
+group-B.md, group-C.md, comparative-nyx.md. Fix pass applied the high/
+medium findings; deliberate non-changes are documented there too.

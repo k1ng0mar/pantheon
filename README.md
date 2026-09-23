@@ -1,70 +1,69 @@
 # Pantheon
 
-Small at the center, huge at the edges.
+A Rust agent runtime. Small at the center, huge at the edges.
 
-The model is not the runtime. The model is one replaceable component inside it. Runtime owns lifecycle, state, policy, execution, capabilities, recovery, and events. Agents never pick models.
+The model is not the runtime. The model is one replaceable component inside
+it. The runtime owns lifecycle, state, policy, execution, capabilities,
+recovery, and events. Agents never pick models.
 
-Technical spec: [ARCHITECTURE.md](./ARCHITECTURE.md).
+## Documentation map
 
-## Layout
+| Document | What it covers |
+|---|---|
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | System design, crate map, locked decisions, status of every subsystem |
+| [docs/getting-started.md](./docs/getting-started.md) | Install, setup, first chat, config reference |
+| [docs/cli.md](./docs/cli.md) | Every verb, every flag, exit codes, environment variables |
+| [docs/configuration.md](./docs/configuration.md) | config.toml fields, secret handling, backend selection |
+| [docs/runs-and-recovery.md](./docs/runs-and-recovery.md) | Run lifecycle, approvals, leases, recovery, cancellation |
+| [docs/pipelines.md](./docs/pipelines.md) | The orchestration pipeline, gates, evaluator loop |
+| [docs/channels.md](./docs/channels.md) | Discord, Telegram, the AG-UI web surface, gateways |
+| [docs/plugins.md](./docs/plugins.md) | Extension format, hooks, capability gating, doctor |
+| [docs/memory.md](./docs/memory.md) | Memory layers, the write path, MEMORY.md sync |
+| [docs/troubleshooting.md](./docs/troubleshooting.md) | Error codes and what to do about them |
+| [docs/contributing.md](./docs/contributing.md) | Crate boundaries, testing rules, how to add a verb/tool/event |
 
-```
-crates/*          Rust runtime (the thing we own)
-eval/             regression harness (stdlib Python + cases.json)
-vendor/           ported Hermes plugins used as fixtures
-ARCHITECTURE.md   full technical architecture
-```
+## Status
 
-## Model policy (locked)
+Working today: chat with tool loops against any OpenAI-compatible or
+Anthropic provider, crash recovery, durable operations, human approval
+gates, plugin loading and hooks, memory with provenance, Discord and
+Telegram surfaces, the AG-UI local web client, a setup wizard, a system
+doctor, and the six-stage orchestration pipeline.
 
-No model routing.
-
-- **default model** — the run’s model
-- **fallback models** — policy-ordered list, used only when the default fails. Runtime-controlled, never agent-chosen
-- **auxiliary models** — task-scoped helpers (embeddings, rerank, STT/TTS, vision, extraction, search synthesis), selected by runtime capability need
+Implemented but not yet wired to a CLI surface: scheduler, secrets broker,
+MCP projection, migration import, sandbox profiles, swarm caps. See
+ARCHITECTURE.md sections 3, 10, 13, 15, 21, 23 for the exact state.
 
 ## Build
 
 ```sh
 cargo build
-cargo test --workspace
-./target/debug/pantheon
+cargo test --workspace   # 300 tests
+python3 eval/run.py      # 19 regression cases, drives the real binary
 ```
 
-## AG-UI and channels
+Requires a Rust toolchain (edition 2021). No database server: SQLite is
+bundled. No async runtime: everything is std threads.
 
-The local AG-UI server exposes a small SSE web client at `/`, JSON-RPC at
-`/agui/rpc`, and signed generative-UI artifacts at `/agui/blob/<task_id>`:
+## A ten-minute tour
 
 ```sh
-pantheon serve --host 127.0.0.1 --port 18789
-pantheon stream <run_id>
-pantheon sign <task_id> --mime text/plain --ttl 3600000
+pantheon setup --yes --provider openai --model gpt-4o-mini --api-key-env OPENAI_API_KEY
+export OPENAI_API_KEY=sk-...
+pantheon chat "explain this repo in one sentence"
+pantheon explain <run_id>          # why everything happened
+pantheon doctor                    # is everything healthy
 ```
 
-Discord and Telegram adapters implement the `Channel` seam with platform
-message limits, Unicode-safe chunking, and approval actions. Their REST
-transports are enabled by the existing gateway `ureq` dependency.
+The default policy lets the model run shell commands in your working
+directory. Read docs/configuration.md before pointing it at anything you
+care about.
 
-## CLI
+## Design position (short version)
 
-```
-pantheon run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext]
-pantheon explain <run_id>
-pantheon status <run_id>
-pantheon extensions
-pantheon hook <name> [--session S]
-pantheon doctor <plugin_dir>
-```
-
-Optional env: `PANTHEON_DATA_DIR`, `PANTHEON_EXT_DIR`.
-
-## Eval
-
-```sh
-cargo build -p pantheon-cli
-python3 eval/run.py
-python3 eval/run.py --cargo-tests
-```
-
-Exit 0 only when every active case passes.
+Event-sourced everything: every run is a sequence of events in SQLite, which
+is why /explain, crash recovery, and audit export all read the same rows.
+Capability-gated everything: tools declare the capability they need, the
+policy decides allow/deny/approve. Human approval parks a run durably; a
+denial becomes a transcript result, not a crashed run. Durability is
+versioned CAS state machines, not hope.
