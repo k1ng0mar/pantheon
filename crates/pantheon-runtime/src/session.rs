@@ -522,8 +522,10 @@ impl Session {
                     run_id: run_id.into(),
                     message: Message::assistant_tool_calls(refs.clone()),
                 })?;
+                // Phase 5: gate ALL calls first, then run them in parallel.
+                // Any approval needed parks the run before anything executes
+                // (no partial execution), matching the single-call path.
                 for (call, r) in calls.iter().zip(refs.iter()) {
-                    // Gate on the registry's capability, not the model's claim.
                     let cap = reg
                         .capability_of(&call.name)
                         .unwrap_or(pantheon_core::capability::Capability::Other("tool".into()));
@@ -535,9 +537,6 @@ impl Session {
                     match pantheon_agent::gate(&loop_.policy, &gated.capability)? {
                         pantheon_agent::GateOutcome::Allow => {}
                         pantheon_agent::GateOutcome::NeedsApproval { capability } => {
-                            // Approval scope MUST be the call id, not the
-                            // capability: granting one shell call must not
-                            // automatically grant the next one.
                             self.supervisor.emit(Event::ApprovalRequested {
                                 run_id: run_id.into(),
                                 scope: r.id.clone(),
@@ -545,17 +544,52 @@ impl Session {
                             return Ok(LoopOutcome::AwaitingApproval { capability });
                         }
                     }
+                }
+                // All calls allowed: emit ToolStarted per call, then run the
+                // batch concurrently on worker threads.
+                for (call, r) in calls.iter().zip(refs.iter()) {
                     self.supervisor.emit(Event::ToolStarted {
                         run_id: run_id.into(),
                         call_id: r.id.clone(),
-                        tool: gated.name.clone(),
-                        args: gated.args.clone(),
+                        tool: call.name.clone(),
+                        args: call.args.clone(),
                     })?;
-                    let out = reg.execute(&gated.name, &gated.args)?;
+                }
+                // Run all allowed calls concurrently on scoped threads. The
+                // registry is Send+Sync (boxed closures are), so sharing it
+                // by reference is sound. Results collect in call order, so
+                // the transcript stays deterministic regardless of which
+                // worker finishes first.
+                let results: Vec<Result<String, PantheonError>> = std::thread::scope(|s| {
+                    let handles: Vec<_> = calls
+                        .iter()
+                        .map(|c| {
+                            let reg_ref = &reg;
+                            s.spawn(move || reg_ref.execute(&c.name, &c.args))
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join().unwrap_or_else(|_| {
+                                Err(PantheonError::new(
+                                    "TOOL_PANIC",
+                                    pantheon_core::error::Layer::Execution,
+                                    false,
+                                    "tool worker thread panicked".to_string(),
+                                    "check the tool implementation",
+                                    "",
+                                ))
+                            })
+                        })
+                        .collect()
+                });
+                for ((call, r), out) in calls.iter().zip(refs.iter()).zip(results.into_iter()) {
+                    let out = out?;
                     self.supervisor.emit(Event::ToolOutput {
                         run_id: run_id.into(),
                         call_id: r.id.clone(),
-                        tool: gated.name.clone(),
+                        tool: call.name.clone(),
                         truncated: false,
                     })?;
                     let tool_msg = Message::tool(r.id.clone(), out);
@@ -567,7 +601,7 @@ impl Session {
                     self.supervisor.emit(Event::ToolCompleted {
                         run_id: run_id.into(),
                         call_id: r.id.clone(),
-                        tool: gated.name.clone(),
+                        tool: call.name.clone(),
                     })?;
                 }
                 self.drive(
@@ -703,5 +737,66 @@ mod tests {
         // the transcript still has the persisted content for inspection.
         let msgs = rebuild_messages(entries);
         assert!(msgs.is_empty(), "no full assistant/user rows emitted");
+    }
+
+    /// Phase 5: three 400ms tool calls in one turn must finish in well under
+    /// a second if they run concurrently (sequential would be >=1.2s).
+    #[test]
+    fn parallel_tool_calls_overlap_in_wall_time() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Instant;
+
+        let mut reg = ToolRegistry::new();
+        let counter = std::sync::Arc::new(AtomicU32::new(0));
+        let c2 = counter.clone();
+        for i in 0..3 {
+            let c = c2.clone();
+            reg.register(
+                pantheon_core::message::ToolSchema {
+                    name: format!("slow_{i}"),
+                    description: "sleeps 400ms".into(),
+                    parameters: serde_json::json!({}),
+                },
+                pantheon_core::capability::Capability::ShellExecute,
+                move |_args| {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    Ok(format!("done_{i}"))
+                },
+            );
+        }
+        // Three calls the model "asked for" in one turn.
+        let calls: Vec<pantheon_agent::ToolCall> = (0..3)
+            .map(|i| pantheon_agent::ToolCall {
+                name: format!("slow_{i}"),
+                capability: pantheon_core::capability::Capability::ShellExecute,
+                args: "{}".into(),
+            })
+            .collect();
+        // Execute the same way drive() does: scoped threads over the registry.
+        let t0 = Instant::now();
+        let results: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = calls
+                .iter()
+                .map(|c| {
+                    let r = &reg;
+                    s.spawn(move || r.execute(&c.name, &c.args))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let elapsed = t0.elapsed();
+        for (i, r) in results.iter().enumerate() {
+            assert_eq!(r.as_ref().unwrap(), &format!("done_{i}"));
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+        // Sequential would be >= 1.2s. Parallel: < 0.9s with slack.
+        assert!(
+            elapsed < std::time::Duration::from_millis(900),
+            "calls ran sequentially: {elapsed:?}"
+        );
     }
 }

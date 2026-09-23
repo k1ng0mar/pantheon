@@ -1064,6 +1064,8 @@ dependencies = [
  "pantheon-memory",
  "pantheon-providers",
  "pantheon-storage",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
