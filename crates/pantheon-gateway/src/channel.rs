@@ -66,6 +66,39 @@ pub fn fanout(
         .collect()
 }
 
+/// Split text at character boundaries without breaking UTF-8. Adapters use
+/// this for their platform limits; it also prevents a large model response
+/// from becoming one un-sendable message.
+pub fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return vec![text.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let mut end = (start + max_chars).min(text.len());
+        while end > start && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == start {
+            end = (start + 1).min(text.len());
+        }
+        out.push(text[start..end].to_string());
+        start = end;
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+/// Buttons carried by approval frames. The custom IDs are stable protocol
+/// values so a transport can map a click back to the original scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalButtons {
+    pub scope: String,
+}
+
 /// Render one frame as plain text for surfaces without rich UI
 /// (discord/slack code fences and chunking live in the adapters; this is
 /// the shared fallback shape).
@@ -84,8 +117,10 @@ pub fn format_text(frame: &UiFrame) -> String {
         crate::stream::UiFrameKind::Approval => {
             if frame.name == "requested" {
                 format!("approval needed: `{}` — reply grant/deny", frame.text)
+            } else if frame.name == "denied" {
+                format!("approval denied: `{}`", frame.text)
             } else {
-                format!("approved: `{}`", frame.text)
+                format!("approval granted: `{}`", frame.text)
             }
         }
         crate::stream::UiFrameKind::GenUi => frame

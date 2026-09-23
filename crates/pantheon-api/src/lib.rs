@@ -18,7 +18,10 @@ pub mod rpc;
 pub mod serve;
 pub mod transport;
 
-pub use agui::dispatcher_for;
+pub use agui::{
+    dispatcher_for, dispatcher_for_with_hint, dispatcher_for_with_hint_and_base,
+    dispatcher_for_with_hint_and_host,
+};
 pub use rpc::{Dispatcher, Id, MethodHandler, Request, Response, RpcError};
 pub use serve::{remember_thread, serve, snapshot_frames, ServeConfig};
 pub use transport::{ApiTransport, UnixSocketTransport};

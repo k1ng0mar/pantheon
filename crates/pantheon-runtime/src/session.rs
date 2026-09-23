@@ -5,6 +5,7 @@
 //! -> terminal outcome, every step event-sourced in the ledger.
 
 use crate::operation::{run_tool_operation, ToolOperationAdapter};
+use crate::watchdog::TurnWatchdog;
 use crate::{RunLeaseGuard, Supervisor};
 use pantheon_agent::{AgentLoop, Budget, LoopOutcome};
 use pantheon_core::capability::Policy;
@@ -92,6 +93,50 @@ impl MemoryToolSink for LedgerMemorySink {
             detail,
         }) {
             eprintln!("ledger write failed: {e}");
+        }
+    }
+}
+
+struct PluginCleanup {
+    entries: Vec<(String, Arc<Mutex<PluginSupervisor>>)>,
+    supervisor: Supervisor,
+    run_id: String,
+    lease_healthy: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PluginCleanup {
+    fn new(
+        supervisor: Supervisor,
+        run_id: &str,
+        lease_healthy: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            entries: Vec::new(),
+            supervisor,
+            run_id: run_id.to_string(),
+            lease_healthy,
+        }
+    }
+    fn push(&mut self, entry: (String, Arc<Mutex<PluginSupervisor>>)) {
+        self.entries.push(entry);
+    }
+}
+
+impl Drop for PluginCleanup {
+    fn drop(&mut self) {
+        let healthy = !self
+            .lease_healthy
+            .load(std::sync::atomic::Ordering::Acquire)
+            && self.supervisor.assert_lease(&self.run_id).is_ok();
+        for (_, supervisor) in &self.entries {
+            let Ok(mut supervisor) = supervisor.lock() else {
+                continue;
+            };
+            if healthy {
+                supervisor.stop();
+            } else {
+                supervisor.abandon();
+            }
         }
     }
 }
@@ -236,6 +281,16 @@ impl Session {
         args: &str,
         registry: &ToolRegistry,
     ) -> Result<String, PantheonError> {
+        self.supervisor.assert_lease(run_id).map_err(|e| {
+            PantheonError::new(
+                "LOST_LEASE",
+                Layer::Runtime,
+                true,
+                e.to_string(),
+                "stop tool work and reacquire the run lease",
+                "",
+            )
+        })?;
         let adapter = RegistryToolAdapter {
             registry,
             name: name.to_string(),
@@ -245,9 +300,19 @@ impl Session {
             self.supervisor.operations(),
             &operation_id,
             "tool.execute",
-            serde_json::json!({"name": name, "args": args}),
+            serde_json::json!({"run_id": run_id, "name": name, "args": args}),
             &adapter,
         )?;
+        self.supervisor.assert_lease(run_id).map_err(|e| {
+            PantheonError::new(
+                "LOST_LEASE",
+                Layer::Runtime,
+                true,
+                e.to_string(),
+                "stop tool work and reacquire the run lease",
+                "",
+            )
+        })?;
         op.state
             .get("result")
             .and_then(|v| v.as_str())
@@ -266,6 +331,10 @@ impl Session {
 
     /// Run one task end to end. Returns the terminal outcome.
     pub fn chat(&self, run_id: &str, user_message: &str) -> Result<LoopOutcome, PantheonError> {
+        // Activity-based watchdog: only a failed probe after stall escalates,
+        // never wall-clock duration. Pauses (human approval) do not eat the
+        // clock because the watchdog only advances inside drive().
+        let watchdog = std::sync::Mutex::new(TurnWatchdog::from_env());
         match self.supervisor.ledger_status(run_id)?.as_deref() {
             Some("awaiting_approval") => {
                 return Err(aerr(
@@ -282,7 +351,7 @@ impl Session {
             _ => {}
         }
         let (recovered, _lease) = self.supervisor.start_run_with_lease(run_id)?;
-        let _lease_guard = RunLeaseGuard::new(self.supervisor.clone(), run_id);
+        let _lease_guard = RunLeaseGuard::try_new(self.supervisor.clone(), run_id)?;
         let mut messages: Vec<Message> = if recovered {
             self.supervisor.emit(Event::RunProgress {
                 run_id: run_id.into(),
@@ -375,7 +444,8 @@ impl Session {
         }
         // Plugin supervisors spawned for this run. They get group-killed at
         // the end of the call to avoid orphaned processes.
-        let mut plugin_supers: Vec<(String, Arc<std::sync::Mutex<PluginSupervisor>>)> = Vec::new();
+        let mut plugin_supers =
+            PluginCleanup::new(self.supervisor.clone(), run_id, _lease_guard.health_flag());
         // Plugin tools: discover installed plugins, verify + spawn the enabled
         // ones, register their tools behind the capability gate. A plugin
         // spawn failure is non-fatal: log it and continue without that plugin.
@@ -406,20 +476,22 @@ impl Session {
                 &dd,
                 timeout,
             ) {
-                Ok(sup) => {
+                Ok(mut sup) => {
                     let label = format!("plugin:{}", plugin.manifest.name);
                     if let Err(e) = self.supervisor.register_process_group(run_id, sup.pgid()) {
                         eprintln!("plugin '{label}': process group not registered: {e}");
+                        sup.stop();
+                    } else {
+                        let sup_arc = Arc::new(Mutex::new(sup));
+                        pantheon_exec::supervisor::register_plugin_tools(
+                            &mut reg,
+                            &plugin.manifest,
+                            sup_arc.clone(),
+                        );
+                        // Stash the supervisor so it gets stopped (group-kill) on
+                        // session end instead of leaking children.
+                        plugin_supers.push((label, sup_arc));
                     }
-                    let sup_arc = Arc::new(Mutex::new(sup));
-                    pantheon_exec::supervisor::register_plugin_tools(
-                        &mut reg,
-                        &plugin.manifest,
-                        sup_arc.clone(),
-                    );
-                    // Stash the supervisor so it gets stopped (group-kill) on
-                    // session end instead of leaking children.
-                    plugin_supers.push((label, sup_arc));
                 }
                 Err(e) => {
                     eprintln!(
@@ -487,6 +559,13 @@ impl Session {
                 _ => None,
             })
             .collect();
+        let denied_scopes: Vec<String> = entries
+            .iter()
+            .filter_map(|e| match &e.event {
+                Event::ApprovalDenied { scope, .. } => Some(scope.clone()),
+                _ => None,
+            })
+            .collect();
 
         // Drive the loop through the canonical-message path: each turn feeds
         // messages to the provider, appends assistant/tool rows, repeats.
@@ -500,10 +579,27 @@ impl Session {
             &reg,
             pending,
             &grants,
+            &denied_scopes,
             &mut tool_calls_used,
+            &watchdog,
         ) {
             Ok(o) => o,
             Err(e) => {
+                if matches!(
+                    self.supervisor.ledger_status(run_id)?.as_deref(),
+                    Some("canceled")
+                ) {
+                    return Err(aerr(
+                        "RUN_CANCELED",
+                        "run cancellation was requested".into(),
+                    ));
+                }
+                if !_lease_guard.is_healthy() {
+                    return Err(aerr(
+                        "LOST_LEASE",
+                        "run lease was lost before the turn could finish".into(),
+                    ));
+                }
                 // Provider failures bubble up before any terminal outcome is
                 // emitted. Mark the run failed so the ledger is honest about
                 // why the run didn't complete; the structured error is
@@ -512,6 +608,21 @@ impl Session {
                 return Err(e);
             }
         };
+        if matches!(
+            self.supervisor.ledger_status(run_id)?.as_deref(),
+            Some("canceled")
+        ) {
+            return Err(aerr(
+                "RUN_CANCELED",
+                "run cancellation was requested".into(),
+            ));
+        }
+        if !_lease_guard.is_healthy() {
+            return Err(aerr(
+                "LOST_LEASE",
+                "run lease was lost before the turn could finish".into(),
+            ));
+        }
 
         match &outcome {
             LoopOutcome::Answered(text) => {
@@ -541,12 +652,6 @@ impl Session {
             }
         }
 
-        // Clean up plugin supervisors: group-kill children before return.
-        for (_, sup) in &plugin_supers {
-            let pgid = sup.lock().unwrap().pgid();
-            sup.lock().unwrap().stop();
-            let _ = self.supervisor.unregister_process_group(run_id, pgid);
-        }
         Ok(outcome)
     }
 
@@ -554,7 +659,8 @@ impl Session {
     /// `pending` holds tool calls that crashed mid-execution; `grants`
     /// records scopes the user has already approved. `tool_calls_used`
     /// carries the running total across turns so the max_tool_calls cap
-    /// is enforced over the whole run, not per turn.
+    /// is enforced over the whole run, not per turn. `watchdog` observes
+    /// turn progress and escalates only on a failed liveness probe.
     fn drive(
         &self,
         loop_: &AgentLoop,
@@ -565,7 +671,9 @@ impl Session {
         reg: &ToolRegistry,
         pending: Vec<String>,
         grants: &[String],
+        denied_scopes: &[String],
         tool_calls_used: &mut u32,
+        watchdog: &std::sync::Mutex<TurnWatchdog>,
     ) -> Result<LoopOutcome, PantheonError> {
         if turn >= loop_.budget.max_turns {
             return Err(PantheonError::new(
@@ -576,6 +684,28 @@ impl Session {
                 "raise the budget or simplify the task",
                 "",
             ));
+        }
+        // Watchdog: every turn entry counts as observed progress. A stalled
+        // provider turn is caught when the probe (a lightweight ledger
+        // status read) fails, not by wall-clock duration.
+        if let Ok(mut w) = watchdog.lock() {
+            w.activity();
+            let action = w.poll_with_probe(|| {
+                self.supervisor
+                    .ledger_status(run_id)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            });
+            if action == crate::WatchdogAction::Kill {
+                return Err(PantheonError::new(
+                    "WATCHDOG_KILL",
+                    pantheon_core::error::Layer::Agent,
+                    false,
+                    "stall watchdog: liveness probe failed after budget".to_string(),
+                    "check the provider transport; the run stays recoverable",
+                    "",
+                ));
+            }
         }
         // Recovered pending tool calls settle first, before the next model
         // call. Tools already completed (matching ToolMessage rows in the
@@ -611,9 +741,38 @@ impl Session {
                     }
                 }
             }
-            // Split by grant status: granted calls re-execute now, ungranted
-            // ones park the run.
-            let (granted, ungranted): (Vec<ToolCallRef>, Vec<ToolCallRef>) = not_done
+            // Split by resolution status. Denied scopes must NOT re-park the
+            // run: the operator already answered, so the call settles as a
+            // denial result in the transcript and the turn proceeds.
+            let (denied, rest): (Vec<ToolCallRef>, Vec<ToolCallRef>) = not_done
+                .into_iter()
+                .partition(|tc| denied_scopes.iter().any(|s| s == &tc.id));
+            for tc in &denied {
+                self.supervisor.emit(Event::ToolStarted {
+                    run_id: run_id.into(),
+                    call_id: tc.id.clone(),
+                    tool: tc.name.clone(),
+                    args: tc.arguments.clone(),
+                })?;
+                let denial = Message::tool(
+                    tc.id.clone(),
+                    "denied by operator: this tool call was rejected and was not executed",
+                );
+                messages.push(denial.clone());
+                self.supervisor.emit(Event::ToolMessage {
+                    run_id: run_id.into(),
+                    message: denial,
+                })?;
+                self.supervisor.emit(Event::ToolCompleted {
+                    run_id: run_id.into(),
+                    call_id: tc.id.clone(),
+                    tool: tc.name.clone(),
+                })?;
+                *tool_calls_used += 1;
+            }
+            // Split remaining by grant status: granted calls re-execute now,
+            // ungranted ones park the run.
+            let (granted, ungranted): (Vec<ToolCallRef>, Vec<ToolCallRef>) = rest
                 .into_iter()
                 .partition(|tc| grants.iter().any(|s| s == &tc.id));
             if !ungranted.is_empty() {
@@ -832,7 +991,9 @@ impl Session {
                     reg,
                     Vec::new(),
                     grants,
+                    denied_scopes,
                     tool_calls_used,
+                    watchdog,
                 )
             }
             pantheon_agent::TurnOutcome::Delegate { .. } => {
@@ -1033,6 +1194,38 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_millis(900),
             "calls ran sequentially: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn denied_scope_settles_instead_of_reparking_on_resume() {
+        // A denied call must not leave the run stuck: on resume the denial
+        // becomes a transcript tool result and the run can finish.
+        let dir = std::env::temp_dir().join(format!("pantheon-deny-settle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sup = Supervisor::open(dir).unwrap();
+        sup.start_run("deny-resume").unwrap();
+        sup.emit(Event::ApprovalRequested {
+            run_id: "deny-resume".into(),
+            scope: "call_0_0".into(),
+        })
+        .unwrap();
+        sup.deny("deny-resume", "call_0_0").unwrap();
+        // The denial scope is visible on replay and must be excluded from
+        // re-parking by the drive() partition logic.
+        let entries = sup.replay("deny-resume").unwrap();
+        let denied: Vec<String> = entries
+            .iter()
+            .filter_map(|e| match &e.event {
+                Event::ApprovalDenied { scope, .. } => Some(scope.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(denied, vec!["call_0_0".to_string()]);
+        // Status flipped back to running (not parked) after the denial.
+        assert_eq!(
+            sup.ledger_status("deny-resume").unwrap().as_deref(),
+            Some("running")
         );
     }
 }

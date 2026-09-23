@@ -96,6 +96,10 @@ pub struct PluginSupervisor {
     name: String,
     /// Compaction policy for large plugin output.
     compaction: CompactionPolicy,
+    /// Drop only kills the group while the owning runtime still holds its
+    /// lease. A stale supervisor may abandon its handles instead of signaling
+    /// a potentially reused PGID.
+    drop_kill: bool,
 }
 
 impl PluginSupervisor {
@@ -169,6 +173,7 @@ impl PluginSupervisor {
             alive: true,
             name: manifest.name.clone(),
             compaction: CompactionPolicy::default(),
+            drop_kill: true,
         })
     }
 
@@ -342,6 +347,16 @@ impl PluginSupervisor {
         }
     }
 
+    /// relinquish the handles without signaling the process group. This is
+    /// used when the run lease is lost and PID reuse safety forbids a kill.
+    pub fn abandon(&mut self) {
+        self.stdin.take();
+        self.stdout.take();
+        self.child.take();
+        self.alive = false;
+        self.drop_kill = false;
+    }
+
     /// Graceful stop: TERM the process group, wait up to STOP_GRACE, then
     /// KILL the group. Idempotent.
     pub fn stop(&mut self) {
@@ -384,14 +399,21 @@ impl PluginSupervisor {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    /// Process group id owned by this supervisor.  It is safe to persist only
+    /// together with a run lease; a bare PID is not an ownership token.
+    pub fn pgid(&self) -> i32 {
+        self.pgid
+    }
 }
 
 impl Drop for PluginSupervisor {
     fn drop(&mut self) {
         // Never leave orphans: group-kill on drop. KILL, not TERM — drop
         // cannot wait for a graceful exit, so the guaranteed signal is the
-        // right default. stop() is the graceful path when the caller can wait.
-        if self.child.is_some() {
+        // stop() is the graceful path when the caller can wait. A stale
+        // supervisor calls abandon() so Drop never signals a reused PGID.
+        if self.child.is_some() && self.drop_kill {
             #[cfg(unix)]
             unsafe {
                 if self.pgid > 1 && self.pgid != std::process::id() as i32 {

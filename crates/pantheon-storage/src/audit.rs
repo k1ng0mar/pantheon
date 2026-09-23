@@ -56,10 +56,14 @@ pub fn audit_line(entry: &LedgerEntry) -> String {
         pantheon_core::events::Event::RunFailed { code, .. } => {
             obj["code"] = serde_json::json!(code);
         }
+        pantheon_core::events::Event::RunCanceled { reason, .. } => {
+            obj["reason"] = serde_json::json!(reason);
+        }
         pantheon_core::events::Event::ApprovalRequested { scope, .. } => {
             obj["scope"] = serde_json::json!(scope);
         }
-        pantheon_core::events::Event::ApprovalGranted { scope, .. } => {
+        pantheon_core::events::Event::ApprovalGranted { scope, .. }
+        | pantheon_core::events::Event::ApprovalDenied { scope, .. } => {
             obj["scope"] = serde_json::json!(scope);
         }
         _ => {}
@@ -75,6 +79,7 @@ fn event_name(e: &pantheon_core::events::Event) -> &'static str {
         RunProgress { .. } => "RunProgress",
         RunCompleted { .. } => "RunCompleted",
         RunFailed { .. } => "RunFailed",
+        RunCanceled { .. } => "RunCanceled",
         RunRecovered { .. } => "RunRecovered",
         ModelRequested { .. } => "ModelRequested",
         ModelCompleted { .. } => "ModelCompleted",
@@ -87,6 +92,7 @@ fn event_name(e: &pantheon_core::events::Event) -> &'static str {
         ToolCompleted { .. } => "ToolCompleted",
         ApprovalRequested { .. } => "ApprovalRequested",
         ApprovalGranted { .. } => "ApprovalGranted",
+        ApprovalDenied { .. } => "ApprovalDenied",
         AgentMessage { .. } => "AgentMessage",
         AgentSpawned { .. } => "AgentSpawned",
         AgentCompleted { .. } => "AgentCompleted",

@@ -8,6 +8,7 @@
 pub mod builtins;
 pub mod memory_tools;
 pub mod plugins;
+pub mod process;
 pub mod safewrite;
 pub mod skills;
 pub mod supervisor;

@@ -13,21 +13,31 @@ pub mod canonical;
 pub mod channel;
 pub mod dedup;
 pub mod delivery;
+pub mod discord;
 pub mod genui;
 pub mod sse;
 pub mod stream;
+pub mod telegram;
 
 pub use allowlist::{Admission, Allowlist, Pairing};
 pub use canonical::{Canonical, Command, Conversation, Reaction};
 pub use channel::{
-    fanout, format_text, Channel, ChannelEnvelope, ChannelError, ChannelEvent, MemoryChannel,
-    ThreadRunMap,
+    chunk_text, fanout, format_text, ApprovalButtons, Channel, ChannelEnvelope, ChannelError,
+    ChannelEvent, MemoryChannel, ThreadRunMap,
 };
 pub use dedup::{dedup_key, DedupWindow};
 pub use delivery::{backoff_ms, plan_delivery, DeliveryOutcome, Outbox};
-pub use genui::{GenUiRef, GenUiSigner, SignedUrl};
+pub use discord::{
+    parse_event as parse_discord_event, DiscordChannel, DiscordRestTransport, DiscordTransport,
+    DISCORD_CONTENT_LIMIT,
+};
+pub use genui::{valid_task_id, GenUiRef, GenUiSigner, SignedUrl};
 pub use sse::{parse_last_event_id, SseEncoder};
 pub use stream::{frame_for_event, frames_for_entries, UiFrame, UiFrameKind};
+pub use telegram::{
+    parse_event as parse_telegram_event, TelegramChannel, TelegramRestTransport, TelegramTransport,
+    TELEGRAM_MESSAGE_LIMIT,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Identity {
