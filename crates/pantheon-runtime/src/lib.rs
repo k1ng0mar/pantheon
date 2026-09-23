@@ -1,6 +1,8 @@
 //! Supervisor: run lifecycle, quotas, recovery, checkpointing (D decision).
 //! Runs persist every event; a killed run resumes as RunRecovered.
 pub mod operation;
+pub mod pipeline;
+pub mod pipeline_runner;
 pub mod session;
 pub mod watchdog;
 
@@ -13,6 +15,8 @@ pub use pantheon_storage::LostLeaseError;
 use pantheon_storage::{
     Ledger, Operation, OperationStatus, OperationStore, RunLease, RunLeaseStore,
 };
+pub use pipeline::{run_model_stage, StageEvaluator, StageExecutor};
+pub use pipeline_runner::{PipelineOutcome, PipelineRunner};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

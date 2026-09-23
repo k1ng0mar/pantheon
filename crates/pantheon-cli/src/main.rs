@@ -73,6 +73,7 @@ mod config_doc;
 mod config_schema;
 mod doctor_cli;
 mod gateway_cli;
+mod pipeline_cli;
 mod reset_cli;
 mod setup_cli;
 mod setup_entry;
@@ -1086,6 +1087,9 @@ fn main() {
         }
         "reset" => {
             reset_cli::cmd_reset(&args);
+        }
+        "pipeline" => {
+            pipeline_cli::cmd_pipeline(&args);
         }
         "providers" => {
             // List cataloged providers and their models, plus the
