@@ -9,7 +9,7 @@
 use crate::hooks::Hook;
 use crate::python_runner::{fire_hook, HookInput, PythonPlugin, RunnerConfig};
 use pantheon_core::error::{Layer, PantheonError};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -28,7 +28,17 @@ pub struct ExtensionManager {
     plugins: Vec<PythonPlugin>,
     cfg: RunnerConfig,
     seen_once: Mutex<HashSet<(String, String, String)>>,
+    /// Consecutive hook failures per plugin. A plugin that times out
+    /// repeatedly degrades every turn; after SKIP_AFTER_FAILURES
+    /// consecutive failures it is skipped for the rest of the session
+    /// (in-memory only; a new session retries it).
+    timeout_streaks: Mutex<HashMap<String, u32>>,
 }
+
+/// Consecutive hook failures after which a plugin is skipped for the
+/// session. A single timeout stays fail-open (one bad call should not
+/// disable the plugin), but a wedge degrades every turn until stopped.
+const SKIP_AFTER_FAILURES: u32 = 3;
 
 impl ExtensionManager {
     pub fn new(cfg: RunnerConfig) -> Self {
@@ -36,6 +46,7 @@ impl ExtensionManager {
             plugins: Vec::new(),
             cfg,
             seen_once: Mutex::new(HashSet::new()),
+            timeout_streaks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -87,11 +98,32 @@ impl ExtensionManager {
             .map(|p| p.manifest.name.clone())
             .collect()
     }
-    /// Fire `hook` on all providers, concatenate contexts. Never fails the turn.
-    pub fn fire(&self, hook: Hook, session: &str, platform: &str) -> Option<String> {
+    /// Fire `hook` on all providers, concatenate contexts. Never fails the
+    /// turn. `extra` carries per-call context (e.g. the user message for
+    /// pre_llm_call) that plugins may read.
+    pub fn fire(
+        &self,
+        hook: Hook,
+        session: &str,
+        platform: &str,
+        extra: std::collections::HashMap<String, String>,
+    ) -> Option<String> {
         let mut parts = Vec::new();
         for pl in &self.plugins {
             if !pl.provides(hook) {
+                continue;
+            }
+            // A plugin that failed repeatedly degrades every turn; skip it
+            // for the rest of the session (streak resets on any success).
+            if self
+                .timeout_streaks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&pl.manifest.name)
+                .copied()
+                .unwrap_or(0)
+                >= SKIP_AFTER_FAILURES
+            {
                 continue;
             }
             if pl.manifest.once_per_session(Some(&pl.dir)) {
@@ -110,12 +142,33 @@ impl ExtensionManager {
                 hook: hook.name().into(),
                 session_id: session.into(),
                 platform: platform.into(),
-                extra: Default::default(),
+                extra: extra.clone(),
             };
             match fire_hook(pl, hook, &input, &self.cfg) {
-                Ok(Some(ctx)) => parts.push(ctx),
+                Ok(Some(ctx)) => {
+                    self.timeout_streaks
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&pl.manifest.name);
+                    parts.push(ctx)
+                }
                 Ok(None) => {}
-                Err(e) => eprintln!("plugin {}: {e}", pl.manifest.name),
+                Err(e) => {
+                    let mut streaks = self
+                        .timeout_streaks
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let n = streaks.entry(pl.manifest.name.clone()).or_insert(0);
+                    *n += 1;
+                    if *n == SKIP_AFTER_FAILURES {
+                        eprintln!(
+                            "plugin {}: skipped for the session after {SKIP_AFTER_FAILURES} consecutive failures",
+                            pl.manifest.name
+                        );
+                    } else {
+                        eprintln!("plugin {}: {e}", pl.manifest.name);
+                    }
+                }
             }
         }
         if parts.is_empty() {
@@ -160,9 +213,18 @@ mod tests {
         plug(&base.join("p"), "p", true, "CTX");
         let mut m = ExtensionManager::new(RunnerConfig::default());
         m.load_dir(&base).unwrap();
-        assert_eq!(m.fire(Hook::PreLlmCall, "s1", "cli"), Some("CTX".into()));
-        assert_eq!(m.fire(Hook::PreLlmCall, "s1", "cli"), None);
-        assert_eq!(m.fire(Hook::PreLlmCall, "s2", "cli"), Some("CTX".into()));
+        assert_eq!(
+            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
+            Some("CTX".into())
+        );
+        assert_eq!(
+            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
+            None
+        );
+        assert_eq!(
+            m.fire(Hook::PreLlmCall, "s2", "cli", Default::default()),
+            Some("CTX".into())
+        );
     }
 
     #[test]
@@ -183,8 +245,14 @@ mod tests {
         .unwrap();
         let mut m = ExtensionManager::new(RunnerConfig::default());
         m.load_dir(&base).unwrap();
-        assert_eq!(m.fire(Hook::PreLlmCall, "s1", "cli"), Some("Q".into()));
-        assert_eq!(m.fire(Hook::PreLlmCall, "s1", "cli"), None);
+        assert_eq!(
+            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
+            Some("Q".into())
+        );
+        assert_eq!(
+            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
+            None
+        );
     }
 
     #[test]
@@ -194,7 +262,13 @@ mod tests {
         plug(&base.join("r"), "r", false, "R");
         let mut m = ExtensionManager::new(RunnerConfig::default());
         m.load_dir(&base).unwrap();
-        assert_eq!(m.fire(Hook::PreLlmCall, "s1", "cli"), Some("R".into()));
-        assert_eq!(m.fire(Hook::PreLlmCall, "s1", "cli"), Some("R".into()));
+        assert_eq!(
+            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
+            Some("R".into())
+        );
+        assert_eq!(
+            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
+            Some("R".into())
+        );
     }
 }

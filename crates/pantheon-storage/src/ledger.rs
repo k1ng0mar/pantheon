@@ -32,6 +32,10 @@ pub struct Ledger {
     conn: Mutex<Connection>,
 }
 
+/// Artifact size cap: generative-UI blobs are small by design; the ledger
+/// is not a blob store. 8 MiB covers SVG/PNG/JSON artifacts comfortably.
+const MAX_ARTIFACT_BYTES: usize = 8 * 1024 * 1024;
+
 fn valid_artifact_id(task_id: &str) -> bool {
     !task_id.is_empty()
         && task_id.len() <= 128
@@ -334,6 +338,15 @@ impl Ledger {
             return Err(err(
                 "ARTIFACT_MIME",
                 "artifact mime type contains invalid header characters".into(),
+            ));
+        }
+        if bytes.len() > MAX_ARTIFACT_BYTES {
+            return Err(err(
+                "ARTIFACT_TOO_LARGE",
+                format!(
+                    "artifact is {} bytes; the cap is {MAX_ARTIFACT_BYTES}",
+                    bytes.len()
+                ),
             ));
         }
         let conn = self

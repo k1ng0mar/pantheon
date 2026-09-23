@@ -22,7 +22,7 @@ fn aerr(code: &str, cause: String) -> PantheonError {
 /// so new event kinds never silently vanish from trajectories.
 pub fn audit_line(entry: &LedgerEntry) -> String {
     let mut obj = serde_json::json!({
-        "seq": entry.id,
+        "seq": entry.seq,
         "event": event_name(&entry.event),
     });
     match &entry.event {
