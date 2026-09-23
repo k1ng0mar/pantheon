@@ -4,7 +4,8 @@
 //! start -> loop (model turns, gated tool calls, compacted output)
 //! -> terminal outcome, every step event-sourced in the ledger.
 
-use crate::Supervisor;
+use crate::operation::{run_tool_operation, ToolOperationAdapter};
+use crate::{RunLeaseGuard, Supervisor};
 use pantheon_agent::{AgentLoop, Budget, LoopOutcome};
 use pantheon_core::capability::Policy;
 use pantheon_core::error::{Layer, PantheonError};
@@ -139,6 +140,41 @@ impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
     }
 }
 
+/// Adapter that makes a registry tool durable without changing the registry
+/// itself. The operation runner persists each phase before the next phase.
+struct RegistryToolAdapter<'a> {
+    registry: &'a ToolRegistry,
+    name: String,
+}
+
+impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
+    fn translate(&self, request: &serde_json::Value) -> Result<serde_json::Value, PantheonError> {
+        Ok(serde_json::json!({
+            "name": self.name,
+            "args": request.get("args").and_then(|v| v.as_str()).unwrap_or(""),
+        }))
+    }
+    fn execute(&self, translated: &serde_json::Value) -> Result<serde_json::Value, PantheonError> {
+        let name = translated
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&self.name);
+        let args = translated
+            .get("args")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        Ok(serde_json::Value::String(
+            self.registry.execute(name, args)?,
+        ))
+    }
+    fn translate_result(
+        &self,
+        result: &serde_json::Value,
+    ) -> Result<serde_json::Value, PantheonError> {
+        Ok(result.clone())
+    }
+}
+
 /// Everything one agent run needs.
 pub struct Session {
     pub supervisor: Supervisor,
@@ -192,6 +228,42 @@ impl Session {
             .unwrap_or(Duration::from_secs(30))
     }
 
+    fn durable_tool(
+        &self,
+        run_id: &str,
+        call_id: &str,
+        name: &str,
+        args: &str,
+        registry: &ToolRegistry,
+    ) -> Result<String, PantheonError> {
+        let adapter = RegistryToolAdapter {
+            registry,
+            name: name.to_string(),
+        };
+        let operation_id = format!("{run_id}:{call_id}");
+        let op = run_tool_operation(
+            self.supervisor.operations(),
+            &operation_id,
+            "tool.execute",
+            serde_json::json!({"name": name, "args": args}),
+            &adapter,
+        )?;
+        op.state
+            .get("result")
+            .and_then(|v| v.as_str())
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                PantheonError::new(
+                    "OPERATION_RESULT",
+                    Layer::Execution,
+                    false,
+                    format!("operation {operation_id} completed without a string result"),
+                    "inspect the tool operation state",
+                    "",
+                )
+            })
+    }
+
     /// Run one task end to end. Returns the terminal outcome.
     pub fn chat(&self, run_id: &str, user_message: &str) -> Result<LoopOutcome, PantheonError> {
         match self.supervisor.ledger_status(run_id)?.as_deref() {
@@ -201,7 +273,7 @@ impl Session {
                     format!("run {run_id} is parked on approval; grant then resume"),
                 ));
             }
-            Some("completed") | Some("failed") => {
+            Some("completed") | Some("failed") | Some("canceled") => {
                 return Err(aerr(
                     "RUN_TERMINAL",
                     format!("run {run_id} already finished; start a new id"),
@@ -209,7 +281,8 @@ impl Session {
             }
             _ => {}
         }
-        let recovered = self.supervisor.start_run(run_id)?;
+        let (recovered, _lease) = self.supervisor.start_run_with_lease(run_id)?;
+        let _lease_guard = RunLeaseGuard::new(self.supervisor.clone(), run_id);
         let mut messages: Vec<Message> = if recovered {
             self.supervisor.emit(Event::RunProgress {
                 run_id: run_id.into(),
@@ -335,6 +408,9 @@ impl Session {
             ) {
                 Ok(sup) => {
                     let label = format!("plugin:{}", plugin.manifest.name);
+                    if let Err(e) = self.supervisor.register_process_group(run_id, sup.pgid()) {
+                        eprintln!("plugin '{label}': process group not registered: {e}");
+                    }
                     let sup_arc = Arc::new(Mutex::new(sup));
                     pantheon_exec::supervisor::register_plugin_tools(
                         &mut reg,
@@ -414,6 +490,7 @@ impl Session {
 
         // Drive the loop through the canonical-message path: each turn feeds
         // messages to the provider, appends assistant/tool rows, repeats.
+        let mut tool_calls_used: u32 = 0;
         let outcome = match self.drive(
             &loop_,
             &chain,
@@ -423,6 +500,7 @@ impl Session {
             &reg,
             pending,
             &grants,
+            &mut tool_calls_used,
         ) {
             Ok(o) => o,
             Err(e) => {
@@ -465,14 +543,18 @@ impl Session {
 
         // Clean up plugin supervisors: group-kill children before return.
         for (_, sup) in &plugin_supers {
+            let pgid = sup.lock().unwrap().pgid();
             sup.lock().unwrap().stop();
+            let _ = self.supervisor.unregister_process_group(run_id, pgid);
         }
         Ok(outcome)
     }
 
     /// Canonical-message driver: replaces the legacy string-transcript loop.
     /// `pending` holds tool calls that crashed mid-execution; `grants`
-    /// records scopes the user has already approved.
+    /// records scopes the user has already approved. `tool_calls_used`
+    /// carries the running total across turns so the max_tool_calls cap
+    /// is enforced over the whole run, not per turn.
     fn drive(
         &self,
         loop_: &AgentLoop,
@@ -483,6 +565,7 @@ impl Session {
         reg: &ToolRegistry,
         pending: Vec<String>,
         grants: &[String],
+        tool_calls_used: &mut u32,
     ) -> Result<LoopOutcome, PantheonError> {
         if turn >= loop_.budget.max_turns {
             return Err(PantheonError::new(
@@ -499,32 +582,114 @@ impl Session {
         // ledger) are skipped; tools that crashed before completing run.
         if !pending.is_empty() {
             let pending_set: std::collections::BTreeSet<String> = pending.into_iter().collect();
-            let mut not_done: Vec<String> = Vec::new();
+            let mut not_done: Vec<ToolCallRef> = Vec::new();
             for cid in &pending_set {
                 // If a ToolMessage row exists for this call id, it's done.
                 let done = messages.iter().any(|m| {
                     m.role == pantheon_core::message::Role::Tool
                         && m.tool_call_id.as_deref() == Some(cid.as_str())
                 });
-                if !done {
-                    not_done.push(cid.clone());
+                if done {
+                    continue;
+                }
+                // Recover name+args from the persisted assistant_tool_calls
+                // row so the re-run is faithful, not a guess.
+                let orig = messages
+                    .iter()
+                    .find_map(|m| m.tool_calls.iter().find(|c| c.id == *cid).cloned());
+                match orig {
+                    Some(tc) => not_done.push(tc),
+                    None => {
+                        // No persisted call record: cannot re-run faithfully.
+                        // Fabricate an error result so the transcript stays
+                        // provider-valid instead of dying on a missing
+                        // tool response.
+                        messages.push(Message::tool(
+                            cid.clone(),
+                            format!("recovery error: no persisted call record for {cid}"),
+                        ));
+                    }
                 }
             }
-            for cid in not_done {
-                if grants.iter().any(|s| s == &cid) {
-                    // Already approved via ApprovalGranted.
-                } else {
-                    // Pending re-execution without a grant: surface as
-                    // approval-needed. We do not know the capability from
-                    // the ledger alone (calls are anonymous until re-run),
-                    // so we ask with the conservative "Other" capability.
-                    let cap =
-                        pantheon_core::capability::Capability::Other(format!("recover:{cid}"));
+            // Split by grant status: granted calls re-execute now, ungranted
+            // ones park the run.
+            let (granted, ungranted): (Vec<ToolCallRef>, Vec<ToolCallRef>) = not_done
+                .into_iter()
+                .partition(|tc| grants.iter().any(|s| s == &tc.id));
+            if !ungranted.is_empty() {
+                // Ask with the real capability resolved from the registry.
+                let first = &ungranted[0];
+                let cap = reg
+                    .capability_of(&first.name)
+                    .unwrap_or(pantheon_core::capability::Capability::Other("tool".into()));
+                for tc in &ungranted {
                     self.supervisor.emit(Event::ApprovalRequested {
                         run_id: run_id.into(),
-                        scope: cid.clone(),
+                        scope: tc.id.clone(),
                     })?;
-                    return Ok(LoopOutcome::AwaitingApproval { capability: cap });
+                }
+                return Ok(LoopOutcome::AwaitingApproval { capability: cap });
+            }
+            // Re-execute granted calls through the same parallel path as a
+            // fresh batch: gate (already granted), run, emit, append results.
+            if !granted.is_empty() {
+                for tc in &granted {
+                    self.supervisor.emit(Event::ToolStarted {
+                        run_id: run_id.into(),
+                        call_id: tc.id.clone(),
+                        tool: tc.name.clone(),
+                        args: tc.arguments.clone(),
+                    })?;
+                }
+                let results: Vec<Result<String, PantheonError>> = std::thread::scope(|s| {
+                    let handles: Vec<_> = granted
+                        .iter()
+                        .map(|tc| {
+                            let reg_ref = &reg;
+                            let name = tc.name.clone();
+                            let args = tc.arguments.clone();
+                            let run_ref = run_id;
+                            let call_id = tc.id.clone();
+                            s.spawn(move || {
+                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref)
+                            })
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join().unwrap_or_else(|_| {
+                                Err(PantheonError::new(
+                                    "TOOL_PANIC",
+                                    pantheon_core::error::Layer::Execution,
+                                    false,
+                                    "tool worker thread panicked".to_string(),
+                                    "check the tool implementation",
+                                    "",
+                                ))
+                            })
+                        })
+                        .collect()
+                });
+                for (tc, out) in granted.iter().zip(results.into_iter()) {
+                    let out = out?;
+                    self.supervisor.emit(Event::ToolOutput {
+                        run_id: run_id.into(),
+                        call_id: tc.id.clone(),
+                        tool: tc.name.clone(),
+                        truncated: false,
+                    })?;
+                    let tool_msg = Message::tool(tc.id.clone(), out);
+                    messages.push(tool_msg.clone());
+                    self.supervisor.emit(Event::ToolMessage {
+                        run_id: run_id.into(),
+                        message: tool_msg,
+                    })?;
+                    self.supervisor.emit(Event::ToolCompleted {
+                        run_id: run_id.into(),
+                        call_id: tc.id.clone(),
+                        tool: tc.name.clone(),
+                    })?;
                 }
             }
         }
@@ -547,6 +712,13 @@ impl Session {
                 Ok(LoopOutcome::Answered(text))
             }
             pantheon_agent::TurnOutcome::Tools(calls) => {
+                // Enforce the whole-run tool-call budget before gating or
+                // executing anything in this batch.
+                if *tool_calls_used + calls.len() as u32 > loop_.budget.max_tool_calls {
+                    return Ok(LoopOutcome::BudgetExhausted {
+                        cap: "max_tool_calls",
+                    });
+                }
                 let refs: Vec<ToolCallRef> = calls
                     .iter()
                     .enumerate()
@@ -602,9 +774,16 @@ impl Session {
                 let results: Vec<Result<String, PantheonError>> = std::thread::scope(|s| {
                     let handles: Vec<_> = calls
                         .iter()
-                        .map(|c| {
+                        .zip(refs.iter())
+                        .map(|(c, r)| {
                             let reg_ref = &reg;
-                            s.spawn(move || reg_ref.execute(&c.name, &c.args))
+                            let call_id = r.id.clone();
+                            let name = c.name.clone();
+                            let args = c.args.clone();
+                            let run_ref = run_id;
+                            s.spawn(move || {
+                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref)
+                            })
                         })
                         .collect();
                     handles
@@ -625,6 +804,7 @@ impl Session {
                 });
                 for ((call, r), out) in calls.iter().zip(refs.iter()).zip(results.into_iter()) {
                     let out = out?;
+                    *tool_calls_used += 1;
                     self.supervisor.emit(Event::ToolOutput {
                         run_id: run_id.into(),
                         call_id: r.id.clone(),
@@ -652,6 +832,7 @@ impl Session {
                     reg,
                     Vec::new(),
                     grants,
+                    tool_calls_used,
                 )
             }
             pantheon_agent::TurnOutcome::Delegate { .. } => {

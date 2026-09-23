@@ -173,12 +173,27 @@ pub fn detect_conflict(
 }
 
 /// Render Agent-layer records for one namespace as markdown.
-/// Sections: `# <key>` heading, value as the body.
+/// Sections: `# <key>` heading, value as the body. Value lines that look
+/// like headings are escaped with a leading backslash so a value holding
+/// `# something` survives a render/parse round-trip as one record.
 pub fn render_agent(records: &[(String, String)]) -> String {
     let mut out = String::new();
-    out.push_str("# Agent memory\n\n");
+    // Sentinel header: unambiguous, and a key named "Agent memory" still
+    // round-trips because the header is not a `# ` heading.
+    out.push_str("<!-- pantheon:agent-memory v1 -->\n\n# Agent memory\n\n");
     for (k, v) in records {
-        out.push_str(&format!("# {k}\n\n{v}\n\n"));
+        let escaped = v
+            .lines()
+            .map(|l| {
+                if l.starts_with("# ") || l == "#" {
+                    format!("\\{l}")
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push_str(&format!("# {k}\n\n{escaped}\n\n"));
     }
     out
 }
@@ -204,19 +219,44 @@ pub fn list_agent_records(
 }
 
 /// Parse a markdown file into Agent-layer records. Splits on `# <key>`
-/// headings; the body until the next heading becomes the value.
+/// headings; the body until the next heading becomes the value. Value
+/// lines escaped at render time (leading backslash before a heading-like
+/// line) are unescaped here. The sentinel header marks v1 exports; for
+/// legacy files without it, the first `# Agent memory` line is treated as
+/// the document header and skipped, so a literal key named `Agent memory`
+/// in a v1 file round-trips.
 pub fn parse_md(content: &str) -> Vec<(String, String)> {
+    let has_sentinel = content.starts_with("<!-- pantheon:agent-memory");
     let mut out = Vec::new();
     let mut current: Option<(String, String)> = None;
+    let mut seen_header = false;
     for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("\\# ") {
+            // Escaped heading-like line inside a value.
+            if let Some((_, body)) = current.as_mut() {
+                body.push_str(&format!("# {rest}\n"));
+            }
+            continue;
+        }
+        if line == "\\#" {
+            if let Some((_, body)) = current.as_mut() {
+                body.push_str("#\n");
+            }
+            continue;
+        }
         if let Some(rest) = line.strip_prefix("# ") {
+            let key = rest.trim().to_string();
+            // Document header: always skipped, sentinel or legacy. In a
+            // sentinel file only the very first occurrence is the header;
+            // later `# Agent memory` lines are real records.
+            if key == "Agent memory" && !seen_header {
+                seen_header = true;
+                continue;
+            }
             if let Some((key, body)) = current.take() {
                 out.push((key, body.trim().to_string()));
             }
-            let key = rest.trim().to_string();
-            if key != "Agent memory" {
-                current = Some((key, String::new()));
-            }
+            current = Some((key, String::new()));
         } else if let Some((_, body)) = current.as_mut() {
             body.push_str(line);
             body.push('\n');
@@ -304,6 +344,36 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].0, "city");
         assert_eq!(parsed[1].1, "Africa/Lagos");
+    }
+
+    #[test]
+    fn heading_inside_value_survives_round_trip() {
+        let rows = vec![(
+            "steps".to_string(),
+            "step 1\n# step 2\n#\nstep 3".to_string(),
+        )];
+        let md = render_agent(&rows);
+        let parsed = parse_md(&md);
+        assert_eq!(
+            parsed.len(),
+            1,
+            "heading-looking value lines must not split the record"
+        );
+        assert_eq!(parsed[0].1, "step 1\n# step 2\n#\nstep 3");
+    }
+
+    #[test]
+    fn key_named_agent_memory_round_trips_in_v1_file() {
+        let rows = vec![
+            ("Agent memory".to_string(), "meta".to_string()),
+            ("other".to_string(), "v".to_string()),
+        ];
+        let md = render_agent(&rows);
+        let parsed = parse_md(&md);
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed
+            .iter()
+            .any(|(k, v)| k == "Agent memory" && v == "meta"));
     }
 
     #[test]

@@ -2,9 +2,13 @@
 //! Default backend is SQLite (rusqlite, bundled). Postgres later.
 
 pub mod claims;
+pub mod leases;
 pub mod ledger;
+pub mod operations;
 
 pub mod audit;
 pub use audit::{audit_line, export_jsonl};
 pub use claims::ClaimStore;
-pub use ledger::{Ledger, LedgerEntry};
+pub use leases::{LostLeaseError, RunLease, RunLeaseStore};
+pub use ledger::{Artifact, Ledger, LedgerEntry};
+pub use operations::{Operation, OperationConflict, OperationStatus, OperationStore};
