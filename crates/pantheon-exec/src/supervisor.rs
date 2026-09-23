@@ -109,9 +109,7 @@ impl PluginSupervisor {
         timeout: Duration,
     ) -> Result<Self, PantheonError> {
         let mut cmd = Command::new(runner);
-        cmd.env("PANTHEON_PLUGIN_NAME", &manifest.name)
-            .env("PANTHEON_DATA_DIR", data_dir.to_string_lossy().to_string())
-            .stdin(Stdio::piped())
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env_clear();
@@ -125,6 +123,10 @@ impl PluginSupervisor {
                 cmd.env(&decl.name, v);
             }
         }
+        // Pantheon-provided vars MUST come after env_clear() — the clear
+        // wipes everything set before it.
+        cmd.env("PANTHEON_PLUGIN_NAME", &manifest.name)
+            .env("PANTHEON_DATA_DIR", data_dir.to_string_lossy().to_string());
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -237,12 +239,24 @@ impl PluginSupervisor {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if Instant::now() > deadline {
                         // Timeout: the reader thread still owns stdout and is
-                        // blocked in read_line. Kill the process group; the
-                        // read unblocks on EOF/EBADF and the thread exits.
-                        // Do NOT restore stdout: this supervisor is dead.
+                        // blocked in read_line. TERM the group; a compliant
+                        // plugin exits, closing the pipe, and the reader
+                        // thread unblocks on EOF and sends the reader back
+                        // (which we drop). If it ignores TERM, escalate to
+                        // SIGKILL so neither the group nor the thread leaks.
                         self.kill_group();
                         self.child.take();
                         self.stdin.take();
+                        let kill_deadline = Instant::now() + STOP_GRACE;
+                        while Instant::now() < kill_deadline {
+                            #[cfg(unix)]
+                            unsafe {
+                                libc::killpg(self.pgid, SIGKILL);
+                            }
+                            std::thread::sleep(Duration::from_millis(100));
+                            // SIGKILL is terminal; one signal + settle is enough.
+                            break;
+                        }
                         // stdout stays None (moved into the dead thread).
                         self.alive = false;
                         return Err(merr(
@@ -284,10 +298,15 @@ impl PluginSupervisor {
             )
         })?;
         if resp.call_id != call_id {
+            // A mismatched id means the protocol stream is corrupted (we
+            // have one in-flight call). Restoring stdout would poison every
+            // later call with this stale line, so treat it like EOF.
+            self.alive = false;
+            self.stdout.take();
             return Err(merr(
                 "PLUGIN_PROTOCOL",
                 format!(
-                    "plugin '{}' answered wrong call: got {}, want {call_id}",
+                    "plugin '{}' answered wrong call: got {}, want {call_id}; marking dead to avoid stream desync",
                     self.name, resp.call_id
                 ),
             ));
@@ -369,9 +388,16 @@ impl PluginSupervisor {
 
 impl Drop for PluginSupervisor {
     fn drop(&mut self) {
-        // Never leave orphans: group-kill on drop.
+        // Never leave orphans: group-kill on drop. KILL, not TERM — drop
+        // cannot wait for a graceful exit, so the guaranteed signal is the
+        // right default. stop() is the graceful path when the caller can wait.
         if self.child.is_some() {
-            self.kill_group();
+            #[cfg(unix)]
+            unsafe {
+                if self.pgid > 1 && self.pgid != std::process::id() as i32 {
+                    libc::killpg(self.pgid, SIGKILL);
+                }
+            }
             self.child.take();
         }
     }
