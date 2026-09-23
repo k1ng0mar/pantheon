@@ -81,8 +81,34 @@ def fnv1a_hex(data: bytes) -> str:
     return f"{h:016x}"
 
 
+def audit_check(path: Path) -> tuple[bool, str]:
+    """Validate a JSONL trajectory: every line parses, seq strictly increases.
+
+    Returns (ok, detail) — detail is the failure reason or a summary.
+    """
+    if not path.exists():
+        return False, f"trajectory file missing: {path}"
+    lines = path.read_text().splitlines()
+    if not lines:
+        return False, "trajectory file is empty"
+    last_seq = None
+    events = []
+    for i, line in enumerate(lines):
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as e:
+            return False, f"line {i} is not valid JSON: {e}"
+        if "seq" not in obj or "event" not in obj:
+            return False, f"line {i} missing seq/event keys"
+        seq = obj["seq"]
+        if last_seq is not None and seq <= last_seq:
+            return False, f"line {i}: seq {seq} not greater than {last_seq}"
+        last_seq = seq
+        events.append(obj["event"])
+    return True, f"valid trajectory: {len(lines)} events ({events[0]}..{events[-1]})"
+
+
 def compact_output(text: str) -> str:
-    """Mirror of pantheon-exec compact_output with the default policy."""
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()  # Rust str::lines() drops the trailing empty piece
@@ -159,6 +185,9 @@ def run_case(case, bin_path, py3):
     env["PANTHEON_DATA_DIR"] = str(sandbox / "data")
     env["PANTHEON_EXT_DIR"] = str(sandbox / "ext")
     env["PANTHEON_EVAL_TMP"] = str(sandbox)
+    # Case-level env overrides (resolved with <TMP>/<VENDOR> placeholders).
+    for k, v in case.get("env", {}).items():
+        env[k] = resolve(v, sandbox)
     os.makedirs(sandbox / "data", exist_ok=True)
     os.makedirs(sandbox / "ext", exist_ok=True)
 
@@ -171,6 +200,11 @@ def run_case(case, bin_path, py3):
                 path = Path(resolve(cmd[1], sandbox))
                 out = compact_output(path.read_text())
                 code, stdout, stderr = 0, out, ""
+            elif cmd and cmd[0] == "_audit_check":
+                path = Path(resolve(cmd[1], sandbox))
+                ok, detail = audit_check(path)
+                code = 0 if ok else 1
+                stdout, stderr = detail, "" if ok else detail
             else:
                 argv = [str(bin_path)] + [resolve(a, sandbox) for a in cmd]
                 code, stdout, stderr = run_cmd(argv, env)
@@ -190,6 +224,17 @@ def run_case(case, bin_path, py3):
 
         for post in case.get("post", []):
             *argv, assertion = post
+            if argv and argv[0] in ("_audit_check", "_compact"):
+                # Probe command, not a CLI invocation.
+                if argv[0] == "_audit_check":
+                    ok, detail = audit_check(Path(resolve(argv[1], sandbox)))
+                    if not ok:
+                        failures.append(f"post _audit_check: {detail}")
+                else:  # _compact
+                    out = compact_output(Path(resolve(argv[1], sandbox)).read_text())
+                    if not assertion_ok(assertion, out):
+                        failures.append(f"post _compact: stdout missing {assertion!r}")
+                continue
             if assertion.startswith("exists:"):
                 ok = Path(resolve(assertion[len("exists:"):], sandbox)).exists()
                 if not ok:
