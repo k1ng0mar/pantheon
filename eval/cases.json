@@ -190,6 +190,88 @@
           "noisegate.log": "#GENERATE_LINES:500"
         }
       }
+    },
+    {
+      "id": "mock-chat-answers-without-network",
+      "title": "PANTHEON_MOCK_FILE scripted reply reaches the model loop",
+      "origin": "phase6: MockTransport, deterministic evals",
+      "skip": "needs binary",
+      "commands": [
+        ["chat", "--provider", "mock", "--model", "mock", "anything at all"]
+      ],
+      "expect": {
+        "mock-chat-answers-without-network": ["MOCK SAYS HELLO"]
+      },
+      "post": [],
+      "env": {"PANTHEON_MOCK_FILE": "<TMP>/mock.json"},
+      "setup": {
+        "files": {
+          "mock.json": "{\"responses\":[{\"match\":\"*\",\"content\":\"MOCK SAYS HELLO\"}]}"
+        }
+      }
+    },
+    {
+      "id": "mock-tool-call-runs-shell",
+      "title": "Mock-driven tool call executes and the second scripted turn answers",
+      "origin": "phase6: fixture scripts multi-turn tool loops",
+      "skip": "needs binary",
+      "commands": [
+        ["chat", "--provider", "mock", "--model", "mock", "run it"]
+      ],
+      "expect": {
+        "mock-tool-call-runs-shell": ["TOOL LOOP COMPLETE"]
+      },
+      "post": [],
+      "env": {"PANTHEON_MOCK_FILE": "<TMP>/mock.json"},
+      "setup": {
+        "files": {
+          "mock.json": "{\"responses\":[{\"match\":\"run it\",\"tool_calls\":[{\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"echo batch-tool-ran\\\"}\"}]},{\"match\":\"batch-tool-ran\",\"content\":\"TOOL LOOP COMPLETE\"}]}"
+        }
+      }
+    },
+    {
+      "id": "audit-exports-valid-jsonl",
+      "title": "pantheon audit writes a sequence-validated JSONL trajectory",
+      "origin": "phase6: JSONL audit log, eval interface",
+      "skip": "needs binary",
+      "commands": [
+        ["run", "--id", "eval-audit-run", "--say", "audit me"]
+      ],
+      "expect": {
+        "audit-exports-valid-jsonl": ["eval-audit-run"]
+      },
+      "post": [
+        ["audit", "eval-audit-run", "<TMP>/traj.jsonl", "contains:wrote 3 events"],
+        ["_audit_check", "<TMP>/traj.jsonl", "ANY"]
+      ]
+    },
+    {
+      "id": "memory-put-recall-roundtrip",
+      "title": "memory put then recall returns the record with provenance",
+      "origin": "phase: native memory wiring",
+      "skip": "needs binary",
+      "commands": [
+        ["memory", "put", "evalkey", "evalvalue"]
+      ],
+      "expect": {
+        "memory-put-recall-roundtrip": ["stored evalkey"]
+      },
+      "post": [
+        ["memory", "recall", "evalkey", "contains:evalvalue"]
+      ]
+    },
+    {
+      "id": "plugins-list-reports-empty",
+      "title": "plugins list on a fresh sandbox reports no plugins without error",
+      "origin": "phase: plugin discovery",
+      "skip": "needs binary",
+      "commands": [
+        ["plugins", "list"]
+      ],
+      "expect": {
+        "plugins-list-reports-empty": ["no plugins installed"]
+      },
+      "post": []
     }
   ]
 }

@@ -720,6 +720,32 @@ fn main() {
                 }
             }
         }
+        "audit" => {
+            // Export a run's ledger as a sequence-validated JSONL trajectory.
+            // Usage: pantheon audit <run_id> [OUT]  (default: <run_id>.jsonl)
+            if args.len() < 3 {
+                eprintln!("usage: pantheon audit <run_id> [OUT.jsonl]");
+                std::process::exit(2);
+            }
+            let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
+                eprintln!("open runtime: {e}");
+                std::process::exit(1);
+            });
+            let entries = sup.replay(&args[2]).unwrap_or_else(|e| {
+                eprintln!("audit: {e}");
+                std::process::exit(1);
+            });
+            let out = args
+                .get(3)
+                .cloned()
+                .unwrap_or_else(|| format!("{}.jsonl", args[2]));
+            let n = pantheon_storage::export_jsonl(&entries, std::path::Path::new(&out))
+                .unwrap_or_else(|e| {
+                    eprintln!("audit: {e}");
+                    std::process::exit(1);
+                });
+            println!("wrote {n} events to {out}");
+        }
         "status" => {
             if args.len() < 3 {
                 eprintln!("usage: pantheon status <run_id>");

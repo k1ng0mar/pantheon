@@ -96,6 +96,21 @@ fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, Panthe
     })
 }
 
+/// Boxed transport: lets runtime code pick mock vs HTTP at runtime while
+/// keeping one concrete `ProviderChain` type.
+impl ChatTransport for Box<dyn ChatTransport> {
+    fn post(&self, req: &WireRequest) -> Result<String, PantheonError> {
+        (**self).post(req)
+    }
+    fn post_stream(
+        &self,
+        req: &WireRequest,
+        on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+    ) -> Result<(), PantheonError> {
+        (**self).post_stream(req, on_payload)
+    }
+}
+
 impl ChatTransport for HttpTransport {
     fn post(&self, req: &WireRequest) -> Result<String, PantheonError> {
         let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();

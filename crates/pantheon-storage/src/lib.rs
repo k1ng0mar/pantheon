@@ -4,5 +4,7 @@
 pub mod claims;
 pub mod ledger;
 
+pub mod audit;
+pub use audit::{audit_line, export_jsonl};
 pub use claims::ClaimStore;
 pub use ledger::{Ledger, LedgerEntry};

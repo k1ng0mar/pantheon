@@ -336,9 +336,31 @@ impl Session {
                 }
             }
         }
+        // Mock mode: PANTHEON_MOCK_FILE points at a scripted fixture. The
+        // whole chain runs against the fixture — deterministic evals, zero
+        // network. Unset = real HTTP transport.
+        let mock_file = std::env::var("PANTHEON_MOCK_FILE").ok();
+        let transport: Box<dyn pantheon_providers::ChatTransport> = if let Some(f) = mock_file {
+            Box::new(
+                pantheon_providers::MockTransport::from_file(std::path::Path::new(&f)).map_err(
+                    |e| {
+                        PantheonError::new(
+                            e.code.clone(),
+                            Layer::Provider,
+                            false,
+                            e.cause.clone(),
+                            "check PANTHEON_MOCK_FILE",
+                            "",
+                        )
+                    },
+                )?,
+            )
+        } else {
+            Box::new(HttpTransport::default())
+        };
         let chain = ProviderChain::new(
             self.model_policy.clone(),
-            HttpTransport::default(),
+            transport,
             reg.schemas(),
             self.api_key.clone(),
         );
@@ -437,7 +459,7 @@ impl Session {
     fn drive(
         &self,
         loop_: &AgentLoop,
-        chain: &ProviderChain<HttpTransport>,
+        chain: &ProviderChain<Box<dyn pantheon_providers::ChatTransport>>,
         messages: &mut Vec<Message>,
         run_id: &str,
         turn: u32,

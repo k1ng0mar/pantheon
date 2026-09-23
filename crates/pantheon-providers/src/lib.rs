@@ -5,12 +5,14 @@
 pub mod anthropic;
 pub mod chain;
 pub mod http;
+pub mod mock;
 pub mod openai;
 
 use pantheon_core::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, ModelPolicy};
 
 pub use crate::chain::ProviderChain;
 pub use crate::http::{ChatTransport, HttpTransport, ResolvedModel, WireRequest};
+pub use crate::mock::MockTransport;
 pub use pantheon_core::catalog::{ApiMode, ModelCost, ModelMeta, ProviderMeta};
 
 /// Select the model for a run: always the default.

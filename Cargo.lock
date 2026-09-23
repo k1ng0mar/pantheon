@@ -963,6 +963,7 @@ dependencies = [
  "pantheon-gateway",
  "pantheon-memory",
  "pantheon-runtime",
+ "pantheon-storage",
  "serde_json",
  "toml",
 ]
@@ -1050,6 +1051,7 @@ version = "0.1.0"
 dependencies = [
  "pantheon-agent",
  "pantheon-core",
+ "serde",
  "serde_json",
  "ureq",
 ]
