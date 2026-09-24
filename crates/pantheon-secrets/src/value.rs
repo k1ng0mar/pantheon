@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 ///
 /// Cloning is allowed but discouraged; prefer moving. Logs/errors/events
 /// must only ever carry `Debug` or [`SecretValue::len`], never raw bytes.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SecretValue(Zeroizing<String>);
 
 impl SecretValue {

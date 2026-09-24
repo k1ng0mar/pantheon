@@ -16,6 +16,8 @@ use pantheon_core::message::Message;
 use pantheon_core::model::{DefaultModel, FallbackChain, ModelPolicy};
 use pantheon_core::model_event::{ModelEvent, ModelEventSink, ModelUsage};
 use pantheon_providers::{HttpTransport, ProviderChain};
+#[allow(unused_imports)]
+use pantheon_secrets::SecretValue;
 use std::cell::RefCell;
 use std::time::Duration;
 
@@ -30,7 +32,7 @@ impl ModelEventSink for Collect {
 
 /// Chain pointed at the local router, or `None` when no key is configured.
 fn router_chain() -> Option<ProviderChain<HttpTransport>> {
-    let key = std::env::var("PANTHEON_KEY_ROUTER").ok()?;
+    let key = pantheon_secrets::SecretValue::new(std::env::var("PANTHEON_KEY_ROUTER").ok()?);
     let pol = ModelPolicy {
         default: DefaultModel {
             provider: "router".into(),

@@ -133,6 +133,7 @@ pub fn export_jsonl(entries: &[LedgerEntry], path: &Path) -> Result<usize, Panth
 mod tests {
     use super::*;
     use pantheon_core::events::Event;
+    use pantheon_core::provenance::Provenance;
 
     fn entry(id: i64, event: Event) -> LedgerEntry {
         LedgerEntry {
@@ -153,6 +154,7 @@ mod tests {
                 call_id: "call_1_0".into(),
                 tool: "shell".into(),
                 args: "ls".into(),
+                provenance: Provenance::untrusted("shell"),
             },
         );
         let line = audit_line(&e);

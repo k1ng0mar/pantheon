@@ -25,6 +25,7 @@ use pantheon_exec::tools::ToolRegistry;
 use pantheon_memory::{recall as mem_recall, LayerKind, MemoryStore};
 use pantheon_providers::http::HttpTransport;
 use pantheon_providers::ProviderChain;
+use pantheon_secrets::{SecretValue, SecretsBroker};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -226,7 +227,10 @@ pub struct Session {
     pub supervisor: Supervisor,
     pub policy: Policy,
     pub model_policy: ModelPolicy,
-    pub api_key: String,
+    /// Secrets broker. Replaces the old raw `api_key: String` field so
+    /// the API key is resolved through `SecretsBroker::inject` at the
+    /// execution boundary and never lives in memory as a plain String.
+    pub secrets: SecretsBroker,
     pub budget: Budget,
     pub system_prompt: String,
     /// Native SQLite + FTS5 memory store. Optional so a session can run
@@ -242,7 +246,7 @@ impl Session {
         data_dir: std::path::PathBuf,
         policy: Policy,
         model_policy: ModelPolicy,
-        api_key: String,
+        secrets: SecretsBroker,
     ) -> Result<Self, PantheonError> {
         let memory = MemoryStore::open(&data_dir.join("memory.db"))
             .ok()
@@ -251,7 +255,7 @@ impl Session {
             supervisor: Supervisor::open(data_dir)?,
             policy,
             model_policy,
-            api_key,
+            secrets,
             budget: Budget::default(),
             system_prompt: String::new(),
             memory,
@@ -583,12 +587,23 @@ impl Session {
         } else {
             Box::new(HttpTransport::default())
         };
-        let chain = ProviderChain::new(
-            self.model_policy.clone(),
-            transport,
-            reg.schemas(),
-            self.api_key.clone(),
-        );
+        let chain = {
+            let api_key: SecretValue = self
+                .secrets
+                .inject("PANTHEON_API_KEY")
+                .map_err(|e| {
+                    PantheonError::new(
+                        "SECRET_RESOLVE",
+                        pantheon_core::error::Layer::Agent,
+                        true,
+                        format!("failed to resolve API key from secrets broker: {e}"),
+                        "ensure PANTHEON_API_KEY is set in the environment",
+                        "",
+                    )
+                })?
+                .unwrap_or_default();
+            ProviderChain::new(self.model_policy.clone(), transport, reg.schemas(), api_key)
+        };
 
         let sink = SupSink(&self.supervisor);
         let runner = RegRunner(&reg);
@@ -816,6 +831,7 @@ impl Session {
                     call_id: tc.id.clone(),
                     tool: tc.name.clone(),
                     args: tc.arguments.clone(),
+                    provenance: Provenance::system("pantheon"),
                 })?;
                 let denial = Message::tool(
                     tc.id.clone(),
@@ -831,6 +847,7 @@ impl Session {
                     run_id: run_id.into(),
                     call_id: tc.id.clone(),
                     tool: tc.name.clone(),
+                    provenance: Provenance::system("pantheon"),
                 })?;
                 *tool_calls_used += 1;
             }
@@ -862,6 +879,7 @@ impl Session {
                         call_id: tc.id.clone(),
                         tool: tc.name.clone(),
                         args: tc.arguments.clone(),
+                        provenance: Provenance::system("pantheon"),
                     })?;
                 }
                 let results: Vec<Result<String, PantheonError>> = std::thread::scope(|s| {
@@ -901,6 +919,7 @@ impl Session {
                         call_id: tc.id.clone(),
                         tool: tc.name.clone(),
                         truncated: false,
+                        provenance: Provenance::untrusted(&tc.name),
                     })?;
                     let tool_msg = Message::tool(tc.id.clone(), out)
                         .with_provenance(Provenance::untrusted(&tc.name));
@@ -913,6 +932,7 @@ impl Session {
                         run_id: run_id.into(),
                         call_id: tc.id.clone(),
                         tool: tc.name.clone(),
+                        provenance: Provenance::untrusted(&tc.name),
                     })?;
                 }
             }
@@ -988,6 +1008,7 @@ impl Session {
                         call_id: r.id.clone(),
                         tool: call.name.clone(),
                         args: call.args.clone(),
+                        provenance: Provenance::system("pantheon"),
                     })?;
                 }
                 // Run all allowed calls concurrently on scoped threads. The
@@ -1034,6 +1055,7 @@ impl Session {
                         call_id: r.id.clone(),
                         tool: call.name.clone(),
                         truncated: false,
+                        provenance: Provenance::untrusted(&call.name),
                     })?;
                     let tool_msg = Message::tool(r.id.clone(), out)
                         .with_provenance(Provenance::untrusted(&call.name));
@@ -1046,6 +1068,7 @@ impl Session {
                         run_id: run_id.into(),
                         call_id: r.id.clone(),
                         tool: call.name.clone(),
+                        provenance: Provenance::untrusted(&call.name),
                     })?;
                 }
                 self.drive(

@@ -670,6 +670,7 @@ mod tests {
                 call_id: "call_0_0".into(),
                 tool: "shell".into(),
                 args: String::new(),
+                provenance: pantheon_core::provenance::Provenance::system("test"),
             })
             .unwrap();
         ledger
