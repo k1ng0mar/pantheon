@@ -47,26 +47,7 @@ fn save_backend_selection(data_dir: &Path, sel: &BackendSelection) {
     });
 }
 fn usage() -> String {
-    "pantheon <chat|run|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback|serve|stream|grant|deny|sign> ...\n\
-     \u{20} chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n\
-     \u{20} run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n\
-     \u{20} explain <run_id>\n\
-     \u{20} status <run_id>\n\
-     \u{20} extensions  list loaded extensions\n\
-     \u{20} hook <name> [--session S] [--platform P]  fire a hook\n\
-     \u{20} doctor <plugin_dir>  loud preflight report\n\
-     \u{20} preview <path> <file-with-new-content>  read-only diff preview\n\
-     \u{20} stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n\
-     \u{20} apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n\
-     \u{20} checkpoint <path>... [--run ID]  snapshot pre-images\n\
-     \u{20} rollback (--ckpt ID | --seq N)  restore a checkpoint
-     serve [--port N] [--host H]  AG-UI SSE + RPC server (cline-style interactive)
-     stream <run_id> [--thread T] [--after N]  print SSE frames for a run
-     grant <run_id> <scope>  approve a parked tool call
-     deny <run_id> [scope]  refuse a parked tool call
-     sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n\
-     channel <run_id> [--thread T]  replay frames through the transport seam\n\
-     gateway                    run Discord/Telegram surfaces (env tokens)\n"
+    "pantheon <chat|run|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback|serve|stream|grant|deny|sign|setup|session|reset|gateway> ...\n  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n  run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n  explain <run_id>\n  status <run_id>\n  extensions  list loaded extensions\n  hook <name> [--session S] [--platform P]  fire a hook\n  doctor <plugin_dir>  loud preflight report\n  preview <path> <file-with-new-content>  read-only diff preview\n  stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n  apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n  checkpoint <path>... [--run ID]  snapshot pre-images\n  rollback (--ckpt ID | --seq N)  restore a checkpoint\n  serve [--port N] [--host H]  AG-UI SSE + RPC server (cline-style interactive)\n  stream <run_id> [--thread T] [--after N]  print SSE frames for a run\n  grant <run_id> <scope>  approve a parked tool call\n  deny <run_id> [scope]  refuse a parked tool call\n  sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n  channel <run_id> [--thread T]  replay frames through the transport seam\n  gateway                    run Discord/Telegram surfaces (env tokens)\n  setup                      interactive wizard: API key, default model, policy\n  session                    start the interactive REPL (default if no args)\n  reset [all|memory|ledger]    wipe data with confirmation\n  providers                  list cataloged providers and models\n"
         .into()
 }
 mod agui_cli;
