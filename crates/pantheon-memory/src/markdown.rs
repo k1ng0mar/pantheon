@@ -289,6 +289,7 @@ pub fn import_agent(
             provenance: Provenance {
                 source: "import".into(),
                 origin: "memory.md".into(),
+                trust: pantheon_core::provenance::TrustTier::User,
                 recorded_at_ms: now_ms(),
             },
         };
@@ -501,6 +502,7 @@ mod tests {
                 provenance: Provenance {
                     source: "test".into(),
                     origin: "test".into(),
+                    trust: pantheon_core::provenance::TrustTier::User,
                     recorded_at_ms: 0,
                 },
             },
@@ -528,6 +530,7 @@ mod tests {
                 provenance: Provenance {
                     source: "test".into(),
                     origin: "test".into(),
+                    trust: pantheon_core::provenance::TrustTier::User,
                     recorded_at_ms: 0,
                 },
             },

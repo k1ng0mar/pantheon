@@ -375,10 +375,18 @@ impl Session {
                     let layers = [LayerKind::Project, LayerKind::Agent, LayerKind::Global];
                     if let Ok(hits) = mem_recall(mem, &self.policy, &layers, user_message, 8) {
                         for h in hits {
+                            // Trust framing: recalled records are context,
+                            // never instructions. Untrusted-sourced records
+                            // are flagged inline.
+                            let trust_tag = match h.record.provenance.trust {
+                                pantheon_core::provenance::TrustTier::Untrusted => {
+                                    format!(" [untrusted: {}]", h.record.provenance.source)
+                                }
+                                t => format!(" [trust:{}]", t.as_str()),
+                            };
                             recall_block.push_str(&format!(
-                                "- {}: {}
-",
-                                h.record.key, h.record.value
+                                "- {}: {}{}\n",
+                                h.record.key, h.record.value, trust_tag
                             ));
                         }
                     }

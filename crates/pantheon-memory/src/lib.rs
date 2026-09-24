@@ -105,12 +105,17 @@ impl WriteRefusal {
     }
 }
 
-/// Who is asking, and on whose behalf.
+/// Who is asking, and on whose behalf. `trust` carries the tier from
+/// pantheon-core; the invariant `trust <= source tier` is enforced in
+/// `propose_write`: memory can never raise the trust of its material.
+/// Only an explicit user action (CLI `memory put`, `memory_confirm` on
+/// an existing record) may store or promote a higher tier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Provenance {
     pub source: String,
     /// Where the value came from: `user`, `tool:web_fetch`, `plugin:time-gap`...
     pub origin: String,
+    pub trust: pantheon_core::provenance::TrustTier,
     pub recorded_at_ms: i64,
 }
 
@@ -157,6 +162,13 @@ pub fn validate(p: &Proposal, max_bytes: usize) -> Result<(), WriteRefusal> {
 }
 
 /// The full write path. Returns the record that was stored.
+///
+/// Trust invariant: a proposal may not claim a tier above what its origin
+/// justifies. Model-sourced proposals (`origin` not `user`/`cli`/`import`)
+/// are clamped to Untrusted no matter what the caller asked for: the model
+/// cannot launder web content into trusted memory by passing a flattering
+/// origin tag. Explicit user actions (CLI put, file import) write User
+/// tier directly.
 pub fn propose_write(
     store: &MemoryStore,
     policy: &Policy,
@@ -183,8 +195,37 @@ pub fn propose_write(
             "fix the proposal; nothing was stored",
         ));
     }
-    // 3. provider.
-    store.put(&proposal)
+    // 3. trust clamp. Anything not authored by an explicit user action
+    // lands at Untrusted regardless of the requested tier. The user
+    // promotion path is `memory_confirm` / CLI, which writes Memory tier
+    // directly below.
+    let mut p = proposal;
+    if !matches!(p.provenance.origin.as_str(), "user" | "cli" | "import") {
+        p.provenance.trust = pantheon_core::provenance::TrustTier::Untrusted;
+    }
+    // 4. provider.
+    store.put(&p)
+}
+
+/// Promote an existing record to Memory tier (from Untrusted). This is
+/// the explicit user-approval path: the CLI and the `memory_confirm` tool
+/// call this after a human says the record is sound. Returns the updated
+/// record. No-op (still succeeds) if the record is already Memory tier or
+/// better.
+pub fn confirm_write(
+    store: &MemoryStore,
+    policy: &Policy,
+    namespace: &str,
+    key: &str,
+) -> Result<MemoryRecord, PantheonError> {
+    if !matches!(policy.check(&Capability::MemoryWrite), Decision::Allow) {
+        return Err(merr(
+            "MEM_NO_CAPABILITY",
+            "memory.write not granted for confirm".into(),
+            "grant memory.write in the agent policy",
+        ));
+    }
+    store.promote(namespace, key, pantheon_core::provenance::TrustTier::Memory)
 }
 
 /// Recall across layers, narrowest first, with provenance attached.
@@ -213,6 +254,7 @@ mod tests {
         Provenance {
             source: "import".into(),
             origin: origin.into(),
+            trust: pantheon_core::provenance::TrustTier::User,
             recorded_at_ms: 1,
         }
     }
