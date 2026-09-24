@@ -109,6 +109,12 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
     }
 }
 
+impl From<SandboxLevel> for SandboxProfile {
+    fn from(level: SandboxLevel) -> Self {
+        profile_for(level)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

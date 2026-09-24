@@ -11,9 +11,8 @@ use crate::tools::{parse_args, ToolRegistry};
 use pantheon_core::capability::Capability;
 use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::message::ToolSchema;
+use pantheon_sandbox::{SandboxLevel, SandboxProfile};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
 
 /// Options for `register_builtins`. Empty defaults keep the old call site
 /// working; supplying `safewrite_state_dir` routes `write_file` through the
@@ -186,52 +185,28 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
 fn run_shell(args: &str) -> Result<String, PantheonError> {
     let v = parse_args(args)?;
     let command = arg_str(&v, "command")?;
-    // sh -c, output captured, 60s timeout via wait_timeout-style polling.
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| berr("TOOL_SPAWN", format!("spawn: {e}"), false))?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut out = String::new();
-                if let Some(mut s) = child.stdout.take() {
-                    use std::io::Read;
-                    s.read_to_string(&mut out).ok();
-                }
-                if let Some(mut s) = child.stderr.take() {
-                    use std::io::Read;
-                    let mut e = String::new();
-                    s.read_to_string(&mut e).ok();
-                    out.push_str(&e);
-                }
-                let code = status.code().unwrap_or(-1);
-                let raw = if out.is_empty() {
-                    format!("(exit {code})")
-                } else {
-                    format!("{out}\n(exit {code})")
-                };
-                let compacted = compact_output(&raw, &Default::default());
-                return Ok(compacted.text);
-            }
-            Ok(None) => {
-                if std::time::Instant::now() > deadline {
-                    let _ = child.kill();
-                    return Err(berr(
-                        "TOOL_TIMEOUT",
-                        format!("command exceeded 60s: {command}"),
-                        true,
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => return Err(berr("TOOL_WAIT", e.to_string(), false)),
-        }
-    }
+    // Shell runs at HIGH isolation: bwrap with dropped caps + no-new-privs
+    // + rlimits. The capability gate already ran before we get here.
+    let profile = SandboxProfile::from(SandboxLevel::High);
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "/tmp".to_string());
+
+    let result = pantheon_sandbox::runner::run_sandboxed(
+        &profile,
+        "sh",
+        &["-c", &command],
+        &cwd,
+    )?;
+
+    let code = result.exit_code;
+    let raw = if result.output.is_empty() {
+        format!("(exit {code})")
+    } else {
+        format!("{}\n(exit {code})", result.output)
+    };
+    let compacted = compact_output(&raw, &Default::default());
+    Ok(compacted.text)
 }
 
 #[cfg(test)]
