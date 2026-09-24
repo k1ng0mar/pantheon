@@ -3,10 +3,18 @@
 ## Prerequisites
 
 - A Rust toolchain (rustup, edition 2021). Any recent stable works.
-- That is all. SQLite is bundled; there is no async runtime, no container
-  requirement, no external services for the core path.
+- System deps: `sh` and `git` (bundled SQLite needs neither).
 
-## Build
+## Install (recommended)
+
+```sh
+curl -fsSL https://pantheon.run/install.sh | bash
+```
+
+Installs Rust if missing, builds from source, links the binary into
+`~/.local/bin`. Re-running is idempotent.
+
+## Build (from source)
 
 ```sh
 git clone <repo> pantheon && cd pantheon
