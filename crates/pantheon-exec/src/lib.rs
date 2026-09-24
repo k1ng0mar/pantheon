@@ -6,6 +6,7 @@
 //! head/tail, hash the dropped middle, record what was dropped in the ledger.
 
 pub mod builtins;
+pub mod danger;
 pub mod memory_tools;
 pub mod plugins;
 pub mod process;

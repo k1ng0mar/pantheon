@@ -139,7 +139,7 @@ impl MemoryStore {
         let conn = Connection::open_in_memory().map_err(|e| serr("MEM_OPEN", e.to_string()))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
-        migrate_trust_column(&conn);
+        migrate_trust_column(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             path: None,
