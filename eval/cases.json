@@ -230,6 +230,29 @@
       }
     },
     {
+      "id": "danger-gate-blocks-shell-wipe",
+      "title": "Dangerous-pattern pre-gate refuses rm -rf / before execution",
+      "origin": "security: dangerous-pattern pre-gate",
+      "skip": "needs binary",
+      "commands": [
+        ["chat", "--id", "eval-danger-gate", "--provider", "mock", "--model", "mock", "clean up"]
+      ],
+      "expect_fail": [0],
+      "expect": {
+        "danger-gate-blocks-shell-wipe": []
+      },
+      "post": [
+        ["status", "eval-danger-gate", "equals:failed"],
+        ["explain", "eval-danger-gate", "contains:DANGER_BLOCKED"]
+      ],
+      "env": {"PANTHEON_MOCK_FILE": "<TMP>/mock.json"},
+      "setup": {
+        "files": {
+          "mock.json": "{\"responses\":[{\"match\":\"*\",\"tool_calls\":[{\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"rm -rf /\\\"}\"}]}]}"
+        }
+      }
+    },
+    {
       "id": "audit-exports-valid-jsonl",
       "title": "pantheon audit writes a sequence-validated JSONL trajectory",
       "origin": "phase6: JSONL audit log, eval interface",
