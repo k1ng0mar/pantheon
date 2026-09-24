@@ -510,6 +510,7 @@ fn main() {
                             provenance: Provenance {
                                 source: "cli".into(),
                                 origin: "user".into(),
+                                trust: pantheon_core::provenance::TrustTier::User,
                                 recorded_at_ms: 0,
                             },
                         },

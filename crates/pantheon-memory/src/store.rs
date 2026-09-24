@@ -2,9 +2,15 @@
 //!
 //! Two tables: `memories` (the record) and `memories_fts` (search index).
 //! Every recalled row carries its provenance so the agent (and `/explain`)
-//! can see where a belief came from.
+//! can see where a belief came from, including its trust tier.
+//!
+//! The `trust` column is tiered per pantheon_core::provenance::TrustTier.
+//! Rows written before tiers existed backfill as `memory` tier on open:
+//! they were human/import authored in practice, and treating legacy data
+//! as mid-trust is safer than treating it as authoritative.
 use crate::{LayerKind, MemoryRecord, Proposal, Provenance};
 use pantheon_core::error::{Layer, PantheonError};
+use pantheon_core::provenance::TrustTier;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -43,6 +49,7 @@ CREATE TABLE IF NOT EXISTS memories (
   value TEXT NOT NULL,
   source TEXT NOT NULL,
   origin TEXT NOT NULL,
+  trust TEXT NOT NULL DEFAULT 'memory',
   recorded_at_ms INTEGER NOT NULL,
   UNIQUE(layer, namespace, key)
 );
@@ -59,6 +66,37 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
   INSERT INTO memories_fts(rowid, key, value, namespace, layer, origin)
   VALUES (new.id, new.key, new.value, new.namespace, new.layer, new.origin);
 END;";
+
+/// Backfill for stores created before trust tiers. Legacy rows become
+/// `memory` tier: mid-trust, informative, never authoritative. Idempotent.
+const MIGRATE_TRUST: &str = "
+ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
+
+/// Add the trust column if the table predates it. `ALTER TABLE ... ADD
+/// COLUMN` with a NOT NULL DEFAULT is instant in SQLite (no table rewrite).
+fn migrate_trust_column(conn: &Connection) -> Result<(), PantheonError> {
+    let has_trust: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='trust'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
+    if !has_trust {
+        conn.execute_batch(MIGRATE_TRUST)
+            .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
+    }
+    Ok(())
+}
+
+fn trust_str(t: TrustTier) -> &'static str {
+    t.as_str()
+}
+
+fn trust_from(s: &str) -> TrustTier {
+    TrustTier::parse(s).unwrap_or(TrustTier::Memory)
+}
 
 fn layer_str(l: LayerKind) -> &'static str {
     match l {
@@ -90,6 +128,7 @@ impl MemoryStore {
         let conn = Connection::open(path).map_err(|e| serr("MEM_OPEN", e.to_string()))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
+        migrate_trust_column(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             path: Some(path.to_path_buf()),
@@ -100,6 +139,7 @@ impl MemoryStore {
         let conn = Connection::open_in_memory().map_err(|e| serr("MEM_OPEN", e.to_string()))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
+        migrate_trust_column(&conn);
         Ok(Self {
             conn: Mutex::new(conn),
             path: None,
@@ -153,17 +193,88 @@ impl MemoryStore {
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
+
+    /// Promote one record's trust tier. Only raises the tier (the
+    /// `derived <= source` invariant runs in reverse only through
+    /// explicit promotion); demotion goes through delete + rewrite.
+    pub fn promote(
+        &self,
+        namespace: &str,
+        key: &str,
+        tier: pantheon_core::provenance::TrustTier,
+    ) -> Result<MemoryRecord, PantheonError> {
+        let updated = {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
+            // Only upgrade: an existing higher tier wins. The WHERE clause
+            // constrains what can change, so a record already at or above
+            // the requested tier is untouched.
+            conn.execute(
+                "UPDATE memories SET trust=?3
+                 WHERE namespace=?1 AND key=?2
+                   AND trust IN ('untrusted','memory')",
+                params![namespace, key, trust_str(tier)],
+            )
+            .map_err(|e| serr("MEM_PUT", e.to_string()))?
+        };
+        if updated == 0 {
+            return Err(serr(
+                "MEM_NOT_FOUND",
+                format!("no promotable record {key} in {namespace}"),
+            ));
+        }
+        self.get(namespace, key)?
+            .ok_or_else(|| serr("MEM_NOT_FOUND", format!("no record {key} in {namespace}")))
+    }
+
+    /// Fetch one record by namespace + key.
+    pub fn get(&self, namespace: &str, key: &str) -> Result<Option<MemoryRecord>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT layer, namespace, key, value, source, origin, trust, recorded_at_ms
+                 FROM memories WHERE namespace=?1 AND key=?2",
+            )
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        let mut rows = stmt
+            .query_map(params![namespace, key], |r| {
+                Ok(MemoryRecord {
+                    layer: layer_from(&r.get::<_, String>(0)?),
+                    namespace: r.get(1)?,
+                    key: r.get(2)?,
+                    value: r.get(3)?,
+                    provenance: Provenance {
+                        source: r.get(4)?,
+                        origin: r.get(5)?,
+                        trust: trust_from(&r.get::<_, String>(6)?),
+                        recorded_at_ms: r.get(7)?,
+                    },
+                })
+            })
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        match rows.next() {
+            Some(row) => row.map(Some).map_err(|e| serr("MEM_QUERY", e.to_string())),
+            None => Ok(None),
+        }
+    }
+
     pub fn put(&self, p: &Proposal) -> Result<MemoryRecord, PantheonError> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
         conn.execute(
-            "INSERT INTO memories (layer, namespace, key, value, source, origin, recorded_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO memories (layer, namespace, key, value, source, origin, trust, recorded_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(layer, namespace, key) DO UPDATE SET
                value=excluded.value, source=excluded.source,
-               origin=excluded.origin, recorded_at_ms=excluded.recorded_at_ms",
+               origin=excluded.origin, trust=excluded.trust,
+               recorded_at_ms=excluded.recorded_at_ms",
             params![
                 layer_str(p.layer),
                 p.namespace,
@@ -171,6 +282,7 @@ impl MemoryStore {
                 p.value,
                 p.provenance.source,
                 p.provenance.origin,
+                trust_str(p.provenance.trust),
                 p.provenance.recorded_at_ms
             ],
         )
@@ -202,7 +314,7 @@ impl MemoryStore {
         let mut stmt = conn
             .prepare(
                 "SELECT m.layer, m.namespace, m.key, m.value, m.source, m.origin,
-                    m.recorded_at_ms, bm25(memories_fts) AS rank
+                    m.trust, m.recorded_at_ms, bm25(memories_fts) AS rank
              FROM memories_fts f
              JOIN memories m ON m.id = f.rowid
              WHERE memories_fts MATCH ?1
@@ -235,10 +347,11 @@ impl MemoryStore {
                         provenance: Provenance {
                             source: r.get(4)?,
                             origin: r.get(5)?,
-                            recorded_at_ms: r.get(6)?,
+                            trust: trust_from(&r.get::<_, String>(6)?),
+                            recorded_at_ms: r.get(7)?,
                         },
                     },
-                    rank: r.get(7)?,
+                    rank: r.get(8)?,
                 })
             })
             .map_err(|e| serr("MEM_SEARCH", e.to_string()))?;
