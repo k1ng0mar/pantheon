@@ -34,12 +34,21 @@ Implemented but not yet wired to a CLI surface: scheduler, secrets broker,
 MCP projection, migration import, sandbox profiles, swarm caps. See
 ARCHITECTURE.md sections 3, 10, 13, 15, 21, 23 for the exact state.
 
-## Build
+## Install
 
 ```sh
-cargo build
-cargo test --workspace   # 300 tests
-python3 eval/run.py      # 19 regression cases, drives the real binary
+curl -fsSL https://pantheon.run/install.sh | bash
+```
+
+The script installs Rust (if missing), builds from source, and links
+into `~/.local/bin`. Requires `sh` and `git` at minimum.
+
+Or build from source:
+
+```sh
+git clone https://github.com/pantheon-agent/pantheon.git
+cd pantheon
+cargo build --release
 ```
 
 Requires a Rust toolchain (edition 2021). No database server: SQLite is
