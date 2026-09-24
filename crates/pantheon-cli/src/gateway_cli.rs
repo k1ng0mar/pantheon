@@ -97,7 +97,7 @@ impl pantheon_gateway::EventSink for RuntimeSink {
         match session.chat(&run_id, text) {
             Ok(outcome) => {
                 let text = match outcome {
-                    pantheon_agent::LoopOutcome::Answered(t) => t,
+                    pantheon_agent::LoopOutcome::Answered { text: t, .. } => t,
                     pantheon_agent::LoopOutcome::AwaitingApproval { capability } => format!(
                         "approval needed: {capability:?}. Reply 'grant {run_id} <scope>' or 'deny'."
                     ),
