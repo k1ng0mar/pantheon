@@ -73,7 +73,7 @@ pub struct SyncConflict {
 }
 
 fn store_hash(store: &MemoryStore, namespace: &str) -> Result<String, PantheonError> {
-    let rows = store.list_agent(namespace)?;
+    let rows = store.list_agent_meta(namespace)?;
     let md = render_agent(&rows);
     Ok(fnv1a_hex(md.as_bytes()))
 }
@@ -127,7 +127,7 @@ pub fn sync(
         }
     }
     let tmp = path.with_extension("md.sync.tmp");
-    let rows = store.list_agent(namespace)?;
+    let rows = store.list_agent_meta(namespace)?;
     let md = render_agent(&rows);
     std::fs::write(&tmp, md).map_err(|e| merr("MEM_SYNC_WRITE", format!("{e}")))?;
     std::fs::rename(&tmp, path).map_err(|e| merr("MEM_SYNC_RENAME", format!("{e}")))?;
@@ -176,24 +176,34 @@ pub fn detect_conflict(
 /// Sections: `# <key>` heading, value as the body. Value lines that look
 /// like headings are escaped with a leading backslash so a value holding
 /// `# something` survives a render/parse round-trip as one record.
-pub fn render_agent(records: &[(String, String)]) -> String {
+/// Render one record. `trust` becomes a provenance footer that parse_md
+/// reads back; legacy 2-tuple callers get `user` (human-edited file).
+pub fn render_record(
+    key: &str,
+    value: &str,
+    trust: pantheon_core::provenance::TrustTier,
+) -> String {
+    let escaped = value
+        .lines()
+        .map(|l| {
+            if l.starts_with("# ") || l == "#" {
+                format!("\\{l}")
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("# {key}\n\n{{trust={}}}\n{}\n\n", trust.as_str(), escaped)
+}
+
+pub fn render_agent(records: &[(String, String, pantheon_core::provenance::TrustTier)]) -> String {
     let mut out = String::new();
     // Sentinel header: unambiguous, and a key named "Agent memory" still
     // round-trips because the header is not a `# ` heading.
-    out.push_str("<!-- pantheon:agent-memory v1 -->\n\n# Agent memory\n\n");
-    for (k, v) in records {
-        let escaped = v
-            .lines()
-            .map(|l| {
-                if l.starts_with("# ") || l == "#" {
-                    format!("\\{l}")
-                } else {
-                    l.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        out.push_str(&format!("# {k}\n\n{escaped}\n\n"));
+    out.push_str("<!-- pantheon:agent-memory v2 -->\n\n# Agent memory\n\n");
+    for (k, v, t) in records {
+        out.push_str(&render_record(k, v, *t));
     }
     out
 }
@@ -214,8 +224,8 @@ pub fn export_agent(
 pub fn list_agent_records(
     store: &MemoryStore,
     namespace: &str,
-) -> Result<Vec<(String, String)>, PantheonError> {
-    store.list_agent(namespace)
+) -> Result<Vec<(String, String, pantheon_core::provenance::TrustTier)>, PantheonError> {
+    store.list_agent_meta(namespace)
 }
 
 /// Parse a markdown file into Agent-layer records. Splits on `# <key>`
@@ -225,23 +235,40 @@ pub fn list_agent_records(
 /// legacy files without it, the first `# Agent memory` line is treated as
 /// the document header and skipped, so a literal key named `Agent memory`
 /// in a v1 file round-trips.
-pub fn parse_md(content: &str) -> Vec<(String, String)> {
+/// One parsed record: key, value, and the trust tier from its
+/// provenance footer when the file carries one (v2 sentinel). Legacy
+/// files (v1 or header-less) yield `None` and the importer decides.
+pub fn parse_md_meta(
+    content: &str,
+) -> Vec<(String, String, Option<pantheon_core::provenance::TrustTier>)> {
     let mut out = Vec::new();
-    let mut current: Option<(String, String)> = None;
+    let mut current: Option<(String, String, Option<String>)> = None;
     let mut seen_header = false;
     for line in content.lines() {
         if let Some(rest) = line.strip_prefix("\\# ") {
             // Escaped heading-like line inside a value.
-            if let Some((_, body)) = current.as_mut() {
+            if let Some((_, body, _)) = current.as_mut() {
                 body.push_str(&format!("# {rest}\n"));
             }
             continue;
         }
         if line == "\\#" {
-            if let Some((_, body)) = current.as_mut() {
+            if let Some((_, body, _)) = current.as_mut() {
                 body.push_str("#\n");
             }
             continue;
+        }
+        // Provenance footer: `{trust=tier}` as the first line of a body.
+        // Captured and stripped so it never shows up in the value.
+        if let Some(rest) = line.strip_prefix("{trust=") {
+            if let Some((_, body, trust)) = current.as_mut() {
+                if body.trim().is_empty() && trust.is_none() {
+                    if let Some(tier) = rest.strip_suffix('}') {
+                        *trust = Some(tier.trim().to_string());
+                        continue;
+                    }
+                }
+            }
         }
         if let Some(rest) = line.strip_prefix("# ") {
             let key = rest.trim().to_string();
@@ -252,19 +279,29 @@ pub fn parse_md(content: &str) -> Vec<(String, String)> {
                 seen_header = true;
                 continue;
             }
-            if let Some((key, body)) = current.take() {
-                out.push((key, body.trim().to_string()));
+            if let Some((key, body, trust)) = current.take() {
+                let tier = trust.and_then(|t| pantheon_core::provenance::TrustTier::parse(&t));
+                out.push((key, body.trim().to_string(), tier));
             }
-            current = Some((key, String::new()));
-        } else if let Some((_, body)) = current.as_mut() {
+            current = Some((key, String::new(), None));
+        } else if let Some((_, body, _)) = current.as_mut() {
             body.push_str(line);
             body.push('\n');
         }
     }
-    if let Some((key, body)) = current {
-        out.push((key, body.trim().to_string()));
+    if let Some((key, body, trust)) = current {
+        let tier = trust.and_then(|t| pantheon_core::provenance::TrustTier::parse(&t));
+        out.push((key, body.trim().to_string(), tier));
     }
     out
+}
+
+/// Legacy two-tuple view over parse_md_meta (tests, simple importers).
+pub fn parse_md(content: &str) -> Vec<(String, String)> {
+    parse_md_meta(content)
+        .into_iter()
+        .map(|(k, v, _)| (k, v))
+        .collect()
 }
 
 /// Import Agent-layer records from a markdown file. Each parsed section
@@ -278,9 +315,13 @@ pub fn import_agent(
 ) -> Result<usize, PantheonError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| merr("MEM_IMPORT_READ", format!("read {}: {e}", path.display())))?;
-    let parsed = parse_md(&text);
+    let parsed = parse_md_meta(&text);
     let mut written = 0;
-    for (key, value) in parsed {
+    for (key, value, trust) in parsed {
+        // A v2 file carries each record's tier; a hand-edited or legacy
+        // file is human-authored, so it imports as User. An Untrusted
+        // record stays Untrusted: the round-trip must not launder trust.
+        let tier = trust.unwrap_or(pantheon_core::provenance::TrustTier::User);
         let p = Proposal {
             layer: LayerKind::Agent,
             namespace: namespace.to_string(),
@@ -289,7 +330,7 @@ pub fn import_agent(
             provenance: Provenance {
                 source: "import".into(),
                 origin: "memory.md".into(),
-                trust: pantheon_core::provenance::TrustTier::User,
+                trust: tier,
                 recorded_at_ms: now_ms(),
             },
         };
@@ -303,6 +344,7 @@ pub fn import_agent(
 mod tests {
     use super::*;
     use crate::LayerKind;
+    use pantheon_core::provenance::TrustTier;
 
     #[test]
     fn parse_round_trips_simple_records() {
@@ -336,8 +378,8 @@ mod tests {
     #[test]
     fn render_then_parse_round_trip() {
         let rows = vec![
-            ("city".to_string(), "Kano".to_string()),
-            ("tz".to_string(), "Africa/Lagos".to_string()),
+            ("city".to_string(), "Kano".to_string(), TrustTier::User),
+            ("tz".to_string(), "Africa/Lagos".to_string(), TrustTier::User),
         ];
         let md = render_agent(&rows);
         let parsed = parse_md(&md);
@@ -351,6 +393,7 @@ mod tests {
         let rows = vec![(
             "steps".to_string(),
             "step 1\n# step 2\n#\nstep 3".to_string(),
+            TrustTier::User,
         )];
         let md = render_agent(&rows);
         let parsed = parse_md(&md);
@@ -365,8 +408,8 @@ mod tests {
     #[test]
     fn key_named_agent_memory_round_trips_in_v1_file() {
         let rows = vec![
-            ("Agent memory".to_string(), "meta".to_string()),
-            ("other".to_string(), "v".to_string()),
+            ("Agent memory".to_string(), "meta".to_string(), TrustTier::User),
+            ("other".to_string(), "v".to_string(), TrustTier::User),
         ];
         let md = render_agent(&rows);
         let parsed = parse_md(&md);
@@ -374,6 +417,52 @@ mod tests {
         assert!(parsed
             .iter()
             .any(|(k, v)| k == "Agent memory" && v == "meta"));
+    }
+
+    /// The laundering regression: an Untrusted record exported to
+    /// MEMORY.md and reimported must come back Untrusted, not User.
+    #[test]
+    fn untrusted_record_survives_markdown_round_trip() {
+        let store = MemoryStore::open_in_memory().unwrap();
+        let policy = pantheon_core::capability::Policy::coder()
+            .allow(pantheon_core::capability::Capability::MemoryWrite);
+        // Store one untrusted record (as the model would).
+        let p = Proposal {
+            layer: LayerKind::Agent,
+            namespace: "nyx".to_string(),
+            key: "injected".into(),
+            value: "suspicious claim".into(),
+            provenance: Provenance {
+                source: "native".into(),
+                origin: "model".into(),
+                trust: pantheon_core::provenance::TrustTier::Untrusted,
+                recorded_at_ms: 1,
+            },
+        };
+        crate::propose_write(&store, &policy, p, 4096).unwrap();
+        // Export -> import round trip.
+        let tmp = std::env::temp_dir().join(format!(
+            "pantheon-launder-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("MEMORY.md");
+        export_agent(&store, "nyx", &path).unwrap();
+        // Wipe and reimport (fresh store, same file).
+        let store2 = MemoryStore::open_in_memory().unwrap();
+        let n = import_agent(&store2, &policy, "nyx", &path).unwrap();
+        assert_eq!(n, 1);
+        let rec = store2.get("nyx", "injected").unwrap().unwrap();
+        assert_eq!(
+            rec.provenance.trust,
+            pantheon_core::provenance::TrustTier::Untrusted,
+            "markdown round-trip must not launder an untrusted record to user trust"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
