@@ -700,7 +700,7 @@ impl Session {
         }
 
         match &outcome {
-            LoopOutcome::Answered(text) => {
+            LoopOutcome::Answered { text, .. } => {
                 println!("{text}");
                 self.supervisor.emit(Event::RunProgress {
                     run_id: run_id.into(),
@@ -946,16 +946,21 @@ impl Session {
         let outcome = chain.turn_with_sink(messages, &msink)?;
 
         match outcome {
-            pantheon_agent::TurnOutcome::Text(text) => {
+            pantheon_agent::TurnOutcome::Text { text, tokens, cost_cents } => {
+                let t = text.clone();
                 let msg = Message::assistant(&text);
                 messages.push(msg.clone());
                 self.supervisor.emit(Event::AssistantMessage {
                     run_id: run_id.into(),
                     message: msg,
                 })?;
-                Ok(LoopOutcome::Answered(text))
+                Ok(LoopOutcome::Answered {
+                    text: t,
+                    total_tokens: tokens,
+                    total_cost_cents: cost_cents,
+                })
             }
-            pantheon_agent::TurnOutcome::Tools(calls) => {
+            pantheon_agent::TurnOutcome::Tools { calls, .. } => {
                 // Enforce the whole-run tool-call budget before gating or
                 // executing anything in this batch.
                 if *tool_calls_used + calls.len() as u32 > loop_.budget.max_tool_calls {

@@ -180,7 +180,14 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
                 });
             }
             Ok(AdapterTurn {
-                outcome: TurnOutcome::Tools(out),
+                outcome: TurnOutcome::Tools {
+                    calls: out,
+                    tokens: usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0),
+                    cost_cents: usage.as_ref()
+                        .and_then(|u| u.cost_usd)
+                        .map(|c| (c * 100.0) as u32)
+                        .unwrap_or(0),
+                },
                 usage,
                 finish_reason,
             })
@@ -195,7 +202,15 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
                 sink.emit(ModelEvent::TextDelta { text: text.clone() });
             }
             Ok(AdapterTurn {
-                outcome: TurnOutcome::Text(text),
+                outcome: TurnOutcome::Text {
+                    text,
+                    tokens: usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0),
+                    cost_cents: usage
+                        .as_ref()
+                        .and_then(|u| u.cost_usd)
+                        .map(|c| (c * 100.0) as u32)
+                        .unwrap_or(0),
+                },
                 usage,
                 finish_reason,
             })
@@ -287,8 +302,18 @@ impl OpenStream {
         let usage = self.usage;
         let finish_reason = self.finish_reason;
         if self.tools.is_empty() {
+            let tokens = usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0);
+            let cost_cents = usage
+                .as_ref()
+                .and_then(|u| u.cost_usd)
+                .map(|c| (c * 100.0) as u32)
+                .unwrap_or(0);
             return Ok(AdapterTurn {
-                outcome: TurnOutcome::Text(self.text),
+                outcome: TurnOutcome::Text {
+                    text: self.text,
+                    tokens,
+                    cost_cents,
+                },
                 usage,
                 finish_reason,
             });
@@ -317,7 +342,15 @@ impl OpenStream {
             });
         }
         Ok(AdapterTurn {
-            outcome: TurnOutcome::Tools(out),
+            outcome: TurnOutcome::Tools {
+                calls: out,
+                tokens: usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0),
+                cost_cents: usage
+                    .as_ref()
+                    .and_then(|u| u.cost_usd)
+                    .map(|c| (c * 100.0) as u32)
+                    .unwrap_or(0),
+            },
             usage,
             finish_reason,
         })
@@ -392,7 +425,7 @@ mod tests {
             "usage": { "prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5 } }).to_string();
         let c = collector();
         let turn = parse_response(&body, &c).unwrap();
-        assert_eq!(turn.outcome, TurnOutcome::Text("hi".into()));
+        assert!(matches!(turn.outcome, TurnOutcome::Text { ref text, .. } if text == "hi"));
         assert_eq!(turn.usage.unwrap().total_tokens, 5);
         assert_eq!(turn.finish_reason.as_deref(), Some("stop"));
         let evs = c.0.borrow();
@@ -409,7 +442,7 @@ mod tests {
             .to_string();
         let c = collector();
         match parse_response(&body, &c).unwrap().outcome {
-            TurnOutcome::Tools(calls) => {
+            TurnOutcome::Tools { calls, .. } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].name, "shell");
                 assert_eq!(calls[0].args, "{\"cmd\":\"ls\"}");
@@ -448,7 +481,7 @@ mod tests {
         .unwrap();
         s.push("[DONE]", &c).unwrap();
         let turn = s.finish(&c).unwrap();
-        assert_eq!(turn.outcome, TurnOutcome::Text("Hello there".into()));
+        assert!(matches!(turn.outcome, TurnOutcome::Text { ref text, .. } if text == "Hello there"));
         assert_eq!(turn.finish_reason.as_deref(), Some("stop"));
         assert_eq!(turn.usage.unwrap().total_tokens, 3);
         let evs = c.0.borrow();
@@ -487,7 +520,7 @@ mod tests {
         )
         .unwrap();
         match s.finish(&c).unwrap().outcome {
-            TurnOutcome::Tools(calls) => {
+            TurnOutcome::Tools { calls, .. } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].args, "{\"cmd\":\"ls\"}");
             }
@@ -500,7 +533,7 @@ mod tests {
         let body = serde_json::json!({ "choices": [ { "message": { "role": "assistant", "content": null } } ] }).to_string();
         let c = collector();
         let turn = parse_response(&body, &c).unwrap();
-        assert_eq!(turn.outcome, TurnOutcome::Text(String::new()));
+        assert!(matches!(turn.outcome, TurnOutcome::Text { ref text, .. } if text.is_empty()));
         assert!(c.0.borrow().is_empty());
     }
 }

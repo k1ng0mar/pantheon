@@ -215,13 +215,18 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
     }
     let usage = usage_of(&v);
     let finish_reason = v.get("stop_reason").and_then(|x| x.as_str()).map(map_stop);
+    let tokens = usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0);
+    let cost_cents = usage.as_ref()
+        .and_then(|u| u.cost_usd)
+        .map(|c| (c * 100.0) as u32)
+        .unwrap_or(0);
     if !text.is_empty() {
         sink.emit(ModelEvent::TextDelta { text: text.clone() });
     }
     let outcome = if out.is_empty() {
-        TurnOutcome::Text(text)
+        TurnOutcome::Text { text, tokens, cost_cents }
     } else {
-        TurnOutcome::Tools(out)
+        TurnOutcome::Tools { calls: out, tokens, cost_cents }
     };
     Ok(AdapterTurn {
         outcome,
@@ -341,8 +346,17 @@ impl AnthStream {
         };
         let finish_reason = self.finish_reason;
         if self.tools.is_empty() {
+            let tokens = usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0);
+            let cost_cents = usage.as_ref()
+                .and_then(|u| u.cost_usd)
+                .map(|c| (c * 100.0) as u32)
+                .unwrap_or(0);
             return Ok(AdapterTurn {
-                outcome: TurnOutcome::Text(self.text),
+                outcome: TurnOutcome::Text {
+                    text: self.text,
+                    tokens,
+                    cost_cents,
+                },
                 usage,
                 finish_reason,
             });
@@ -376,7 +390,14 @@ impl AnthStream {
             });
         }
         Ok(AdapterTurn {
-            outcome: TurnOutcome::Tools(out),
+            outcome: TurnOutcome::Tools {
+                calls: out,
+                tokens: usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0),
+                cost_cents: usage.as_ref()
+                    .and_then(|u| u.cost_usd)
+                    .map(|c| (c * 100.0) as u32)
+                    .unwrap_or(0),
+            },
             usage,
             finish_reason,
         })
@@ -481,7 +502,7 @@ mod tests {
         .to_string();
         let c = collector();
         let turn = parse_response(&body, &c).unwrap();
-        assert_eq!(turn.outcome, TurnOutcome::Text("hello".into()));
+        assert!(matches!(turn.outcome, TurnOutcome::Text { ref text, .. } if text == "hello"));
         assert_eq!(turn.finish_reason.as_deref(), Some("stop"));
         let u = turn.usage.unwrap();
         assert_eq!((u.input_tokens, u.total_tokens), (7, 11));
@@ -504,7 +525,7 @@ mod tests {
         .to_string();
         let c = collector();
         match parse_response(&body, &c).unwrap().outcome {
-            TurnOutcome::Tools(calls) => {
+            TurnOutcome::Tools { calls, .. } => {
                 assert_eq!(calls[0].name, "shell");
                 assert_eq!(calls[0].args, "{\"cmd\":\"ls\"}");
             }
@@ -552,7 +573,7 @@ mod tests {
         .unwrap();
         s.push(r#"{"type":"message_stop"}"#, &c).unwrap();
         let turn = s.finish(&c).unwrap();
-        assert_eq!(turn.outcome, TurnOutcome::Text("Hi".into()));
+        assert!(matches!(turn.outcome, TurnOutcome::Text { ref text, .. } if text == "Hi"));
         assert_eq!(turn.finish_reason.as_deref(), Some("stop"));
         let u = turn.usage.unwrap();
         assert_eq!(
@@ -599,7 +620,7 @@ mod tests {
         )
         .unwrap();
         match s.finish(&c).unwrap().outcome {
-            TurnOutcome::Tools(calls) => {
+            TurnOutcome::Tools { calls, .. } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].args, "{\"cmd\":\"ls\"}");
             }

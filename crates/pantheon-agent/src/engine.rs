@@ -16,19 +16,49 @@ pub struct ToolCall {
 }
 
 /// What one model turn produced.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TurnOutcome {
     /// Plain text response.
-    Text(String),
+    Text {
+        text: String,
+        /// Tokens consumed in this turn (input + output).
+        tokens: u32,
+        /// Cost in US cents for this turn (0 if provider doesn't report).
+        cost_cents: u32,
+    },
     /// One or more tool calls to execute.
-    Tools(Vec<ToolCall>),
+    Tools {
+        calls: Vec<ToolCall>,
+        /// Tokens consumed for the turn that produced these calls.
+        tokens: u32,
+        cost_cents: u32,
+    },
     /// Delegate to a specialist sub-agent.
-    /// The loop checks swarm caps and emits AgentSpawned/AgentCompleted.
     Delegate {
         agent: String,
         model: String,
         task: String,
     },
+}
+
+impl TurnOutcome {
+    /// Total tokens consumed this turn.
+    pub fn tokens(&self) -> u32 {
+        match self {
+            TurnOutcome::Text { tokens, .. } => *tokens,
+            TurnOutcome::Tools { tokens, .. } => *tokens,
+            TurnOutcome::Delegate { .. } => 0,
+        }
+    }
+
+    /// Cost in cents for this turn.
+    pub fn cost_cents(&self) -> u32 {
+        match self {
+            TurnOutcome::Text { cost_cents, .. } => *cost_cents,
+            TurnOutcome::Tools { cost_cents, .. } => *cost_cents,
+            TurnOutcome::Delegate { .. } => 0,
+        }
+    }
 }
 
 /// The model, behind one method. Providers implement this; the loop does not
@@ -42,6 +72,12 @@ pub trait ModelTurn {
 pub struct Budget {
     pub max_turns: u32,
     pub max_tool_calls: u32,
+    /// Maximum tokens (input + output) across the entire run.
+    /// `None` means no token cap (not "unlimited by design").
+    pub max_tokens: Option<u32>,
+    /// Maximum cost in US cents (e.g. 500 = $5.00).
+    /// `None` means no cost cap.
+    pub max_cost_cents: Option<u32>,
 }
 
 impl Default for Budget {
@@ -49,15 +85,21 @@ impl Default for Budget {
         Self {
             max_turns: 16,
             max_tool_calls: 32,
+            max_tokens: None,
+            max_cost_cents: None,
         }
     }
 }
 
 /// How the loop ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LoopOutcome {
     /// Model returned a final text answer.
-    Answered(String),
+    Answered {
+        text: String,
+        total_tokens: u32,
+        total_cost_cents: u32,
+    },
     /// A capability was denied: the run stopped hard.
     Denied { capability: Capability },
     /// Policy wants approval before the tool can run.
@@ -127,6 +169,8 @@ impl<'a> AgentLoop<'a> {
         transcript.push(format!("user: {task}"));
         let mut turns = 0u32;
         let mut calls = 0u32;
+        let mut total_tokens: u32 = 0;
+        let mut total_cost_cents: u32 = 0;
 
         loop {
             if turns >= self.budget.max_turns {
@@ -143,18 +187,38 @@ impl<'a> AgentLoop<'a> {
                 run_id: self.run_id.clone(),
             });
 
+            // Track token and cost budgets across the run
+            total_tokens += outcome.tokens();
+            total_cost_cents += outcome.cost_cents();
+            if let Some(cap) = self.budget.max_tokens {
+                if total_tokens >= cap {
+                    return Ok(LoopOutcome::BudgetExhausted { cap: "max_tokens" });
+                }
+            }
+            if let Some(cap) = self.budget.max_cost_cents {
+                if total_cost_cents >= cap {
+                    return Ok(LoopOutcome::BudgetExhausted { cap: "max_cost_cents" });
+                }
+            }
+
             match outcome {
-                TurnOutcome::Text(text) => {
+                TurnOutcome::Text { text, .. } => {
                     transcript.push(format!("assistant: {text}"));
                     if turns > 1 {
                         self.sink.emit(Event::RunProgress {
                             run_id: self.run_id.clone(),
-                            detail: format!("{turns} turns, {calls} tool calls"),
+                            detail: format!(
+                                "{turns} turns, {calls} tool calls, {total_tokens} tokens, ${total_cost_cents} cents"
+                            ),
                         });
                     }
-                    return Ok(LoopOutcome::Answered(text));
+                    return Ok(LoopOutcome::Answered {
+                        text,
+                        total_tokens,
+                        total_cost_cents,
+                    });
                 }
-                TurnOutcome::Tools(tool_calls) => {
+                TurnOutcome::Tools { calls: tool_calls, .. } => {
                     for (i, call) in tool_calls.into_iter().enumerate() {
                         if calls >= self.budget.max_tool_calls {
                             return Ok(LoopOutcome::BudgetExhausted {
@@ -261,7 +325,7 @@ mod tests {
         fn turn(&self, _t: &[String]) -> Result<TurnOutcome, PantheonError> {
             let mut s = self.steps.borrow_mut();
             if s.is_empty() {
-                return Ok(TurnOutcome::Text("done".into()));
+                return Ok(TurnOutcome::Text { text: "done".into(), tokens: 0, cost_cents: 0 });
             }
             Ok(s.remove(0))
         }
@@ -396,17 +460,21 @@ mod tests {
         let sink = Collector(RefCell::new(vec![]));
         let tools = NoTools;
         let model = Scripted {
-            steps: RefCell::new(vec![TurnOutcome::Tools(vec![ToolCall {
-                name: "shell".into(),
-                capability: Capability::ShellExecute,
-                args: "ls".into(),
-            }])]),
+            steps: RefCell::new(vec![TurnOutcome::Tools {
+                calls: vec![ToolCall {
+                    name: "shell".into(),
+                    capability: Capability::ShellExecute,
+                    args: "ls".into(),
+                }],
+                tokens: 0,
+                cost_cents: 0,
+            }]),
         };
         let mut t = vec![];
         let out = loop_with(Policy::coder(), &sink, &tools)
             .run(&model, "go", &mut t)
             .unwrap();
-        assert_eq!(out, LoopOutcome::Answered("done".into()));
+        assert!(matches!(out, LoopOutcome::Answered { .. }));
         assert!(t.iter().any(|l| l.starts_with("tool[shell]")));
         assert!(sink.0.borrow().len() >= 6, "expected model/tool events");
     }
@@ -416,11 +484,15 @@ mod tests {
         let sink = Collector(RefCell::new(vec![]));
         let tools = NoTools;
         let model = Scripted {
-            steps: RefCell::new(vec![TurnOutcome::Tools(vec![ToolCall {
-                name: "browse".into(),
-                capability: Capability::Browser,
-                args: "".into(),
-            }])]),
+            steps: RefCell::new(vec![TurnOutcome::Tools {
+                calls: vec![ToolCall {
+                    name: "browse".into(),
+                    capability: Capability::Browser,
+                    args: "".into(),
+                }],
+                tokens: 0,
+                cost_cents: 0,
+            }]),
         };
         let mut t = vec![];
         let err = loop_with(Policy::coder(), &sink, &tools)
@@ -434,11 +506,15 @@ mod tests {
         let sink = Collector(RefCell::new(vec![]));
         let tools = NoTools;
         let model = Scripted {
-            steps: RefCell::new(vec![TurnOutcome::Tools(vec![ToolCall {
-                name: "push".into(),
-                capability: Capability::GitPush,
-                args: "origin main".into(),
-            }])]),
+            steps: RefCell::new(vec![TurnOutcome::Tools {
+                calls: vec![ToolCall {
+                    name: "push".into(),
+                    capability: Capability::GitPush,
+                    args: "origin main".into(),
+                }],
+                tokens: 0,
+                cost_cents: 0,
+            }]),
         };
         let mut t = vec![];
         let out = loop_with(Policy::coder(), &sink, &tools)
@@ -460,17 +536,23 @@ mod tests {
         struct NeverAnswers;
         impl ModelTurn for NeverAnswers {
             fn turn(&self, _t: &[String]) -> Result<TurnOutcome, PantheonError> {
-                Ok(TurnOutcome::Tools(vec![ToolCall {
-                    name: "shell".into(),
-                    capability: Capability::ShellExecute,
-                    args: "".into(),
-                }]))
+                Ok(TurnOutcome::Tools {
+                    calls: vec![ToolCall {
+                        name: "shell".into(),
+                        capability: Capability::ShellExecute,
+                        args: "".into(),
+                    }],
+                    tokens: 0,
+                    cost_cents: 0,
+                })
             }
         }
         let mut l = loop_with(Policy::coder(), &sink, &tools);
         l.budget = Budget {
             max_turns: 3,
             max_tool_calls: 32,
+            max_tokens: None,
+            max_cost_cents: None,
         };
         let mut t = vec![];
         let err = l.run(&NeverAnswers, "go", &mut t).unwrap_err();

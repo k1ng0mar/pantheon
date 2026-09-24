@@ -45,7 +45,7 @@ impl StageExecutor for RuntimeExecutor {
             other => format!("{other}: {input}"),
         };
         match session.chat(&run_id, &prompt) {
-            Ok(pantheon_agent::LoopOutcome::Answered(text)) => Ok(text),
+            Ok(pantheon_agent::LoopOutcome::Answered { text, .. }) => Ok(text),
             Ok(other) => Ok(format!("[stage {stage} ended: {other:?}]")),
             Err(e) => Err(e),
         }
@@ -71,7 +71,7 @@ impl StageEvaluator for RuntimeEvaluator {
 Reply with exactly ACCEPT or REJECT followed by one reason line.\n\n{output}"
         );
         let answer = match session.chat(&run_id, &prompt) {
-            Ok(pantheon_agent::LoopOutcome::Answered(t)) => t.to_ascii_lowercase(),
+            Ok(pantheon_agent::LoopOutcome::Answered { text: t, .. }) => t.to_ascii_lowercase(),
             _ => return Ok(false),
         };
         Ok(answer.starts_with("accept"))

@@ -330,7 +330,7 @@ mod tests {
         ]);
         let chain = ProviderChain::new(policy(), t, vec![], SecretValue::new(""));
         let out = chain.turn_messages(&[Message::user("go")]).unwrap();
-        assert_eq!(out, TurnOutcome::Text("from fallback".into()));
+        assert!(matches!(out, TurnOutcome::Text { ref text, .. } if text == "from fallback"));
         let r = chain.last_resolved.borrow().clone().unwrap();
         assert_eq!(r.chain_index, 1);
         assert_eq!(r.provider, "deepseek");
@@ -504,7 +504,7 @@ mod tests {
         let chain = ProviderChain::new(policy(), t, vec![], SecretValue::new(""));
         let c = collector();
         let out = chain.turn_stream(&[Message::user("go")], &c).unwrap();
-        assert_eq!(out, TurnOutcome::Text("Hey".into()));
+        assert!(matches!(out, TurnOutcome::Text { ref text, .. } if text == "Hey"));
         let evs = c.0.borrow();
         assert!(matches!(
             evs.first(),
@@ -546,7 +546,7 @@ mod tests {
         let chain = ProviderChain::new(pol, t, vec![], SecretValue::new(""));
         let c = collector();
         let out = chain.turn_stream(&[Message::user("go")], &c).unwrap();
-        assert_eq!(out, TurnOutcome::Text("ok".into()));
+        assert!(matches!(out, TurnOutcome::Text { ref text, .. } if text == "ok"));
         assert!(c.0.borrow().iter().any(|e| matches!(
             e,
             ModelEvent::Attempt {

@@ -112,7 +112,7 @@ fn streaming_turn_emits_ordered_normalized_events() {
 
     // Concatenated deltas equal the returned text.
     let text = match &out {
-        pantheon_agent::TurnOutcome::Text(t) => t.clone(),
+        pantheon_agent::TurnOutcome::Text { text: t, .. } => t.clone(),
         other => panic!("expected text outcome, got {other:?}"),
     };
     assert_eq!(text_deltas(&evs), text);
@@ -169,7 +169,7 @@ fn single_shot_turn_emits_one_full_text_delta() {
         .collect();
     assert_eq!(deltas.len(), 1, "single-shot must emit exactly one delta");
     match &out {
-        pantheon_agent::TurnOutcome::Text(t) => assert_eq!(deltas[0], t.as_str()),
+        pantheon_agent::TurnOutcome::Text { text: t, .. } => assert_eq!(deltas[0], t.as_str()),
         other => panic!("expected text outcome, got {other:?}"),
     }
     assert!(matches!(evs.last(), Some(ModelEvent::Completed { .. })));
