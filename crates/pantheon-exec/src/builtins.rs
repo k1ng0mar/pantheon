@@ -69,7 +69,17 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             }),
         },
         Capability::ShellExecute,
-        |args| run_shell(args),
+        |args| {
+            // Dangerous-pattern pre-gate: deterministic, in-process, runs
+            // before any spawn. Not the security boundary (policy is), but
+            // it fails fast on `rm -rf /` class commands and keeps them
+            // out of the audit trail as executed calls. run_shell parses
+            // the args itself; parse here only for the gate.
+            let v = parse_args(args)?;
+            let command = arg_str(&v, "command")?;
+            crate::danger::gate(&command)?;
+            run_shell(args)
+        },
     );
     reg.register(
         ToolSchema {
