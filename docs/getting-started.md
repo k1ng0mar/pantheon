@@ -43,14 +43,27 @@ env var NAME and resolves it at runtime.
 
 ## First chat
 
+Interactive session (the normal way):
+
 ```sh
 export OPENAI_API_KEY=sk-...
+pantheon
+```
+
+Type a message at the `>` prompt. The conversation keeps its run id and
+full ledger history across exits; `/help` lists the session commands.
+
+One-shot (scripts, CI):
+
+```sh
 pantheon chat "what files are in this directory"
 ```
 
 The model can call tools (shell, file read/write, git) according to the
-policy. Each run gets an id like `run_1690000000000_ab12`; everything it did
-is recorded in the ledger.
+policy. Shell commands pass a dangerous-pattern pre-gate (`rm -rf /`-class
+commands are refused with `DANGER_BLOCKED` before execution). Each run
+gets an id like `run_1690000000000_ab12`; everything it did is recorded
+in the ledger.
 
 ```sh
 pantheon status run_1690000000000_ab12   # current state

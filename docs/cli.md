@@ -17,12 +17,26 @@ Every `pantheon` verb, its flags, and its exit codes. Shared rules first.
 
 ## Session verbs
 
+### (bare) / session
+```
+pantheon              # opens the interactive session
+pantheon session      # same thing, explicit
+```
+Interactive REPL: every input is a turn on the current conversation, one
+ledger run, so history and approvals persist across process exits.
+Auto-resumes the most recent run on open; `/new` starts fresh.
+
+Commands: `/help`, `/new`, `/runs`, `/resume [ID|n]`, `/status`,
+`/memory QUERY`, `/remember KEY TEXT`, `/policy`, `/model P M`, `/exit`.
+Slash commands are session-local and never reach the model.
+
 ### chat
 ```
 pantheon chat [--id ID] [--model M] [--provider P] [--key K] [--choose] "message"
 ```
-Runs one conversation turn with the full tool loop. `--id` resumes or names
-a run; `--choose` opens an interactive model picker from the catalog.
+One-shot turn: runs one conversation turn with the full tool loop, then
+exits. `--id` continues a named run (terminal runs are reopened); `--choose`
+opens an interactive model picker from the catalog.
 Model/provider flags override config.toml, which overrides
 `PANTHEON_MODEL`/`PANTHEON_PROVIDER`.
 

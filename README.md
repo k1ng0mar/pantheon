@@ -50,14 +50,14 @@ bundled. No async runtime: everything is std threads.
 ```sh
 pantheon setup --yes --provider openai --model gpt-4o-mini --api-key-env OPENAI_API_KEY
 export OPENAI_API_KEY=sk-...
-pantheon chat "explain this repo in one sentence"
+pantheon                           # interactive session (or: pantheon chat "...")
 pantheon explain <run_id>          # why everything happened
 pantheon doctor                    # is everything healthy
 ```
 
 The default policy lets the model run shell commands in your working
-directory. Read docs/configuration.md before pointing it at anything you
-care about.
+directory, behind a dangerous-pattern pre-gate. Read
+docs/configuration.md before pointing it at anything you care about.
 
 ## Design position (short version)
 
