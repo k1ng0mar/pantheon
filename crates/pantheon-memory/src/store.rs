@@ -166,6 +166,42 @@ impl MemoryStore {
         Ok(n > 0)
     }
 
+    /// List Agent-layer records for a namespace in stable write order,
+    /// including each record's trust tier. The plain `list_agent` stays
+    /// for callers that only need key/value (the memory_list tool);
+    /// anything that round-trips records through files must use this so
+    /// trust survives the trip.
+    pub fn list_agent_meta(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<(String, String, TrustTier)>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT key, value, trust FROM memories
+                 WHERE layer='agent' AND namespace=?1
+                 ORDER BY recorded_at_ms, id",
+            )
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        let rows = stmt
+            .query_map([namespace], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    trust_from(&r.get::<_, String>(2)?),
+                ))
+            })
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| serr("MEM_QUERY", e.to_string()))?);
+        }
+        Ok(out)
+    }
+
     /// List Agent-layer records for a namespace in stable write order.
     pub fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError> {
         let conn = self
