@@ -17,10 +17,22 @@ use pantheon_core::model_event::{ModelEvent, ModelEventSink, ModelUsage};
 use std::collections::BTreeMap;
 
 /// Assemble the request body value from canonical messages + tool schemas.
+///
+/// Provenance envelope: tool rows and any row carrying untrusted or
+/// memory-tier provenance get a `[provenance: ...]` prefix so the model
+/// can distinguish fetched data from instructions. System/User tiers are
+/// authoritative and get no prefix (a prefix on authoritative content
+/// would only invite the model to distrust the wrong things).
 pub fn body_value(model: &str, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
     let mut msgs = Vec::with_capacity(messages.len());
     for m in messages {
-        let mut row = serde_json::json!({ "role": role_str(m.role), "content": m.content });
+        let content = match &m.provenance {
+            Some(p) if p.trust.rank() <= pantheon_core::provenance::TrustTier::Memory.rank() => {
+                format!("{} {}", p.envelope_prefix(), m.content)
+            }
+            _ => m.content.clone(),
+        };
+        let mut row = serde_json::json!({ "role": role_str(m.role), "content": content });
         if !m.tool_calls.is_empty() {
             let calls: Vec<serde_json::Value> = m
                 .tool_calls

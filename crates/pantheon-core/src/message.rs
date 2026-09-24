@@ -4,6 +4,7 @@
 //! Strict alternation is enforced by the loop, not this type. Tool results ride
 //! `role: "tool"` rows with their tool_call_id, never a synthetic user message.
 
+use crate::provenance::Provenance;
 use serde::{Deserialize, Serialize};
 
 /// One conversation message.
@@ -17,6 +18,12 @@ pub struct Message {
     /// Present on tool rows; matches the assistant tool_call id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Structured provenance. `None` on legacy rows (treated as the role's
+    /// default tier); set on every row the harness builds from now on.
+    /// Skipped on the wire for rows without it, so legacy providers and
+    /// fixtures keep working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +51,7 @@ impl Message {
             content: content.into(),
             tool_calls: vec![],
             tool_call_id: None,
+            provenance: None,
         }
     }
     pub fn user(content: impl Into<String>) -> Self {
@@ -52,6 +60,7 @@ impl Message {
             content: content.into(),
             tool_calls: vec![],
             tool_call_id: None,
+            provenance: None,
         }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
@@ -60,6 +69,7 @@ impl Message {
             content: content.into(),
             tool_calls: vec![],
             tool_call_id: None,
+            provenance: None,
         }
     }
     pub fn assistant_tool_calls(calls: Vec<ToolCallRef>) -> Self {
@@ -68,6 +78,7 @@ impl Message {
             content: String::new(),
             tool_calls: calls,
             tool_call_id: None,
+            provenance: None,
         }
     }
     pub fn tool(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
@@ -76,7 +87,15 @@ impl Message {
             content: content.into(),
             tool_calls: vec![],
             tool_call_id: Some(tool_call_id.into()),
+            provenance: None,
         }
+    }
+
+    /// Attach provenance to this message. Builder-style so call sites read
+    /// as `Message::tool(id, out).with_provenance(...)`.
+    pub fn with_provenance(mut self, provenance: Provenance) -> Self {
+        self.provenance = Some(provenance);
+        self
     }
 }
 

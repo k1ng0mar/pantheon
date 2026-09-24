@@ -13,3 +13,4 @@ pub mod events;
 pub mod message;
 pub mod model;
 pub mod model_event;
+pub mod provenance;
