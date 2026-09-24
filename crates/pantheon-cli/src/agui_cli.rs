@@ -33,6 +33,9 @@ pub fn cmd_serve(args: &[String]) {
         host,
         port,
         genui_base: base,
+        auth_token: std::env::var("PANTHEON_SERVE_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty()),
     };
     if let Err(e) = pantheon_api::serve(cfg) {
         eprintln!("serve: {e}");

@@ -18,12 +18,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Where polled events go: implemented by the runtime bridge.
+/// Where polled events go: implemented by the runtime bridge. `sender`
+/// is the platform sender identity when the surface exposes one; the
+/// gateway allowlist keys on it.
 pub trait EventSink: Send + Sync {
     /// A user message arrived.
-    fn on_message(&self, thread_id: &str, text: &str);
+    fn on_message(&self, thread_id: &str, sender: Option<&str>, text: &str);
     /// An approval button was clicked.
-    fn on_approval(&self, thread_id: &str, scope: &str, grant: bool);
+    fn on_approval(&self, thread_id: &str, sender: Option<&str>, scope: &str, grant: bool);
 }
 
 /// Persisted `update_id` cursor so a daemon restart skips already-seen
@@ -91,6 +93,7 @@ pub fn route_event(sink: &dyn EventSink, event: &ChannelEvent) -> String {
         (Some(answer), Some(scope)) => {
             sink.on_approval(
                 &event.thread_id,
+                event.sender.as_deref(),
                 scope,
                 matches!(answer, crate::channel::ApprovalAnswer::Grant),
             );
@@ -98,7 +101,7 @@ pub fn route_event(sink: &dyn EventSink, event: &ChannelEvent) -> String {
         }
         _ => {
             if !event.text.trim().is_empty() {
-                sink.on_message(&event.thread_id, &event.text);
+                sink.on_message(&event.thread_id, event.sender.as_deref(), &event.text);
             }
             event.thread_id.clone()
         }
@@ -231,13 +234,13 @@ mod tests {
         approvals: Mutex<Vec<(String, String, bool)>>,
     }
     impl EventSink for RecordingSink {
-        fn on_message(&self, thread: &str, text: &str) {
+        fn on_message(&self, thread: &str, _sender: Option<&str>, text: &str) {
             self.messages
                 .lock()
                 .unwrap()
                 .push((thread.into(), text.into()));
         }
-        fn on_approval(&self, thread: &str, scope: &str, grant: bool) {
+        fn on_approval(&self, thread: &str, _sender: Option<&str>, scope: &str, grant: bool) {
             self.approvals
                 .lock()
                 .unwrap()
@@ -277,6 +280,7 @@ mod tests {
                 text: "hello".into(),
                 approval: None,
                 scope: None,
+                sender: None,
             },
         );
         route_event(
@@ -287,6 +291,7 @@ mod tests {
                 text: String::new(),
                 approval: Some(ApprovalAnswer::Grant),
                 scope: Some("call_0_0".into()),
+                sender: None,
             },
         );
         assert_eq!(

@@ -79,12 +79,18 @@ pub fn parse_event(payload: &Value) -> Result<Option<ChannelEvent>, ChannelError
             .and_then(Value::as_str)
             .ok_or_else(|| ChannelError::new("DISCORD_EVENT", "message has no channel_id"))?;
         let text = data.get("content").and_then(Value::as_str).unwrap_or("");
+        let sender = data
+            .get("author")
+            .and_then(|author| author.get("id"))
+            .and_then(Value::as_str)
+            .map(|id| id.to_string());
         return Ok(Some(ChannelEvent {
             thread_id: channel_id.to_string(),
             run_id: None,
             text: text.to_string(),
             approval: None,
             scope: None,
+            sender,
         }));
     }
     if kind == Some(2) {
@@ -116,12 +122,25 @@ pub fn parse_event(payload: &Value) -> Result<Option<ChannelEvent>, ChannelError
             .and_then(Value::as_str)
             .or_else(|| payload.get("channel_id").and_then(Value::as_str))
             .ok_or_else(|| ChannelError::new("DISCORD_EVENT", "interaction has no channel_id"))?;
+        let sender = payload
+            .get("user")
+            .and_then(|user| user.get("id"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                payload
+                    .get("member")
+                    .and_then(|member| member.get("user"))
+                    .and_then(|user| user.get("id"))
+                    .and_then(Value::as_str)
+            })
+            .map(|id| id.to_string());
         return Ok(Some(ChannelEvent {
             thread_id: channel_id.to_string(),
             run_id: None,
             text: String::new(),
             approval,
             scope: Some(scope.to_string()),
+            sender,
         }));
     }
     Ok(None)

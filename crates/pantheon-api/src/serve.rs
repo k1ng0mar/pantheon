@@ -17,6 +17,11 @@ pub struct ServeConfig {
     pub host: String,
     pub port: u16,
     pub genui_base: String,
+    /// Bearer token for every /agui route except /agui/health. None =
+    /// no auth (localhost-only dev). The CLI reads
+    /// PANTHEON_SERVE_TOKEN; `pantheon serve` prints the bound URL with
+    /// the token appended for the web UI.
+    pub auth_token: Option<String>,
 }
 impl ServeConfig {
     fn effective_genui_base(&self) -> String {
@@ -54,10 +59,10 @@ body{font:16px system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1
 <script>
 const $=s=>document.querySelector(s), log=s=>{$('#log').textContent+=s+'\n'};
 let rpcId=1, run='', es;
-async function rpc(method,params={}){let r=await fetch('/agui/rpc',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:rpcId++,method,params})});let j=await r.json();if(j.error)throw Error(j.error.message);return j.result}
+const TOKEN='__PANTHEON_TOKEN__';async function rpc(method,params={}){let r=await fetch('/agui/rpc',{method:'POST',headers:{'content-type':'application/json','x-pantheon-token':TOKEN},body:JSON.stringify({jsonrpc:'2.0',id:rpcId++,method,params})});let j=await r.json();if(j.error)throw Error(j.error.message);return j.result}
 function showActions(f){if(f.name!=='requested')return;const actions=$('#actions');actions.innerHTML='';for(const [label,answer] of [['Grant','grant'],['Deny','deny']]){const b=document.createElement('button');b.textContent=label;b.onclick=async()=>{try{await rpc('agui.'+answer,{run_id:run,scope:f.text});actions.innerHTML=''}catch(e){log(e.message)}};actions.appendChild(b)}}
 $('#cancel').onclick=async()=>{if(!run)return;try{await rpc('agui.cancel',{run_id:run});$('#cancel').disabled=true;log('run canceled')}catch(e){log(e.message)}};
-$('#send').onsubmit=async e=>{e.preventDefault();const text=$('#text').value;$('#text').value='';try{if(!run){const r=await rpc('agui.send',{text});run=r.run_id;$('#cancel').disabled=false;es=new EventSource('/agui/stream?run='+encodeURIComponent(run)+'&thread='+encodeURIComponent(r.thread_id));for(const kind of ['run','text','tool','state','genui'])es.addEventListener(kind,e=>{const f=JSON.parse(e.data);log(kind+': '+f.text)});es.addEventListener('approval',e=>showActions(JSON.parse(e.data)))}else{await rpc('agui.send',{run_id:run,text})}}catch(e){log(e.message)}};
+$('#send').onsubmit=async e=>{e.preventDefault();const text=$('#text').value;$('#text').value='';try{if(!run){const r=await rpc('agui.send',{text});run=r.run_id;$('#cancel').disabled=false;es=new EventSource('/agui/stream?run='+encodeURIComponent(run)+'&thread='+encodeURIComponent(r.thread_id)+(TOKEN?'&token='+encodeURIComponent(TOKEN):''));for(const kind of ['run','text','tool','state','genui'])es.addEventListener(kind,e=>{const f=JSON.parse(e.data);log(kind+': '+f.text)});es.addEventListener('approval',e=>showActions(JSON.parse(e.data)))}else{await rpc('agui.send',{run_id:run,text})}}catch(e){log(e.message)}};
 </script>"##;
 
 fn reason(code: u16) -> &'static str {
@@ -307,8 +312,38 @@ fn handle_one(stream: TcpStream, cfg: ServeConfig) {
             String::from_utf8_lossy(&body).to_string(),
         )
     };
+    // Auth: everything except /agui/health requires the token when one
+    // is configured. Accept Authorization: Bearer <t> or X-Pantheon-Token.
+    if let Some(token) = &cfg.auth_token {
+        let provided = headers
+            .get("authorization")
+            .and_then(|v| v.strip_prefix("Bearer ").map(|t| t.trim().to_string()))
+            .or_else(|| headers.get("x-pantheon-token").cloned())
+            .or_else(|| {
+                // EventSource cannot set headers; allow ?token= on stream.
+                path.split_once('?').and_then(|(_, q)| {
+                    q.split('&')
+                        .find_map(|kv| kv.strip_prefix("token=").map(|t| t.to_string()))
+                })
+            });
+        let health = path.split('?').next() == Some("/agui/health");
+        if !health && provided.as_deref() != Some(token.as_str()) {
+            respond(
+                &mut s,
+                401,
+                "application/json",
+                br#"{"error":"unauthorized: set Authorization: Bearer <token>"}"#,
+            );
+            return;
+        }
+    }
     if method == "GET" && (path == "/" || path == "/agui" || path == "/agui/") {
-        respond(&mut s, 200, "text/html; charset=utf-8", WEB_UI.as_bytes());
+        // Inject the token into the served UI so its fetch calls carry it.
+        let page = WEB_UI.replace(
+            "__PANTHEON_TOKEN__",
+            cfg.auth_token.as_deref().unwrap_or(""),
+        );
+        respond(&mut s, 200, "text/html; charset=utf-8", page.as_bytes());
     } else if method == "GET" && route_is(&path, "/agui/stream") {
         handle_stream(&mut s, &cfg, &path, &headers);
     } else if method == "POST" && route_is(&path, "/agui/rpc") {
@@ -350,6 +385,7 @@ pub fn serve(mut cfg: ServeConfig) -> std::io::Result<()> {
                     host: cfg.host.clone(),
                     port: cfg.port,
                     genui_base: cfg.genui_base.clone(),
+                    auth_token: cfg.auth_token.clone(),
                 };
                 std::thread::spawn(move || handle_one(s, c));
             }
@@ -387,6 +423,7 @@ mod tests {
             host: "127.0.0.1".into(),
             port: 43219,
             genui_base: "http://127.0.0.1:43219/agui/blob".into(),
+            auth_token: None,
         };
         let signed = cfg.signer().sign("task-1", "text/plain", 60_000);
         let path = signed.url.split_once("http://127.0.0.1:43219").unwrap().1;
@@ -401,5 +438,45 @@ mod tests {
             "GET /agui/blob/task-1?exp=1&sig=00 HTTP/1.1\r\nHost: localhost\r\n\r\n",
         );
         assert!(bad.starts_with("HTTP/1.1 403 Forbidden"));
+    }
+
+    fn auth_cfg(token: &str) -> ServeConfig {
+        ServeConfig {
+            data_dir: std::env::temp_dir().join(format!("pantheon-auth-{}", std::process::id())),
+            host: "127.0.0.1".into(),
+            port: 0,
+            genui_base: "http://127.0.0.1:9/agui/blob".into(),
+            auth_token: Some(token.into()),
+        }
+    }
+
+    #[test]
+    fn rpc_requires_the_token_when_configured() {
+        let cfg = auth_cfg("sekrit");
+        let no_token = request(
+            cfg.clone(),
+            "POST /agui/rpc HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}",
+        );
+        assert!(no_token.starts_with("HTTP/1.1 401"), "{no_token}");
+        let with_token = request(
+            cfg,
+            "POST /agui/rpc HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer sekrit\r\nContent-Length: 2\r\n\r\n{}",
+        );
+        assert!(!with_token.starts_with("HTTP/1.1 401"), "{with_token}");
+    }
+
+    #[test]
+    fn health_stays_open_but_stream_needs_token() {
+        let cfg = auth_cfg("t2");
+        let health = request(
+            cfg.clone(),
+            "GET /agui/health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        );
+        assert!(health.contains("\"ok\":true"), "{health}");
+        let stream = request(
+            cfg,
+            "GET /agui/stream?run=x HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        );
+        assert!(stream.starts_with("HTTP/1.1 401"), "{stream}");
     }
 }

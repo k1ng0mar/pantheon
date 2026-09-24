@@ -21,6 +21,11 @@ pub struct ChannelEvent {
     pub text: String,
     pub approval: Option<ApprovalAnswer>,
     pub scope: Option<String>,
+    /// Platform sender identity when the surface exposes one (Telegram
+    /// user id, Discord author id). None for surfaces that cannot know
+    /// (bridges). The gateway allowlist keys on this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
 }
 /// What the runtime hands a surface (one frame + routing).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +230,7 @@ mod tests {
             text: "go".into(),
             approval: None,
             scope: None,
+            sender: None,
         });
         assert_eq!(c.poll().len(), 1);
         assert!(c.poll().is_empty());
