@@ -256,10 +256,16 @@ impl MemoryStore {
             .map_err(|e| serr("MEM_PUT", e.to_string()))?
         };
         if updated == 0 {
-            return Err(serr(
-                "MEM_NOT_FOUND",
-                format!("no promotable record {key} in {namespace}"),
-            ));
+            // Distinguish "no such record" from "already at or above the
+            // requested tier" so confirm on a user record is a clear
+            // no-op message, not a missing-row error.
+            return match self.get(namespace, key)? {
+                Some(rec) => Ok(rec),
+                None => Err(serr(
+                    "MEM_NOT_FOUND",
+                    format!("no promotable record {key} in {namespace}"),
+                )),
+            };
         }
         self.get(namespace, key)?
             .ok_or_else(|| serr("MEM_NOT_FOUND", format!("no record {key} in {namespace}")))

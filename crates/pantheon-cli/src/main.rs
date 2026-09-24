@@ -230,7 +230,7 @@ fn open_memory() -> MemoryStore {
 }
 
 fn memory_help() {
-    eprintln!("usage: pantheon memory <import|export|recall|put|sync|backend> ...");
+    eprintln!("usage: pantheon memory <import|export|recall|put|confirm|sync|backend> ...");
     eprintln!("  import [FILE]       import MEMORY.md into native memory");
     eprintln!("  export [FILE]       export native agent memory to MEMORY.md");
     eprintln!("  sync [FILE]         reconcile MEMORY.md and the native store");
@@ -493,6 +493,24 @@ fn main() {
                             hit.record.provenance.origin
                         );
                     }
+                }
+                "confirm" => {
+                    if args.len() < 4 {
+                        eprintln!("usage: pantheon memory confirm KEY");
+                        std::process::exit(2);
+                    }
+                    let key = args[3].clone();
+                    let record = pantheon_memory::confirm_write(
+                        &store,
+                        &Policy::coder_with_memory(),
+                        &namespace,
+                        &key,
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("memory confirm: {e}");
+                        std::process::exit(1);
+                    });
+                    println!("confirmed {} (memory tier)", record.key);
                 }
                 "put" => {
                     if args.len() < 5 {
