@@ -152,6 +152,21 @@ struct LedgerModelSink<'a> {
     sup: &'a Supervisor,
     run_id: &'a str,
 }
+/// Sink that forwards to the ledger AND fires an optional callback per event.
+struct TeeModelSink<'a> {
+    inner: LedgerModelSink<'a>,
+    callback: Option<&'a dyn Fn(ModelEvent)>,
+}
+
+impl<'a> ModelEventSink for TeeModelSink<'a> {
+    fn emit(&self, event: ModelEvent) {
+        self.inner.emit(event.clone());
+        if let Some(cb) = self.callback {
+            cb(event);
+        }
+    }
+}
+
 impl<'a> ModelEventSink for LedgerModelSink<'a> {
     fn emit(&self, event: ModelEvent) {
         match event.to_event(self.run_id) {
@@ -239,6 +254,9 @@ pub struct Session {
     pub memory: Option<Arc<MemoryStore>>,
     /// Default namespace for memory writes (agent name or project id).
     pub memory_namespace: String,
+    /// Optional callback for model events (streaming display, etc).
+    /// Called on every ModelEvent during turn_with_sink.
+    pub on_event: Option<Box<dyn Fn(pantheon_core::model_event::ModelEvent) + Send + Sync>>,
 }
 
 impl Session {
@@ -260,6 +278,7 @@ impl Session {
             system_prompt: String::new(),
             memory,
             memory_namespace: "nyx".into(),
+            on_event: None,
         })
     }
 
@@ -939,11 +958,23 @@ impl Session {
         }
         // Chain events (Attempt/Usage/Completed/Fallback/…) project into the
         // ledger through one sink — no manual model lifecycle emissions here.
-        let msink = LedgerModelSink {
-            sup: &self.supervisor,
-            run_id,
+        let outcome = if let Some(cb) = &self.on_event {
+            let msink = LedgerModelSink {
+                sup: &self.supervisor,
+                run_id,
+            };
+            let sink = TeeModelSink {
+                inner: msink,
+                callback: Some(&**cb as &dyn Fn(ModelEvent)),
+            };
+            chain.turn_with_sink(messages, &sink)?
+        } else {
+            let msink = LedgerModelSink {
+                sup: &self.supervisor,
+                run_id,
+            };
+            chain.turn_with_sink(messages, &msink)?
         };
-        let outcome = chain.turn_with_sink(messages, &msink)?;
 
         match outcome {
             pantheon_agent::TurnOutcome::Text { text, tokens, cost_cents } => {
