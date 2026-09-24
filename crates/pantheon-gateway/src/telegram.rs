@@ -98,12 +98,18 @@ pub fn parse_event(payload: &Value) -> Result<Option<ChannelEvent>, ChannelError
             .filter(|id| !id.is_empty())
             .ok_or_else(|| ChannelError::new("TELEGRAM_EVENT", "message has no chat id"))?;
         let text = message.get("text").and_then(Value::as_str).unwrap_or("");
+        let sender = message
+            .get("from")
+            .and_then(|from| from.get("id"))
+            .and_then(Value::as_i64)
+            .map(|id| id.to_string());
         return Ok(Some(ChannelEvent {
             thread_id: chat_id,
             run_id: None,
             text: text.to_string(),
             approval: None,
             scope: None,
+            sender,
         }));
     }
     if let Some(callback) = payload.get("callback_query") {
@@ -137,12 +143,18 @@ pub fn parse_event(payload: &Value) -> Result<Option<ChannelEvent>, ChannelError
             .map(chat_id_string)
             .filter(|id| !id.is_empty())
             .ok_or_else(|| ChannelError::new("TELEGRAM_EVENT", "callback has no chat id"))?;
+        let sender = callback
+            .get("from")
+            .and_then(|from| from.get("id"))
+            .and_then(Value::as_i64)
+            .map(|id| id.to_string());
         return Ok(Some(ChannelEvent {
             thread_id: chat_id,
             run_id: None,
             text: String::new(),
             approval,
             scope: Some(scope.to_string()),
+            sender,
         }));
     }
     Ok(None)

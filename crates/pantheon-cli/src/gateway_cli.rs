@@ -20,6 +20,26 @@ struct RuntimeSink {
     policy: Policy,
     threads: Mutex<std::collections::HashMap<String, String>>,
     outbound: Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>,
+    /// Allowed platform sender ids (Telegram user id, Discord user id).
+    /// None = allowlist disabled (local testing); Some(empty) denies
+    /// everyone. The gateway is a remote shell, so the default is Some:
+    /// cmd_gateway requires an explicit allowlist before it starts.
+    allow: Option<std::collections::HashSet<String>>,
+}
+
+impl RuntimeSink {
+    /// Allowlist check. A sender not on the list is refused loudly on
+    /// their channel and nothing reaches the runtime.
+    fn allowed(&self, sender: Option<&str>) -> bool {
+        match (&self.allow, sender) {
+            (None, _) => true,
+            (Some(set), Some(id)) => set.contains(id),
+            // No sender identity and an allowlist is active: refuse.
+            // A bridge that strips identity must be explicitly trusted
+            // by leaving the allowlist unset.
+            (Some(_), None) => false,
+        }
+    }
 }
 
 fn open_session(
@@ -52,7 +72,14 @@ impl RuntimeSink {
 }
 
 impl pantheon_gateway::EventSink for RuntimeSink {
-    fn on_message(&self, thread_id: &str, text: &str) {
+    fn on_message(&self, thread_id: &str, sender: Option<&str>, text: &str) {
+        if !self.allowed(sender) {
+            self.push_outbound(
+                thread_id,
+                "not authorized: this bot only accepts messages from its allowlist".into(),
+            );
+            return;
+        }
         let session = match open_session(&self.data_dir.clone(), self.policy.clone()) {
             Ok(s) => s,
             Err(e) => {
@@ -90,7 +117,11 @@ impl pantheon_gateway::EventSink for RuntimeSink {
         }
     }
 
-    fn on_approval(&self, thread_id: &str, scope: &str, grant: bool) {
+    fn on_approval(&self, thread_id: &str, sender: Option<&str>, scope: &str, grant: bool) {
+        if !self.allowed(sender) {
+            self.push_outbound(thread_id, "not authorized".into());
+            return;
+        }
         let sup = match pantheon_runtime::Supervisor::open(self.data_dir.clone()) {
             Ok(s) => s,
             Err(e) => {
@@ -136,13 +167,38 @@ pub fn cmd_gateway(_args: &[String]) {
         eprintln!("gateway: set PANTHEON_DISCORD_TOKEN and/or PANTHEON_TELEGRAM_BOT_TOKEN");
         std::process::exit(2);
     }
+    // Sender allowlist: required. The gateway runs whatever a message
+    // says on this machine; without a list, any stranger who finds the
+    // bot owns the host. Comma-separated platform ids:
+    //   PANTHEON_GATEWAY_ALLOW=6123456789,223344556677889900
+    let allow: Option<std::collections::HashSet<String>> =
+        std::env::var("PANTHEON_GATEWAY_ALLOW").ok().map(|raw| {
+            raw.split(',')
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty())
+                .collect()
+        });
+    if allow.is_none() {
+        eprintln!(
+            "gateway: refusing to start without PANTHEON_GATEWAY_ALLOW\n\
+             set it to the comma-separated user ids allowed to talk to the bot\n\
+             (Telegram: message the bot, check @userinfobot; Discord: enable developer mode, right-click a user)"
+        );
+        std::process::exit(2);
+    }
     let data_dir = super::data_dir();
     let outbound = Arc::new(Mutex::new(Vec::new()));
+    let policy = match std::env::var("PANTHEON_GATEWAY_POLICY").as_deref() {
+        Ok("researcher") => Policy::researcher_readonly(),
+        Ok("coder") => Policy::coder(),
+        _ => Policy::coder_with_memory(),
+    };
     let sink = Arc::new(RuntimeSink {
         data_dir: data_dir.clone(),
-        policy: Policy::coder_with_memory(),
+        policy,
         threads: Mutex::new(std::collections::HashMap::new()),
         outbound: outbound.clone(),
+        allow,
     });
     let state_dir = data_dir.join("gateway");
     let _ = std::fs::create_dir_all(&state_dir);
@@ -195,5 +251,64 @@ pub fn cmd_gateway(_args: &[String]) {
     eprintln!("gateway running; Ctrl+C to stop");
     for h in handles {
         let _ = h.join();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pantheon_gateway::EventSink;
+
+    fn sink_with(allow: Option<&[&str]>) -> RuntimeSink {
+        RuntimeSink {
+            data_dir: std::path::PathBuf::from("/tmp"),
+            policy: Policy::coder(),
+            threads: Mutex::new(std::collections::HashMap::new()),
+            outbound: Arc::new(Mutex::new(Vec::new())),
+            allow: allow.map(|ids| ids.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    #[test]
+    fn allowlist_admits_listed_senders_only() {
+        let s = sink_with(Some(&["111", "222"]));
+        assert!(s.allowed(Some("111")));
+        assert!(!s.allowed(Some("333")));
+        // No sender identity with an active allowlist: refuse.
+        assert!(!s.allowed(None));
+    }
+
+    #[test]
+    fn unset_allowlist_admits_everyone_local_only() {
+        let s = sink_with(None);
+        assert!(s.allowed(Some("anyone")));
+        assert!(s.allowed(None));
+    }
+
+    #[test]
+    fn empty_allowlist_denies_everyone() {
+        let s = sink_with(Some(&[]));
+        assert!(!s.allowed(Some("111")));
+    }
+
+    #[test]
+    fn denied_sender_never_reaches_the_runtime() {
+        // on_message from a non-listed sender must not bind a thread or
+        // touch a session; outbound gets the refusal instead.
+        let dir = std::env::temp_dir().join(format!("pantheon-gw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let outbound = Arc::new(Mutex::new(Vec::new()));
+        let s = RuntimeSink {
+            data_dir: dir,
+            policy: Policy::coder(),
+            threads: Mutex::new(std::collections::HashMap::new()),
+            outbound: outbound.clone(),
+            allow: Some(["111".to_string()].into_iter().collect()),
+        };
+        s.on_message("chat1", Some("999"), "rm -rf /");
+        let out = outbound.lock().unwrap();
+        assert_eq!(out.len(), 1, "exactly the refusal");
+        assert!(out[0].text.contains("not authorized"));
     }
 }

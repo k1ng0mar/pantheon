@@ -29,6 +29,14 @@ Signing: `PANTHEON_GENUI_SECRET` (default is a dev-only constant; set a
 real one before exposing the port). `pantheon sign <task_id>` mints a URL
 without the server running.
 
+Auth: set `PANTHEON_SERVE_TOKEN` and every `/agui` route except
+`/agui/health` requires it (HTTP header `Authorization: Bearer <token>`
+or `X-Pantheon-Token`; the SSE stream also accepts `?token=` for
+EventSource). The served web client gets the token injected
+automatically. Without the variable the server is open on localhost,
+which is fine for single-user development and nothing else. Any
+non-local bind, tunnel, or port-forward requires a token.
+
 ## Discord
 
 Two inbound paths, one normalizer:
@@ -58,8 +66,17 @@ Approval frames use inline keyboards with `callback_data`
 ## The daemon
 
 ```sh
-PANTHEON_DISCORD_TOKEN=... PANTHEON_TELEGRAM_BOT_TOKEN=... pantheon gateway
+PANTHEON_DISCORD_TOKEN=... PANTHEON_TELEGRAM_BOT_TOKEN=... \
+PANTHEON_GATEWAY_ALLOW=6123456789,223344556677889900 \
+pantheon gateway
 ```
+
+Access control: the gateway runs whatever a message says on this
+machine, so it refuses to start without `PANTHEON_GATEWAY_ALLOW`, the
+comma-separated list of platform user ids (Telegram user id, Discord
+user id) allowed to talk to the bot. Everyone else gets a refusal and
+nothing reaches the runtime. `PANTHEON_GATEWAY_POLICY` overrides the
+session policy per deployment (`researcher` for read-only surfaces).
 
 One thread per surface. Each tick:
 
