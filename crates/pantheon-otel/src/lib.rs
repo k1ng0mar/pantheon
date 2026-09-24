@@ -5,6 +5,8 @@
 //! transition, metrics derived from the same events. The durable ledger
 //! stays the source of truth; OTel is the export format.
 use pantheon_core::events::Event;
+#[allow(unused_imports)]
+use pantheon_core::provenance::Provenance;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +145,7 @@ mod tests {
             call_id: "call_0_0".into(),
             tool: "shell".into(),
             args: String::new(),
+            provenance: Provenance::system("test"),
         })
         .unwrap();
         assert_eq!(s.kind, SpanKind::Tool);
@@ -165,6 +168,7 @@ mod tests {
                 call_id: "call_0_0".into(),
                 tool: "a".into(),
                 args: String::new(),
+                provenance: Provenance::system("test"),
             },
             Event::ModelCompleted { run_id: "r".into() },
             Event::RunCompleted { run_id: "r".into() },

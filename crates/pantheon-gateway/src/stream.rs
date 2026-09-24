@@ -133,6 +133,7 @@ pub fn frames_for_entries(
 mod tests {
     use super::*;
     use pantheon_core::events::Event;
+    use pantheon_core::provenance::Provenance;
     #[test]
     fn approval_request_parks_with_interrupt_flag() {
         let f = frame_for_event(
@@ -171,6 +172,7 @@ mod tests {
                 call_id: "call_0_0".into(),
                 tool: "shell".into(),
                 args: String::new(),
+                provenance: Provenance::system("test"),
             },
             None,
         );

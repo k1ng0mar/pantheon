@@ -2,6 +2,7 @@
 //! giving replayability, debugging, and crash recovery.
 
 use crate::message::Message;
+use crate::provenance::Provenance;
 use serde::{Deserialize, Serialize};
 
 /// Canonical runtime events (§2 agent engine + §18 runtime API).
@@ -52,17 +53,23 @@ pub enum Event {
         tool: String,
         /// Tool arguments as issued (persisted so resume re-executes exactly).
         args: String,
+        /// Which entity/action issued this tool call (user, model, memory).
+        provenance: Provenance,
     },
     ToolOutput {
         run_id: String,
         call_id: String,
         tool: String,
         truncated: bool,
+        /// Provenance of the output (tool-derived, always Untrusted tier).
+        provenance: Provenance,
     },
     ToolCompleted {
         run_id: String,
         call_id: String,
         tool: String,
+        /// Provenance of the completion boundary.
+        provenance: Provenance,
     },
     /// Assistant turn persisted so resume rebuilds messages without a model call.
     AssistantMessage {

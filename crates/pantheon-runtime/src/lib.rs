@@ -700,6 +700,7 @@ mod tests {
             call_id: "t".into(),
             tool: "shell".into(),
             args: String::new(),
+            provenance: pantheon_core::provenance::Provenance::system("test"),
         })
         .unwrap();
         sup.complete(id).unwrap();
@@ -756,6 +757,7 @@ mod tests {
             call_id: "call_0_0".into(),
             tool: "shell".into(),
             args: "{\"cmd\":\"ls\"}".into(),
+            provenance: pantheon_core::provenance::Provenance::system("test"),
         })
         .unwrap();
         let entries = sup.replay("run_replay").unwrap();
@@ -903,7 +905,7 @@ mod tests {
                 fallbacks: pantheon_core::model::FallbackChain::default(),
                 auxiliaries: vec![],
             },
-            String::new(),
+            pantheon_secrets::SecretsBroker::new(),
         )
         .unwrap();
         let err = session.chat("run_park", "again").unwrap_err();

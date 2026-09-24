@@ -55,8 +55,8 @@ fn open_session(
         fallbacks: pantheon_core::model::FallbackChain::default(),
         auxiliaries: vec![],
     };
-    let api_key = std::env::var("PANTHEON_API_KEY").unwrap_or_default();
-    pantheon_runtime::session::Session::new(data_dir.clone(), policy, model_policy, api_key)
+    let secrets = pantheon_secrets::SecretsBroker::from_system_env_with_api_key(None);
+    pantheon_runtime::session::Session::new(data_dir.clone(), policy, model_policy, secrets)
 }
 
 impl RuntimeSink {

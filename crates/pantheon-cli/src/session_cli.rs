@@ -320,8 +320,8 @@ pub fn run_session() {
     } else {
         pantheon_core::capability::Policy::coder()
     };
-    let api_key = std::env::var("PANTHEON_API_KEY").unwrap_or_default();
-    let session = match Session::new(crate::data_dir(), policy, model_policy, api_key) {
+    let secrets = pantheon_secrets::SecretsBroker::from_system_env_with_api_key(None);
+    let session = match Session::new(crate::data_dir(), policy, model_policy, secrets) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("open session: {e}");
@@ -380,8 +380,8 @@ pub fn run_session() {
             let file_cfg = config_doc::Config::load(&crate::data_dir()).ok();
             let mp = build_model_policy(&file_cfg, Some(p), Some(m));
             let pol = repl.session.policy.clone();
-            let key = repl.session.api_key.clone();
-            if let Ok(s) = Session::new(crate::data_dir(), pol, mp, key) {
+            let secrets = pantheon_secrets::SecretsBroker::from_system_env();
+            if let Ok(s) = Session::new(crate::data_dir(), pol, mp, secrets) {
                 repl.session = s;
             }
             repl.model = None;

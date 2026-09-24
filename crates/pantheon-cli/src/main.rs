@@ -5,6 +5,7 @@ use pantheon_exec::safewrite::{preview_edit, SafeWriter};
 use pantheon_extensions::{doctor, ExtensionManager, Hook, RunnerConfig};
 use pantheon_memory::{markdown, BackendSelection, LayerKind, MemoryStore, Proposal, Provenance};
 use pantheon_runtime::{new_run_id, Supervisor};
+use pantheon_secrets::SecretVault;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -354,17 +355,24 @@ fn main() {
                 fallbacks: chain,
                 auxiliaries: vec![],
             };
-            let api_key = key
-                .or_else(|| {
-                    // Config names the env var; resolve it at runtime.
-                    file_cfg
-                        .as_ref()
-                        .and_then(|c| c.model.as_ref())
-                        .and_then(|m| m.api_key_env.clone())
-                        .and_then(|env| std::env::var(env).ok())
-                })
-                .or_else(|| std::env::var("PANTHEON_API_KEY").ok())
-                .unwrap_or_default();
+            // Resolve API key through the secrets broker: env var, config-
+            // named env var, or --key flag. The key is wrapped in a
+            // SecretValue and injected into a memory vault so it never
+            // lives as a plain String in session state.
+            let key_env = file_cfg
+                .as_ref()
+                .and_then(|c| c.model.as_ref())
+                .and_then(|m| m.api_key_env.clone());
+            let mut secrets =
+                pantheon_secrets::SecretsBroker::from_system_env_with_api_key(key_env.as_deref());
+            if let Some(k) = &key {
+                let mem = pantheon_secrets::MemoryVault::new();
+                let _ = mem.set(
+                    "PANTHEON_API_KEY",
+                    pantheon_secrets::SecretValue::new(k.clone()),
+                );
+                secrets = secrets.with_vault(Box::new(mem));
+            }
             let allow_memory = file_cfg
                 .as_ref()
                 .map(|c| c.policy == Some(config_schema::PolicyPreset::CoderMemory))
@@ -382,7 +390,7 @@ fn main() {
                 data_dir(),
                 policy,
                 model_policy,
-                api_key,
+                secrets,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -755,6 +763,7 @@ fn main() {
                     call_id: "cli".into(),
                     tool: t,
                     args: String::new(),
+                    provenance: pantheon_core::provenance::Provenance::system("cli"),
                 })
                 .unwrap();
             }

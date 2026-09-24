@@ -34,6 +34,21 @@ impl SecretsBroker {
         }
     }
 
+    /// Like `from_system_env`, but also picks up the legacy `PANTHEON_API_KEY`
+    /// env var (and any config-named env var passed via `key_env`) by injecting
+    /// it into a memory vault. Use this when the runtime needs backward
+    /// compatibility with older env-based configuration.
+    pub fn from_system_env_with_api_key(key_env: Option<&str>) -> Self {
+        let mem = crate::vault::MemoryVault::new();
+        let found = key_env
+            .and_then(|env| std::env::var(env).ok())
+            .or_else(|| std::env::var("PANTHEON_API_KEY").ok());
+        if let Some(k) = found {
+            let _ = mem.set("PANTHEON_API_KEY", SecretValue::new(k));
+        }
+        Self::from_system_env().with_vault(Box::new(mem))
+    }
+
     /// Add a durable vault (OS keychain, encrypted local, memory). Durable
     /// vaults are consulted in insertion order before the environment.
     pub fn with_vault(mut self, vault: Box<dyn SecretVault>) -> Self {

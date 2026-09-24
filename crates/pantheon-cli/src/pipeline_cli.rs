@@ -93,19 +93,13 @@ fn open_session(
                 std::env::var("PANTHEON_MODEL").unwrap_or_else(|_| "llama3.2".into()),
             )
         });
-    let api_key = cfg
-        .as_ref()
-        .and_then(|c| c.model.as_ref())
-        .and_then(|m| m.api_key_env.clone())
-        .and_then(|env| std::env::var(env).ok())
-        .or_else(|| std::env::var("PANTHEON_API_KEY").ok())
-        .unwrap_or_default();
     let model_policy = pantheon_core::model::ModelPolicy {
         default: pantheon_core::model::DefaultModel { provider, model },
         fallbacks: pantheon_core::model::FallbackChain::default(),
         auxiliaries: vec![],
     };
-    pantheon_runtime::session::Session::new(data_dir.clone(), policy, model_policy, api_key)
+    let secrets = pantheon_secrets::SecretsBroker::from_system_env();
+    pantheon_runtime::session::Session::new(data_dir.clone(), policy, model_policy, secrets)
 }
 
 pub fn cmd_pipeline(args: &[String]) {

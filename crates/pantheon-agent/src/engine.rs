@@ -3,6 +3,7 @@ use crate::tool::{gate, EventSink, GateOutcome, ToolRunner};
 use pantheon_core::capability::{Capability, Policy};
 use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::events::Event;
+use pantheon_core::provenance::Provenance;
 
 /// One tool the model asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +182,7 @@ impl<'a> AgentLoop<'a> {
                             call_id: call_id.clone(),
                             tool: call.name.clone(),
                             args: call.args.clone(),
+                            provenance: Provenance::untrusted(&call.name),
                         });
                         let out = self.tools.run(&call.name, &call.args)?;
                         self.sink.emit(Event::ToolOutput {
@@ -188,12 +190,14 @@ impl<'a> AgentLoop<'a> {
                             call_id: call_id.clone(),
                             tool: call.name.clone(),
                             truncated: false,
+                            provenance: Provenance::untrusted(&call.name),
                         });
                         transcript.push(format!("tool[{}]: {out}", call.name));
                         self.sink.emit(Event::ToolCompleted {
                             run_id: self.run_id.clone(),
                             call_id,
                             tool: call.name.clone(),
+                            provenance: Provenance::untrusted(&call.name),
                         });
                     }
                 }

@@ -15,6 +15,7 @@ use pantheon_core::error::PantheonError;
 use pantheon_core::message::{Message, ToolSchema};
 use pantheon_core::model::{DefaultModel, ModelPolicy};
 use pantheon_core::model_event::{ModelEvent, ModelEventSink, NoopModelSink};
+use pantheon_secrets::SecretValue;
 use std::cell::RefCell;
 
 /// A `ModelTurn` backed by the policy chain. Streaming is a preference:
@@ -23,18 +24,26 @@ pub struct ProviderChain<T: ChatTransport> {
     pub policy: ModelPolicy,
     pub transport: T,
     pub tools: Vec<ToolSchema>,
-    pub api_key: String,
+    /// Resolved through SecretsBroker at the execution boundary.
+    /// Stored as SecretValue so the key is never a plain String in
+    /// memory beyond this point.
+    pub api_key: Option<SecretValue>,
     /// Resolved after the last turn (default or fallback index).
     pub last_resolved: RefCell<Option<ResolvedModel>>,
 }
 
 impl<T: ChatTransport> ProviderChain<T> {
-    pub fn new(policy: ModelPolicy, transport: T, tools: Vec<ToolSchema>, api_key: String) -> Self {
+    pub fn new(
+        policy: ModelPolicy,
+        transport: T,
+        tools: Vec<ToolSchema>,
+        api_key: SecretValue,
+    ) -> Self {
         Self {
             policy,
             transport,
             tools,
-            api_key,
+            api_key: Some(api_key),
             last_resolved: RefCell::new(None),
         }
     }
@@ -54,7 +63,10 @@ impl<T: ChatTransport> ProviderChain<T> {
             .map(|p| p.api_mode)
             .unwrap_or(ApiMode::OpenAi);
         let base = catalog::base_url_for(&model.provider);
-        let key = catalog::key_for(&model.provider, &self.api_key);
+        let key = catalog::key_for(
+            &model.provider,
+            self.api_key.as_ref().map(|kv| kv.expose()).unwrap_or(""),
+        );
         let stream = stream && meta.streaming;
         sink.emit(ModelEvent::Attempt {
             provider: model.provider.clone(),
@@ -233,6 +245,7 @@ mod tests {
     use crate::http::WireRequest;
     use pantheon_core::model::{FallbackChain, ModelPolicy};
     use pantheon_core::model_event::ModelUsage;
+    use pantheon_secrets::SecretValue;
     use std::cell::RefCell;
     use std::sync::Mutex;
 
@@ -315,7 +328,7 @@ mod tests {
             Err(perr("PROVIDER_HTTP", "503".into(), true)),
             Ok(ok_body("from fallback")),
         ]);
-        let chain = ProviderChain::new(policy(), t, vec![], String::new());
+        let chain = ProviderChain::new(policy(), t, vec![], SecretValue::new(""));
         let out = chain.turn_messages(&[Message::user("go")]).unwrap();
         assert_eq!(out, TurnOutcome::Text("from fallback".into()));
         let r = chain.last_resolved.borrow().clone().unwrap();
@@ -329,7 +342,7 @@ mod tests {
             Err(perr("PROVIDER_HTTP", "503".into(), true)),
             Ok(ok_body("saved")),
         ]);
-        let chain = ProviderChain::new(policy(), t, vec![], String::new());
+        let chain = ProviderChain::new(policy(), t, vec![], SecretValue::new(""));
         let c = collector();
         chain.turn_with_sink(&[Message::user("go")], &c).unwrap();
         let evs = c.0.borrow();
@@ -376,7 +389,7 @@ mod tests {
         let body = serde_json::json!({ "choices": [ { "message": { "role": "assistant", "content": "x" } } ],
             "usage": { "prompt_tokens": 1000000, "completion_tokens": 1000000, "total_tokens": 2000000 } }).to_string();
         let t = FakeTransport::new(vec![Ok(body)]);
-        let chain = ProviderChain::new(pol, t, vec![], String::new());
+        let chain = ProviderChain::new(pol, t, vec![], SecretValue::new(""));
         let c = collector();
         chain.turn_with_sink(&[Message::user("go")], &c).unwrap();
         let evs = c.0.borrow();
@@ -402,7 +415,7 @@ mod tests {
             "401 unauthorized".into(),
             false,
         ))]);
-        let chain = ProviderChain::new(policy(), t, vec![], String::new());
+        let chain = ProviderChain::new(policy(), t, vec![], SecretValue::new(""));
         let c = collector();
         let err = chain
             .turn_with_sink(&[Message::user("go")], &c)
@@ -424,7 +437,7 @@ mod tests {
             Err(perr("PROVIDER_HTTP", "500".into(), true)),
             Err(perr("PROVIDER_HTTP", "500".into(), true)),
         ]);
-        let chain = ProviderChain::new(policy(), t, vec![], String::new());
+        let chain = ProviderChain::new(policy(), t, vec![], SecretValue::new(""));
         let c = collector();
         let err = chain
             .turn_with_sink(&[Message::user("go")], &c)
@@ -450,7 +463,7 @@ mod tests {
             auxiliaries: vec![],
         };
         let t = FakeTransport::new(vec![Ok(ok_body("ok"))]);
-        let chain = ProviderChain::new(pol, t, vec![], "test-key".into());
+        let chain = ProviderChain::new(pol, t, vec![], SecretValue::new("test-key"));
         chain.turn_messages(&[Message::user("go")]).unwrap();
         assert_eq!(
             chain.transport.urls.lock().unwrap()[0],
@@ -471,7 +484,7 @@ mod tests {
             "stop_reason": "end_turn"
         })
         .to_string())]);
-        let chain = ProviderChain::new(pol, t, vec![], "test-key".into());
+        let chain = ProviderChain::new(pol, t, vec![], SecretValue::new("test-key"));
         chain.turn_messages(&[Message::user("go")]).unwrap();
         assert_eq!(
             chain.transport.urls.lock().unwrap()[0],
@@ -488,7 +501,7 @@ mod tests {
             "[DONE]".to_string(),
         ];
         let t = FakeTransport::with_streams(vec![chunks]);
-        let chain = ProviderChain::new(policy(), t, vec![], String::new());
+        let chain = ProviderChain::new(policy(), t, vec![], SecretValue::new(""));
         let c = collector();
         let out = chain.turn_stream(&[Message::user("go")], &c).unwrap();
         assert_eq!(out, TurnOutcome::Text("Hey".into()));
@@ -530,7 +543,7 @@ mod tests {
             "[DONE]".to_string(),
         ];
         let t = FakeTransport::with_streams(vec![chunks]);
-        let chain = ProviderChain::new(pol, t, vec![], String::new());
+        let chain = ProviderChain::new(pol, t, vec![], SecretValue::new(""));
         let c = collector();
         let out = chain.turn_stream(&[Message::user("go")], &c).unwrap();
         assert_eq!(out, TurnOutcome::Text("ok".into()));

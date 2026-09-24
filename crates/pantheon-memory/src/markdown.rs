@@ -379,7 +379,11 @@ mod tests {
     fn render_then_parse_round_trip() {
         let rows = vec![
             ("city".to_string(), "Kano".to_string(), TrustTier::User),
-            ("tz".to_string(), "Africa/Lagos".to_string(), TrustTier::User),
+            (
+                "tz".to_string(),
+                "Africa/Lagos".to_string(),
+                TrustTier::User,
+            ),
         ];
         let md = render_agent(&rows);
         let parsed = parse_md(&md);
@@ -408,7 +412,11 @@ mod tests {
     #[test]
     fn key_named_agent_memory_round_trips_in_v1_file() {
         let rows = vec![
-            ("Agent memory".to_string(), "meta".to_string(), TrustTier::User),
+            (
+                "Agent memory".to_string(),
+                "meta".to_string(),
+                TrustTier::User,
+            ),
             ("other".to_string(), "v".to_string(), TrustTier::User),
         ];
         let md = render_agent(&rows);
