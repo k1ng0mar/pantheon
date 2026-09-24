@@ -321,7 +321,7 @@ pub fn run_session() {
         pantheon_core::capability::Policy::coder()
     };
     let secrets = pantheon_secrets::SecretsBroker::from_system_env_with_api_key(None);
-    let session = match Session::new(crate::data_dir(), policy, model_policy, secrets) {
+    let mut session = match Session::new(crate::data_dir(), policy, model_policy, secrets) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("open session: {e}");
@@ -329,6 +329,43 @@ pub fn run_session() {
         }
     };
     let namespace = std::env::var("PANTHEON_MEMORY_NAMESPACE").unwrap_or_else(|_| "nyx".into());
+
+    // Install a streaming callback: print TextDelta events as they arrive,
+    // plus tool call names and usage info. This gives the user Claude Code-
+    // style live output without a full TUI dependency.
+    session.on_event = Some(Box::new(|ev| {
+        use pantheon_core::model_event::ModelEvent;
+        use std::io::Write;
+        match ev {
+            ModelEvent::TextDelta { text } => {
+                let _ = std::io::stdout().write_all(text.as_bytes());
+                let _ = std::io::stdout().flush();
+            }
+            ModelEvent::ReasoningDelta { text } => {
+                let _ = writeln!(std::io::stdout(), "\n{thought_prefix}{text}\n{thought_suffix}",
+                    thought_prefix = "◊|", thought_suffix = "|◊");
+            }
+            ModelEvent::ToolCall { name, .. } => {
+                let _ = writeln!(std::io::stdout(), "\n[tool: {name}]");
+            }
+            ModelEvent::Usage { usage } => {
+                if let Some(cost) = usage.cost_usd {
+                    let _ = writeln!(
+                        std::io::stdout(),
+                        "\n[usage: {} tokens, ${:.4}]",
+                        usage.total_tokens, cost
+                    );
+                } else {
+                    let _ = writeln!(
+                        std::io::stdout(),
+                        "\n[usage: {} tokens]",
+                        usage.total_tokens
+                    );
+                }
+            }
+            _ => {}
+        }
+    }));
 
     // Auto-resume: continue the most recent run if one exists.
     let run_id = match session.supervisor.ledger_list_runs(1) {
