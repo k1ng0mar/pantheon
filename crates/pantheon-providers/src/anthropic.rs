@@ -35,6 +35,15 @@ pub fn request(
         .collect();
     let mut rows: Vec<serde_json::Value> = Vec::new();
     for m in messages.iter().filter(|m| m.role != Role::System) {
+        // Provenance envelope: same convention as the OpenAI adapter. Rows
+        // with untrusted or memory-tier provenance carry a prefix so the
+        // model can tell fetched data from instructions.
+        let content = match &m.provenance {
+            Some(p) if p.trust.rank() <= pantheon_core::provenance::TrustTier::Memory.rank() => {
+                format!("{} {}", p.envelope_prefix(), m.content)
+            }
+            _ => m.content.clone(),
+        };
         let blocks: Vec<serde_json::Value> = match m.role {
             Role::Assistant => {
                 let mut b = Vec::new();
@@ -53,9 +62,9 @@ pub fn request(
             Role::Tool => vec![serde_json::json!({
                 "type": "tool_result",
                 "tool_use_id": m.tool_call_id.clone().unwrap_or_else(|| "call_0".into()),
-                "content": m.content,
+                "content": content,
             })],
-            _ => vec![serde_json::json!({"type": "text", "text": m.content})],
+            _ => vec![serde_json::json!({"type": "text", "text": content})],
         };
         let role = if m.role == Role::Assistant {
             "assistant"
