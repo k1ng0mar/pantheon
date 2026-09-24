@@ -76,6 +76,7 @@ mod doctor_cli;
 mod gateway_cli;
 mod pipeline_cli;
 mod reset_cli;
+mod session_cli;
 mod setup_cli;
 mod setup_entry;
 
@@ -242,8 +243,9 @@ fn memory_help() {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprint!("{}", usage());
-        std::process::exit(2);
+        // Bare `pantheon` opens the interactive session REPL.
+        session_cli::run_session();
+        return;
     }
     match args[1].as_str() {
         "chat" => {
@@ -1086,6 +1088,9 @@ fn main() {
         }
         "setup" => {
             setup_entry::cmd_setup(&args);
+        }
+        "session" => {
+            session_cli::run_session();
         }
         "reset" => {
             reset_cli::cmd_reset(&args);

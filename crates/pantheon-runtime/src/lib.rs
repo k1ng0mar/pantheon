@@ -634,6 +634,15 @@ impl Supervisor {
     pub fn ledger_status(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
         self.ledger().status(run_id)
     }
+    pub fn ledger_list_runs(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(String, String, i64)>, PantheonError> {
+        self.ledger().list_runs(limit)
+    }
+    pub fn ledger_reopen_run(&self, run_id: &str) -> Result<bool, PantheonError> {
+        self.ledger().reopen_run(run_id)
+    }
     pub fn replay(
         &self,
         run_id: &str,

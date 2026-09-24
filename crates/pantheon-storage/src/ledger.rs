@@ -493,6 +493,54 @@ impl Ledger {
         .optional()
         .map_err(|e| err("LEDGER_STATUS", e.to_string()))
     }
+
+    /// List recent runs, newest first. Powers the REPL `/runs` picker and
+    /// auto-resume. `limit` bounds the row count.
+    pub fn list_runs(&self, limit: usize) -> Result<Vec<(String, String, i64)>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT run_id, status, created_ms FROM runs ORDER BY created_ms DESC, rowid DESC LIMIT ?1",
+            )
+            .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+        let rows = stmt
+            .query_map(params![limit as i64], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| err("LEDGER_QUERY", e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// Reopen a terminal run for continued conversation. Only terminal
+    /// statuses flip back to running; a running/awaiting run is untouched
+    /// (the caller then follows the normal path). Returns whether a
+    /// reopen happened. The event trail keeps its original shape; the
+    /// status flip is the continuation marker.
+    pub fn reopen_run(&self, run_id: &str) -> Result<bool, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let n = conn
+            .execute(
+                "UPDATE runs SET status='running' WHERE run_id=?1
+                 AND status IN ('completed','failed','canceled')",
+                params![run_id],
+            )
+            .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
+        Ok(n > 0)
+    }
     /// Highest global ledger sequence (== highest event id). Checkpoints
     /// anchor to this, so `rollback --seq N` maps to a real position.
     pub fn max_seq(&self) -> Result<i64, PantheonError> {

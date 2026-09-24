@@ -330,12 +330,16 @@ impl Session {
             })
     }
 
-    /// Run one task end to end. Returns the terminal outcome.
+    /// One conversational turn. A fresh run id starts a conversation; a
+    /// terminal run id continues it (reopen + transcript rebuild from the
+    /// ledger) so an interactive session can keep talking across turns.
+    /// A parked run (awaiting approval) must be granted or denied first.
     pub fn chat(&self, run_id: &str, user_message: &str) -> Result<LoopOutcome, PantheonError> {
         // Activity-based watchdog: only a failed probe after stall escalates,
         // never wall-clock duration. Pauses (human approval) do not eat the
         // clock because the watchdog only advances inside drive().
         let watchdog = std::sync::Mutex::new(TurnWatchdog::from_env());
+        let mut reopened = false;
         match self.supervisor.ledger_status(run_id)?.as_deref() {
             Some("awaiting_approval") => {
                 return Err(aerr(
@@ -344,21 +348,36 @@ impl Session {
                 ));
             }
             Some("completed") | Some("failed") | Some("canceled") => {
-                return Err(aerr(
-                    "RUN_TERMINAL",
-                    format!("run {run_id} already finished; start a new id"),
-                ));
+                // Interactive continuation: flip the terminal status back
+                // to running and rebuild the transcript below. The ledger
+                // keeps the full event trail; `reopen_run` is the marker.
+                reopened = self.supervisor.ledger_reopen_run(run_id)?;
+                if !reopened {
+                    return Err(aerr(
+                        "RUN_TERMINAL",
+                        format!("run {run_id} already finished and could not be reopened"),
+                    ));
+                }
             }
             _ => {}
         }
         let (recovered, _lease) = self.supervisor.start_run_with_lease(run_id)?;
         let _lease_guard = RunLeaseGuard::try_new(self.supervisor.clone(), run_id)?;
-        let mut messages: Vec<Message> = if recovered {
-            self.supervisor.emit(Event::RunProgress {
-                run_id: run_id.into(),
-                detail: "recovered unfinished run".into(),
-            })?;
-            rebuild_messages(self.supervisor.replay(run_id)?)
+        let prior_entries = self.supervisor.replay(run_id)?;
+        let has_prior_history = prior_entries.iter().any(|e| {
+            matches!(
+                e.event,
+                Event::AssistantMessage { .. } | Event::ToolMessage { .. }
+            )
+        });
+        let mut messages: Vec<Message> = if recovered || reopened || has_prior_history {
+            if recovered {
+                self.supervisor.emit(Event::RunProgress {
+                    run_id: run_id.into(),
+                    detail: "recovered unfinished run".into(),
+                })?;
+            }
+            rebuild_messages(prior_entries)
         } else {
             Vec::new()
         };
