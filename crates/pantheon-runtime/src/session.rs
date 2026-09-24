@@ -977,7 +977,11 @@ impl Session {
         };
 
         match outcome {
-            pantheon_agent::TurnOutcome::Text { text, tokens, cost_cents } => {
+            pantheon_agent::TurnOutcome::Text {
+                text,
+                tokens,
+                cost_cents,
+            } => {
                 let t = text.clone();
                 let msg = Message::assistant(&text);
                 messages.push(msg.clone());

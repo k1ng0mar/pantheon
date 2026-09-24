@@ -342,8 +342,12 @@ pub fn run_session() {
                 let _ = std::io::stdout().flush();
             }
             ModelEvent::ReasoningDelta { text } => {
-                let _ = writeln!(std::io::stdout(), "\n{thought_prefix}{text}\n{thought_suffix}",
-                    thought_prefix = "◊|", thought_suffix = "|◊");
+                let _ = writeln!(
+                    std::io::stdout(),
+                    "\n{thought_prefix}{text}\n{thought_suffix}",
+                    thought_prefix = "◊|",
+                    thought_suffix = "|◊"
+                );
             }
             ModelEvent::ToolCall { name, .. } => {
                 let _ = writeln!(std::io::stdout(), "\n[tool: {name}]");
@@ -353,7 +357,8 @@ pub fn run_session() {
                     let _ = writeln!(
                         std::io::stdout(),
                         "\n[usage: {} tokens, ${:.4}]",
-                        usage.total_tokens, cost
+                        usage.total_tokens,
+                        cost
                     );
                 } else {
                     let _ = writeln!(
