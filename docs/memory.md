@@ -33,11 +33,30 @@ propose -> policy check -> provenance attach -> validation -> store
 No silent prompt-injection writes: anything the model wants remembered
 goes through the same gate as anything you write by hand.
 
+## Trust tiers
+
+Every record carries a trust tier from where it came from:
+
+```
+system     harness-authored, authoritative
+user       you wrote it (CLI put, /remember, hand-edited MEMORY.md)
+memory     user-confirmed records (memory_confirm promotion)
+untrusted  model-proposed, tool- or web-derived material
+```
+
+The invariant: content never gains trust by being copied. A model
+proposal lands untrusted no matter what it claims; only an explicit
+user action promotes it (`pantheon memory confirm KEY`, or a human
+edit in MEMORY.md). Recalled records show their tier inline, and
+untrusted records are flagged `[untrusted: source]` in the context the
+model sees.
+
 ## CLI
 
 ```sh
-pantheon memory put KEY VALUE          # store (goes through the gate)
+pantheon memory put KEY VALUE          # store (user trust, goes through the gate)
 pantheon memory recall QUERY           # FTS search, provenance included
+pantheon memory confirm KEY            # promote a record to memory tier
 pantheon memory export [PATH]          # store -> markdown (default MEMORY.md)
 pantheon memory import [PATH]          # markdown -> store, each section a proposal
 pantheon memory sync [PATH]            # bidirectional, conflict-detecting
