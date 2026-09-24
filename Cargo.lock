@@ -1037,6 +1037,7 @@ dependencies = [
  "libc",
  "pantheon-core",
  "pantheon-memory",
+ "pantheon-sandbox",
  "serde",
  "serde_json",
  "serde_yaml",

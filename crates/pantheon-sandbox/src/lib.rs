@@ -7,6 +7,7 @@
 //! onto those boundaries. Levels are ordered weakest -> strongest.
 pub mod enforce;
 pub mod level;
+pub mod runner;
 
 pub use enforce::{capability_label, enforce, Enforcement};
 pub use level::{profile_for, ExecutionBoundary, SandboxProfile};
