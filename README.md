@@ -36,12 +36,21 @@ ARCHITECTURE.md sections 3, 10, 13, 15, 21, 23 for the exact state.
 
 ## Install
 
+Linux or macOS:
+
 ```sh
-curl -fsSL https://pantheon.run/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/pantheon-agent/pantheon/main/install.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+iwr https://raw.githubusercontent.com/pantheon-agent/pantheon/main/install.ps1 -useb | iex
 ```
 
 The script installs Rust (if missing), builds from source, and links
-into `~/.local/bin`. Requires `sh` and `git` at minimum.
+into `~/.local/bin`. Requires `sh` and `git` at minimum on Unix;
+Git and curl on Windows.
 
 Or build from source:
 
