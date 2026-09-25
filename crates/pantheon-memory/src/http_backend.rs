@@ -39,11 +39,40 @@ fn merr(code: &str, cause: String) -> PantheonError {
 pub struct HttpBackend {
     base: String,
     api_key: Option<String>,
+    /// Path prefix the service mounts the protocol under. Default
+    /// `/v1/memory`; custom plugins set their own (e.g. `/memory`).
+    prefix: String,
 }
 
 impl HttpBackend {
     pub fn new(base: String, api_key: Option<String>) -> Self {
-        Self { base, api_key }
+        Self {
+            base,
+            api_key,
+            prefix: "/v1/memory".into(),
+        }
+    }
+
+    /// Same adapter, custom protocol mount point. Trailing slashes are
+    /// normalized so both `url` and `prefix` can be written either way.
+    pub fn with_prefix(base: String, api_key: Option<String>, prefix: impl Into<String>) -> Self {
+        let mut p = prefix.into();
+        if !p.starts_with('/') {
+            p.insert(0, '/');
+        }
+        while p.ends_with('/') {
+            p.pop();
+        }
+        Self {
+            base,
+            api_key,
+            prefix: p,
+        }
+    }
+
+    /// `<base><prefix>/<suffix>` with the base trailing slash trimmed.
+    fn endpoint(&self, suffix: &str) -> String {
+        format!("{}{}/{}", self.base.trim_end_matches('/'), self.prefix, suffix)
     }
 }
 
@@ -89,8 +118,8 @@ impl MemoryBackend for HttpBackend {
             .collect::<Vec<_>>()
             .join(",");
         let url = format!(
-            "{}/v1/memory/recall?query={}&limit={}&layers={}",
-            self.base.trim_end_matches('/'),
+            "{}?query={}&limit={}&layers={}",
+            self.endpoint("recall"),
             pct(query),
             limit,
             pct(&layers_str)
@@ -125,7 +154,7 @@ impl MemoryBackend for HttpBackend {
                 format!("failed to encode write request: {e}"),
             )
         })?;
-        let endpoint = format!("{}/v1/memory/write", self.base.trim_end_matches('/'));
+        let endpoint = self.endpoint("write");
         let resp = http_post(&endpoint, &body, self.api_key.as_deref())?;
         if resp.status >= 400 {
             let parsed: ErrorResponse = serde_json::from_slice(&resp.body).unwrap_or_default();
@@ -147,11 +176,7 @@ impl MemoryBackend for HttpBackend {
     }
 
     fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError> {
-        let url = format!(
-            "{}/v1/memory/list_agent?namespace={}",
-            self.base.trim_end_matches('/'),
-            pct(namespace)
-        );
+        let url = format!("{}?namespace={}", self.endpoint("list_agent"), pct(namespace));
         let resp = http_get(&url, self.api_key.as_deref())?;
         let rows: Vec<(String, String)> = serde_json::from_slice(&resp.body).map_err(|e| {
             merr(

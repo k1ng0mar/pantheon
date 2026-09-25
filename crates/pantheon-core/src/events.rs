@@ -2,11 +2,46 @@
 //! giving replayability, debugging, and crash recovery.
 
 use crate::message::Message;
+use crate::model::DecisionPoint;
 use crate::provenance::Provenance;
 use serde::{Deserialize, Serialize};
 
-/// Canonical runtime events (§2 agent engine + §18 runtime API).
+/// Compact summary of a decision answer for ledger events.
+/// Full type lives in model.rs; this is the ledger-friendly version.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DecisionAnswerSummary {
+    Route {
+        choice: String,
+        confidence: f32,
+    },
+    Gate {
+        verdict: String,
+        score: f32,
+        confidence: f32,
+    },
+    Binary {
+        accepted: bool,
+        confidence: f32,
+    },
+    Threshold {
+        passed: bool,
+        value: f32,
+    },
+}
+
+/// Compact summary of what the host actually did with a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DecisionActionSummary {
+    Accepted,
+    Overridden { fallback_used: String },
+    Denied { reason: String },
+}
+
+/// Canonical runtime events (§2 agent engine + §18 runtime API).
+/// NOTE: no Eq derive — DecisionMade events carry f32 confidence scores.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     RunStarted {
         run_id: String,
@@ -30,6 +65,28 @@ pub enum Event {
     },
     RunRecovered {
         run_id: String,
+    },
+    /// A user-initiated turn inside a durable conversation. A run may contain
+    /// many turns over its lifetime; each turn owns its model/tool activity.
+    TurnStarted {
+        run_id: String,
+        turn_id: String,
+    },
+    /// The turn yielded to an external continuation such as human approval.
+    TurnParked {
+        run_id: String,
+        turn_id: String,
+        reason: String,
+    },
+    TurnCompleted {
+        run_id: String,
+        turn_id: String,
+        outcome: String,
+    },
+    TurnFailed {
+        run_id: String,
+        turn_id: String,
+        code: String,
     },
     ModelRequested {
         run_id: String,
@@ -109,5 +166,58 @@ pub enum Event {
     ApprovalDenied {
         run_id: String,
         scope: String,
+    },
+    /// A decision-layer model was consulted at a specific insertion point.
+    DecisionRequested {
+        run_id: String,
+        point: DecisionPoint,
+        model: String,
+    },
+    /// The decision model produced a typed answer (Choice/Score/Noul).
+    DecisionMade {
+        run_id: String,
+        point: DecisionPoint,
+        model: String,
+        answer: DecisionAnswerSummary,
+    },
+    /// The host validated the decision against live state and acted.
+    DecisionRecorded {
+        run_id: String,
+        point: DecisionPoint,
+        model: String,
+        action: DecisionActionSummary,
+    },
+    /// The assembled context exceeded the model's window; the host trimmed
+    /// it before the provider call (oldest tool rows re-compacted, oldest
+    /// exchanges dropped). Ephemeral — ledger history is untouched, only
+    /// what the model sees this turn. Persisted so /explain shows why
+    /// earlier turns are absent from the prompt.
+    ContextTrimmed {
+        run_id: String,
+        /// Estimated input tokens after trimming.
+        estimated: u32,
+        /// Usable input window the fit targeted.
+        window: u32,
+        /// Rows dropped (oldest whole exchanges, oldest first).
+        dropped_rows: u32,
+        /// Tool rows re-compacted to the floor.
+        compacted_rows: u32,
+    },
+    /// The compression aux model summarized the oldest exchanges during an
+    /// overflow-triggered fit. The summary row is ephemeral prompt state
+    /// (memory tier); ledger history is untouched. Emitted even when the
+    /// subsequent deterministic fit still has to drop rows.
+    ContextCompressed {
+        run_id: String,
+        /// The compression aux model (identifier for the audit trail).
+        model: String,
+        /// Exchanges absorbed into the summary.
+        exchanges: u32,
+        /// Rows removed (replaced by one summary row).
+        rows: u32,
+        /// Rendered transcript size in chars.
+        chars_before: u32,
+        /// Summary row size in chars.
+        chars_after: u32,
     },
 }

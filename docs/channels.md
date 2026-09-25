@@ -18,9 +18,12 @@ pantheon serve --host 127.0.0.1 --port 18789
 | `GET /agui/blob/<task_id>?exp=&sig=` | Signed generative-UI artifacts (HMAC, strict task-id alphabet, TTL) |
 | `GET /agui/health` | liveness |
 
-Frames are the UI projection of ledger events: text deltas, tool
-start/output, approval requests, run completion. `agui.serve_hint` returns
-the actual bound addresses so clients never guess ports.
+`agui.send` is asynchronous admission: it assigns a durable `turn_id`,
+executes the canonical `Session` runtime in the background, and returns once
+the turn-start event is replayable. Clients follow the resulting ledger events
+over SSE. Frames are the UI projection of typed turn lifecycle, text deltas,
+tool start/output, approval requests, and run completion. `agui.serve_hint`
+returns the actual bound addresses so clients never guess ports.
 
 Request bodies are capped at 1 MiB (413 beyond). Artifact bodies are
 capped at 8 MiB at the storage layer (`ARTIFACT_TOO_LARGE`).
@@ -35,7 +38,8 @@ or `X-Pantheon-Token`; the SSE stream also accepts `?token=` for
 EventSource). The served web client gets the token injected
 automatically. Without the variable the server is open on localhost,
 which is fine for single-user development and nothing else. Any
-non-local bind, tunnel, or port-forward requires a token.
+non-local bind, tunnel, or port-forward is rejected unless both a serve
+token and `PANTHEON_GENUI_SECRET` are configured.
 
 ## Discord
 

@@ -12,6 +12,7 @@ what to do.
 | `MOCK_PROVIDER_UNCONFIGURED` | `--provider mock` without `PANTHEON_MOCK_FILE` | Point `PANTHEON_MOCK_FILE` at a fixture JSON (shape in eval/cases.json) |
 | `MOCK_EXHAUSTED` | Fixture has no response matching the turn | Add a `{"match": "...", "content": "..."}` entry |
 | `MODEL_HTTP_*` | Transport error from the provider | The cause names the HTTP status; 401/403 = key, 429 = quota, 5xx = provider side |
+| `CONTEXT_OVERFLOW` | Essential rows (system + last turn) alone exceed the model's window | Shorten the system prompt/extension context, or pick a model with a larger `context_limit`. Long runs normally trim oldest context automatically — `ContextTrimmed` in `pantheon explain` shows what went |
 
 ## Run lifecycle
 

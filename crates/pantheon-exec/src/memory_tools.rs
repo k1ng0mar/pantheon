@@ -12,7 +12,9 @@ use crate::tools::{parse_args, ToolRegistry};
 use pantheon_core::capability::Capability;
 use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::message::ToolSchema;
-use pantheon_memory::{propose_write, recall, LayerKind, MemoryStore, Proposal, Provenance};
+use pantheon_memory::{
+    confirm_via, recall_via, write_via, LayerKind, MemoryBackend, Proposal, Provenance,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -114,7 +116,11 @@ impl MemoryToolSink for Arc<std::sync::Mutex<Vec<MemoryToolEvent>>> {
 /// the CLI does.
 #[derive(Clone)]
 pub struct MemoryToolOptions {
-    pub store: Arc<MemoryStore>,
+    /// Active backend (native store or any registered plugin backend:
+    /// GalaxyMem, Mnemosyne, Honcho, Hindsight, OpenViking, http bridge).
+    /// Gating runs through `recall_via`/`write_via`/`confirm_via` before
+    /// the backend sees anything.
+    pub store: Arc<dyn MemoryBackend>,
     pub policy: Arc<pantheon_core::capability::Policy>,
     pub namespace: String,
     pub max_bytes: usize,
@@ -178,8 +184,8 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
                 LayerKind::Agent,
                 LayerKind::Global,
             ];
-            let hits = match recall(
-                &recall_opts.store,
+            let hits = match recall_via(
+                recall_opts.store.as_ref(),
                 &recall_opts.policy,
                 &layers,
                 &query,
@@ -325,8 +331,8 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
                 origin: origin.clone(),
             });
 
-            match propose_write(
-                &propose_opts.store,
+            match write_via(
+                propose_opts.store.as_ref(),
                 &propose_opts.policy,
                 proposal,
                 propose_opts.max_bytes,
@@ -441,8 +447,8 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
                 .and_then(|x| x.as_str())
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| confirm_opts.namespace.clone());
-            match pantheon_memory::confirm_write(
-                &confirm_opts.store,
+            match confirm_via(
+                confirm_opts.store.as_ref(),
                 &confirm_opts.policy,
                 &namespace,
                 &key,
@@ -471,6 +477,7 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pantheon_memory::MemoryStore;
 
     fn writer_policy() -> pantheon_core::capability::Policy {
         use pantheon_core::capability::Capability as C;
@@ -749,5 +756,111 @@ mod tests {
             .unwrap();
         assert!(out2.contains("[trust:memory]"), "{out2}");
         assert!(!out2.contains("[untrusted:"), "{out2}");
+    }
+
+    /// Stands in for GalaxyMem/Honcho/Hindsight-style external backends:
+    /// receives proposals already gated by write_via, never sees ungated
+    /// material, and does not implement confirm (trust tiers are native).
+    #[derive(Debug, Default)]
+    struct RecordingBackend {
+        seen: std::sync::Mutex<Vec<Proposal>>,
+    }
+    impl pantheon_memory::MemoryBackend for RecordingBackend {
+        fn recall(
+            &self,
+            _policy: &pantheon_core::capability::Policy,
+            _layers: &[LayerKind],
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Vec<pantheon_memory::Recalled>, PantheonError> {
+            Ok(vec![])
+        }
+        fn write(
+            &self,
+            _policy: &pantheon_core::capability::Policy,
+            proposal: Proposal,
+            _max_bytes: usize,
+        ) -> Result<pantheon_memory::MemoryRecord, PantheonError> {
+            let rec = pantheon_memory::MemoryRecord {
+                layer: proposal.layer,
+                namespace: proposal.namespace.clone(),
+                key: proposal.key.clone(),
+                value: proposal.value.clone(),
+                provenance: proposal.provenance.clone(),
+            };
+            self.seen.lock().unwrap().push(proposal);
+            Ok(rec)
+        }
+        fn list_agent(
+            &self,
+            _namespace: &str,
+        ) -> Result<Vec<(String, String)>, PantheonError> {
+            Ok(vec![])
+        }
+    }
+
+    fn opts_with_backend(
+        policy: pantheon_core::capability::Policy,
+        backend: Arc<dyn pantheon_memory::MemoryBackend>,
+    ) -> MemoryToolOptions {
+        MemoryToolOptions {
+            store: backend,
+            policy: Arc::new(policy),
+            namespace: "nyx".into(),
+            max_bytes: 4096,
+            sink: Arc::new(VecMemorySink::new()),
+            backend_label: "external".into(),
+        }
+    }
+
+    /// The gate runs before the boundary: what a plugin backend receives
+    /// is already validated + trust-clamped (model origin => Untrusted).
+    #[test]
+    fn external_backend_receives_already_gated_proposals() {
+        let backend = Arc::new(RecordingBackend::default());
+        let opts = opts_with_backend(writer_policy(), backend.clone());
+        let reg = build_registry(opts);
+        reg.execute(
+            "memory_propose",
+            r#"{"key":"k","value":"v","layer":"agent"}"#,
+        )
+        .unwrap();
+        let seen = backend.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].provenance.origin, "model");
+        assert_eq!(
+            seen[0].provenance.trust,
+            pantheon_core::provenance::TrustTier::Untrusted
+        );
+    }
+
+    /// recall_via gates on policy before the backend sees the query.
+    #[test]
+    fn external_backend_recall_is_denied_without_capability() {
+        let backend = Arc::new(RecordingBackend::default());
+        // researcher_readonly grants MemoryRead; use a raw coder policy
+        // built WITHOUT memory grants to prove the via-gate blocks.
+        let policy = pantheon_core::capability::Policy::coder().deny(
+            pantheon_core::capability::Capability::MemoryRead,
+        );
+        let opts = opts_with_backend(policy, backend);
+        let reg = build_registry(opts);
+        let err = reg
+            .execute("memory_recall", r#"{"query":"anything"}"#)
+            .unwrap_err();
+        assert_eq!(err.code, "MEM_NO_READ_CAPABILITY");
+    }
+
+    /// Trust-tier promotion is native-only; external backends surface a
+    /// structured unsupported error instead of silently pretending.
+    #[test]
+    fn external_backend_confirm_is_structured_unsupported() {
+        let backend = Arc::new(RecordingBackend::default());
+        let opts = opts_with_backend(writer_policy(), backend);
+        let reg = build_registry(opts);
+        let err = reg
+            .execute("memory_confirm", r#"{"key":"anything"}"#)
+            .unwrap_err();
+        assert_eq!(err.code, "MEM_BACKEND_UNSUPPORTED");
     }
 }

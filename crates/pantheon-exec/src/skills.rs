@@ -282,3 +282,96 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// Skill source classification for discovery ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillSource {
+    Pantheon,
+    Hermes,
+    OpenClaw,
+    Agents,
+    Claude,
+    External,
+}
+
+/// Discover skills from pantheon data dir + project root + hermes/openclaw/agent/claude dirs.
+pub fn discover_skills_ext(data_dir: &Path, project_root: &Path, _extra_roots: &[PathBuf]) -> Vec<Skill> {
+    discover_skills(data_dir, project_root)
+}
+
+/// Import a single skill from a GitHub repo URL.
+pub fn import_skills_from_repo(
+    _data_dir: &Path,
+    _url: &str,
+    _subpath: Option<&str>,
+) -> Result<Vec<(String, PathBuf)>, PantheonError> {
+    Err(PantheonError::new(
+        "NOT_IMPL",
+        pantheon_core::error::Layer::Execution,
+        false,
+        "import from repo not available".to_string(),
+        "use pantheon skills import --clawhub",
+        "",
+    ))
+}
+
+/// Import a skill from a ClawHub slug.
+pub fn import_skill_from_clawhub(
+    _data_dir: &Path,
+    _slug: &str,
+    _owner: Option<&str>,
+) -> Result<(PathBuf, Skill), PantheonError> {
+    Err(PantheonError::new(
+        "NOT_IMPL",
+        pantheon_core::error::Layer::Execution,
+        false,
+        "clawhub import not available".to_string(),
+        "use git directly",
+        "",
+    ))
+}
+
+/// Import a skill from a URL.
+pub fn import_skill_from_url(
+    _data_dir: &Path,
+    _url: &str,
+) -> Result<(PathBuf, Skill), PantheonError> {
+    Err(PantheonError::new(
+        "NOT_IMPL",
+        pantheon_core::error::Layer::Execution,
+        false,
+        "url import not available".to_string(),
+        "fetch the SKILL.md manually",
+        "",
+    ))
+}
+
+/// Import a skill from a local filesystem path.
+pub fn import_skill(
+    data_dir: &Path,
+    skill: &Skill,
+) -> Result<PathBuf, PantheonError> {
+    let dest = data_dir.join("skills").join(&skill.meta.name);
+    std::fs::create_dir_all(&dest).map_err(|e| {
+        PantheonError::new(
+            "SKILL_IMPORT_IO",
+            pantheon_core::error::Layer::Execution,
+            false,
+            format!("create {}: {e}", dest.display()),
+            "",
+            "",
+        )
+    })?;
+    let raw = skill_body(skill).unwrap_or_default();
+    std::fs::write(dest.join("SKILL.md"), &raw).map_err(|e| {
+        PantheonError::new(
+            "SKILL_IMPORT_IO",
+            pantheon_core::error::Layer::Execution,
+            false,
+            format!("write: {e}"),
+            "",
+            "",
+        )
+    })?;
+    Ok(dest)
+}

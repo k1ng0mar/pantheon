@@ -99,12 +99,21 @@ pub fn span_for(ev: &Event) -> Option<SpanRecord> {
         ),
         Event::RunProgress { .. }
         | Event::RunRecovered { .. }
+        | Event::TurnStarted { .. }
+        | Event::TurnParked { .. }
+        | Event::TurnCompleted { .. }
+        | Event::TurnFailed { .. }
         | Event::ModelDelta { .. }
         | Event::ToolRequested { .. }
         | Event::ToolOutput { .. }
         | Event::AgentMessage { .. }
         | Event::AssistantMessage { .. }
-        | Event::ToolMessage { .. } => None,
+        | Event::ToolMessage { .. }
+        | Event::DecisionRequested { .. }
+        | Event::DecisionMade { .. }
+        | Event::DecisionRecorded { .. }
+        | Event::ContextTrimmed { .. }
+        | Event::ContextCompressed { .. } => None,
     }
 }
 

@@ -56,7 +56,7 @@ impl TelegramTransport for TelegramRestTransport {
         self.agent
             .post(&url)
             .send_json(body)
-            .map_err(|e| ChannelError::new("TELEGRAM_HTTP", e.to_string()))?;
+            .map_err(|e| ChannelError::from_ureq("TELEGRAM_HTTP", e))?;
         Ok(())
     }
     fn get_updates(&self, offset: i64, timeout_secs: u64) -> Result<Vec<Value>, ChannelError> {
@@ -70,7 +70,7 @@ impl TelegramTransport for TelegramRestTransport {
                 "timeout": timeout_secs,
                 "allowed_updates": ["message", "callback_query"],
             }))
-            .map_err(|e| ChannelError::new("TELEGRAM_HTTP", e.to_string()))?
+            .map_err(|e| ChannelError::from_ureq("TELEGRAM_HTTP", e))?
             .into_json()
             .map_err(|e| ChannelError::new("TELEGRAM_HTTP", e.to_string()))?;
         if body.get("ok").and_then(Value::as_bool) != Some(true) {

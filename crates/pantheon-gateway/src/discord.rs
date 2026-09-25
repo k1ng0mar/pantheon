@@ -53,7 +53,7 @@ impl DiscordTransport for DiscordRestTransport {
             .post(&url)
             .set("Authorization", &format!("Bot {}", self.token))
             .send_json(payload.clone())
-            .map_err(|e| ChannelError::new("DISCORD_HTTP", e.to_string()))?;
+            .map_err(|e| ChannelError::from_ureq("DISCORD_HTTP", e))?;
         Ok(())
     }
 }

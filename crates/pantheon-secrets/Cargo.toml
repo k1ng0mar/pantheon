@@ -11,6 +11,13 @@ serde_json = "1"
 aes-gcm = "0.10"
 rand = "0.8"
 zeroize = { version = "1", features = ["std"] }
+keyring = "4"
+# Direct core dep so the store is an explicit seam: production resolves
+# entries through the platform store the `keyring` crate installs, while
+# tests can install keyring's in-memory sample store first (feature below)
+# and exercise the full vault logic with zero environment.
+keyring-core = "1"
 
 [dev-dependencies]
 tempfile = "3"
+keyring-core = { version = "1", features = ["sample"] }

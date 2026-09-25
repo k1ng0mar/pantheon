@@ -4,7 +4,8 @@
 //! - The model is not the runtime. Agents never choose models.
 //! - No model routing. There is a default model, an ordered fallback list
 //!   (runtime-controlled, failure-only), and auxiliary models for scoped
-//!   capabilities (embeddings, rerank, STT/TTS, vision, extraction...).
+//!   capabilities (embeddings, rerank, vision, extraction...). Service
+//!   capabilities (STT/TTS, search, browser) are provider-plane, not models.
 
 pub mod capability;
 pub mod catalog;

@@ -6,6 +6,7 @@
 //! head/tail, hash the dropped middle, record what was dropped in the ledger.
 
 pub mod builtins;
+pub mod context;
 pub mod danger;
 pub mod memory_tools;
 pub mod plugins;
@@ -14,6 +15,7 @@ pub mod safewrite;
 pub mod skills;
 pub mod supervisor;
 pub mod tools;
+pub mod vault_tools;
 
 use serde::{Deserialize, Serialize};
 

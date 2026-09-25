@@ -51,7 +51,8 @@ pub fn build_sandboxed(
     args: &[&str],
     cwd: &str,
 ) -> Command {
-    match profile.boundary {
+    #[allow(unused_mut)] // non-unix has no rlimits to attach
+    let mut cmd = match profile.boundary {
         crate::ExecutionBoundary::InProcess => {
             let mut cmd = Command::new(program);
             cmd.args(args);
@@ -161,7 +162,200 @@ pub fn build_sandboxed(
                 cmd
             }
         }
+    };
+
+    // The profile's limits are rlimits on the child itself, set just
+    // before exec — so they hold with or without a namespace wrapper and
+    // survive the fallback to a direct spawn.
+    #[cfg(unix)]
+    attach_rlimits(&mut cmd, profile);
+    cmd
+}
+
+/// Apply the profile's limits as rlimits on the child, issued in the
+/// forked child just before exec (via `pre_exec`).
+///
+/// - `max_memory_mb` → `RLIMIT_AS`: the address space the child may map.
+/// - `max_pids` → `RLIMIT_NPROC`: extra processes it may spawn.
+///
+/// NPROC needs care: the kernel's accounting is UID-wide, not
+/// per-sandbox, and in containers sharing the host user namespace it
+/// counts processes this container's `/proc` cannot even show. An
+/// absolute cap — or one derived from a `/proc` scan — therefore refuses
+/// every fork the wrapper itself needs, turning the pids cap into a
+/// denial of service. Instead we calibrate against the kernel directly:
+/// binary-search the smallest NPROC limit at which a fork still
+/// succeeds; that boundary is true usage, and the profile's `max_pids`
+/// is granted above it. The probing uses only setrlimit/fork/_exit/
+/// waitpid — async-signal-safe in the pre-exec zone. Where NPROC isn't
+/// enforced for this user (some containers), or a calibrated cap can no
+/// longer fork, the pids cap is skipped and every other limit still
+/// applies.
+///
+/// Limits are only ever lowered, and only in the child — the parent is
+/// untouched. The wall-clock budget is enforced separately by
+/// [`run_sandboxed`], and the capability gate runs before any of this.
+#[cfg(unix)]
+fn attach_rlimits(cmd: &mut Command, profile: &SandboxProfile) {
+    use std::os::unix::process::CommandExt;
+
+    let as_bytes = profile
+        .max_memory_mb
+        .map(|mb| mb.saturating_mul(1024 * 1024));
+    let want_pids = profile.max_pids.map(u64::from);
+    if as_bytes.is_none() && want_pids.is_none() {
+        return;
     }
+    // NPROC's hard ceiling, read now (parent, safe context): probes must
+    // stay within it and the final cap may not exceed it.
+    let nproc_hard = {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        (unsafe { libc::getrlimit(libc::RLIMIT_NPROC, &mut lim) } == 0).then_some(lim.rlim_max)
+    };
+
+    // SAFETY: between fork and exec the closure only issues setrlimit
+    // (plus fork/waitpid/_exit inside calibration) with plain integers —
+    // no allocation, no locks. All measuring happens above, in the parent.
+    unsafe {
+        cmd.pre_exec(move || {
+            if let Some(bytes) = as_bytes {
+                let lim = libc::rlimit {
+                    rlim_cur: bytes as libc::rlim_t,
+                    rlim_max: bytes as libc::rlim_t,
+                };
+                if libc::setrlimit(libc::RLIMIT_AS, &lim) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            if let (Some(want), Some(hard)) = (want_pids, nproc_hard) {
+                if let Some(cap) = calibrate_nproc(want, hard) {
+                    let lim = libc::rlimit {
+                        rlim_cur: cap,
+                        rlim_max: cap,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_NPROC, &lim) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
+/// A NPROC cap granting `want` processes above the kernel's true current
+/// usage for this UID — or `None` to leave NPROC untouched.
+///
+/// SAFETY: pre-exec context — only setrlimit/fork/_exit/waitpid, no
+/// allocation.
+#[cfg(unix)]
+unsafe fn calibrate_nproc(want: u64, hard: libc::rlim_t) -> Option<libc::rlim_t> {
+    /// Would `limit` currently allow a fork? Resets NPROC's soft limit
+    /// as a side effect (the caller re-sets the final value afterwards).
+    unsafe fn forkable(limit: u64, hard: libc::rlim_t) -> bool {
+        let lim = libc::rlimit {
+            rlim_cur: limit as libc::rlim_t,
+            rlim_max: hard,
+        };
+        if libc::setrlimit(libc::RLIMIT_NPROC, &lim) != 0 {
+            return false;
+        }
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            // Only EAGAIN carries information about NPROC; anything else
+            // (ENOMEM…) must not steer the search.
+            return std::io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN);
+        }
+        if pid == 0 {
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0;
+        while unsafe { libc::waitpid(pid, &mut status, 0) } < 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+        {}
+        true
+    }
+
+    if hard == 0 {
+        return None;
+    }
+    // Not enforced for this user: a cap would be decoration.
+    if unsafe { forkable(1, hard) } {
+        return None;
+    }
+    // Search ceiling: covers any realistic usage, and stays far from
+    // RLIM_INFINITY (u64::MAX would need 64 halvings to converge).
+    let top = hard.min(1 << 20);
+    let mut lo = 1u64; // known unforkable (usage ≥ 1: we exist)
+    let mut hi = top; // assumed forkable (we are running under it)
+    if !unsafe { forkable(hi, hard) } {
+        // Usage is at the ceiling — nothing safe to grant.
+        return None;
+    }
+    while hi - lo > 16 {
+        let mid = lo + (hi - lo) / 2;
+        if unsafe { forkable(mid, hard) } {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    // `hi` ≈ usage + 1; grant the profile's headroom above it.
+    let cap = hi.saturating_add(want).min(hard);
+    // Belt and braces: never apply a cap that can't fork — degrade to
+    // no pids limit instead of breaking the command.
+    if !unsafe { forkable(cap, hard) } {
+        return None;
+    }
+    Some(cap)
+}
+
+/// A plain direct command (no wrapper); rlimits attached by the caller.
+fn direct_command(program: &str, args: &[&str], cwd: &str) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    cmd.current_dir(cwd);
+    cmd
+}
+
+/// Has this boundary's wrapper successfully initialized once in this
+/// process? Probed once and cached: a wrapper that cannot initialize
+/// here (missing privileges, blocked user namespaces) would fail *every*
+/// command before it runs, so the runner degrades to direct execution —
+/// the capability gate already ran, only the OS-level isolation is lost.
+fn wrapper_initializes(profile: &SandboxProfile, cwd: &str) -> bool {
+    static PROBE: [std::sync::OnceLock<bool>; 4] = [
+        std::sync::OnceLock::new(),
+        std::sync::OnceLock::new(),
+        std::sync::OnceLock::new(),
+        std::sync::OnceLock::new(),
+    ];
+    *PROBE[profile.boundary as usize].get_or_init(|| {
+        let mut probe = build_sandboxed(profile, "sh", &["-c", "true"], cwd);
+        probe
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let Ok(mut child) = probe.spawn() else {
+            return false;
+        };
+        // Bounded: a wedged wrapper must not hang the first command.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success(),
+                Ok(None) if std::time::Instant::now() > deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(_) => return false,
+            }
+        }
+    })
 }
 
 /// Run a sandboxed command with the profile's wall-clock timeout.
@@ -178,8 +372,18 @@ pub fn run_sandboxed(
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
 
     let mut builder = build_sandboxed(profile, program, args, cwd);
-    let program_name = builder.get_program().to_string_lossy().to_string();
-    let sandboxed = program_name != program;
+    let mut sandboxed = builder.get_program().to_string_lossy() != program;
+    // A wrapper that cannot initialize in this environment would fail
+    // every command before it runs. Probe once (cached per process) and
+    // fall back to a direct spawn: the capability gate has already run
+    // and the profile limits still attach — only the namespace-level
+    // isolation degrades, exactly as the module contract promises.
+    if sandboxed && !wrapper_initializes(profile, cwd) {
+        builder = direct_command(program, args, cwd);
+        #[cfg(unix)]
+        attach_rlimits(&mut builder, profile);
+        sandboxed = false;
+    }
 
     let mut child = builder
         .stdout(Stdio::piped())
@@ -317,5 +521,136 @@ mod tests {
         if let Err(e) = result {
             assert_eq!(e.code, "SANDBOX_TIMEOUT");
         }
+    }
+
+    /// Parse one limit line ("name soft hard units") from
+    /// `/proc/self/limits` text. `None` = unlimited.
+    #[cfg(target_os = "linux")]
+    fn parse_limit(text: &str, what: &str) -> Option<u64> {
+        let line = text
+            .lines()
+            .find(|l| l.trim_start().starts_with(what))
+            .unwrap_or_else(|| panic!("no '{what}' line in {text}"));
+        // Trailing shape: "<soft> <hard> <units>" — name words vary
+        // ("Max processes" vs "Max address space"), so parse from the end.
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        assert!(tokens.len() >= 3, "malformed line: {line}");
+        tokens[tokens.len() - 3].parse().ok()
+    }
+
+    /// This test process's own limit — the baseline a child must keep
+    /// when the profile imposes nothing.
+    #[cfg(target_os = "linux")]
+    fn host_limit(what: &str) -> Option<u64> {
+        let text = std::fs::read_to_string("/proc/self/limits").unwrap();
+        parse_limit(&text, what)
+    }
+
+    /// Run a command under `profile` and read back one of its limits.
+    #[cfg(target_os = "linux")]
+    fn proc_limit(profile: &SandboxProfile, what: &str) -> Option<u64> {
+        let r = run_sandboxed(
+            profile,
+            "sh",
+            &["-c", &format!("grep '{what}' /proc/self/limits")],
+            "/tmp",
+        )
+        .expect("run");
+        assert_eq!(r.exit_code, 0, "command failed: {}", r.output);
+        parse_limit(&r.output, what)
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn memory_cap_is_applied_as_rlimit_as() {
+        // Whatever the level carries as max_memory_mb must reach the
+        // child as RLIMIT_AS — through the wrapper when it works here,
+        // through the direct fallback when it doesn't.
+        let profile = crate::SandboxLevel::High.profile();
+        let want = profile.max_memory_mb.expect("High carries a memory cap") * 1024 * 1024;
+        assert_eq!(
+            proc_limit(&profile, "Max address space"),
+            Some(want),
+            "profile's max_memory_mb must be the child's address-space cap"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn pids_cap_is_applied_as_rlimit_nproc() {
+        // NPROC is calibrated against the kernel's true usage and grants
+        // max_pids above it: strictly more than the raw cap (usage ≥ 1),
+        // never more than the user's system hard limit — which the parent
+        // keeps untouched.
+        let profile = crate::SandboxLevel::High.profile();
+        let want = u64::from(profile.max_pids.expect("High carries a pids cap"));
+        let soft = proc_limit(&profile, "Max processes").expect("NPROC must be finite");
+        assert!(
+            soft >= want + 1,
+            "nproc limit {soft} must grant max_pids ({want}) above at least our own process"
+        );
+        if let Some(hard) = host_limit("Max processes") {
+            assert!(
+                soft <= hard,
+                "child cap {soft} must not exceed the host hard limit {hard}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn in_process_boundary_also_gets_the_limits() {
+        // Limits live on the child, not the wrapper: even a direct spawn
+        // (no bwrap/unshare) enforces the profile.
+        let profile = SandboxProfile {
+            level: crate::SandboxLevel::Low,
+            boundary: crate::ExecutionBoundary::InProcess,
+            drop_capabilities: false,
+            no_new_privs: false,
+            network: false,
+            max_memory_mb: Some(512),
+            max_pids: Some(8),
+            wall_clock_ms: 30_000,
+        };
+        assert_eq!(
+            proc_limit(&profile, "Max address space"),
+            Some(512 * 1024 * 1024)
+        );
+        let soft = proc_limit(&profile, "Max processes").expect("NPROC must be finite");
+        assert!(soft >= 8 + 1, "nproc limit {soft} must cover the 8-pid cap");
+        if let Some(hard) = host_limit("Max processes") {
+            assert!(soft <= hard, "got {soft}, host hard {hard}");
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn low_profile_imposes_no_limits() {
+        // Low sets neither field: the child must keep the system's own
+        // defaults exactly — proven against this process's limits.
+        let profile = crate::SandboxLevel::Low.profile();
+        assert_eq!(
+            proc_limit(&profile, "Max address space"),
+            host_limit("Max address space"),
+            "Low must not impose a memory cap"
+        );
+        assert_eq!(
+            proc_limit(&profile, "Max processes"),
+            host_limit("Max processes"),
+            "Low must not impose a pids cap"
+        );
+    }
+
+    #[test]
+    fn a_command_still_runs_when_the_wrapper_cannot_initialize() {
+        // The runner's contract: wrapper-init failure degrades to direct
+        // execution instead of failing every command. Environments where
+        // bwrap works take the wrapper path instead — either way the
+        // command's output must come back.
+        let profile = crate::SandboxLevel::High.profile();
+        let r =
+            run_sandboxed(&profile, "sh", &["-c", "echo fallback-sentinel"], "/tmp").expect("run");
+        assert_eq!(r.exit_code, 0, "command failed: {}", r.output);
+        assert!(r.output.contains("fallback-sentinel"), "got: {}", r.output);
     }
 }

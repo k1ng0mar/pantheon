@@ -21,8 +21,6 @@ use pantheon_secrets::SecretValue;
 use std::cell::RefCell;
 use std::time::Duration;
 
-const ROUTER_BASE: &str = "http://127.0.0.1:8015/v1";
-
 struct Collect(RefCell<Vec<ModelEvent>>);
 impl ModelEventSink for Collect {
     fn emit(&self, event: ModelEvent) {

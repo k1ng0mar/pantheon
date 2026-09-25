@@ -53,6 +53,34 @@ pub fn frame_for_event(
             vec![mk(UiFrameKind::Run, "canceled", reason.clone(), false)]
         }
         Event::RunRecovered { .. } => vec![mk(UiFrameKind::Run, "recovered", String::new(), false)],
+        Event::TurnStarted { turn_id, .. } => vec![mk(
+            UiFrameKind::State,
+            "turn_started",
+            turn_id.clone(),
+            false,
+        )],
+        Event::TurnParked {
+            turn_id, reason, ..
+        } => vec![mk(
+            UiFrameKind::State,
+            "turn_parked",
+            format!("{turn_id}: {reason}"),
+            true,
+        )],
+        Event::TurnCompleted {
+            turn_id, outcome, ..
+        } => vec![mk(
+            UiFrameKind::State,
+            "turn_completed",
+            format!("{turn_id}: {outcome}"),
+            false,
+        )],
+        Event::TurnFailed { turn_id, code, .. } => vec![mk(
+            UiFrameKind::State,
+            "turn_failed",
+            format!("{turn_id}: {code}"),
+            false,
+        )],
         Event::ModelDelta { delta, .. } => {
             vec![mk(UiFrameKind::Text, "delta", delta.clone(), false)]
         }

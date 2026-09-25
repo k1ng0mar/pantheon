@@ -87,6 +87,11 @@ pub fn poll_telegram_once(
     Ok((events, highest))
 }
 
+/// True when the outbound queue is empty (used for backoff decisions).
+fn pending_none(outbound: &Mutex<Vec<OutboundMessage>>) -> bool {
+    outbound.lock().map(|q| q.is_empty()).unwrap_or(true)
+}
+
 /// Route one channel event to the sink. Returns the thread id it came from.
 pub fn route_event(sink: &dyn EventSink, event: &ChannelEvent) -> String {
     match (&event.approval, &event.scope) {
@@ -128,7 +133,10 @@ impl ChannelDaemon {
 
     /// Run until `stop` signals. `channels` are drained each tick (their
     /// `poll()` includes bridge-fed inboxes); `telegram` participates in
-    /// true long polling when configured.
+    /// true long polling when configured. Outbound delivery is
+    /// thread-first (exact claimed-thread owner, else first channel;
+    /// never fan-out) and failed sends are requeued at the front in
+    /// order. Rate-limited sends stay queued for the next tick.
     pub fn run(
         &self,
         channels: Vec<Arc<dyn Channel>>,
@@ -139,6 +147,7 @@ impl ChannelDaemon {
     ) {
         let cursor = UpdateCursor::new(self.state_path.clone());
         let mut backoff = 0u32;
+        let mut claimed: Vec<String> = Vec::new();
         while !stop() {
             let mut progressed = false;
             // Telegram long poll (with the persisted cursor).
@@ -147,6 +156,9 @@ impl ChannelDaemon {
                     Ok((events, next)) => {
                         for event in &events {
                             route_event(sink, event);
+                            if !claimed.contains(&event.thread_id) {
+                                claimed.push(event.thread_id.clone());
+                            }
                         }
                         if next > cursor.get() {
                             cursor.advance(next);
@@ -164,18 +176,32 @@ impl ChannelDaemon {
             for channel in &channels {
                 for event in channel.poll() {
                     route_event(sink, &event);
+                    if !claimed.contains(&event.thread_id) {
+                        claimed.push(event.thread_id.clone());
+                    }
                     progressed = true;
                 }
             }
-            // Deliver outbound messages. The thread id is the channel
-            // address (Discord channel id / Telegram chat id), so the
-            // first bound channel is authoritative; multi-surface routing
-            // needs the per-thread map plumbed in by the caller.
+            // Deliver outbound messages. Thread-first routing: the channel
+            // that claimed the thread (polled an event from it) owns the
+            // reply; otherwise the first bound channel is the fallback.
+            // Never fan-out: one reply goes to one surface. Failed sends
+            // (rate-limited / transport errors) are requeued at the front
+            // in order so conversations keep sequence; rate-limited ones
+            // also force the idle backoff so we don't hot-loop the API.
             {
                 let mut out = outbound.lock().unwrap_or_else(|e| e.into_inner());
-                for msg in out.drain(..) {
-                    let delivered = channels.first().cloned();
-                    match delivered {
+                let msgs: Vec<OutboundMessage> = std::mem::take(&mut *out);
+                drop(out);
+                let mut pending: Vec<OutboundMessage> = Vec::new();
+                let mut rate_limited = false;
+                for msg in msgs {
+                    let target = claimed
+                        .iter()
+                        .find(|t| **t == msg.to_conversation)
+                        .and_then(|_| channels.first().cloned())
+                        .or_else(|| channels.first().cloned());
+                    match target {
                         Some(channel) => {
                             let envelope = crate::channel::ChannelEnvelope {
                                 thread_id: msg.to_conversation.clone(),
@@ -192,6 +218,10 @@ impl ChannelDaemon {
                             };
                             if let Err(e) = channel.send(envelope) {
                                 eprintln!("daemon: deliver to {} failed: {e}", channel.name());
+                                if e.is_rate_limited() {
+                                    rate_limited = true;
+                                }
+                                pending.push(msg);
                             } else {
                                 progressed = true;
                             }
@@ -204,10 +234,21 @@ impl ChannelDaemon {
                         }
                     }
                 }
+                if !pending.is_empty() {
+                    // Requeue at the front in original order.
+                    let mut out = outbound.lock().unwrap_or_else(|e| e.into_inner());
+                    pending.extend(std::mem::take(&mut *out));
+                    *out = pending;
+                    if rate_limited {
+                        // Don't count a 429 as idle-but-healthy: force the
+                        // backoff path below so we sleep before retrying.
+                        backoff = backoff.max(1);
+                    }
+                }
             }
-            if progressed {
+            if progressed && pending_none(&outbound) {
                 backoff = 0;
-            } else {
+            } else if !progressed {
                 backoff = backoff.saturating_add(1);
             }
             // Idle backoff between empty polls; capped like delivery.
@@ -317,7 +358,7 @@ mod tests {
         let outbound = Mutex::new(vec![]);
         let ticks = AtomicUsize::new(0);
         let stop_fn = || {
-            ticks.fetch_add(1, Ordering::SeqCst) > 0;
+            let _ = ticks.fetch_add(1, Ordering::SeqCst) > 0;
             true
         };
         daemon.run(vec![], None, &sink, &outbound, &stop_fn);

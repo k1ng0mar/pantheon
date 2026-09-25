@@ -1,0 +1,529 @@
+//! Obsidian Vault Archive & Library tools.
+//!
+//! Exposes tools for the agent to archive long documents, notes, reports,
+//! research, and project outputs into an Obsidian vault (`~/vault`),
+//! keeping working memory lean while preserving a permanent, human-readable,
+//! linked markdown library.
+
+use crate::compact_output;
+use crate::tools::ToolRegistry;
+use pantheon_core::capability::Capability;
+use pantheon_core::error::{Layer, PantheonError};
+use pantheon_core::message::ToolSchema;
+use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+fn verr(code: &str, cause: String) -> PantheonError {
+    PantheonError::new(
+        code,
+        Layer::Execution,
+        false,
+        cause,
+        "check vault path, permissions, or arguments",
+        "",
+    )
+}
+
+fn parse_vault_args<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, PantheonError> {
+    serde_json::from_str(raw).map_err(|e| {
+        verr("TOOL_BAD_ARGS", format!("failed to parse arguments: {e}"))
+    })
+}
+
+/// Options to configure vault tooling.
+#[derive(Clone, Debug)]
+pub struct VaultToolOptions {
+    pub vault_dir: PathBuf,
+}
+
+impl Default for VaultToolOptions {
+    fn default() -> Self {
+        let vault_dir = std::env::var("PANTHEON_VAULT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".into());
+                PathBuf::from(home).join("vault")
+            });
+        Self { vault_dir }
+    }
+}
+
+/// Helper to sanitize relative path and avoid traversal outside the vault.
+fn resolve_safe_vault_path(vault_dir: &Path, rel_path: &str) -> Result<PathBuf, PantheonError> {
+    let rel = rel_path.trim().trim_start_matches('/');
+    if rel.contains("..") {
+        return Err(verr("VAULT_PATH_TRAVERSAL", "path traversal (..) is not permitted".into()));
+    }
+    let target = vault_dir.join(rel);
+    Ok(target)
+}
+
+#[derive(Deserialize)]
+struct VaultArchiveArgs {
+    category: String,
+    title: String,
+    content: String,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct VaultReadArgs {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct VaultSearchArgs {
+    query: String,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+}
+
+fn default_search_limit() -> usize {
+    10
+}
+
+#[derive(Deserialize)]
+struct VaultListArgs {
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default = "default_list_limit")]
+    limit: usize,
+}
+
+fn default_list_limit() -> usize {
+    50
+}
+
+/// Register the Obsidian Vault archive & library tools:
+/// - `vault_archive`: Store a long-form document/output under a vault category (notes, projects, reference, etc.)
+/// - `vault_read`: Read a document from the vault
+/// - `vault_search`: Full-text/keyword search across markdown notes in the vault
+/// - `vault_list`: List notes within a category or across the vault
+pub fn register_vault_tools(reg: &mut ToolRegistry, opts: VaultToolOptions) {
+    let vault_root = opts.vault_dir.clone();
+
+    // 1. vault_archive
+    {
+        let root = vault_root.clone();
+        reg.register(
+            ToolSchema {
+                name: "vault_archive".into(),
+                description: "Archive long texts, project designs, research reports, or session notes into the Obsidian vault library for long-term reference.".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "description": "Category directory in the vault, e.g. 'notes', 'projects', 'reference', 'people'."
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Title or slug for the file, e.g. 'agent-architecture-deepdive'."
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The markdown body to archive."
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of tags, e.g. ['pantheon', 'architecture']."
+                        }
+                    },
+                    "required": ["category", "title", "content"]
+                }),
+            },
+            Capability::FilesystemWrite,
+            move |raw_args| {
+                let args: VaultArchiveArgs = parse_vault_args(raw_args)?;
+                let category_clean = args.category.trim().trim_matches('/');
+                let mut filename = args.title.trim().replace('/', "-");
+                if !filename.ends_with(".md") {
+                    filename.push_str(".md");
+                }
+
+                let target_dir = resolve_safe_vault_path(&root, category_clean)?;
+                if let Err(e) = fs::create_dir_all(&target_dir) {
+                    return Err(verr("VAULT_MKDIR_FAILED", format!("failed to create dir {}: {e}", target_dir.display())));
+                }
+
+                let target_file = target_dir.join(&filename);
+                let now_utc = chrono_now();
+
+                let mut body = String::new();
+                body.push_str("---\n");
+                body.push_str(&format!("title: \"{}\"\n", args.title.trim()));
+                body.push_str(&format!("date: {}\n", now_utc));
+                body.push_str(&format!("category: {}\n", category_clean));
+                if !args.tags.is_empty() {
+                    body.push_str("tags:\n");
+                    for tag in &args.tags {
+                        body.push_str(&format!("  - {}\n", tag.trim().trim_start_matches('#')));
+                    }
+                }
+                body.push_str("---\n\n");
+                body.push_str(args.content.trim());
+                body.push('\n');
+
+                if let Err(e) = fs::write(&target_file, body.as_bytes()) {
+                    return Err(verr("VAULT_WRITE_FAILED", format!("failed to write {}: {e}", target_file.display())));
+                }
+
+                let rel_path = format!("{}/{}", category_clean, filename);
+                Ok(format!("Successfully archived to vault: [[{}]] ({} bytes)", rel_path, body.len()))
+            },
+        );
+    }
+
+    // 2. vault_read
+    {
+        let root = vault_root.clone();
+        reg.register(
+            ToolSchema {
+                name: "vault_read".into(),
+                description: "Read the contents of an archived note or document from the Obsidian vault.".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative path in vault, e.g. 'notes/ideation/2026-09-15-webhookwatch.md' or 'Home.md'."
+                        }
+                    },
+                    "required": ["path"]
+                }),
+            },
+            Capability::FilesystemRead,
+            move |raw_args| {
+                let args: VaultReadArgs = parse_vault_args(raw_args)?;
+                let mut path_str = args.path.trim().to_string();
+                if !path_str.ends_with(".md") && !path_str.contains('.') {
+                    path_str.push_str(".md");
+                }
+                let target = resolve_safe_vault_path(&root, &path_str)?;
+                if !target.exists() {
+                    return Err(verr("VAULT_FILE_NOT_FOUND", format!("file not found in vault: {path_str}")));
+                }
+
+                let content = fs::read_to_string(&target)
+                    .map_err(|e| verr("VAULT_READ_FAILED", format!("failed to read {}: {e}", target.display())))?;
+                
+                let compacted = compact_output(&content, &Default::default());
+                Ok(compacted.text)
+            },
+        );
+    }
+
+    // 3. vault_search
+    {
+        let root = vault_root.clone();
+        reg.register(
+            ToolSchema {
+                name: "vault_search".into(),
+                description: "Search across the Obsidian vault markdown documents for keywords or phrases.".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Keyword or phrase to search for."
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Optional subfolder to restrict search to, e.g. 'projects' or 'notes'."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum matching snippets to return (default 10)."
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            Capability::FilesystemRead,
+            move |raw_args| {
+                let args: VaultSearchArgs = parse_vault_args(raw_args)?;
+                let search_dir = match &args.category {
+                    Some(cat) => resolve_safe_vault_path(&root, cat.trim().trim_matches('/'))?,
+                    None => root.clone(),
+                };
+
+                if !search_dir.exists() {
+                    return Ok("Category directory not found in vault.".into());
+                }
+
+                let query_lower = args.query.to_lowercase();
+                let terms: Vec<&str> = query_lower.split_whitespace().collect();
+                if terms.is_empty() {
+                    return Ok("Empty query.".into());
+                }
+
+                let mut hits = Vec::new();
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_millis(TRAVERSE_BUDGET_MS);
+                let complete = search_vault_dir(
+                    &root,
+                    &search_dir,
+                    &terms,
+                    args.limit,
+                    &mut hits,
+                    &deadline,
+                )?;
+
+                if hits.is_empty() {
+                    return Ok(format!("No matches found in vault for '{}'.", args.query));
+                }
+
+                let mut out = format!("Found {} vault matches for '{}':\n\n", hits.len(), args.query);
+                for hit in hits {
+                    out.push_str(&format!("- **[[{}]]**:\n  > {}\n\n", hit.rel_path, hit.snippet));
+                }
+                if !complete {
+                    out.push_str("\n[note: search hit the time budget on the vault mount; results are partial — narrow with category=]");
+                }
+                Ok(out)
+            },
+        );
+    }
+
+    // 4. vault_list
+    {
+        let root = vault_root.clone();
+        reg.register(
+            ToolSchema {
+                name: "vault_list".into(),
+                description: "List notes and documents archived in the Obsidian vault library.".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "description": "Optional category subfolder, e.g. 'projects', 'notes', 'reference'."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum items to list (default 50)."
+                        }
+                    }
+                }),
+            },
+            Capability::FilesystemRead,
+            move |raw_args| {
+                let args: VaultListArgs = parse_vault_args(raw_args)?;
+                let search_dir = match &args.category {
+                    Some(cat) => resolve_safe_vault_path(&root, cat.trim().trim_matches('/'))?,
+                    None => root.clone(),
+                };
+
+                if !search_dir.exists() {
+                    return Ok("Vault directory does not exist.".into());
+                }
+
+                let mut files = Vec::new();
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_millis(TRAVERSE_BUDGET_MS);
+                let complete =
+                    collect_vault_files(&root, &search_dir, args.limit, &mut files, &deadline)?;
+
+                if files.is_empty() {
+                    return Ok("No files found in vault.".into());
+                }
+
+                let mut out = format!("Vault files ({} total):\n", files.len());
+                for f in files {
+                    out.push_str(&format!("- [[{}]]\n", f));
+                }
+                if !complete {
+                    out.push_str("\n[note: listing hit the time budget; partial — narrow with category=]");
+                }
+                Ok(out)
+            },
+        );
+    }
+}
+
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    format!("{now}")
+}
+
+struct SearchHit {
+    rel_path: String,
+    snippet: String,
+}
+
+/// Wall-clock budget for one traversal. The vault can live on a FUSE
+/// network mount (rclone); an unbounded walk stalls the tool call.
+const TRAVERSE_BUDGET_MS: u64 = 2_500;
+/// Skip markdown files bigger than this: archives are read into model
+/// context only through compaction anyway, and huge reads on a network
+/// mount dominate the budget.
+const MAX_SCAN_BYTES: u64 = 512 * 1024;
+
+fn should_skip_dir(name: &str) -> bool {
+    name.starts_with('.') || matches!(name, "backups" | "target" | "node_modules" | "UoPeople")
+}
+
+fn search_vault_dir(
+    root: &Path,
+    dir: &Path,
+    terms: &[&str],
+    limit: usize,
+    hits: &mut Vec<SearchHit>,
+    deadline: &std::time::Instant,
+) -> Result<bool, PantheonError> {
+    if hits.len() >= limit || std::time::Instant::now() >= *deadline {
+        return Ok(false);
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(true),
+    };
+
+    for entry in entries.flatten() {
+        if hits.len() >= limit {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= *deadline {
+            return Ok(false);
+        }
+        let p = entry.path();
+        if p.is_dir() {
+            let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if should_skip_dir(file_name) {
+                continue;
+            }
+            if !search_vault_dir(root, &p, terms, limit, hits, deadline)? {
+                return Ok(false);
+            }
+        } else if p.is_file() && p.extension().map_or(false, |ext| ext == "md") {
+            let meta_len = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            if meta_len > MAX_SCAN_BYTES {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(&p) {
+                let content_lower = content.to_lowercase();
+                if terms.iter().all(|t| content_lower.contains(t)) {
+                    let first_pos = content_lower.find(terms[0]).unwrap_or(0);
+                    let start = first_pos.saturating_sub(60);
+                    let end = (first_pos + 100).min(content.len());
+                    let snippet = content[start..end].replace('\n', " ").trim().to_string();
+                    let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().to_string();
+                    hits.push(SearchHit {
+                        rel_path: rel,
+                        snippet,
+                    });
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn collect_vault_files(
+    root: &Path,
+    dir: &Path,
+    limit: usize,
+    files: &mut Vec<String>,
+    deadline: &std::time::Instant,
+) -> Result<bool, PantheonError> {
+    if files.len() >= limit || std::time::Instant::now() >= *deadline {
+        return Ok(false);
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(true),
+    };
+
+    for entry in entries.flatten() {
+        if files.len() >= limit {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= *deadline {
+            return Ok(false);
+        }
+        let p = entry.path();
+        if p.is_dir() {
+            let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if should_skip_dir(file_name) {
+                continue;
+            }
+            if !collect_vault_files(root, &p, limit, files, deadline)? {
+                return Ok(false);
+            }
+        } else if p.is_file() && p.extension().map_or(false, |ext| ext == "md") {
+            let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().to_string();
+            files.push(rel);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_vault_archive_read_search_list() {
+        let tmp = tempdir().unwrap();
+        let vault_path = tmp.path().to_path_buf();
+        let opts = VaultToolOptions {
+            vault_dir: vault_path.clone(),
+        };
+
+        let mut reg = ToolRegistry::new();
+        register_vault_tools(&mut reg, opts);
+
+        // 1. Archive a note
+        let res = reg.execute(
+            "vault_archive",
+            r#"{"category": "notes", "title": "my-research", "content": "Autonomous agents need durable memory.", "tags": ["agent", "runtime"]}"#,
+        ).unwrap();
+        assert!(res.contains("my-research.md"));
+
+        // 2. Read the note back
+        let read_res = reg.execute(
+            "vault_read",
+            r#"{"path": "notes/my-research.md"}"#,
+        ).unwrap();
+        assert!(read_res.contains("Autonomous agents need durable memory."));
+        assert!(read_res.contains("tags:"));
+
+        // 3. Search the vault
+        let search_res = reg.execute(
+            "vault_search",
+            r#"{"query": "durable memory"}"#,
+        ).unwrap();
+        assert!(search_res.contains("notes/my-research.md"));
+
+        // 4. List files
+        let list_res = reg.execute(
+            "vault_list",
+            r#"{"category": "notes"}"#,
+        ).unwrap();
+        assert!(list_res.contains("notes/my-research.md"));
+    }
+
+    #[test]
+    fn test_vault_path_traversal_rejected() {
+        let tmp = tempdir().unwrap();
+        let opts = VaultToolOptions {
+            vault_dir: tmp.path().to_path_buf(),
+        };
+
+        let mut reg = ToolRegistry::new();
+        register_vault_tools(&mut reg, opts);
+
+        let err = reg.execute(
+            "vault_archive",
+            r#"{"category": "../etc", "title": "bad", "content": "malicious"}"#,
+        ).unwrap_err();
+        assert_eq!(err.code, "VAULT_PATH_TRAVERSAL");
+    }
+}

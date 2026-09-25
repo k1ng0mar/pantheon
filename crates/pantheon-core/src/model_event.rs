@@ -47,6 +47,9 @@ pub enum ModelEvent {
     /// Terminal success of an attempt.
     Completed { finish_reason: Option<String> },
     /// An attempt failed. The chain may still fall back when `retryable`.
+    /// `cause` is a short human snippet (truncated provider error) so
+    /// `/explain` can answer WHY each fallback happened, not just which
+    /// models were tried.
     AttemptFailed {
         provider: String,
         model: String,
@@ -55,8 +58,12 @@ pub enum ModelEvent {
         retryable: bool,
     },
     /// The chain moved from `from_index` to fallback `to_index`.
+    /// Carries the failure cause so the ledger records why.
     Fallback {
         from_index: usize,
+        from_provider: String,
+        from_model: String,
+        from_code: String,
         to_index: usize,
         to_provider: String,
         to_model: String,
@@ -90,13 +97,18 @@ impl ModelEvent {
                 run_id: run_id.to_string(),
             }),
             ModelEvent::Fallback {
+                from_provider,
+                from_model,
+                from_code,
                 to_index,
                 to_model,
                 to_provider,
                 ..
             } => Some(Event::RunProgress {
                 run_id: run_id.to_string(),
-                detail: format!("fallback to {to_provider}/{to_model} (chain index {to_index})"),
+                detail: format!(
+                    "fallback {from_provider}/{from_model} ({from_code}) -> {to_provider}/{to_model} (chain index {to_index})"
+                ),
             }),
             ModelEvent::AttemptFailed { code, .. } => Some(Event::RunProgress {
                 run_id: run_id.to_string(),
@@ -167,6 +179,9 @@ mod tests {
     fn fallback_projects_to_run_progress() {
         let ev = ModelEvent::Fallback {
             from_index: 0,
+            from_provider: "openai".into(),
+            from_model: "gpt".into(),
+            from_code: "PROVIDER_HTTP".into(),
             to_index: 1,
             to_provider: "deepseek".into(),
             to_model: "ds".into(),
@@ -175,6 +190,7 @@ mod tests {
             Some(crate::events::Event::RunProgress { detail, .. }) => {
                 assert!(detail.contains("fallback"));
                 assert!(detail.contains("deepseek"));
+                assert!(detail.contains("PROVIDER_HTTP"));
             }
             other => panic!("unexpected: {other:?}"),
         }

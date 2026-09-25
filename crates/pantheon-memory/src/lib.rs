@@ -13,15 +13,27 @@ use serde::{Deserialize, Serialize};
 
 pub mod backend;
 pub mod http_backend;
+pub mod plugins;
 pub mod markdown;
 pub mod store;
-pub use backend::{BackendInfo, BackendRegistry, BackendSelection};
+pub use backend::{
+    load_selection, open_selected, save_selection, selection_path, BackendInfo, BackendRegistry,
+    BackendSelection,
+};
+pub use plugins::{load_dir as load_memory_plugins, MemoryPluginManifest, StdioBackend};
 pub use store::{MemoryStore, Recalled};
 
 /// Backend boundary for external memory providers such as GalaxyMem,
-/// Mnemosyne, Honcho, or Hindsight. Providers implement recall and writes;
-/// policy and provenance stay at this boundary instead of being delegated
-/// blindly to a plugin.
+/// Mnemosyne, Honcho, Hindsight, OpenViking. Providers implement recall
+/// and writes; policy and provenance stay at this boundary instead of
+/// being delegated blindly to a plugin.
+///
+/// Policy enforcement rule: callers must gate through the `*_via` helpers
+/// in this crate (`recall_via` / `write_via` / `confirm_via`). Those check
+/// capability + validation + trust clamp BEFORE the backend sees anything,
+/// so a backend can never be the thing that decides to ignore policy.
+/// The trait methods themselves take the policy for native-style backends
+/// that want to re-check; external adapters may ignore it.
 pub trait MemoryBackend: Send + Sync + std::fmt::Debug {
     fn recall(
         &self,
@@ -37,6 +49,43 @@ pub trait MemoryBackend: Send + Sync + std::fmt::Debug {
         max_bytes: usize,
     ) -> Result<MemoryRecord, PantheonError>;
     fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError>;
+    /// Fetch one record by (namespace, key). Default: unsupported —
+    /// external services are query-oriented, not key-get oriented.
+    fn get(&self, namespace: &str, key: &str) -> Result<Option<MemoryRecord>, PantheonError> {
+        let _ = (namespace, key);
+        Err(unsupported("get"))
+    }
+    /// Remove one record. Default: unsupported (external services manage
+    /// deletion through their own surface).
+    fn forget(
+        &self,
+        layer: LayerKind,
+        namespace: &str,
+        key: &str,
+    ) -> Result<bool, PantheonError> {
+        let _ = (layer, namespace, key);
+        Err(unsupported("forget"))
+    }
+    /// Promote a record to Memory tier (the human-vouch path). Default:
+    /// unsupported — trust tiers live in Pantheon's provenance model and
+    /// not every remote service can represent them.
+    fn confirm(
+        &self,
+        policy: &Policy,
+        namespace: &str,
+        key: &str,
+    ) -> Result<MemoryRecord, PantheonError> {
+        let _ = (policy, namespace, key);
+        Err(unsupported("confirm"))
+    }
+}
+
+fn unsupported(op: &str) -> PantheonError {
+    merr(
+        "MEM_BACKEND_UNSUPPORTED",
+        format!("backend does not implement `{op}`"),
+        "use a backend that supports this operation, or the native store",
+    )
 }
 
 impl MemoryBackend for MemoryStore {
@@ -61,6 +110,28 @@ impl MemoryBackend for MemoryStore {
 
     fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError> {
         self.list_agent(namespace)
+    }
+
+    fn get(&self, namespace: &str, key: &str) -> Result<Option<MemoryRecord>, PantheonError> {
+        MemoryStore::get(self, namespace, key)
+    }
+
+    fn forget(
+        &self,
+        layer: LayerKind,
+        namespace: &str,
+        key: &str,
+    ) -> Result<bool, PantheonError> {
+        MemoryStore::forget(self, layer, namespace, key)
+    }
+
+    fn confirm(
+        &self,
+        policy: &Policy,
+        namespace: &str,
+        key: &str,
+    ) -> Result<MemoryRecord, PantheonError> {
+        confirm_write(self, policy, namespace, key)
     }
 }
 
@@ -175,36 +246,9 @@ pub fn propose_write(
     proposal: Proposal,
     max_bytes: usize,
 ) -> Result<MemoryRecord, PantheonError> {
-    // 1. policy — memory.write must be granted explicitly.
-    if !matches!(policy.check(&Capability::MemoryWrite), Decision::Allow) {
-        let r = WriteRefusal::MissingCapability;
-        return Err(merr(
-            r.code(),
-            format!(
-                "memory.write not granted for origin {}",
-                proposal.provenance.origin
-            ),
-            "grant memory.write in the agent policy",
-        ));
-    }
-    // 2. validation (provenance is checked here too).
-    if let Err(r) = validate(&proposal, max_bytes) {
-        return Err(merr(
-            r.code(),
-            format!("proposal failed validation: {r:?}"),
-            "fix the proposal; nothing was stored",
-        ));
-    }
-    // 3. trust clamp. Anything not authored by an explicit user action
-    // lands at Untrusted regardless of the requested tier. The user
-    // promotion path is `memory_confirm` / CLI, which writes Memory tier
-    // directly below.
-    let mut p = proposal;
-    if !matches!(p.provenance.origin.as_str(), "user" | "cli" | "import") {
-        p.provenance.trust = pantheon_core::provenance::TrustTier::Untrusted;
-    }
-    // 4. provider.
-    store.put(&p)
+    let gated = gate_proposal(policy, proposal, max_bytes)?;
+    // provider.
+    store.put(&gated)
 }
 
 /// Promote an existing record to Memory tier (from Untrusted). This is
@@ -244,6 +288,96 @@ pub fn recall(
         ));
     }
     store.search(layers, query, limit)
+}
+
+/// Gated recall against ANY backend. Checks `memory.read` here, before the
+/// backend sees the query — external backends must never be the party that
+/// decides whether policy allows a read.
+pub fn recall_via(
+    backend: &dyn MemoryBackend,
+    policy: &Policy,
+    layers: &[LayerKind],
+    query: &str,
+    limit: usize,
+) -> Result<Vec<Recalled>, PantheonError> {
+    if !matches!(policy.check(&Capability::MemoryRead), Decision::Allow) {
+        return Err(merr(
+            "MEM_NO_READ_CAPABILITY",
+            "memory.read not granted".into(),
+            "grant memory.read in the agent policy",
+        ));
+    }
+    backend.recall(policy, layers, query, limit)
+}
+
+/// Full write path against ANY backend: policy -> validation -> trust
+/// clamp happen HERE (before the proposal crosses the boundary), then the
+/// backend stores the already-gated proposal. `propose_write` on the
+/// native store re-checks idempotently; external adapters can rely on the
+/// gate having run.
+pub fn write_via(
+    backend: &dyn MemoryBackend,
+    policy: &Policy,
+    proposal: Proposal,
+    max_bytes: usize,
+) -> Result<MemoryRecord, PantheonError> {
+    let gated = gate_proposal(policy, proposal, max_bytes)?;
+    backend.write(policy, gated, max_bytes)
+}
+
+/// Gated confirm against ANY backend: policy check first, then the
+/// backend's promotion path (native implements it; external backends
+/// default to `MEM_BACKEND_UNSUPPORTED`).
+pub fn confirm_via(
+    backend: &dyn MemoryBackend,
+    policy: &Policy,
+    namespace: &str,
+    key: &str,
+) -> Result<MemoryRecord, PantheonError> {
+    if !matches!(policy.check(&Capability::MemoryWrite), Decision::Allow) {
+        return Err(merr(
+            "MEM_NO_CAPABILITY",
+            "memory.write not granted for confirm".into(),
+            "grant memory.write in the agent policy",
+        ));
+    }
+    backend.confirm(policy, namespace, key)
+}
+
+/// Shared gate for the write path: capability, validation, trust clamp.
+/// Returns the gated proposal ready for any provider.
+fn gate_proposal(
+    policy: &Policy,
+    proposal: Proposal,
+    max_bytes: usize,
+) -> Result<Proposal, PantheonError> {
+    // 1. policy — memory.write must be granted explicitly.
+    if !matches!(policy.check(&Capability::MemoryWrite), Decision::Allow) {
+        let r = WriteRefusal::MissingCapability;
+        return Err(merr(
+            r.code(),
+            format!(
+                "memory.write not granted for origin {}",
+                proposal.provenance.origin
+            ),
+            "grant memory.write in the agent policy",
+        ));
+    }
+    // 2. validation (provenance is checked here too).
+    if let Err(r) = validate(&proposal, max_bytes) {
+        return Err(merr(
+            r.code(),
+            format!("proposal failed validation: {r:?}"),
+            "fix the proposal; nothing was stored",
+        ));
+    }
+    // 3. trust clamp. Anything not authored by an explicit user action
+    // lands at Untrusted regardless of the requested tier.
+    let mut p = proposal;
+    if !matches!(p.provenance.origin.as_str(), "user" | "cli" | "import") {
+        p.provenance.trust = pantheon_core::provenance::TrustTier::Untrusted;
+    }
+    Ok(p)
 }
 
 #[cfg(test)]

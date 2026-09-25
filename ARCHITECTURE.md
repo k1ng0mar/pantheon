@@ -77,7 +77,7 @@ Every meaningful transition emits a canonical `Event` (core):
 
 Gives replay, debugging, crash recovery. Aligns with MCP 2026 (stateless protocol core, formal extensions, stronger auth, long tasks).
 
-**Implemented:** `pantheon-agent` — pure orchestration loop behind `ModelTurn`. Capability gate at tool call (`Allow` / `Deny` / `Approval`). Denial emits structured `CAP_DENIED`; approval parks the run. Budgets: max turns, max tool calls. Swarm handoff via `AgentSpawner`.
+**Implemented:** `pantheon-agent` — pure orchestration loop behind `ModelTurn`. Capability gate at tool call (`Allow` / `Deny` / `Approval`). Denial emits structured `CAP_DENIED`; approval parks the run. Budgets: max turns, max tool calls. Swarm handoff via `AgentSpawner`. Context window budget (`pantheon-exec::context`): assembled messages are fitted to the catalog `context_limit` before each provider call — oldest oversized tool rows re-compact to a floor, then oldest whole exchanges drop (system rows and the live tail never); the trim is recorded as a `ContextTrimmed` event for `/explain`, and `CONTEXT_OVERFLOW` fires when even the essential rows cannot fit. An opt-in compression auxiliary (`[compression]` / `AuxiliaryKind::Compression`, provider-agnostic `ContextCompressor` in core, client in `pantheon-providers`) summarizes the oldest exchanges into a memory-tier `<compressed_context>` note on overflow, before the deterministic steps; failures fall back to dropping, every pass is a `ContextCompressed` event. exec itself never talks to a model — the host passes the compressor in.
 
 ## 3. Dynamic swarm
 
@@ -112,7 +112,7 @@ Specialists: `inherit` | `kimi-k3` | `configured-model`. Fallbacks are policy-co
 **Locked policy (no routing):**
 - **default model** — the run’s model
 - **fallback models** — ordered list, failure-only, runtime-controlled; never agent-chosen
-- **auxiliary models** — scoped helpers (embeddings, rerank, STT/TTS, vision, extraction, search synthesis), selected by runtime capability need
+- **auxiliary models** — scoped helper *models* (embeddings, rerank, vision, extraction, search synthesis, decision, compression), selected by runtime capability need. Service capabilities (STT, TTS, search, browser) are provider-plane swaps, not model-policy entries.
 
 **Implemented:** `pantheon-providers` — default + failure-only fallback + auxiliaries. Live HTTP adapters: OpenAI-compatible + Anthropic Messages behind `ModelTurn`, both emitting normalized `ModelEvent`s (core) for complete + streaming paths; fallback chain (`chain.rs`) is the only fallback logic and sits outside the agent loop; provider/model metadata (base URL, wire mode, context limits, tools, vision, reasoning, streaming, cost) lives in the core catalog. Streaming integration tests run against the local llm-router when `PANTHEON_KEY_ROUTER` is set.
 
@@ -133,7 +133,7 @@ Another harness can be a specialized execution backend.
 
 ## 7. Skills vs extensions
 
-**Tier 1 — Skills:** portable knowledge. `SKILL.md` + instructions + examples + references + optional scripts. Import from `.agents/skills`, `.claude/skills`, Hermes, OpenClaw, native format.
+**Tier 1 — Skills:** portable knowledge. `SKILL.md` + instructions + examples + references + optional scripts. Import from `.agents/skills`, `.claude/skills`, Hermes, OpenClaw, native format. **Implemented:** cross-format discovery (`discover_skills_ext`) covers pantheon + project `.agents/.claude/.pantheon` + `~/.hermes`/`~/.openclaw` + `PANTHEON_SKILLS_DIR` extra roots; session registers discovered skills as capability-gated tools; `pantheon skills list|import|doctor` CLI verbs (Tier 1, read-only source side; `import` is the only writer, and only into `<data_dir>/skills`, copying the raw `SKILL.md` verbatim so it round-trips through `parse_skill` on the next discovery pass). `import --url <URL>` fetches a SKILL.md from a GitHub repo/blob URL or a direct raw URL (rewrites `github.com/owner/repo` → `raw.githubusercontent.com/owner/repo/{main,master}/SKILL.md`), validates the body with `parse_skill` **before** touching the filesystem (fail-closed: a 200 with bad frontmatter returns `SKILL_NO_FRONTMATTER` and leaves no file behind), then writes the raw copy.
 
 **Tier 2 — Extensions:** runtime code. Tools, hooks, context providers, validators, result transformers, slash commands, persistent state, channels, UI, workers. OpenClaw-native plugins live here.
 
@@ -238,7 +238,7 @@ models, search, browser, vision, STT, TTS, embeddings, rerank, extraction.
 
 Swap `SearchProvider` / `BrowserProvider` / etc. without rewriting agents.
 
-**Implemented:** logic layer in `pantheon-providers` (default + failure-only fallback + auxiliaries, no routing) plus live OpenAI-compat and Anthropic adapters with normalized `ModelEvent` emission (single-shot + SSE streaming) and catalog-driven capability/cost metadata.
+**Implemented:** logic layer in `pantheon-providers` (default + failure-only fallback + auxiliaries, no routing) plus live OpenAI-compat and Anthropic adapters with normalized `ModelEvent` emission (single-shot + SSE streaming) and catalog-driven capability/cost metadata. STT/TTS seam: `SttProvider`/`TtsProvider` traits with `command` (bounded subprocess: text→stdout / audio→stdin) and `openai` (compatible audio endpoints) backends, registry + config `[stt]`/`[tts]` selection — service providers, deliberately outside model policy. Search/browser/vision-service swaps remain future work.
 
 ## 15. MCP
 
@@ -267,7 +267,7 @@ Agent sees a canonical event. Gateway handles auth, allowlist, pairing, delivery
 
 One runtime. CLI / GUI / TUI + Gateways all talk to the same Runtime API. No duplicated business logic.
 
-**Implemented:** CLI (26 verbs: chat, run, explain, status, audit, grant, deny, memory, plugins, extensions, hook, doctor, preview, stage, apply, checkpoint, rollback, serve, stream, sign, channel, gateway, setup, reset, pipeline, providers) plus the AG-UI local web client (`pantheon serve` at `/`). TUI/GUI absent; the web client is a smoke-test surface. See docs/cli.md for the full reference.
+**Implemented:** CLI (27 verbs: chat, run, explain, status, audit, grant, deny, memory, plugins, extensions, hook, doctor, preview, stage, apply, checkpoint, rollback, serve, stream, sign, channel, gateway, setup, reset, pipeline, providers, skills) plus the AG-UI local web client (`pantheon serve` at `/`). The web surface executes the canonical Session runtime and replays its typed ledger turn/item stream; it remains intentionally minimal rather than a full product UI. TUI/GUI absent. See docs/cli.md for the full reference.
 
 ## 18. Runtime API
 
@@ -288,7 +288,7 @@ package.install/update/rollback
 
 Events stream as the core `Event` enum (no second event type). Transports: HTTP / WebSocket / Unix socket.
 
-**Implemented:** `pantheon-api` — JSON-RPC 2.0 dispatcher + `UnixSocketTransport` + stdlib HTTP server (`pantheon serve`) with SSE streams and signed blob routes. Methods: `system.ping`, `system.methods`, `agui.send/grant/deny/cancel/frames/sign/artifact.put/serve_hint`. Request bodies capped at 1 MiB (413). The aspirational command list below is the long-term protocol, not the current surface.
+**Implemented:** `pantheon-api` — JSON-RPC 2.0 dispatcher + `UnixSocketTransport` + stdlib HTTP server (`pantheon serve`) with SSE streams and signed blob routes. `agui.send` now admits a host-assigned `turn_id` and executes through the same `pantheon-runtime::Session` used by CLI/gateway paths; completion, parking, and failure are durable `TurnCompleted` / `TurnParked` / `TurnFailed` ledger events. Other methods: `system.ping`, `system.methods`, `agui.grant/deny/cancel/frames/sign/artifact.put/serve_hint`. Request bodies capped at 1 MiB (413). The aspirational command list below is the long-term protocol, not the current surface.
 
 ## 19. Observability
 
@@ -299,7 +299,7 @@ Runtime events → OTel instrumentation → logs / metrics / traces
               + durable execution ledger (offline /explain)
 ```
 
-**Implemented:** `pantheon-otel` — Event → span mapping, metrics fold over replay, offline explain(). Deltas excluded from spans. `/explain` remains the offline path. No live OTel exporter.
+**Implemented:** `pantheon-otel` — Event → span mapping, metrics fold over replay, offline explain(). Deltas excluded from spans. `/explain` remains the offline path. Span mapping exists but no live OTel exporter (no OTLP/gRPC/HTTP push target); instrumentation is fold-only today.
 
 ## 20. Recovery
 
@@ -425,19 +425,12 @@ Eval: `eval/run.py` + `eval/cases.json` — regression harness driving the real 
 
 ## Open gaps
 
-- ~~Agent loop wired through Runtime API command handlers + CLI~~ (done: session drive loop + agui.* methods)
-- ~~Live gateways (Telegram/Discord)~~ (done: daemon + gateway websocket; 429 handling pending)
-- Sandbox container/VM enforcement (profiles are policy values today)
-- Durable agent identity configs
-- Tier 1 skill import
-- OpenClaw Soul adapter + full plugin compat
-- Package ecosystem (manifest, trust levels, lifecycle)
-- `pantheon migrate` CLI surface
-- Scheduler CLI surface (durable scheduling logic is implemented and tested)
-- Secrets broker wiring into chat's api_key path
-- Pick one claim store (`ClaimStore` vs embedded `Ledger::claim`) — audit recommendation: keep ClaimStore, deprecate Ledger::claim
-- Wire swarm Caps into the delegate path (session denies all delegation today)
-- OTel export target (span mapping exists; no exporter)
+- Sandbox container/VM enforcement (profiles are policy values today; HIGH/VERY HIGH still process-level)
+- Durable agent identity configs (identity/config/memory-namespace/skills/capability/mode per persistent agent)
+- Package ecosystem (`packages/` format, install/verify/resolve/sandbox/test/approve/activate/rollback, channels + pinning)
+- `pantheon migrate` CLI verb (migrate lib implemented + unit-tested; not yet surfaced as a CLI verb)
+- Scheduler CLI surface + end-to-end live run driving (durable scheduling logic implemented and tested)
+- Live OTel exporter (OTLP push target)
 
 ## Audit trail
 

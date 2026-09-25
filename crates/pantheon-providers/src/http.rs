@@ -69,9 +69,23 @@ pub struct HttpTransport {
 impl Default for HttpTransport {
     fn default() -> Self {
         Self {
-            timeout: Duration::from_secs(120),
+            timeout: http_timeout(),
         }
     }
+}
+
+/// Provider HTTP timeout. Overridable via `PANTHEON_HTTP_TIMEOUT_MS`
+/// (default 120_000). Applies to single-shot calls as an overall
+/// deadline and to streams as a per-chunk read idle deadline so a
+/// hanging provider cannot wedge the session thread forever.
+/// The turn watchdog covers process liveness; this covers provider hang.
+pub fn http_timeout() -> Duration {
+    std::env::var("PANTHEON_HTTP_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(120))
 }
 
 fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, PantheonError> {

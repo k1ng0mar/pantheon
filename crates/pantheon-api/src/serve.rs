@@ -2,6 +2,17 @@
 //! GET /agui/stream (SSE replay + 25s long-poll), POST /agui/rpc (JSON-RPC),
 //! GET /agui/blob/<task> (signed generative-UI bytes), GET /agui/health.
 //! One TcpListener, one thread per connection, ledger polling for liveness.
+//!
+//! OPERATING NOTES (group-C audit):
+//! - Request bodies are capped at 1 MiB: a bigger Content-Length gets 413
+//!   BEFORE any allocation (see `MAX_BODY` + `handle_one`).
+//! - Every RPC method opens a fresh `Supervisor` (3 SQLite connections +
+//!   migrations) and drops it. Milliseconds for a local single-user
+//!   server; a multi-user server needs a SupervisorPool (not built).
+//! - SSE streams poll the ledger every 500 ms for 25 s max, then close.
+//!   Terminal runs (completed/failed/canceled) close early; an
+//!   awaiting_approval run stays open for the window and the WEB CLIENT
+//!   is expected to reconnect (Last-Event-ID / ?after= supported).
 use crate::rpc::Dispatcher;
 use pantheon_gateway::{
     frames_for_entries, parse_last_event_id, valid_task_id, GenUiSigner, SseEncoder, UiFrame,
@@ -58,11 +69,13 @@ body{font:16px system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1
 <button id="cancel" disabled>Cancel run</button><div id="actions"></div><pre id="log"></pre>
 <script>
 const $=s=>document.querySelector(s), log=s=>{$('#log').textContent+=s+'\n'};
-let rpcId=1, run='', es;
-const TOKEN='__PANTHEON_TOKEN__';async function rpc(method,params={}){let r=await fetch('/agui/rpc',{method:'POST',headers:{'content-type':'application/json','x-pantheon-token':TOKEN},body:JSON.stringify({jsonrpc:'2.0',id:rpcId++,method,params})});let j=await r.json();if(j.error)throw Error(j.error.message);return j.result}
+let rpcId=1, run='', thread='', cursor=0, es;
+const TOKEN='__PANTHEON_TOKEN__';
+async function rpc(method,params={}){let r=await fetch('/agui/rpc',{method:'POST',headers:{'content-type':'application/json','x-pantheon-token':TOKEN},body:JSON.stringify({jsonrpc:'2.0',id:rpcId++,method,params})});let j=await r.json();if(j.error)throw Error(j.error.message);return j.result}
 function showActions(f){if(f.name!=='requested')return;const actions=$('#actions');actions.innerHTML='';for(const [label,answer] of [['Grant','grant'],['Deny','deny']]){const b=document.createElement('button');b.textContent=label;b.onclick=async()=>{try{await rpc('agui.'+answer,{run_id:run,scope:f.text});actions.innerHTML=''}catch(e){log(e.message)}};actions.appendChild(b)}}
+function openStream(){if(es)es.close();es=new EventSource('/agui/stream?run='+encodeURIComponent(run)+'&thread='+encodeURIComponent(thread)+'&after='+cursor+(TOKEN?'&token='+encodeURIComponent(TOKEN):''));for(const kind of ['run','text','tool','state','genui'])es.addEventListener(kind,e=>{const f=JSON.parse(e.data);cursor=Math.max(cursor,f.id||0);log(kind+': '+f.text)});es.addEventListener('approval',e=>showActions(JSON.parse(e.data)))}
 $('#cancel').onclick=async()=>{if(!run)return;try{await rpc('agui.cancel',{run_id:run});$('#cancel').disabled=true;log('run canceled')}catch(e){log(e.message)}};
-$('#send').onsubmit=async e=>{e.preventDefault();const text=$('#text').value;$('#text').value='';try{if(!run){const r=await rpc('agui.send',{text});run=r.run_id;$('#cancel').disabled=false;es=new EventSource('/agui/stream?run='+encodeURIComponent(run)+'&thread='+encodeURIComponent(r.thread_id)+(TOKEN?'&token='+encodeURIComponent(TOKEN):''));for(const kind of ['run','text','tool','state','genui'])es.addEventListener(kind,e=>{const f=JSON.parse(e.data);log(kind+': '+f.text)});es.addEventListener('approval',e=>showActions(JSON.parse(e.data)))}else{await rpc('agui.send',{run_id:run,text})}}catch(e){log(e.message)}};
+$('#send').onsubmit=async e=>{e.preventDefault();const text=$('#text').value;$('#text').value='';try{const r=await rpc('agui.send',run?{run_id:run,text}:{text});run=r.run_id;thread=r.thread_id;$('#cancel').disabled=false;openStream()}catch(e){log(e.message)}};
 </script>"##;
 
 fn reason(code: u16) -> &'static str {
@@ -363,6 +376,22 @@ fn handle_one(stream: TcpStream, cfg: ServeConfig) {
 }
 /// Blocking serve loop: one thread per connection.
 pub fn serve(mut cfg: ServeConfig) -> std::io::Result<()> {
+    let loopback = matches!(
+        cfg.host.as_str(),
+        "127.0.0.1" | "localhost" | "::1" | "[::1]"
+    );
+    if !loopback && cfg.auth_token.is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "non-loopback AG-UI serving requires PANTHEON_SERVE_TOKEN",
+        ));
+    }
+    if !loopback && std::env::var("PANTHEON_GENUI_SECRET").is_err() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "non-loopback AG-UI serving requires PANTHEON_GENUI_SECRET",
+        ));
+    }
     let addr = format!("{}:{}", cfg.host, cfg.port);
     let listener = TcpListener::bind(&addr)?;
     let bound = listener.local_addr()?;
