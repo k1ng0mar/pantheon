@@ -40,12 +40,34 @@ pub struct Supervisor {
     inner: Arc<SupervisorInner>,
 }
 
+/// Guard returned by `register_observer`. Removes the observer on drop
+/// by pointer identity, so multiple observers coexist safely.
+pub struct ObserverGuard {
+    supervisor: Supervisor,
+    cb: std::sync::Arc<dyn Fn(&Event) + Send + Sync>,
+}
+
+impl Drop for ObserverGuard {
+    fn drop(&mut self) {
+        if let Ok(mut observers) = self.supervisor.inner.observers.lock() {
+            if let Some(pos) = observers.iter().position(|o| Arc::ptr_eq(o, &self.cb)) {
+                observers.remove(pos);
+            }
+        }
+    }
+}
+
 struct SupervisorInner {
     ledger: Ledger,
     operations: OperationStore,
     leases: RunLeaseStore,
     data_dir: PathBuf,
     lease_id: String,
+    /// Live observers (TUI, gateway, tests). Called after each successful
+    /// ledger append. Registration is via `register_observer` on the
+    /// handle; the list itself lives behind a mutex because registration
+    /// happens while runs are already in flight.
+    observers: std::sync::Mutex<Vec<std::sync::Arc<dyn Fn(&Event) + Send + Sync>>>,
 }
 
 /// Holds a run lease until the work scope exits.  Dropping the guard is the
@@ -168,6 +190,7 @@ impl Supervisor {
                 leases,
                 data_dir,
                 lease_id,
+                observers: std::sync::Mutex::new(Vec::new()),
             }),
         })
     }
@@ -349,7 +372,29 @@ impl Supervisor {
     }
     pub fn emit(&self, ev: Event) -> Result<(), PantheonError> {
         self.ledger().append(&ev)?;
+        // Fan out to live observers after the durable write. Observer
+        // failures must never break the run: the ledger is the contract,
+        // observers are best-effort views.
+        if let Ok(observers) = self.inner.observers.lock() {
+            for cb in observers.iter() {
+                cb(&ev);
+            }
+        }
         Ok(())
+    }
+    /// Register a live event observer (TUI, gateway). Returns a handle
+    /// that removes the observer when dropped.
+    pub fn register_observer(
+        &self,
+        cb: std::sync::Arc<dyn Fn(&Event) + Send + Sync>,
+    ) -> ObserverGuard {
+        if let Ok(mut observers) = self.inner.observers.lock() {
+            observers.push(cb.clone());
+        }
+        ObserverGuard {
+            supervisor: self.clone(),
+            cb,
+        }
     }
     pub fn complete(&self, run_id: &str) -> Result<(), PantheonError> {
         self.ledger().append(&Event::RunCompleted {
@@ -723,6 +768,38 @@ mod tests {
         let sup2 = Supervisor::open(dir).unwrap();
         assert!(sup2.start_run("run_crash").unwrap());
         assert!(sup2.explain("run_crash").unwrap().contains("recovered"));
+    }
+
+    #[test]
+    fn observers_receive_events_and_guard_unregisters() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let dir = std::env::temp_dir().join(format!("pantheon-obs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sup = Supervisor::open(dir).unwrap();
+        sup.start_run("run_obs").unwrap();
+
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let h2 = hits.clone();
+        let guard = sup.register_observer(std::sync::Arc::new(move |_ev: &Event| {
+            h2.fetch_add(1, AtomicOrdering::SeqCst);
+        }));
+
+        sup.emit(Event::RunProgress {
+            run_id: "run_obs".into(),
+            detail: "hello observer".into(),
+        })
+        .unwrap();
+        assert_eq!(hits.load(AtomicOrdering::SeqCst), 1, "observer fired");
+
+        // Dropping the guard unregisters: no further deliveries.
+        drop(guard);
+        sup.emit(Event::RunProgress {
+            run_id: "run_obs".into(),
+            detail: "should not deliver".into(),
+        })
+        .unwrap();
+        assert_eq!(hits.load(AtomicOrdering::SeqCst), 1, "guard removed observer");
     }
 
     #[test]
