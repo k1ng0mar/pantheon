@@ -54,7 +54,11 @@ pub struct TuiState {
     pub model: String,
     pub elapsed: Duration,
     pub start_time: Instant,
+    /// Authoritative cumulative tokens (snapped on each Usage event).
     pub tokens_used: u32,
+    /// Live estimate of THIS turn's streamed tokens (chars / 4).
+    /// Added to tokens_used for the live counter; snapped away when Usage lands.
+    pub turn_estimate: u32,
     pub tokens_max: u32,
     pub cost_cents: u32,
     pub blocks: Vec<TranscriptBlock>,
@@ -74,6 +78,7 @@ impl Default for TuiState {
             elapsed: Duration::ZERO,
             start_time: Instant::now(),
             tokens_used: 0,
+            turn_estimate: 0,
             tokens_max: 0,
             cost_cents: 0,
             blocks: Vec::new(),
@@ -95,6 +100,7 @@ impl TuiState {
             elapsed: Duration::ZERO,
             start_time: Instant::now(),
             tokens_used: 0,
+            turn_estimate: 0,
             tokens_max,
             cost_cents: 0,
             blocks: Vec::new(),
@@ -107,10 +113,31 @@ impl TuiState {
         }
     }
 
+    /// Live token estimate: ~4 chars per token, updated on every streamed
+    /// delta so the counter ticks like Claude Code's. Snapped to the
+    /// authoritative number when Usage arrives.
+    fn bump_estimate(&mut self, text: &str) {
+        self.turn_estimate += (text.len() as u32 + 3) / 4;
+    }
+
     /// Process a model event into a transcript block or state update.
     pub fn handle_model_event(&mut self, ev: ModelEvent) {
         match ev {
+            ModelEvent::Attempt { provider, model, .. } => {
+                // Track mid-session model switches (fallback chain).
+                if self.model != model {
+                    self.blocks.push(TranscriptBlock {
+                        kind: BlockKind::Status(format!(
+                            "routing: {} unavailable, falling back to {provider}/{model}",
+                            self.model
+                        )),
+                        timestamp: Instant::now(),
+                    });
+                    self.model = model;
+                }
+            }
             ModelEvent::TextDelta { text } => {
+                self.bump_estimate(&text);
                 if let Some(TranscriptBlock {
                     kind: BlockKind::AssistantMessage(ref mut buf),
                     ..
@@ -125,6 +152,7 @@ impl TuiState {
                 }
             }
             ModelEvent::ReasoningDelta { text } => {
+                self.bump_estimate(&text);
                 if let Some(TranscriptBlock {
                     kind:
                         BlockKind::Thinking {
@@ -296,10 +324,11 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
         (icon::RUNNING.to_string(), color::RUNNING)
     };
     let status_word = if state.ready { "ready" } else { "working" };
+    let live_tokens = state.tokens_used + state.turn_estimate;
     let ctx = if state.tokens_max > 0 {
-        format!("{:.1}k/{}k", state.tokens_used as f64 / 1000.0, state.tokens_max / 1000)
+        format!("{:.1}k/{}k", live_tokens as f64 / 1000.0, state.tokens_max / 1000)
     } else {
-        format!("{:.1}k", state.tokens_used as f64 / 1000.0)
+        format!("{:.1}k", live_tokens as f64 / 1000.0)
     };
     let secs = state.elapsed.as_secs();
     let text = format!(
