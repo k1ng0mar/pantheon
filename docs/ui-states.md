@@ -156,3 +156,40 @@ process crash · corrupted checkpoint · invalid patch · failing tests · merge
 conflict · sandbox timeout · permission denied · secret in output · mid-session
 model change. Each maps to a RECOVERY or CONTROL state above; none may render
 as a bare "error: something went wrong".
+
+
+---
+
+## Open follow-ups (tracked, not in current scope)
+
+### Permission card: queued-batch approval ordering
+
+`ApprovalRequested` carries only the opaque call id (`call_1_0`). The TUI
+permission card displays the tool name and args captured from the immediately
+preceding `ToolStarted` (`TuiState::last_tool`).
+
+Edge case: if approval fires for a **queued** batch before any `ToolStarted`
+for that batch has been observed, the card would show the previous tool's name
+(an empty or stale one). Unlikely under the current serial approval flow, but
+it is a real display-inaccuracy risk.
+
+Proper fix (deliberately not done now, since it means changing the event
+contract, not just the UI): include `tool` and `args` on `ApprovalRequested`
+itself so the card is self-describing and no inference is needed.
+
+### Interruption: cooperative-only cancel boundary
+
+The cancel token is checked at turn entry and (via the `turn + 1` recursion)
+after each tool batch. An **in-flight provider request cannot be aborted** —
+the HTTP stream runs to completion and the cancel is observed on the next
+boundary. A request hung at the network layer still needs the watchdog.
+
+Acceptable for now: intent is recorded durably the instant the user confirms,
+and the UI reports the interrupt immediately and honestly. Making the provider
+call itself cancellable means an abortable-stream provider interface.
+
+### Observer lock constraint
+
+Observers run while the supervisor observer lock is held. See the
+`register_observer` doc comment in `crates/pantheon-runtime/src/lib.rs`.
+Observers must stay non-blocking and must not re-enter the Supervisor.

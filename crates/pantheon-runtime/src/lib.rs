@@ -384,6 +384,25 @@ impl Supervisor {
     }
     /// Register a live event observer (TUI, gateway). Returns a handle
     /// that removes the observer when dropped.
+    ///
+    /// # Locking contract — read before writing an observer
+    ///
+    /// Observers are invoked **while the supervisor's observer lock is
+    /// held** (see `emit`). An observer callback therefore MUST:
+    ///
+    /// * be fast and non-blocking (the only current observer is a
+    ///   non-blocking `mpsc::Sender::send` into the TUI event loop),
+    /// * never block on a mutex another thread holds,
+    /// * never call back into the `Supervisor` (`emit`, `register_observer`,
+    ///   dropping its own `ObserverGuard`, ...) — `std::sync::Mutex` is not
+    ///   reentrant, so this self-deadlocks,
+    /// * never panic across the FFI-free boundary in a way that poisons the
+    ///   lock for every later emit.
+    ///
+    /// A blocking observer would freeze the emitting thread, which is the
+    /// agent loop worker, not the UI. Do not turn this into a synchronous
+    /// callback path; if you need work done off the emit path, queue it and
+    /// process it elsewhere.
     pub fn register_observer(
         &self,
         cb: std::sync::Arc<dyn Fn(&Event) + Send + Sync>,
