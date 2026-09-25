@@ -10,6 +10,7 @@ recovery, and events. Agents never pick models.
 
 | Document | What it covers |
 |---|---|
+| [docs/product-overview.md](./docs/product-overview.md) | Product definition, user value, current experience, and planned system |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | System design, crate map, locked decisions, status of every subsystem |
 | [docs/getting-started.md](./docs/getting-started.md) | Install, setup, first chat, config reference |
 | [docs/cli.md](./docs/cli.md) | Every verb, every flag, exit codes, environment variables |
