@@ -257,6 +257,10 @@ pub struct Session {
     /// Optional callback for model events (streaming display, etc).
     /// Called on every ModelEvent during turn_with_sink.
     pub on_event: Option<Box<dyn Fn(pantheon_core::model_event::ModelEvent) + Send + Sync>>,
+    /// Cooperative cancellation for the run in flight. Set by the user
+    /// (double-Esc / Ctrl-C). The agent loop checks it at every turn and
+    /// tool boundary; it cannot abort an in-flight provider request.
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Session {
@@ -279,6 +283,7 @@ impl Session {
             memory,
             memory_namespace: "nyx".into(),
             on_event: None,
+            cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -381,6 +386,42 @@ impl Session {
     /// A parked run (awaiting approval) must be granted or denied first.
     pub fn chat(&self, run_id: &str, user_message: &str) -> Result<LoopOutcome, PantheonError> {
         self.chat_turn(run_id, &crate::new_turn_id(), user_message)
+    }
+
+    /// Request cancellation of the run in flight. Records the intent in the
+    /// ledger (so the run is durably canceled and recoverable), signals the
+    /// agent loop via the shared token, then terminates owned process groups
+    /// on a worker thread because the TERM/KILL escalation blocks.
+    ///
+    /// Safe to call from the UI thread: only the ledger write is synchronous.
+    pub fn cancel_current_run(&self, run_id: &str, reason: &str) {
+        // Phase 1: durable intent. Cheap, any thread.
+        if let Err(e) = self.supervisor.cancel_run_intent(run_id, reason) {
+            // Already canceled or terminal: nothing to interrupt, but the
+            // token still stops the loop cooperatively.
+            if !matches!(e.code.as_str(), "RT_TERMINAL" | "RT_NO_RUN") {
+                eprintln!("cancel: {e}");
+            }
+        }
+        // Phase 2: stop the loop at its next boundary.
+        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Phase 3: kill process groups off-thread (blocks on TERM grace).
+        let sup = self.supervisor.clone();
+        let run = run_id.to_string();
+        let why = reason.to_string();
+        std::thread::spawn(move || {
+            let _ = sup.finish_cancel(&run, &why);
+        });
+    }
+
+    /// Clear the cancel token so the same session can run again.
+    pub fn reset_cancel(&self) {
+        self.cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// True while a cancellation is in flight.
+    pub fn is_canceled(&self) -> bool {
+        self.cancel.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Execute one typed user turn with a stable turn id.
@@ -667,6 +708,7 @@ impl Session {
             tools: &runner,
             spawner: None,
             decision: None,
+            cancel: Some(&self.cancel),
             depth: 0,
         };
 
@@ -716,10 +758,9 @@ impl Session {
                     self.supervisor.ledger_status(run_id)?.as_deref(),
                     Some("canceled")
                 ) {
-                    return Err(aerr(
-                        "RUN_CANCELED",
-                        "run cancellation was requested".into(),
-                    ));
+                    return Ok(LoopOutcome::Canceled {
+                        reason: "interrupted by user".into(),
+                    });
                 }
                 if !_lease_guard.is_healthy() {
                     return Err(aerr(
@@ -738,11 +779,12 @@ impl Session {
         if matches!(
             self.supervisor.ledger_status(run_id)?.as_deref(),
             Some("canceled")
-        ) {
-            return Err(aerr(
-                "RUN_CANCELED",
-                "run cancellation was requested".into(),
-            ));
+        )
+            || matches!(&outcome, LoopOutcome::Canceled { .. })
+        {
+            return Ok(LoopOutcome::Canceled {
+                reason: "interrupted by user".into(),
+            });
         }
         if !_lease_guard.is_healthy() {
             return Err(aerr(
@@ -762,6 +804,14 @@ impl Session {
             }
             LoopOutcome::Denied { .. } | LoopOutcome::BudgetExhausted { .. } => {
                 self.supervisor.fail(run_id, "LOOP_STOPPED")?;
+            }
+            LoopOutcome::Canceled { reason } => {
+                // The ledger already recorded the cancel intent; this is the
+                // durable confirmation that the loop actually stopped.
+                self.supervisor.emit(Event::RunProgress {
+                    run_id: run_id.into(),
+                    detail: format!("canceled: {reason}"),
+                })?;
             }
             LoopOutcome::AwaitingApproval { capability } => {
                 self.supervisor.emit(Event::RunProgress {
@@ -811,6 +861,17 @@ impl Session {
                 "raise the budget or simplify the task",
                 "",
             ));
+        }
+        // Cooperative cancel: checked at every turn boundary. The ledger
+        // was already marked canceled by the caller; we stop before doing
+        // more work and report it as an outcome, not a failure.
+        if loop_
+            .cancel
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            return Ok(LoopOutcome::Canceled {
+                reason: "interrupted by user".to_string(),
+            });
         }
         // Watchdog: every turn entry counts as observed progress. A stalled
         // provider turn is caught when the probe (a lightweight ledger
@@ -1389,5 +1450,96 @@ mod tests {
             sup.ledger_status("deny-resume").unwrap().as_deref(),
             Some("running")
         );
+    }
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+
+    fn test_session(tag: &str) -> (Session, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("pantheon-cancel-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let policy = pantheon_core::capability::Policy::coder();
+        let model_policy = pantheon_core::model::ModelPolicy {
+            default: pantheon_core::model::DefaultModel {
+                provider: "test".into(),
+                model: "test".into(),
+            },
+            fallbacks: pantheon_core::model::FallbackChain {
+                fallbacks: Vec::new(),
+            },
+            auxiliaries: Vec::new(),
+        };
+        let secrets = pantheon_secrets::SecretsBroker::from_system_env();
+        let s = Session::new(dir.clone(), policy, model_policy, secrets).unwrap();
+        (s, dir)
+    }
+
+    /// The cancel token starts clear, and reset_cancel clears it again.
+    #[test]
+    fn cancel_token_lifecycle() {
+        let (s, _dir) = test_session("tok");
+        assert!(!s.is_canceled(), "fresh session is not canceled");
+        s.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(s.is_canceled(), "token observed");
+        s.reset_cancel();
+        assert!(!s.is_canceled(), "reset clears the token");
+    }
+
+    /// Cancelling a running run records the intent durably and leaves the
+    /// run in `canceled` — not `failed` — so replay can tell the difference
+    /// and `reopen_run` can bring it back.
+    #[test]
+    fn cancel_marks_run_canceled_and_recoverable() {
+        let (s, dir) = test_session("mark");
+        let run = "run_cancel_me";
+        s.supervisor.start_run(run).unwrap();
+        assert_eq!(
+            s.supervisor.ledger_status(run).unwrap().as_deref(),
+            Some("running")
+        );
+
+        s.cancel_current_run(run, "user pressed esc twice");
+
+        assert_eq!(
+            s.supervisor.ledger_status(run).unwrap().as_deref(),
+            Some("canceled"),
+            "cancel is terminal and distinct from failed"
+        );
+        assert!(s.is_canceled(), "loop token signaled");
+
+        // Recoverable: the run reopens and the transcript is intact.
+        assert!(s.supervisor.ledger_reopen_run(run).unwrap());
+        assert_eq!(
+            s.supervisor.ledger_status(run).unwrap().as_deref(),
+            Some("running")
+        );
+        let entries = s.supervisor.replay(run).unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|e| matches!(e.event, Event::RunCanceled { .. })),
+            "cancel intent is in the ledger trail"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cancel that arrives after the run already finished is rejected
+    /// rather than clobbering a terminal state.
+    #[test]
+    fn cancel_after_completion_is_rejected() {
+        let (s, dir) = test_session("done");
+        let run = "run_already_done";
+        s.supervisor.start_run(run).unwrap();
+        s.supervisor.complete(run).unwrap();
+        let err = s.supervisor.cancel_run_intent(run, "too late").unwrap_err();
+        assert_eq!(err.code, "RT_TERMINAL", "completed runs are not cancelable");
+        assert_eq!(
+            s.supervisor.ledger_status(run).unwrap().as_deref(),
+            Some("completed"),
+            "terminal state preserved"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

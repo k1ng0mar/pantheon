@@ -76,6 +76,11 @@ pub struct TuiState {
     /// Last tool that started (name, args) — shown in the permission card
     /// because ApprovalRequested only carries the opaque call id.
     pub last_tool: Option<(String, String)>,
+    /// Double-Esc state: None = not interrupting, Some(t) = armed at t.
+    /// The second Esc inside the window actually cancels the run.
+    pub interrupt_armed_at: Option<Instant>,
+    /// True once the user confirmed; shows the canceled card.
+    pub interrupted: bool,
 }
 
 impl Default for TuiState {
@@ -98,6 +103,8 @@ impl Default for TuiState {
             is_inputting: false,
             pending_approval: None,
             last_tool: None,
+            interrupt_armed_at: None,
+            interrupted: false,
         }
     }
 }
@@ -122,6 +129,8 @@ impl TuiState {
             is_inputting: false,
             pending_approval: None,
             last_tool: None,
+            interrupt_armed_at: None,
+            interrupted: false,
         }
     }
 
@@ -403,12 +412,21 @@ fn render_input(f: &mut Frame, area: Rect, state: &TuiState) {
 
 /// Draw the one-line status bar under the input.
 fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
-    let (status_icon, status_color) = if state.ready {
-        (icon::SUCCESS.to_string(), color::SUCCESS)
+    // Interrupt state takes over the status word: an armed interrupt is a
+    // call to action, a settled one reports the truth.
+    let (status_icon, status_color, status_word) = if state.interrupted {
+        ("\u{25CB}".to_string(), color::WARNING, "interrupted")
+    } else if !state.ready && state.interrupt_armed_at.is_some() {
+        (
+            icon::WARNING.to_string(),
+            color::WARNING,
+            "esc to interrupt",
+        )
+    } else if state.ready {
+        (icon::SUCCESS.to_string(), color::SUCCESS, "ready")
     } else {
-        (icon::RUNNING.to_string(), color::RUNNING)
+        (icon::RUNNING.to_string(), color::RUNNING, "working")
     };
-    let status_word = if state.ready { "ready" } else { "working" };
     let live_tokens = state.tokens_used + state.turn_estimate;
     let ctx = if state.tokens_max > 0 {
         format!("{:.1}k/{}k", live_tokens as f64 / 1000.0, state.tokens_max / 1000)
@@ -490,7 +508,7 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &TuiState) {
     let block_count = state.blocks.len();
     for (i, block) in state.blocks.iter().rev().skip(start).rev().enumerate() {
         let is_last = i + start + 1 == block_count;
-        render_block(&mut lines, block, is_last);
+        render_block(&mut lines, block, is_last, state.interrupted);
         lines.push(Line::from(""));
     }
 
@@ -504,7 +522,12 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &TuiState) {
 /// Render a single transcript block as Lines. `is_last` marks the streaming
 /// head: thinking blocks stay expanded while they are the live block and
 /// collapse to a summary line once anything else lands after them.
-fn render_block(lines: &mut Vec<Line>, block: &TranscriptBlock, is_last: bool) {
+fn render_block(
+    lines: &mut Vec<Line>,
+    block: &TranscriptBlock,
+    is_last: bool,
+    interrupted: bool,
+) {
     match &block.kind {
         BlockKind::UserMessage(text) => {
             lines.push(Line::from(Span::styled(
@@ -551,6 +574,9 @@ fn render_block(lines: &mut Vec<Line>, block: &TranscriptBlock, is_last: bool) {
         }
         BlockKind::ToolCall { name, args, ok } => {
             let (glyph, col) = match ok {
+                // A tool still marked running after an interrupt was stopped
+                // from the outside: show that honestly instead of spinning.
+                None if interrupted => ("■", color::WARNING),
                 None => ("●", color::RUNNING),
                 Some(true) => ("✓", color::SUCCESS),
                 Some(false) => ("×", color::FAILURE),
@@ -616,6 +642,8 @@ enum TuiEvent {
     Runtime(pantheon_core::events::Event),
     TurnComplete,
     Error(String),
+    /// The run stopped because the user interrupted it (not a failure).
+    Canceled,
 }
 
 /// Entry point for the Pantheon agent cockpit TUI.
@@ -729,6 +757,9 @@ fn tui_loop(
                 TuiEvent::TurnComplete => {
                     state.ready = true;
                     state.status_line = "ready".to_string();
+                    state.interrupt_armed_at = None;
+                    state.interrupted = false;
+                    session.reset_cancel();
                     worker = None;
                 }
                 TuiEvent::Error(msg) => {
@@ -737,6 +768,23 @@ fn tui_loop(
                         timestamp: Instant::now(),
                     });
                     state.ready = true;
+                    worker = None;
+                }
+                TuiEvent::Canceled => {
+                    // Honest report: the run was stopped by the user, and the
+                    // ledger holds the partial transcript so it can be resumed.
+                    state.ready = true;
+                    state.interrupt_armed_at = None;
+                    state.status_line = "interrupted".to_string();
+                    state.blocks.push(TranscriptBlock {
+                        kind: BlockKind::Status(
+                            "interrupted \u{2014} run stopped, transcript saved"
+                                .to_string(),
+                        ),
+                        timestamp: Instant::now(),
+                    });
+                    // Clear the token so the next turn starts clean.
+                    session.reset_cancel();
                     worker = None;
                 }
             }
@@ -823,6 +871,9 @@ fn tui_loop(
 
                             state.ready = false;
                             state.status_line = "working".to_string();
+                            state.interrupt_armed_at = None;
+                            state.interrupted = false;
+                            session.reset_cancel();
                             
                             let tx2 = tx.clone();
                             let run_id_owned = run_id.to_string();
@@ -839,6 +890,9 @@ fn tui_loop(
                                             // worker just marks the turn parked.
                                             let _ = tx2.send(TuiEvent::TurnComplete);
                                         }
+                                        pantheon_agent::LoopOutcome::Canceled { .. } => {
+                                            let _ = tx2.send(TuiEvent::Canceled);
+                                        }
                                         _ => {
                                             let _ = tx2.send(TuiEvent::TurnComplete);
                                         }
@@ -854,6 +908,32 @@ fn tui_loop(
                     }
                     KeyCode::Esc => {
                         state.is_inputting = false;
+                        // Double-Esc interrupts the active run. First Esc arms,
+                        // second Esc inside the window cancels for real.
+                        if !state.ready && !state.interrupted {
+                            const ARM_WINDOW: Duration = Duration::from_millis(1500);
+                            match state.interrupt_armed_at {
+                                Some(t) if t.elapsed() < ARM_WINDOW => {
+                                    state.interrupt_armed_at = None;
+                                    state.interrupted = true;
+                                    state.status_line =
+                                        "interrupting\u{2026}".into();
+                                    session.cancel_current_run(
+                                        run_id,
+                                        "user pressed esc twice",
+                                    );
+                                }
+                                _ => {
+                                    state.interrupt_armed_at = Some(Instant::now());
+                                    state.status_line =
+                                        "press esc again to interrupt".into();
+                                }
+                            }
+                        } else if state.interrupt_armed_at.is_some() {
+                            // Disarm if the run finished before the second Esc.
+                            state.interrupt_armed_at = None;
+                            state.status_line = "ready".into();
+                        }
                     }
                     _ => {}
                 }
@@ -951,7 +1031,7 @@ mod tests {
             },
             timestamp: Instant::now(),
         };
-        render_block(&mut lines, &block, false);
+        render_block(&mut lines, &block, false, false);
         // Collapsed: exactly one line, contains the marker.
         assert_eq!(lines.len(), 1, "collapsed thinking is one line");
         let s = format!("{:?}", lines[0]);
@@ -970,7 +1050,7 @@ mod tests {
             },
             timestamp: Instant::now(),
         };
-        render_block(&mut lines, &block, true);
+        render_block(&mut lines, &block, true, false);
         // Expanded: header + 2 content lines.
         assert_eq!(lines.len(), 3, "expanded thinking shows all lines");
     }
@@ -986,7 +1066,7 @@ mod tests {
             },
             timestamp: Instant::now(),
         };
-        render_block(&mut lines, &block, true);
+        render_block(&mut lines, &block, true, false);
         let running = format!("{:?}", lines[0]);
         assert!(running.contains('\u{25cf}'), "running glyph while ok=None: {running}");
 
@@ -994,7 +1074,7 @@ mod tests {
             *ok = Some(true);
         }
         lines.clear();
-        render_block(&mut lines, &block, true);
+        render_block(&mut lines, &block, true, false);
         let done = format!("{:?}", lines[0]);
         assert!(done.contains('\u{2713}'), "done glyph after completion: {done}");
     }
@@ -1015,5 +1095,67 @@ mod tests {
         assert_eq!(state.tokens_used, 110, "snapped to authoritative");
         assert_eq!(state.turn_estimate, 0, "estimate reset after snap");
         assert_eq!(state.cost_cents, 1);
+    }
+}
+
+#[cfg(test)]
+mod interrupt_tests {
+    use super::*;
+
+    /// Build a real running-session state (no hand-maintained field list,
+    /// so this test cannot rot when the struct grows).
+    fn state() -> TuiState {
+        let mut s = TuiState::new("sess_test01".into(), "test".into(), 128_000);
+        s.ready = false;
+        s.is_inputting = true;
+        s.status_line = "working".into();
+        s
+    }
+
+    const ARM_WINDOW: Duration = Duration::from_millis(1500);
+
+    /// First Esc arms; it must not claim the run is interrupted yet.
+    #[test]
+    fn first_esc_only_arms() {
+        let mut s = state();
+        assert!(s.interrupt_armed_at.is_none());
+        s.interrupt_armed_at = Some(Instant::now());
+        assert!(s.interrupt_armed_at.is_some(), "armed");
+        assert!(!s.interrupted, "arming is not interruption");
+    }
+
+    /// A second Esc inside the window confirms the interrupt.
+    #[test]
+    fn second_esc_inside_window_interrupts() {
+        let mut s = state();
+        s.interrupt_armed_at = Some(Instant::now());
+        let confirms = s
+            .interrupt_armed_at
+            .is_some_and(|t| t.elapsed() < ARM_WINDOW);
+        assert!(confirms, "second esc inside the window is a confirm");
+        s.interrupted = true;
+        s.interrupt_armed_at = None;
+        assert!(s.interrupted);
+    }
+
+    /// An arm that goes stale (user wandered off) must not fire later.
+    #[test]
+    fn stale_arm_does_not_interrupt() {
+        let mut s = state();
+        s.interrupt_armed_at = Some(Instant::now() - ARM_WINDOW - Duration::from_millis(50));
+        let confirms = s
+            .interrupt_armed_at
+            .is_some_and(|t| t.elapsed() < ARM_WINDOW);
+        assert!(!confirms, "stale arm is re-armed, not fired");
+    }
+
+    /// Idle sessions must not be interruptible: the arm path is gated on
+    /// !ready, so an Esc while ready cannot cancel anything.
+    #[test]
+    fn idle_session_cannot_arm() {
+        let mut s = state();
+        s.ready = true;
+        let armable = !s.ready && !s.interrupted;
+        assert!(!armable, "no interrupt affordance while idle");
     }
 }

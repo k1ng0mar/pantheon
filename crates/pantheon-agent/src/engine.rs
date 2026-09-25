@@ -117,6 +117,10 @@ pub enum LoopOutcome {
     AwaitingApproval { capability: Capability },
     /// A budget cap stopped the run.
     BudgetExhausted { cap: &'static str },
+    /// The user interrupted the run. Distinct from Denied and from a
+    /// provider error: the work was abandoned on purpose, and the run
+    /// stays resumable. `reason` is the short human cause.
+    Canceled { reason: String },
     /// A sub-agent was spawned and completed.
     Delegated { agent: String },
 }
@@ -167,6 +171,11 @@ pub struct AgentLoop<'a> {
     pub spawner: Option<&'a dyn AgentSpawner>,
     /// Optional decision-layer model. Consulted at route selection and tool gate.
     pub decision: Option<&'a dyn pantheon_core::model::DecisionRouter>,
+    /// Cooperative cancellation token. Set by the user (Ctrl-C / double-Esc);
+    /// the loop checks it at every turn and tool boundary and stops cleanly.
+    /// It cannot abort an in-flight provider request — that returns on its own
+    /// and the flag is observed on the next boundary.
+    pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
     /// Current depth in the swarm (0 = primary agent).
     pub depth: u32,
 }
@@ -186,6 +195,16 @@ impl<'a> AgentLoop<'a> {
         let mut total_cost_cents: u32 = 0;
 
         loop {
+            // Cooperative cancel boundary: checked at the top of every turn,
+            // before the model is asked to do more work.
+            if self
+                .cancel
+                .is_some_and(|f| f.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                return Ok(LoopOutcome::Canceled {
+                    reason: "interrupted by user".to_string(),
+                });
+            }
             if turns >= self.budget.max_turns {
                 return Err(berr("max_turns"));
             }
@@ -689,6 +708,7 @@ mod tests {
             tools,
             spawner: None,
             decision: None,
+            cancel: None,
             depth: 0,
         }
     }
@@ -741,6 +761,7 @@ mod tests {
             tools: &tools,
             spawner: Some(&spawner),
             decision: None,
+            cancel: None,
             depth: 0,
         };
         let out = loop_.run(&model, "go", &mut t).unwrap();
@@ -778,6 +799,7 @@ mod tests {
             tools: &tools,
             spawner: Some(&spawner),
             decision: None,
+            cancel: None,
             depth: 0,
         };
         let err = loop_.run(&model, "go", &mut t).unwrap_err();
@@ -953,6 +975,7 @@ mod tests {
             tools: &tools,
             spawner: None,
             decision: Some(&router),
+            cancel: None,
             depth: 0,
         };
         let mut t = vec![];
@@ -962,6 +985,46 @@ mod tests {
         assert!(evs.iter().any(|e| matches!(e, Event::DecisionRequested { point: DecisionPoint::RouteSelect, .. })));
         assert!(evs.iter().any(|e| matches!(e, Event::DecisionRecorded { point: DecisionPoint::RouteSelect, action: DecisionActionSummary::Overridden { .. }, .. })));
         assert!(!evs.iter().any(|e| matches!(e, Event::DecisionRecorded { point: DecisionPoint::RouteSelect, action: DecisionActionSummary::Accepted, .. })));
+    }
+
+    /// A pre-armed cancel token must stop the loop at the first turn
+    /// boundary, returning Canceled instead of calling the model.
+    #[test]
+    fn cancel_token_stops_loop_before_first_turn() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        struct Boom;
+        impl ModelTurn for Boom {
+            fn turn(&self, _t: &[String]) -> Result<TurnOutcome, PantheonError> {
+                panic!("model must not be called after cancel");
+            }
+        }
+
+        struct NullSink;
+        impl EventSink for NullSink {
+            fn emit(&self, _event: Event) {}
+        }
+        let sink = NullSink;
+        let tools = NoTools;
+        let flag = Arc::new(AtomicBool::new(true));
+        let loop_ = AgentLoop {
+            run_id: "run_cancel".into(),
+            policy: Policy::coder(),
+            budget: Budget::default(),
+            sink: &sink,
+            tools: &tools,
+            spawner: None,
+            decision: None,
+            cancel: Some(&flag),
+            depth: 0,
+        };
+        let mut t = vec![];
+        let out = loop_.run(&Boom, "go", &mut t).unwrap();
+        assert!(
+            matches!(out, LoopOutcome::Canceled { .. }),
+            "expected Canceled, got {out:?}"
+        );
     }
 
     #[test]
@@ -994,6 +1057,7 @@ mod tests {
             tools: &tools,
             spawner: None,
             decision: Some(&router),
+            cancel: None,
             depth: 0,
         };
         let mut t = vec![];
@@ -1018,6 +1082,7 @@ mod tests {
             tools: &tools,
             spawner: None,
             decision: Some(&router2),
+            cancel: None,
             depth: 0,
         };
         let mut t2 = vec![];
