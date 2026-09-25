@@ -18,7 +18,8 @@ use pantheon_storage::{
 pub use pipeline::{run_model_stage, StageEvaluator, StageExecutor};
 pub use pipeline_runner::{PipelineOutcome, PipelineRunner};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 pub use watchdog::{TurnWatchdog, WatchdogAction};
 
@@ -668,21 +669,27 @@ impl Supervisor {
     }
 }
 
-/// Run IDs: run_<epochms>_<rand4>. No external deps.
-pub fn new_run_id() -> String {
+static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn new_scoped_id(prefix: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let r = Mutex::new(0u32);
-    let n = {
-        let mut g = r.lock().unwrap();
-        *g = ((*g).wrapping_mul(1664525).wrapping_add(1013904223)) % 10000;
-        *g
-    };
-    let n = (ms as u32).wrapping_add(n + std::process::id()) % 10000;
-    format!("run_{ms}_{n:04}")
+    let sequence = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let n = (sequence as u32).wrapping_add(std::process::id()) % 10_000;
+    format!("{prefix}_{ms}_{n:04}")
+}
+
+/// Run IDs: run_<epochms>_<process-local sequence>.
+pub fn new_run_id() -> String {
+    new_scoped_id("run")
+}
+
+/// Turn IDs are host-assigned and stable across streaming/parking/recovery.
+pub fn new_turn_id() -> String {
+    new_scoped_id("turn")
 }
 
 #[cfg(test)]

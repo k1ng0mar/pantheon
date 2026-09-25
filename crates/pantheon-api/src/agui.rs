@@ -88,6 +88,11 @@ pub fn dispatcher_for_with_hint_and_host(
     d
 }
 fn sup_for(dir: &PathBuf) -> Result<pantheon_runtime::Supervisor, RpcError> {
+    // NOTE (group-C): one fresh Supervisor per RPC call — 3 SQLite
+    // connections + migrations, then dropped. Fine for a local
+    // single-user server (milliseconds); introduce a SupervisorPool
+    // if this ever goes multi-user. Do NOT cache across threads
+    // without it: the ledger uses immediate transactions + a Mutex.
     pantheon_runtime::Supervisor::open(dir.clone())
         .map_err(|e| RpcError::internal(format!("open runtime: {e}")))
 }
@@ -125,25 +130,51 @@ impl MethodHandler for SendMsg {
                     "run {run_id} is parked on approval; grant/deny first"
                 )));
             }
-            if matches!(status, "completed" | "failed" | "canceled") {
-                return Err(RpcError::invalid_params(format!(
-                    "run {run_id} is already {status}"
-                )));
-            }
         }
-        sup.start_run(&run_id)
-            .map_err(|e| RpcError::internal(e.to_string()))?;
+        let session = pantheon_runtime::session::Session::from_env(dir.clone())
+            .map_err(|e| RpcError::internal(format!("open session: {e}")))?;
         crate::serve::remember_thread(&dir, &run_id, &thread_id);
-        sup.emit(pantheon_core::events::Event::RunProgress {
-            run_id: run_id.clone(),
-            detail: format!("user: {text}"),
-        })
-        .map_err(|e| RpcError::internal(e.to_string()))?;
+        let turn_id = pantheon_runtime::new_turn_id();
+        let worker_run = run_id.clone();
+        let worker_turn = turn_id.clone();
+        let worker_text = text.to_string();
+        std::thread::spawn(move || {
+            if let Err(error) = session.chat_turn(&worker_run, &worker_turn, &worker_text) {
+                eprintln!("agui turn {worker_turn} failed: {error}");
+            }
+        });
+        // Admission is durable before the RPC returns. A short bounded wait
+        // gives the client an initial replay cursor without coupling admission
+        // to model/tool completion.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        loop {
+            let entries = sup
+                .replay(&run_id)
+                .map_err(|e| RpcError::internal(e.to_string()))?;
+            if entries.iter().any(|entry| {
+                matches!(
+                    &entry.event,
+                    pantheon_core::events::Event::TurnStarted { turn_id: id, .. } if id == &turn_id
+                )
+            }) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let entries = sup
             .replay(&run_id)
             .map_err(|e| RpcError::internal(e.to_string()))?;
         let frames = pantheon_gateway::frames_for_entries(&entries, &thread_id);
-        Ok(json!({"run_id": run_id, "thread_id": thread_id, "frames": frames}))
+        Ok(json!({
+            "run_id": run_id,
+            "turn_id": turn_id,
+            "thread_id": thread_id,
+            "accepted": true,
+            "frames": frames
+        }))
     }
 }
 struct Grant {

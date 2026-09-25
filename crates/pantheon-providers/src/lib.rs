@@ -4,15 +4,24 @@
 
 pub mod anthropic;
 pub mod chain;
+pub mod compress;
+pub mod decision;
 pub mod http;
 pub mod mock;
 pub mod openai;
+pub mod voice;
 
 use pantheon_core::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, ModelPolicy};
 
 pub use crate::chain::ProviderChain;
-pub use crate::http::{ChatTransport, HttpTransport, ResolvedModel, WireRequest};
+pub use crate::http::{http_timeout, ChatTransport, HttpTransport, ResolvedModel, WireRequest};
+pub use crate::compress::CompressionClient;
+pub use crate::decision::{DecisionClient, parse_answer, prompt_for};
 pub use crate::mock::MockTransport;
+pub use crate::voice::{
+    SttProvider, SttRequest, SttResult, TtsProvider, TtsRequest, TtsResult, open_stt, open_tts,
+    stt_backends, tts_backends,
+};
 pub use pantheon_core::catalog::{ApiMode, ModelCost, ModelMeta, ProviderMeta};
 
 /// Select the model for a run: always the default.
@@ -29,7 +38,8 @@ pub fn on_retryable_failure<'a>(
     policy.fallbacks.next_after(failed_index)
 }
 
-/// Auxiliary for a scoped capability (embeddings, rerank, STT/TTS...).
+/// Auxiliary for a scoped *model* capability (embeddings, rerank, vision...).
+/// Services like STT/TTS are provider-plane, not model policy.
 pub fn auxiliary<'a>(policy: &'a ModelPolicy, kind: &AuxiliaryKind) -> Option<&'a AuxiliaryModel> {
     policy.auxiliary(kind)
 }

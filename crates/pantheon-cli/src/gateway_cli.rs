@@ -46,6 +46,7 @@ fn open_session(
     data_dir: &PathBuf,
     policy: Policy,
 ) -> Result<pantheon_runtime::session::Session, pantheon_core::error::PantheonError> {
+    let cfg = crate::config_doc::Config::load(data_dir).ok();
     let default = pantheon_core::model::DefaultModel {
         provider: std::env::var("PANTHEON_PROVIDER").unwrap_or_else(|_| "local".into()),
         model: std::env::var("PANTHEON_MODEL").unwrap_or_else(|_| "llama3.2".into()),
@@ -53,9 +54,9 @@ fn open_session(
     let model_policy = pantheon_core::model::ModelPolicy {
         default,
         fallbacks: pantheon_core::model::FallbackChain::default(),
-        auxiliaries: vec![],
+        auxiliaries: crate::config_doc::auxiliaries(cfg.as_ref()),
     };
-    let secrets = pantheon_secrets::SecretsBroker::from_system_env_with_api_key(None);
+    let secrets = crate::config_doc::chat_secrets(cfg.as_ref());
     pantheon_runtime::session::Session::new(data_dir.clone(), policy, model_policy, secrets)
 }
 

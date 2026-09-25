@@ -45,6 +45,29 @@ impl ChannelError {
             message: message.into(),
         }
     }
+    /// True when the surface is rate-limiting us (HTTP 429). Callers
+    /// should back off via `delivery::backoff_ms` and retry; the planner
+    /// treats this as retryable, everything else permanent unless the
+    /// transport says otherwise.
+    /// Transports detect this by mapping HTTP 429 to code `RATE_LIMITED`
+    /// (or `*_RATE_LIMITED`); this predicate keeps that convention in
+    /// one place so send paths don't string-match ad hoc.
+    pub fn is_rate_limited(&self) -> bool {
+        self.code == "RATE_LIMITED" || self.code.ends_with("_RATE_LIMITED")
+    }
+    /// Wrap a ureq error, mapping HTTP 429 to `RATE_LIMITED` so
+    /// `is_rate_limited()` works. `prefix` is the transport code
+    /// (e.g. `TELEGRAM_HTTP`); the rate-limit code becomes
+    /// `{prefix}_RATE_LIMITED`.
+    pub fn from_ureq(prefix: &str, err: ureq::Error) -> Self {
+        match &err {
+            ureq::Error::Status(429, _) => Self::new(
+                &format!("{prefix}_RATE_LIMITED"),
+                format!("rate limited (429): {err}"),
+            ),
+            _ => Self::new(prefix, err.to_string()),
+        }
+    }
 }
 impl std::fmt::Display for ChannelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

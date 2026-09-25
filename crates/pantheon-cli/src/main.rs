@@ -27,27 +27,16 @@ fn ext_dir() -> PathBuf {
 fn safewrite_dir() -> PathBuf {
     data_dir().join("safewrite")
 }
-fn backend_selection_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("memory-backend.toml")
-}
 fn load_backend_selection(data_dir: &Path) -> BackendSelection {
-    let path = backend_selection_path(data_dir);
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| toml::from_str::<BackendSelection>(&s).ok())
-        .unwrap_or_default()
+    pantheon_memory::load_selection(data_dir)
 }
 fn save_backend_selection(data_dir: &Path, sel: &BackendSelection) {
-    let path = backend_selection_path(data_dir);
-    if let Err(e) = std::fs::create_dir_all(data_dir) {
-        eprintln!("memory backend: data dir failed: {e}");
+    if let Err(e) = pantheon_memory::save_selection(data_dir, sel) {
+        eprintln!("memory backend: {e}");
     }
-    std::fs::write(path, toml::to_string(sel).unwrap_or_default()).unwrap_or_else(|e| {
-        eprintln!("memory backend: write failed: {e}");
-    });
 }
 fn usage() -> String {
-    "pantheon <chat|run|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback|serve|stream|grant|deny|sign|setup|session|reset|gateway> ...\n  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n  run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n  explain <run_id>\n  status <run_id>\n  extensions  list loaded extensions\n  hook <name> [--session S] [--platform P]  fire a hook\n  doctor <plugin_dir>  loud preflight report\n  preview <path> <file-with-new-content>  read-only diff preview\n  stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n  apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n  checkpoint <path>... [--run ID]  snapshot pre-images\n  rollback (--ckpt ID | --seq N)  restore a checkpoint\n  serve [--port N] [--host H]  AG-UI SSE + RPC server (cline-style interactive)\n  stream <run_id> [--thread T] [--after N]  print SSE frames for a run\n  grant <run_id> <scope>  approve a parked tool call\n  deny <run_id> [scope]  refuse a parked tool call\n  sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n  channel <run_id> [--thread T]  replay frames through the transport seam\n  gateway                    run Discord/Telegram surfaces (env tokens)\n  setup                      interactive wizard: API key, default model, policy\n  session                    start the interactive REPL (default if no args)\n  reset [all|memory|ledger]    wipe data with confirmation\n  providers                  list cataloged providers and models\n"
+    "pantheon <chat|run|schedule|swarm|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback|serve|stream|grant|deny|sign|setup|session|reset|gateway|skills> ...\n  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n  run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n  schedule <task> --30m [--agent NAME] | list|pause|resume|cancel|run <id>\n  swarm <N> \"<task>\" [roles...] [--delivery telegram]\n  explain <run_id>\n  status <run_id>\n  extensions  list loaded extensions\n  hook <name> [--session S] [--platform P]  fire a hook\n  doctor <plugin_dir>  loud preflight report\n  preview <path> <file-with-new-content>  read-only diff preview\n  stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n  apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n  checkpoint <path>... [--run ID]  snapshot pre-images\n  rollback (--ckpt ID | --seq N)  restore a checkpoint\n  serve [--port N] [--host H]  AG-UI SSE + RPC server (cline-style interactive)\n  stream <run_id> [--thread T] [--after N]  print SSE frames for a run\n  grant <run_id> <scope>  approve a parked tool call\n  deny <run_id> [scope]  refuse a parked tool call\n  sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n  channel <run_id> [--thread T]  replay frames through the transport seam\n  gateway                    run Discord/Telegram surfaces (env tokens)\n  setup                      interactive wizard: API key, default model, policy\n  session                    start the interactive REPL (default if no args)\n  reset [all|memory|ledger]    wipe data with confirmation\n  providers                  list cataloged providers and models\n  skills list|import <name>|doctor  discover/import/check SKILL.md skills\n"
         .into()
 }
 mod agui_cli;
@@ -58,9 +47,13 @@ mod doctor_cli;
 mod gateway_cli;
 mod pipeline_cli;
 mod reset_cli;
+mod schedule_cli;
 mod session_cli;
 mod setup_cli;
 mod setup_entry;
+mod skills_cli;
+mod swarm_cli;
+mod tui;
 
 fn load_mgr() -> ExtensionManager {
     let mut m = ExtensionManager::new(RunnerConfig::default());
@@ -212,21 +205,32 @@ fn open_memory() -> MemoryStore {
 }
 
 fn memory_help() {
-    eprintln!("usage: pantheon memory <import|export|recall|put|confirm|sync|backend> ...");
+    eprintln!("usage: pantheon memory <import|export|recall|put|confirm|sync|backend|vault> ...");
     eprintln!("  import [FILE]       import MEMORY.md into native memory");
     eprintln!("  export [FILE]       export native agent memory to MEMORY.md");
     eprintln!("  sync [FILE]         reconcile MEMORY.md and the native store");
     eprintln!("  recall QUERY        search native memory");
     eprintln!("  put KEY VALUE       store an agent memory (explicit write)");
     eprintln!("  backend list        show registered memory backends");
-    eprintln!("  backend select NAME choose the active backend");
+    eprintln!("  backend select NAME [k=v] choose the active backend");
+    eprintln!("  backend scaffold NAME [http|stdio]  create a custom plugin manifest");
+    eprintln!("  vault search QUERY  search notes/archives in Obsidian vault");
+    eprintln!("  vault read PATH     read document from Obsidian vault");
+    eprintln!("  vault list [CAT]    list files in Obsidian vault");
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        // Bare `pantheon` opens the interactive session REPL.
-        session_cli::run_session();
+        // Bare `pantheon` opens the agent cockpit TUI when a TTY is available.
+        // Falls back to the text REPL if stdin is not a tty or TUI init fails.
+        if atty::is(atty::Stream::Stdout) && atty::is(atty::Stream::Stdin) {
+            if let Err(e) = tui::run_tui_session() {
+                eprintln!("pantheon: TUI session failed: {e}");
+            }
+        } else {
+            session_cli::run_session();
+        }
         return;
     }
     match args[1].as_str() {
@@ -334,25 +338,21 @@ fn main() {
             let model_policy = pantheon_core::model::ModelPolicy {
                 default,
                 fallbacks: chain,
-                auxiliaries: vec![],
+                auxiliaries: config_doc::auxiliaries(file_cfg.as_ref()),
             };
-            // Resolve API key through the secrets broker: env var, config-
-            // named env var, or --key flag. The key is wrapped in a
-            // SecretValue and injected into a memory vault so it never
-            // lives as a plain String in session state.
-            let key_env = file_cfg
-                .as_ref()
-                .and_then(|c| c.model.as_ref())
-                .and_then(|m| m.api_key_env.clone());
-            let mut secrets =
-                pantheon_secrets::SecretsBroker::from_system_env_with_api_key(key_env.as_deref());
+            // Resolve API key through the secrets broker: the config-named
+            // env var, then PANTHEON_API_KEY, then --key. Keys travel as
+            // SecretValue in vaults, never as plain Strings in session
+            // state. --key uses with_vault_front so an explicit flag beats
+            // the config- and env-seeded vaults.
+            let mut secrets = config_doc::chat_secrets(file_cfg.as_ref());
             if let Some(k) = &key {
                 let mem = pantheon_secrets::MemoryVault::new();
                 let _ = mem.set(
                     "PANTHEON_API_KEY",
                     pantheon_secrets::SecretValue::new(k.clone()),
                 );
-                secrets = secrets.with_vault(Box::new(mem));
+                secrets = secrets.with_vault_front(Box::new(mem));
             }
             let allow_memory = file_cfg
                 .as_ref()
@@ -457,8 +457,12 @@ fn main() {
                         memory_help();
                         std::process::exit(2);
                     }
-                    let hits = pantheon_memory::recall(
-                        &store,
+                    let backend = pantheon_memory::open_selected(&data_dir()).unwrap_or_else(|e| {
+                        eprintln!("memory recall: backend: {e}");
+                        std::process::exit(1);
+                    });
+                    let hits = pantheon_memory::recall_via(
+                        backend.as_ref(),
                         &Policy::coder(),
                         &[
                             LayerKind::TaskSession,
@@ -489,8 +493,12 @@ fn main() {
                         std::process::exit(2);
                     }
                     let key = args[3].clone();
-                    let record = pantheon_memory::confirm_write(
-                        &store,
+                    let backend = pantheon_memory::open_selected(&data_dir()).unwrap_or_else(|e| {
+                        eprintln!("memory confirm: backend: {e}");
+                        std::process::exit(1);
+                    });
+                    let record = pantheon_memory::confirm_via(
+                        backend.as_ref(),
                         &Policy::coder_with_memory(),
                         &namespace,
                         &key,
@@ -508,8 +516,12 @@ fn main() {
                     }
                     let key = args[3].clone();
                     let value = args[4..].join(" ");
-                    let record = pantheon_memory::propose_write(
-                        &store,
+                    let backend = pantheon_memory::open_selected(&data_dir()).unwrap_or_else(|e| {
+                        eprintln!("memory put: backend: {e}");
+                        std::process::exit(1);
+                    });
+                    let record = pantheon_memory::write_via(
+                        backend.as_ref(),
                         &Policy::coder_with_memory(),
                         Proposal {
                             layer: LayerKind::Agent,
@@ -531,11 +543,71 @@ fn main() {
                     });
                     println!("stored {}", record.key);
                 }
+                "vault" => {
+                    let vault_dir = std::env::var("PANTHEON_VAULT_DIR")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|_| {
+                            let home = std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".into());
+                            PathBuf::from(home).join("vault")
+                        });
+                    let mut reg = pantheon_exec::tools::ToolRegistry::new();
+                    pantheon_exec::vault_tools::register_vault_tools(
+                        &mut reg,
+                        pantheon_exec::vault_tools::VaultToolOptions { vault_dir },
+                    );
+                    match args.get(3).map(|s| s.as_str()) {
+                        Some("search") => {
+                            if args.len() < 5 {
+                                eprintln!("usage: pantheon memory vault search <QUERY>");
+                                std::process::exit(2);
+                            }
+                            let query = args[4..].join(" ");
+                            let json_arg = serde_json::json!({ "query": query }).to_string();
+                            match reg.execute("vault_search", &json_arg) {
+                                Ok(res) => println!("{res}"),
+                                Err(e) => {
+                                    eprintln!("vault search: {e}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                        Some("read") => {
+                            if args.len() < 5 {
+                                eprintln!("usage: pantheon memory vault read <PATH>");
+                                std::process::exit(2);
+                            }
+                            let p = &args[4];
+                            let json_arg = serde_json::json!({ "path": p }).to_string();
+                            match reg.execute("vault_read", &json_arg) {
+                                Ok(res) => println!("{res}"),
+                                Err(e) => {
+                                    eprintln!("vault read: {e}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                        Some("list") => {
+                            let cat = args.get(4).map(|s| s.as_str());
+                            let json_arg = serde_json::json!({ "category": cat }).to_string();
+                            match reg.execute("vault_list", &json_arg) {
+                                Ok(res) => println!("{res}"),
+                                Err(e) => {
+                                    eprintln!("vault list: {e}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                        _ => {
+                            eprintln!("usage: pantheon memory vault <search|read|list> ...");
+                            std::process::exit(2);
+                        }
+                    }
+                }
                 "backend" => {
-                    let registry = pantheon_memory::BackendRegistry::with_defaults();
+                    let dd = data_dir();
+                    let registry = pantheon_memory::BackendRegistry::with_plugins(&dd);
                     match args.get(3).map(|s| s.as_str()) {
                         Some("list") => {
-                            let dd = data_dir();
                             let sel = load_backend_selection(&dd);
                             for b in registry.list() {
                                 let mark = if sel.name == b.name { " *" } else { "" };
@@ -561,13 +633,80 @@ fn main() {
                                 eprintln!("memory backend select: unknown backend '{name}'");
                                 std::process::exit(1);
                             }
+                            // Extra args are `k=v` options persisted with
+                            // the selection (e.g. url=http://127.0.0.1:8016/v1).
+                            let mut options = HashMap::new();
+                            for kv in &args[5..] {
+                                match kv.split_once('=') {
+                                    Some((k, v)) if !k.is_empty() => {
+                                        options.insert(k.to_string(), v.to_string());
+                                    }
+                                    _ => {
+                                        eprintln!("memory backend select: expected k=v option, got '{kv}'");
+                                        std::process::exit(2);
+                                    }
+                                }
+                            }
                             let sel = BackendSelection {
                                 name: name.clone(),
-                                options: HashMap::new(),
+                                options,
                             };
-                            let dd = data_dir();
                             save_backend_selection(&dd, &sel);
                             println!("active backend: {}", name);
+                            println!("selection saved: {}", dd.join("memory-backend.toml").display());
+                        }
+                        Some("scaffold") => {
+                            let name = match args.get(4) {
+                                Some(n) if !n.is_empty() => n.clone(),
+                                _ => {
+                                    eprintln!("usage: pantheon memory backend scaffold NAME [http|stdio]");
+                                    std::process::exit(2);
+                                }
+                            };
+                            let kind = args.get(5).map(|s| s.as_str()).unwrap_or("http");
+                            if kind != "http" && kind != "stdio" {
+                                eprintln!("memory backend scaffold: kind must be http or stdio");
+                                std::process::exit(2);
+                            }
+                            let dir = dd.join("memory-plugins");
+                            if let Err(e) = std::fs::create_dir_all(&dir) {
+                                eprintln!("memory backend scaffold: {e}");
+                                std::process::exit(1);
+                            }
+                            let path = dir.join(format!("{name}.toml"));
+                            let template = if kind == "http" {
+                                format!(
+                                    r#"# Custom memory plugin: edit url/key, then select with
+#   pantheon memory backend select {name}
+name = "{name}"
+label = "{name} memory service"
+kind = "http"
+url = "http://127.0.0.1:9000"
+# key = "token"
+# prefix = "/v1/memory"
+"#
+                                )
+                            } else {
+                                format!(
+                                    r#"# Custom memory plugin (subprocess bridge). The command must
+# read ONE JSON request line and write ONE JSON response line.
+#   requests:  {{"op":"recall"|"write"|"list_agent"|"get"|"forget"|"confirm", ...}}
+#   responses: {{"ok":true,...}} or {{"ok":false,"code":"...","cause":"..."}}
+name = "{name}"
+label = "{name} bridge"
+kind = "stdio"
+command = "python3"
+args = ["/absolute/path/to/{name}_bridge.py"]
+timeout_ms = 5000
+"#
+                                )
+                            };
+                            if let Err(e) = std::fs::write(&path, template) {
+                                eprintln!("memory backend scaffold: {e}");
+                                std::process::exit(1);
+                            }
+                            println!("scaffolded {}", path.display());
+                            println!("edit it, then: pantheon memory backend select {name}");
                         }
                         _ => {
                             memory_help();
@@ -761,6 +900,12 @@ fn main() {
                 sup.complete(&run_id).unwrap();
             }
             println!("{run_id}");
+        }
+        "schedule" => {
+            schedule_cli::cmd_schedule(&args, &data_dir());
+        }
+        "swarm" => {
+            swarm_cli::cmd_swarm(&args, &data_dir());
         }
         "explain" => {
             if args.len() < 3 {
@@ -1133,6 +1278,21 @@ fn main() {
             println!(
                 "example: pantheon chat --provider http://127.0.0.1:8015/v1 --model chat \"hi\""
             );
+        }
+        "skills" => {
+            if args.len() < 3 {
+                eprintln!("usage: pantheon skills <list|import|doctor> ...");
+                std::process::exit(2);
+            }
+            match args[2].as_str() {
+                "list" => skills_cli::cmd_skills_list(&args),
+                "import" => skills_cli::cmd_skills_import(&args[2..]),
+                "doctor" => skills_cli::cmd_skills_doctor(&args),
+                _ => {
+                    eprintln!("usage: pantheon skills <list|import|doctor> ...");
+                    std::process::exit(2);
+                }
+            }
         }
         _ => {
             eprint!("{}", usage());

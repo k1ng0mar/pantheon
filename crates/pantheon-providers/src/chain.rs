@@ -63,10 +63,15 @@ impl<T: ChatTransport> ProviderChain<T> {
             .map(|p| p.api_mode)
             .unwrap_or(ApiMode::OpenAi);
         let base = catalog::base_url_for(&model.provider);
-        let key = catalog::key_for(
-            &model.provider,
-            self.api_key.as_ref().map(|kv| kv.expose()).unwrap_or(""),
-        );
+        // The configured key belongs to the default provider. Fallbacks may
+        // use their own catalog/env credential, but must never receive the
+        // primary provider's secret by accident.
+        let configured = if idx == 0 {
+            self.api_key.as_ref().map(|kv| kv.expose()).unwrap_or("")
+        } else {
+            ""
+        };
+        let key = catalog::key_for(&model.provider, configured);
         let stream = stream && meta.streaming;
         sink.emit(ModelEvent::Attempt {
             provider: model.provider.clone(),
@@ -133,21 +138,26 @@ impl<T: ChatTransport> ProviderChain<T> {
     }
 
     /// Walk the chain: default, then each fallback on retryable failure
-    /// only. Emits chain events for every transition.
+    /// only. Emits chain events for every transition, including the
+    /// failure cause on each Fallback so `/explain` answers why.
     fn run(
         &self,
         messages: &[Message],
         stream: bool,
         sink: &dyn ModelEventSink,
     ) -> Result<TurnOutcome, PantheonError> {
-        let mut failed: Option<usize> = None;
+        // (failed_idx, provider, model, code, cause-snippet) of last failure.
+        let mut failed: Option<(usize, String, String, String)> = None;
         loop {
-            let (idx, model) = match failed {
+            let (idx, model) = match &failed {
                 None => (0usize, &self.policy.default),
-                Some(f) => match self.next_in_chain(f) {
+                Some((f, fp, fm, fc)) => match self.next_in_chain(*f) {
                     Some((ni, nm)) => {
                         sink.emit(ModelEvent::Fallback {
-                            from_index: f,
+                            from_index: *f,
+                            from_provider: fp.clone(),
+                            from_model: fm.clone(),
+                            from_code: fc.clone(),
                             to_index: ni,
                             to_provider: nm.provider.clone(),
                             to_model: nm.model.clone(),
@@ -176,7 +186,12 @@ impl<T: ChatTransport> ProviderChain<T> {
                     return Ok(turn.outcome);
                 }
                 Err(e) if e.retryable => {
-                    failed = Some(idx);
+                    failed = Some((
+                        idx,
+                        model.provider.clone(),
+                        model.model.clone(),
+                        e.code.clone(),
+                    ));
                     continue;
                 }
                 Err(e) => return Err(e),

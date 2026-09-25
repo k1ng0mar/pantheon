@@ -13,6 +13,10 @@ pub enum SecretsError {
     Unsupported(String),
     /// The request itself was invalid (empty name, bad reference).
     Invalid(String),
+    /// The platform backend failed (OS keychain locked, D-Bus error,
+    /// credential store missing). The secret itself may well exist —
+    /// the store just could not answer.
+    Backend(String),
 }
 
 impl fmt::Display for SecretsError {
@@ -22,6 +26,7 @@ impl fmt::Display for SecretsError {
             SecretsError::Crypto(m) => write!(f, "secrets crypto failure: {m}"),
             SecretsError::Unsupported(m) => write!(f, "secrets unsupported: {m}"),
             SecretsError::Invalid(m) => write!(f, "invalid secrets request: {m}"),
+            SecretsError::Backend(m) => write!(f, "secrets backend failure: {m}"),
         }
     }
 }

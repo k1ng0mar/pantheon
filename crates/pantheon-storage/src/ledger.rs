@@ -76,6 +76,10 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::RunFailed { run_id, .. }
         | Event::RunCanceled { run_id, .. }
         | Event::RunRecovered { run_id }
+        | Event::TurnStarted { run_id, .. }
+        | Event::TurnParked { run_id, .. }
+        | Event::TurnCompleted { run_id, .. }
+        | Event::TurnFailed { run_id, .. }
         | Event::ModelRequested { run_id, .. }
         | Event::ModelDelta { run_id, .. }
         | Event::ModelCompleted { run_id }
@@ -90,6 +94,11 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::ApprovalRequested { run_id, .. }
         | Event::ApprovalGranted { run_id, .. }
         | Event::ApprovalDenied { run_id, .. }
+        | Event::DecisionRequested { run_id, .. }
+        | Event::DecisionMade { run_id, .. }
+        | Event::DecisionRecorded { run_id, .. }
+        | Event::ContextTrimmed { run_id, .. }
+        | Event::ContextCompressed { run_id, .. }
         | Event::AssistantMessage { run_id, .. }
         | Event::ToolMessage { run_id, .. } => run_id,
     }
@@ -201,7 +210,7 @@ impl Ledger {
                 params![run_id, ts],
             ).map_err(|e| err("LEDGER_RUN", e.to_string()))?;
         }
-        if matches!(event, Event::RunFailed { .. }) {
+        if matches!(event, Event::RunFailed { .. } | Event::TurnFailed { .. }) {
             conn.execute(
                 "UPDATE runs SET status = 'failed' WHERE run_id = ?1 AND status NOT IN ('completed','failed','canceled')",
                 params![run_id],
@@ -572,6 +581,14 @@ fn describe(ev: &Event) -> String {
         Event::RunFailed { code, .. } => format!("FAILED ({code})"),
         Event::RunCanceled { reason, .. } => format!("canceled ({reason})"),
         Event::RunRecovered { .. } => String::from("recovered after restart"),
+        Event::TurnStarted { turn_id, .. } => format!("turn started: {turn_id}"),
+        Event::TurnParked {
+            turn_id, reason, ..
+        } => format!("turn parked: {turn_id} ({reason})"),
+        Event::TurnCompleted {
+            turn_id, outcome, ..
+        } => format!("turn completed: {turn_id} ({outcome})"),
+        Event::TurnFailed { turn_id, code, .. } => format!("turn failed: {turn_id} ({code})"),
         Event::ModelRequested { model, .. } => format!("model requested: {model}"),
         Event::ModelDelta { .. } => String::from("model streamed output"),
         Event::ModelCompleted { .. } => String::from("model turn done"),
@@ -591,6 +608,35 @@ fn describe(ev: &Event) -> String {
         Event::ApprovalRequested { scope, .. } => format!("approval requested: {scope}"),
         Event::ApprovalGranted { scope, .. } => format!("approval granted: {scope}"),
         Event::ApprovalDenied { scope, .. } => format!("approval denied: {scope}"),
+        Event::DecisionRequested { point, .. } => {
+            format!("decision requested: {:?}", point)
+        }
+        Event::DecisionMade { point, .. } => {
+            format!("decision made: {:?}", point)
+        }
+        Event::DecisionRecorded { point, action, .. } => {
+            format!("decision recorded: {:?} {:?}", point, action)
+        }
+        Event::ContextTrimmed {
+            estimated,
+            window,
+            dropped_rows,
+            compacted_rows,
+            ..
+        } => format!(
+            "context trimmed: ~{estimated} tokens for a {window} window \
+             ({dropped_rows} rows dropped, {compacted_rows} compacted)"
+        ),
+        Event::ContextCompressed {
+            model,
+            exchanges,
+            chars_before,
+            chars_after,
+            ..
+        } => format!(
+            "context compressed by {model}: {exchanges} exchanges \
+             ({chars_before} -> {chars_after} chars)"
+        ),
         Event::AssistantMessage { message, .. } => {
             format!(
                 "assistant: {}",
@@ -681,5 +727,58 @@ mod tests {
         assert_eq!(ledger.replay("r1").unwrap().len(), 3);
         assert!(ledger.explain("r1").unwrap().contains("completed"));
         assert_eq!(ledger.status("r1").unwrap().as_deref(), Some("completed"));
+    }
+
+    #[test]
+    fn context_trimmed_round_trips_and_explains() {
+        let ledger = Ledger::open_in_memory().unwrap();
+        ledger
+            .append(&Event::RunStarted {
+                run_id: "r1".into(),
+            })
+            .unwrap();
+        ledger
+            .append(&Event::ContextTrimmed {
+                run_id: "r1".into(),
+                estimated: 11_000,
+                window: 16_000,
+                dropped_rows: 4,
+                compacted_rows: 1,
+            })
+            .unwrap();
+        // run_id_of must attribute it to the run: replay finds it.
+        let entries = ledger.replay("r1").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(entries[1].event, Event::ContextTrimmed { dropped_rows: 4, .. }));
+        let explain = ledger.explain("r1").unwrap();
+        assert!(explain.contains("context trimmed"), "explain: {explain}");
+    }
+
+    #[test]
+    fn context_compressed_round_trips_and_explains() {
+        let ledger = Ledger::open_in_memory().unwrap();
+        ledger
+            .append(&Event::RunStarted {
+                run_id: "r1".into(),
+            })
+            .unwrap();
+        ledger
+            .append(&Event::ContextCompressed {
+                run_id: "r1".into(),
+                model: "summarizer".into(),
+                exchanges: 2,
+                rows: 4,
+                chars_before: 20_000,
+                chars_after: 400,
+            })
+            .unwrap();
+        let entries = ledger.replay("r1").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(
+            entries[1].event,
+            Event::ContextCompressed { exchanges: 2, .. }
+        ));
+        let explain = ledger.explain("r1").unwrap();
+        assert!(explain.contains("context compressed by summarizer"), "explain: {explain}");
     }
 }

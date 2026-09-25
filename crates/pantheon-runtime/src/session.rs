@@ -288,6 +288,28 @@ impl Session {
         self
     }
 
+    /// Build a Session from environment variables.
+    /// Used by the AG-UI server and TUI where env-driven config is sufficient.
+    pub fn from_env(data_dir: std::path::PathBuf) -> Result<Self, PantheonError> {
+        use pantheon_core::model::{DefaultModel, FallbackChain, ModelPolicy};
+        use pantheon_core::capability::Policy;
+
+        let provider = std::env::var("PANTHEON_PROVIDER").unwrap_or_else(|_| "local".into());
+        let model = std::env::var("PANTHEON_MODEL").unwrap_or_else(|_| "default".into());
+        let model_policy = ModelPolicy {
+            default: DefaultModel { provider, model },
+            fallbacks: FallbackChain { fallbacks: Vec::new() },
+            auxiliaries: Vec::new(),
+        };
+        let policy = if std::env::var("PANTHEON_ALLOW_MEMORY").as_deref() == Ok("1") {
+            Policy::coder_with_memory()
+        } else {
+            Policy::coder()
+        };
+        let secrets = pantheon_secrets::SecretsBroker::from_system_env();
+        Self::new(data_dir, policy, model_policy, secrets)
+    }
+
     /// Per-call timeout for plugin tool calls. Overridable via env.
     fn plugin_timeout(&self) -> Duration {
         std::env::var("PANTHEON_PLUGIN_TIMEOUT_SECS")
@@ -358,6 +380,16 @@ impl Session {
     /// ledger) so an interactive session can keep talking across turns.
     /// A parked run (awaiting approval) must be granted or denied first.
     pub fn chat(&self, run_id: &str, user_message: &str) -> Result<LoopOutcome, PantheonError> {
+        self.chat_turn(run_id, &crate::new_turn_id(), user_message)
+    }
+
+    /// Execute one typed user turn with a stable turn id.
+    pub fn chat_turn(
+        &self,
+        run_id: &str,
+        _turn_id: &str,
+        user_message: &str,
+    ) -> Result<LoopOutcome, PantheonError> {
         // Activity-based watchdog: only a failed probe after stall escalates,
         // never wall-clock duration. Pauses (human approval) do not eat the
         // clock because the watchdog only advances inside drive().
@@ -634,6 +666,7 @@ impl Session {
             sink: &sink,
             tools: &runner,
             spawner: None,
+            decision: None,
             depth: 0,
         };
 

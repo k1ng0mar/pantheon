@@ -102,6 +102,16 @@ impl Provenance {
         }
     }
 
+    /// Recalled or derived context (memory writes, compressed history):
+    /// informative, never authoritative.
+    pub fn memory(source: impl Into<String>) -> Self {
+        Self {
+            trust: TrustTier::Memory,
+            source: source.into(),
+            origin_seq: None,
+        }
+    }
+
     /// Render the envelope prefix providers put in front of untrusted and
     /// memory-tier content so the model sees provenance inline.
     pub fn envelope_prefix(&self) -> String {

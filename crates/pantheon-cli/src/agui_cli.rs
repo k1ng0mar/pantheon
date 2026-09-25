@@ -22,6 +22,50 @@ fn read_thread(run_id: &str) -> Option<String> {
     map.get(run_id).cloned()
 }
 pub fn cmd_serve(args: &[String]) {
+    // The API executes through pantheon-runtime::Session. Translate the CLI's
+    // config document into the runtime's environment contract once at server
+    // startup so setup.toml is honored without duplicating execution logic in
+    // the HTTP surface.
+    if let Ok(config) = super::config_doc::Config::load(&data_dir()) {
+        if let Some(model) = &config.model {
+            if std::env::var("PANTHEON_PROVIDER").is_err() {
+                std::env::set_var("PANTHEON_PROVIDER", &model.provider);
+            }
+            if std::env::var("PANTHEON_MODEL").is_err() {
+                std::env::set_var("PANTHEON_MODEL", &model.model);
+            }
+            if let Some(env_name) = &model.api_key_env {
+                if std::env::var("PANTHEON_API_KEY_ENV").is_err() {
+                    std::env::set_var("PANTHEON_API_KEY_ENV", env_name);
+                }
+            }
+        }
+        if let Some(decision) = &config.decision {
+            if std::env::var("PANTHEON_DECISION_PROVIDER").is_err() {
+                std::env::set_var("PANTHEON_DECISION_PROVIDER", &decision.provider);
+            }
+            if std::env::var("PANTHEON_DECISION_MODEL").is_err() {
+                std::env::set_var("PANTHEON_DECISION_MODEL", &decision.model);
+            }
+            if let Some(env_name) = &decision.api_key_env {
+                if std::env::var("PANTHEON_DECISION_API_KEY_ENV").is_err() {
+                    std::env::set_var("PANTHEON_DECISION_API_KEY_ENV", env_name);
+                }
+            }
+        }
+        if let Some(policy) = config.policy {
+            if std::env::var("PANTHEON_POLICY").is_err() {
+                std::env::set_var(
+                    "PANTHEON_POLICY",
+                    match policy {
+                        super::config_schema::PolicyPreset::Reader => "reader",
+                        super::config_schema::PolicyPreset::Coder => "coder",
+                        super::config_schema::PolicyPreset::CoderMemory => "coder_memory",
+                    },
+                );
+            }
+        }
+    }
     let port: u16 = flag(args, "--port")
         .and_then(|v| v.parse().ok())
         .unwrap_or(18789);

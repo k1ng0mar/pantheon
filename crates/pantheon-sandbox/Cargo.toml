@@ -8,3 +8,4 @@ authors.workspace = true
 [dependencies]
 pantheon-core = { path = "../pantheon-core" }
 serde = { version = "1", features = ["derive"] }
+libc = "0.2"

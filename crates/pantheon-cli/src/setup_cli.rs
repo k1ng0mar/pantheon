@@ -180,6 +180,10 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             },
             fallbacks,
         }),
+        decision: None,
+        compression: None,
+        stt: None,
+        tts: None,
         policy: Some(policy),
         memory: Some(MemorySection {
             backend: memory_backend.clone(),

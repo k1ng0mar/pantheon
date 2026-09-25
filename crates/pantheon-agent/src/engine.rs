@@ -1,4 +1,9 @@
 //! The loop itself. Pure orchestration: no model SDK, no process spawning.
+//!
+//! TEST HARNESS — not the canonical runtime path. `Session::drive` in
+//! `pantheon-runtime` is canonical (typed messages, provenance, real
+//! provider chain). This loop takes a `Vec<String>` transcript so unit
+//! tests can drive it with scripted models and no network.
 use crate::tool::{gate, EventSink, GateOutcome, ToolRunner};
 use pantheon_core::capability::{Capability, Policy};
 use pantheon_core::error::{Layer, PantheonError};
@@ -65,6 +70,12 @@ impl TurnOutcome {
 /// know which one it is talking to.
 pub trait ModelTurn {
     fn turn(&self, transcript: &[String]) -> Result<TurnOutcome, PantheonError>;
+    /// Model identity for ledger `ModelRequested` rows. The test harness
+    /// defaults to "default"; the canonical session path overrides this
+    /// with the real chain's resolved model (default or fallback).
+    fn model_name(&self) -> String {
+        "default".into()
+    }
 }
 
 /// Hard limits enforced by the runtime, never by the model.
@@ -154,6 +165,8 @@ pub struct AgentLoop<'a> {
     pub tools: &'a dyn ToolRunner,
     /// Optional spawner for sub-agents. If None, Delegate turns are denied.
     pub spawner: Option<&'a dyn AgentSpawner>,
+    /// Optional decision-layer model. Consulted at route selection and tool gate.
+    pub decision: Option<&'a dyn pantheon_core::model::DecisionRouter>,
     /// Current depth in the swarm (0 = primary agent).
     pub depth: u32,
 }
@@ -179,8 +192,22 @@ impl<'a> AgentLoop<'a> {
             turns += 1;
             self.sink.emit(Event::ModelRequested {
                 run_id: self.run_id.clone(),
-                model: "default".into(),
+                model: model.model_name(),
             });
+
+            // Route selection (advisory-only): ask the decision-layer model
+            // which provider/model to use for this turn. The answer is
+            // validated against the allowed set (default + fallbacks);
+            // anything else is recorded as Overridden and ignored.
+            // Never changes which model actually runs — that stays
+            // runtime-controlled via the fallback chain.
+            if let Some(decision) = self.decision {
+                self.consult_route_advisory(
+                    decision,
+                    &[format!("provider={}", "default")],
+                    Some(&task),
+                );
+            }
 
             let outcome = model.turn(transcript)?;
             self.sink.emit(Event::ModelCompleted {
@@ -219,14 +246,120 @@ impl<'a> AgentLoop<'a> {
                     });
                 }
                 TurnOutcome::Tools { calls: tool_calls, .. } => {
+                    // Budget counts EXECUTED calls only: denials never
+                    // consume budget (group-A audit). Check-then-count:
+                    // gate first, count only on Allow.
                     for (i, call) in tool_calls.into_iter().enumerate() {
-                        if calls >= self.budget.max_tool_calls {
-                            return Ok(LoopOutcome::BudgetExhausted {
-                                cap: "max_tool_calls",
+                        let call_id = format!("call_{}_{}", turns, i);
+                        // Tool gating (escalate-only): the classifier may raise
+                        // Allow -> Approval/Deny but never lower Deny -> Allow.
+                        // The deterministic host policy is the floor.
+                        // Returns the classifier verdict if it escalates,
+                        // else None (host policy stands).
+                        let classifier_verdict = if let Some(decision) = self.decision {
+                            self.consult_gate_advisory(
+                                decision,
+                                &[call.name.clone(), format!("{:?}", call.capability)],
+                                Some(&call.args),
+                            )
+                        } else {
+                            None
+                        };
+                        // Host floor from deterministic policy.
+                        // gate() returns Ok(Allow|NeedsApproval) or Err(Deny).
+                        // Classifier may only ESCALATE (Allow->Approval/Deny).
+                        let host_outcome = gate(&self.policy, &call.capability);
+                        let effective = match (host_outcome, &classifier_verdict) {
+                            // Host denies: classifier cannot lower it.
+                            (Err(e), _) => {
+                                self.sink.emit(Event::DecisionRecorded {
+                                    run_id: self.run_id.clone(),
+                                    point: pantheon_core::model::DecisionPoint::ToolGate,
+                                    model: self
+                                        .decision
+                                        .map(|d| d.model_name().to_string())
+                                        .unwrap_or_else(|| "host-policy".to_string()),
+                                    action: pantheon_core::events::DecisionActionSummary::Denied {
+                                        reason: format!(
+                                            "host policy blocked {:?}",
+                                            call.capability
+                                        ),
+                                    },
+                                });
+                                return Err(e);
+                            }
+                            // Host parks for approval: classifier cannot lower.
+                            (Ok(GateOutcome::NeedsApproval { capability }), _) => {
+                                GateOutcome::NeedsApproval { capability }
+                            }
+                            // Host allows: honor classifier only if it escalates.
+                            (Ok(_), Some(v))
+                                if v.escalation_level()
+                                    > pantheon_core::model::GateVerdict::Allow
+                                        .escalation_level() =>
+                            {
+                                match v {
+                                    pantheon_core::model::GateVerdict::Deny {
+                                        reason,
+                                    } => {
+                                        self.sink.emit(Event::DecisionRecorded {
+                                            run_id: self.run_id.clone(),
+                                            point: pantheon_core::model::DecisionPoint::ToolGate,
+                                            model: self
+                                                .decision
+                                                .map(|d| d.model_name().to_string())
+                                                .unwrap_or_else(|| {
+                                                    "host-policy".to_string()
+                                                }),
+                                            action: pantheon_core::events::DecisionActionSummary::Denied {
+                                                reason: reason.clone(),
+                                            },
+                                        });
+                                        return Err(PantheonError::new(
+                                            "GATE_ESCALATED_DENY",
+                                            Layer::Agent,
+                                            false,
+                                            format!(
+                                                "decision model escalated {:?} to deny: {reason}",
+                                                call.capability
+                                            ),
+                                            "adjust the policy or narrow the tool call",
+                                            "",
+                                        ));
+                                    }
+                                    pantheon_core::model::GateVerdict::NeedsApproval {
+                                        ..
+                                    } => GateOutcome::NeedsApproval {
+                                        capability: call.capability.clone(),
+                                    },
+                                    pantheon_core::model::GateVerdict::Allow => {
+                                        GateOutcome::Allow
+                                    }
+                                }
+                            }
+                            (Ok(_), _) => GateOutcome::Allow,
+                        };
+                        // Record the final host action for this gate.
+                        if self.decision.is_some() {
+                            let action = match &effective {
+                                GateOutcome::Allow => {
+                                    pantheon_core::events::DecisionActionSummary::Accepted
+                                }
+                                GateOutcome::NeedsApproval { .. } => {
+                                    pantheon_core::events::DecisionActionSummary::Accepted
+                                }
+                            };
+                            self.sink.emit(Event::DecisionRecorded {
+                                run_id: self.run_id.clone(),
+                                point: pantheon_core::model::DecisionPoint::ToolGate,
+                                model: self
+                                    .decision
+                                    .map(|d| d.model_name().to_string())
+                                    .unwrap_or_else(|| "host-policy".to_string()),
+                                action,
                             });
                         }
-                        let call_id = format!("call_{}_{}", turns, i);
-                        match gate(&self.policy, &call.capability)? {
+                        match effective {
                             GateOutcome::Allow => {}
                             GateOutcome::NeedsApproval { capability } => {
                                 self.sink.emit(Event::ApprovalRequested {
@@ -235,6 +368,14 @@ impl<'a> AgentLoop<'a> {
                                 });
                                 return Ok(LoopOutcome::AwaitingApproval { capability });
                             }
+                        }
+                        // Only executed calls consume budget. Denials and
+                        // approvals park/fail before this point and cost
+                        // nothing against max_tool_calls.
+                        if calls >= self.budget.max_tool_calls {
+                            return Ok(LoopOutcome::BudgetExhausted {
+                                cap: "max_tool_calls",
+                            });
                         }
                         calls += 1;
                         self.sink.emit(Event::ToolRequested {
@@ -270,10 +411,17 @@ impl<'a> AgentLoop<'a> {
                         run_id: self.run_id.clone(),
                         agent: agent.clone(),
                     });
+                    // No spawner wired: delegation is denied by the host
+                    // (session.rs also denies today pending swarm Caps).
+                    // Fail loud — never silently continue as if delegated.
                     let spawner = self
                         .spawner
                         .ok_or_else(|| sberr("no spawner configured for delegation".into()))?;
                     match spawner.spawn(&agent, &model, &task, self.depth) {
+                        // Spawn succeeded: sub-agent output lands in the
+                        // transcript and the loop STOPS here. The parent
+                        // does not continue from delegated output in v1
+                        // (swarm Caps wiring will decide resume vs stop).
                         Ok(result) => {
                             transcript.push(format!("delegate[{agent}]: {result}"));
                             return Ok(LoopOutcome::Delegated { agent });
@@ -290,6 +438,207 @@ impl<'a> AgentLoop<'a> {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Route advisory: validate choice against `allowed`, record outcome.
+    /// Returns validated choice or None (host keeps default). Never panics.
+    fn consult_route_advisory(
+        &self,
+        decision: &dyn pantheon_core::model::DecisionRouter,
+        allowed: &[String],
+        context: Option<&str>,
+    ) -> Option<String> {
+        use pantheon_core::model::DecisionPoint;
+        let point = DecisionPoint::RouteSelect;
+        let model_name = decision.model_name();
+        self.sink.emit(Event::DecisionRequested {
+            run_id: self.run_id.clone(),
+            point: point.clone(),
+            model: model_name.to_string(),
+        });
+
+        let req = pantheon_core::model::DecisionRequest {
+            run_id: self.run_id.clone(),
+            point: point.clone(),
+            query: "select route for this turn".to_string(),
+            choices: allowed.to_vec(),
+            context: context.map(String::from),
+        };
+
+        match decision.decide(&req) {
+            Ok(answer) => {
+                let summary = match &answer {
+                    pantheon_core::model::DecisionAnswer::Route {
+                        choice,
+                        confidence,
+                    } => {
+                        pantheon_core::events::DecisionAnswerSummary::Route {
+                            choice: choice.clone(),
+                            confidence: *confidence,
+                        }
+                    }
+                    pantheon_core::model::DecisionAnswer::Gate {
+                        verdict,
+                        confidence,
+                        score,
+                    } => pantheon_core::events::DecisionAnswerSummary::Gate {
+                        verdict: format!("{:?}", verdict),
+                        score: *score,
+                        confidence: *confidence,
+                    },
+                    pantheon_core::model::DecisionAnswer::Binary {
+                        accepted,
+                        confidence,
+                    } => pantheon_core::events::DecisionAnswerSummary::Binary {
+                        accepted: *accepted,
+                        confidence: *confidence,
+                    },
+                    pantheon_core::model::DecisionAnswer::Threshold {
+                        passed,
+                        value,
+                    } => pantheon_core::events::DecisionAnswerSummary::Threshold {
+                        passed: *passed,
+                        value: *value,
+                    },
+                };
+                self.sink.emit(Event::DecisionMade {
+                    run_id: self.run_id.clone(),
+                    point: point.clone(),
+                    model: model_name.to_string(),
+                    answer: summary,
+                });
+                // Advisory-only: route choice validated against allowed set.
+                // Accepted only if it matches; else Overridden -> default.
+                let accepted = answer.validated_route(&req.choices).is_some();
+                self.sink.emit(Event::DecisionRecorded {
+                    run_id: self.run_id.clone(),
+                    point: req.point.clone(),
+                    model: model_name.to_string(),
+                    action: if accepted {
+                        pantheon_core::events::DecisionActionSummary::Accepted
+                    } else {
+                        pantheon_core::events::DecisionActionSummary::Overridden {
+                            fallback_used: "default".to_string(),
+                        }
+                    },
+                });
+                if accepted {
+                    return answer.validated_route(&req.choices);
+                }
+                None
+            }
+            Err(e) => {
+                // Model failed or returned an error. Host falls back to defaults.
+                let _ = e;
+                self.sink.emit(Event::DecisionRecorded {
+                    run_id: self.run_id.clone(),
+                    point,
+                    model: model_name.to_string(),
+                    action: pantheon_core::events::DecisionActionSummary::Overridden {
+                        fallback_used: "default".to_string(),
+                    },
+                });
+                None
+            }
+        }
+    }
+
+    /// Gate advisory (escalate-only). Returns classifier verdict for the
+    /// caller to enforce against the host policy floor. None on failure
+    /// or wrong answer kind.
+    fn consult_gate_advisory(
+        &self,
+        decision: &dyn pantheon_core::model::DecisionRouter,
+        choices: &[String],
+        context: Option<&str>,
+    ) -> Option<pantheon_core::model::GateVerdict> {
+        use pantheon_core::model::DecisionPoint;
+        let point = DecisionPoint::ToolGate;
+        let model_name = decision.model_name();
+        self.sink.emit(Event::DecisionRequested {
+            run_id: self.run_id.clone(),
+            point: point.clone(),
+            model: model_name.to_string(),
+        });
+        let req = pantheon_core::model::DecisionRequest {
+            run_id: self.run_id.clone(),
+            point: point.clone(),
+            query: "score risk of tool call".to_string(),
+            choices: choices.to_vec(),
+            context: context.map(String::from),
+        };
+        match decision.decide(&req) {
+            Ok(answer) => {
+                let summary = match &answer {
+                    pantheon_core::model::DecisionAnswer::Route {
+                        choice,
+                        confidence,
+                    } => {
+                        pantheon_core::events::DecisionAnswerSummary::Route {
+                            choice: choice.clone(),
+                            confidence: *confidence,
+                        }
+                    }
+                    pantheon_core::model::DecisionAnswer::Gate {
+                        verdict,
+                        confidence,
+                        score,
+                    } => pantheon_core::events::DecisionAnswerSummary::Gate {
+                        verdict: format!("{verdict:?}"),
+                        score: *score,
+                        confidence: *confidence,
+                    },
+                    pantheon_core::model::DecisionAnswer::Binary {
+                        accepted,
+                        confidence,
+                    } => pantheon_core::events::DecisionAnswerSummary::Binary {
+                        accepted: *accepted,
+                        confidence: *confidence,
+                    },
+                    pantheon_core::model::DecisionAnswer::Threshold {
+                        passed,
+                        value,
+                    } => pantheon_core::events::DecisionAnswerSummary::Threshold {
+                        passed: *passed,
+                        value: *value,
+                    },
+                };
+                self.sink.emit(Event::DecisionMade {
+                    run_id: self.run_id.clone(),
+                    point: point.clone(),
+                    model: model_name.to_string(),
+                    answer: summary,
+                });
+                match answer {
+                    pantheon_core::model::DecisionAnswer::Gate {
+                        verdict, ..
+                    } => Some(verdict),
+                    _ => {
+                        self.sink.emit(Event::DecisionRecorded {
+                            run_id: self.run_id.clone(),
+                            point,
+                            model: model_name.to_string(),
+                            action: pantheon_core::events::DecisionActionSummary::Overridden {
+                                fallback_used: "host-policy".to_string(),
+                            },
+                        });
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = e;
+                self.sink.emit(Event::DecisionRecorded {
+                    run_id: self.run_id.clone(),
+                    point,
+                    model: model_name.to_string(),
+                    action: pantheon_core::events::DecisionActionSummary::Overridden {
+                        fallback_used: "host-policy".to_string(),
+                    },
+                });
+                None
             }
         }
     }
@@ -339,6 +688,7 @@ mod tests {
             sink,
             tools,
             spawner: None,
+            decision: None,
             depth: 0,
         }
     }
@@ -390,6 +740,7 @@ mod tests {
             sink: &sink,
             tools: &tools,
             spawner: Some(&spawner),
+            decision: None,
             depth: 0,
         };
         let out = loop_.run(&model, "go", &mut t).unwrap();
@@ -426,6 +777,7 @@ mod tests {
             sink: &sink,
             tools: &tools,
             spawner: Some(&spawner),
+            decision: None,
             depth: 0,
         };
         let err = loop_.run(&model, "go", &mut t).unwrap_err();
@@ -558,5 +910,120 @@ mod tests {
         let err = l.run(&NeverAnswers, "go", &mut t).unwrap_err();
         assert_eq!(err.code, "BUDGET_EXHAUSTED");
         assert!(err.cause.contains("max_turns"));
+    }
+
+    struct FixedRouter {
+        answer: pantheon_core::model::DecisionAnswer,
+    }
+    impl pantheon_core::model::DecisionRouter for FixedRouter {
+        fn decide(
+            &self,
+            _req: &pantheon_core::model::DecisionRequest,
+        ) -> Result<pantheon_core::model::DecisionAnswer, PantheonError> {
+            Ok(self.answer.clone())
+        }
+    }
+
+    #[test]
+    fn route_outside_allowed_set_is_overridden() {
+        use pantheon_core::events::{DecisionActionSummary, Event};
+        use pantheon_core::model::{DecisionAnswer, DecisionPoint};
+        struct CapSink(RefCell<Vec<Event>>);
+        impl EventSink for CapSink {
+            fn emit(&self, event: Event) {
+                self.0.borrow_mut().push(event);
+            }
+        }
+        let sink = CapSink(RefCell::new(vec![]));
+        let tools = NoTools;
+        struct Answer;
+        impl ModelTurn for Answer {
+            fn turn(&self, _t: &[String]) -> Result<TurnOutcome, PantheonError> {
+                Ok(TurnOutcome::Text { text: "done".into(), tokens: 0, cost_cents: 0 })
+            }
+        }
+        let router = FixedRouter {
+            answer: DecisionAnswer::Route { choice: "evil-provider".into(), confidence: 0.99 },
+        };
+        let loop_ = AgentLoop {
+            run_id: "run_route".into(),
+            policy: Policy::coder(),
+            budget: Budget::default(),
+            sink: &sink,
+            tools: &tools,
+            spawner: None,
+            decision: Some(&router),
+            depth: 0,
+        };
+        let mut t = vec![];
+        let out = loop_.run(&Answer, "go", &mut t).unwrap();
+        assert!(matches!(out, LoopOutcome::Answered { .. }));
+        let evs = sink.0.borrow();
+        assert!(evs.iter().any(|e| matches!(e, Event::DecisionRequested { point: DecisionPoint::RouteSelect, .. })));
+        assert!(evs.iter().any(|e| matches!(e, Event::DecisionRecorded { point: DecisionPoint::RouteSelect, action: DecisionActionSummary::Overridden { .. }, .. })));
+        assert!(!evs.iter().any(|e| matches!(e, Event::DecisionRecorded { point: DecisionPoint::RouteSelect, action: DecisionActionSummary::Accepted, .. })));
+    }
+
+    #[test]
+    fn gate_escalates_allow_to_approval_but_never_lowers_deny() {
+        use pantheon_core::model::{DecisionAnswer, DecisionPoint, GateVerdict};
+        use pantheon_core::events::Event;
+        struct CapSink(RefCell<Vec<Event>>);
+        impl EventSink for CapSink {
+            fn emit(&self, event: Event) {
+                self.0.borrow_mut().push(event);
+            }
+        }
+        let sink = CapSink(RefCell::new(vec![]));
+        let tools = NoTools;
+        let model = Scripted {
+            steps: RefCell::new(vec![TurnOutcome::Tools {
+                calls: vec![ToolCall { name: "shell".into(), capability: Capability::ShellExecute, args: "ls".into() }],
+                tokens: 0,
+                cost_cents: 0,
+            }]),
+        };
+        let router = FixedRouter {
+            answer: DecisionAnswer::Gate { verdict: GateVerdict::NeedsApproval { reason: "risky".into() }, confidence: 0.9, score: 0.8 },
+        };
+        let loop_ = AgentLoop {
+            run_id: "run_gate_up".into(),
+            policy: Policy::coder(),
+            budget: Budget::default(),
+            sink: &sink,
+            tools: &tools,
+            spawner: None,
+            decision: Some(&router),
+            depth: 0,
+        };
+        let mut t = vec![];
+        let out = loop_.run(&model, "go", &mut t).unwrap();
+        assert_eq!(out, LoopOutcome::AwaitingApproval { capability: Capability::ShellExecute });
+        let sink2 = CapSink(RefCell::new(vec![]));
+        let model2 = Scripted {
+            steps: RefCell::new(vec![TurnOutcome::Tools {
+                calls: vec![ToolCall { name: "browse".into(), capability: Capability::Browser, args: "".into() }],
+                tokens: 0,
+                cost_cents: 0,
+            }]),
+        };
+        let router2 = FixedRouter {
+            answer: DecisionAnswer::Gate { verdict: GateVerdict::Allow, confidence: 0.99, score: 0.0 },
+        };
+        let loop2 = AgentLoop {
+            run_id: "run_gate_down".into(),
+            policy: Policy::coder(),
+            budget: Budget::default(),
+            sink: &sink2,
+            tools: &tools,
+            spawner: None,
+            decision: Some(&router2),
+            depth: 0,
+        };
+        let mut t2 = vec![];
+        let err = loop2.run(&model2, "go", &mut t2).unwrap_err();
+        assert_eq!(err.code, "CAP_DENIED");
+        let evs2 = sink2.0.borrow();
+        assert!(evs2.iter().any(|e| matches!(e, Event::DecisionRecorded { point: DecisionPoint::ToolGate, .. })));
     }
 }

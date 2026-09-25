@@ -96,9 +96,9 @@ fn open_session(
     let model_policy = pantheon_core::model::ModelPolicy {
         default: pantheon_core::model::DefaultModel { provider, model },
         fallbacks: pantheon_core::model::FallbackChain::default(),
-        auxiliaries: vec![],
+        auxiliaries: crate::config_doc::auxiliaries(cfg.as_ref()),
     };
-    let secrets = pantheon_secrets::SecretsBroker::from_system_env();
+    let secrets = crate::config_doc::chat_secrets(cfg.as_ref());
     pantheon_runtime::session::Session::new(data_dir.clone(), policy, model_policy, secrets)
 }
 

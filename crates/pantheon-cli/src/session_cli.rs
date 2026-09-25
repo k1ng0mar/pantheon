@@ -260,7 +260,7 @@ fn default_layers() -> [pantheon_memory::LayerKind; 3] {
 }
 
 /// Model policy for the REPL: flags/env/config precedence, same as chat.
-fn build_model_policy(
+pub fn build_model_policy(
     file_cfg: &Option<config_doc::Config>,
     provider: Option<String>,
     model: Option<String>,
@@ -299,7 +299,7 @@ fn build_model_policy(
     pantheon_core::model::ModelPolicy {
         default,
         fallbacks: chain,
-        auxiliaries: vec![],
+        auxiliaries: config_doc::auxiliaries(file_cfg.as_ref()),
     }
 }
 
@@ -320,7 +320,7 @@ pub fn run_session() {
     } else {
         pantheon_core::capability::Policy::coder()
     };
-    let secrets = pantheon_secrets::SecretsBroker::from_system_env_with_api_key(None);
+    let secrets = config_doc::chat_secrets(file_cfg.as_ref());
     let mut session = match Session::new(crate::data_dir(), policy, model_policy, secrets) {
         Ok(s) => s,
         Err(e) => {
@@ -422,7 +422,7 @@ pub fn run_session() {
             let file_cfg = config_doc::Config::load(&crate::data_dir()).ok();
             let mp = build_model_policy(&file_cfg, Some(p), Some(m));
             let pol = repl.session.policy.clone();
-            let secrets = pantheon_secrets::SecretsBroker::from_system_env();
+            let secrets = config_doc::chat_secrets(file_cfg.as_ref());
             if let Ok(s) = Session::new(crate::data_dir(), pol, mp, secrets) {
                 repl.session = s;
             }

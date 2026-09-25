@@ -5,8 +5,10 @@
 //! - [`crate::filevault::EncryptedFileVault`] — AES-256-GCM sealed JSON file.
 //! - [`MemoryVault`] — tests / ephemeral runtime.
 //!
-//! OS keychains (macOS Keychain, Windows CredMan, Linux Secret Service) are
-//! a future platform impl of this same trait.
+//! - [`crate::keychain::KeychainVault`] — macOS Keychain, Windows CredMan,
+//!   Linux Secret Service (the preferred durable backend).
+//!
+//! All of these implement [`SecretVault`].
 
 use crate::error::SecretsError;
 use crate::value::SecretValue;
