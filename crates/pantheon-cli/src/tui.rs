@@ -10,18 +10,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEvent,
-     KeyEventKind, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    buffer::Buffer,
-    layout::{Constraint, Layout, Position, Rect},
-    style::{Color, Modifier, Style},
-    symbols::border,
+    layout::{Constraint, Layout, Rect},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Paragraph, Scrollbar},
+    widgets::{Block, BorderType, Paragraph},
     DefaultTerminal,
     Frame,
 };
@@ -56,6 +53,7 @@ pub struct TuiState {
     pub session_id: String,
     pub model: String,
     pub elapsed: Duration,
+    pub start_time: Instant,
     pub tokens_used: u32,
     pub tokens_max: u32,
     pub cost_cents: u32,
@@ -74,6 +72,7 @@ impl Default for TuiState {
             session_id: String::new(),
             model: String::new(),
             elapsed: Duration::ZERO,
+            start_time: Instant::now(),
             tokens_used: 0,
             tokens_max: 0,
             cost_cents: 0,
@@ -94,6 +93,7 @@ impl TuiState {
             session_id,
             model,
             elapsed: Duration::ZERO,
+            start_time: Instant::now(),
             tokens_used: 0,
             tokens_max,
             cost_cents: 0,
@@ -178,8 +178,8 @@ impl TuiState {
                 });
             }
             RuntimeErrorEvent::ToolOutput {
-                tool,
-                truncated,
+                tool: _,
+                truncated: _,
                 ..
             } => {
                 let block = self.blocks.last_mut();
@@ -228,12 +228,7 @@ impl TuiState {
     }
 
     pub fn tick(&mut self) {
-        self.elapsed = Instant::now().duration_since(
-            self.blocks
-                .first()
-                .map(|b| b.timestamp)
-                .unwrap_or_else(Instant::now),
-        );
+        self.elapsed = self.start_time.elapsed();
     }
 }
 
@@ -262,34 +257,71 @@ mod color {
     pub const FAILURE: Color = Color::Red;
 }
 
-/// Render the full TUI frame.
+/// Render the full TUI frame: header, transcript, input, status bar.
 pub fn render(state: &TuiState, f: &mut Frame) {
     let outer = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(3),
-        Constraint::Min(1),
-        Constraint::Length(3),
+        Constraint::Length(3), // header
+        Constraint::Min(1),    // transcript
+        Constraint::Length(3), // input
+        Constraint::Length(1), // status bar
     ]);
-    let [main_area, header_area, chat_area, input_area] = outer.areas(f.size());
+    let [header_area, chat_area, input_area, status_area] = outer.areas(f.area());
 
-    // Header (persistent top bar).
     render_header(f, header_area, state);
+    render_transcript(f, chat_area, state);
+    render_input(f, input_area, state);
+    render_status(f, status_area, state);
+}
 
-    // Main transcript area with a visual block.
-    let chat_chunks: [Rect; 1] = Layout::vertical([Constraint::Min(1)])
-        .margin(1)
-    .areas(chat_area);
+/// Draw the input box at the bottom.
+fn render_input(f: &mut Frame, area: Rect, state: &TuiState) {
+    let cursor = if state.is_inputting { "_" } else { " " };
+    let line = format!("› {}{}", state.input, cursor);
+    let input = Paragraph::new(line).block(
+        Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title(Span::styled(
+                " Input ",
+                Style::default().fg(color::PRIMARY),
+            )),
+    );
+    f.render_widget(input, area);
+}
 
-    render_transcript(f, chat_chunks[0], state);
+/// Draw the one-line status bar under the input.
+fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
+    let (status_icon, status_color) = if state.ready {
+        (icon::SUCCESS.to_string(), color::SUCCESS)
+    } else {
+        (icon::RUNNING.to_string(), color::RUNNING)
+    };
+    let status_word = if state.ready { "ready" } else { "working" };
+    let ctx = if state.tokens_max > 0 {
+        format!("{:.1}k/{}k", state.tokens_used as f64 / 1000.0, state.tokens_max / 1000)
+    } else {
+        format!("{:.1}k", state.tokens_used as f64 / 1000.0)
+    };
+    let secs = state.elapsed.as_secs();
+    let text = format!(
+        "{} {}  │  {}  │  {}  │  {:02}:{:02}:{:02}  │  session {}",
+        status_icon,
+        status_word,
+        state.model,
+        ctx,
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60,
+        &state.session_id[..state.session_id.len().min(4)],
+    );
+    let bar = Paragraph::new(Line::from(Span::styled(
+        text,
+        Style::default().fg(status_color),
+    )));
+    f.render_widget(bar, area);
 }
 
 /// Draw the persistent top header bar.
 fn render_header(f: &mut Frame, area: Rect, state: &TuiState) {
-    let progress_pct = if state.tokens_max > 0 {
-        (state.tokens_used as f32 / state.tokens_max as f32) * 100.0
-    } else {
-        0.0
-    };
     let tokens_display = if state.tokens_max > 0 {
         format!("{:.1}k/{}k", state.tokens_used as f64 / 1000.0, state.tokens_max / 1000)
     } else {
@@ -317,23 +349,6 @@ fn render_header(f: &mut Frame, area: Rect, state: &TuiState) {
             .title(" PANTHEON "),
     );
     f.render_widget(header, area);
-
-    // Progress bar under the header.
-    let progress_area = Rect {
-        x: area.x,
-        y: area.y + 1,
-        width: area.width,
-        height: 1,
-    };
-    if state.tokens_max > 0 {
-        let width = ((progress_pct / 100.0) * (area.width as f32 - 2.0)) as u16;
-        let bar = "▰".repeat(width as usize);
-        let blank = "▱".repeat((area.width as usize - 2).saturating_sub(width as usize));
-        let progress_text = format!("{bar}{blank} {:.0}% ", progress_pct);
-        let progress = Paragraph::new(progress_text)
-            .style(Style::default().fg(color::RUNNING));
-        f.render_widget(progress, progress_area);
-    }
 }
 
 /// Draw the conversation transcript with visual blocks per event type.
@@ -353,7 +368,6 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &TuiState) {
         return;
     }
 
-    let visible_height = area.height as usize;
     let mut lines: Vec<Line> = Vec::new();
     let skip = state.scroll_offset;
 
@@ -543,6 +557,7 @@ pub fn run_tui_session() -> Result<(), Box<dyn std::error::Error>> {
     Ok(result?)
 }
 
+#[allow(unused_mut, unused_assignments)]
 fn tui_loop(
     terminal: &mut DefaultTerminal,
     state: &mut TuiState,
@@ -555,7 +570,7 @@ fn tui_loop(
     let mut worker: Option<std::thread::JoinHandle<()>> = None;
 
     loop {
-        if !running.load(Ordering::SeqCst) {
+        if !running.load(Ordering::SeqCst) || state.shutting_down {
             break;
         }
 
@@ -578,6 +593,7 @@ fn tui_loop(
             }
         }
 
+        state.tick();
         terminal.draw(|f| render(state, f))?;
 
         if event::poll(Duration::from_millis(100))? {

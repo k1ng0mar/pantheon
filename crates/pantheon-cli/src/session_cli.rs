@@ -260,6 +260,16 @@ fn default_layers() -> [pantheon_memory::LayerKind; 3] {
 }
 
 /// Model policy for the REPL: flags/env/config precedence, same as chat.
+/// Resolve the display name of the default model from config or env.
+pub fn default_model_name(file_cfg: &Option<config_doc::Config>) -> String {
+    file_cfg
+        .as_ref()
+        .and_then(|c| c.model.as_ref().map(|m| m.model.clone()))
+        .or_else(|| std::env::var("PANTHEON_MODEL").ok())
+        .unwrap_or_else(|| "llama3.2".into())
+}
+
+/// Model policy for the REPL: flags/env/config precedence, same as chat.
 pub fn build_model_policy(
     file_cfg: &Option<config_doc::Config>,
     provider: Option<String>,

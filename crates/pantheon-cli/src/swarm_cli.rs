@@ -134,7 +134,7 @@ fn spawn_swarm(
 
     // Build and check swarm caps.
     let caps = Caps::default();
-    let mut swarm = Swarm::new(caps);
+    let swarm = Swarm::new(caps);
 
     // Check we can spawn N agents up front.
     for (i, role) in role_names.iter().enumerate() {

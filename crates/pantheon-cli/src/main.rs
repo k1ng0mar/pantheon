@@ -9,7 +9,7 @@ use pantheon_secrets::SecretVault;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     if let Ok(d) = std::env::var("PANTHEON_DATA_DIR") {
         return PathBuf::from(d);
     }
