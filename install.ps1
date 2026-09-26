@@ -1,10 +1,10 @@
 # Pantheon installer for Windows PowerShell
-#   iwr https://raw.githubusercontent.com/pantheon-agent/pantheon/main/install.ps1 -useb | iex
+#   iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb | iex
 #
 # Installs Rust (if missing), builds Pantheon from source, and puts the
 # binary in $HOME/.local/bin (or $env:USERPROFILE/.local/bin).
 param(
-    [string]$RepoUrl = "https://github.com/pantheon-agent/pantheon.git",
+    [string]$RepoUrl = "https://github.com/k1ng0mar/pantheon.git",
     [string]$InstallDir = "$HOME/.local/bin",
     [string]$SrcDir = "$HOME/.pantheon-src"
 )

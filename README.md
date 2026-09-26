@@ -42,13 +42,13 @@ ARCHITECTURE.md sections 3, 10, 13, 15, 21, 23 for the exact state.
 Linux or macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/pantheon-agent/pantheon/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-iwr https://raw.githubusercontent.com/pantheon-agent/pantheon/main/install.ps1 -useb | iex
+iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb | iex
 ```
 
 The script installs Rust (if missing), builds from source, and links
@@ -58,7 +58,7 @@ Git and curl on Windows.
 Or build from source:
 
 ```sh
-git clone https://github.com/pantheon-agent/pantheon.git
+git clone https://github.com/k1ng0mar/pantheon.git
 cd pantheon
 cargo build --release
 ```

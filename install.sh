@@ -6,7 +6,7 @@
 # and puts the binary in ~/.local/bin. Works on Linux and macOS.
 set -euo pipefail
 
-REPO="${PANTHEON_REPO_URL:-https://github.com/pantheon-agent/pantheon.git}"
+REPO="${PANTHEON_REPO_URL:-https://github.com/k1ng0mar/pantheon.git}"
 BIN_DIR="${PANTHEON_INSTALL_DIR:-$HOME/.local/bin}"
 SRC_DIR="${PANTHEON_SRC_DIR:-$HOME/.pantheon-src}"
 
