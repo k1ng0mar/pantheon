@@ -48,7 +48,7 @@ fn terminal_run_status_cannot_be_overwritten() {
 }
 
 #[test]
-fn round_trip_and_explain() {
+fn round_trip_and_render_log() {
     let ledger = Ledger::open_in_memory().unwrap();
     ledger
         .append(&Event::RunStarted {
@@ -70,7 +70,7 @@ fn round_trip_and_explain() {
         })
         .unwrap();
     assert_eq!(ledger.replay("r1").unwrap().len(), 3);
-    assert!(ledger.explain("r1").unwrap().contains("completed"));
+    assert!(ledger.render_run_log("r1").unwrap().contains("completed"));
     assert_eq!(ledger.status("r1").unwrap().as_deref(), Some("completed"));
 }
 
@@ -101,7 +101,7 @@ fn context_trimmed_round_trips_and_explains() {
             ..
         }
     ));
-    let explain = ledger.explain("r1").unwrap();
+    let explain = ledger.render_run_log("r1").unwrap();
     assert!(explain.contains("context trimmed"), "explain: {explain}");
 }
 
@@ -129,7 +129,7 @@ fn context_compressed_round_trips_and_explains() {
         entries[1].event,
         Event::ContextCompressed { exchanges: 2, .. }
     ));
-    let explain = ledger.explain("r1").unwrap();
+    let explain = ledger.render_run_log("r1").unwrap();
     assert!(
         explain.contains("context compressed by summarizer"),
         "explain: {explain}"
@@ -174,12 +174,12 @@ fn session_titled_drives_the_run_title_and_last_write_wins() {
         ledger.run_title("r1").unwrap().as_deref(),
         Some("Renamed by hand")
     );
-    let explain = ledger.explain("r1").unwrap();
+    let explain = ledger.render_run_log("r1").unwrap();
     assert!(
         explain.contains("session titled \"Renamed by hand\" (manual by user)"),
         "explain: {explain}"
     );
-    // The event itself replays for /explain and the audit trail.
+    // The event itself replays for `pantheon logs` and the audit trail.
     assert!(ledger
         .replay("r1")
         .unwrap()

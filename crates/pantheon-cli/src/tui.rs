@@ -1323,7 +1323,7 @@ fn handle_slash(state: &mut TuiState, supervisor: &pantheon_runtime::Supervisor,
     }
     if let Some(id) = cmd.strip_prefix("/status ") {
         let id = id.trim();
-        match supervisor.explain(id) {
+        match supervisor.render_run_log(id) {
             Ok(s) => state.add_status(s),
             Err(e) => state.add_status(format!("status: {e}")),
         }

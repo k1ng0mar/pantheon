@@ -33,7 +33,7 @@ description must say "does not checkpoint; not rollback-able".
 **[low] tools.rs — registry has no listing of which capability each tool
 maps to at runtime**
 `capability_of` exists (used by gate), but there is no `list()` returning
-schema+capability together for the /explain path or a future tools.list RPC.
+schema+capability together for the `pantheon logs` path or a future tools.list RPC.
 Additive, cheap.
 
 Keep as-is: the reader-thread + deadline pattern in supervisor is correct

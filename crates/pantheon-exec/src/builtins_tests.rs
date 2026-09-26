@@ -130,7 +130,7 @@ fn shell_result_states_whether_the_sandbox_actually_ran() {
     // where user namespaces are unavailable — most EC2 and container
     // instances, where `bwrap` fails with "setting up uid map: Permission
     // denied" — a command the tool documents as HIGH isolation ran
-    // un-isolated with nothing in the tool result, the ledger, or /explain to
+    // un-isolated with nothing in the tool result, the ledger, or `pantheon logs` to
     // record the downgrade. The invariant is that the result is never silent
     // about degraded isolation.
     let mut reg = ToolRegistry::default();

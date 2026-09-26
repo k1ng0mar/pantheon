@@ -1,7 +1,7 @@
 //! SQLite-backed memory provider with FTS recall and provenance.
 //!
 //! Two tables: `memories` (the record) and `memories_fts` (search index).
-//! Every recalled row carries its provenance so the agent (and `/explain`)
+//! Every recalled row carries its provenance so the agent (and `pantheon logs`)
 //! can see where a belief came from, including its trust tier.
 //!
 //! The `trust` column is tiered per pantheon_core::provenance::TrustTier.

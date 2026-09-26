@@ -16,22 +16,22 @@
         ]
       },
       "post": [
-        ["explain", "eval-run-1", "contains:started"],
-        ["explain", "eval-run-1", "contains:completed"],
-        ["explain", "eval-run-1", "contains:hello from eval"],
-        ["explain", "eval-run-1", "contains:completed"]
+        ["logs", "eval-run-1", "contains:started"],
+        ["logs", "eval-run-1", "contains:completed"],
+        ["logs", "eval-run-1", "contains:hello from eval"],
+        ["logs", "eval-run-1", "contains:completed"]
       ]
     },
     {
-      "id": "explain-unknown-run-is-empty",
+      "id": "logs-unknown-run-is-empty",
       "title": "Explain of an unknown run says so instead of erroring",
-      "origin": "wave1: /explain offline path",
+      "origin": "wave1: offline log replay path",
       "skip": "needs binary",
       "commands": [
-        ["explain", "eval-never-ran"]
+        ["logs", "eval-never-ran"]
       ],
       "expect": {
-        "explain-unknown-run-is-empty": [
+        "logs-unknown-run-is-empty": [
           "no events recorded"
         ]
       },
@@ -51,8 +51,8 @@
         ]
       },
       "post": [
-        ["explain", "eval-run-fail", "contains:FAILED (EVAL_CAP_DENIED)"],
-        ["explain", "eval-run-fail", "contains:FAILED"]
+        ["logs", "eval-run-fail", "contains:FAILED (EVAL_CAP_DENIED)"],
+        ["logs", "eval-run-fail", "contains:FAILED"]
       ]
     },
     {
@@ -73,9 +73,9 @@
         ]
       },
       "post": [
-        ["explain", "eval-run-twice", "contains:first pass"],
-        ["explain", "eval-run-twice", "contains:second pass"],
-        ["explain", "eval-run-twice", "contains:completed"]
+        ["logs", "eval-run-twice", "contains:first pass"],
+        ["logs", "eval-run-twice", "contains:second pass"],
+        ["logs", "eval-run-twice", "contains:completed"]
       ]
     },
     {
@@ -280,7 +280,7 @@
         "setup-reset-roundtrip__2": ["deleted"]
       },
       "post": [
-        ["explain", "eval-reset-run", "contains:no events recorded"]
+        ["logs", "eval-reset-run", "contains:no events recorded"]
       ]
     },
     {

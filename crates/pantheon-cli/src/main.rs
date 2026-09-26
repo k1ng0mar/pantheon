@@ -159,7 +159,8 @@ fn usage() -> String {
     s.push_str("        run a task by id; delivery defaults to an in-session turn\n\n");
 
     s.push_str("INSPECT A RUN\n");
-    s.push_str("  explain <run_id>             full event trace\n");
+    s.push_str("  logs                         list runs and their status\n");
+    s.push_str("  logs <run_id>                full event trace for one run\n");
     s.push_str("  audit <run_id> [OUT.jsonl]   sequence-validated JSONL trajectory\n\n");
 
     s.push_str("SET UP\n");
@@ -210,11 +211,11 @@ const KNOWN_VERBS: &[&str] = &[
     "audit",
     "chat",
     "doctor",
-    "explain",
     "extensions",
     "fallback",
     "gateway",
     "hook",
+    "logs",
     "mcp",
     "memory",
     "migrate",
@@ -713,7 +714,7 @@ fn main() {
                         println!("{answer}");
                     } else {
                         eprintln!(
-                            "run {run_id} produced no answer text; see `pantheon explain {run_id}`"
+                            "run {run_id} produced no answer text; see `pantheon logs {run_id}`"
                         );
                     }
                     eprintln!("[run {run_id}]");
@@ -1390,19 +1391,40 @@ timeout_ms = 5000
         "swarm" => {
             swarm_cli::cmd_swarm(&args, &data_dir());
         }
-        "explain" => {
+        "logs" => {
+            // No run id: the operator wants to know what exists and what
+            // state each run is in. This is the question `logs` answers and
+            // `explain` never could, because `explain` demanded a run id.
             if args.len() < 3 {
-                eprintln!("usage: pantheon explain <run_id>");
-                std::process::exit(2);
+                let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
+                    eprintln!("open runtime: {e}");
+                    std::process::exit(1);
+                });
+                match sup.ledger_list_runs(50) {
+                    Ok(rows) if rows.is_empty() => println!("no runs yet"),
+                    Ok(rows) => {
+                        println!("{:<34} {:<18} TITLE", "RUN", "STATUS");
+                        for (run_id, status, _ts, title) in rows {
+                            // Same status vocabulary as the TUI `/runs` view,
+                            // so the two never disagree about a run.
+                            println!("{run_id:<34} {status:<18} {}", title.unwrap_or_default());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("logs: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                return;
             }
             let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
                 eprintln!("open runtime: {e}");
                 std::process::exit(1);
             });
-            match sup.explain(&args[2]) {
+            match sup.render_run_log(&args[2]) {
                 Ok(t) => println!("{t}"),
                 Err(e) => {
-                    eprintln!("explain: {e}");
+                    eprintln!("logs: {e}");
                     std::process::exit(1);
                 }
             }
@@ -1714,7 +1736,7 @@ mod verb_guard_tests {
         for v in [
             "chat",
             "run",
-            "explain",
+            "logs",
             "audit",
             "memory",
             "plugins",

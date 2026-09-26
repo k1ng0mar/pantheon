@@ -47,7 +47,7 @@ fn name_renames_the_conversation_durably() {
     // Rename a run that has never chatted: the row is created for it.
     assert!(command(&mut r, "/name Fix the login bug"));
     assert_eq!(title_of(&r).as_deref(), Some("Fix the login bug"));
-    // Recorded as a manual title event (source/model for /explain).
+    // Recorded as a manual title event (source/model for `pantheon logs`).
     let entries = r.session.supervisor.replay(&r.run_id).unwrap();
     assert!(entries.iter().any(|e| matches!(
         &e.event,

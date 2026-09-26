@@ -222,7 +222,7 @@ fn run_shell(args: &str) -> Result<String, PantheonError> {
     // (a common case: most EC2/container instances block `bwrap`'s uid map).
     // Discarding the flag let a command the tool documents as HIGH isolation
     // run un-isolated with nothing in the tool result, the ledger, or
-    // /explain to record the downgrade. Say so in every result rather than
+    // `pantheon logs` to record the downgrade. Say so in every result rather than
     // failing the call — the capability gate still ran, so this is degraded
     // isolation, not a bypassed policy.
     let notice = if result.sandboxed {

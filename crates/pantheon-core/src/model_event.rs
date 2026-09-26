@@ -48,7 +48,7 @@ pub enum ModelEvent {
     Completed { finish_reason: Option<String> },
     /// An attempt failed. The chain may still fall back when `retryable`.
     /// `cause` is a short human snippet (truncated provider error) so
-    /// `/explain` can answer WHY each fallback happened, not just which
+    /// `pantheon logs` can answer WHY each fallback happened, not just which
     /// models were tried.
     AttemptFailed {
         provider: String,

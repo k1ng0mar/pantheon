@@ -61,10 +61,10 @@ structured denials; loop events cover every transition.
 only to the sink**
 The chain retries on retryable errors with the next fallback, but the cause
 of each fallback is not persisted as its own ledger event (only Attempt
-metadata). After a run with two fallbacks, /explain shows which models were
+metadata). After a run with two fallbacks, `pantheon logs` shows which models were
 tried but not WHY each earlier one failed. Fix: emit ModelFallback with the
 error code (an event variant may already exist — verify) so the offline
-/explain answers "why fallback?".
+`pantheon logs` answers "why fallback?".
 
 **[low] mock.rs — match semantics "*" only**
 MockTransport matches "*" or exact strings. A fixture needing prefix matching

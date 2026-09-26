@@ -30,7 +30,7 @@ pub fn capability_from_token(token: &str) -> Capability {
 }
 
 /// Project a server's tools through a policy. A tool whose capability is not
-/// allowed is still listed but marked `allowed: false` so `/explain` can
+/// allowed is still listed but marked `allowed: false` so `pantheon logs` can
 /// show why it never ran.
 pub fn project(server: &str, tools: &[McpTool], policy: &Policy) -> Vec<ProjectedTool> {
     tools

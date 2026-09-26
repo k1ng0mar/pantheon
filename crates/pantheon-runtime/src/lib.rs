@@ -804,8 +804,8 @@ impl Supervisor {
         self.finish_cancel(run_id, "process groups terminated")
     }
 
-    pub fn explain(&self, run_id: &str) -> Result<String, PantheonError> {
-        self.ledger().explain(run_id)
+    pub fn render_run_log(&self, run_id: &str) -> Result<String, PantheonError> {
+        self.ledger().render_run_log(run_id)
     }
 
     pub fn ledger_status(&self, run_id: &str) -> Result<Option<String>, PantheonError> {

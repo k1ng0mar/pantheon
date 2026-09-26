@@ -37,7 +37,7 @@ Fresh conversations get a one-line **session title** generated from the
 first prompt by the title auxiliary (config `[title_gen]`, default
 `auto` = the run's default model — see docs/configuration.md). `/runs`,
 `/history`, and `/status` show it; the title is a `SessionTitled` ledger
-event, so `pantheon explain <run>` shows how it was produced.
+event, so `pantheon logs <run>` shows how it was produced.
 
 ### chat
 ```
@@ -82,16 +82,24 @@ and `--ext` fires `pre_llm_call` and prints whatever context it injects. This
 mode exists so recovery and ledger tooling can seed a run without spending a
 model call.
 
-### explain / audit
+### logs / audit
 ```
-pantheon explain <run_id>
+pantheon logs
+pantheon logs <run_id>
 pantheon audit <run_id> [OUT.jsonl]
 ```
-`explain` replays the ledger for a run in words, and prints the run state
-(`running`, `awaiting_approval`, `completed`, `failed`, `canceled`). Inside
-a session, `/status` reports the current run and `/status <id>` any other.
+`logs` with no argument lists every run with its status and title, using the
+same status vocabulary as the in-session `/runs` view. With a run id it
+replays that run's ledger in words. This verb used to be called `explain`,
+which described nothing: it renders the event log, so it is named for that.
 `audit` writes a sequence-validated JSONL trajectory (3 events minimum for a
 simple run).
+
+Run state (`running`, `awaiting_approval`, `completed`, `failed`, `canceled`)
+is *not* part of the per-run trace, despite what this page used to claim. From
+the shell, `pantheon logs` with no argument is the listing. Inside a session,
+`/status` reports the current run and `/status <id>` any other. To settle a
+run stranded by a crash, see [repair](#repair).
 
 ## Approvals
 
@@ -308,6 +316,8 @@ pantheon setup [--yes] [--profile P] [--provider P] [--model M]
 pantheon doctor              # system preflight (config, key, ledger, memory,
                              #   skills, gateway, plugins)
 pantheon doctor <plugin_dir> # per-plugin preflight (as above)
+pantheon repair check        # integrity + stranded runs (read-only)
+pantheon repair runs [<id>]  # settle runs stranded by a crash
 pantheon reset --config | --state | --everything [--yes]
 pantheon providers           # catalog listing
 pantheon fallback list                    # the ordered fallback chain
@@ -332,6 +342,32 @@ and whether each key resolves — without ever printing a value.
 ledger.db, memory.db, and gateway cursors, and refuses while a run lease is
 active. Typed confirmation (`reset`) is required unless `--yes`.
 
+### repair
+
+`repair` is what a crash leaves behind. `reset` is not a substitute: it deletes
+state, so a user whose run died mid-turn is choosing between losing everything
+and hand-editing SQLite.
+
+`repair check` is read-only. It reports `PRAGMA integrity_check` verbatim, then
+any run left in a non-terminal state (`running`, `awaiting_approval`):
+
+```
+$ pantheon repair check
+warn: run run_1790460358409_7904 is still 'running' with no live lease
+  fix: pantheon repair runs run_1790460358409_7904
+```
+
+`repair runs [id]` settles them. It appends real events (a `RunProgress` naming
+the reason, then `RunFailed` with code `REPAIRED`) rather than overwriting the
+status, so the ledger still explains how the run ended. With no id it settles
+every stranded run and prints a count.
+
+A run holding a live lease is never touched: that one is a session still
+working, not a corpse. "Live" means the lease is unexpired **and** recently
+heartbeated. Testing only the TTL would be wrong, because a lease row outlives
+`kill -9` — nothing gets to release it — so a crashed run reads as busy for a
+full lease TTL, exactly when an operator reaches for `repair`.
+
 ## AG-UI verb
 
 ```
@@ -349,7 +385,7 @@ makes internally, and `pantheon-api` never referenced them — `serve` does
 not depend on either. `channel` was, by its own doc comment, a demo that
 replays frames into an in-memory surface to prove the seam; nothing
 consumed its output. To watch a live run, use the SSE stream the server
-already exposes, or `pantheon explain <run_id>` for the durable event list.
+already exposes, or `pantheon logs <run_id>` for the durable event list.
 
 ## Gateway verbs
 

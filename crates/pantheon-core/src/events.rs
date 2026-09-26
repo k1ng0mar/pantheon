@@ -190,7 +190,7 @@ pub enum Event {
     /// The assembled context exceeded the model's window; the host trimmed
     /// it before the provider call (oldest tool rows re-compacted, oldest
     /// exchanges dropped). Ephemeral — ledger history is untouched, only
-    /// what the model sees this turn. Persisted so /explain shows why
+    /// what the model sees this turn. Persisted so `pantheon logs` shows why
     /// earlier turns are absent from the prompt.
     ContextTrimmed {
         run_id: String,

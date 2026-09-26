@@ -49,7 +49,7 @@ the whole vector to the provider:
 A user hits this on any conversation past a few hundred KB of tool output. The provider returns
 `CONTEXT_OVERFLOW` or a 400, and the run dies with no recovery. `ContextTrimmed` and
 `ContextCompressed` events exist in `pantheon-core/src/events.rs:195` and are mapped by the otel
-fold and the extension bridge, so an operator watching `/explain` will never see one emitted.
+fold and the extension bridge, so an operator watching `pantheon logs` will never see one emitted.
 
 This is the worst gap because `ARCHITECTURE.md:80` describes the behaviour in the present tense
 ("assembled messages are fitted to the catalog `context_limit` before each provider call") and
@@ -363,7 +363,7 @@ this means rebuilding from source to get a fix.
 Worth stating, because the brief asked for skepticism in both directions.
 
 - **The event ledger.** Every meaningful transition is a typed `Event` persisted to SQLite with
-  sequence numbers, giving replay, crash recovery, and `/explain` offline. Hermes has
+  sequence numbers, giving replay, crash recovery, and `pantheon logs` offline. Hermes has
   `hermes_state_*` modules, OMP has `append-only-context.ts`, and both are less uniform about it.
   Hermes's own audit trail is a parallel concept.
 - **Capability identity over role labels.** Tools declare the capabilities they need; policy

@@ -27,7 +27,7 @@ or a pre-merge hook as the feature gate.
 | Case | Origin |
 |---|---|
 | run-completes-and-logs | wave1 supervisor lifecycle; ledger persistence |
-| explain-unknown-run-is-empty | wave1 `/explain` offline path |
+| explain-unknown-run-is-empty | wave1 `pantheon logs` offline path |
 | run-failure-records-code | wave1 structured errors (§20) |
 | rerun-of-completed-run-keeps-history | wave1 append-only ledger |
 | hook-fires-and-dedups-per-session | Hermes: once-per-session plugins |

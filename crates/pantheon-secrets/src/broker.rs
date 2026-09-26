@@ -8,7 +8,7 @@
 //!   must never fail a resolve the next vault could satisfy. Deeper
 //!   failures (tampered encrypted vault, I/O) still propagate loudly.
 //! - Secrets travel only as [`SecretValue`]; `describe`/`Debug` never leak
-//!   contents, so events, `/explain`, and logs stay clean.
+//!   contents, so events, `pantheon logs`, and logs stay clean.
 //! - `inject` returns `None` for absent secrets rather than erroring, so
 //!   callers degrade gracefully when a secret isn't configured.
 

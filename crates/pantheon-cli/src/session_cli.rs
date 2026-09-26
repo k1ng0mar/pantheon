@@ -407,7 +407,7 @@ fn command(repl: &mut Repl, line: &str) -> bool {
                 }
             }
             // Manual rename: a SessionTitled event like any other, so
-            // last-write-wins and /explain shows who named it. A later
+            // last-write-wins and `pantheon logs` shows who named it. A later
             // auto-title is suppressed (the run is already titled).
             let ev = pantheon_core::events::Event::SessionTitled {
                 run_id: repl.run_id.clone(),
