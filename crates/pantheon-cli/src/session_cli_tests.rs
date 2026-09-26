@@ -23,6 +23,7 @@ fn repl(tag: &str) -> (Repl, std::path::PathBuf) {
         Repl {
             session,
             run_id: "run_name_t".into(),
+            policy_preset: "coder".into(),
             model: None,
             namespace: "nyx".into(),
         },

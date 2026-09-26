@@ -1269,6 +1269,18 @@ fn handle_slash(state: &mut TuiState, supervisor: &pantheon_runtime::Supervisor,
                 if runs.is_empty() {
                     state.add_status("no runs yet".into());
                 }
+                // The current run has no ledger rows until the first message
+                // is sent, so on a fresh session /runs claimed there were no
+                // runs while the user was plainly sitting in one. Show it,
+                // flagged, rather than contradicting what they just saw.
+                let listed: std::collections::HashSet<&str> =
+                    runs.iter().map(|(id, ..)| id.as_str()).collect();
+                if !state.session_id.is_empty() && !listed.contains(state.session_id.as_str()) {
+                    state.add_status(format!(
+                        "\u{25d0} {}  (this run, not yet saved)",
+                        state.session_id
+                    ));
+                }
                 for (run_id, status, _ts, title) in runs {
                     let glyph = match status.as_str() {
                         "completed" => "\u{2713}",

@@ -69,6 +69,16 @@ pub enum PolicyPreset {
 }
 
 impl PolicyPreset {
+    /// Canonical config spelling. Round-trips with `from_str`, so a preset
+    /// read from config can be printed back in the form the user wrote.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reader => "reader",
+            Self::Coder => "coder",
+            Self::CoderMemory => "coder_memory",
+        }
+    }
+
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "reader" => Some(Self::Reader),
