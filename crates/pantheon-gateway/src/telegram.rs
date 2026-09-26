@@ -210,7 +210,7 @@ impl TelegramChannel {
         Self::new(bot_token, transport)
     }
     pub fn push_inbound(&self, event: ChannelEvent) {
-        self.inbox.lock().unwrap().push(event);
+        crate::channel::lock(&self.inbox).push(event);
     }
 
     fn payload(frame: &UiFrame, text: String) -> Value {
@@ -250,7 +250,7 @@ impl Channel for TelegramChannel {
         Ok(())
     }
     fn poll(&self) -> Vec<ChannelEvent> {
-        let mut events = std::mem::take(&mut *self.inbox.lock().unwrap());
+        let mut events = std::mem::take(&mut *crate::channel::lock(&self.inbox));
         events.extend(self.transport.poll_events());
         events
     }
