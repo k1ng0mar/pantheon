@@ -524,21 +524,9 @@ pub fn run_session() {
 
 /// `pinned`: Some(id) from `--resume` — skip auto-resume and use the id.
 pub fn run_session_inner(pinned_id: Option<String>) {
-    let file_cfg = config_doc::Config::load(&crate::data_dir()).ok();
+    let file_cfg = config_doc::Config::load_or_report(&crate::data_dir());
     let model_policy = build_model_policy(&file_cfg, None, None);
-    let allow_memory = file_cfg
-        .as_ref()
-        .map(|c| c.policy == Some(config_schema::PolicyPreset::CoderMemory))
-        .unwrap_or_else(|| {
-            std::env::var("PANTHEON_ALLOW_MEMORY")
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or(false)
-        });
-    let policy = if allow_memory {
-        pantheon_core::capability::Policy::coder_with_memory()
-    } else {
-        pantheon_core::capability::Policy::coder()
-    };
+    let policy = config_schema::policy_for_config(&file_cfg);
     let secrets = config_doc::chat_secrets(file_cfg.as_ref());
     let mut session = match Session::new(crate::data_dir(), policy, model_policy, secrets) {
         Ok(s) => s,
@@ -640,7 +628,7 @@ pub fn run_session_inner(pinned_id: Option<String>) {
         // policy is read per turn from the session struct. For now the
         // override takes effect by restarting the session object.
         if let Some((p, m)) = repl.model.clone() {
-            let file_cfg = config_doc::Config::load(&crate::data_dir()).ok();
+            let file_cfg = config_doc::Config::load_or_report(&crate::data_dir());
             let mp = build_model_policy(&file_cfg, Some(p), Some(m));
             let pol = repl.session.policy.clone();
             let secrets = config_doc::chat_secrets(file_cfg.as_ref());

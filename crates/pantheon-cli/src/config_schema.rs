@@ -77,6 +77,45 @@ impl PolicyPreset {
             _ => None,
         }
     }
+
+    /// The policy this preset names.
+    ///
+    /// Every entry point resolves the preset here. It used to inline a
+    /// two-way `allow_memory` boolean at four call sites, so `reader` and
+    /// `coder` both produced `Policy::coder()` and a user who set
+    /// `policy = "reader"` got shell and file writes.
+    pub fn to_policy(self) -> pantheon_core::capability::Policy {
+        match self {
+            Self::Reader => pantheon_core::capability::Policy::researcher_readonly(),
+            Self::Coder => pantheon_core::capability::Policy::coder(),
+            Self::CoderMemory => pantheon_core::capability::Policy::coder_with_memory(),
+        }
+    }
+}
+
+/// Resolve the policy for a session.
+///
+/// Config wins. With no config, `PANTHEON_ALLOW_MEMORY` only decides between
+/// the two coder policies, and `PANTHEON_POLICY` picks the preset outright.
+pub fn policy_for_config(
+    file_cfg: &Option<crate::config_doc::Config>,
+) -> pantheon_core::capability::Policy {
+    if let Some(preset) = file_cfg.as_ref().and_then(|c| c.policy) {
+        return preset.to_policy();
+    }
+    if let Ok(p) = std::env::var("PANTHEON_POLICY") {
+        if let Some(preset) = PolicyPreset::from_str(&p) {
+            return preset.to_policy();
+        }
+    }
+    let allow_memory = std::env::var("PANTHEON_ALLOW_MEMORY")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    if allow_memory {
+        pantheon_core::capability::Policy::coder_with_memory()
+    } else {
+        pantheon_core::capability::Policy::coder()
+    }
 }
 
 #[cfg(test)]

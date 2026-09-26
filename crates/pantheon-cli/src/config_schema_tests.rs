@@ -26,3 +26,58 @@ fn policy_preset_parses_the_config_toml_spellings() {
     );
     assert_eq!(PolicyPreset::from_str("nope"), None);
 }
+
+#[test]
+fn every_preset_maps_to_the_policy_it_names() {
+    // `reader` used to resolve to Policy::coder(), so a user who set
+    // policy = "reader" got shell and file writes.
+    use pantheon_core::capability::{Capability, Decision};
+
+    let reader = PolicyPreset::Reader.to_policy();
+    for denied in [
+        Capability::ShellExecute,
+        Capability::FilesystemWrite,
+        Capability::GitPush,
+        Capability::MemoryWrite,
+    ] {
+        assert_eq!(
+            reader.check(&denied),
+            Decision::Deny,
+            "reader must not grant {denied:?}"
+        );
+    }
+    assert_eq!(reader.check(&Capability::FilesystemRead), Decision::Allow);
+    assert_eq!(reader.check(&Capability::MemoryRead), Decision::Allow);
+
+    assert_eq!(
+        PolicyPreset::Coder
+            .to_policy()
+            .check(&Capability::ShellExecute),
+        Decision::Allow
+    );
+    assert_eq!(
+        PolicyPreset::Coder
+            .to_policy()
+            .check(&Capability::MemoryWrite),
+        Decision::Deny
+    );
+    assert_eq!(
+        PolicyPreset::CoderMemory
+            .to_policy()
+            .check(&Capability::MemoryWrite),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn config_policy_wins_over_the_environment() {
+    let cfg = crate::config_doc::Config {
+        policy: Some(PolicyPreset::Reader),
+        ..Default::default()
+    };
+    let policy = policy_for_config(&Some(cfg));
+    assert_eq!(
+        policy.check(&pantheon_core::capability::Capability::ShellExecute),
+        pantheon_core::capability::Decision::Deny
+    );
+}

@@ -69,12 +69,18 @@ fn store_path(data_dir: &Path) -> PathBuf {
     data_dir.join("schedule.json")
 }
 
-fn load_jobs(data_dir: &Path) -> Vec<StoredJob> {
+/// Load jobs, treating a corrupt file as an error rather than as "no jobs".
+///
+/// A silent `unwrap_or_default` meant a malformed schedule.json read as an
+/// empty list and the next create overwrote the user's jobs.
+fn load_jobs(data_dir: &Path) -> Result<Vec<StoredJob>, String> {
     let path = store_path(data_dir);
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    serde_json::from_str(&text).map_err(|e| format!("{} is corrupt: {e}", path.display()))
 }
 
 fn save_jobs(data_dir: &Path, jobs: &[StoredJob]) -> Result<(), String> {
@@ -87,6 +93,18 @@ fn save_jobs(data_dir: &Path, jobs: &[StoredJob]) -> Result<(), String> {
     Ok(())
 }
 
+/// Load jobs or exit. A corrupt schedule file is a stop, not an empty list.
+fn load_or_exit(data_dir: &Path) -> Vec<StoredJob> {
+    match load_jobs(data_dir) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("schedule: {e}");
+            eprintln!("fix: delete or repair {}", store_path(data_dir).display());
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Schedule a task to run repeatedly.
 pub fn cmd_schedule(args: &[String], data_dir: &Path) {
     if args.len() < 3 {
@@ -96,7 +114,10 @@ pub fn cmd_schedule(args: &[String], data_dir: &Path) {
     }
 
     let subcommand = args[2].as_str();
-    if matches!(subcommand, "list" | "pause" | "resume" | "cancel" | "run") {
+    if matches!(
+        subcommand,
+        "list" | "pause" | "resume" | "cancel" | "run" | "tick"
+    ) {
         handle_subcommand(&args[2..], data_dir);
         return;
     }
@@ -149,7 +170,7 @@ pub fn cmd_schedule(args: &[String], data_dir: &Path) {
         provider: probe.provider,
     };
 
-    let mut jobs = load_jobs(data_dir);
+    let mut jobs = load_or_exit(data_dir);
     jobs.push(stored);
     if let Err(e) = save_jobs(data_dir, &jobs) {
         eprintln!("save failed: {e}");
@@ -167,7 +188,7 @@ pub fn cmd_schedule(args: &[String], data_dir: &Path) {
 fn handle_subcommand(parts: &[String], data_dir: &Path) {
     match parts[0].as_str() {
         "list" => {
-            let jobs = load_jobs(data_dir);
+            let jobs = load_or_exit(data_dir);
             if jobs.is_empty() {
                 println!("no scheduled jobs");
                 return;
@@ -201,7 +222,7 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                 eprintln!("usage: pantheon schedule {} <id>", parts[0]);
                 std::process::exit(2);
             };
-            let mut jobs = load_jobs(data_dir);
+            let mut jobs = load_or_exit(data_dir);
             let found = jobs.iter_mut().find(|j| j.id == *id);
             match found {
                 Some(j) => {
@@ -230,7 +251,7 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                 eprintln!("usage: pantheon schedule run <id>");
                 std::process::exit(2);
             };
-            let jobs = load_jobs(data_dir);
+            let jobs = load_or_exit(data_dir);
             match jobs.iter().find(|j| j.id == *id) {
                 Some(j) => {
                     run_job_now(j, data_dir);
@@ -256,10 +277,60 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                 }
             }
         }
+        "tick" => {
+            // Fire every job that is due. Jobs used to be written to
+            // schedule.json and nothing ever read it against a clock, so no
+            // job could ever fire on its own. `tick` is the primitive a
+            // daemon, cron entry, or CI step calls; `--watch` keeps it
+            // running in the foreground.
+            let watch = parts.iter().any(|a| a == "--watch");
+            loop {
+                let jobs = load_or_exit(data_dir);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let mut fired = Vec::new();
+                for j in jobs.iter().filter(|j| !j.paused) {
+                    let scheduled = pantheon_scheduler::Job::new(
+                        &j.id,
+                        j.kind.clone(),
+                        j.agent.as_deref().unwrap_or("nyx"),
+                    );
+                    if scheduled.due(now, j.last_run) {
+                        run_job_now(j, data_dir);
+                        fired.push(j.id.clone());
+                    }
+                }
+                if fired.is_empty() {
+                    println!("tick {now}: nothing due");
+                } else {
+                    for id in &fired {
+                        println!("tick {now}: fired {id}");
+                    }
+                    // Persist fire times so an interval job does not
+                    // immediately come due again on the next tick.
+                    let mut jobs = jobs;
+                    for j in jobs.iter_mut() {
+                        if fired.contains(&j.id) {
+                            j.last_run = Some(now);
+                        }
+                    }
+                    if let Err(e) = save_jobs(data_dir, &jobs) {
+                        eprintln!("warning: could not record last_run: {e}");
+                    }
+                }
+                if !watch {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(30));
+            }
+        }
         _ => {
             // Guarded by cmd_schedule's subcommand allow-list; fail loud
             // (not unreachable) so a new subcommand can't silently no-op.
             eprintln!("usage: pantheon schedule list|pause|resume|cancel|run <id>");
+            eprintln!("       pantheon schedule tick [--watch]");
             std::process::exit(2);
         }
     }
@@ -350,13 +421,28 @@ fn format_kind(kind: &ScheduleKind) -> String {
     }
 }
 
+/// Render `last_run` as elapsed time.
+///
+/// `last_run` is a wall-clock millisecond timestamp, not a duration. It was
+/// printed as if it were elapsed seconds, so a job that fired a moment ago
+/// reported "last: 1790433286s ago".
 fn format_last(last: Option<i64>) -> String {
-    match last {
-        Some(ms) => {
-            let secs = ms / 1000;
-            format!("{secs}s ago")
-        }
-        None => "never".into(),
+    let Some(fired_at) = last else {
+        return "never".into();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let secs = ((now - fired_at) / 1000).max(0);
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86_400)
     }
 }
 
@@ -372,7 +458,7 @@ fn run_job_now(job: &StoredJob, data_dir: &Path) {
     use crate::session_cli::build_model_policy;
     use pantheon_runtime::session::Session;
 
-    let file_cfg = config_doc::Config::load(data_dir).ok();
+    let file_cfg = config_doc::Config::load_or_report(data_dir);
     let model_policy = build_model_policy(&file_cfg, job.provider.clone(), job.model.clone());
     let allow_memory = file_cfg
         .as_ref()

@@ -821,21 +821,9 @@ pub fn run_tui_session() -> Result<(), Box<dyn std::error::Error>> {
     use crate::session_cli::build_model_policy;
     use std::sync::mpsc;
 
-    let file_cfg = config_doc::Config::load(&crate::data_dir()).ok();
+    let file_cfg = config_doc::Config::load_or_report(&crate::data_dir());
     let model_policy = build_model_policy(&file_cfg, None, None);
-    let allow_memory = file_cfg
-        .as_ref()
-        .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
-        .unwrap_or_else(|| {
-            std::env::var("PANTHEON_ALLOW_MEMORY")
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or(false)
-        });
-    let policy = if allow_memory {
-        pantheon_core::capability::Policy::coder_with_memory()
-    } else {
-        pantheon_core::capability::Policy::coder()
-    };
+    let policy = crate::config_schema::policy_for_config(&file_cfg);
     let secrets = config_doc::chat_secrets(file_cfg.as_ref());
 
     let mut session = match Session::new(crate::data_dir(), policy, model_policy, secrets) {
