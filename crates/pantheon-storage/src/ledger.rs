@@ -1,5 +1,5 @@
 //! Event-sourced execution ledger. Every run persists its events to SQLite;
-//! `/explain run_X` replays them. History is append-only.
+//! ``pantheon logs run_X`` replays them. History is append-only.
 use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::events::Event;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -731,7 +731,7 @@ impl Ledger {
         .map(|_| ())
     }
 
-    pub fn explain(&self, run_id: &str) -> Result<String, PantheonError> {
+    pub fn render_run_log(&self, run_id: &str) -> Result<String, PantheonError> {
         let entries = self.replay(run_id)?;
         if entries.is_empty() {
             return Ok(format!("run {run_id}: no events recorded"));

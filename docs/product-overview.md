@@ -22,7 +22,7 @@ This boundary is central to Pantheon's value. Agent products often lose trust wh
 
 Pantheon is for software builders who need an agent that can operate inside a real workspace. A solo developer can use the chat loop to inspect a repository, make gated changes, run commands, and inspect the resulting run history. A small team can put the same runtime behind a local server or a controlled chat gateway. A platform team can use the event ledger and policy boundary as the basis for an agent product without adopting a particular model vendor.
 
-It is also for users who need to know why an agent did something. The runtime records events for run start, model requests, tool requests, approvals, memory writes, recovery, and completion. `pantheon explain` replays those events in a human-readable form, and reports the run's current state alongside them. `pantheon audit` exports a sequence-checked JSONL trajectory. This record is useful for debugging, handoff, compliance reviews, and tests.
+It is also for users who need to know why an agent did something. The runtime records events for run start, model requests, tool requests, approvals, memory writes, recovery, and completion. `pantheon logs` replays those events in a human-readable form, and reports the run's current state alongside them. `pantheon audit` exports a sequence-checked JSONL trajectory. This record is useful for debugging, handoff, compliance reviews, and tests.
 
 The system is less suited to a user who wants a finished hosted personal assistant with a broad device ecosystem and managed accounts. Those capabilities are visible in the product plan, but the repository currently describes a local runtime with a small web client and channel adapters. The honest audience is a builder or technical operator who can configure providers, inspect permissions, and operate the process.
 
@@ -86,7 +86,7 @@ The intended product is one runtime with several ways to use it.
 
 A user installs Pantheon, runs setup, chooses a provider and model, selects a policy, and runs `pantheon doctor`. The user opens an interactive session or sends a one-shot request. The agent streams a response, calls tools when policy permits, and shows enough state for the user to understand what is happening. A shell command that needs approval pauses. The user grants or denies it. The session continues.
 
-The user can leave the process and return later. The session finds the latest run, restores the transcript, and resumes unfinished work. `pantheon explain run_id` shows the decisions and events. `pantheon memory recall` returns relevant facts with their source and trust tier. A human can confirm a proposed record when it deserves higher trust.
+The user can leave the process and return later. The session finds the latest run, restores the transcript, and resumes unfinished work. `pantheon logs run_id` shows the decisions and events. `pantheon memory recall` returns relevant facts with their source and trust tier. A human can confirm a proposed record when it deserves higher trust.
 
 The same user can use the terminal cockpit, local web client, Telegram, or Discord. The surface changes delivery and interaction, while the runtime keeps the same run, policy, and approval model. A future desktop client can consume the same runtime API rather than implement a second agent engine.
 

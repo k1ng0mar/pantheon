@@ -151,7 +151,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                 }
                 Err(e) if !last_key && is_key_failure(e) => {
                     // This key is dead/over quota; the next stacked key gets
-                    // the turn. Marked retryable so /explain shows rotation.
+                    // the turn. Marked retryable so `pantheon logs` shows rotation.
                     key_failures += 1;
                     sink.emit(ModelEvent::AttemptFailed {
                         provider: model.provider.clone(),
@@ -185,7 +185,7 @@ impl<T: ChatTransport> ProviderChain<T> {
 
     /// Walk the chain: default, then each fallback on retryable failure
     /// only. Emits chain events for every transition, including the
-    /// failure cause on each Fallback so `/explain` answers why.
+    /// failure cause on each Fallback so `pantheon logs` answers why.
     fn run(
         &self,
         messages: &[Message],

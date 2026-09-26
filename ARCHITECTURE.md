@@ -62,7 +62,7 @@ Owns agent lifecycle, execution state, sessions, task scheduling, permissions, a
 
 Model-agnostic. Adapters: Claude, Kimi, GLM, Qwen, OpenAI-compatible, local, whatever-next.
 
-**Implemented:** `pantheon-core` (events, structured errors, capabilities, model policy), `pantheon-storage` (SQLite event-sourced ledger, `/explain`, `/status`, crash recovery), `pantheon-runtime` (supervisor, run lifecycle, checkpoint/recovery), `pantheon-cli`.
+**Implemented:** `pantheon-core` (events, structured errors, capabilities, model policy), `pantheon-storage` (SQLite event-sourced ledger, `pantheon logs`, `/status`, crash recovery), `pantheon-runtime` (supervisor, run lifecycle, checkpoint/recovery), `pantheon-cli`.
 
 ## 2. Agent engine
 
@@ -219,7 +219,7 @@ StorageProvider → SQLite | PostgreSQL | future
 
 Execution history is event-sourced. Derived data is mutable.
 
-**Implemented:** `pantheon-storage` — SQLite ledger, event sourcing, `/explain`, `/status`, crash recovery (`RunRecovered`), durable occurrence claims (`ClaimStore`), versioned operation state machines, CAS run leases with heartbeats, and ledger-backed generative-UI artifacts. Durable tool work advances through `translate → execute → translate_result`; process groups are lease-owned and use TERM→KILL cancellation. Global `max_seq` anchor for file checkpoints. Scheduler durable path uses `ClaimStore`; `Ledger::claim` also exists on a separate table (review: pick one). **Session search** (`search.rs`): a hybrid retrieval sidecar in the ledger file, exposed to the model as the `session_search` tool (capability `FilesystemRead`). Chunks are indexed forward-only inside `Supervisor::emit` as message/tool/title events land — a hit points at the exact source event (`run_id` + `seq`). **FTS5 is primary** (exact identifiers, tool names, quoted phrases; recall-first OR query with prefix matching so `websocket` finds `websockets`). **Vector is secondary**: embeddings are computed at index time via the `Embeddings` auxiliary (`EmbedClient::from_policy`; absent entry falls back to a deterministic local hashing embedder, dim 256, char-trigram, L2-normalised — no network, no key, replaced wholesale when a real embedding model is configured). Stored as little-endian f32 blobs on the chunk row (`session_chunks.embedding`); hybrid ranking is 0.60 lexical + 0.30 semantic (cosine) + 0.10 recency, with the semantic term absent when no embedder is attached. Query-side embedding uses the same client. No external vector DB — cosine runs in-process over the chunk rows. Safe file writes live in `pantheon-exec::safewrite` (CLI: `preview` / `stage` / `apply` / `checkpoint` / `rollback`): preview is read-only, every apply snapshots a checkpoint first, multi-file batches publish atomically (tmp+fsync+rename), stale `expected_hash` fails with `SAFE_STALE`, rollback restores by checkpoint id or ledger seq, and a hash-chained journal replays torn applies at startup.
+**Implemented:** `pantheon-storage` — SQLite ledger, event sourcing, `pantheon logs`, `/status`, crash recovery (`RunRecovered`), durable occurrence claims (`ClaimStore`), versioned operation state machines, CAS run leases with heartbeats, and ledger-backed generative-UI artifacts. Durable tool work advances through `translate → execute → translate_result`; process groups are lease-owned and use TERM→KILL cancellation. Global `max_seq` anchor for file checkpoints. Scheduler durable path uses `ClaimStore`; `Ledger::claim` also exists on a separate table (review: pick one). **Session search** (`search.rs`): a hybrid retrieval sidecar in the ledger file, exposed to the model as the `session_search` tool (capability `FilesystemRead`). Chunks are indexed forward-only inside `Supervisor::emit` as message/tool/title events land — a hit points at the exact source event (`run_id` + `seq`). **FTS5 is primary** (exact identifiers, tool names, quoted phrases; recall-first OR query with prefix matching so `websocket` finds `websockets`). **Vector is secondary**: embeddings are computed at index time via the `Embeddings` auxiliary (`EmbedClient::from_policy`; absent entry falls back to a deterministic local hashing embedder, dim 256, char-trigram, L2-normalised — no network, no key, replaced wholesale when a real embedding model is configured). Stored as little-endian f32 blobs on the chunk row (`session_chunks.embedding`); hybrid ranking is 0.60 lexical + 0.30 semantic (cosine) + 0.10 recency, with the semantic term absent when no embedder is attached. Query-side embedding uses the same client. No external vector DB — cosine runs in-process over the chunk rows. Safe file writes live in `pantheon-exec::safewrite` (CLI: `preview` / `stage` / `apply` / `checkpoint` / `rollback`): preview is read-only, every apply snapshots a checkpoint first, multi-file batches publish atomically (tmp+fsync+rename), stale `expected_hash` fails with `SAFE_STALE`, rollback restores by checkpoint id or ledger seq, and a hash-chained journal replays torn applies at startup.
 
 ## 13. Secrets
 
@@ -304,14 +304,14 @@ Events stream as the core `Event` enum (no second event type). Transports: HTTP 
 
 ## 19. Observability
 
-`/explain run_abc123`: why spawn? why tool? why denied? why retry? why fallback? which memory influenced this?
+``pantheon logs` run_abc123`: why spawn? why tool? why denied? why retry? why fallback? which memory influenced this?
 
 ```
 Runtime events → OTel instrumentation → logs / metrics / traces
-              + durable execution ledger (offline /explain)
+              + durable execution ledger (offline `pantheon logs`)
 ```
 
-**Implemented:** `pantheon-otel` — Event → span mapping, metrics fold over replay, offline explain(). Deltas excluded from spans. `/explain` remains the offline path. Span mapping exists but no live OTel exporter (no OTLP/gRPC/HTTP push target); instrumentation is fold-only today.
+**Implemented:** `pantheon-otel` — Event → span mapping, metrics fold over replay, offline explain(). Deltas excluded from spans. `pantheon logs` remains the offline path. Span mapping exists but no live OTel exporter (no OTLP/gRPC/HTTP push target); instrumentation is fold-only today.
 
 ## 20. Recovery
 
@@ -427,7 +427,7 @@ Item kinds: `skill`, `agent`, `rule`, `command`, `prompt`, `extension` (Tier 2),
 4. Secrets via broker at the execution boundary; values never in context/logs.
 5. MCP = external interop only. Internal = native Capability API.
 6. Durable checkpoint + recovery (D). SQLite default storage.
-7. OTel + ledger for observability; `/explain` stays offline-capable.
+7. OTel + ledger for observability; `pantheon logs` stays offline-capable.
 8. Skills (portable) vs extensions (runtime code) stay two tiers.
 9. Sandboxing is a runtime primitive with policy-chosen levels.
 10. Migration retains provenance; unmappable content is archived, not dropped.

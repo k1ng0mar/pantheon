@@ -83,7 +83,7 @@ pantheon pipeline mybuild --spec "build a login page"    # resume
 ```
 
 Printed output is `== stage ==` sections with each stage's text. The run
-also appears in the ledger (`pantheon explain mybuild`).
+also appears in the ledger (`pantheon logs mybuild`).
 
 ## What a stage executor is
 

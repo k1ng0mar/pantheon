@@ -45,5 +45,5 @@ fn metrics_fold_over_replay() {
         ),
         (1, 1, 1, 1)
     );
-    assert!(explain(&evs).contains("1 completed"));
+    assert!(render_events(&evs).contains("1 completed"));
 }

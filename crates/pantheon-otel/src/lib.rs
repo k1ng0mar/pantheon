@@ -137,7 +137,7 @@ pub fn metrics_from(events: &[Event]) -> Metrics {
 }
 
 /// Offline explain: works with no collector attached.
-pub fn explain(events: &[Event]) -> String {
+pub fn render_events(events: &[Event]) -> String {
     let m = metrics_from(events);
     format!(
         "runs {} started / {} completed / {} failed; {} tool calls; {} model turns; {} approvals; {} sub-agents",

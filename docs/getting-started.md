@@ -74,8 +74,8 @@ gets an id like `run_1690000000000_ab12`; everything it did is recorded
 in the ledger.
 
 ```sh
-pantheon explain run_1690000000000_ab12   # full event trace (in-session: /status)
-pantheon explain run_1690000000000_ab12  # full event replay in words
+pantheon logs run_1690000000000_ab12   # full event trace (in-session: /status)
+pantheon logs run_1690000000000_ab12  # full event replay in words
 ```
 
 ## Where data lives

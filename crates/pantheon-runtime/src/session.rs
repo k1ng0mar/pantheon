@@ -591,7 +591,7 @@ impl Session {
         let mut reopened = false;
         match self.supervisor.ledger_status(run_id)?.as_deref() {
             Some("awaiting_approval") => {
-                // Name the scope. This used to point at `pantheon explain` and
+                // Name the scope. This used to point at `pantheon logs` and
                 // leave the operator to copy `call_id:tool:args` — JSON with
                 // embedded quotes — out of a table by hand. An approval flow
                 // cannot ask for that.
@@ -605,7 +605,7 @@ impl Session {
                     ),
                     None => format!(
                         "run {run_id} is parked on approval but lists no pending \
-                         scope; see `pantheon explain {run_id}`"
+                         scope; see `pantheon logs {run_id}`"
                     ),
                 };
                 return Err(aerr("RUN_PARKED", how));

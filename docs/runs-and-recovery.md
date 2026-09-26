@@ -13,7 +13,7 @@ RunStarted -> ModelRequested -> [ToolStarted -> ToolOutput -> ToolCompleted]*
                         \-> RunFailed | RunCanceled
 ```
 
-The run status (shown by `pantheon explain <id>`, or `/status` in-session) is derived state: `running`,
+The run status (shown by `pantheon logs <id>`, or `/status` in-session) is derived state: `running`,
 `awaiting_approval`, `completed`, `failed`, `canceled`, or `unknown`.
 Terminal statuses are immutable: a `RunFailed` after `RunCompleted` does
 not overwrite the completed status. The events still append (the ledger is

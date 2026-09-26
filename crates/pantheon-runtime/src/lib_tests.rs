@@ -46,7 +46,7 @@ fn session_search_indexes_and_finds() {
 }
 
 #[test]
-fn start_complete_explain() {
+fn start_complete_render_log() {
     let dir = std::env::temp_dir().join(format!("pantheon-rt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let sup = Supervisor::open(dir).unwrap();
@@ -61,7 +61,7 @@ fn start_complete_explain() {
     })
     .unwrap();
     sup.complete(id).unwrap();
-    assert!(sup.explain(id).unwrap().contains("completed"));
+    assert!(sup.render_run_log(id).unwrap().contains("completed"));
 }
 #[test]
 fn crash_recovery_flag() {
@@ -72,7 +72,10 @@ fn crash_recovery_flag() {
     drop(sup);
     let sup2 = Supervisor::open(dir).unwrap();
     assert!(sup2.start_run("run_crash").unwrap());
-    assert!(sup2.explain("run_crash").unwrap().contains("recovered"));
+    assert!(sup2
+        .render_run_log("run_crash")
+        .unwrap()
+        .contains("recovered"));
 }
 
 #[test]
