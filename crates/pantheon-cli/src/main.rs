@@ -478,7 +478,7 @@ fn main() {
                 std::process::exit(2);
             }
             // Config file (from setup) provides defaults; flags and env win.
-            let file_cfg = config_doc::Config::load(&data_dir()).ok();
+            let file_cfg = config_doc::Config::load_or_report(&data_dir());
             let cfg_model = file_cfg
                 .as_ref()
                 .and_then(|c| c.model.clone())
@@ -530,19 +530,7 @@ fn main() {
                 );
                 secrets = secrets.with_vault_front(Box::new(mem));
             }
-            let allow_memory = file_cfg
-                .as_ref()
-                .map(|c| c.policy == Some(config_schema::PolicyPreset::CoderMemory))
-                .unwrap_or_else(|| {
-                    std::env::var("PANTHEON_ALLOW_MEMORY")
-                        .map(|v| v == "1" || v == "true")
-                        .unwrap_or(false)
-                });
-            let policy = if allow_memory {
-                pantheon_core::capability::Policy::coder_with_memory()
-            } else {
-                pantheon_core::capability::Policy::coder()
-            };
+            let policy = config_schema::policy_for_config(&file_cfg);
             let session = match pantheon_runtime::session::Session::new(
                 data_dir(),
                 policy,

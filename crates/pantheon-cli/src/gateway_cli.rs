@@ -46,7 +46,7 @@ fn open_session(
     data_dir: &Path,
     policy: Policy,
 ) -> Result<pantheon_runtime::session::Session, pantheon_core::error::PantheonError> {
-    let cfg = crate::config_doc::Config::load(data_dir).ok();
+    let cfg = crate::config_doc::Config::load_or_report(data_dir);
     let default = pantheon_core::model::DefaultModel {
         provider: std::env::var("PANTHEON_PROVIDER").unwrap_or_else(|_| "local".into()),
         model: std::env::var("PANTHEON_MODEL").unwrap_or_else(|_| "llama3.2".into()),
@@ -190,10 +190,14 @@ pub fn cmd_gateway(_args: &[String]) {
     }
     let data_dir = super::data_dir();
     let outbound = Arc::new(Mutex::new(Vec::new()));
+    // The gateway runs the same policy the config names. It used to read
+    // PANTHEON_GATEWAY_POLICY only, so a user with a working `policy =
+    // "reader"` config still got coder on Discord and Telegram.
+    let gw_cfg = crate::config_doc::Config::load_or_report(&data_dir);
     let policy = match std::env::var("PANTHEON_GATEWAY_POLICY").as_deref() {
         Ok("researcher") => Policy::researcher_readonly(),
         Ok("coder") => Policy::coder(),
-        _ => Policy::coder_with_memory(),
+        _ => crate::config_schema::policy_for_config(&gw_cfg),
     };
     let sink = Arc::new(RuntimeSink {
         data_dir: data_dir.clone(),

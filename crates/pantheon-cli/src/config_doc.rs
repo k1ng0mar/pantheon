@@ -296,6 +296,28 @@ impl Config {
     pub fn path(data_dir: &Path) -> std::path::PathBuf {
         data_dir.join("config.toml")
     }
+    /// Load the config, or explain why it could not be read.
+    ///
+    /// `load(...).ok()` at a dozen call sites threw away a `CONFIG_PARSE`
+    /// error that names the file, line, and column. A single typo then
+    /// looked like a working install that could not reach a provider: the
+    /// session fell back to `local`/`llama3.2` and failed against
+    /// localhost with no mention of the file that was actually broken.
+    ///
+    /// A missing config is not an error, so this returns `None` for that
+    /// case and prints for a config that exists but does not parse.
+    pub fn load_or_report(data_dir: &Path) -> Option<Self> {
+        match Self::load(data_dir) {
+            Ok(c) => Some(c),
+            Err(e) if e.code == "CONFIG_OPEN" => None,
+            Err(e) => {
+                eprintln!("pantheon: {}", e.cause);
+                eprintln!("pantheon: fix: {}", e.remediation);
+                std::process::exit(2);
+            }
+        }
+    }
+
     pub fn load(data_dir: &Path) -> Result<Self, PantheonError> {
         let path = Self::path(data_dir);
         let text = std::fs::read_to_string(&path).map_err(|e| {

@@ -84,7 +84,7 @@ fn open_session(
     data_dir: &Path,
     policy: pantheon_core::capability::Policy,
 ) -> Result<pantheon_runtime::session::Session, pantheon_core::error::PantheonError> {
-    let cfg = Config::load(data_dir).ok();
+    let cfg = Config::load_or_report(data_dir);
     let (provider, model) = cfg
         .as_ref()
         .and_then(|c| c.model.clone())
@@ -213,7 +213,7 @@ fn load_spec(sup: &Supervisor, run_id: &str) -> Option<String> {
 
 fn drive(sup: &Supervisor, data_dir: &std::path::Path, run_id: &str, spec: &str) {
     let data_dir = data_dir.to_path_buf();
-    let policy = policy_for(Config::load(&data_dir).ok().as_ref());
+    let policy = policy_for(Config::load_or_report(&data_dir).as_ref());
     let exec = RuntimeExecutor {
         data_dir: data_dir.clone(),
         policy: policy.clone(),
