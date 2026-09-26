@@ -77,7 +77,7 @@ Every meaningful transition emits a canonical `Event` (core):
 
 Gives replay, debugging, crash recovery. Aligns with MCP 2026 (stateless protocol core, formal extensions, stronger auth, long tasks).
 
-**Implemented:** `pantheon-agent` — pure orchestration loop behind `ModelTurn`. Capability gate at tool call (`Allow` / `Deny` / `Approval`). Denial emits structured `CAP_DENIED`; approval parks the run. Budgets: max turns, max tool calls. Swarm handoff via `AgentSpawner`. Context window budget (`pantheon-exec::context`): assembled messages are fitted to the catalog `context_limit` before each provider call — oldest oversized tool rows re-compact to a floor, then oldest whole exchanges drop (system rows and the live tail never); the trim is recorded as a `ContextTrimmed` event for `/explain`, and `CONTEXT_OVERFLOW` fires when even the essential rows cannot fit. An opt-in compression auxiliary (`[compression]` / `AuxiliaryKind::Compression`, provider-agnostic `ContextCompressor` in core, client in `pantheon-providers`) summarizes the oldest exchanges into a memory-tier `<compressed_context>` note on overflow, before the deterministic steps; failures fall back to dropping, every pass is a `ContextCompressed` event. exec itself never talks to a model — the host passes the compressor in.
+**Implemented:** `pantheon-agent` — pure orchestration loop behind `ModelTurn`. Capability gate at tool call (`Allow` / `Deny` / `Approval`). Denial emits structured `CAP_DENIED`; approval parks the run. Budgets: max turns, max tool calls. Swarm handoff via `AgentSpawner`.
 
 ## 3. Dynamic swarm
 
@@ -462,13 +462,18 @@ Eval: `eval/run.py` + `eval/cases.json` — regression harness driving the real 
 
 ## Open gaps
 
+- **Context window management is not in the production loop.** `pantheon-exec::context` implements `fit_to_window` / `compress_oldest`, and the `ContextTrimmed` / `ContextCompressed` / `CONTEXT_OVERFLOW` types exist, but `Session::drive` calls none of them: `session.rs` contains zero references to any of those symbols, and `drive` bounds turns, not tokens. A long session grows the transcript until the provider rejects it. Highest-value single fix in the repository; the module is already written and tested.
+- **Sub-agent delegation is not wired.** `AgentSpawner` and `pantheon_swarm::{Swarm, Caps, SpawnRefusal}` exist, but `Session::drive` never constructs a spawner, so the spawn path is unreachable from a chat turn. `pantheon swarm` writes ledger rows and a manifest; it does not execute the agents.
 - `pre_gateway_dispatch` has no fire site: `pantheon-gateway` depends only on `pantheon-core` + `pantheon-storage` and cannot reach the extension manager. Wiring it needs a deliberate dependency edge (or a callback trait in core) — it is declared, reported unsupported by the compat adapter, and flagged by `doctor` rather than silently mapped
-- Sandbox container/VM enforcement (profiles are policy values today; HIGH/VERY HIGH still process-level)
+- `pantheon-otel` has no consumer and no OpenTelemetry dependency. It is a pure event→span/metrics transformation, so the crate name oversells it; there is no OTLP exporter, no live trace, and no live metrics
+- MCP is projection only: `pantheon mcp` maps declared tokens to capabilities but launches no client, so no MCP tool can be discovered or called
+- Sandbox `HIGH`/`VERY HIGH` are policy values; the runner is process-level (bubblewrap/unshare) and falls back to a direct spawn when no backend is present, so it fails open
+- Scheduler has no daemon and no missed-run catch-up after a long outage (jobs fire on the next `schedule run`, not retroactively)
 - Durable agent identity configs (identity/config/memory-namespace/skills/capability/mode per persistent agent)
 - Package ecosystem (`packages/` format, install/verify/resolve/sandbox/test/approve/activate/rollback, channels + pinning)
-- MCP server *attachment* (`pantheon mcp` lists what a migration declared and whether it can register; no launcher yet — spec section 15)
-- Scheduler missed-run catch-up after a long outage (jobs fire on the next `schedule run`, not retroactively)
-- Live OTel exporter (OTLP push target)
+- No web/search, image, browser, patch, or grep/glob tool; no image or file input on any surface
+- Approval has no "always allow" and no rule persistence
+- Config and secrets are env-file only; the secrets broker is not on the tool execution path
 
 ## Audit trail
 
