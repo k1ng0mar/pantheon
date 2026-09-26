@@ -57,12 +57,78 @@ fn print_json<T: serde::Serialize>(label: &str, v: &T) {
     }
 }
 
+/// `pantheon --help`. Grouped by what a user is trying to do, because the
+/// flat verb list was 29 lines of equal weight with no way to tell the two
+/// commands you need daily from the six you install once.
 fn usage() -> String {
-    "pantheon <chat|run|schedule|swarm|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback|serve|stream|grant|deny|sign|setup|session|reset|gateway|skills|migrate|mcp|audit|pipeline> ...\n  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n  run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]  synthetic ledger events, no model\n  schedule <task> --30m [--agent NAME] | list|pause|resume|cancel|run <id>\n  swarm <N> \"<task>\" [roles...] [--delivery telegram]\n  explain <run_id>\n  status <run_id>\n  extensions  list loaded extensions\n  hook <name> [--session S] [--platform P]  fire a hook\n  doctor <plugin_dir>  loud preflight report\n  preview <path> <file-with-new-content>  read-only diff preview\n  stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n  apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n  checkpoint <path>... [--run ID]  snapshot pre-images\n  rollback (--ckpt ID | --seq N)  restore a checkpoint\n  serve [--port N] [--host H]  AG-UI SSE + RPC server (cline-style interactive)\n  stream <run_id> [--thread T] [--after N]  print SSE frames for a run\n  grant <run_id> <scope>  approve a parked tool call\n  deny <run_id> [scope]  refuse a parked tool call\n  sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n  channel <run_id> [--thread T]  replay frames through the transport seam\n  gateway                    run Discord/Telegram surfaces (env tokens)\n  setup                      interactive wizard: API key, default model, policy\n  model [--list] [--auxiliary KIND]  provider picker, stacked keys → .env, live model fetch\n  provider <add|list|remove>  custom-endpoint registry (keys → <data_dir>/.env)\n  session                    start the interactive REPL (default if no args)\n  reset [--config|--state|--everything] [--yes]  wipe data with confirmation\n  audit <run_id> [OUT.jsonl]  sequence-validated JSONL trajectory export\n  pipeline <run_id> [--approve STAGE|--deny STAGE]  six-stage orchestration gates\n  providers                  list cataloged providers and models\n  mcp list [--json]                     MCP servers declared by a migration, and whether they can register
-  migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp> [path] [--kind K] [--json] [--yes] [--merge-providers]  section 23 import pipeline
-  skills list|import <name>|doctor  discover/import/check SKILL.md skills\n"
-        .into()
+    let mut s = String::new();
+    s.push_str("pantheon - a durable agent runtime\n\n");
+    s.push_str("USAGE\n");
+    s.push_str(
+        "  pantheon                      open a session (TUI on a terminal, REPL otherwise)\n",
+    );
+    s.push_str("  pantheon chat \"message\"      one-shot turn; --id to resume, --choose to pick a model\n");
+    s.push_str("  pantheon --help | --version\n\n");
+
+    s.push_str("TALK TO IT\n");
+    s.push_str("  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n");
+    s.push_str(
+        "  run  [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n",
+    );
+    s.push_str("        synthetic ledger events, no model - for testing a surface\n\n");
+
+    s.push_str("INSPECT A RUN\n");
+    s.push_str("  explain <run_id>             full event trace\n");
+    s.push_str("  audit <run_id> [OUT.jsonl]   sequence-validated JSONL trajectory\n");
+    s.push_str("  stream <run_id> [--thread T] [--after N]   print SSE frames\n");
+    s.push_str("  channel <run_id> [--thread T]  replay frames through the transport seam\n\n");
+
+    s.push_str("EDIT FILES SAFELY\n");
+    s.push_str("  preview <path> <file>        read-only diff\n");
+    s.push_str("  stage <path> <file> [--expect HASH]     stage one edit\n");
+    s.push_str("  apply <path> <file> [--expect HASH] [--run ID]   checkpoint + atomic write\n");
+    s.push_str("  checkpoint <path>... [--run ID]          snapshot pre-images\n");
+    s.push_str("  rollback (--ckpt ID | --seq N)          restore a checkpoint\n\n");
+
+    s.push_str("SET UP\n");
+    s.push_str("  setup                         wizard: API key, default model, policy\n");
+    s.push_str("  model [--list] [--auxiliary KIND]        provider picker, keys -> .env\n");
+    s.push_str("  provider <add|list|remove>   custom-endpoint registry\n");
+    s.push_str("  providers                    list cataloged providers and models\n");
+    s.push_str("  doctor [<plugin_dir>]        system preflight (or per-plugin)\n");
+    s.push_str("  reset [--config|--state|--everything] [--yes]\n\n");
+
+    s.push_str("EXTEND\n");
+    s.push_str("  skills list|import <name>|doctor        SKILL.md skills\n");
+    s.push_str("  plugins list|install|enable|disable     capability plugins\n");
+    s.push_str("  extensions                    list loaded extensions\n");
+    s.push_str("  hook <name> [--session S] [--platform P]  fire a hook\n");
+    s.push_str("  mcp list [--json]             MCP servers a migration declared\n");
+    s.push_str("  migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp> [path]\n");
+    s.push_str("           [--kind K] [--json] [--yes] [--merge-providers]\n\n");
+
+    s.push_str("MEMORY\n");
+    s.push_str("  memory import|export|sync|recall|list|confirm|put|vault|backend\n\n");
+
+    s.push_str("RUN UNATTENDED\n");
+    s.push_str("  schedule <task> --30m | list|pause|resume|cancel|run <id>\n");
+    s.push_str("  swarm <N> \"task\" [roles...] [--delivery telegram]\n");
+    s.push_str("  pipeline <run_id> [--approve STAGE|--deny STAGE]\n");
+    s.push_str("  gateway                       Discord/Telegram surfaces (env tokens)\n\n");
+
+    s.push_str("SERVE\n");
+    s.push_str("  serve [--port N] [--host H]   AG-UI SSE + RPC server\n");
+    s.push_str("  sign <task_id> [--mime M] [--ttl MS]   signed generative-UI URL\n\n");
+
+    s.push_str("APPROVALS\n");
+    s.push_str("  Approvals are answered in the session that raised them - the TUI shows a\n");
+    s.push_str("  permission card (y/n), the REPL prompts inline. A run parked on approval\n");
+    s.push_str("  can also be answered out of band:\n");
+    s.push_str("    pantheon run --id <id> --grant <scope>    allow one exact call\n");
+    s.push_str("    pantheon run --id <id> --deny  <scope>    refuse it\n");
+    s
 }
+
 /// OMP RESERVED_TOP_LEVEL_WORDS guard: every top-level dispatch target,
 /// kept in sync with the `match args[1]` arms in `main`.
 const KNOWN_VERBS: &[&str] = &[
@@ -71,12 +137,10 @@ const KNOWN_VERBS: &[&str] = &[
     "channel",
     "chat",
     "checkpoint",
-    "deny",
     "doctor",
     "explain",
     "extensions",
     "gateway",
-    "grant",
     "hook",
     "mcp",
     "memory",
@@ -92,12 +156,10 @@ const KNOWN_VERBS: &[&str] = &[
     "run",
     "schedule",
     "serve",
-    "session",
     "setup",
     "sign",
     "skills",
     "stage",
-    "status",
     "stream",
     "swarm",
 ];
@@ -1031,6 +1093,13 @@ timeout_ms = 5000
             let mut fail: Option<String> = None;
             let mut with_ext = false;
             let mut platform = String::from("cli");
+            // Approvals are normally answered inside the session that raised
+            // them. These two flags are the out-of-band path: a run parked
+            // from a script, a gateway message, or a second terminal. They
+            // live on `run` rather than as top-level verbs so the verb list
+            // stays short and the approval surface stays one place.
+            let mut grant_scope: Option<String> = None;
+            let mut deny_scope: Option<String> = None;
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
@@ -1038,6 +1107,18 @@ timeout_ms = 5000
                         i += 1;
                         if i < args.len() {
                             id = Some(args[i].clone());
+                        }
+                    }
+                    "--grant" => {
+                        i += 1;
+                        if i < args.len() {
+                            grant_scope = Some(args[i].clone());
+                        }
+                    }
+                    "--deny" => {
+                        i += 1;
+                        if i < args.len() {
+                            deny_scope = Some(args[i].clone());
                         }
                     }
                     "--say" => {
@@ -1070,6 +1151,40 @@ timeout_ms = 5000
                     _ => {}
                 }
                 i += 1;
+            }
+            // Out-of-band approval: settle a parked scope, then continue the
+            // run unless the caller opted out. The supervisor is scoped so
+            // its SQLite write handle closes before the Session opens — two
+            // live writers on one file make the Session's `BEGIN IMMEDIATE`
+            // block on the busy timeout, which presents as a silent hang.
+            if grant_scope.is_some() || deny_scope.is_some() {
+                let run_id = id.clone().unwrap_or_else(|| {
+                    eprintln!("run --grant/--deny needs --id <run_id>");
+                    std::process::exit(2);
+                });
+                let is_grant = grant_scope.is_some();
+                let scope = grant_scope.or(deny_scope).unwrap_or_default();
+                {
+                    let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
+                        eprintln!("open runtime: {e}");
+                        std::process::exit(1);
+                    });
+                    let res = if is_grant {
+                        sup.grant(&run_id, &scope)
+                    } else {
+                        sup.deny(&run_id, &scope)
+                    };
+                    if let Err(e) = res {
+                        eprintln!("approval: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                let verb = if is_grant { "granted" } else { "denied" };
+                println!("{verb} {scope} for {run_id}");
+                if !args.iter().any(|a| a == "--no-resume") {
+                    agui_cli::resume_after_grant(&run_id);
+                }
+                return;
             }
             // `run` writes ledger events directly. It does not call a model
             // and does not execute the named tool, so it is a synthetic-run
@@ -1202,23 +1317,6 @@ timeout_ms = 5000
                     std::process::exit(1);
                 });
             println!("wrote {n} events to {out}");
-        }
-        "status" => {
-            if args.len() < 3 {
-                eprintln!("usage: pantheon status <run_id>");
-                std::process::exit(2);
-            }
-            let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
-                eprintln!("open runtime: {e}");
-                std::process::exit(1);
-            });
-            match sup.ledger_status(&args[2]) {
-                Ok(s) => println!("{}", s.as_deref().unwrap_or("unknown")),
-                Err(e) => {
-                    eprintln!("status: {e}");
-                    std::process::exit(1);
-                }
-            }
         }
         "extensions" => {
             let mgr = load_mgr();
@@ -1479,12 +1577,6 @@ timeout_ms = 5000
         "stream" => {
             agui_cli::cmd_stream(&args);
         }
-        "grant" => {
-            agui_cli::cmd_grant(&args);
-        }
-        "deny" => {
-            agui_cli::cmd_deny(&args);
-        }
         "sign" => {
             agui_cli::cmd_sign(&args);
         }
@@ -1502,9 +1594,6 @@ timeout_ms = 5000
         }
         "provider" => {
             provider_cli::cmd_provider(&args);
-        }
-        "session" => {
-            session_cli::run_session();
         }
         "reset" => {
             reset_cli::cmd_reset(&args);
@@ -1610,10 +1699,26 @@ mod verb_guard_tests {
     }
 
     #[test]
-    fn typo_suggests_status() {
-        for typo in ["stats", "statsu"] {
+    fn typo_suggests_a_verb_that_still_exists() {
+        // A typo handler that suggests a removed verb sends the user
+        // straight to "unknown verb", so the suggestion must be checked
+        // against the live list rather than hardcoded to a name that used
+        // to exist.
+        assert_eq!(
+            suggest_verbs("stge", 3).first(),
+            Some(&"stage"),
+            "'stge' should suggest stage"
+        );
+        // `status` and `session` were removed; they must never come back as
+        // a suggestion for a near-miss.
+        for typo in ["stats", "statsu", "sesion", "sess"] {
             let got = suggest_verbs(typo, 3);
-            assert_eq!(got.first(), Some(&"status"), "typo '{typo}' -> {got:?}");
+            for removed in ["status", "session", "grant", "deny"] {
+                assert!(
+                    !got.contains(&removed),
+                    "typo '{typo}' suggested removed verb '{removed}': {got:?}"
+                );
+            }
         }
     }
 
@@ -1674,7 +1779,7 @@ mod verb_guard_tests {
 
     #[test]
     fn verb_list_covers_dispatch() {
-        // Every dispatch arm in main must be known: the 34-verb surface.
+        // Every dispatch arm in main must be known: the 29-verb surface.
         // (An earlier comment said 28 + extras; the list below is the
         // whole truth and the test fails if a new arm is added without
         // registering it here and in KNOWN_VERBS.)
@@ -1682,10 +1787,7 @@ mod verb_guard_tests {
             "chat",
             "run",
             "explain",
-            "status",
             "audit",
-            "grant",
-            "deny",
             "memory",
             "plugins",
             "extensions",
@@ -1711,7 +1813,6 @@ mod verb_guard_tests {
             "swarm",
             "model",
             "provider",
-            "session",
             "mcp",
         ] {
             assert!(
