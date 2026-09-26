@@ -101,8 +101,19 @@ fn live_stacked_keys_rotate_past_401() {
 #[test]
 fn live_stacked_keys_exhausted_reports_last_error_without_fallback() {
     // Both keys dead: rotation runs out on the default entry. No fallback
-    // configured, so the turn fails with the last 401. (Needs only the
-    // router reachable — reachability is probed via offline().)
+    // configured, so the turn fails with the last 401.
+    //
+    // The router must actually be reachable for that verdict to mean
+    // anything: `live_policy` hardcodes 127.0.0.1:8015, so on a machine
+    // without the router the dial is refused, the chain exhausts, and the
+    // error is PROVIDER_EXHAUSTED rather than the 401 this asserts. The
+    // `offline()` probe only recognises PROVIDER_HTTP without a status, so
+    // it did not catch that case and the test failed on CI instead of
+    // skipping. Gate on the router being up, not on the error shape.
+    let Some(_) = router_key() else {
+        eprintln!("SKIP live_stacked_keys_exhausted: no PANTHEON_KEY_ROUTER");
+        return;
+    };
     let (policy, keys) = live_policy("bogus-one,bogus-two", None);
     let chain = ProviderChain::new(policy, HttpTransport::default(), vec![], keys);
     let c = Collect(RefCell::new(vec![]));
@@ -114,7 +125,7 @@ fn live_stacked_keys_exhausted_reports_last_error_without_fallback() {
         }
         Err(e) => e,
     };
-    assert_eq!(err.code, "PROVIDER_HTTP");
+    assert_eq!(err.code, "PROVIDER_HTTP", "unexpected error: {err:?}");
     assert!(err.cause.contains("HTTP 401"), "last error was {err:?}");
     assert!(
         !c.0.borrow()
