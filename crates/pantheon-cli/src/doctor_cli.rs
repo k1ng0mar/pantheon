@@ -49,10 +49,15 @@ pub fn run_system_doctor(data_dir: &Path) -> SystemReport {
             if problems.is_empty() {
                 checks.push(check("config", "ok", "validation clean", ""));
             } else {
+                // A config problem is a failure, not a warning. `doctor` is
+                // the preflight a user runs before their first session, so
+                // "no [model] section" has to stop the run with a non-zero
+                // exit. Downgrading every problem to a warning meant a
+                // config that cannot run a conversation still passed.
                 for p in problems {
                     checks.push(check(
                         "config",
-                        "warn",
+                        "fail",
                         p.clone(),
                         "rerun `pantheon setup` or fix the config by hand",
                     ));
@@ -119,10 +124,19 @@ pub fn run_system_doctor(data_dir: &Path) -> SystemReport {
             None => checks.push(check(
                 "model",
                 "ok",
-                "no API key configured (local provider?)",
+                format!("no API key required for {}", m.provider),
                 "",
             )),
         }
+    } else {
+        // Without a [model] section there is nothing to check above, and the
+        // user gets no model line at all. Name the gap explicitly.
+        checks.push(check(
+            "model",
+            "fail",
+            "no [model] section, so no provider or model is configured",
+            "run `pantheon setup`",
+        ));
     }
 
     // 4. Memory backend: the ledger must open and the store must list.
