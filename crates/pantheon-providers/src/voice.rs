@@ -230,15 +230,14 @@ fn run_bounded(
     };
     let stdout = out_thread.join().unwrap_or_default();
     let stderr = err_thread.join().unwrap_or_default();
-    Ok((
-        stdout,
-        stderr,
-        status.code().unwrap_or(-1),
-    ))
+    Ok((stdout, stderr, status.code().unwrap_or(-1)))
 }
 
 fn options_get<'a>(options: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
-    options.get(key).map(|s| s.as_str()).filter(|s| !s.trim().is_empty())
+    options
+        .get(key)
+        .map(|s| s.as_str())
+        .filter(|s| !s.trim().is_empty())
 }
 
 fn require_option<'a>(
@@ -335,13 +334,7 @@ impl SttProvider for CommandStt {
             .language
             .clone()
             .unwrap_or_else(|| self.fallback_language.clone());
-        let args = expand_args(
-            &self.args,
-            Some(&req.path),
-            Some(&language),
-            None,
-            None,
-        );
+        let args = expand_args(&self.args, Some(&req.path), Some(&language), None, None);
         let (stdout, stderr, code) = run_bounded(&self.cmd, &args, None, self.timeout)?;
         if code != 0 {
             return Err(verr(
@@ -349,7 +342,10 @@ impl SttProvider for CommandStt {
                 format!(
                     "{} exited {code}: {}",
                     self.cmd,
-                    String::from_utf8_lossy(&stderr).chars().take(300).collect::<String>()
+                    String::from_utf8_lossy(&stderr)
+                        .chars()
+                        .take(300)
+                        .collect::<String>()
                 ),
                 false,
                 "check the STT binary's model paths and arguments",
@@ -403,15 +399,17 @@ impl TtsProvider for CommandTts {
             req.voice.as_deref(),
             Some(req.format.as_str()),
         );
-        let (stdout, stderr, code) =
-            run_bounded(&self.cmd, &args, Some(&req.text), self.timeout)?;
+        let (stdout, stderr, code) = run_bounded(&self.cmd, &args, Some(&req.text), self.timeout)?;
         if code != 0 {
             return Err(verr(
                 "TTS_EXIT",
                 format!(
                     "{} exited {code}: {}",
                     self.cmd,
-                    String::from_utf8_lossy(&stderr).chars().take(300).collect::<String>()
+                    String::from_utf8_lossy(&stderr)
+                        .chars()
+                        .take(300)
+                        .collect::<String>()
                 ),
                 false,
                 "check the TTS binary's voice model and arguments",
@@ -591,10 +589,7 @@ impl SttProvider for HttpStt {
                 .and_then(|t| t.as_str())
                 .unwrap_or_default()
                 .to_string(),
-            language: v
-                .get("language")
-                .and_then(|l| l.as_str())
-                .map(String::from),
+            language: v.get("language").and_then(|l| l.as_str()).map(String::from),
             duration_secs: v.get("duration").and_then(|d| d.as_f64()),
             provider: self.name().to_string(),
         })
@@ -619,9 +614,7 @@ impl HttpTts {
     ) -> Result<Self, PantheonError> {
         Ok(Self {
             provider: require_option(options, "provider")?.to_string(),
-            model: options_get(options, "model")
-                .unwrap_or("tts-1")
-                .to_string(),
+            model: options_get(options, "model").unwrap_or("tts-1").to_string(),
             default_voice: options_get(options, "voice").map(String::from),
             api_key,
         })
@@ -782,162 +775,5 @@ pub fn open_tts(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn opts(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-    }
-
-    #[test]
-    fn command_stt_reads_stdout_of_the_template_command() {
-        // `cat {file}` echoes the audio file's bytes — a stand-in for any
-        // whisper-style binary that prints the transcript to stdout.
-        let dir = std::env::temp_dir().join(format!("pantheon-stt-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let audio = dir.join("clip.txt");
-        std::fs::write(&audio, "faked transcript audio\n").unwrap();
-
-        let stt = CommandStt::from_options(&opts(&[
-            ("cmd", "cat"),
-            ("args", "{file}"),
-            ("language", "en"),
-        ]))
-        .unwrap();
-        let mut req = SttRequest::new(&audio);
-        req.prompt = None;
-        let out = stt.transcribe(&req).unwrap();
-        assert_eq!(out.text, "faked transcript audio");
-        assert_eq!(out.provider, "command");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn command_tts_pipes_text_through_stdout() {
-        // `cat` with no args: stdin text comes back as "audio" bytes.
-        let tts = CommandTts::from_options(&opts(&[("cmd", "cat")])).unwrap();
-        let out = tts.synthesize(&TtsRequest::new("hello out loud")).unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.bytes), "hello out loud");
-        assert_eq!(out.format, AudioFormat::Wav);
-    }
-
-    #[test]
-    fn command_tts_substitutes_voice_and_format_placeholders() {
-        let tts = CommandTts::from_options(&opts(&[
-            ("cmd", "echo"),
-            ("args", "voice={voice} fmt={format}"),
-        ]))
-        .unwrap();
-        let req = TtsRequest::new("ignored by echo").with_voice("alice");
-        let out = tts.synthesize(&req).unwrap();
-        let line = String::from_utf8_lossy(&out.bytes);
-        assert!(line.contains("voice=alice"), "got: {line}");
-        assert!(line.contains("fmt=wav"), "got: {line}");
-    }
-
-    #[test]
-    fn command_failure_is_structured_not_empty_success() {
-        let stt = CommandStt::from_options(&opts(&[("cmd", "false")])).unwrap();
-        let dir = std::env::temp_dir().join(format!("pantheon-stt2-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let audio = dir.join("clip.txt");
-        std::fs::write(&audio, "x").unwrap();
-        let err = stt.transcribe(&SttRequest::new(&audio)).unwrap_err();
-        assert_eq!(err.code, "STT_EXIT");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn missing_audio_file_is_an_input_error() {
-        let stt = CommandStt::from_options(&opts(&[("cmd", "cat")])).unwrap();
-        let err = stt
-            .transcribe(&SttRequest::new("/nonexistent/audio.wav"))
-            .unwrap_err();
-        assert_eq!(err.code, "STT_INPUT");
-    }
-
-    #[test]
-    fn subprocess_run_is_wall_clock_bounded() {
-        let stt = CommandStt::from_options(&opts(&[
-            ("cmd", "sleep"),
-            ("args", "5"),
-            ("timeout_secs", "1"),
-        ]))
-        .unwrap();
-        let dir = std::env::temp_dir().join(format!("pantheon-stt3-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let audio = dir.join("clip.txt");
-        std::fs::write(&audio, "x").unwrap();
-        let started = std::time::Instant::now();
-        let err = stt.transcribe(&SttRequest::new(&audio)).unwrap_err();
-        assert_eq!(err.code, "VOICE_TIMEOUT");
-        assert!(started.elapsed() < Duration::from_secs(3));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn multipart_body_carries_model_language_and_file() {
-        let (content_type, body) =
-            stt_multipart("whisper-1", Some("en"), Some("pantheon"), "clip.ogg", b"RIFF");
-        assert!(content_type.starts_with("multipart/form-data; boundary="));
-        let text = String::from_utf8_lossy(&body);
-        assert!(text.contains("name=\"model\""));
-        assert!(text.contains("whisper-1"));
-        assert!(text.contains("name=\"language\""));
-        assert!(text.contains("name=\"prompt\""));
-        assert!(text.contains("filename=\"clip.ogg\""));
-        assert!(text.contains("RIFF"));
-        assert!(text.trim_end().ends_with("--"));
-    }
-
-    #[test]
-    fn speech_payload_is_openai_shaped() {
-        let v = speech_payload(&TtsRequest::new("hi").with_voice("nova"), "tts-1");
-        assert_eq!(v["model"], "tts-1");
-        assert_eq!(v["voice"], "nova");
-        assert_eq!(v["input"], "hi");
-        assert_eq!(v["response_format"], "wav");
-    }
-
-    #[test]
-    fn registry_lists_both_kinds_and_rejects_unknown() {
-        assert_eq!(stt_backends().len(), 2);
-        assert_eq!(tts_backends().len(), 2);
-        assert_eq!(stt_backends()[0].kind, VoiceBackendKind::Subprocess);
-        assert_eq!(stt_backends()[1].kind, VoiceBackendKind::Http);
-        let err = match open_stt("bogus", &HashMap::new(), None) {
-            Err(e) => e,
-            Ok(_) => panic!("unknown backend must error"),
-        };
-        assert_eq!(err.code, "VOICE_BACKEND_UNKNOWN");
-        // Missing required option is a config error, not a panic.
-        let err = match open_tts("openai", &HashMap::new(), None) {
-            Err(e) => e,
-            Ok(_) => panic!("missing provider option must error"),
-        };
-        assert_eq!(err.code, "VOICE_CONFIG");
-        // Happy path: registered backends construct.
-        assert!(open_stt("command", &opts(&[("cmd", "cat")]), None).is_ok());
-        assert!(open_tts(
-            "openai",
-            &opts(&[("provider", "openai")]),
-            None
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn unknown_option_paths_default_safely() {
-        // No args template = no placeholders, still runs.
-        let stt = CommandStt::from_options(&opts(&[("cmd", "cat")])).unwrap();
-        assert!(stt.args.is_empty());
-        assert_eq!(stt.fallback_language, "auto");
-        // Garbage timeout falls back to the default bound.
-        let stt = CommandStt::from_options(&opts(&[
-            ("cmd", "cat"),
-            ("timeout_secs", "not-a-number"),
-        ]))
-        .unwrap();
-        assert_eq!(stt.timeout, Duration::from_secs(DEFAULT_COMMAND_TIMEOUT_SECS));
-    }
-}
+#[path = "voice_tests.rs"]
+mod tests;

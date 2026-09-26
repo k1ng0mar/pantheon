@@ -9,9 +9,11 @@ what to do.
 | Code | Meaning | Fix |
 |---|---|---|
 | `PROVIDER_EXHAUSTED` | Default and all fallbacks failed | Check the first failure's cause above it in the log; usually key, base URL, or network |
-| `MOCK_PROVIDER_UNCONFIGURED` | `--provider mock` without `PANTHEON_MOCK_FILE` | Point `PANTHEON_MOCK_FILE` at a fixture JSON (shape in eval/cases.json) |
-| `MOCK_EXHAUSTED` | Fixture has no response matching the turn | Add a `{"match": "...", "content": "..."}` entry |
-| `MODEL_HTTP_*` | Transport error from the provider | The cause names the HTTP status; 401/403 = key, 429 = quota, 5xx = provider side |
+| `MOCK_PROVIDER_UNCONFIGURED` | `--provider mock` (no such provider; scripted transports were removed) | Point at a real provider: `pantheon model` |
+| `PROVIDER_HTTP` | Transport error from the provider | The cause names the HTTP status; 401/403 = key (stacked keys rotate and retry), 429 = quota, 5xx = provider side |
+| `PROVIDER_PARSE` / `PROVIDER_CONFIG` | Provider returned unusable output / bad endpoint config | Check the cause; for CONFIG, `pantheon model` to refill base URL and key |
+| `JUDGE_HTTP` / `TITLEGEN_HTTP` / `STT_HTTP` / `TTS_HTTP` | Aux/service call failed | Aux failures fall back to defaults; STT/TTS fail the turn — check the service |
+| `VOICE_TIMEOUT` | STT/TTS subprocess over deadline | Raise the timeout or check the backend command |
 | `CONTEXT_OVERFLOW` | Essential rows (system + last turn) alone exceed the model's window | Shorten the system prompt/extension context, or pick a model with a larger `context_limit`. Long runs normally trim oldest context automatically — `ContextTrimmed` in `pantheon explain` shows what went |
 
 ## Run lifecycle
@@ -20,11 +22,14 @@ what to do.
 |---|---|---|
 | `RUN_PARKED` | Run is awaiting an approval | `pantheon grant <run> <scope>` or deny |
 | `RUN_TERMINAL` | Run already completed/failed/canceled | Start a new run id |
+| `RT_NO_RUN` | No such run id | Check the id; `/history` lists runs |
+| `CAP_APPROVAL_REQUIRED` | Capability needs a human decision | `pantheon grant` / `deny`; the run parks, it does not crash |
+| `TOOL_BAD_ARGS` | Model supplied malformed tool arguments | The run fails with the bad args in the cause; resume with a corrected prompt |
 | `RT_LEASE_BUSY` | Another supervisor owns the run | Wait for it, or let the lease expire (TTL 30s) |
 | `LOST_LEASE` | This supervisor lost ownership mid-work | Stop tool work; reacquire; the run is recoverable |
 | `BUDGET_EXHAUSTED` | max_turns or max_tool_calls hit | Raise the budget in code or simplify the task |
 | `WATCHDOG_KILL` | Stall probe failed after the silence budget | Check the provider transport; the run stays recoverable |
-| `SWARM_SPAWN_DENIED` | Delegation not configured in this session | Expected in v1; spawn caps exist but the spawner is not wired |
+| `SWARM_SPAWN_DENIED` | Spawn refused by runtime caps, or delegation unconfigured | Check `pantheon swarm status` and cap settings |
 
 ## Approvals
 
@@ -39,7 +44,7 @@ what to do.
 | Code | Meaning | Fix |
 |---|---|---|
 | `CAP_DENIED` | Policy denies the capability | Change the policy preset or the tool's capability |
-| `TOOL_PANIC` | Tool implementation panicked | Bug in the tool; the run continues with the error as result |
+| `TOOL_PANIC` | Tool worker thread panicked | Bug in the tool; the run fails loudly — resume after fixing |
 | `PLUGIN_TIMEOUT` | Plugin missed the per-call deadline | The group was killed; fix the plugin's latency or raise timeout_ms |
 | `PLUGIN_DEAD` / `PLUGIN_EOF` | Plugin process died or closed stdout | Run it manually to see the crash |
 | `PLUGIN_PROTOCOL` | Invalid JSON or wrong call_id | Plugin's stdio contract is broken; one JSON line in/out |

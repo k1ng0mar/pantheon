@@ -104,7 +104,7 @@ Chat supports OpenAI-compatible and Anthropic provider adapters, including norma
 
 The terminal cockpit shows streamed text, reasoning, tool activity, token use, estimated cost, and permission requests. Tool cards change from running to complete when runtime events arrive. Completed thinking blocks collapse into compact transcript entries. The cockpit has local commands for help, cost, run history, status, transcript clearing, and exit. It is an early interface, not the full product UI described in the state design.
 
-The current tool path includes shell, file operations, and git behavior exposed by the configured policy. The repository's evaluation system also exercises the real CLI through a deterministic mock transport.
+The current tool path includes shell, file operations, and git behavior exposed by the configured policy. The repository's evaluation system exercises the real CLI end to end.
 
 ### Capabilities and approvals
 
@@ -166,7 +166,7 @@ Working paths are those exercised through the documented CLI, runtime, ledger, o
 
 ### Partial functionality
 
-Several subsystems have working code with incomplete product connection. Context compression has a provider seam and configurable auxiliary model, but deterministic trimming remains the correctness path. STT and TTS backends have a registry and testable command or HTTP implementations, while gateway and CLI voice consumers are not wired. Memory backend adapters have a protocol, but a bridge is required for external services. Sandbox profiles map capabilities to levels, but no container or VM enforces those levels. The scheduler has durable cron, interval, one-shot, and webhook logic, but does not yet drive a live agent run end to end. MCP has a policy-to-capability projection, but no live MCP server is attached. Migration has Hermes and OpenClaw analysis and planning code, but no CLI verb. The runtime API supports a useful subset of JSON-RPC and SSE methods, while the larger command list in the architecture document remains aspirational. The UI state matrix describes a future cockpit; the repository reports TUI and GUI as absent.
+Several subsystems have working code with incomplete product connection. Context compression has a provider seam and configurable auxiliary model, but deterministic trimming remains the correctness path. STT and TTS backends have a registry and testable command or HTTP implementations, while gateway and CLI voice consumers are not wired. Memory backend adapters have a protocol, but a bridge is required for external services. Sandbox profiles map capabilities to levels, but no container or VM enforces those levels. The scheduler has durable cron, interval, one-shot, and webhook logic, but does not yet drive a live agent run end to end. MCP has a policy-to-capability projection, but no live MCP server is attached. Migration has Hermes and OpenClaw analysis and planning code, but no CLI verb. The runtime API supports a useful subset of JSON-RPC and SSE methods, while the larger command list in the architecture document remains aspirational. The UI state matrix describes a future cockpit; a terminal cockpit exists (`pantheon` with a TTY) while a GUI remains absent.
 
 ### Planned
 

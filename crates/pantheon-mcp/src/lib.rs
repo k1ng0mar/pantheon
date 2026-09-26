@@ -24,22 +24,9 @@ pub struct ProjectedTool {
 
 /// Map a policy token string to a capability. Unknown tokens become
 /// `Other(name)` so policy can still gate them explicitly.
+/// Delegates to [`Capability::from_token`] — the single token table.
 pub fn capability_from_token(token: &str) -> Capability {
-    match token.trim() {
-        "filesystem.read" => Capability::FilesystemRead,
-        "filesystem.write" => Capability::FilesystemWrite,
-        "shell.execute" => Capability::ShellExecute,
-        "git.read" => Capability::GitRead,
-        "git.write" => Capability::GitWrite,
-        "git.push" => Capability::GitPush,
-        "network.outbound" => Capability::NetworkOutbound,
-        "browser" => Capability::Browser,
-        "memory.read" => Capability::MemoryRead,
-        "memory.write" => Capability::MemoryWrite,
-        "secrets.use" => Capability::SecretsUse,
-        "agent.spawn" => Capability::AgentSpawn,
-        other => Capability::Other(other.to_string()),
-    }
+    Capability::from_token(token)
 }
 
 /// Project a server's tools through a policy. A tool whose capability is not
@@ -65,35 +52,5 @@ pub fn project(server: &str, tools: &[McpTool], policy: &Policy) -> Vec<Projecte
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn tokens_map_and_unknowns_stay_gated() {
-        assert_eq!(
-            capability_from_token("shell.execute"),
-            Capability::ShellExecute
-        );
-        match capability_from_token("weird.thing") {
-            Capability::Other(n) => assert_eq!(n, "weird.thing"),
-            other => panic!("expected Other, got {other:?}"),
-        }
-    }
-    #[test]
-    fn listing_shows_denied_tools_as_denied() {
-        let tools = vec![
-            McpTool {
-                name: "read".into(),
-                description: String::new(),
-                requires: "filesystem.read".into(),
-            },
-            McpTool {
-                name: "browse".into(),
-                description: String::new(),
-                requires: "browser".into(),
-            },
-        ];
-        let projected = project("demo", &tools, &Policy::coder());
-        assert!(projected[0].allowed);
-        assert!(!projected[1].allowed);
-    }
-}
+#[path = "lib_tests.rs"]
+mod tests;

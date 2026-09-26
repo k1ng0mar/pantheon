@@ -18,24 +18,83 @@ pub struct ModelSection {
     pub fallbacks: Vec<FallbackEntry>,
 }
 
-/// `[decision]`: the auxiliary decision model. Any provider/model the
-/// catalog knows (or a raw base URL as provider) — the runtime resolves
-/// wire mode and key env the same way it does for chat. Absent = the
-/// decision layer stays off.
+/// One aux-model slot: every `[judge]`, `[compression]`, `[title_gen]`,
+/// `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]` and
+/// `[mcp_synthesis]` section has exactly this shape — provider + model +
+/// optional key env name. The named section types below are aliases so
+/// existing construction sites keep compiling untouched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct DecisionSection {
+pub struct AuxSection {
     pub provider: String,
     pub model: String,
-    /// Env var name holding the API key for the decision endpoint.
+    /// Env var name holding the API key for the endpoint.
     /// Never the key itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
 }
 
+/// `[judge]`: the auxiliary judge model. Any provider/model the
+/// catalog knows (or a raw base URL as provider) — the runtime resolves
+/// wire mode and key env the same way it does for chat. Absent = `auto`:
+/// the run's default model answers judge queries (route select, tool
+/// gate) — judging always runs, it just gets cheaper when configured.
+pub type JudgeSection = AuxSection;
+
+/// `[title_gen]`: the auxiliary session-title model. Names a conversation
+/// from its first user prompt (fire-and-forget beside the first turn).
+/// Absent = `auto`: the runtime uses the run's default model instead —
+/// titles always work, they just get cheaper/smaller when configured.
+pub type TitleGenSection = AuxSection;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct FallbackEntry {
     pub provider: String,
     pub model: String,
+}
+
+/// One model row inside `[custom_providers.<name>.models]`.
+///
+/// Present so a custom endpoint's models appear in the catalog and can be
+/// picked by name. A migrated provider used to register with no models at all,
+/// which meant `pantheon providers` showed a bare endpoint and the operator had
+/// to type a model id they could not see listed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct CustomModel {
+    /// Model id as the endpoint spells it.
+    pub id: String,
+    /// Context window in tokens. Omitted = unknown, which the runtime treats
+    /// conservatively rather than guessing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_limit: Option<u32>,
+    /// Provider-imposed max output tokens. Omitted = unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
+/// `[custom_providers.<name>]`: a user-defined endpoint (written by
+/// `pantheon model` when you pick "Custom provider"). Behaves like a
+/// cataloged provider everywhere: base URL + wire mode + key env.
+/// The provider id is the table name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct CustomProviderSection {
+    /// Full base URL, no trailing slash (e.g. `http://127.0.0.1:8015/v1`).
+    #[serde(default)]
+    pub base_url: String,
+    /// Wire format: `openai` (default) or `anthropic`.
+    #[serde(default = "default_openai_mode")]
+    pub api_mode: String,
+    /// Env var name holding the API key. Never the key itself.
+    /// Default: `PANTHEON_KEY_<NAME>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_env: Option<String>,
+    /// Models this endpoint serves. Optional: an endpoint with none still
+    /// works, the operator just has to name the model explicitly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<CustomModel>,
+}
+
+fn default_openai_mode() -> String {
+    "openai".into()
 }
 
 /// `[stt]` / `[tts]`: speech service selection. These are provider-plane
@@ -54,16 +113,36 @@ pub struct VoiceSection {
 
 /// `[compression]`: the auxiliary context-compression model. Summarizes
 /// the oldest exchanges when a transcript overflows the window. Absent =
-/// deterministic dropping only (compression never runs unconfigured).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct CompressionSection {
-    pub provider: String,
-    pub model: String,
-    /// Env var name holding the API key for the compression endpoint.
-    /// Never the key itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
-}
+/// `auto`: the run's default model compresses; the deterministic fit
+/// stays the correctness path either way.
+pub type CompressionSection = AuxSection;
+
+/// `[embeddings]`: the vector-search embedding model. The one auxiliary
+/// where `auto` would be wrong: absent = the local hashing embedder,
+/// never the chat model — pin a provider here to embed remotely.
+pub type EmbeddingsSection = AuxSection;
+
+/// `[search_synthesis]`: the model that turns retrieved passages into a
+/// synthesized answer. Absent = `auto`: the run's default model writes
+/// the synthesis — configuring it just makes search answers cheaper.
+pub type SearchSynthesisSection = AuxSection;
+
+/// `[vision]`: the image-understanding model. Absent = `auto`: the run's
+/// default model handles images. Config + client surface only for now —
+/// message image plumbing lands with multimodal content.
+pub type VisionSection = AuxSection;
+
+/// `[scheduled]`: the model scheduled (background) runs execute with.
+/// Absent = `auto`: scheduled jobs run on the run's default model —
+/// pin a small/cheap model here so background tasks stop competing with
+/// interactive chat.
+pub type ScheduledSection = AuxSection;
+
+/// `[mcp_synthesis]`: the model that bounds large MCP tool results into
+/// a short note before they enter context (compression's pattern,
+/// scoped to MCP results). Absent = `auto`: the run's default model
+/// summarizes.
+pub type McpSynthesisSection = AuxSection;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MemorySection {
@@ -94,14 +173,107 @@ pub struct ServerSection {
 
 /// The whole config file. Everything optional-tolerant so doctor can
 /// describe exactly what is missing instead of failing to parse.
+/// `[agents.<name>]`: a durable identity for one persistent agent (§4).
+///
+/// The audit's gap: Hermes ships this as `profile.yaml` + `SOUL.md` +
+/// `MEMORY.md`/`USER.md` (the 6 `_PROFILE_IDENTITY_MARKERS` files), while
+/// Pantheon had no identity config at all — every run was anonymous.
+/// This is the durable half: name, persona source files, memory namespace,
+/// and capability policy live in config; the prompt assembly that reads
+/// them is next. Persona files are referenced by path (repo-relative or
+/// absolute), never inlined, so secrets that drift into a SOUL.md stay out
+/// of config snapshots.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AgentIdentity {
+    /// Human display name ("nyx"). Defaults to the table name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Persona file (SOUL.md equivalent). Optional: an agent with no persona
+    /// file is a blank slate, not an error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soul_file: Option<String>,
+    /// Long-term memory namespace. Isolated per agent by default so two
+    /// agents never share recall.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_namespace: Option<String>,
+    /// Capability policy preset name (mirrors `PolicyPreset::as_str`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+}
+
+impl AgentIdentity {
+    /// Effective display name: explicit, else the table name.
+    /// (No production reader yet — prompt assembly is the planned
+    /// consumer; covered by `agent_identity_defaults_isolate_namespaces`.)
+    pub fn name<'a>(&'a self, table: &'a str) -> &'a str {
+        self.display_name.as_deref().unwrap_or(table)
+    }
+    /// Effective memory namespace: explicit, else `agent:<table>`.
+    pub fn namespace(&self, table: &str) -> String {
+        self.memory_namespace
+            .clone()
+            .unwrap_or_else(|| format!("agent:{table}"))
+    }
+    /// Validate at load: table names are slugs, namespaces must not be
+    /// empty or collide with another agent's after defaulting.
+    pub fn validate(
+        table: &str,
+        all: &std::collections::HashMap<String, AgentIdentity>,
+    ) -> Result<(), String> {
+        if table.trim().is_empty()
+            || !table
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(format!(
+                "agent table {table:?} must be a slug (letters, digits, - _)"
+            ));
+        }
+        let sec = all.get(table).expect("validated table exists");
+        if let Some(p) = &sec.policy {
+            if crate::config_schema::PolicyPreset::from_str(p).is_none() {
+                return Err(format!(
+                    "agent {table:?} policy {p:?} is unknown (reader|coder|coder_memory)"
+                ));
+            }
+        }
+        let ns = sec.namespace(table);
+        if ns.trim().is_empty() {
+            return Err(format!("agent {table:?} memory namespace cannot be blank"));
+        }
+        let clash = all
+            .iter()
+            .filter(|(t, _)| t.as_str() != table)
+            .any(|(t, o)| o.namespace(t) == ns);
+        if clash {
+            return Err(format!(
+                "agent {table:?} memory namespace {ns:?} collides with another agent"
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Config {
     pub profile: Option<String>,
     pub model: Option<ModelSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decision: Option<DecisionSection>,
+    pub judge: Option<JudgeSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embeddings: Option<EmbeddingsSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_synthesis: Option<SearchSynthesisSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<VisionSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled: Option<ScheduledSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_synthesis: Option<McpSynthesisSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compression: Option<CompressionSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_gen: Option<TitleGenSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stt: Option<VoiceSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,6 +282,14 @@ pub struct Config {
     pub memory: Option<MemorySection>,
     pub tools: Option<ToolSection>,
     pub server: Option<ServerSection>,
+    /// User-defined providers (`pantheon model` → Custom provider).
+    /// Empty for configs written before this existed (back-compat).
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub custom_providers: std::collections::HashMap<String, CustomProviderSection>,
+    /// Durable per-agent identities (§4). Empty = all runs anonymous, the
+    /// pre-identity behavior (back-compat).
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub agents: std::collections::HashMap<String, AgentIdentity>,
 }
 
 impl Config {
@@ -195,36 +375,32 @@ impl Config {
         } else {
             problems.push("no [model] section: run `pantheon setup`".into());
         }
-        if let Some(d) = &self.decision {
-            if d.provider.trim().is_empty() {
-                problems.push("decision.provider is empty".into());
+        // Every aux section validates identically: non-empty target
+        // fields + a resolvable api_key_env when named.
+        fn aux_problem(name: &str, sec: (&str, &str, &Option<String>), problems: &mut Vec<String>) {
+            let (provider, model, api_key_env) = sec;
+            if provider.trim().is_empty() {
+                problems.push(format!("{name}.provider is empty"));
             }
-            if d.model.trim().is_empty() {
-                problems.push("decision.model is empty".into());
+            if model.trim().is_empty() {
+                problems.push(format!("{name}.model is empty"));
             }
-            if let Some(env) = &d.api_key_env {
+            if let Some(env) = api_key_env {
                 let r = SecretRef::from_env(env.clone());
                 if let Err(e) = r.validate() {
-                    problems.push(format!("decision.api_key_env: {e}"));
+                    problems.push(format!("{name}.api_key_env: {e}"));
                 } else if r.resolve().is_none() {
                     problems.push(format!("env var {env} is not set"));
                 }
             }
         }
-        if let Some(c) = &self.compression {
-            if c.provider.trim().is_empty() {
-                problems.push("compression.provider is empty".into());
-            }
-            if c.model.trim().is_empty() {
-                problems.push("compression.model is empty".into());
-            }
-            if let Some(env) = &c.api_key_env {
-                let r = SecretRef::from_env(env.clone());
-                if let Err(e) = r.validate() {
-                    problems.push(format!("compression.api_key_env: {e}"));
-                } else if r.resolve().is_none() {
-                    problems.push(format!("env var {env} is not set"));
-                }
+        for slot in AUX_SLOTS {
+            if let Some(s) = cfg_section(self, slot) {
+                aux_problem(
+                    slot.name,
+                    (&s.provider, &s.model, &s.api_key_env),
+                    &mut problems,
+                );
             }
         }
         if let Some(mem) = &self.memory {
@@ -249,6 +425,14 @@ impl Config {
                 }
             }
         }
+        // Agent identity tables validate at load: slugs, known policies,
+        // no namespace clashes. An invalid [agents.*] table fails doctor
+        // loudly instead of silently running anonymous.
+        for table in self.agents.keys() {
+            if let Err(e) = AgentIdentity::validate(table, &self.agents) {
+                problems.push(e);
+            }
+        }
         if let Some(server) = &self.server {
             if !server.host.is_empty()
                 && server.host != "127.0.0.1"
@@ -266,11 +450,11 @@ impl Config {
     }
 }
 
-/// Resolve the decision-model target: `PANTHEON_DECISION_*` env overrides
-/// the `[decision]` section field-wise. Pure so tests don't touch env.
-/// Returns `(provider, model)` only when both resolve and are non-empty.
-pub fn decision_target(
-    section: Option<&DecisionSection>,
+/// Resolve an aux-model target: `PANTHEON_*` env overrides the section
+/// field-wise. Pure so tests don't touch env. The single generic behind
+/// every `*_target` below.
+fn aux_target(
+    section: Option<(&String, &String)>,
     env_provider: Option<String>,
     env_model: Option<String>,
 ) -> Option<(String, String)> {
@@ -278,21 +462,117 @@ pub fn decision_target(
         env.filter(|v| !v.trim().is_empty())
             .or_else(|| cfg.map(|v| v.to_string()).filter(|v| !v.trim().is_empty()))
     };
-    let provider = pick(env_provider, section.map(|s| &s.provider))?;
-    let model = pick(env_model, section.map(|s| &s.model))?;
-    Some((provider, model))
+    let (sp, sm) = match section {
+        Some((p, m)) => (Some(p), Some(m)),
+        None => (None, None),
+    };
+    Some((pick(env_provider, sp)?, pick(env_model, sm)?))
 }
 
-/// `[decision]` + env → the `DecisionRouter` auxiliary entry.
-/// `None` = the decision layer stays off for this host.
-pub fn decision_aux(cfg: Option<&Config>) -> Option<pantheon_core::model::AuxiliaryModel> {
-    let (provider, model) = decision_target(
-        cfg.and_then(|c| c.decision.as_ref()),
-        std::env::var("PANTHEON_DECISION_PROVIDER").ok(),
-        std::env::var("PANTHEON_DECISION_MODEL").ok(),
-    )?;
+/// One aux slot: everything that varies per capability. The table below
+/// drives target resolution, key seeding, validation, and the
+/// `auxiliaries()` fan-out — adding a capability means adding one row.
+struct AuxSlot {
+    kind: pantheon_core::model::AuxiliaryKind,
+    /// Config section name (for diagnostics).
+    name: &'static str,
+    /// `PANTHEON_<PREFIX>_PROVIDER` / `PANTHEON_<PREFIX>_MODEL`.
+    env_prefix: &'static str,
+    /// Vault entry the section's key env seeds.
+    vault_name: &'static str,
+    /// Absent section falls back to `auto` (the default model).
+    /// False only for embeddings (absent = local embedder, never chat).
+    auto: bool,
+    section: for<'a> fn(&'a Config) -> Option<&'a AuxSection>,
+}
+
+const AUX_SLOTS: &[AuxSlot] = &[
+    AuxSlot {
+        kind: pantheon_core::model::AuxiliaryKind::Judge,
+        name: "judge",
+        env_prefix: "JUDGE",
+        vault_name: "PANTHEON_JUDGE_API_KEY",
+        auto: true,
+        section: |c| c.judge.as_ref(),
+    },
+    AuxSlot {
+        kind: pantheon_core::model::AuxiliaryKind::Compression,
+        name: "compression",
+        env_prefix: "COMPRESSION",
+        vault_name: "PANTHEON_COMPRESSION_API_KEY",
+        auto: true,
+        section: |c| c.compression.as_ref(),
+    },
+    AuxSlot {
+        kind: pantheon_core::model::AuxiliaryKind::TitleGen,
+        name: "title_gen",
+        env_prefix: "TITLEGEN",
+        vault_name: "PANTHEON_TITLEGEN_API_KEY",
+        auto: true,
+        section: |c| c.title_gen.as_ref(),
+    },
+    AuxSlot {
+        kind: pantheon_core::model::AuxiliaryKind::Embeddings,
+        name: "embeddings",
+        env_prefix: "EMBEDDINGS",
+        vault_name: "PANTHEON_EMBEDDINGS_API_KEY",
+        auto: false,
+        section: |c| c.embeddings.as_ref(),
+    },
+    AuxSlot {
+        kind: pantheon_core::model::AuxiliaryKind::SearchSynthesis,
+        name: "search_synthesis",
+        env_prefix: "SEARCH_SYNTHESIS",
+        vault_name: "PANTHEON_SEARCH_SYNTHESIS_API_KEY",
+        auto: true,
+        section: |c| c.search_synthesis.as_ref(),
+    },
+    AuxSlot {
+        kind: pantheon_core::model::AuxiliaryKind::Vision,
+        name: "vision",
+        env_prefix: "VISION",
+        vault_name: "PANTHEON_VISION_API_KEY",
+        auto: true,
+        section: |c| c.vision.as_ref(),
+    },
+    AuxSlot {
+        kind: pantheon_core::model::AuxiliaryKind::Scheduled,
+        name: "scheduled",
+        env_prefix: "SCHEDULED",
+        vault_name: "PANTHEON_SCHEDULED_API_KEY",
+        auto: true,
+        section: |c| c.scheduled.as_ref(),
+    },
+    AuxSlot {
+        kind: pantheon_core::model::AuxiliaryKind::McpSynthesis,
+        name: "mcp_synthesis",
+        env_prefix: "MCP_SYNTHESIS",
+        vault_name: "PANTHEON_MCP_SYNTHESIS_API_KEY",
+        auto: true,
+        section: |c| c.mcp_synthesis.as_ref(),
+    },
+];
+
+/// Borrow one slot's section for validation.
+fn cfg_section<'a>(cfg: &'a Config, slot: &AuxSlot) -> Option<&'a AuxSection> {
+    (slot.section)(cfg)
+}
+
+/// Resolve one slot's target from its section + env pair.
+fn slot_target(slot: &AuxSlot, cfg: Option<&Config>) -> Option<(String, String)> {
+    let section = cfg.and_then(slot.section);
+    aux_target(
+        section.map(|s| (&s.provider, &s.model)),
+        std::env::var(format!("PANTHEON_{}_PROVIDER", slot.env_prefix)).ok(),
+        std::env::var(format!("PANTHEON_{}_MODEL", slot.env_prefix)).ok(),
+    )
+}
+
+/// Resolve one slot's auxiliary entry (pinned target only, no `auto`).
+fn slot_aux(slot: &AuxSlot, cfg: Option<&Config>) -> Option<pantheon_core::model::AuxiliaryModel> {
+    let (provider, model) = slot_target(slot, cfg)?;
     Some(pantheon_core::model::AuxiliaryModel {
-        kind: pantheon_core::model::AuxiliaryKind::DecisionRouter,
+        kind: slot.kind.clone(),
         provider,
         model,
     })
@@ -317,35 +597,20 @@ fn seed_env_key(
     secrets.with_vault(Box::new(mem))
 }
 
-/// Seed `PANTHEON_DECISION_API_KEY` from `[decision].api_key_env`.
-pub fn with_decision_key(
-    secrets: pantheon_secrets::SecretsBroker,
-    cfg: Option<&Config>,
-) -> pantheon_secrets::SecretsBroker {
-    let env = cfg
-        .and_then(|c| c.decision.as_ref())
-        .and_then(|d| d.api_key_env.clone());
-    seed_env_key(secrets, env, "PANTHEON_DECISION_API_KEY")
-}
-
-/// Seed `PANTHEON_COMPRESSION_API_KEY` from `[compression].api_key_env`.
-pub fn with_compression_key(
-    secrets: pantheon_secrets::SecretsBroker,
-    cfg: Option<&Config>,
-) -> pantheon_secrets::SecretsBroker {
-    let env = cfg
-        .and_then(|c| c.compression.as_ref())
-        .and_then(|c| c.api_key_env.clone());
-    seed_env_key(secrets, env, "PANTHEON_COMPRESSION_API_KEY")
-}
-
 /// Seed every configured aux key in one call (the session-builder sites'
 /// entry point).
 pub fn with_aux_keys(
     secrets: pantheon_secrets::SecretsBroker,
     cfg: Option<&Config>,
 ) -> pantheon_secrets::SecretsBroker {
-    with_compression_key(with_decision_key(secrets, cfg), cfg)
+    let mut secrets = secrets;
+    for slot in AUX_SLOTS {
+        let env = cfg
+            .and_then(slot.section)
+            .and_then(|s| s.api_key_env.clone());
+        secrets = seed_env_key(secrets, env, slot.vault_name);
+    }
+    secrets
 }
 
 /// `[model].api_key_env` → the env-var name holding the chat model key.
@@ -355,9 +620,164 @@ pub fn model_key_env(cfg: Option<&Config>) -> Option<String> {
         .and_then(|m| m.api_key_env.clone())
 }
 
+/// Env-var-safe version of a provider id: `my-llm` → `MY_LLM`.
+/// Delegates to [`pantheon_core::catalog::env_part`] — one cleaner for
+/// every `PANTHEON_*` name.
+pub fn sanitize_env_suffix(id: &str) -> String {
+    pantheon_core::catalog::env_part(id)
+}
+
+/// Effective key env var for a provider id: explicit `key_env` wins,
+/// otherwise `PANTHEON_KEY_<ID>`. Naming only — no env lookup. (The
+/// runtime read path is `catalog::key_for`, which resolves this same name
+/// against the environment; keep the two in agreement via
+/// `catalog::env_part`.)
+pub fn provider_key_env(provider_id: &str, explicit: Option<&str>) -> String {
+    explicit
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| format!("PANTHEON_KEY_{}", sanitize_env_suffix(provider_id)))
+}
+
+/// Insert (or replace) one `[custom_providers.<name>]` row, persist the
+/// config, and register it with the global catalog. The single writer
+/// behind `pantheon provider add` and the `pantheon model` builtin-override
+/// path. Returns whether the id shadows a builtin catalog id (the caller
+/// announces it).
+pub fn upsert_custom_row(
+    data_dir: &std::path::Path,
+    name: &str,
+    base_url: &str,
+    api_mode: pantheon_core::catalog::ApiMode,
+    key_env: &str,
+) -> Result<bool, String> {
+    use pantheon_core::catalog::ApiMode as Mode;
+    let mut cfg = Config::load(data_dir).unwrap_or_default();
+    let shadow = pantheon_core::catalog::providers()
+        .iter()
+        .any(|p| p.id == name);
+    cfg.custom_providers.insert(
+        name.to_string(),
+        CustomProviderSection {
+            base_url: base_url.to_string(),
+            api_mode: match api_mode {
+                Mode::OpenAi => "openai".into(),
+                Mode::Anthropic => "anthropic".into(),
+            },
+            key_env: Some(key_env.to_string()),
+            // Preserve whatever the operator has already named on this
+            // endpoint. Replacing the whole row used to drop them, so
+            // re-picking a provider silently emptied its model list.
+            models: cfg
+                .custom_providers
+                .get(name)
+                .map(|s| s.models.clone())
+                .unwrap_or_default(),
+        },
+    );
+    cfg.save(data_dir).map_err(|e| e.to_string())?;
+    register_custom_providers(&cfg);
+    Ok(shadow)
+}
+
+/// Record a model the operator named by hand on a custom endpoint.
+///
+/// This is the only thing that ever adds a row to `[custom_providers.*].models`.
+/// A model list harvested from another agent's config is deliberately *not*
+/// written: it is a snapshot of a third-party endpoint and goes stale. This
+/// records a name a human actually chose, which stays true.
+///
+/// Idempotent, and preserves any limits already known for that model.
+pub fn remember_custom_model(
+    data_dir: &std::path::Path,
+    provider: &str,
+    model: &str,
+) -> Result<bool, String> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Ok(false);
+    }
+    let mut cfg = Config::load(data_dir).unwrap_or_default();
+    let Some(sec) = cfg.custom_providers.get_mut(provider) else {
+        return Err(format!(
+            "no custom provider {provider:?}; add it with `pantheon provider add --name {provider}`"
+        ));
+    };
+    if sec.models.iter().any(|m| m.id == model) {
+        return Ok(false);
+    }
+    sec.models.push(CustomModel {
+        id: model.to_string(),
+        context_limit: None,
+        max_output_tokens: None,
+    });
+    sec.models.sort_by(|a, b| a.id.cmp(&b.id));
+    cfg.save(data_dir).map_err(|e| e.to_string())?;
+    register_custom_providers(&cfg);
+    Ok(true)
+}
+
+/// Load `<data_dir>/.env` (exports always win) and register
+/// `[custom_providers.*]` with the catalog. Every verb entry calls this
+/// once before doing anything else; forgetting it silently breaks
+/// template and key resolution.
+pub fn init_env_and_catalog(data_dir: &std::path::Path) {
+    crate::dotenv::load_dotenv(data_dir);
+    if let Ok(cfg) = Config::load(data_dir) {
+        register_custom_providers(&cfg);
+    }
+}
+
+/// Register every `[custom_providers.*]` entry with the global catalog so
+/// the runtime resolves base URL / wire mode / key env for them. Called
+/// once at CLI startup after loading the config; idempotent.
+pub fn register_custom_providers(cfg: &Config) {
+    for (name, sec) in &cfg.custom_providers {
+        if sec.base_url.trim().is_empty() {
+            continue;
+        }
+        let api_mode = match sec.api_mode.trim().to_ascii_lowercase().as_str() {
+            "anthropic" => pantheon_core::catalog::ApiMode::Anthropic,
+            _ => pantheon_core::catalog::ApiMode::OpenAi,
+        };
+        // Register the endpoint's models so `pantheon providers` lists them and
+        // the model picker can name one. `model_meta` supplies conservative
+        // defaults (tools on, vision/reasoning off, streaming on) and any
+        // declared limit overrides them.
+        let models: Vec<pantheon_core::catalog::ModelMeta> = sec
+            .models
+            .iter()
+            .filter(|m| !m.id.trim().is_empty())
+            .map(|m| {
+                let mut meta = pantheon_core::catalog::model_meta(name, m.id.trim());
+                if let Some(c) = m.context_limit {
+                    meta.context_limit = Some(c);
+                }
+                if let Some(o) = m.max_output_tokens {
+                    meta.max_output_tokens = Some(o);
+                }
+                meta
+            })
+            .collect();
+        pantheon_core::catalog::register_custom_provider(pantheon_core::catalog::ProviderMeta {
+            id: name.clone(),
+            label: name.clone(),
+            base_url: sec.base_url.trim().trim_end_matches('/').to_string(),
+            api_mode,
+            base_env: String::new(),
+            key_env: provider_key_env(name, sec.key_env.as_deref()),
+            key_header: "Authorization".into(),
+            models,
+            prominent: true,
+            tag: "custom".into(),
+        });
+    }
+}
+
 /// The one secrets broker every session-builder site constructs: the chat
 /// model key (config-named env var, else `PANTHEON_API_KEY`), then every
-/// aux key (decision + compression), environment fallback last.
+/// aux key (judge, compression, title, embeddings, search synthesis,
+/// vision, scheduled, MCP synthesis), environment fallback last.
 ///
 /// Session, gateway, pipeline, and `chat --key` all share this so a key
 /// configured once resolves identically on every path. An explicit `--key`
@@ -373,324 +793,39 @@ pub fn chat_secrets(cfg: Option<&Config>) -> pantheon_secrets::SecretsBroker {
     )
 }
 
-/// `[compression]` + env → the `Compression` auxiliary entry.
-/// `None` = compression stays off for this host.
-pub fn compression_aux(cfg: Option<&Config>) -> Option<pantheon_core::model::AuxiliaryModel> {
-    let (provider, model) = compression_target(
-        cfg.and_then(|c| c.compression.as_ref()),
-        std::env::var("PANTHEON_COMPRESSION_PROVIDER").ok(),
-        std::env::var("PANTHEON_COMPRESSION_MODEL").ok(),
-    )?;
-    Some(pantheon_core::model::AuxiliaryModel {
-        kind: pantheon_core::model::AuxiliaryKind::Compression,
-        provider,
-        model,
-    })
-}
-
-/// Resolve the compression-model target: env overrides config
-/// field-wise, mirroring [`decision_target`]. Pure so tests don't touch env.
-pub fn compression_target(
-    section: Option<&CompressionSection>,
-    env_provider: Option<String>,
-    env_model: Option<String>,
-) -> Option<(String, String)> {
-    let pick = |env: Option<String>, cfg: Option<&String>| -> Option<String> {
-        env.filter(|v| !v.trim().is_empty()).or_else(|| {
-            cfg.map(|v| v.to_string())
-                .filter(|v| !v.trim().is_empty())
-        })
+/// Every auxiliary for this host with a resolved target: an explicit
+/// `[judge]` / `[compression]` / `[title_gen]` / `[search_synthesis]` /
+/// `[vision]` / `[scheduled]` / `[mcp_synthesis]` section (or its env
+/// override) wins; otherwise `auto` — the run's default model. Aux
+/// models default to auto, so an absent section never switches a
+/// capability off, it just means "use what you already use for chat".
+///
+/// The documented exception is `Embeddings`: absent = the local hashing
+/// embedder, never the chat model — so an entry appears only when
+/// `[embeddings]` (or its env) actually pins a target.
+pub fn auxiliaries(
+    cfg: Option<&Config>,
+    default: &pantheon_core::model::DefaultModel,
+) -> Vec<pantheon_core::model::AuxiliaryModel> {
+    use pantheon_core::model::{AuxiliaryKind, AuxiliaryModel};
+    let auto = |kind: AuxiliaryKind| AuxiliaryModel {
+        kind,
+        provider: default.provider.clone(),
+        model: default.model.clone(),
     };
-    let provider = pick(env_provider, section.map(|s| &s.provider))?;
-    let model = pick(env_model, section.map(|s| &s.model))?;
-    Some((provider, model))
-}
-
-/// Every configured auxiliary for this host (decision + compression).
-/// Lookups are by kind, so order is irrelevant.
-pub fn auxiliaries(cfg: Option<&Config>) -> Vec<pantheon_core::model::AuxiliaryModel> {
-    [decision_aux(cfg), compression_aux(cfg)]
-        .into_iter()
-        .flatten()
-        .collect()
+    let mut out = Vec::with_capacity(AUX_SLOTS.len());
+    for slot in AUX_SLOTS {
+        match slot_aux(slot, cfg) {
+            Some(pinned) => out.push(pinned),
+            // Embeddings is the documented exception: absent = the local
+            // hashing embedder, never the chat model — no `auto` entry.
+            None if slot.auto => out.push(auto(slot.kind.clone())),
+            None => {}
+        }
+    }
+    out
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn round_trips_through_toml() {
-        let dir = std::env::temp_dir().join(format!("pantheon-cfg-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg = Config {
-            profile: Some("dev".into()),
-            model: Some(ModelSection {
-                provider: "hp-llm-router".into(),
-                model: "longcat".into(),
-                api_key_env: Some("PANTHEON_API_KEY".into()),
-                fallbacks: vec![FallbackEntry {
-                    provider: "local".into(),
-                    model: "llama3.2".into(),
-                }],
-            }),
-            decision: Some(DecisionSection {
-                provider: "local".into(),
-                model: "qwen2.5:1.5b".into(),
-                api_key_env: None,
-            }),
-            compression: Some(CompressionSection {
-                provider: "local".into(),
-                model: "summarizer".into(),
-                api_key_env: None,
-            }),
-            stt: Some(VoiceSection {
-                backend: "command".into(),
-                options: [("cmd".into(), "whisper-cli".into())].into_iter().collect(),
-            }),
-            tts: None,
-            policy: Some(PolicyPreset::Coder),
-            memory: Some(MemorySection {
-                backend: "native".into(),
-                options: Default::default(),
-            }),
-            tools: Some(ToolSection {
-                packs: vec!["core".into()],
-                plugins: vec![],
-            }),
-            server: Some(ServerSection {
-                port: 18789,
-                host: "127.0.0.1".into(),
-            }),
-        };
-        cfg.save(&dir).unwrap();
-        let loaded = Config::load(&dir).unwrap();
-        assert_eq!(loaded, cfg);
-        // The file must never contain a raw key, only the env var name.
-        let text = std::fs::read_to_string(Config::path(&dir)).unwrap();
-        assert!(!text.contains("sk-"));
-        assert!(text.contains("PANTHEON_API_KEY"));
-    }
-
-    #[test]
-    fn validate_reports_missing_model_and_unset_env() {
-        let cfg = Config {
-            model: Some(ModelSection {
-                provider: "p".into(),
-                model: "m".into(),
-                api_key_env: Some("PANTHEON_DEFINITELY_UNSET_VAR_42".into()),
-                fallbacks: vec![],
-            }),
-            ..Default::default()
-        };
-        let problems = cfg.validate();
-        assert!(problems
-            .iter()
-            .any(|p| p.contains("PANTHEON_DEFINITELY_UNSET_VAR_42")));
-        let empty = Config::default();
-        assert!(empty.validate().iter().any(|p| p.contains("[model]")));
-    }
-
-    #[test]
-    fn decision_target_env_overrides_config_field_wise() {
-        let sec = DecisionSection {
-            provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
-            api_key_env: None,
-        };
-        // No env: config wins.
-        assert_eq!(
-            decision_target(Some(&sec), None, None),
-            Some(("openai".into(), "gpt-4o-mini".into()))
-        );
-        // Env overrides one field, config fills the other.
-        assert_eq!(
-            decision_target(Some(&sec), Some("anthropic".into()), None),
-            Some(("anthropic".into(), "gpt-4o-mini".into()))
-        );
-        // Env alone activates the layer (no [decision] section at all).
-        assert_eq!(
-            decision_target(
-                None,
-                Some("http://127.0.0.1:8016/v1".into()),
-                Some("typed-decisions".into())
-            ),
-            Some(("http://127.0.0.1:8016/v1".into(), "typed-decisions".into()))
-        );
-        // Partial env with no section stays off.
-        assert_eq!(decision_target(None, Some("openai".into()), None), None);
-        // Whitespace-only values count as absent.
-        assert_eq!(
-            decision_target(Some(&sec), Some("  ".into()), None),
-            Some(("openai".into(), "gpt-4o-mini".into()))
-        );
-    }
-
-    #[test]
-    fn decision_section_parses_from_toml() {
-        let cfg: Config = toml::from_str(
-            "[model]\nprovider = \"local\"\nmodel = \"llama3.2\"\n\
-             [decision]\nprovider = \"local\"\nmodel = \"qwen2.5:1.5b\"\n",
-        )
-        .unwrap();
-        let d = cfg.decision.as_ref().expect("decision section parsed");
-        assert_eq!(d.provider, "local");
-        assert_eq!(d.model, "qwen2.5:1.5b");
-        assert_eq!(cfg.validate(), Vec::<String>::new());
-        // Configs without [decision] still parse (back-compat).
-        let old: Config = toml::from_str("[model]\nprovider = \"p\"\nmodel = \"m\"\n").unwrap();
-        assert!(old.decision.is_none());
-        assert!(old.compression.is_none());
-    }
-
-    #[test]
-    fn compression_target_env_overrides_config_field_wise() {
-        let sec = CompressionSection {
-            provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
-            api_key_env: None,
-        };
-        assert_eq!(
-            compression_target(Some(&sec), None, None),
-            Some(("openai".into(), "gpt-4o-mini".into()))
-        );
-        assert_eq!(
-            compression_target(Some(&sec), Some("local".into()), None),
-            Some(("local".into(), "gpt-4o-mini".into()))
-        );
-        // Env alone activates compression (no [compression] section).
-        assert_eq!(
-            compression_target(
-                None,
-                Some("http://127.0.0.1:8017/v1".into()),
-                Some("summarizer".into())
-            ),
-            Some(("http://127.0.0.1:8017/v1".into(), "summarizer".into()))
-        );
-        // Partial env with no section stays off.
-        assert_eq!(compression_target(None, Some("openai".into()), None), None);
-    }
-
-    #[test]
-    fn auxiliaries_combine_decision_and_compression() {
-        let cfg: Config = toml::from_str(
-            "[model]\nprovider = \"local\"\nmodel = \"llama3.2\"\n\
-             [decision]\nprovider = \"local\"\nmodel = \"qwen2.5:1.5b\"\n\
-             [compression]\nprovider = \"local\"\nmodel = \"summarizer\"\n",
-        )
-        .unwrap();
-        let aux = auxiliaries(Some(&cfg));
-        assert_eq!(aux.len(), 2);
-        assert!(aux.iter().any(|a| matches!(
-            a.kind,
-            pantheon_core::model::AuxiliaryKind::DecisionRouter
-        )));
-        assert!(aux
-            .iter()
-            .any(|a| matches!(a.kind, pantheon_core::model::AuxiliaryKind::Compression)));
-        // No aux configured = empty vec, layers off.
-        let bare: Config = toml::from_str("[model]\nprovider = \"p\"\nmodel = \"m\"\n").unwrap();
-        assert!(auxiliaries(Some(&bare)).is_empty());
-    }
-
-    #[test]
-    fn voice_sections_parse_and_validate() {
-        let cfg: Config = toml::from_str(
-            "[model]\nprovider = \"local\"\nmodel = \"llama3.2\"\n\
-             [stt]\nbackend = \"command\"\n[stt.options]\ncmd = \"whisper-cli\"\n\
-             args = \"-m m.bin -f {file} -nt\"\n\
-             [tts]\nbackend = \"openai\"\n[tts.options]\nprovider = \"openai\"\nmodel = \"tts-1\"\n",
-        )
-        .unwrap();
-        let stt = cfg.stt.as_ref().expect("stt section");
-        assert_eq!(stt.backend, "command");
-        assert_eq!(stt.options["cmd"], "whisper-cli");
-        assert_eq!(cfg.tts.as_ref().unwrap().backend, "openai");
-        // Fully specified voice config validates clean.
-        assert_eq!(cfg.validate(), Vec::<String>::new());
-
-        // Backend-specific required options are checked.
-        let bad: Config = toml::from_str(
-            "[model]\nprovider = \"p\"\nmodel = \"m\"\n\
-             [stt]\nbackend = \"command\"\n\
-             [tts]\nbackend = \"openai\"\n",
-        )
-        .unwrap();
-        let problems = bad.validate();
-        assert!(problems.iter().any(|p| p.contains("stt.options.cmd")));
-        assert!(problems.iter().any(|p| p.contains("tts.options.provider")));
-        // Absent sections = no voice capability, no complaints.
-        let none: Config = toml::from_str("[model]\nprovider = \"p\"\nmodel = \"m\"\n").unwrap();
-        assert!(none.stt.is_none() && none.tts.is_none());
-        assert_eq!(none.validate(), Vec::<String>::new());
-    }
-
-    #[test]
-    fn model_key_env_reads_config_not_the_key() {
-        let cfg: Config = toml::from_str(
-            "[model]\nprovider = \"p\"\nmodel = \"m\"\napi_key_env = \"MY_KEY_VAR\"\n",
-        )
-        .unwrap();
-        assert_eq!(model_key_env(Some(&cfg)).as_deref(), Some("MY_KEY_VAR"));
-        // Configured without api_key_env (or no config at all) = the
-        // default PANTHEON_API_KEY path, never a missing key.
-        let bare: Config = toml::from_str("[model]\nprovider = \"p\"\nmodel = \"m\"\n").unwrap();
-        assert_eq!(model_key_env(Some(&bare)), None);
-        assert_eq!(model_key_env(None), None);
-    }
-
-    #[test]
-    fn chat_secrets_resolves_the_config_named_model_key() {
-        // Unique var name so parallel tests cannot collide; the
-        // config-named var must win over the plain PANTHEON_API_KEY
-        // fallback (this is the chat path bug: run honored it, chat
-        // passed None).
-        std::env::set_var("PANTHEON_TEST_CHAT_KEY_A7F3", "sk-from-config-env");
-        let cfg: Config = toml::from_str(
-            "[model]\nprovider = \"p\"\nmodel = \"m\"\n\
-             api_key_env = \"PANTHEON_TEST_CHAT_KEY_A7F3\"\n",
-        )
-        .unwrap();
-        let broker = chat_secrets(Some(&cfg));
-        let k = broker
-            .resolve("PANTHEON_API_KEY")
-            .unwrap()
-            .expect("config-named key env resolves into PANTHEON_API_KEY");
-        assert_eq!(k.expose(), "sk-from-config-env");
-        std::env::remove_var("PANTHEON_TEST_CHAT_KEY_A7F3");
-    }
-
-    #[test]
-    fn chat_secrets_seeds_every_aux_key() {
-        // with_aux_keys was the documented session-builder entry point but
-        // had zero callers: the compression key never seeded on any path.
-        std::env::set_var("PANTHEON_TEST_DEC_KEY_A7F3", "dec-1");
-        std::env::set_var("PANTHEON_TEST_CMP_KEY_A7F3", "cmp-1");
-        let cfg: Config = toml::from_str(
-            "[model]\nprovider = \"p\"\nmodel = \"m\"\n\
-             [decision]\nprovider = \"p\"\nmodel = \"d\"\n\
-             api_key_env = \"PANTHEON_TEST_DEC_KEY_A7F3\"\n\
-             [compression]\nprovider = \"p\"\nmodel = \"c\"\n\
-             api_key_env = \"PANTHEON_TEST_CMP_KEY_A7F3\"\n",
-        )
-        .unwrap();
-        let broker = chat_secrets(Some(&cfg));
-        assert_eq!(
-            broker
-                .resolve("PANTHEON_DECISION_API_KEY")
-                .unwrap()
-                .map(|s| s.expose().to_string()),
-            Some("dec-1".into())
-        );
-        assert_eq!(
-            broker
-                .resolve("PANTHEON_COMPRESSION_API_KEY")
-                .unwrap()
-                .map(|s| s.expose().to_string()),
-            Some("cmp-1".into())
-        );
-        std::env::remove_var("PANTHEON_TEST_DEC_KEY_A7F3");
-        std::env::remove_var("PANTHEON_TEST_CMP_KEY_A7F3");
-    }
-}
+#[path = "config_doc_tests.rs"]
+mod tests;

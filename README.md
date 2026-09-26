@@ -31,8 +31,10 @@ gates, plugin loading and hooks, memory with provenance, Discord and
 Telegram surfaces, the AG-UI local web client, a setup wizard, a system
 doctor, and the six-stage orchestration pipeline.
 
-Implemented but not yet wired to a CLI surface: scheduler, secrets broker,
-MCP projection, migration import, sandbox profiles, swarm caps. See
+Wired to the CLI: scheduler (`pantheon schedule`), migration import
+(`pantheon migrate`), swarm caps (`pantheon swarm`). Still unwired: MCP
+server launcher (`pantheon mcp list` is read-only), OS-keychain backends,
+container/VM enforcement, scheduler end-to-end run driving. See
 ARCHITECTURE.md sections 3, 10, 13, 15, 21, 23 for the exact state.
 
 ## Install

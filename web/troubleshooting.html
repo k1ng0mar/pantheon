@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pantheon — Rust Agent Runtime</title>
+  <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="https://cdn.tailwindcss.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0d0d0d', fg: '#e8e6e1', muted: '#71717a', accent: '#7027c5',
+            card: '#1c1c1e', border: '#2e2e30',
+          },
+          fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Inter', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { background: #0d0d0d; color: #e8e6e1; font-family: 'Inter', sans-serif; }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7027c5, transparent); }
+    .radial-core { background: radial-gradient(ellipse at center, rgba(112,39,197,0.06) 0%, transparent 70%); }
+    .logo-mark { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark img { height: 32px; width: auto; }
+    .logo-mark-sm { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark-sm img { height: 22px; width: auto; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    pre { background: #1c1c1e; border: 1px solid #2e2e30; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+    pre code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #e8e6e1; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: #7027c5; background: rgba(112,39,197,0.1); padding: 0.15em 0.3em; border-radius: 3px; }
+    h1, h2, h3, h4 { font-family: 'JetBrains Mono', monospace; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
+    th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
+    tr:hover td { background: rgba(112,39,197,0.05); }
+    details { cursor: pointer; }
+    details summary { list-style: none; }
+    details summary::-webkit-details-marker { display: none; }
+    details[open] summary .chevron { transform: rotate(90deg); }
+    .chevron { display: inline-block; transition: transform 0.15s; }
+  </style>
+</head>
+<body class="antialiased">
+
+  <nav class="fixed top-0 left-0 right-0 z-50 bg-bg/80 backdrop-blur border-b border-border">
+    <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="index.html" class="flex items-center gap-3">
+        <div class="logo-mark"><img src="logo.png" alt="Pantheon" width="32" height="32"></div>
+        <span class="font-mono font-bold text-fg text-lg tracking-tight">pantheon</span>
+      </a>
+      <div class="flex items-center gap-6 text-sm">
+        <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
+        <a href="getting-started.html" class="text-muted hover:text-fg transition-colors">Docs</a>
+        <a href="configuration.html" class="text-muted hover:text-fg transition-colors">Configuration</a>
+        <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
+        <a href="channels.html" class="text-muted hover:text-fg transition-colors">Channels</a>
+        <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <h1 class="text-3xl md:text-4xl font-bold text-fg mb-4 mt-8">Troubleshooting</h1>
+<p class="text-muted text-sm leading-relaxed mb-3">Every error is a structured <code>PantheonError</code>: code, layer, retryable flag,</p>
+<p class="text-muted text-sm leading-relaxed mb-3">cause, remediation. This page maps the codes you will actually meet to</p>
+<p class="text-muted text-sm leading-relaxed mb-3">what to do.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Model / provider</h2>
+<table>
+<thead><tr><th>Code</th><th>Meaning</th><th>Fix</th></tr></thead>
+<tbody>
+<thead><tr><th>`PROVIDER_EXHAUSTED`</th><th>Default and all fallbacks failed</th><th>Check the first failure's cause above it in the log; usually key, base URL, or network</th></tr></thead>
+<tbody>
+<thead><tr><th>`MOCK_PROVIDER_UNCONFIGURED`</th><th>`--provider mock` (no such provider; scripted transports were removed)</th><th>Point at a real provider: `pantheon model`</th></tr></thead>
+<tbody>
+<thead><tr><th>`MODEL_HTTP_*`</th><th>Transport error from the provider</th><th>The cause names the HTTP status; 401/403 = key, 429 = quota, 5xx = provider side</th></tr></thead>
+<tbody>
+<thead><tr><th>`CONTEXT_OVERFLOW`</th><th>Essential rows (system + last turn) alone exceed the model's window</th><th>Shorten the system prompt/extension context, or pick a model with a larger `context_limit`. Long runs normally trim oldest context automatically — `ContextTrimmed` in `pantheon explain` shows what went</th></tr></thead>
+<tbody>
+</tbody></table>
+
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Run lifecycle</h2>
+<table>
+<thead><tr><th>Code</th><th>Meaning</th><th>Fix</th></tr></thead>
+<tbody>
+<thead><tr><th>`RUN_PARKED`</th><th>Run is awaiting an approval</th><th>`pantheon grant <run> <scope>` or deny</th></tr></thead>
+<tbody>
+<thead><tr><th>`RUN_TERMINAL`</th><th>Run already completed/failed/canceled</th><th>Start a new run id</th></tr></thead>
+<tbody>
+<thead><tr><th>`RT_LEASE_BUSY`</th><th>Another supervisor owns the run</th><th>Wait for it, or let the lease expire (TTL 30s)</th></tr></thead>
+<tbody>
+<thead><tr><th>`LOST_LEASE`</th><th>This supervisor lost ownership mid-work</th><th>Stop tool work; reacquire; the run is recoverable</th></tr></thead>
+<tbody>
+<thead><tr><th>`BUDGET_EXHAUSTED`</th><th>max_turns or max_tool_calls hit</th><th>Raise the budget in code or simplify the task</th></tr></thead>
+<tbody>
+<thead><tr><th>`WATCHDOG_KILL`</th><th>Stall probe failed after the silence budget</th><th>Check the provider transport; the run stays recoverable</th></tr></thead>
+<tbody>
+<thead><tr><th>`SWARM_SPAWN_DENIED`</th><th>Delegation not configured in this session</th><th>Expected in v1; spawn caps exist but the spawner is not wired</th></tr></thead>
+<tbody>
+</tbody></table>
+
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Approvals</h2>
+<table>
+<thead><tr><th>Code</th><th>Meaning</th><th>Fix</th></tr></thead>
+<tbody>
+<thead><tr><th>`RT_APPROVAL_UNKNOWN`</th><th>Scope was never requested</th><th>Copy the scope from the ApprovalRequested event</th></tr></thead>
+<tbody>
+<thead><tr><th>`RT_APPROVAL_RESOLVED`</th><th>Scope already granted/denied</th><th>Nothing to do</th></tr></thead>
+<tbody>
+<thead><tr><th>`RT_NOT_PARKED`</th><th>Run is not in awaiting_approval</th><th>Check `pantheon status` first</th></tr></thead>
+<tbody>
+</tbody></table>
+
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Tools and plugins</h2>
+<table>
+<thead><tr><th>Code</th><th>Meaning</th><th>Fix</th></tr></thead>
+<tbody>
+<thead><tr><th>`CAP_DENIED`</th><th>Policy denies the capability</th><th>Change the policy preset or the tool's capability</th></tr></thead>
+<tbody>
+<thead><tr><th>`TOOL_PANIC`</th><th>Tool implementation panicked</th><th>Bug in the tool; the run continues with the error as result</th></tr></thead>
+<tbody>
+<thead><tr><th>`PLUGIN_TIMEOUT`</th><th>Plugin missed the per-call deadline</th><th>The group was killed; fix the plugin's latency or raise timeout_ms</th></tr></thead>
+<tbody>
+<thead><tr><th>`PLUGIN_DEAD` / `PLUGIN_EOF`</th><th>Plugin process died or closed stdout</th><th>Run it manually to see the crash</th></tr></thead>
+<tbody>
+<thead><tr><th>`PLUGIN_PROTOCOL`</th><th>Invalid JSON or wrong call_id</th><th>Plugin's stdio contract is broken; one JSON line in/out</th></tr></thead>
+<tbody>
+</tbody></table>
+
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Files and storage</h2>
+<table>
+<thead><tr><th>Code</th><th>Meaning</th><th>Fix</th></tr></thead>
+<tbody>
+<thead><tr><th>`SAFE_STALE`</th><th>File changed since your expected hash</th><th>Re-preview; the change was not applied</th></tr></thead>
+<tbody>
+<thead><tr><th>`LEDGER_OPEN` / `LEDGER_*`</th><th>SQLite errors</th><th>Disk space, permissions, or a corrupted file (restore from backup)</th></tr></thead>
+<tbody>
+<thead><tr><th>`ARTIFACT_TOO_LARGE`</th><th>Blob over 8MiB</th><th>Store big files on disk, put a reference in the ledger</th></tr></thead>
+<tbody>
+<thead><tr><th>`ARTIFACT_ID` / `ARTIFACT_MIME`</th><th>Unsafe task id or header-hostile mime</th><th>Use `[A-Za-z0-9_-]` ids</th></tr></thead>
+<tbody>
+</tbody></table>
+
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Config and setup</h2>
+<table>
+<thead><tr><th>Code</th><th>Meaning</th><th>Fix</th></tr></thead>
+<tbody>
+<thead><tr><th>`CONFIG_OPEN`</th><th>No config file</th><th>`pantheon setup`</th></tr></thead>
+<tbody>
+<thead><tr><th>`CONFIG_PARSE`</th><th>Malformed TOML</th><th>The error names line and column; or rerun setup</th></tr></thead>
+<tbody>
+<thead><tr><th>`CONFIG_WRITE`</th><th>Could not persist config</th><th>Check directory permissions</th></tr></thead>
+<tbody>
+</tbody></table>
+
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Pipelines</h2>
+<table>
+<thead><tr><th>Code</th><th>Meaning</th><th>Fix</th></tr></thead>
+<tbody>
+<thead><tr><th>`PIPELINE_GATE`</th><th>Parked on plan or review</th><th>`pantheon pipeline <run> --approve <stage>`</th></tr></thead>
+<tbody>
+<thead><tr><th>`PIPELINE_DENIED`</th><th>A gate was denied</th><th>Pipeline stops by design; start a new run</th></tr></thead>
+<tbody>
+<thead><tr><th>`PIPELINE_EVAL_LOOP`</th><th>implement did not converge</th><th>Raise max_iterations, fix the task, or disable the strict evaluator</th></tr></thead>
+<tbody>
+<thead><tr><th>`PIPELINE_STATE`</th><th>Stage operation has no output</th><th>Inspect the operation row; likely an executor bug</th></tr></thead>
+<tbody>
+<thead><tr><th>`OPERATION_CONFLICT`</th><th>Version CAS failed</th><th>Another worker moved the operation; re-read and retry</th></tr></thead>
+<tbody>
+<thead><tr><th>`OPERATION_IDENTITY`</th><th>Operation id reused for a different request</th><th>Use a fresh operation id</th></tr></thead>
+<tbody>
+</tbody></table>
+
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Channels</h2>
+<table>
+<thead><tr><th>Code</th><th>Meaning</th><th>Fix</th></tr></thead>
+<tbody>
+<thead><tr><th>`TELEGRAM_HTTP` / `DISCORD_HTTP`</th><th>Platform API error</th><th>Token validity, network; the daemon backs off and retries</th></tr></thead>
+<tbody>
+<thead><tr><th>`DISCORD_EVENT`</th><th>Malformed gateway payload</th><th>Bridge bug; check the normalizer's expectations</th></tr></thead>
+<tbody>
+</tbody></table>
+
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Generic debugging order</h2>
+<li class="mb-2 text-muted text-sm"><code>pantheon doctor</code> — most "it doesn't work" is config or env.</li>
+<li class="mb-2 text-muted text-sm"><code>pantheon explain <run_id></code> — the answer to "why did it do that" is in</li>
+<p class="text-muted text-sm leading-relaxed mb-3">the event replay.</p>
+<li class="mb-2 text-muted text-sm"><code>cargo test --workspace && python3 eval/run.py</code> — if these are green,</li>
+<p class="text-muted text-sm leading-relaxed mb-3">the bug is in your config or environment, not the build.</p>
+
+  <div class="glow-line max-w-5xl mx-auto"></div>
+
+  <footer class="py-16">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+        <div class="flex items-center gap-3">
+          <div class="logo-mark-sm"><img src="logo.png" alt="Pantheon" width="22" height="22"></div>
+          <div>
+            <span class="font-mono font-bold text-fg text-sm">pantheon</span>
+            <p class="text-muted text-xs mt-0.5">Rust agent runtime. MIT licensed. <span class="font-mono">pantheon-agent/pantheon</span> on GitHub.</p>
+          </div>
+        </div>
+        <div class="flex gap-8 text-sm">
+          <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
+          <a href="https://github.com/pantheon-agent/pantheon/blob/main/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
+          <a href="https://github.com/pantheon-agent/pantheon/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+        </div>
+      </div>
+      <div class="glow-line my-8"></div>
+      <p class="text-muted text-xs text-center">No hosted tier. No subscription. Your data stays on your machine.</p>
+    </div>
+  </footer>
+
+</body>
+</html>

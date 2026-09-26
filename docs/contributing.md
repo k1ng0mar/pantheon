@@ -39,8 +39,8 @@ Rules that keep the architecture honest:
 3. `python3 eval/run.py` drives the real binary in fresh sandboxes. New
    CLI verbs get an eval case. Look at eval/cases.json for the shape;
    `_`-prefixed commands are probes (see eval/run.py).
-4. Mock-driven determinism: tests never touch the network. Use
-   `MockTransport` (fixture JSON) or scripted traits. Anything needing a
+4. Determinism: unit tests never touch the network. Use scripted
+   `ChatTransport` test doubles local to the test file. Anything needing a
    live model is behind an env check (see router_streaming test).
 5. Concurrency code gets a race test (see leases.rs
    `cross_connection_acquire_has_one_winner` for the pattern: two

@@ -126,6 +126,8 @@ pantheon memory backend select honcho url=http://127.0.0.1:8000 key=...
 | `honcho` | HTTP bridge | same, `PANTHEON_MEMORY_HONCHO_URL`/`_KEY` |
 | `hindsight` | HTTP bridge | same, `PANTHEON_MEMORY_HINDSIGHT_URL`/`_KEY` |
 | `openviking` | HTTP bridge | same, `PANTHEON_MEMORY_OPENVIKING_URL`/`_KEY` |
+| `mnemopi` | HTTP bridge | OMP's local SQLite memory; same, `PANTHEON_MEMORY_MNEMOPI_URL`/`_KEY` (needs a thin bridge — it speaks OMP's protocol, not `/v1/memory`) |
+| `sharpshooter` | HTTP bridge | OMP's project decision memory; same, `PANTHEON_MEMORY_SHARPSHOOTER_URL`/`_KEY` (thin bridge needed) |
 
 Selection is persisted at `<data_dir>/memory-backend.toml` and is honored
 by the runtime session (recall before each turn, `memory_*` tools) and by

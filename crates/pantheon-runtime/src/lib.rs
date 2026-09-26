@@ -61,6 +61,14 @@ struct SupervisorInner {
     ledger: Ledger,
     operations: OperationStore,
     leases: RunLeaseStore,
+    /// Session search index (FTS5 sidecar in the ledger file). Every
+    /// emitted message/tool/title event is chunked and indexed here so
+    /// the `session_search` tool can find past work without a model call.
+    search: std::sync::Arc<pantheon_storage::search::SessionSearch>,
+    /// Embeddings client for the vector recall layer. `None` until
+    /// `set_embedder` attaches the policy-resolved client (Session::new);
+    /// before that indexing falls back to the local hashing embedder.
+    embedder: std::sync::Mutex<Option<std::sync::Arc<pantheon_providers::embeddings::EmbedClient>>>,
     data_dir: PathBuf,
     lease_id: String,
     /// Live observers (TUI, gateway, tests). Called after each successful
@@ -182,6 +190,9 @@ impl Supervisor {
         // mutex and SQLite provides the cross-connection CAS semantics.
         let operations = OperationStore::open(&data_dir.join("ledger.db"))?;
         let leases = RunLeaseStore::open(&data_dir.join("ledger.db"))?;
+        let search = std::sync::Arc::new(pantheon_storage::search::SessionSearch::open(
+            &data_dir.join("ledger.db"),
+        )?);
         let lease_id = format!("lease_{}_{}", std::process::id(), new_run_id());
         Ok(Self {
             inner: Arc::new(SupervisorInner {
@@ -190,9 +201,24 @@ impl Supervisor {
                 leases,
                 data_dir,
                 lease_id,
+                search,
+                embedder: std::sync::Mutex::new(None),
                 observers: std::sync::Mutex::new(Vec::new()),
             }),
         })
+    }
+    /// Shared handle to the session search index (for tool wiring).
+    pub fn shared_search(&self) -> std::sync::Arc<pantheon_storage::search::SessionSearch> {
+        std::sync::Arc::clone(&self.inner.search)
+    }
+
+    /// Attach the embeddings client resolved from the session's model
+    /// policy. Called by `Session::new`; before that, indexing falls back
+    /// to the local hashing embedder.
+    pub fn set_embedder(&self, client: pantheon_providers::embeddings::EmbedClient) {
+        if let Ok(mut slot) = self.inner.embedder.lock() {
+            *slot = Some(std::sync::Arc::new(client));
+        }
     }
     fn ledger(&self) -> &Ledger {
         &self.inner.ledger
@@ -357,14 +383,19 @@ impl Supervisor {
     /// Start a run. If a previous ledger shows it unfinished, emit RunRecovered.
     /// A run parked on approval is NOT recoverable into a fresh chat: the
     /// caller must resume() or grant() first, never start over it.
+    ///
+    /// Goes through `emit`, not a bare ledger append, so live observers (TUI,
+    /// the hook bridge) see the run boundary. Appending directly would make
+    /// `RunStarted` invisible to every subscriber while still durable — the
+    /// exact "durable but unobserved" split the observer contract forbids.
     pub fn start_run(&self, run_id: &str) -> Result<bool, PantheonError> {
         let status = self.ledger().status(run_id)?;
         let recovered = matches!(status.as_deref(), Some("running"));
-        self.ledger().append(&Event::RunStarted {
+        self.emit(Event::RunStarted {
             run_id: run_id.into(),
         })?;
         if recovered {
-            self.ledger().append(&Event::RunRecovered {
+            self.emit(Event::RunRecovered {
                 run_id: run_id.into(),
             })?;
         }
@@ -372,6 +403,11 @@ impl Supervisor {
     }
     pub fn emit(&self, ev: Event) -> Result<(), PantheonError> {
         self.ledger().append(&ev)?;
+        // Index for session search (best-effort: a failed index write must
+        // never break the run, same contract as observers).
+        if let Err(e) = self.index_for_search(&ev) {
+            eprintln!("session search index: {e}");
+        }
         // Fan out to live observers after the durable write. Observer
         // failures must never break the run: the ledger is the contract,
         // observers are best-effort views.
@@ -382,6 +418,58 @@ impl Supervisor {
         }
         Ok(())
     }
+    /// Chunk-and-index one event into the session search sidecar. Only
+    /// content-bearing events are indexed; bookkeeping events (started,
+    /// completed, approvals) carry no searchable text.
+    fn index_for_search(&self, ev: &Event) -> Result<(), PantheonError> {
+        use pantheon_core::events::Event as E;
+        use pantheon_providers::embeddings::EmbedderClient;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let seq = self.ledger().max_seq()?;
+        let (run_id, kind, text) = match ev {
+            E::AssistantMessage { run_id, message } => (run_id, "message", message.content.clone()),
+            E::ToolMessage { run_id, message } => (run_id, "tool", message.content.clone()),
+            E::SessionTitled { run_id, title, .. } => (run_id, "title", title.clone()),
+            _ => return Ok(()),
+        };
+        let chunk = pantheon_storage::search::SessionChunk {
+            chunk_id: format!("{run_id}:{seq}:{kind}"),
+            run_id: run_id.clone(),
+            seq,
+            kind: kind.into(),
+            text: text.clone(),
+            ts_ms: ts,
+        };
+        // Embed via the attached client (policy-resolved auxiliary), or
+        // the local hashing embedder when none is set. Either way the
+        // vector layer gets real vectors; a failed embed degrades this
+        // chunk to lexical-only — indexing never breaks the run.
+        let attached = self
+            .inner
+            .embedder
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(std::sync::Arc::clone));
+        let embedding = match attached {
+            Some(client) => client
+                .embed(std::slice::from_ref(&text))
+                .ok()
+                .and_then(|mut v| v.drain(..).next())
+                .map(|e| e.vec),
+            None => pantheon_providers::embeddings::EmbedClient::local()
+                .embed(std::slice::from_ref(&text))
+                .ok()
+                .and_then(|mut v| v.drain(..).next())
+                .map(|e| e.vec),
+        };
+        self.inner
+            .search
+            .index_with_embedding(&chunk, embedding.as_deref())
+    }
+
     /// Register a live event observer (TUI, gateway). Returns a handle
     /// that removes the observer when dropped.
     ///
@@ -415,18 +503,19 @@ impl Supervisor {
             cb,
         }
     }
+    /// Terminal run boundary. Routed through `emit` so `on_session_end` (and
+    /// the TUI) observe completion; a bare append would make the run finish
+    /// durably while every live subscriber still believed it was running.
     pub fn complete(&self, run_id: &str) -> Result<(), PantheonError> {
-        self.ledger().append(&Event::RunCompleted {
+        self.emit(Event::RunCompleted {
             run_id: run_id.into(),
-        })?;
-        Ok(())
+        })
     }
     pub fn fail(&self, run_id: &str, code: &str) -> Result<(), PantheonError> {
-        self.ledger().append(&Event::RunFailed {
+        self.emit(Event::RunFailed {
             run_id: run_id.into(),
             code: code.into(),
-        })?;
-        Ok(())
+        })
     }
 
     /// Record an approval grant for a parked run. Emits ApprovalGranted and
@@ -664,7 +753,7 @@ impl Supervisor {
             Some(_) => {}
             None => return Err(rerr("RT_NO_RUN", format!("no run {run_id} in ledger"))),
         }
-        self.ledger().append(&Event::RunCanceled {
+        self.emit(Event::RunCanceled {
             run_id: run_id.into(),
             reason: reason.to_string(),
         })?;
@@ -702,8 +791,12 @@ impl Supervisor {
     pub fn ledger_list_runs(
         &self,
         limit: usize,
-    ) -> Result<Vec<(String, String, i64)>, PantheonError> {
+    ) -> Result<Vec<pantheon_storage::RunListing>, PantheonError> {
         self.ledger().list_runs(limit)
+    }
+    /// Current display title of a run (`None` = never titled).
+    pub fn ledger_title(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
+        self.ledger().run_title(run_id)
     }
     pub fn ledger_reopen_run(&self, run_id: &str) -> Result<bool, PantheonError> {
         self.ledger().reopen_run(run_id)
@@ -757,261 +850,5 @@ pub fn new_turn_id() -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn start_complete_explain() {
-        let dir = std::env::temp_dir().join(format!("pantheon-rt-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir).unwrap();
-        let id = "run_test_1";
-        assert!(!sup.start_run(id).unwrap());
-        sup.emit(Event::ToolStarted {
-            run_id: id.into(),
-            call_id: "t".into(),
-            tool: "shell".into(),
-            args: String::new(),
-            provenance: pantheon_core::provenance::Provenance::system("test"),
-        })
-        .unwrap();
-        sup.complete(id).unwrap();
-        assert!(sup.explain(id).unwrap().contains("completed"));
-    }
-    #[test]
-    fn crash_recovery_flag() {
-        let dir = std::env::temp_dir().join(format!("pantheon-rt2-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir.clone()).unwrap();
-        sup.start_run("run_crash").unwrap();
-        drop(sup);
-        let sup2 = Supervisor::open(dir).unwrap();
-        assert!(sup2.start_run("run_crash").unwrap());
-        assert!(sup2.explain("run_crash").unwrap().contains("recovered"));
-    }
-
-    #[test]
-    fn observers_receive_events_and_guard_unregisters() {
-        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-
-        let dir = std::env::temp_dir().join(format!("pantheon-obs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir).unwrap();
-        sup.start_run("run_obs").unwrap();
-
-        let hits = std::sync::Arc::new(AtomicUsize::new(0));
-        let h2 = hits.clone();
-        let guard = sup.register_observer(std::sync::Arc::new(move |_ev: &Event| {
-            h2.fetch_add(1, AtomicOrdering::SeqCst);
-        }));
-
-        sup.emit(Event::RunProgress {
-            run_id: "run_obs".into(),
-            detail: "hello observer".into(),
-        })
-        .unwrap();
-        assert_eq!(hits.load(AtomicOrdering::SeqCst), 1, "observer fired");
-
-        // Dropping the guard unregisters: no further deliveries.
-        drop(guard);
-        sup.emit(Event::RunProgress {
-            run_id: "run_obs".into(),
-            detail: "should not deliver".into(),
-        })
-        .unwrap();
-        assert_eq!(hits.load(AtomicOrdering::SeqCst), 1, "guard removed observer");
-    }
-
-    #[test]
-    fn grant_flips_parked_run_back_to_running() {
-        let dir = std::env::temp_dir().join(format!("pantheon-rt3-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir).unwrap();
-        sup.start_run("run_park").unwrap();
-        sup.emit(Event::ApprovalRequested {
-            run_id: "run_park".into(),
-            scope: "call_0_0".into(),
-        })
-        .unwrap();
-        assert_eq!(
-            sup.ledger_status("run_park").unwrap().as_deref(),
-            Some("awaiting_approval")
-        );
-        sup.grant("run_park", "call_0_0").unwrap();
-        assert_eq!(
-            sup.ledger_status("run_park").unwrap().as_deref(),
-            Some("running")
-        );
-    }
-
-    #[test]
-    fn replay_rebuilds_transcript_and_unfinished_calls() {
-        use pantheon_core::message::Message;
-        let dir = std::env::temp_dir().join(format!("pantheon-rt4-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir).unwrap();
-        sup.start_run("run_replay").unwrap();
-        sup.emit(Event::AssistantMessage {
-            run_id: "run_replay".into(),
-            message: Message::user("do the thing"),
-        })
-        .unwrap();
-        sup.emit(Event::ToolStarted {
-            run_id: "run_replay".into(),
-            call_id: "call_0_0".into(),
-            tool: "shell".into(),
-            args: "{\"cmd\":\"ls\"}".into(),
-            provenance: pantheon_core::provenance::Provenance::system("test"),
-        })
-        .unwrap();
-        let entries = sup.replay("run_replay").unwrap();
-        let msgs = crate::session::rebuild_messages(entries.clone());
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].content, "do the thing");
-        assert_eq!(
-            crate::session::unfinished_calls(&entries),
-            vec!["call_0_0".to_string()]
-        );
-    }
-
-    #[test]
-    fn grant_rejects_unknown_scope() {
-        let dir = std::env::temp_dir().join(format!("pantheon-rt5-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir).unwrap();
-        sup.start_run("run_unknown").unwrap();
-        // Park the run on approval so grant() reaches the scope check.
-        sup.emit(Event::ApprovalRequested {
-            run_id: "run_unknown".into(),
-            scope: "real_scope".into(),
-        })
-        .unwrap();
-        assert_eq!(
-            sup.ledger_status("run_unknown").unwrap().as_deref(),
-            Some("awaiting_approval")
-        );
-        // Grant a different scope: must refuse as unknown.
-        let err = sup.grant("run_unknown", "other_scope").unwrap_err();
-        assert_eq!(err.code, "RT_APPROVAL_UNKNOWN");
-    }
-
-    #[test]
-    fn lease_guard_blocks_a_second_supervisor_until_release() {
-        let dir = std::env::temp_dir().join(format!("pantheon-lease-guard-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let first = Supervisor::open(dir.clone()).unwrap();
-        let second = Supervisor::open(dir).unwrap();
-        first.start_run_with_lease("run-guarded").unwrap();
-        let guard = RunLeaseGuard::try_new(first.clone(), "run-guarded").unwrap();
-        assert!(guard.is_healthy());
-        assert!(second.acquire_lease("run-guarded").is_err());
-        drop(guard);
-        assert!(second.acquire_lease("run-guarded").is_ok());
-    }
-
-    #[test]
-    fn canceling_a_run_moves_linked_operations_to_canceled() {
-        let dir =
-            std::env::temp_dir().join(format!("pantheon-op-cancel-run-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir).unwrap();
-        sup.start_run_with_lease("run-op").unwrap();
-        sup.create_operation(
-            "run-op:call_0_0",
-            "tool.execute",
-            serde_json::json!({
-                "phase": "execute",
-                "request": {"run_id": "run-op", "name": "shell", "args": ""},
-                "translated": {"name": "shell", "args": ""}
-            }),
-        )
-        .unwrap();
-        sup.cancel_run("run-op", "user stop").unwrap();
-        assert_eq!(
-            sup.operations()
-                .get("run-op:call_0_0")
-                .unwrap()
-                .unwrap()
-                .status,
-            OperationStatus::Canceled
-        );
-    }
-
-    #[test]
-    fn operation_cannot_be_canceled_for_another_run() {
-        let dir = std::env::temp_dir().join(format!("pantheon-op-mismatch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir).unwrap();
-        sup.create_operation(
-            "op",
-            "tool.execute",
-            serde_json::json!({
-                "phase": "execute", "request": {"run_id": "run-a"}
-            }),
-        )
-        .unwrap();
-        let error = sup
-            .cancel_operation_with_groups("op", "run-b", "stop")
-            .unwrap_err();
-        assert_eq!(error.code, "OPERATION_RUN_MISMATCH");
-        assert_eq!(
-            sup.operations().get("op").unwrap().unwrap().status,
-            OperationStatus::Ready
-        );
-    }
-
-    #[test]
-    fn grant_rejects_duplicate_scope() {
-        let dir = std::env::temp_dir().join(format!("pantheon-rt6-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir).unwrap();
-        sup.start_run("run_dup").unwrap();
-        sup.emit(Event::ApprovalRequested {
-            run_id: "run_dup".into(),
-            scope: "call_0_0".into(),
-        })
-        .unwrap();
-        sup.grant("run_dup", "call_0_0").unwrap();
-        // First grant unparked the run. Second grant must refuse because
-        // the run is no longer parked — the duplicate is caught by the
-        // status gate, not the scope check.
-        let err = sup.grant("run_dup", "call_0_0").unwrap_err();
-        assert_eq!(err.code, "RT_NOT_PARKED");
-    }
-
-    #[test]
-    fn chat_on_parked_run_is_refused() {
-        use std::path::PathBuf;
-        let dir = std::env::temp_dir().join(format!("pantheon-rt7-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir.clone()).unwrap();
-        // Park the run synthetically.
-        sup.start_run("run_park").unwrap();
-        sup.emit(Event::ApprovalRequested {
-            run_id: "run_park".into(),
-            scope: "call_0_0".into(),
-        })
-        .unwrap();
-        assert_eq!(
-            sup.ledger_status("run_park").unwrap().as_deref(),
-            Some("awaiting_approval")
-        );
-        // Build a session whose chat() must refuse before talking to any model.
-        // Use an unreachable endpoint to prove the refusal happens pre-flight.
-        let session = crate::session::Session::new(
-            PathBuf::from(dir),
-            pantheon_core::capability::Policy::coder(),
-            pantheon_core::model::ModelPolicy {
-                default: pantheon_core::model::DefaultModel {
-                    provider: "unreachable.test".into(),
-                    model: "x".into(),
-                },
-                fallbacks: pantheon_core::model::FallbackChain::default(),
-                auxiliaries: vec![],
-            },
-            pantheon_secrets::SecretsBroker::new(),
-        )
-        .unwrap();
-        let err = session.chat("run_park", "again").unwrap_err();
-        assert_eq!(err.code, "RUN_PARKED");
-    }
-}
+#[path = "lib_tests.rs"]
+mod tests;

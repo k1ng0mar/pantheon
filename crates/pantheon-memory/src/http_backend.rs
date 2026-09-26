@@ -72,7 +72,12 @@ impl HttpBackend {
 
     /// `<base><prefix>/<suffix>` with the base trailing slash trimmed.
     fn endpoint(&self, suffix: &str) -> String {
-        format!("{}{}/{}", self.base.trim_end_matches('/'), self.prefix, suffix)
+        format!(
+            "{}{}/{}",
+            self.base.trim_end_matches('/'),
+            self.prefix,
+            suffix
+        )
     }
 }
 
@@ -176,7 +181,11 @@ impl MemoryBackend for HttpBackend {
     }
 
     fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError> {
-        let url = format!("{}?namespace={}", self.endpoint("list_agent"), pct(namespace));
+        let url = format!(
+            "{}?namespace={}",
+            self.endpoint("list_agent"),
+            pct(namespace)
+        );
         let resp = http_get(&url, self.api_key.as_deref())?;
         let rows: Vec<(String, String)> = serde_json::from_slice(&resp.body).map_err(|e| {
             merr(
@@ -208,25 +217,13 @@ struct HttpResponse {
 }
 
 fn http_get(url: &str, api_key: Option<&str>) -> Result<HttpResponse, PantheonError> {
-    let client = build_client(api_key)?;
-    let resp = client
-        .get(url)
-        .send()
-        .map_err(|e| merr("MEM_HTTP_CONN", format!("GET {url}: {e}")))?;
-    let status = resp.status().as_u16();
-    let body = resp
-        .bytes()
-        .map_err(|e| merr("MEM_HTTP_BODY", format!("GET {url}: {e}")))?
-        .to_vec();
-    if status >= 400 {
-        let parsed: ErrorResponse = serde_json::from_slice(&body).unwrap_or_default();
-        let code = parsed.error.unwrap_or_else(|| format!("HTTP {}", status));
-        let cause = parsed
-            .cause
-            .unwrap_or_else(|| format!("GET {}: HTTP {}", url, status));
-        return Err(merr(&code, cause));
+    let agent = http_agent();
+    let mut req = agent.get(url);
+    if let Some(k) = api_key {
+        req = req.set("Authorization", &format!("Bearer {k}"));
     }
-    Ok(HttpResponse { status, body })
+    let resp = req.call().map_err(|e| http_conn_err("GET", url, e))?;
+    read_response("GET", url, resp)
 }
 
 fn http_post(
@@ -234,59 +231,62 @@ fn http_post(
     payload: &[u8],
     api_key: Option<&str>,
 ) -> Result<HttpResponse, PantheonError> {
-    let client = build_client(api_key)?;
-    let resp = client
-        .post(url)
-        .body(payload.to_vec())
-        .send()
-        .map_err(|e| merr("MEM_HTTP_CONN", format!("POST {url}: {e}")))?;
-    let status = resp.status().as_u16();
+    let agent = http_agent();
+    let mut req = agent.post(url);
+    if let Some(k) = api_key {
+        req = req.set("Authorization", &format!("Bearer {k}"));
+    }
+    let resp = req
+        .set("Content-Type", "application/json")
+        .send_bytes(payload)
+        .map_err(|e| http_conn_err("POST", url, e))?;
+    read_response("POST", url, resp)
+}
+
+/// One shared agent shape for the memory bridge: bounded overall timeout,
+/// rustls, no async runtime — the same posture as the provider plane.
+fn http_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+}
+
+fn http_conn_err(method: &str, url: &str, e: ureq::Error) -> PantheonError {
+    match e {
+        ureq::Error::Status(code, resp) => {
+            let body = resp.into_string().unwrap_or_default();
+            let parsed: ErrorResponse = serde_json::from_str(&body).unwrap_or_default();
+            let code_str = parsed.error.unwrap_or_else(|| format!("HTTP {code}"));
+            let cause = parsed
+                .cause
+                .unwrap_or_else(|| format!("{method} {url}: HTTP {code}"));
+            merr(&code_str, cause)
+        }
+        e => merr("MEM_HTTP_CONN", format!("{method} {url}: {e}")),
+    }
+}
+
+fn read_response(
+    method: &str,
+    url: &str,
+    resp: ureq::Response,
+) -> Result<HttpResponse, PantheonError> {
+    let status = resp.status();
     let body = resp
-        .bytes()
-        .map_err(|e| merr("MEM_HTTP_BODY", format!("POST {url}: {e}")))?
-        .to_vec();
+        .into_string()
+        .map_err(|e| merr("MEM_HTTP_BODY", format!("{method} {url}: {e}")))?
+        .into_bytes();
     if status >= 400 {
         let parsed: ErrorResponse = serde_json::from_slice(&body).unwrap_or_default();
-        let code = parsed.error.unwrap_or_else(|| format!("HTTP {}", status));
+        let code = parsed.error.unwrap_or_else(|| format!("HTTP {status}"));
         let cause = parsed
             .cause
-            .unwrap_or_else(|| format!("POST {}: HTTP {}", url, status));
+            .unwrap_or_else(|| format!("{method} {url}: HTTP {status}"));
         return Err(merr(&code, cause));
     }
     Ok(HttpResponse { status, body })
 }
 
-fn build_client(api_key: Option<&str>) -> Result<reqwest::blocking::Client, PantheonError> {
-    let mut builder = reqwest::blocking::Client::builder();
-    if let Some(k) = api_key {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", k))
-                .map_err(|e| merr("MEM_HTTP_AUTH", format!("invalid api key header: {e}")))?,
-        );
-        builder = builder.default_headers(headers);
-    }
-    builder
-        .build()
-        .map_err(|e| merr("MEM_HTTP_CLIENT", format!("building client: {e}")))
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pct_passes_through_unreserved() {
-        assert_eq!(pct("abc"), "abc");
-        assert_eq!(pct("hello world"), "hello%20world");
-        assert_eq!(pct("a/b"), "a%2Fb");
-    }
-
-    #[test]
-    fn layer_str_round_trips() {
-        assert_eq!(layer_str(LayerKind::Global), "Global");
-        assert_eq!(layer_str(LayerKind::Agent), "Agent");
-        assert_eq!(layer_str(LayerKind::EphemeralTurn), "EphemeralTurn");
-    }
-}
+#[path = "http_backend_tests.rs"]
+mod tests;

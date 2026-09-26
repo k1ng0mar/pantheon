@@ -21,6 +21,12 @@ pub struct StoredJob {
     pub paused: bool,
     #[serde(default)]
     pub last_run: Option<i64>,
+    /// Per-job model/provider pin (Hermes parity: its jobs carry a model +
+    /// provider snapshot). None = inherit the runtime default at fire time.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 impl From<StoredJob> for Job {
@@ -32,6 +38,8 @@ impl From<StoredJob> for Job {
             missed: s.missed,
             paused: s.paused,
             target_agent: s.agent.unwrap_or_else(|| "nyx".into()),
+            model: s.model,
+            provider: s.provider,
         }
     }
 }
@@ -88,16 +96,13 @@ pub fn cmd_schedule(args: &[String], data_dir: &PathBuf) {
     }
 
     let subcommand = args[2].as_str();
-    if matches!(
-        subcommand,
-        "list" | "pause" | "resume" | "cancel" | "run"
-    ) {
+    if matches!(subcommand, "list" | "pause" | "resume" | "cancel" | "run") {
         handle_subcommand(&args[2..], data_dir);
         return;
     }
 
-    // Create: pantheon schedule <task> [--every|N<unit>] [--agent NAME] [--cron EXPR]
-    let (task, every, agent, cron) = parse_create_args(&args[2..]);
+    // Create: pantheon schedule <task> [--every|N<unit>] [--agent NAME] [--cron EXPR] [--model M] [--provider P]
+    let (task, every, agent, cron, model, provider) = parse_create_args(&args[2..]);
 
     let kind = if let Some(expr) = &cron {
         ScheduleKind::Cron { expr: expr.clone() }
@@ -115,6 +120,16 @@ pub fn cmd_schedule(args: &[String], data_dir: &PathBuf) {
     };
 
     let job_id = format!("job_{}", pantheon_runtime::new_run_id());
+    let mut probe = Job::new(&job_id, kind.clone(), "nyx");
+    if let Some(m) = model.as_deref() {
+        if let Err(e) = probe.pin_model(m, provider.as_deref()) {
+            eprintln!("bad pin: {e}");
+            std::process::exit(2);
+        }
+    } else if provider.is_some() {
+        eprintln!("note: --provider without --model pins nothing; add --model to pin");
+        std::process::exit(2);
+    }
     let stored = StoredJob {
         id: job_id.clone(),
         task,
@@ -123,6 +138,8 @@ pub fn cmd_schedule(args: &[String], data_dir: &PathBuf) {
         missed: MissedPolicy::RunOnce,
         paused: false,
         last_run: None,
+        model: probe.model,
+        provider: probe.provider,
     };
 
     let mut jobs = load_jobs(data_dir);
@@ -151,19 +168,27 @@ fn handle_subcommand(parts: &[String], data_dir: &PathBuf) {
             }
             for j in &jobs {
                 let status = if j.paused { "paused" } else { "active" };
+                let pin = match (&j.model, &j.provider) {
+                    (Some(m), Some(p)) => format!("  model: {m} via {p}"),
+                    (Some(m), None) => format!("  model: {m}"),
+                    _ => String::new(),
+                };
                 println!(
-                    "{}  {}  {}  [{}]  last: {}  | cancel: pantheon schedule cancel {}",
+                    "{}  {}  {}  [{}]{}  last: {}  | cancel: pantheon schedule cancel {}",
                     &j.id[..8],
                     status,
                     format_kind(&j.kind),
                     j.task,
+                    pin,
                     format_last(j.last_run),
                     j.id
                 );
             }
         }
         "pause" | "resume" | "cancel" => {
-            let id = if parts.len() > 1 { &parts[1] } else {
+            let id = if parts.len() > 1 {
+                &parts[1]
+            } else {
                 eprintln!("usage: pantheon schedule {} <id>", parts[0]);
                 std::process::exit(2);
             };
@@ -174,10 +199,11 @@ fn handle_subcommand(parts: &[String], data_dir: &PathBuf) {
                     match parts[0].as_str() {
                         "pause" => j.paused = true,
                         "resume" => j.paused = false,
-                        "cancel" => {
+                        // "cancel" removes below; outer guard allows only
+                        // pause|resume|cancel here.
+                        _ => {
                             jobs.retain(|x| x.id != *id);
                         }
-                        _ => unreachable!(),
                     }
                     let _ = save_jobs(data_dir, &jobs);
                     println!("{} {}", parts[0], id);
@@ -189,7 +215,9 @@ fn handle_subcommand(parts: &[String], data_dir: &PathBuf) {
             }
         }
         "run" => {
-            let id = if parts.len() > 1 { &parts[1] } else {
+            let id = if parts.len() > 1 {
+                &parts[1]
+            } else {
                 eprintln!("usage: pantheon schedule run <id>");
                 std::process::exit(2);
             };
@@ -204,15 +232,31 @@ fn handle_subcommand(parts: &[String], data_dir: &PathBuf) {
                 }
             }
         }
-        _ => unreachable!(),
+        _ => {
+            // Guarded by cmd_schedule's subcommand allow-list; fail loud
+            // (not unreachable) so a new subcommand can't silently no-op.
+            eprintln!("usage: pantheon schedule list|pause|resume|cancel|run <id>");
+            std::process::exit(2);
+        }
     }
 }
 
-fn parse_create_args(args: &[String]) -> (String, Option<String>, Option<String>, Option<String>) {
+fn parse_create_args(
+    args: &[String],
+) -> (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let mut task = String::new();
     let mut every = None;
     let mut agent = None;
     let mut cron = None;
+    let mut model = None;
+    let mut provider = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -234,6 +278,18 @@ fn parse_create_args(args: &[String]) -> (String, Option<String>, Option<String>
                     cron = Some(args[i].clone());
                 }
             }
+            "--model" => {
+                i += 1;
+                if i < args.len() {
+                    model = Some(args[i].clone());
+                }
+            }
+            "--provider" => {
+                i += 1;
+                if i < args.len() {
+                    provider = Some(args[i].clone());
+                }
+            }
             s if s.starts_with("--") => {
                 // Support --30m style shorthand
                 let dur = s.trim_start_matches("--");
@@ -247,7 +303,7 @@ fn parse_create_args(args: &[String]) -> (String, Option<String>, Option<String>
         }
         i += 1;
     }
-    (task, every, agent, cron)
+    (task, every, agent, cron, model, provider)
 }
 
 fn format_kind(kind: &ScheduleKind) -> String {

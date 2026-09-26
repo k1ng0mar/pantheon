@@ -31,6 +31,53 @@ pub enum Decision {
     Approval,
 }
 
+impl Capability {
+    /// Stable, log-safe token for a capability, e.g. `shell.execute`.
+    /// Used for approval scopes and events, so it never carries payload
+    /// values: a `MessageSend` token is the channel class, not the message.
+    /// Single home for the token table — sandbox labels and MCP parsing
+    /// both delegate here so a new variant touches one match.
+    pub fn token(&self) -> String {
+        match self {
+            Capability::FilesystemRead => "filesystem.read".to_string(),
+            Capability::FilesystemWrite => "filesystem.write".to_string(),
+            Capability::ShellExecute => "shell.execute".to_string(),
+            Capability::GitRead => "git.read".to_string(),
+            Capability::GitWrite => "git.write".to_string(),
+            Capability::GitPush => "git.push".to_string(),
+            Capability::NetworkOutbound => "network.outbound".to_string(),
+            Capability::Browser => "browser".to_string(),
+            Capability::MessageSend(_) => "message.send".to_string(),
+            Capability::MemoryRead => "memory.read".to_string(),
+            Capability::MemoryWrite => "memory.write".to_string(),
+            Capability::SecretsUse => "secrets.use".to_string(),
+            Capability::AgentSpawn => "agent.spawn".to_string(),
+            Capability::Other(name) => format!("other.{}", name.trim().replace(' ', ".")),
+        }
+    }
+
+    /// Map a policy token string to a capability. Unknown tokens become
+    /// `Other(name)` so policy can still gate them explicitly.
+    /// Inverse of [`Capability::token`] for the fixed variants.
+    pub fn from_token(token: &str) -> Capability {
+        match token.trim() {
+            "filesystem.read" => Capability::FilesystemRead,
+            "filesystem.write" => Capability::FilesystemWrite,
+            "shell.execute" => Capability::ShellExecute,
+            "git.read" => Capability::GitRead,
+            "git.write" => Capability::GitWrite,
+            "git.push" => Capability::GitPush,
+            "network.outbound" => Capability::NetworkOutbound,
+            "browser" => Capability::Browser,
+            "memory.read" => Capability::MemoryRead,
+            "memory.write" => Capability::MemoryWrite,
+            "secrets.use" => Capability::SecretsUse,
+            "agent.spawn" => Capability::AgentSpawn,
+            other => Capability::Other(other.to_string()),
+        }
+    }
+}
+
 /// Policy: capability -> decision, default-deny.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Policy {

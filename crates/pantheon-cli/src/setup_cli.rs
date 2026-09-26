@@ -52,6 +52,10 @@ pub struct SetupAnswers {
     pub memory_backend: Option<String>,
     pub tool_packs: Option<Vec<String>>,
     pub plugins: Option<Vec<String>>,
+    /// A raw API key, for scripting setup. Never written to config.toml:
+    /// it goes into `<data_dir>/.env` under `api_key_env` (or a derived
+    /// `PANTHEON_KEY_<PROVIDER>` name) and the config stores only the name.
+    pub key: Option<String>,
 }
 
 /// Run the wizard. `stdin` is only touched for missing answers.
@@ -91,6 +95,27 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             prompt("Env var holding the API key (empty = none)", Some(""))
         }
     });
+    // A raw key needs a name to live under. Derive one from the provider
+    // using the same convention `pantheon model` uses, so a scripted setup
+    // and a wizard run agree on where the key is read from later.
+    //
+    // A URL is an endpoint, not an id: sanitizing `http://127.0.0.1:8015/v1`
+    // produced `HTTP___127_0_0_1_8015_V1`, which doctor's own UPPER_SNAKE
+    // check then rejected. A custom endpoint gets one stable name instead.
+    let raw_key = answers.key.clone().filter(|k| !k.trim().is_empty());
+    let api_key_env = match (api_key_env.is_empty(), raw_key.is_some()) {
+        (true, true) => {
+            if looks_like_url(&provider) {
+                "PANTHEON_KEY_CUSTOM".to_string()
+            } else {
+                format!(
+                    "PANTHEON_KEY_{}",
+                    super::config_doc::sanitize_env_suffix(&provider)
+                )
+            }
+        }
+        _ => api_key_env,
+    };
     let mut fallbacks = Vec::new();
     let fb_provider = answers.fallback_provider.clone().or_else(|| {
         if assume_defaults {
@@ -180,8 +205,14 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             },
             fallbacks,
         }),
-        decision: None,
+        judge: None,
+        embeddings: None,
+        search_synthesis: None,
+        vision: None,
+        scheduled: None,
+        mcp_synthesis: None,
         compression: None,
+        title_gen: None,
         stt: None,
         tts: None,
         policy: Some(policy),
@@ -194,6 +225,8 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             port: 18789,
             host: "127.0.0.1".into(),
         }),
+        custom_providers: Default::default(),
+        agents: Default::default(),
     };
 
     match cfg.save(data_dir) {
@@ -208,8 +241,35 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             );
             println!();
             println!("config written: {}", Config::path(data_dir).display());
-            if let Some(env) = &cfg.model.as_ref().and_then(|m| m.api_key_env.clone()) {
+            // The key lands in <data_dir>/.env, never in config.toml, which
+            // holds only the env var name. Surface a write failure loudly:
+            // a silent one leaves a config that points at a key nobody has.
+            if let Some(key) = raw_key.as_deref() {
+                let env_name = cfg
+                    .model
+                    .as_ref()
+                    .and_then(|m| m.api_key_env.clone())
+                    .unwrap_or_default();
+                match super::dotenv::upsert_dotenv(data_dir, &env_name, key) {
+                    Ok(()) => {
+                        println!("key written: {}/.env ({env_name})", data_dir.display());
+                        // Make the key live in this process too, so a
+                        // `setup && doctor` chain in one shell works.
+                        std::env::set_var(&env_name, key);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "setup: config written but the key could not be saved to {}/.env: {e}",
+                            data_dir.display()
+                        );
+                        eprintln!("fix: export {env_name}=... manually, then rerun doctor");
+                        std::process::exit(1);
+                    }
+                }
+            } else if let Some(env) = cfg.model.as_ref().and_then(|m| m.api_key_env.clone()) {
                 println!("make sure {env} is exported before starting a session");
+            } else {
+                println!("no API key configured (a local provider needs none)");
             }
             println!("next: pantheon doctor");
         }
@@ -219,6 +279,11 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         }
     }
     cfg
+}
+
+/// True when a provider string is a bare endpoint rather than a catalog id.
+fn looks_like_url(provider: &str) -> bool {
+    provider.starts_with("http://") || provider.starts_with("https://")
 }
 
 fn backend_selection_path(data_dir: &Path) -> std::path::PathBuf {
@@ -239,39 +304,5 @@ fn save_backend_selection(data_dir: &Path, sel: &pantheon_memory::BackendSelecti
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn flag_only_setup_writes_a_complete_config_without_stdin() {
-        let dir = std::env::temp_dir().join(format!("pantheon-setup-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let cfg = run_setup(
-            &dir,
-            SetupAnswers {
-                profile: Some("dev".into()),
-                provider: Some("router".into()),
-                model: Some("big-model".into()),
-                api_key_env: Some("PANTHEON_API_KEY".into()),
-                policy: Some(PolicyPreset::CoderMemory),
-                memory_backend: Some("native".into()),
-                tool_packs: Some(vec!["core".into()]),
-                plugins: Some(vec![]),
-                ..Default::default()
-            },
-            true,
-        );
-        // Everything the wizard was asked for landed in the file.
-        let loaded = Config::load(&dir).unwrap();
-        assert_eq!(loaded, cfg);
-        assert_eq!(loaded.model.as_ref().unwrap().provider, "router");
-        assert_eq!(loaded.policy, Some(PolicyPreset::CoderMemory),);
-        // Backend selection file was synced.
-        let sel = load_backend_selection(&dir);
-        assert_eq!(sel.name, "native");
-        // No raw secrets anywhere.
-        let text = std::fs::read_to_string(Config::path(&dir)).unwrap();
-        assert!(!text.contains("sk-"));
-    }
-}
+#[path = "setup_cli_tests.rs"]
+mod tests;

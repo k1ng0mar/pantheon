@@ -18,7 +18,9 @@ const HELP: &str = "commands:
   /new               start a fresh conversation (new run id)
   /runs              list recent conversations
   /resume [ID|n]     switch to a conversation by id or /runs number
+  /history           interactive searchable history list
   /status            show the current run id and status
+  /name [TITLE]      show this conversation's title, or rename it
   /memory <query>    search memory
   /remember <key> <text>
                      store a memory record (user-authored, user trust)
@@ -43,18 +45,95 @@ impl Repl {
                     println!("(no runs yet)");
                     return;
                 }
-                for (i, (id, status, created_ms)) in runs.iter().enumerate() {
+                for (i, (id, status, created_ms, title)) in runs.iter().enumerate() {
+                    let label = title.as_deref().unwrap_or("");
                     println!(
-                        "{:>3}  {}  {:<18} {}",
+                        "{:>3}  {}  {:<18} {}  {}",
                         i,
                         status,
                         id,
-                        fmt_created(*created_ms)
+                        fmt_created(*created_ms),
+                        label
                     );
                 }
             }
             Err(e) => eprintln!("list runs: {e}"),
         }
+    }
+}
+
+/// Interactive searchable run picker for /history. Typing filters,
+/// <Enter> on a number selects, /q cancels. Mirrors `pick_model`'s
+/// filter-then-select pattern. `runs`: (id, status, created_ms).
+pub fn pick_run(runs: &[(String, String, i64, Option<String>)]) -> Option<String> {
+    use std::io::{self, BufRead, Write};
+    let stdin = io::stdin();
+    let mut filter = String::new();
+
+    loop {
+        let all: Vec<&(String, String, i64, Option<String>)> = runs
+            .iter()
+            .filter(|(id, status, _, title)| {
+                filter.is_empty()
+                    || id.to_lowercase().contains(&filter.to_lowercase())
+                    || status.to_lowercase().contains(&filter.to_lowercase())
+                    || title
+                        .as_deref()
+                        .map(|t| t.to_lowercase().contains(&filter.to_lowercase()))
+                        .unwrap_or(false)
+            })
+            .collect();
+
+        print!("\x1b[2J\x1b[H");
+        println!("Pantheon history — type to filter, <Enter> on a number to resume, /clear to reset, /q to cancel\n");
+        if !filter.is_empty() {
+            println!("filter: {}\n", filter);
+        }
+        if all.is_empty() {
+            println!("(no matches)");
+        } else {
+            println!("{:>3}  {:<18} {:<10} {}", "#", "RUN ID", "STATUS", "AGE");
+            for (i, (id, status, created_ms, title)) in all.iter().enumerate() {
+                let label = title.as_deref().unwrap_or("");
+                println!(
+                    "  {:>3}  {:<18} {:<10} {}  {}",
+                    i,
+                    id,
+                    status,
+                    fmt_created(*created_ms),
+                    label
+                );
+            }
+        }
+        print!("\n> ");
+        io::stdout().flush().ok()?;
+
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line).ok() == Some(0) {
+            return None; // EOF
+        }
+        let line = line.trim();
+
+        if line.is_empty() {
+            continue;
+        }
+        if line == "/q" || line == "q" {
+            return None;
+        }
+        if line == "/clear" || line == "c" {
+            filter.clear();
+            continue;
+        }
+
+        if let Ok(n) = line.parse::<usize>() {
+            if n < all.len() {
+                return Some(all[n].0.clone());
+            }
+            eprintln!("out of range");
+            continue;
+        }
+
+        filter = line.to_string();
     }
 }
 
@@ -92,6 +171,28 @@ fn command(repl: &mut Repl, line: &str) -> bool {
             }
         }
         "/runs" => repl.print_runs(20),
+        "/history" => {
+            // Interactive searchable history: /runs list + type-to-filter +
+            // pick-by-number, then switch runs like /resume does.
+            match repl.session.supervisor.ledger_list_runs(50) {
+                Ok(runs) => {
+                    let target = pick_run(&runs);
+                    if let Some(id) = target {
+                        if id != repl.run_id {
+                            match repl.session.supervisor.ledger_status(&id) {
+                                Ok(Some(_)) => {
+                                    println!("resumed {}", id);
+                                    repl.run_id = id;
+                                }
+                                Ok(None) => println!("no run {}", id),
+                                Err(e) => eprintln!("status: {e}"),
+                            }
+                        }
+                    }
+                }
+                Err(e) => eprintln!("list runs: {e}"),
+            }
+        }
         "/resume" => {
             if rest.is_empty() {
                 repl.print_runs(20);
@@ -137,7 +238,17 @@ fn command(repl: &mut Repl, line: &str) -> bool {
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| "new".into());
-            println!("run {} ({})", repl.run_id, status);
+            match repl
+                .session
+                .supervisor
+                .ledger_title(&repl.run_id)
+                .ok()
+                .flatten()
+                .filter(|t| !t.is_empty())
+            {
+                Some(title) => println!("run {} ({}) — {}", repl.run_id, status, title),
+                None => println!("run {} ({})", repl.run_id, status),
+            }
         }
         "/memory" => {
             if rest.is_empty() {
@@ -243,6 +354,59 @@ fn command(repl: &mut Repl, line: &str) -> bool {
                 }
             }
         }
+        "/name" => {
+            let current = repl
+                .session
+                .supervisor
+                .ledger_title(&repl.run_id)
+                .ok()
+                .flatten()
+                .filter(|t| !t.is_empty());
+            if rest.is_empty() {
+                match current {
+                    Some(t) => println!("{t}"),
+                    None => println!("(untitled)"),
+                }
+                println!("rename with: /name <new title>");
+                return true;
+            }
+            // Normalize exactly like a model reply: one line, bounded —
+            // the manual path shares the title contract with the aux.
+            let title =
+                pantheon_core::model::bound_title(rest, pantheon_core::model::TITLE_MAX_CHARS);
+            if title.is_empty() {
+                eprintln!("/name: nothing to title with");
+                return true;
+            }
+            // A not-yet-started run has no row to store the title in;
+            // create it so the rename survives (and shows in /history).
+            if repl
+                .session
+                .supervisor
+                .ledger_status(&repl.run_id)
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                if let Err(e) = repl.session.supervisor.start_run(&repl.run_id) {
+                    eprintln!("/name: {e}");
+                    return true;
+                }
+            }
+            // Manual rename: a SessionTitled event like any other, so
+            // last-write-wins and /explain shows who named it. A later
+            // auto-title is suppressed (the run is already titled).
+            let ev = pantheon_core::events::Event::SessionTitled {
+                run_id: repl.run_id.clone(),
+                title: title.clone(),
+                model: "user".into(),
+                source: "manual".into(),
+            };
+            match repl.session.supervisor.emit(ev) {
+                Ok(()) => println!("\u{2192} {title}"),
+                Err(e) => eprintln!("/name: {e}"),
+            }
+        }
         "/exit" | "/quit" => return false,
         _ => {
             println!("unknown command {cmd}; /help lists commands");
@@ -259,15 +423,9 @@ fn default_layers() -> [pantheon_memory::LayerKind; 3] {
     ]
 }
 
-/// Model policy for the REPL: flags/env/config precedence, same as chat.
-/// Resolve the display name of the default model from config or env.
-pub fn default_model_name(file_cfg: &Option<config_doc::Config>) -> String {
-    file_cfg
-        .as_ref()
-        .and_then(|c| c.model.as_ref().map(|m| m.model.clone()))
-        .or_else(|| std::env::var("PANTHEON_MODEL").ok())
-        .unwrap_or_else(|| "llama3.2".into())
-}
+#[cfg(test)]
+#[path = "session_cli_tests.rs"]
+mod tests;
 
 /// Model policy for the REPL: flags/env/config precedence, same as chat.
 pub fn build_model_policy(
@@ -307,14 +465,68 @@ pub fn build_model_policy(
         }
     }
     pantheon_core::model::ModelPolicy {
-        default,
+        default: default.clone(),
         fallbacks: chain,
-        auxiliaries: config_doc::auxiliaries(file_cfg.as_ref()),
+        auxiliaries: config_doc::auxiliaries(file_cfg.as_ref(), &default),
     }
+}
+
+/// Entry for `pantheon --resume [id]`: same as `run_session`, but the
+/// run id is pinned to the given (or most recent) run instead of a fresh
+/// auto-resume. A missing id exits with the same "no run" wording /resume
+/// uses, so `--resume bad-id` fails loudly, not silently fresh.
+pub fn run_session_with_resume(resume_id: Option<String>) {
+    // Validate the target before opening the session.
+    let pinned = match resume_id {
+        Some(id) => {
+            // The ledger needs the session's supervisor; validate through a
+            // lightweight ledger open on the data dir instead of building a
+            // full Session first.
+            match pantheon_runtime::Supervisor::open(crate::data_dir()) {
+                Ok(sup) => match sup.ledger_status(&id) {
+                    Ok(Some(_)) => id,
+                    Ok(None) => {
+                        eprintln!("no run {id}");
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("resume: {e}");
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("open session: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => {
+            // No id: most recent run, same as auto-resume.
+            match pantheon_runtime::Supervisor::open(crate::data_dir()) {
+                Ok(sup) => match sup.ledger_list_runs(1) {
+                    Ok(runs) if !runs.is_empty() => runs[0].0.clone(),
+                    _ => {
+                        eprintln!("no runs to resume; start a conversation first");
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("open session: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
+    run_session_inner(Some(pinned));
 }
 
 /// Entry: `pantheon` with no args, or `pantheon session`.
 pub fn run_session() {
+    run_session_inner(None);
+}
+
+/// `pinned`: Some(id) from `--resume` — skip auto-resume and use the id.
+pub fn run_session_inner(pinned_id: Option<String>) {
     let file_cfg = config_doc::Config::load(&crate::data_dir()).ok();
     let model_policy = build_model_policy(&file_cfg, None, None);
     let allow_memory = file_cfg
@@ -382,17 +594,24 @@ pub fn run_session() {
         }
     }));
 
-    // Auto-resume: continue the most recent run if one exists.
-    let run_id = match session.supervisor.ledger_list_runs(1) {
-        Ok(runs) if !runs.is_empty() => {
-            let (id, status, _) = runs[0].clone();
-            println!("resuming {id} ({status}); /new for a fresh conversation, /help for commands");
-            id
-        }
-        _ => {
-            let id = pantheon_runtime::new_run_id();
-            println!("new run {id}; type a message or /help");
-            id
+    let run_id = if let Some(pinned) = pinned_id {
+        println!("resumed {pinned} (--resume)");
+        pinned
+    } else {
+        // Auto-resume: continue the most recent run if one exists.
+        match session.supervisor.ledger_list_runs(1) {
+            Ok(runs) if !runs.is_empty() => {
+                let (id, status, _, _) = runs[0].clone();
+                println!(
+                    "resuming {id} ({status}); /new for a fresh conversation, /help for commands"
+                );
+                id
+            }
+            _ => {
+                let id = pantheon_runtime::new_run_id();
+                println!("new run {id}; type a message or /help");
+                id
+            }
         }
     };
 
@@ -438,8 +657,31 @@ pub fn run_session() {
             }
             repl.model = None;
         }
+        // Remember whether the run was already titled, so the REPL can
+        // announce the generated session title once, right after the turn
+        // that produced it (fire-and-forget lands during that turn).
+        let had_title = repl
+            .session
+            .supervisor
+            .ledger_title(&repl.run_id)
+            .ok()
+            .flatten()
+            .is_some();
         match repl.session.chat(&repl.run_id, line) {
-            Ok(_) => {}
+            Ok(_) => {
+                if !had_title {
+                    if let Some(title) = repl
+                        .session
+                        .supervisor
+                        .ledger_title(&repl.run_id)
+                        .ok()
+                        .flatten()
+                        .filter(|t| !t.is_empty())
+                    {
+                        println!("(session: {title})");
+                    }
+                }
+            }
             Err(e) => {
                 eprintln!("turn failed: {e}");
                 if e.code == "RUN_PARKED" {

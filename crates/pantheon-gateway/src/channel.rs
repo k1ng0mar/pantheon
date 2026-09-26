@@ -37,12 +37,32 @@ pub struct ChannelEnvelope {
 pub struct ChannelError {
     pub code: String,
     pub message: String,
+    /// The platform's own "wait this long" hint, when it gave one. Discord
+    /// sends `Retry-After` (seconds); Telegram sends `parameters.retry_after`
+    /// in the 429 JSON body. Honoring it is the difference between backing
+    /// off and hammering: Hermes keeps the same reference data in
+    /// `platforms/pairing/_rate_limits.json`.
+    pub retry_after_secs: Option<u64>,
 }
 impl ChannelError {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
+            retry_after_secs: None,
+        }
+    }
+    /// A 429 with the platform's wait hint attached (already capped by the
+    /// caller to something sane; see [`parse_retry_after`]).
+    pub fn rate_limited(
+        prefix: &str,
+        detail: impl Into<String>,
+        retry_after_secs: Option<u64>,
+    ) -> Self {
+        Self {
+            code: format!("{prefix}_RATE_LIMITED"),
+            message: format!("rate limited (429): {}", detail.into()),
+            retry_after_secs,
         }
     }
     /// True when the surface is rate-limiting us (HTTP 429). Callers
@@ -61,14 +81,31 @@ impl ChannelError {
     /// `{prefix}_RATE_LIMITED`.
     pub fn from_ureq(prefix: &str, err: ureq::Error) -> Self {
         match &err {
-            ureq::Error::Status(429, _) => Self::new(
-                &format!("{prefix}_RATE_LIMITED"),
-                format!("rate limited (429): {err}"),
+            // The status arm owns the response, so the `Retry-After` header
+            // is still readable here — once converted to a string it is gone.
+            ureq::Error::Status(429, resp) => Self::rate_limited(
+                prefix,
+                err.to_string(),
+                parse_retry_after(resp.header("retry-after")),
             ),
             _ => Self::new(prefix, err.to_string()),
         }
     }
 }
+/// Parse a `Retry-After` header value (delta-seconds). HTTP-date form is
+/// not parsed — a platform clock we cannot verify is worse than our own
+/// backoff, so it falls back to `None` and the caller uses exponential
+/// backoff instead. Capped at 10 minutes: a larger hint is honored as 10
+/// minutes rather than sleeping the daemon into irrelevance.
+pub fn parse_retry_after(value: Option<&str>) -> Option<u64> {
+    let v = value?.trim();
+    let secs: u64 = v.parse().ok()?;
+    if secs == 0 {
+        return None;
+    }
+    Some(secs.min(600))
+}
+
 impl std::fmt::Display for ChannelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[{}] {}", self.code, self.message)
@@ -223,46 +260,5 @@ impl Channel for MemoryChannel {
     }
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::stream::{UiFrame, UiFrameKind};
-    fn frame() -> UiFrame {
-        UiFrame {
-            id: 1,
-            kind: UiFrameKind::Text,
-            run_id: "r".into(),
-            thread_id: "t".into(),
-            name: "delta".into(),
-            text: "hi".into(),
-            interrupt: false,
-            genui: None,
-        }
-    }
-    #[test]
-    fn memory_channel_round_trips() {
-        let c = MemoryChannel::new("web");
-        c.send(ChannelEnvelope {
-            thread_id: "t".into(),
-            frame: frame(),
-        })
-        .unwrap();
-        assert_eq!(c.drain_outbound().len(), 1);
-        c.push_inbound(ChannelEvent {
-            thread_id: "t".into(),
-            run_id: None,
-            text: "go".into(),
-            approval: None,
-            scope: None,
-            sender: None,
-        });
-        assert_eq!(c.poll().len(), 1);
-        assert!(c.poll().is_empty());
-    }
-    #[test]
-    fn thread_run_map_resolves_both_ways() {
-        let mut m = ThreadRunMap::new();
-        m.bind("discord:c1", "run-1");
-        assert_eq!(m.run_for("discord:c1"), Some("run-1"));
-        assert_eq!(m.thread_for_run("run-1"), Some("discord:c1"));
-    }
-}
+#[path = "channel_tests.rs"]
+mod tests;

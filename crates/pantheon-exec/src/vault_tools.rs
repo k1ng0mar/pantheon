@@ -26,9 +26,8 @@ fn verr(code: &str, cause: String) -> PantheonError {
 }
 
 fn parse_vault_args<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, PantheonError> {
-    serde_json::from_str(raw).map_err(|e| {
-        verr("TOOL_BAD_ARGS", format!("failed to parse arguments: {e}"))
-    })
+    serde_json::from_str(raw)
+        .map_err(|e| verr("TOOL_BAD_ARGS", format!("failed to parse arguments: {e}")))
 }
 
 /// Options to configure vault tooling.
@@ -53,7 +52,10 @@ impl Default for VaultToolOptions {
 fn resolve_safe_vault_path(vault_dir: &Path, rel_path: &str) -> Result<PathBuf, PantheonError> {
     let rel = rel_path.trim().trim_start_matches('/');
     if rel.contains("..") {
-        return Err(verr("VAULT_PATH_TRAVERSAL", "path traversal (..) is not permitted".into()));
+        return Err(verr(
+            "VAULT_PATH_TRAVERSAL",
+            "path traversal (..) is not permitted".into(),
+        ));
     }
     let target = vault_dir.join(rel);
     Ok(target)
@@ -211,7 +213,6 @@ pub fn register_vault_tools(reg: &mut ToolRegistry, opts: VaultToolOptions) {
 
                 let content = fs::read_to_string(&target)
                     .map_err(|e| verr("VAULT_READ_FAILED", format!("failed to read {}: {e}", target.display())))?;
-                
                 let compacted = compact_output(&content, &Default::default());
                 Ok(compacted.text)
             },
@@ -348,7 +349,10 @@ pub fn register_vault_tools(reg: &mut ToolRegistry, opts: VaultToolOptions) {
 
 fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     format!("{now}")
 }
 
@@ -401,7 +405,7 @@ fn search_vault_dir(
             if !search_vault_dir(root, &p, terms, limit, hits, deadline)? {
                 return Ok(false);
             }
-        } else if p.is_file() && p.extension().map_or(false, |ext| ext == "md") {
+        } else if p.is_file() && p.extension().is_some_and(|ext| ext == "md") {
             let meta_len = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
             if meta_len > MAX_SCAN_BYTES {
                 continue;
@@ -413,7 +417,11 @@ fn search_vault_dir(
                     let start = first_pos.saturating_sub(60);
                     let end = (first_pos + 100).min(content.len());
                     let snippet = content[start..end].replace('\n', " ").trim().to_string();
-                    let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().to_string();
+                    let rel = p
+                        .strip_prefix(root)
+                        .unwrap_or(&p)
+                        .to_string_lossy()
+                        .to_string();
                     hits.push(SearchHit {
                         rel_path: rel,
                         snippet,
@@ -456,8 +464,12 @@ fn collect_vault_files(
             if !collect_vault_files(root, &p, limit, files, deadline)? {
                 return Ok(false);
             }
-        } else if p.is_file() && p.extension().map_or(false, |ext| ext == "md") {
-            let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().to_string();
+        } else if p.is_file() && p.extension().is_some_and(|ext| ext == "md") {
+            let rel = p
+                .strip_prefix(root)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .to_string();
             files.push(rel);
         }
     }
@@ -465,65 +477,5 @@ fn collect_vault_files(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_vault_archive_read_search_list() {
-        let tmp = tempdir().unwrap();
-        let vault_path = tmp.path().to_path_buf();
-        let opts = VaultToolOptions {
-            vault_dir: vault_path.clone(),
-        };
-
-        let mut reg = ToolRegistry::new();
-        register_vault_tools(&mut reg, opts);
-
-        // 1. Archive a note
-        let res = reg.execute(
-            "vault_archive",
-            r#"{"category": "notes", "title": "my-research", "content": "Autonomous agents need durable memory.", "tags": ["agent", "runtime"]}"#,
-        ).unwrap();
-        assert!(res.contains("my-research.md"));
-
-        // 2. Read the note back
-        let read_res = reg.execute(
-            "vault_read",
-            r#"{"path": "notes/my-research.md"}"#,
-        ).unwrap();
-        assert!(read_res.contains("Autonomous agents need durable memory."));
-        assert!(read_res.contains("tags:"));
-
-        // 3. Search the vault
-        let search_res = reg.execute(
-            "vault_search",
-            r#"{"query": "durable memory"}"#,
-        ).unwrap();
-        assert!(search_res.contains("notes/my-research.md"));
-
-        // 4. List files
-        let list_res = reg.execute(
-            "vault_list",
-            r#"{"category": "notes"}"#,
-        ).unwrap();
-        assert!(list_res.contains("notes/my-research.md"));
-    }
-
-    #[test]
-    fn test_vault_path_traversal_rejected() {
-        let tmp = tempdir().unwrap();
-        let opts = VaultToolOptions {
-            vault_dir: tmp.path().to_path_buf(),
-        };
-
-        let mut reg = ToolRegistry::new();
-        register_vault_tools(&mut reg, opts);
-
-        let err = reg.execute(
-            "vault_archive",
-            r#"{"category": "../etc", "title": "bad", "content": "malicious"}"#,
-        ).unwrap_err();
-        assert_eq!(err.code, "VAULT_PATH_TRAVERSAL");
-    }
-}
+#[path = "vault_tools_tests.rs"]
+mod tests;

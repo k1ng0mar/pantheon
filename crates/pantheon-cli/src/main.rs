@@ -7,6 +7,7 @@ use pantheon_memory::{markdown, BackendSelection, LayerKind, MemoryStore, Propos
 use pantheon_runtime::{new_run_id, Supervisor};
 use pantheon_secrets::SecretVault;
 use std::collections::{HashMap, HashSet};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 pub fn data_dir() -> PathBuf {
@@ -36,16 +37,160 @@ fn save_backend_selection(data_dir: &Path, sel: &BackendSelection) {
     }
 }
 fn usage() -> String {
-    "pantheon <chat|run|schedule|swarm|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback|serve|stream|grant|deny|sign|setup|session|reset|gateway|skills> ...\n  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n  run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n  schedule <task> --30m [--agent NAME] | list|pause|resume|cancel|run <id>\n  swarm <N> \"<task>\" [roles...] [--delivery telegram]\n  explain <run_id>\n  status <run_id>\n  extensions  list loaded extensions\n  hook <name> [--session S] [--platform P]  fire a hook\n  doctor <plugin_dir>  loud preflight report\n  preview <path> <file-with-new-content>  read-only diff preview\n  stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n  apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n  checkpoint <path>... [--run ID]  snapshot pre-images\n  rollback (--ckpt ID | --seq N)  restore a checkpoint\n  serve [--port N] [--host H]  AG-UI SSE + RPC server (cline-style interactive)\n  stream <run_id> [--thread T] [--after N]  print SSE frames for a run\n  grant <run_id> <scope>  approve a parked tool call\n  deny <run_id> [scope]  refuse a parked tool call\n  sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n  channel <run_id> [--thread T]  replay frames through the transport seam\n  gateway                    run Discord/Telegram surfaces (env tokens)\n  setup                      interactive wizard: API key, default model, policy\n  session                    start the interactive REPL (default if no args)\n  reset [all|memory|ledger]    wipe data with confirmation\n  providers                  list cataloged providers and models\n  skills list|import <name>|doctor  discover/import/check SKILL.md skills\n"
+    "pantheon <chat|run|schedule|swarm|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback|serve|stream|grant|deny|sign|setup|session|reset|gateway|skills|migrate|mcp|audit|pipeline> ...\n  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n  run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n  schedule <task> --30m [--agent NAME] | list|pause|resume|cancel|run <id>\n  swarm <N> \"<task>\" [roles...] [--delivery telegram]\n  explain <run_id>\n  status <run_id>\n  extensions  list loaded extensions\n  hook <name> [--session S] [--platform P]  fire a hook\n  doctor <plugin_dir>  loud preflight report\n  preview <path> <file-with-new-content>  read-only diff preview\n  stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n  apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n  checkpoint <path>... [--run ID]  snapshot pre-images\n  rollback (--ckpt ID | --seq N)  restore a checkpoint\n  serve [--port N] [--host H]  AG-UI SSE + RPC server (cline-style interactive)\n  stream <run_id> [--thread T] [--after N]  print SSE frames for a run\n  grant <run_id> <scope>  approve a parked tool call\n  deny <run_id> [scope]  refuse a parked tool call\n  sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n  channel <run_id> [--thread T]  replay frames through the transport seam\n  gateway                    run Discord/Telegram surfaces (env tokens)\n  setup                      interactive wizard: API key, default model, policy\n  model [--list] [--auxiliary KIND]  provider picker, stacked keys → .env, live model fetch\n  provider <add|list|remove>  custom-endpoint registry (keys → <data_dir>/.env)\n  session                    start the interactive REPL (default if no args)\n  reset [--config|--state|--everything] [--yes]  wipe data with confirmation\n  audit <run_id> [OUT.jsonl]  sequence-validated JSONL trajectory export\n  pipeline <run_id> [--approve STAGE|--deny STAGE]  six-stage orchestration gates\n  providers                  list cataloged providers and models\n  mcp list [--json]                     MCP servers declared by a migration, and whether they can register
+  migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp> [path] [--kind K] [--json] [--yes] [--merge-providers]  section 23 import pipeline
+  skills list|import <name>|doctor  discover/import/check SKILL.md skills\n"
         .into()
+}
+/// OMP RESERVED_TOP_LEVEL_WORDS guard: every top-level dispatch target,
+/// kept in sync with the `match args[1]` arms in `main`.
+const KNOWN_VERBS: &[&str] = &[
+    "apply",
+    "audit",
+    "channel",
+    "chat",
+    "checkpoint",
+    "deny",
+    "doctor",
+    "explain",
+    "extensions",
+    "gateway",
+    "grant",
+    "hook",
+    "mcp",
+    "memory",
+    "migrate",
+    "model",
+    "pipeline",
+    "plugins",
+    "preview",
+    "provider",
+    "providers",
+    "reset",
+    "rollback",
+    "run",
+    "schedule",
+    "serve",
+    "session",
+    "setup",
+    "sign",
+    "skills",
+    "stage",
+    "status",
+    "stream",
+    "swarm",
+];
+
+/// Classification of argv[1] before it can become a prompt or session input.
+#[derive(Debug, PartialEq, Eq)]
+enum FirstArg {
+    /// No argv[1] (bare `pantheon`): TUI/REPL path, behavior unchanged.
+    NoArgs,
+    /// A `-`/`--` flag (e.g. `--help`, `--resume`): never a verb.
+    Flag,
+    /// A known dispatch verb.
+    Known,
+    /// Anything else: rejected with exit code 2, never swallowed.
+    Unknown(String),
+}
+
+fn is_flag_arg(s: &str) -> bool {
+    s.starts_with('-')
+}
+
+fn is_known_verb(s: &str) -> bool {
+    KNOWN_VERBS.contains(&s)
+}
+
+fn classify_first_arg(argv: &[String]) -> FirstArg {
+    if argv.len() < 2 {
+        return FirstArg::NoArgs;
+    }
+    let first = argv[1].as_str();
+    if is_flag_arg(first) {
+        return FirstArg::Flag;
+    }
+    if is_known_verb(first) {
+        return FirstArg::Known;
+    }
+    FirstArg::Unknown(first.to_string())
+}
+
+/// Tiny Levenshtein distance over chars (verbs are ASCII; no new deps).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != cb);
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(sub);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// Closest known verbs to `unknown`, nearest first (up to `max_n`).
+/// Only candidates within edit distance 3 are returned.
+fn suggest_verbs(unknown: &str, max_n: usize) -> Vec<&'static str> {
+    let mut scored: Vec<(usize, &'static str)> = KNOWN_VERBS
+        .iter()
+        .map(|&v| (levenshtein(unknown, v), v))
+        .collect();
+    scored.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.cmp(y.1)));
+    scored
+        .into_iter()
+        .filter(|(d, _)| *d <= 3)
+        .take(max_n)
+        .map(|(_, v)| v)
+        .collect()
+}
+
+fn reject_unknown_verb(unknown: &str) -> ! {
+    eprintln!("pantheon: unknown verb '{unknown}'");
+    let suggestions = suggest_verbs(unknown, 3);
+    if !suggestions.is_empty() {
+        let list = suggestions
+            .iter()
+            .map(|s| format!("'{s}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("did you mean {list}?");
+    }
+    // Full verb list (usage header names every verb).
+    eprint!("{}", usage());
+    std::process::exit(2);
 }
 mod agui_cli;
 mod cli_args;
 mod config_doc;
 mod config_schema;
 mod doctor_cli;
+mod dotenv;
+#[cfg(test)]
+#[path = "dotenv_tests.rs"]
+mod dotenv_tests;
 mod gateway_cli;
+mod mcp_cli;
+mod migrate_cli;
+mod model_cli;
+#[cfg(test)]
+#[path = "model_cli_tests.rs"]
+mod model_cli_tests;
 mod pipeline_cli;
+mod provider_cli;
+#[cfg(test)]
+#[path = "provider_cli_tests.rs"]
+mod provider_cli_tests;
 mod reset_cli;
 mod schedule_cli;
 mod session_cli;
@@ -118,7 +263,7 @@ fn pick_model() -> Option<(String, String)> {
 
     loop {
         // Build the filtered list each iteration.
-        let all: Vec<(String, String, String)> = pantheon_core::catalog::providers()
+        let all: Vec<(String, String, String)> = pantheon_core::catalog::all_providers()
             .iter()
             .flat_map(|p| {
                 p.models
@@ -221,16 +366,27 @@ fn memory_help() {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // The pantheon folder's own key store: `<data_dir>/.env` fills in any
+    // process env var that is not already set (exports always win).
+    // Custom endpoints from config are registered before any verb runs.
+    config_doc::init_env_and_catalog(&data_dir());
     if args.len() < 2 {
         // Bare `pantheon` opens the agent cockpit TUI when a TTY is available.
         // Falls back to the text REPL if stdin is not a tty or TUI init fails.
-        if atty::is(atty::Stream::Stdout) && atty::is(atty::Stream::Stdin) {
+        if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
             if let Err(e) = tui::run_tui_session() {
                 eprintln!("pantheon: TUI session failed: {e}");
             }
         } else {
             session_cli::run_session();
         }
+        return;
+    }
+    // `pantheon --resume [id]` (or `pantheon --resume` with no id)
+    // jumps straight into the interactive session on a specific run.
+    if args.len() >= 2 && args[1] == "--resume" {
+        let resume_id: Option<String> = args.get(2).cloned();
+        session_cli::run_session_with_resume(resume_id);
         return;
     }
     match args[1].as_str() {
@@ -336,9 +492,9 @@ fn main() {
                 }
             }
             let model_policy = pantheon_core::model::ModelPolicy {
-                default,
+                default: default.clone(),
                 fallbacks: chain,
-                auxiliaries: config_doc::auxiliaries(file_cfg.as_ref()),
+                auxiliaries: config_doc::auxiliaries(file_cfg.as_ref(), &default),
             };
             // Resolve API key through the secrets broker: the config-named
             // env var, then PANTHEON_API_KEY, then --key. Keys travel as
@@ -547,7 +703,8 @@ fn main() {
                     let vault_dir = std::env::var("PANTHEON_VAULT_DIR")
                         .map(PathBuf::from)
                         .unwrap_or_else(|_| {
-                            let home = std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".into());
+                            let home =
+                                std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".into());
                             PathBuf::from(home).join("vault")
                         });
                     let mut reg = pantheon_exec::tools::ToolRegistry::new();
@@ -653,13 +810,18 @@ fn main() {
                             };
                             save_backend_selection(&dd, &sel);
                             println!("active backend: {}", name);
-                            println!("selection saved: {}", dd.join("memory-backend.toml").display());
+                            println!(
+                                "selection saved: {}",
+                                dd.join("memory-backend.toml").display()
+                            );
                         }
                         Some("scaffold") => {
                             let name = match args.get(4) {
                                 Some(n) if !n.is_empty() => n.clone(),
                                 _ => {
-                                    eprintln!("usage: pantheon memory backend scaffold NAME [http|stdio]");
+                                    eprintln!(
+                                        "usage: pantheon memory backend scaffold NAME [http|stdio]"
+                                    );
                                     std::process::exit(2);
                                 }
                             };
@@ -794,7 +956,7 @@ timeout_ms = 5000
                     );
                 }
                 _ => {
-                    eprintln!("usage: pantheon plugins <list|install>");
+                    eprintln!("usage: pantheon plugins <list|install|enable|disable>");
                     std::process::exit(2);
                 }
             }
@@ -969,8 +1131,16 @@ timeout_ms = 5000
         }
         "extensions" => {
             let mgr = load_mgr();
-            for n in mgr.names() {
-                println!("{n}");
+            let names = mgr.names();
+            if names.is_empty() {
+                // Silence reads as "the command did nothing". Say what
+                // happened and where to put an extension.
+                println!("no extensions loaded");
+                println!("drop a plugin.yaml in {}", ext_dir().display());
+            } else {
+                for n in &names {
+                    println!("{n}");
+                }
             }
         }
         "hook" => {
@@ -1242,6 +1412,12 @@ timeout_ms = 5000
         "setup" => {
             setup_entry::cmd_setup(&args);
         }
+        "model" => {
+            model_cli::cmd_model(&args);
+        }
+        "provider" => {
+            provider_cli::cmd_provider(&args);
+        }
         "session" => {
             session_cli::run_session();
         }
@@ -1255,13 +1431,13 @@ timeout_ms = 5000
             // List cataloged providers and their models, plus the
             // custom-provider passthrough (any URL used with --provider URL).
             println!("cataloged providers:");
-            for p in pantheon_core::catalog::providers() {
+            for p in pantheon_core::catalog::all_providers() {
                 let models: Vec<&str> = p.models.iter().map(|m| m.model.as_str()).collect();
                 let mode = match p.api_mode {
                     pantheon_core::catalog::ApiMode::OpenAi => "OpenAI",
                     pantheon_core::catalog::ApiMode::Anthropic => "Anthropic",
                 };
-                let tag = if p.prominent { "⭐" } else { " " };
+                let tag = if p.prominent { "*" } else { " " };
                 let label = if p.models.is_empty() {
                     format!("({} only)", p.label)
                 } else {
@@ -1278,6 +1454,7 @@ timeout_ms = 5000
             println!(
                 "example: pantheon chat --provider http://127.0.0.1:8015/v1 --model chat \"hi\""
             );
+            println!("setup:   pantheon model  (picker → keys land in <data_dir>/.env)");
         }
         "skills" => {
             if args.len() < 3 {
@@ -1294,9 +1471,145 @@ timeout_ms = 5000
                 }
             }
         }
+        "migrate" => {
+            migrate_cli::cmd_migrate(&args[2..]);
+        }
+        "mcp" => {
+            mcp_cli::cmd_mcp(&args[2..]);
+        }
         _ => {
-            eprint!("{}", usage());
-            std::process::exit(2);
+            match classify_first_arg(&args) {
+                FirstArg::Flag => {
+                    eprint!("{}", usage());
+                    std::process::exit(2);
+                }
+                FirstArg::Unknown(verb) => reject_unknown_verb(&verb),
+                // Known/NoArgs are unreachable here (this is the
+                // catch-all arm with len >= 2), handled defensively.
+                FirstArg::Known | FirstArg::NoArgs => {
+                    eprint!("{}", usage());
+                    std::process::exit(2);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod verb_guard_tests {
+    use super::*;
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn exact_match_passes() {
+        for v in KNOWN_VERBS {
+            assert!(is_known_verb(v), "known verb '{v}' must pass");
+            assert_eq!(classify_first_arg(&argv(&["pantheon", v])), FirstArg::Known);
+        }
+        assert!(!is_known_verb("statsu"));
+        assert!(!is_known_verb(""));
+    }
+
+    #[test]
+    fn typo_suggests_status() {
+        for typo in ["stats", "statsu"] {
+            let got = suggest_verbs(typo, 3);
+            assert_eq!(got.first(), Some(&"status"), "typo '{typo}' -> {got:?}");
+        }
+    }
+
+    #[test]
+    fn empty_argv_is_noargs() {
+        assert_eq!(classify_first_arg(&[]), FirstArg::NoArgs);
+        assert_eq!(classify_first_arg(&argv(&["pantheon"])), FirstArg::NoArgs);
+    }
+
+    #[test]
+    fn flags_are_not_verbs() {
+        for f in ["--help", "-h", "--resume", "--version"] {
+            assert!(is_flag_arg(f), "'{f}' must classify as flag");
+            assert!(!is_known_verb(f));
+            assert_eq!(classify_first_arg(&argv(&["pantheon", f])), FirstArg::Flag);
+            assert!(
+                !suggest_verbs(f, 3).contains(&"--help"),
+                "flags must never be suggested as verbs"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_is_rejected_not_swallowed() {
+        assert_eq!(
+            classify_first_arg(&argv(&["pantheon", "statsu"])),
+            FirstArg::Unknown("statsu".into())
+        );
+        // Gibberish yields no misleading suggestion, still Unknown.
+        assert!(suggest_verbs("zzzqqqx", 3).is_empty());
+        assert_eq!(
+            classify_first_arg(&argv(&["pantheon", "zzzqqqx"])),
+            FirstArg::Unknown("zzzqqqx".into())
+        );
+    }
+
+    #[test]
+    fn verb_list_covers_dispatch() {
+        // Every dispatch arm in main must be known: the 34-verb surface.
+        // (An earlier comment said 28 + extras; the list below is the
+        // whole truth and the test fails if a new arm is added without
+        // registering it here and in KNOWN_VERBS.)
+        for v in [
+            "chat",
+            "run",
+            "explain",
+            "status",
+            "audit",
+            "grant",
+            "deny",
+            "memory",
+            "plugins",
+            "extensions",
+            "hook",
+            "doctor",
+            "preview",
+            "stage",
+            "apply",
+            "checkpoint",
+            "rollback",
+            "serve",
+            "stream",
+            "sign",
+            "channel",
+            "gateway",
+            "setup",
+            "reset",
+            "pipeline",
+            "providers",
+            "skills",
+            "migrate",
+            "schedule",
+            "swarm",
+            "model",
+            "provider",
+            "session",
+            "mcp",
+        ] {
+            assert!(
+                is_known_verb(v),
+                "dispatch verb '{v}' missing from KNOWN_VERBS"
+            );
+        }
+    }
+
+    #[test]
+    fn usage_mentions_every_known_verb() {
+        // usage() is the operator's map of the surface; a verb missing
+        // from it is discoverable only by source-diving.
+        let u = usage();
+        for v in KNOWN_VERBS {
+            assert!(u.contains(v), "usage() omits verb '{v}'");
         }
     }
 }

@@ -73,9 +73,13 @@ fn role_str(r: Role) -> &'static str {
 }
 
 /// Build the wire request for one attempt. `stream` flips SSE mode on.
+/// `key_header` names the HTTP header carrying the key: `Authorization`
+/// sends `Bearer <key>`; any other name (e.g. Xiaomi MiMo's `api-key`)
+/// sends the raw key.
 pub fn request(
     base_url: &str,
     api_key: &str,
+    key_header: &str,
     model: &str,
     messages: &[Message],
     tools: &[ToolSchema],
@@ -88,10 +92,20 @@ pub fn request(
         // usage in streams is provider-dependent.
         body["stream_options"] = serde_json::json!({ "include_usage": true });
     }
+    let auth_value = if key_header.trim().eq_ignore_ascii_case("authorization") {
+        format!("Bearer {api_key}")
+    } else {
+        api_key.to_string()
+    };
+    let header_name = if key_header.trim().is_empty() {
+        "Authorization".to_string()
+    } else {
+        key_header.trim().to_string()
+    };
     WireRequest {
         url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
         headers: vec![
-            ("Authorization".into(), format!("Bearer {api_key}")),
+            (header_name, auth_value),
             ("Content-Type".into(), "application/json".into()),
         ],
         body: body.to_string(),
@@ -183,7 +197,8 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
                 outcome: TurnOutcome::Tools {
                     calls: out,
                     tokens: usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0),
-                    cost_cents: usage.as_ref()
+                    cost_cents: usage
+                        .as_ref()
                         .and_then(|u| u.cost_usd)
                         .map(|c| (c * 100.0) as u32)
                         .unwrap_or(0),
@@ -379,161 +394,5 @@ pub fn stream(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn body_has_tools_and_messages() {
-        let body = build_body(
-            "m",
-            &[Message::user("hi")],
-            &[ToolSchema {
-                name: "shell".into(),
-                description: "run".into(),
-                parameters: serde_json::json!({"type":"object","properties":{}}),
-            }],
-        );
-        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["messages"][0]["role"], "user");
-        assert_eq!(v["tools"][0]["type"], "function");
-        assert_eq!(v["tools"][0]["function"]["name"], "shell");
-    }
-
-    #[test]
-    fn stream_flag_flips_body() {
-        let req = request("http://x/v1", "k", "m", &[Message::user("hi")], &[], true);
-        assert!(req.url.ends_with("/chat/completions"));
-        let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
-        assert_eq!(v["stream"], true);
-        assert_eq!(v["stream_options"]["include_usage"], true);
-        assert!(req.headers.iter().any(|(k, _)| k == "Authorization"));
-    }
-
-    struct Collect(std::cell::RefCell<Vec<ModelEvent>>);
-    impl ModelEventSink for Collect {
-        fn emit(&self, event: ModelEvent) {
-            self.0.borrow_mut().push(event);
-        }
-    }
-    fn collector() -> Collect {
-        Collect(std::cell::RefCell::new(vec![]))
-    }
-
-    #[test]
-    fn text_response_parses_and_emits() {
-        let body = serde_json::json!({ "choices": [ { "message": { "role": "assistant", "content": "hi" }, "finish_reason": "stop" } ],
-            "usage": { "prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5 } }).to_string();
-        let c = collector();
-        let turn = parse_response(&body, &c).unwrap();
-        assert!(matches!(turn.outcome, TurnOutcome::Text { ref text, .. } if text == "hi"));
-        assert_eq!(turn.usage.unwrap().total_tokens, 5);
-        assert_eq!(turn.finish_reason.as_deref(), Some("stop"));
-        let evs = c.0.borrow();
-        assert!(matches!(evs[0], ModelEvent::TextDelta { .. }));
-    }
-
-    #[test]
-    fn tool_calls_parse_and_emit() {
-        let body =
-            serde_json::json!({ "choices": [ { "message": { "role": "assistant", "content": "",
-            "tool_calls": [ { "id": "call_1", "type": "function",
-            "function": { "name": "shell", "arguments": "{\"cmd\":\"ls\"}" } } ] },
-            "finish_reason": "tool_calls" } ] })
-            .to_string();
-        let c = collector();
-        match parse_response(&body, &c).unwrap().outcome {
-            TurnOutcome::Tools { calls, .. } => {
-                assert_eq!(calls.len(), 1);
-                assert_eq!(calls[0].name, "shell");
-                assert_eq!(calls[0].args, "{\"cmd\":\"ls\"}");
-            }
-            _ => panic!("expected tools"),
-        }
-        assert!(matches!(
-            c.0.borrow()[0],
-            ModelEvent::ToolCall { ref name, .. } if name == "shell"
-        ));
-    }
-
-    #[test]
-    fn stream_assembles_text_from_chunks() {
-        let c = collector();
-        let mut s = OpenStream::default();
-        s.push(
-            r#"{"choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}"#,
-            &c,
-        )
-        .unwrap();
-        s.push(
-            r#"{"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}"#,
-            &c,
-        )
-        .unwrap();
-        s.push(
-            r#"{"choices":[{"delta":{"content":" there"},"finish_reason":null}]}"#,
-            &c,
-        )
-        .unwrap();
-        s.push(
-            r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}"#,
-            &c,
-        )
-        .unwrap();
-        s.push("[DONE]", &c).unwrap();
-        let turn = s.finish(&c).unwrap();
-        assert!(matches!(turn.outcome, TurnOutcome::Text { ref text, .. } if text == "Hello there"));
-        assert_eq!(turn.finish_reason.as_deref(), Some("stop"));
-        assert_eq!(turn.usage.unwrap().total_tokens, 3);
-        let evs = c.0.borrow();
-        let deltas: Vec<&str> = evs
-            .iter()
-            .filter_map(|e| match e {
-                ModelEvent::TextDelta { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(deltas, vec!["Hello", " there"]);
-    }
-
-    #[test]
-    fn stream_assembles_fragmented_tool_calls() {
-        let c = collector();
-        let mut s = OpenStream::default();
-        s.push(
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_9","function":{"name":"shell","arguments":""}}]},"finish_reason":null}]}"#,
-            &c,
-        )
-        .unwrap();
-        s.push(
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":"}}]},"finish_reason":null}]}"#,
-            &c,
-        )
-        .unwrap();
-        s.push(
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls\"}"}}]},"finish_reason":null}]}"#,
-            &c,
-        )
-        .unwrap();
-        s.push(
-            r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
-            &c,
-        )
-        .unwrap();
-        match s.finish(&c).unwrap().outcome {
-            TurnOutcome::Tools { calls, .. } => {
-                assert_eq!(calls.len(), 1);
-                assert_eq!(calls[0].args, "{\"cmd\":\"ls\"}");
-            }
-            _ => panic!("expected tools"),
-        }
-    }
-
-    #[test]
-    fn empty_content_is_empty_text() {
-        let body = serde_json::json!({ "choices": [ { "message": { "role": "assistant", "content": null } } ] }).to_string();
-        let c = collector();
-        let turn = parse_response(&body, &c).unwrap();
-        assert!(matches!(turn.outcome, TurnOutcome::Text { ref text, .. } if text.is_empty()));
-        assert!(c.0.borrow().is_empty());
-    }
-}
+#[path = "openai_tests.rs"]
+mod tests;

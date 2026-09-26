@@ -6,13 +6,13 @@
 
 use crate::operation::{run_tool_operation, ToolOperationAdapter};
 use crate::watchdog::TurnWatchdog;
-use crate::{RunLeaseGuard, Supervisor};
+use crate::{ObserverGuard, RunLeaseGuard, Supervisor};
 use pantheon_agent::{AgentLoop, Budget, LoopOutcome};
 use pantheon_core::capability::Policy;
 use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::events::Event;
 use pantheon_core::message::{Message, ToolCallRef};
-use pantheon_core::model::ModelPolicy;
+use pantheon_core::model::{ModelPolicy, TitleGenerator};
 use pantheon_core::model_event::{ModelEvent, ModelEventSink};
 use pantheon_core::provenance::Provenance;
 use pantheon_exec::builtins::{register_builtins_with, BuiltinOptions};
@@ -20,8 +20,10 @@ use pantheon_exec::memory_tools::{
     register_memory_tools, MemoryToolEvent, MemoryToolOptions, MemoryToolSink,
 };
 use pantheon_exec::safewrite::register_safewrite;
+use pantheon_exec::session_search_tools::{register_session_search, SessionSearchOptions};
 use pantheon_exec::supervisor::PluginSupervisor;
 use pantheon_exec::tools::ToolRegistry;
+use pantheon_extensions::ExtensionManager;
 use pantheon_memory::{recall as mem_recall, LayerKind, MemoryStore};
 use pantheon_providers::http::HttpTransport;
 use pantheon_providers::ProviderChain;
@@ -195,10 +197,54 @@ impl<'a> ModelEventSink for LedgerModelSink<'a> {
 
 /// Adapter: tool registry as the loop's runner. Capability comes from the
 /// registry, not the model's claim.
-struct RegRunner<'a>(&'a ToolRegistry);
+///
+/// This is the single choke point every gated tool call passes through, so it
+/// is where the `pre_tool_call` gate and the `transform_tool_result` hook
+/// fire. Both are inline and synchronous by necessity: a gate must be able to
+/// stop the call, and a transform must return the payload the model sees.
+/// The manager is optional so a bare `Session` (tests, embedded use) keeps
+/// working with no extensions loaded.
+struct RegRunner<'a> {
+    registry: &'a ToolRegistry,
+    hooks: Option<&'a ExtensionManager>,
+    run_id: String,
+}
 impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
     fn run(&self, name: &str, args: &str) -> Result<String, PantheonError> {
-        self.0.execute(name, args)
+        if let Some(mgr) = self.hooks {
+            // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy
+            // plugin blocks the call rather than waving it through.
+            let verdict = mgr.fire_gate(
+                pantheon_extensions::Hook::PreToolCall,
+                &self.run_id,
+                "runtime",
+                [
+                    ("tool".to_string(), name.to_string()),
+                    ("args".to_string(), args.to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            if let pantheon_extensions::GateDecision::Deny { reason, .. } = verdict {
+                // Surface as a tool-shaped refusal rather than a hard run
+                // error: the model should see WHY it may not proceed and can
+                // choose another approach.
+                return Ok(format!("[blocked by extension policy] {reason}"));
+            }
+            let out = self.registry.execute(name, args)?;
+            // Transform last: the plugin sees the real output and may replace
+            // it. Fails OPEN, so redaction degrades to no-op, never to outage.
+            return Ok(mgr.fire_transform(
+                pantheon_extensions::Hook::TransformToolResult,
+                &self.run_id,
+                "runtime",
+                [("tool".to_string(), name.to_string())]
+                    .into_iter()
+                    .collect(),
+                &out,
+            ));
+        }
+        self.registry.execute(name, args)
     }
 }
 
@@ -261,6 +307,20 @@ pub struct Session {
     /// (double-Esc / Ctrl-C). The agent loop checks it at every turn and
     /// tool boundary; it cannot abort an in-flight provider request.
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// Extension manager, loaded once per session.
+    ///
+    /// Session-scoped on purpose: `load_mgr` re-reads the extension
+    /// directory, so building it per turn would load two plugin sets that
+    /// disagree about `once_per_session` dedup and gate streaks. Shared by
+    /// the context-injection point, the tool gate/transform, and the
+    /// lifecycle bridge.
+    pub hooks: Arc<ExtensionManager>,
+    /// Keeps the lifecycle-hook observer registered for the session's
+    /// lifetime. It must outlive any single turn: `RunCompleted` is emitted
+    /// by `Supervisor::complete` *after* `chat_turn` returns, and dropping
+    /// the guard at the end of the turn would miss `on_session_end` — the
+    /// hook GalaxyMem-style consolidation depends on.
+    pub hook_observer: ObserverGuard,
 }
 
 impl Session {
@@ -273,8 +333,25 @@ impl Session {
         let memory = MemoryStore::open(&data_dir.join("memory.db"))
             .ok()
             .map(Arc::new);
+        let sup = Supervisor::open(data_dir.clone())?;
+        // Vector recall layer: resolve the embeddings auxiliary from the
+        // policy. Absent entry -> local hashing embedder (the client
+        // itself decides; either way the supervisor indexes with vectors).
+        sup.set_embedder(pantheon_providers::embeddings::EmbedClient::from_policy(
+            &model_policy,
+            None,
+        ));
+        // Extensions load once per session. The lifecycle bridge is registered
+        // here (not per turn) so terminal events — emitted after `chat_turn`
+        // returns — still reach `on_session_end`. Each fire is queued onto a
+        // worker thread by the dispatcher, so this never blocks the emit path.
+        let hooks = Arc::new(load_mgr());
+        let hook_observer = {
+            let dispatcher = pantheon_extensions::HookDispatcher::new(Arc::clone(&hooks));
+            sup.register_observer(std::sync::Arc::new(move |ev: &Event| dispatcher.fire(ev)))
+        };
         Ok(Self {
-            supervisor: Supervisor::open(data_dir)?,
+            supervisor: sup,
             policy,
             model_policy,
             secrets,
@@ -284,6 +361,8 @@ impl Session {
             memory_namespace: "nyx".into(),
             on_event: None,
             cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            hooks,
+            hook_observer,
         })
     }
 
@@ -296,14 +375,16 @@ impl Session {
     /// Build a Session from environment variables.
     /// Used by the AG-UI server and TUI where env-driven config is sufficient.
     pub fn from_env(data_dir: std::path::PathBuf) -> Result<Self, PantheonError> {
-        use pantheon_core::model::{DefaultModel, FallbackChain, ModelPolicy};
         use pantheon_core::capability::Policy;
+        use pantheon_core::model::{DefaultModel, FallbackChain, ModelPolicy};
 
         let provider = std::env::var("PANTHEON_PROVIDER").unwrap_or_else(|_| "local".into());
         let model = std::env::var("PANTHEON_MODEL").unwrap_or_else(|_| "default".into());
         let model_policy = ModelPolicy {
             default: DefaultModel { provider, model },
-            fallbacks: FallbackChain { fallbacks: Vec::new() },
+            fallbacks: FallbackChain {
+                fallbacks: Vec::new(),
+            },
             auxiliaries: Vec::new(),
         };
         let policy = if std::env::var("PANTHEON_ALLOW_MEMORY").as_deref() == Ok("1") {
@@ -416,7 +497,8 @@ impl Session {
 
     /// Clear the cancel token so the same session can run again.
     pub fn reset_cancel(&self) {
-        self.cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.cancel
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// True while a cancellation is in flight.
@@ -435,6 +517,7 @@ impl Session {
         // never wall-clock duration. Pauses (human approval) do not eat the
         // clock because the watchdog only advances inside drive().
         let watchdog = std::sync::Mutex::new(TurnWatchdog::from_env());
+        let mgr = Arc::clone(&self.hooks);
         let mut reopened = false;
         match self.supervisor.ledger_status(run_id)?.as_deref() {
             Some("awaiting_approval") => {
@@ -466,6 +549,17 @@ impl Session {
                 Event::AssistantMessage { .. } | Event::ToolMessage { .. }
             )
         });
+        // The first prompt of a conversation is the one place a session
+        // title is generated: the title auxiliary (config `[title_gen]`,
+        // else `auto` = this run's default model) names the session from
+        // this prompt, fire-and-forget beside the turn. "First" means no
+        // prior message rows and no title yet — a run pre-started by the
+        // TUI or a crashed run with an empty transcript still counts, a
+        // resumed/reopened conversation never does.
+        let first_prompt = !has_prior_history
+            && !prior_entries
+                .iter()
+                .any(|e| matches!(e.event, Event::SessionTitled { .. }));
         let mut messages: Vec<Message> = if recovered || reopened || has_prior_history {
             if recovered {
                 self.supervisor.emit(Event::RunProgress {
@@ -530,7 +624,6 @@ impl Session {
             }
             // Hook: pre_llm_call. Extensions may inject context (fail-open:
             // a broken hook never blocks the turn). Emitted per fresh run.
-            let mgr = load_mgr();
             let hook_ctx = mgr.fire(
                 pantheon_extensions::Hook::PreLlmCall,
                 run_id,
@@ -562,13 +655,32 @@ impl Session {
             },
         );
         register_safewrite(&mut reg, safewrite_dir);
-        // Skill tools: SKILL.md capabilities from both scopes, gated on
-        // FilesystemRead. Empty skill list registers nothing.
-        let skill_list = pantheon_exec::skills::discover_skills(
+        // Skill tools: SKILL.md capabilities from all cross-format scopes
+        // (pantheon + project + Hermes/OpenClaw/.agents/.claude +
+        // PANTHEON_SKILLS_DIR extra roots), gated on FilesystemRead.
+        // Empty skill list registers nothing.
+        let extra_roots: Vec<std::path::PathBuf> = std::env::var("PANTHEON_SKILLS_DIR")
+            .map(|v| {
+                v.split(':')
+                    .filter(|s| !s.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let skill_list = pantheon_exec::skills::discover_skills_ext(
             &self.supervisor.data_dir(),
             &std::env::current_dir().unwrap_or_else(|_| self.supervisor.data_dir().clone()),
+            &extra_roots,
         );
         pantheon_exec::skills::register_skill_tools(&mut reg, skill_list);
+        // Session search: the model can look up prior/active conversations
+        // by content. Same trust level as reading the ledger (FilesystemRead).
+        register_session_search(
+            &mut reg,
+            SessionSearchOptions {
+                store: self.supervisor.shared_search(),
+            },
+        );
         if let Some(mem) = self.memory.clone() {
             let mem_sink = LedgerMemorySink {
                 sup: Arc::new(self.supervisor.clone()),
@@ -645,40 +757,21 @@ impl Session {
                 }
             }
         }
-        // Mock mode: PANTHEON_MOCK_FILE points at a scripted fixture. The
-        // whole chain runs against the fixture — deterministic evals, zero
-        // network. Unset = real HTTP transport.
-        let mock_file = std::env::var("PANTHEON_MOCK_FILE").ok();
-        if mock_file.is_none() && self.model_policy.default.provider == "mock" {
+        // Transport selection: always the real HTTP transport. There is
+        // no fixture or offline mode — `--provider mock` is rejected
+        // below like any other unknown provider id.
+        if self.model_policy.default.provider == "mock" {
             return Err(PantheonError::new(
                 "MOCK_PROVIDER_UNCONFIGURED",
                 Layer::Provider,
                 false,
-                "provider \"mock\" requires PANTHEON_MOCK_FILE pointing at a fixture JSON"
-                    .to_string(),
-                "set PANTHEON_MOCK_FILE=<fixture.json> (see eval/cases.json for the shape)"
-                    .to_string(),
+                "provider \"mock\" does not exist (scripted transports were removed)".to_string(),
+                "point at a real provider: `pantheon model`".to_string(),
                 "",
             ));
         }
-        let transport: Box<dyn pantheon_providers::ChatTransport> = if let Some(f) = mock_file {
-            Box::new(
-                pantheon_providers::MockTransport::from_file(std::path::Path::new(&f)).map_err(
-                    |e| {
-                        PantheonError::new(
-                            e.code.clone(),
-                            Layer::Provider,
-                            false,
-                            e.cause.clone(),
-                            "check PANTHEON_MOCK_FILE",
-                            "",
-                        )
-                    },
-                )?,
-            )
-        } else {
-            Box::new(HttpTransport::default())
-        };
+        let transport: Box<dyn pantheon_providers::ChatTransport> =
+            Box::new(HttpTransport::default());
         let chain = {
             let api_key: SecretValue = self
                 .secrets
@@ -698,8 +791,26 @@ impl Session {
         };
 
         let sink = SupSink(&self.supervisor);
-        let runner = RegRunner(&reg);
+        // Lifecycle hooks (on_session_start/end, subagent_*, stream, api
+        // request) are driven off the canonical event stream; the bridge is
+        // registered once per session in `Session::new` so terminal events
+        // are not missed. The gate and transform fire inline below, because
+        // their return values change control flow.
+        let _ = &self.hook_observer;
+        let runner = RegRunner {
+            registry: &reg,
+            hooks: Some(&self.hooks),
+            run_id: run_id.to_string(),
+        };
         let _ = (&sink, &runner); // adapters used by the legacy loop path below
+                                  // Title generation runs in parallel with the first turn (not before
+                                  // it): the handle is joined after the turn settles so one-shot CLI
+                                  // invocations can't exit before the SessionTitled event lands.
+        let title_task = if first_prompt {
+            self.spawn_title_task(run_id, user_message)
+        } else {
+            None
+        };
         let loop_ = AgentLoop {
             run_id: run_id.into(),
             policy: self.policy.clone(),
@@ -707,7 +818,7 @@ impl Session {
             sink: &sink,
             tools: &runner,
             spawner: None,
-            decision: None,
+            judge: None,
             cancel: Some(&self.cancel),
             depth: 0,
         };
@@ -779,8 +890,7 @@ impl Session {
         if matches!(
             self.supervisor.ledger_status(run_id)?.as_deref(),
             Some("canceled")
-        )
-            || matches!(&outcome, LoopOutcome::Canceled { .. })
+        ) || matches!(&outcome, LoopOutcome::Canceled { .. })
         {
             return Ok(LoopOutcome::Canceled {
                 reason: "interrupted by user".into(),
@@ -829,7 +939,67 @@ impl Session {
             }
         }
 
+        // Settle title generation (bounded by the aux timeout) before the
+        // turn reports done, so callers and evals see the title event.
+        if let Some(handle) = title_task {
+            let _ = handle.join();
+        }
         Ok(outcome)
+    }
+
+    /// Generate the session title for a fresh conversation on a worker
+    /// thread. Target resolution: the explicit `[title_gen]` auxiliary when
+    /// configured, otherwise `auto` — the run's default model (aux models
+    /// default to auto). Any failure degrades to a deterministic title
+    /// derived from the first prompt, so history is never nameless and a
+    /// title problem can never fail the turn. Returns `None` when there is
+    /// nothing to title.
+    fn spawn_title_task(&self, run_id: &str, prompt: &str) -> Option<std::thread::JoinHandle<()>> {
+        if prompt.trim().is_empty() {
+            return None;
+        }
+        let target = self
+            .model_policy
+            .auxiliary(&pantheon_core::model::AuxiliaryKind::TitleGen)
+            .map(|a| pantheon_core::model::DefaultModel {
+                provider: a.provider.clone(),
+                model: a.model.clone(),
+            })
+            .unwrap_or_else(|| self.model_policy.default.clone());
+        let model_label = target.model.clone();
+        // Title-specific key first; in `auto` mode the default model shares
+        // the chat key. Both resolve through the broker at the boundary.
+        let key = self
+            .secrets
+            .inject("PANTHEON_TITLEGEN_API_KEY")
+            .ok()
+            .flatten()
+            .or_else(|| self.secrets.inject("PANTHEON_API_KEY").ok().flatten());
+        let sup = self.supervisor.clone();
+        let run_id = run_id.to_string();
+        let prompt = prompt.to_string();
+        Some(std::thread::spawn(move || {
+            let fallback = pantheon_core::model::fallback_title(&prompt);
+            let client = pantheon_providers::TitleGenClient::new(target, key)
+                .with_transport(title_transport());
+            let req = pantheon_core::model::TitleRequest {
+                run_id: run_id.clone(),
+                prompt,
+            };
+            let (title, model, source) = match client.title(&req) {
+                Ok(t) => (t.title, model_label, "model"),
+                Err(_) if !fallback.is_empty() => (fallback, "deterministic".into(), "fallback"),
+                // Nothing usable: leave the run untitled rather than store
+                // an empty display name.
+                Err(_) => return,
+            };
+            let _ = sup.emit(Event::SessionTitled {
+                run_id,
+                title,
+                model,
+                source: source.into(),
+            });
+        }))
     }
 
     /// Canonical-message driver: replaces the legacy string-transcript loop.
@@ -1026,7 +1196,13 @@ impl Session {
                         .collect()
                 });
                 for (tc, out) in granted.iter().zip(results.into_iter()) {
-                    let out = out?;
+                    // A tool error is a result the model must see, not a
+                    // reason to kill the run. The provider rejects an
+                    // assistant tool_calls row with no matching tool
+                    // response, so the failure is settled as a tool message
+                    // and the turn continues: the model can correct the
+                    // arguments, choose another tool, or explain.
+                    let out = tool_result_text(out);
                     self.supervisor.emit(Event::ToolOutput {
                         run_id: run_id.into(),
                         call_id: tc.id.clone(),
@@ -1182,7 +1358,7 @@ impl Session {
                         .collect()
                 });
                 for ((call, r), out) in calls.iter().zip(refs.iter()).zip(results.into_iter()) {
-                    let out = out?;
+                    let out = tool_result_text(out);
                     *tool_calls_used += 1;
                     self.supervisor.emit(Event::ToolOutput {
                         run_id: run_id.into(),
@@ -1238,6 +1414,24 @@ fn aerr(code: &str, cause: String) -> PantheonError {
     PantheonError::new(code, Layer::Agent, false, cause, "see ledger status", "")
 }
 
+/// Settle a tool execution outcome into the text that becomes the tool
+/// message. A structured failure becomes an error report addressed to the
+/// model, not a dead run: the message carries the code, the cause, and the
+/// remediation hint so the next turn can correct course.
+///
+/// A panic in a tool worker (TOOL_PANIC from the join handler) settles the
+/// same way. Only failures of the loop itself (provider, gate, ledger)
+/// return as run errors.
+fn tool_result_text(out: Result<String, PantheonError>) -> String {
+    match out {
+        Ok(text) => text,
+        Err(e) => format!(
+            "tool error {}: {}\nremediation: {}",
+            e.code, e.cause, e.remediation
+        ),
+    }
+}
+
 /// Load extension plugins from the default extension dir. Fail-open:
 /// a missing or unreadable dir means zero plugins, never an error.
 fn load_mgr() -> pantheon_extensions::ExtensionManager {
@@ -1252,6 +1446,14 @@ fn load_mgr() -> pantheon_extensions::ExtensionManager {
         });
     let _ = mgr.load_dir(&dir);
     mgr
+}
+
+/// Transport for one title-gen call: a short-timeout HTTP transport —
+/// titles must never hold the turn.
+fn title_transport() -> Box<dyn pantheon_providers::ChatTransport> {
+    Box::new(pantheon_providers::HttpTransport {
+        timeout: std::time::Duration::from_secs(pantheon_providers::TITLEGEN_TIMEOUT_SECS),
+    })
 }
 
 /// Rebuild the canonical transcript from persisted message events.
@@ -1287,259 +1489,9 @@ pub fn unfinished_calls(entries: &[pantheon_storage::LedgerEntry]) -> Vec<String
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use pantheon_core::model_event::ModelEvent;
-
-    #[test]
-    fn streaming_deltas_persist_as_model_delta_rows() {
-        // The sink must persist TextDelta events as ModelDelta rows even
-        // though to_event() returns None for them (high-frequency provider-plane
-        // events are not full Event variants).
-        let dir = std::env::temp_dir().join(format!("pantheon-rt-sess-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir).unwrap();
-        sup.start_run("run_stream").unwrap();
-        let sink = LedgerModelSink {
-            sup: &sup,
-            run_id: "run_stream",
-        };
-        sink.emit(ModelEvent::Attempt {
-            provider: "router".into(),
-            model: "chat".into(),
-            chain_index: 0,
-            streaming: true,
-        });
-        sink.emit(ModelEvent::TextDelta {
-            text: "part1".into(),
-        });
-        sink.emit(ModelEvent::TextDelta {
-            text: "part2".into(),
-        });
-        sink.emit(ModelEvent::Usage {
-            usage: pantheon_core::model_event::ModelUsage {
-                input_tokens: 3,
-                output_tokens: 6,
-                total_tokens: 9,
-                cost_usd: None,
-            },
-        });
-        sink.emit(ModelEvent::Completed {
-            finish_reason: Some("stop".into()),
-        });
-
-        let entries = sup.replay("run_stream").unwrap();
-        let deltas: Vec<String> = entries
-            .iter()
-            .filter_map(|e| match &e.event {
-                Event::ModelDelta { delta, .. } => Some(delta.clone()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(deltas, vec!["part1".to_string(), "part2".to_string()]);
-        // Other events also projected.
-        // Event order: RunStarted (from start_run) -> Attempt/ModelRequested,
-        // two TextDelta->ModelDelta, then Completed->ModelCompleted.
-        // Usage events are provider-plane only (to_event returns None) and
-        // are NOT persisted to the ledger -- by design.
-        let kinds: Vec<&str> = entries
-            .iter()
-            .map(|e| match &e.event {
-                Event::RunStarted { .. } => "start",
-                Event::ModelRequested { .. } => "req",
-                Event::ModelDelta { .. } => "delta",
-                Event::ModelCompleted { .. } => "done",
-                _ => "skip",
-            })
-            .collect();
-        assert_eq!(kinds, vec!["start", "req", "delta", "delta", "done"]);
-        // rebuild_messages skips deltas (they are not full messages), but
-        // the transcript still has the persisted content for inspection.
-        let msgs = rebuild_messages(entries);
-        assert!(msgs.is_empty(), "no full assistant/user rows emitted");
-    }
-
-    /// Phase 5: three 400ms tool calls in one turn must finish in well under
-    /// a second if they run concurrently (sequential would be >=1.2s).
-    #[test]
-    fn parallel_tool_calls_overlap_in_wall_time() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use std::time::Instant;
-
-        let mut reg = ToolRegistry::new();
-        let counter = std::sync::Arc::new(AtomicU32::new(0));
-        let c2 = counter.clone();
-        for i in 0..3 {
-            let c = c2.clone();
-            reg.register(
-                pantheon_core::message::ToolSchema {
-                    name: format!("slow_{i}"),
-                    description: "sleeps 400ms".into(),
-                    parameters: serde_json::json!({}),
-                },
-                pantheon_core::capability::Capability::ShellExecute,
-                move |_args| {
-                    c.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(std::time::Duration::from_millis(400));
-                    Ok(format!("done_{i}"))
-                },
-            );
-        }
-        // Three calls the model "asked for" in one turn.
-        let calls: Vec<pantheon_agent::ToolCall> = (0..3)
-            .map(|i| pantheon_agent::ToolCall {
-                name: format!("slow_{i}"),
-                capability: pantheon_core::capability::Capability::ShellExecute,
-                args: "{}".into(),
-            })
-            .collect();
-        // Execute the same way drive() does: scoped threads over the registry.
-        let t0 = Instant::now();
-        let results: Vec<_> = std::thread::scope(|s| {
-            let handles: Vec<_> = calls
-                .iter()
-                .map(|c| {
-                    let r = &reg;
-                    s.spawn(move || r.execute(&c.name, &c.args))
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap())
-                .collect::<Vec<_>>()
-        });
-        let elapsed = t0.elapsed();
-        for (i, r) in results.iter().enumerate() {
-            assert_eq!(r.as_ref().unwrap(), &format!("done_{i}"));
-        }
-        assert_eq!(counter.load(Ordering::SeqCst), 3);
-        // Sequential would be >= 1.2s. Parallel: < 0.9s with slack.
-        assert!(
-            elapsed < std::time::Duration::from_millis(900),
-            "calls ran sequentially: {elapsed:?}"
-        );
-    }
-
-    #[test]
-    fn denied_scope_settles_instead_of_reparking_on_resume() {
-        // A denied call must not leave the run stuck: on resume the denial
-        // becomes a transcript tool result and the run can finish.
-        let dir = std::env::temp_dir().join(format!("pantheon-deny-settle-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let sup = Supervisor::open(dir).unwrap();
-        sup.start_run("deny-resume").unwrap();
-        sup.emit(Event::ApprovalRequested {
-            run_id: "deny-resume".into(),
-            scope: "call_0_0".into(),
-        })
-        .unwrap();
-        sup.deny("deny-resume", "call_0_0").unwrap();
-        // The denial scope is visible on replay and must be excluded from
-        // re-parking by the drive() partition logic.
-        let entries = sup.replay("deny-resume").unwrap();
-        let denied: Vec<String> = entries
-            .iter()
-            .filter_map(|e| match &e.event {
-                Event::ApprovalDenied { scope, .. } => Some(scope.clone()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(denied, vec!["call_0_0".to_string()]);
-        // Status flipped back to running (not parked) after the denial.
-        assert_eq!(
-            sup.ledger_status("deny-resume").unwrap().as_deref(),
-            Some("running")
-        );
-    }
-}
+#[path = "session_tests.rs"]
+mod tests;
 
 #[cfg(test)]
-mod cancel_tests {
-    use super::*;
-
-    fn test_session(tag: &str) -> (Session, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("pantheon-cancel-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let policy = pantheon_core::capability::Policy::coder();
-        let model_policy = pantheon_core::model::ModelPolicy {
-            default: pantheon_core::model::DefaultModel {
-                provider: "test".into(),
-                model: "test".into(),
-            },
-            fallbacks: pantheon_core::model::FallbackChain {
-                fallbacks: Vec::new(),
-            },
-            auxiliaries: Vec::new(),
-        };
-        let secrets = pantheon_secrets::SecretsBroker::from_system_env();
-        let s = Session::new(dir.clone(), policy, model_policy, secrets).unwrap();
-        (s, dir)
-    }
-
-    /// The cancel token starts clear, and reset_cancel clears it again.
-    #[test]
-    fn cancel_token_lifecycle() {
-        let (s, _dir) = test_session("tok");
-        assert!(!s.is_canceled(), "fresh session is not canceled");
-        s.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-        assert!(s.is_canceled(), "token observed");
-        s.reset_cancel();
-        assert!(!s.is_canceled(), "reset clears the token");
-    }
-
-    /// Cancelling a running run records the intent durably and leaves the
-    /// run in `canceled` — not `failed` — so replay can tell the difference
-    /// and `reopen_run` can bring it back.
-    #[test]
-    fn cancel_marks_run_canceled_and_recoverable() {
-        let (s, dir) = test_session("mark");
-        let run = "run_cancel_me";
-        s.supervisor.start_run(run).unwrap();
-        assert_eq!(
-            s.supervisor.ledger_status(run).unwrap().as_deref(),
-            Some("running")
-        );
-
-        s.cancel_current_run(run, "user pressed esc twice");
-
-        assert_eq!(
-            s.supervisor.ledger_status(run).unwrap().as_deref(),
-            Some("canceled"),
-            "cancel is terminal and distinct from failed"
-        );
-        assert!(s.is_canceled(), "loop token signaled");
-
-        // Recoverable: the run reopens and the transcript is intact.
-        assert!(s.supervisor.ledger_reopen_run(run).unwrap());
-        assert_eq!(
-            s.supervisor.ledger_status(run).unwrap().as_deref(),
-            Some("running")
-        );
-        let entries = s.supervisor.replay(run).unwrap();
-        assert!(
-            entries
-                .iter()
-                .any(|e| matches!(e.event, Event::RunCanceled { .. })),
-            "cancel intent is in the ledger trail"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A cancel that arrives after the run already finished is rejected
-    /// rather than clobbering a terminal state.
-    #[test]
-    fn cancel_after_completion_is_rejected() {
-        let (s, dir) = test_session("done");
-        let run = "run_already_done";
-        s.supervisor.start_run(run).unwrap();
-        s.supervisor.complete(run).unwrap();
-        let err = s.supervisor.cancel_run_intent(run, "too late").unwrap_err();
-        assert_eq!(err.code, "RT_TERMINAL", "completed runs are not cancelable");
-        assert_eq!(
-            s.supervisor.ledger_status(run).unwrap().as_deref(),
-            Some("completed"),
-            "terminal state preserved"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
+#[path = "session_cancel_tests.rs"]
+mod cancel_tests;

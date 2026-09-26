@@ -74,7 +74,7 @@ fn absent_store_reads_as_absence_for_broker_fallthrough() {
     if KeychainVault::platform_available().is_ok() {
         return;
     }
-    use pantheon_secrets::{SecretsError, SecretVault};
+    use pantheon_secrets::{SecretVault, SecretsError};
     let vault = KeychainVault::new();
     assert!(
         matches!(vault.get("whatever"), Ok(None)),
@@ -85,7 +85,10 @@ fn absent_store_reads_as_absence_for_broker_fallthrough() {
         "no store means nothing to delete — the trait's no-op"
     );
     assert!(
-        matches!(vault.set("k", SecretValue::new("v")), Err(SecretsError::Backend(_))),
+        matches!(
+            vault.set("k", SecretValue::new("v")),
+            Err(SecretsError::Backend(_))
+        ),
         "no store means nowhere to write — loud"
     );
 }

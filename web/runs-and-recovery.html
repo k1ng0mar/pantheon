@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pantheon — Rust Agent Runtime</title>
+  <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="https://cdn.tailwindcss.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0d0d0d', fg: '#e8e6e1', muted: '#71717a', accent: '#7027c5',
+            card: '#1c1c1e', border: '#2e2e30',
+          },
+          fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Inter', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { background: #0d0d0d; color: #e8e6e1; font-family: 'Inter', sans-serif; }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7027c5, transparent); }
+    .radial-core { background: radial-gradient(ellipse at center, rgba(112,39,197,0.06) 0%, transparent 70%); }
+    .logo-mark { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark img { height: 32px; width: auto; }
+    .logo-mark-sm { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark-sm img { height: 22px; width: auto; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    pre { background: #1c1c1e; border: 1px solid #2e2e30; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+    pre code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #e8e6e1; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: #7027c5; background: rgba(112,39,197,0.1); padding: 0.15em 0.3em; border-radius: 3px; }
+    h1, h2, h3, h4 { font-family: 'JetBrains Mono', monospace; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
+    th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
+    tr:hover td { background: rgba(112,39,197,0.05); }
+    details { cursor: pointer; }
+    details summary { list-style: none; }
+    details summary::-webkit-details-marker { display: none; }
+    details[open] summary .chevron { transform: rotate(90deg); }
+    .chevron { display: inline-block; transition: transform 0.15s; }
+  </style>
+</head>
+<body class="antialiased">
+
+  <nav class="fixed top-0 left-0 right-0 z-50 bg-bg/80 backdrop-blur border-b border-border">
+    <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="index.html" class="flex items-center gap-3">
+        <div class="logo-mark"><img src="logo.png" alt="Pantheon" width="32" height="32"></div>
+        <span class="font-mono font-bold text-fg text-lg tracking-tight">pantheon</span>
+      </a>
+      <div class="flex items-center gap-6 text-sm">
+        <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
+        <a href="getting-started.html" class="text-muted hover:text-fg transition-colors">Docs</a>
+        <a href="configuration.html" class="text-muted hover:text-fg transition-colors">Configuration</a>
+        <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
+        <a href="channels.html" class="text-muted hover:text-fg transition-colors">Channels</a>
+        <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <h1 class="text-3xl md:text-4xl font-bold text-fg mb-4 mt-8">Runs, approvals, and recovery</h1>
+<p class="text-muted text-sm leading-relaxed mb-3">How work is represented, parked, resumed, and survived.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Run lifecycle</h2>
+<p class="text-muted text-sm leading-relaxed mb-3">A run is any unit of agent work: one chat turn, a tool loop, a pipeline.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Every transition is an event in the ledger (SQLite, <code>ledger.db</code>):</p>
+<pre><code>RunStarted -> ModelRequested -> [ToolStarted -> ToolOutput -> ToolCompleted]*
+          -> ModelCompleted -> RunCompleted
+                        \-> RunFailed | RunCanceled</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">The run status (<code>pantheon status <id></code>) is derived state: <code>running</code>,</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>awaiting_approval</code>, <code>completed</code>, <code>failed</code>, <code>canceled</code>, or <code>unknown</code>.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Terminal statuses are immutable: a <code>RunFailed</code> after <code>RunCompleted</code> does</p>
+<p class="text-muted text-sm leading-relaxed mb-3">not overwrite the completed status. The events still append (the ledger is</p>
+<p class="text-muted text-sm leading-relaxed mb-3">append-only), only the derived status is protected.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Approvals</h2>
+<p class="text-muted text-sm leading-relaxed mb-3">Tools declare the capability they need. The policy decides:</p>
+<li class="mb-2 text-muted text-sm">**Allow**: executes immediately.</li>
+<li class="mb-2 text-muted text-sm">**Approval**: the run parks. <code>ApprovalRequested { scope }</code> is recorded,</li>
+<p class="text-muted text-sm leading-relaxed mb-3">status becomes <code>awaiting_approval</code>, and the process can exit safely.</p>
+<li class="mb-2 text-muted text-sm">**Deny** (policy): the tool never runs; the model sees a structured</li>
+<p class="text-muted text-sm leading-relaxed mb-3">denial and can adapt.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Resolving a parked run:</p>
+<pre><code>pantheon grant run_abc call_1_0     # approve; the call re-executes on resume
+pantheon deny run_abc call_1_0      # refuse; the call settles as denied</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Denial semantics (important): a denied call does not fail the run. On</p>
+<p class="text-muted text-sm leading-relaxed mb-3">resume, the transcript receives a tool result reading "denied by operator:</p>
+<p class="text-muted text-sm leading-relaxed mb-3">this tool call was rejected and was not executed", and the turn continues.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">The model can pick a different approach or finish. This is why deny exists</p>
+<p class="text-muted text-sm leading-relaxed mb-3">as its own verb rather than being a synonym for kill.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">A scope can only be resolved once (<code>RT_APPROVAL_RESOLVED</code> on repeat).</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Granting a scope that was never requested fails (<code>RT_APPROVAL_UNKNOWN</code>).</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Crash recovery</h2>
+<p class="text-muted text-sm leading-relaxed mb-3">Kill the process mid-run (crash, OOM, Ctrl-C on the host) and the ledger</p>
+<p class="text-muted text-sm leading-relaxed mb-3">holds everything up to the last event. On the next <code>chat</code> with the same</p>
+<p class="text-muted text-sm leading-relaxed mb-3">run id:</p>
+<li class="mb-2 text-muted text-sm">Tool calls that completed are skipped (their results are in the ledger).</li>
+<li class="mb-2 text-muted text-sm">Tool calls that were granted but crashed before executing re-execute</li>
+<p class="text-muted text-sm leading-relaxed mb-3">from their persisted name+arguments.</p>
+<li class="mb-2 text-muted text-sm">Tool calls with no persisted record get a fabricated error result so</li>
+<p class="text-muted text-sm leading-relaxed mb-3">the transcript stays provider-valid.</p>
+<li class="mb-2 text-muted text-sm">The run status moves through <code>RunRecovered</code> and continues.</li>
+<p class="text-muted text-sm leading-relaxed mb-3">There is no "hope the model remembers": the transcript is rebuilt from</p>
+<p class="text-muted text-sm leading-relaxed mb-3">persisted message rows.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Run leases</h2>
+<p class="text-muted text-sm leading-relaxed mb-3">A lease is a CAS row (<code>run_leases</code> table: run_id, lease_id,</p>
+<p class="text-muted text-sm leading-relaxed mb-3">lease_until_ms, heartbeat_ms) proving one supervisor owns a run.</p>
+<li class="mb-2 text-muted text-sm">Acquire: <code>BEGIN IMMEDIATE</code> transaction; a second supervisor loses with</li>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>RT_LEASE_BUSY</code>.</p>
+<li class="mb-2 text-muted text-sm">Renew: conditional UPDATE on <code>lease_id AND lease_until_ms > now</code>; a</li>
+<p class="text-muted text-sm leading-relaxed mb-3">heartbeat thread renews at TTL/3.</p>
+<li class="mb-2 text-muted text-sm">Takeover: an expired lease can be acquired by anyone. This is the</li>
+<p class="text-muted text-sm leading-relaxed mb-3">recovery path for a dead supervisor.</p>
+<li class="mb-2 text-muted text-sm">Loss: <code>LOST_LEASE</code> errors stop tool work. Doing work under a lost lease</li>
+<p class="text-muted text-sm leading-relaxed mb-3">risks double-execution against the new owner.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Process groups (plugin processes) are registered against the lease. A</p>
+<p class="text-muted text-sm leading-relaxed mb-3">supervisor that lost its lease refuses to killpg the group: the PGID may</p>
+<p class="text-muted text-sm leading-relaxed mb-3">have been reused by the replacement. Kill authority follows the lease,</p>
+<p class="text-muted text-sm leading-relaxed mb-3">never the PID number.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Cancellation</h2>
+<pre><code># via RPC: agui.cancel {run_id}
+# or programmatically: supervisor.cancel_run(run_id, reason)</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Two phases, deliberately split:</p>
+<li class="mb-2 text-muted text-sm">**Intent** (fast, synchronous): <code>RunCanceled</code> event + every linked</li>
+<p class="text-muted text-sm leading-relaxed mb-3">operation moves to <code>canceling</code>. The run stops taking new work.</p>
+<li class="mb-2 text-muted text-sm">**Termination** (slow, off-thread): process groups owned by the lease</li>
+<p class="text-muted text-sm leading-relaxed mb-3">get TERM, a 5s grace, then KILL; operations settle to <code>canceled</code>.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">The heartbeat thread in the lease holder also watches for cancellation</p>
+<p class="text-muted text-sm leading-relaxed mb-3">and performs phase 2 itself, so a cancel request from another supervisor</p>
+<p class="text-muted text-sm leading-relaxed mb-3">is honored without that supervisor ever signaling a process group.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Watchdog</h2>
+<p class="text-muted text-sm leading-relaxed mb-3">The turn watchdog is activity-based, not duration-based. Silence past the</p>
+<p class="text-muted text-sm leading-relaxed mb-3">stall budget (<code>PANTHEON_STALL_BUDGET_MS</code>, default 30s) triggers a</p>
+<p class="text-muted text-sm leading-relaxed mb-3">liveness probe (a ledger status read); only a failed probe kills, and a</p>
+<p class="text-muted text-sm leading-relaxed mb-3">human pause (awaiting approval) never eats the clock. What it catches:</p>
+<p class="text-muted text-sm leading-relaxed mb-3">wedged runtimes, dead processes. What it does not catch: a slow provider</p>
+<p class="text-muted text-sm leading-relaxed mb-3">response (the HTTP transport's own timeout covers that, default 120s).</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Budgets</h2>
+<p class="text-muted text-sm leading-relaxed mb-3">Two caps, runtime-owned, never agent-chosen:</p>
+<li class="mb-2 text-muted text-sm"><code>max_turns</code> (default 16): model turns per run.</li>
+<li class="mb-2 text-muted text-sm"><code>max_tool_calls</code> (default 32): tool executions across the WHOLE run,</li>
+<p class="text-muted text-sm leading-relaxed mb-3">not per turn.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Hitting either returns <code>BUDGET_EXHAUSTED</code> (turns) or ends the loop with</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>BudgetExhausted { cap }</code> (tool calls). A batch of calls that would</p>
+<p class="text-muted text-sm leading-relaxed mb-3">overshoot is rejected before any of it executes.</p>
+
+  <div class="glow-line max-w-5xl mx-auto"></div>
+
+  <footer class="py-16">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+        <div class="flex items-center gap-3">
+          <div class="logo-mark-sm"><img src="logo.png" alt="Pantheon" width="22" height="22"></div>
+          <div>
+            <span class="font-mono font-bold text-fg text-sm">pantheon</span>
+            <p class="text-muted text-xs mt-0.5">Rust agent runtime. MIT licensed. <span class="font-mono">pantheon-agent/pantheon</span> on GitHub.</p>
+          </div>
+        </div>
+        <div class="flex gap-8 text-sm">
+          <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
+          <a href="https://github.com/pantheon-agent/pantheon/blob/main/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
+          <a href="https://github.com/pantheon-agent/pantheon/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+        </div>
+      </div>
+      <div class="glow-line my-8"></div>
+      <p class="text-muted text-xs text-center">No hosted tier. No subscription. Your data stays on your machine.</p>
+    </div>
+  </footer>
+
+</body>
+</html>

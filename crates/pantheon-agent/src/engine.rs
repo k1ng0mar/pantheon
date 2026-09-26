@@ -169,8 +169,8 @@ pub struct AgentLoop<'a> {
     pub tools: &'a dyn ToolRunner,
     /// Optional spawner for sub-agents. If None, Delegate turns are denied.
     pub spawner: Option<&'a dyn AgentSpawner>,
-    /// Optional decision-layer model. Consulted at route selection and tool gate.
-    pub decision: Option<&'a dyn pantheon_core::model::DecisionRouter>,
+    /// Optional judge model. Consulted at route selection and tool gate.
+    pub judge: Option<&'a dyn pantheon_core::model::Judge>,
     /// Cooperative cancellation token. Set by the user (Ctrl-C / double-Esc);
     /// the loop checks it at every turn and tool boundary and stops cleanly.
     /// It cannot abort an in-flight provider request — that returns on its own
@@ -214,17 +214,17 @@ impl<'a> AgentLoop<'a> {
                 model: model.model_name(),
             });
 
-            // Route selection (advisory-only): ask the decision-layer model
+            // Route selection (advisory-only): ask the judge model
             // which provider/model to use for this turn. The answer is
             // validated against the allowed set (default + fallbacks);
             // anything else is recorded as Overridden and ignored.
             // Never changes which model actually runs — that stays
             // runtime-controlled via the fallback chain.
-            if let Some(decision) = self.decision {
+            if let Some(judge) = self.judge {
                 self.consult_route_advisory(
-                    decision,
+                    judge,
                     &[format!("provider={}", "default")],
-                    Some(&task),
+                    Some(task),
                 );
             }
 
@@ -243,7 +243,9 @@ impl<'a> AgentLoop<'a> {
             }
             if let Some(cap) = self.budget.max_cost_cents {
                 if total_cost_cents >= cap {
-                    return Ok(LoopOutcome::BudgetExhausted { cap: "max_cost_cents" });
+                    return Ok(LoopOutcome::BudgetExhausted {
+                        cap: "max_cost_cents",
+                    });
                 }
             }
 
@@ -264,7 +266,9 @@ impl<'a> AgentLoop<'a> {
                         total_cost_cents,
                     });
                 }
-                TurnOutcome::Tools { calls: tool_calls, .. } => {
+                TurnOutcome::Tools {
+                    calls: tool_calls, ..
+                } => {
                     // Budget counts EXECUTED calls only: denials never
                     // consume budget (group-A audit). Check-then-count:
                     // gate first, count only on Allow.
@@ -275,9 +279,9 @@ impl<'a> AgentLoop<'a> {
                         // The deterministic host policy is the floor.
                         // Returns the classifier verdict if it escalates,
                         // else None (host policy stands).
-                        let classifier_verdict = if let Some(decision) = self.decision {
+                        let classifier_verdict = if let Some(judge) = self.judge {
                             self.consult_gate_advisory(
-                                decision,
+                                judge,
                                 &[call.name.clone(), format!("{:?}", call.capability)],
                                 Some(&call.args),
                             )
@@ -295,7 +299,7 @@ impl<'a> AgentLoop<'a> {
                                     run_id: self.run_id.clone(),
                                     point: pantheon_core::model::DecisionPoint::ToolGate,
                                     model: self
-                                        .decision
+                                        .judge
                                         .map(|d| d.model_name().to_string())
                                         .unwrap_or_else(|| "host-policy".to_string()),
                                     action: pantheon_core::events::DecisionActionSummary::Denied {
@@ -318,14 +322,12 @@ impl<'a> AgentLoop<'a> {
                                         .escalation_level() =>
                             {
                                 match v {
-                                    pantheon_core::model::GateVerdict::Deny {
-                                        reason,
-                                    } => {
+                                    pantheon_core::model::GateVerdict::Deny { reason } => {
                                         self.sink.emit(Event::DecisionRecorded {
                                             run_id: self.run_id.clone(),
                                             point: pantheon_core::model::DecisionPoint::ToolGate,
                                             model: self
-                                                .decision
+                                                .judge
                                                 .map(|d| d.model_name().to_string())
                                                 .unwrap_or_else(|| {
                                                     "host-policy".to_string()
@@ -339,27 +341,25 @@ impl<'a> AgentLoop<'a> {
                                             Layer::Agent,
                                             false,
                                             format!(
-                                                "decision model escalated {:?} to deny: {reason}",
+                                                "judge model escalated {:?} to deny: {reason}",
                                                 call.capability
                                             ),
                                             "adjust the policy or narrow the tool call",
                                             "",
                                         ));
                                     }
-                                    pantheon_core::model::GateVerdict::NeedsApproval {
-                                        ..
-                                    } => GateOutcome::NeedsApproval {
-                                        capability: call.capability.clone(),
-                                    },
-                                    pantheon_core::model::GateVerdict::Allow => {
-                                        GateOutcome::Allow
+                                    pantheon_core::model::GateVerdict::NeedsApproval { .. } => {
+                                        GateOutcome::NeedsApproval {
+                                            capability: call.capability.clone(),
+                                        }
                                     }
+                                    pantheon_core::model::GateVerdict::Allow => GateOutcome::Allow,
                                 }
                             }
                             (Ok(_), _) => GateOutcome::Allow,
                         };
                         // Record the final host action for this gate.
-                        if self.decision.is_some() {
+                        if self.judge.is_some() {
                             let action = match &effective {
                                 GateOutcome::Allow => {
                                     pantheon_core::events::DecisionActionSummary::Accepted
@@ -372,7 +372,7 @@ impl<'a> AgentLoop<'a> {
                                 run_id: self.run_id.clone(),
                                 point: pantheon_core::model::DecisionPoint::ToolGate,
                                 model: self
-                                    .decision
+                                    .judge
                                     .map(|d| d.model_name().to_string())
                                     .unwrap_or_else(|| "host-policy".to_string()),
                                 action,
@@ -463,15 +463,19 @@ impl<'a> AgentLoop<'a> {
 
     /// Route advisory: validate choice against `allowed`, record outcome.
     /// Returns validated choice or None (host keeps default). Never panics.
-    fn consult_route_advisory(
+    ///
+    /// `pub` because the canonical-message driver (`pantheon-runtime`'s
+    /// `Session::drive`) consults the judge inline too — one advisory
+    /// implementation for both loop paths.
+    pub fn consult_route_advisory(
         &self,
-        decision: &dyn pantheon_core::model::DecisionRouter,
+        judge: &dyn pantheon_core::model::Judge,
         allowed: &[String],
         context: Option<&str>,
     ) -> Option<String> {
         use pantheon_core::model::DecisionPoint;
         let point = DecisionPoint::RouteSelect;
-        let model_name = decision.model_name();
+        let model_name = judge.model_name();
         self.sink.emit(Event::DecisionRequested {
             run_id: self.run_id.clone(),
             point: point.clone(),
@@ -486,13 +490,10 @@ impl<'a> AgentLoop<'a> {
             context: context.map(String::from),
         };
 
-        match decision.decide(&req) {
+        match judge.decide(&req) {
             Ok(answer) => {
                 let summary = match &answer {
-                    pantheon_core::model::DecisionAnswer::Route {
-                        choice,
-                        confidence,
-                    } => {
+                    pantheon_core::model::DecisionAnswer::Route { choice, confidence } => {
                         pantheon_core::events::DecisionAnswerSummary::Route {
                             choice: choice.clone(),
                             confidence: *confidence,
@@ -514,13 +515,12 @@ impl<'a> AgentLoop<'a> {
                         accepted: *accepted,
                         confidence: *confidence,
                     },
-                    pantheon_core::model::DecisionAnswer::Threshold {
-                        passed,
-                        value,
-                    } => pantheon_core::events::DecisionAnswerSummary::Threshold {
-                        passed: *passed,
-                        value: *value,
-                    },
+                    pantheon_core::model::DecisionAnswer::Threshold { passed, value } => {
+                        pantheon_core::events::DecisionAnswerSummary::Threshold {
+                            passed: *passed,
+                            value: *value,
+                        }
+                    }
                 };
                 self.sink.emit(Event::DecisionMade {
                     run_id: self.run_id.clone(),
@@ -566,16 +566,16 @@ impl<'a> AgentLoop<'a> {
 
     /// Gate advisory (escalate-only). Returns classifier verdict for the
     /// caller to enforce against the host policy floor. None on failure
-    /// or wrong answer kind.
-    fn consult_gate_advisory(
+    /// or wrong answer kind. See `consult_route_advisory` on visibility.
+    pub fn consult_gate_advisory(
         &self,
-        decision: &dyn pantheon_core::model::DecisionRouter,
+        judge: &dyn pantheon_core::model::Judge,
         choices: &[String],
         context: Option<&str>,
     ) -> Option<pantheon_core::model::GateVerdict> {
         use pantheon_core::model::DecisionPoint;
         let point = DecisionPoint::ToolGate;
-        let model_name = decision.model_name();
+        let model_name = judge.model_name();
         self.sink.emit(Event::DecisionRequested {
             run_id: self.run_id.clone(),
             point: point.clone(),
@@ -588,13 +588,10 @@ impl<'a> AgentLoop<'a> {
             choices: choices.to_vec(),
             context: context.map(String::from),
         };
-        match decision.decide(&req) {
+        match judge.decide(&req) {
             Ok(answer) => {
                 let summary = match &answer {
-                    pantheon_core::model::DecisionAnswer::Route {
-                        choice,
-                        confidence,
-                    } => {
+                    pantheon_core::model::DecisionAnswer::Route { choice, confidence } => {
                         pantheon_core::events::DecisionAnswerSummary::Route {
                             choice: choice.clone(),
                             confidence: *confidence,
@@ -616,13 +613,12 @@ impl<'a> AgentLoop<'a> {
                         accepted: *accepted,
                         confidence: *confidence,
                     },
-                    pantheon_core::model::DecisionAnswer::Threshold {
-                        passed,
-                        value,
-                    } => pantheon_core::events::DecisionAnswerSummary::Threshold {
-                        passed: *passed,
-                        value: *value,
-                    },
+                    pantheon_core::model::DecisionAnswer::Threshold { passed, value } => {
+                        pantheon_core::events::DecisionAnswerSummary::Threshold {
+                            passed: *passed,
+                            value: *value,
+                        }
+                    }
                 };
                 self.sink.emit(Event::DecisionMade {
                     run_id: self.run_id.clone(),
@@ -631,9 +627,7 @@ impl<'a> AgentLoop<'a> {
                     answer: summary,
                 });
                 match answer {
-                    pantheon_core::model::DecisionAnswer::Gate {
-                        verdict, ..
-                    } => Some(verdict),
+                    pantheon_core::model::DecisionAnswer::Gate { verdict, .. } => Some(verdict),
                     _ => {
                         self.sink.emit(Event::DecisionRecorded {
                             run_id: self.run_id.clone(),
@@ -664,431 +658,5 @@ impl<'a> AgentLoop<'a> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tool::ToolRunner;
-    use std::cell::RefCell;
-
-    struct Collector(RefCell<Vec<String>>);
-    impl EventSink for Collector {
-        fn emit(&self, ev: Event) {
-            let s = format!("{ev:?}");
-            self.0
-                .borrow_mut()
-                .push(s.chars().take(24).collect::<String>());
-        }
-    }
-
-    struct NoTools;
-    impl ToolRunner for NoTools {
-        fn run(&self, _n: &str, _a: &str) -> Result<String, PantheonError> {
-            Ok("ok".into())
-        }
-    }
-
-    struct Scripted {
-        steps: RefCell<Vec<TurnOutcome>>,
-    }
-    impl ModelTurn for Scripted {
-        fn turn(&self, _t: &[String]) -> Result<TurnOutcome, PantheonError> {
-            let mut s = self.steps.borrow_mut();
-            if s.is_empty() {
-                return Ok(TurnOutcome::Text { text: "done".into(), tokens: 0, cost_cents: 0 });
-            }
-            Ok(s.remove(0))
-        }
-    }
-
-    fn loop_with<'a>(policy: Policy, sink: &'a Collector, tools: &'a NoTools) -> AgentLoop<'a> {
-        AgentLoop {
-            run_id: "run_t".into(),
-            policy,
-            budget: Budget::default(),
-            sink,
-            tools,
-            spawner: None,
-            decision: None,
-            cancel: None,
-            depth: 0,
-        }
-    }
-
-    /// A spawner that simulates swarm cap enforcement without the swarm crate
-    /// (avoids a circular dep: agent ← swarm ← provider).
-    struct CappedSpawner {
-        max_depth: u32,
-    }
-    impl AgentSpawner for CappedSpawner {
-        fn spawn(
-            &self,
-            _agent: &str,
-            _model: &str,
-            _task: &str,
-            depth: u32,
-        ) -> Result<String, PantheonError> {
-            if depth + 1 > self.max_depth {
-                return Err(PantheonError::new(
-                    "SWARM_SPAWN_DENIED",
-                    Layer::Agent,
-                    false,
-                    format!("depth {depth}+1 exceeds max {}", self.max_depth),
-                    "reduce delegation depth or raise the swarm cap",
-                    "",
-                ));
-            }
-            Ok("spawned-sub-agent-result".into())
-        }
-    }
-
-    #[test]
-    fn delegate_emits_agent_message_and_returns_delegated() {
-        let sink = Collector(RefCell::new(vec![]));
-        let tools = NoTools;
-        let spawner = CappedSpawner { max_depth: 2 };
-        let model = Scripted {
-            steps: RefCell::new(vec![TurnOutcome::Delegate {
-                agent: "researcher".into(),
-                model: "kimi".into(),
-                task: "find X".into(),
-            }]),
-        };
-        let mut t = vec![];
-        let loop_ = AgentLoop {
-            run_id: "run_d".into(),
-            policy: Policy::coder(),
-            budget: Budget::default(),
-            sink: &sink,
-            tools: &tools,
-            spawner: Some(&spawner),
-            decision: None,
-            cancel: None,
-            depth: 0,
-        };
-        let out = loop_.run(&model, "go", &mut t).unwrap();
-        // Loop returns Delegated immediately after a successful spawn.
-        assert_eq!(
-            out,
-            LoopOutcome::Delegated {
-                agent: "researcher".into()
-            }
-        );
-        assert!(t.iter().any(|l| l.contains("delegate[researcher]")));
-        assert!(t.iter().any(|l| l.contains("spawned-sub-agent-result")));
-        // AgentMessage event emitted.
-        assert!(sink.0.borrow().iter().any(|s| s.contains("AgentMessage")));
-    }
-
-    #[test]
-    fn depth_cap_denies_spawn_and_returns_error() {
-        let sink = Collector(RefCell::new(vec![]));
-        let tools = NoTools;
-        let spawner = CappedSpawner { max_depth: 0 };
-        let model = Scripted {
-            steps: RefCell::new(vec![TurnOutcome::Delegate {
-                agent: "researcher".into(),
-                model: "kimi".into(),
-                task: "find X".into(),
-            }]),
-        };
-        let mut t = vec![];
-        let loop_ = AgentLoop {
-            run_id: "run_d2".into(),
-            policy: Policy::coder(),
-            budget: Budget::default(),
-            sink: &sink,
-            tools: &tools,
-            spawner: Some(&spawner),
-            decision: None,
-            cancel: None,
-            depth: 0,
-        };
-        let err = loop_.run(&model, "go", &mut t).unwrap_err();
-        assert_eq!(err.code, "SWARM_SPAWN_DENIED");
-        // Transcript has the initial "user:" but no delegate entry appended.
-        assert!(!t.iter().any(|l| l.starts_with("delegate[")));
-        // AgentMessage was emitted before the spawn attempt.
-        assert!(sink.0.borrow().iter().any(|s| s.contains("AgentMessage")));
-    }
-
-    #[test]
-    fn delegate_without_spawner_fails_loud() {
-        let sink = Collector(RefCell::new(vec![]));
-        let tools = NoTools;
-        let model = Scripted {
-            steps: RefCell::new(vec![TurnOutcome::Delegate {
-                agent: "x".into(),
-                model: "y".into(),
-                task: "z".into(),
-            }]),
-        };
-        let mut t = vec![];
-        // loop_with sets spawner: None.
-        let err = loop_with(Policy::coder(), &sink, &tools)
-            .run(&model, "go", &mut t)
-            .unwrap_err();
-        assert_eq!(err.code, "SWARM_SPAWN_DENIED");
-    }
-
-    #[test]
-    fn scripted_two_turn_run_completes() {
-        let sink = Collector(RefCell::new(vec![]));
-        let tools = NoTools;
-        let model = Scripted {
-            steps: RefCell::new(vec![TurnOutcome::Tools {
-                calls: vec![ToolCall {
-                    name: "shell".into(),
-                    capability: Capability::ShellExecute,
-                    args: "ls".into(),
-                }],
-                tokens: 0,
-                cost_cents: 0,
-            }]),
-        };
-        let mut t = vec![];
-        let out = loop_with(Policy::coder(), &sink, &tools)
-            .run(&model, "go", &mut t)
-            .unwrap();
-        assert!(matches!(out, LoopOutcome::Answered { .. }));
-        assert!(t.iter().any(|l| l.starts_with("tool[shell]")));
-        assert!(sink.0.borrow().len() >= 6, "expected model/tool events");
-    }
-
-    #[test]
-    fn denied_capability_stops_the_run() {
-        let sink = Collector(RefCell::new(vec![]));
-        let tools = NoTools;
-        let model = Scripted {
-            steps: RefCell::new(vec![TurnOutcome::Tools {
-                calls: vec![ToolCall {
-                    name: "browse".into(),
-                    capability: Capability::Browser,
-                    args: "".into(),
-                }],
-                tokens: 0,
-                cost_cents: 0,
-            }]),
-        };
-        let mut t = vec![];
-        let err = loop_with(Policy::coder(), &sink, &tools)
-            .run(&model, "go", &mut t)
-            .unwrap_err();
-        assert_eq!(err.code, "CAP_DENIED");
-    }
-
-    #[test]
-    fn approval_parks_instead_of_running() {
-        let sink = Collector(RefCell::new(vec![]));
-        let tools = NoTools;
-        let model = Scripted {
-            steps: RefCell::new(vec![TurnOutcome::Tools {
-                calls: vec![ToolCall {
-                    name: "push".into(),
-                    capability: Capability::GitPush,
-                    args: "origin main".into(),
-                }],
-                tokens: 0,
-                cost_cents: 0,
-            }]),
-        };
-        let mut t = vec![];
-        let out = loop_with(Policy::coder(), &sink, &tools)
-            .run(&model, "go", &mut t)
-            .unwrap();
-        assert_eq!(
-            out,
-            LoopOutcome::AwaitingApproval {
-                capability: Capability::GitPush
-            }
-        );
-        assert!(!t.iter().any(|l| l.starts_with("tool[push]")));
-    }
-
-    #[test]
-    fn budget_cap_stops_before_the_turn() {
-        let sink = Collector(RefCell::new(vec![]));
-        let tools = NoTools;
-        struct NeverAnswers;
-        impl ModelTurn for NeverAnswers {
-            fn turn(&self, _t: &[String]) -> Result<TurnOutcome, PantheonError> {
-                Ok(TurnOutcome::Tools {
-                    calls: vec![ToolCall {
-                        name: "shell".into(),
-                        capability: Capability::ShellExecute,
-                        args: "".into(),
-                    }],
-                    tokens: 0,
-                    cost_cents: 0,
-                })
-            }
-        }
-        let mut l = loop_with(Policy::coder(), &sink, &tools);
-        l.budget = Budget {
-            max_turns: 3,
-            max_tool_calls: 32,
-            max_tokens: None,
-            max_cost_cents: None,
-        };
-        let mut t = vec![];
-        let err = l.run(&NeverAnswers, "go", &mut t).unwrap_err();
-        assert_eq!(err.code, "BUDGET_EXHAUSTED");
-        assert!(err.cause.contains("max_turns"));
-    }
-
-    struct FixedRouter {
-        answer: pantheon_core::model::DecisionAnswer,
-    }
-    impl pantheon_core::model::DecisionRouter for FixedRouter {
-        fn decide(
-            &self,
-            _req: &pantheon_core::model::DecisionRequest,
-        ) -> Result<pantheon_core::model::DecisionAnswer, PantheonError> {
-            Ok(self.answer.clone())
-        }
-    }
-
-    #[test]
-    fn route_outside_allowed_set_is_overridden() {
-        use pantheon_core::events::{DecisionActionSummary, Event};
-        use pantheon_core::model::{DecisionAnswer, DecisionPoint};
-        struct CapSink(RefCell<Vec<Event>>);
-        impl EventSink for CapSink {
-            fn emit(&self, event: Event) {
-                self.0.borrow_mut().push(event);
-            }
-        }
-        let sink = CapSink(RefCell::new(vec![]));
-        let tools = NoTools;
-        struct Answer;
-        impl ModelTurn for Answer {
-            fn turn(&self, _t: &[String]) -> Result<TurnOutcome, PantheonError> {
-                Ok(TurnOutcome::Text { text: "done".into(), tokens: 0, cost_cents: 0 })
-            }
-        }
-        let router = FixedRouter {
-            answer: DecisionAnswer::Route { choice: "evil-provider".into(), confidence: 0.99 },
-        };
-        let loop_ = AgentLoop {
-            run_id: "run_route".into(),
-            policy: Policy::coder(),
-            budget: Budget::default(),
-            sink: &sink,
-            tools: &tools,
-            spawner: None,
-            decision: Some(&router),
-            cancel: None,
-            depth: 0,
-        };
-        let mut t = vec![];
-        let out = loop_.run(&Answer, "go", &mut t).unwrap();
-        assert!(matches!(out, LoopOutcome::Answered { .. }));
-        let evs = sink.0.borrow();
-        assert!(evs.iter().any(|e| matches!(e, Event::DecisionRequested { point: DecisionPoint::RouteSelect, .. })));
-        assert!(evs.iter().any(|e| matches!(e, Event::DecisionRecorded { point: DecisionPoint::RouteSelect, action: DecisionActionSummary::Overridden { .. }, .. })));
-        assert!(!evs.iter().any(|e| matches!(e, Event::DecisionRecorded { point: DecisionPoint::RouteSelect, action: DecisionActionSummary::Accepted, .. })));
-    }
-
-    /// A pre-armed cancel token must stop the loop at the first turn
-    /// boundary, returning Canceled instead of calling the model.
-    #[test]
-    fn cancel_token_stops_loop_before_first_turn() {
-        use std::sync::atomic::AtomicBool;
-        use std::sync::Arc;
-
-        struct Boom;
-        impl ModelTurn for Boom {
-            fn turn(&self, _t: &[String]) -> Result<TurnOutcome, PantheonError> {
-                panic!("model must not be called after cancel");
-            }
-        }
-
-        struct NullSink;
-        impl EventSink for NullSink {
-            fn emit(&self, _event: Event) {}
-        }
-        let sink = NullSink;
-        let tools = NoTools;
-        let flag = Arc::new(AtomicBool::new(true));
-        let loop_ = AgentLoop {
-            run_id: "run_cancel".into(),
-            policy: Policy::coder(),
-            budget: Budget::default(),
-            sink: &sink,
-            tools: &tools,
-            spawner: None,
-            decision: None,
-            cancel: Some(&flag),
-            depth: 0,
-        };
-        let mut t = vec![];
-        let out = loop_.run(&Boom, "go", &mut t).unwrap();
-        assert!(
-            matches!(out, LoopOutcome::Canceled { .. }),
-            "expected Canceled, got {out:?}"
-        );
-    }
-
-    #[test]
-    fn gate_escalates_allow_to_approval_but_never_lowers_deny() {
-        use pantheon_core::model::{DecisionAnswer, DecisionPoint, GateVerdict};
-        use pantheon_core::events::Event;
-        struct CapSink(RefCell<Vec<Event>>);
-        impl EventSink for CapSink {
-            fn emit(&self, event: Event) {
-                self.0.borrow_mut().push(event);
-            }
-        }
-        let sink = CapSink(RefCell::new(vec![]));
-        let tools = NoTools;
-        let model = Scripted {
-            steps: RefCell::new(vec![TurnOutcome::Tools {
-                calls: vec![ToolCall { name: "shell".into(), capability: Capability::ShellExecute, args: "ls".into() }],
-                tokens: 0,
-                cost_cents: 0,
-            }]),
-        };
-        let router = FixedRouter {
-            answer: DecisionAnswer::Gate { verdict: GateVerdict::NeedsApproval { reason: "risky".into() }, confidence: 0.9, score: 0.8 },
-        };
-        let loop_ = AgentLoop {
-            run_id: "run_gate_up".into(),
-            policy: Policy::coder(),
-            budget: Budget::default(),
-            sink: &sink,
-            tools: &tools,
-            spawner: None,
-            decision: Some(&router),
-            cancel: None,
-            depth: 0,
-        };
-        let mut t = vec![];
-        let out = loop_.run(&model, "go", &mut t).unwrap();
-        assert_eq!(out, LoopOutcome::AwaitingApproval { capability: Capability::ShellExecute });
-        let sink2 = CapSink(RefCell::new(vec![]));
-        let model2 = Scripted {
-            steps: RefCell::new(vec![TurnOutcome::Tools {
-                calls: vec![ToolCall { name: "browse".into(), capability: Capability::Browser, args: "".into() }],
-                tokens: 0,
-                cost_cents: 0,
-            }]),
-        };
-        let router2 = FixedRouter {
-            answer: DecisionAnswer::Gate { verdict: GateVerdict::Allow, confidence: 0.99, score: 0.0 },
-        };
-        let loop2 = AgentLoop {
-            run_id: "run_gate_down".into(),
-            policy: Policy::coder(),
-            budget: Budget::default(),
-            sink: &sink2,
-            tools: &tools,
-            spawner: None,
-            decision: Some(&router2),
-            cancel: None,
-            depth: 0,
-        };
-        let mut t2 = vec![];
-        let err = loop2.run(&model2, "go", &mut t2).unwrap_err();
-        assert_eq!(err.code, "CAP_DENIED");
-        let evs2 = sink2.0.borrow();
-        assert!(evs2.iter().any(|e| matches!(e, Event::DecisionRecorded { point: DecisionPoint::ToolGate, .. })));
-    }
-}
+#[path = "engine_tests.rs"]
+mod tests;

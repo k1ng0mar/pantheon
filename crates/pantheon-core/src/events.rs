@@ -220,4 +220,20 @@ pub enum Event {
         /// Summary row size in chars.
         chars_after: u32,
     },
+    /// The title-gen auxiliary (or the deterministic fallback) named this
+    /// conversation from its first user prompt. The latest `SessionTitled`
+    /// event is the run's display title — a later `/name` (manual) or a
+    /// successful model call simply overwrites the previous one. Cosmetic:
+    /// never affects execution, replay, or the transcript.
+    SessionTitled {
+        run_id: String,
+        /// The bounded single-line title (at most TITLE_MAX_CHARS).
+        title: String,
+        /// Which model produced it (identifier for the audit trail);
+        /// "deterministic" for the prompt-derived fallback.
+        model: String,
+        /// "model" when the aux call succeeded, "fallback" when the host
+        /// derived the title locally from the first prompt.
+        source: String,
+    },
 }

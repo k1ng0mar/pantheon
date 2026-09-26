@@ -1,9 +1,9 @@
-//! Provider-agnostic decision-model adapter.
+//! Provider-agnostic judge-model adapter.
 //!
-//! The decision layer is an auxiliary model the *host* chooses — nothing in
-//! here is provider-specific. Config `[decision]` (or the
-//! `PANTHEON_DECISION_PROVIDER` / `PANTHEON_DECISION_MODEL` env pair) becomes
-//! an `AuxiliaryKind::DecisionRouter` entry in `ModelPolicy`; the client
+//! The judge layer is an auxiliary model the *host* chooses — nothing in
+//! here is provider-specific. Config `[judge]` (or the
+//! `PANTHEON_JUDGE_PROVIDER` / `PANTHEON_JUDGE_MODEL` env pair) becomes
+//! an `AuxiliaryKind::Judge` entry in `ModelPolicy`; the client
 //! resolves base URL, wire mode, and API key from the core catalog, so any
 //! OpenAI-compatible or Anthropic endpoint works — GPT-4o mini, a local
 //! llama, Claude Haiku, or a small local classifier such as Laya pointed at
@@ -21,29 +21,24 @@
 //! `NeedsApproval`, never `Allow`. The host validates every answer against
 //! live state before acting — confidence is a signal, not permission.
 
-use crate::http::{ChatTransport, HttpTransport};
-use crate::{anthropic, openai};
+use crate::http::{aux_complete, aux_request, aux_transport, resolve_aux_wire, ChatTransport};
 use pantheon_agent::TurnOutcome;
-use pantheon_core::catalog::{self, ApiMode};
 use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::message::Message;
 use pantheon_core::model::{
-    DecisionAnswer, DecisionPoint, DecisionRequest, DecisionRouter, DefaultModel, GateVerdict,
+    DecisionAnswer, DecisionPoint, DecisionRequest, DefaultModel, GateVerdict, Judge,
 };
-use pantheon_core::model_event::NoopModelSink;
 use pantheon_secrets::SecretValue;
-use std::time::Duration;
 
-/// Decision calls sit inline in the agent loop: short, bounded deadline.
-pub const DECISION_TIMEOUT_SECS: u64 = 10;
+/// Judge calls sit inline in the agent loop: short, bounded deadline.
+pub const JUDGE_TIMEOUT_SECS: u64 = 10;
 /// Answers are a single label line; generous cap for chatty models.
-pub const DECISION_MAX_TOKENS: u32 = 256;
+pub const JUDGE_MAX_TOKENS: u32 = 256;
 
 fn derr(code: &str, cause: String, retryable: bool, remediation: &'static str) -> PantheonError {
     PantheonError::new(code, Layer::Provider, retryable, cause, remediation, "")
 }
 
-/// Prompt for one decision point: role, options, query, context, plus the
+/// Prompt for one judge point: role, options, query, context, plus the
 /// exact output protocol `parse_answer` expects.
 pub fn prompt_for(req: &DecisionRequest) -> String {
     let choices = if req.choices.is_empty() {
@@ -91,7 +86,10 @@ pub fn prompt_for(req: &DecisionRequest) -> String {
             );
         }
     };
-    format!("{protocol}\n{choices}Query: {query}\nContext: {ctx}", query = req.query)
+    format!(
+        "{protocol}\n{choices}Query: {query}\nContext: {ctx}",
+        query = req.query
+    )
 }
 
 /// Reduce a model reply to the answer line: strip code fences, prefer a
@@ -208,7 +206,7 @@ fn parse_verdict(text: &str) -> GateVerdict {
         || has_word(text, "NEEDS_APPROVAL")
     {
         return GateVerdict::NeedsApproval {
-            reason: "decision model flagged for approval".to_string(),
+            reason: "judge model flagged for approval".to_string(),
         };
     }
     if has_word(text, "DENY")
@@ -217,27 +215,27 @@ fn parse_verdict(text: &str) -> GateVerdict {
         || has_word(text, "REJECT")
     {
         return GateVerdict::Deny {
-            reason: "decision model flagged high risk".to_string(),
+            reason: "judge model flagged high risk".to_string(),
         };
     }
     if has_word(text, "ALLOW") || has_word(text, "SAFE") || has_word(text, "PERMIT") {
         return GateVerdict::Allow;
     }
     GateVerdict::NeedsApproval {
-        reason: "unrecognized verdict from decision model (fail-closed)".to_string(),
+        reason: "unrecognized verdict from judge model (fail-closed)".to_string(),
     }
 }
 
-/// Parse a model reply into a typed answer for this decision point.
+/// Parse a model reply into a typed answer for this judge point.
 /// Never free text out; unrecognized answers fail conservatively.
 pub fn parse_answer(req: &DecisionRequest, raw: &str) -> Result<DecisionAnswer, PantheonError> {
     let line = answer_line(raw);
     if line.is_empty() {
         return Err(derr(
-            "DECISION_EMPTY",
-            "decision model returned an empty answer".to_string(),
+            "JUDGE_EMPTY",
+            "judge model returned an empty answer".to_string(),
             true,
-            "check the [decision] endpoint is healthy",
+            "check the [judge] endpoint is healthy",
         ));
     }
     let upper = line.to_ascii_uppercase();
@@ -268,20 +266,22 @@ pub fn parse_answer(req: &DecisionRequest, raw: &str) -> Result<DecisionAnswer, 
         DecisionPoint::RouteSelect => {
             if has_word(&upper, "NOUL") {
                 return Err(derr(
-                    "DECISION_ABSTAIN",
-                    "decision model abstained (NOUL)".to_string(),
+                    "JUDGE_ABSTAIN",
+                    "judge model abstained (NOUL)".to_string(),
                     false,
                     "host falls back to the default model",
                 ));
             }
-            match_choice(&line, &req.choices).map(|choice| DecisionAnswer::Route { choice, confidence }).ok_or_else(|| {
-                derr(
-                    "DECISION_UNPARSED",
-                    format!("decision model answered {line:?}, no offered option matched"),
-                    false,
-                    "check the decision model follows the ANSWER protocol",
-                )
-            })
+            match_choice(&line, &req.choices)
+                .map(|choice| DecisionAnswer::Route { choice, confidence })
+                .ok_or_else(|| {
+                    derr(
+                        "JUDGE_UNPARSED",
+                        format!("judge model answered {line:?}, no offered option matched"),
+                        false,
+                        "check the judge model follows the ANSWER protocol",
+                    )
+                })
         }
         DecisionPoint::DelegateSelect | DecisionPoint::Other(_) => {
             if has_word(&upper, "NOUL") {
@@ -300,21 +300,21 @@ pub fn parse_answer(req: &DecisionRequest, raw: &str) -> Result<DecisionAnswer, 
                 .map(|choice| DecisionAnswer::Route { choice, confidence })
                 .ok_or_else(|| {
                     derr(
-                        "DECISION_UNPARSED",
-                        format!("decision model answered {line:?}, no offered option matched"),
+                        "JUDGE_UNPARSED",
+                        format!("judge model answered {line:?}, no offered option matched"),
                         false,
-                        "check the decision model follows the ANSWER protocol",
+                        "check the judge model follows the ANSWER protocol",
                     )
                 })
         }
     }
 }
 
-/// A `DecisionRouter` backed by any provider/model the host configured as
-/// the `DecisionRouter` auxiliary. Single-shot, non-streaming, short
+/// A `Judge` backed by any provider/model the host configured as
+/// the `Judge` auxiliary. Single-shot, non-streaming, short
 /// timeout; on failure the engine falls back to host defaults.
-pub struct DecisionClient {
-    /// Provider + model chosen by the host (config `[decision]` / env).
+pub struct JudgeClient {
+    /// Provider + model chosen by the host (config `[judge]` / env).
     pub target: DefaultModel,
     pub transport: Box<dyn ChatTransport>,
     /// Configured key fallback; `catalog::key_for` still prefers the
@@ -323,15 +323,13 @@ pub struct DecisionClient {
     pub max_tokens: u32,
 }
 
-impl DecisionClient {
+impl JudgeClient {
     pub fn new(target: DefaultModel, api_key: Option<SecretValue>) -> Self {
         Self {
             target,
-            transport: Box::new(HttpTransport {
-                timeout: Duration::from_secs(DECISION_TIMEOUT_SECS),
-            }),
+            transport: aux_transport(JUDGE_TIMEOUT_SECS),
             api_key,
-            max_tokens: DECISION_MAX_TOKENS,
+            max_tokens: JUDGE_MAX_TOKENS,
         }
     }
 
@@ -342,166 +340,36 @@ impl DecisionClient {
     }
 }
 
-impl DecisionRouter for DecisionClient {
+impl Judge for JudgeClient {
     fn model_name(&self) -> &str {
         &self.target.model
     }
 
     fn decide(&self, req: &DecisionRequest) -> Result<DecisionAnswer, PantheonError> {
         let prompt = prompt_for(req);
-        let base = catalog::base_url_for(&self.target.provider);
-        let api_mode = catalog::provider(&self.target.provider)
-            .map(|p| p.api_mode)
-            .unwrap_or(ApiMode::OpenAi);
         let configured = self.api_key.as_ref().map(|k| k.expose()).unwrap_or("");
-        let key = catalog::key_for(&self.target.provider, configured);
-        let messages = vec![Message::user(prompt)];
-        let wire = match api_mode {
-            ApiMode::OpenAi => {
-                openai::request(&base, &key, &self.target.model, &messages, &[], false)
-            }
-            ApiMode::Anthropic => anthropic::request(
-                &base,
-                &key,
-                &self.target.model,
-                &messages,
-                &[],
-                false,
-                self.max_tokens,
-            ),
-        };
-        let turn = match api_mode {
-            ApiMode::OpenAi => openai::complete(self.transport.as_ref(), wire, &NoopModelSink),
-            ApiMode::Anthropic => anthropic::complete(self.transport.as_ref(), wire, &NoopModelSink),
-        }
-        .map_err(|e| {
+        let wire = resolve_aux_wire(&self.target.provider, configured, self.max_tokens)?;
+        let request = aux_request(&wire, &self.target.model, prompt);
+        let turn = aux_complete(self.transport.as_ref(), &wire, request).map_err(|e| {
             derr(
-                "DECISION_HTTP",
-                format!("decision model call failed: {}", e.cause),
+                "JUDGE_HTTP",
+                format!("judge model call failed: {}", e.cause),
                 e.retryable,
-                "check the [decision] endpoint is reachable within the timeout",
+                "check the [judge] endpoint is reachable within the timeout",
             )
         })?;
         match turn.outcome {
             TurnOutcome::Text { text, .. } => parse_answer(req, &text),
             _ => Err(derr(
-                "DECISION_NOT_TEXT",
-                "decision model returned a non-text turn".to_string(),
+                "JUDGE_NOT_TEXT",
+                "judge model returned a non-text turn".to_string(),
                 false,
-                "decision models must answer with plain text",
+                "judge models must answer with plain text",
             )),
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use pantheon_core::model::DecisionPoint;
-
-    fn req(point: DecisionPoint, choices: &[&str]) -> DecisionRequest {
-        DecisionRequest {
-            run_id: "run_t".into(),
-            point,
-            query: "q".into(),
-            choices: choices.iter().map(|s| s.to_string()).collect(),
-            context: Some("ctx".into()),
-        }
-    }
-
-    #[test]
-    fn prompt_carries_options_and_protocol() {
-        let r = req(DecisionPoint::RouteSelect, &["provider=a", "provider=b"]);
-        let p = prompt_for(&r);
-        assert!(p.contains("\"provider=a\""));
-        assert!(p.contains("ANSWER <option>"));
-        let g = prompt_for(&req(DecisionPoint::ToolGate, &["shell.execute"]));
-        assert!(g.contains("ALLOW|DENY|APPROVE"));
-        assert!(g.contains("\"shell.execute\""));
-    }
-
-    #[test]
-    fn gate_parses_verdict_score_confidence() {
-        let r = req(DecisionPoint::ToolGate, &["shell.execute"]);
-        let a = parse_answer(&r, "ANSWER DENY score=0.9 confidence=0.8").unwrap();
-        match a {
-            DecisionAnswer::Gate { verdict, score, confidence } => {
-                assert!(matches!(verdict, GateVerdict::Deny { .. }));
-                assert!((score - 0.9).abs() < 1e-6);
-                assert!((confidence - 0.8).abs() < 1e-6);
-            }
-            other => panic!("wrong answer: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn gate_verdict_in_prose_and_fences() {
-        let r = req(DecisionPoint::ToolGate, &["shell.execute"]);
-        let a = parse_answer(
-            &r,
-            "Sure — I checked the args.\n```\nANSWER APPROVE score=0.1 confidence=0.7\n```",
-        )
-        .unwrap();
-        assert!(matches!(
-            a,
-            DecisionAnswer::Gate { verdict: GateVerdict::NeedsApproval { .. }, .. }
-        ));
-    }
-
-    #[test]
-    fn gate_fails_closed_on_gibberish() {
-        let r = req(DecisionPoint::ToolGate, &["shell.execute"]);
-        let a = parse_answer(&r, "ANSWER MAYBE score=0.5 confidence=0.4").unwrap();
-        assert!(matches!(
-            a,
-            DecisionAnswer::Gate { verdict: GateVerdict::NeedsApproval { .. }, .. }
-        ));
-        let empty = parse_answer(&r, "   \n  ");
-        assert!(empty.is_err());
-    }
-
-    #[test]
-    fn route_matches_canonical_choice_from_shorthand() {
-        let r = req(DecisionPoint::RouteSelect, &["provider=default"]);
-        // Model answers with just the value after `=`.
-        let a = parse_answer(&r, "ANSWER default confidence=0.9").unwrap();
-        assert_eq!(
-            a,
-            DecisionAnswer::Route { choice: "provider=default".into(), confidence: 0.9 }
-        );
-        // And with the full option verbatim.
-        let b = parse_answer(&r, "ANSWER provider=default").unwrap();
-        assert_eq!(
-            b,
-            DecisionAnswer::Route { choice: "provider=default".into(), confidence: 0.0 }
-        );
-    }
-
-    #[test]
-    fn route_noul_or_mismatch_is_an_error_the_host_can_fall_back_from() {
-        let r = req(DecisionPoint::RouteSelect, &["provider=a"]);
-        assert!(parse_answer(&r, "ANSWER NOUL confidence=0.2").is_err());
-        assert!(parse_answer(&r, "ANSWER something-else").is_err());
-    }
-
-    #[test]
-    fn verify_yes_no() {
-        let r = req(DecisionPoint::TaskVerify, &[]);
-        let a = parse_answer(&r, "ANSWER YES confidence=0.95").unwrap();
-        assert_eq!(a, DecisionAnswer::Threshold { passed: true, value: 0.95 });
-        let b = parse_answer(&r, "ANSWER NO").unwrap();
-        assert_eq!(b, DecisionAnswer::Threshold { passed: false, value: 0.0 });
-    }
-
-    #[test]
-    fn delegate_noul_is_rejection_not_error() {
-        let r = req(DecisionPoint::DelegateSelect, &["researcher"]);
-        let a = parse_answer(&r, "ANSWER NOUL confidence=0.3").unwrap();
-        assert_eq!(
-            a,
-            DecisionAnswer::Binary { accepted: false, confidence: 0.3 }
-        );
-        let b = parse_answer(&r, "ANSWER researcher").unwrap();
-        assert_eq!(b, DecisionAnswer::Route { choice: "researcher".into(), confidence: 0.0 });
-    }
-}
+#[path = "judge_tests.rs"]
+mod tests;

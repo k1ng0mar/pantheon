@@ -34,6 +34,18 @@ pub fn backoff_ms(attempt: u32) -> u64 {
         .min(MAX_BACKOFF_MS)
 }
 
+/// Wait before the next attempt when the platform rate-limited us: the
+/// server's own `Retry-After` hint wins over our exponential backoff (it
+/// knows its window; we are guessing), still capped at [`MAX_BACKOFF_MS`]
+/// so one hostile header cannot park the daemon. A missing/zero hint falls
+/// back to [`backoff_ms`].
+pub fn retry_delay_ms(err: &crate::channel::ChannelError, attempt: u32) -> u64 {
+    match err.retry_after_secs {
+        Some(hint) if hint > 0 => hint.saturating_mul(1000).min(MAX_BACKOFF_MS),
+        _ => backoff_ms(attempt),
+    }
+}
+
 /// Plan the next step for a delivery attempt (`attempt` is 1-based).
 pub fn plan_delivery(attempt: u32, max_attempts: u32, retryable: bool) -> DeliveryOutcome {
     if !retryable {
@@ -86,68 +98,5 @@ impl Outbox {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn msg(text: &str) -> OutboundMessage {
-        OutboundMessage {
-            to_conversation: "c1".into(),
-            text: text.into(),
-        }
-    }
-
-    #[test]
-    fn retryable_failures_back_off_exponentially_then_stop() {
-        assert_eq!(
-            plan_delivery(1, 5, true),
-            DeliveryOutcome::Retry {
-                attempt: 1,
-                after_ms: 2_000
-            }
-        );
-        assert_eq!(
-            plan_delivery(3, 5, true),
-            DeliveryOutcome::Retry {
-                attempt: 3,
-                after_ms: 8_000
-            }
-        );
-        match plan_delivery(5, 5, true) {
-            DeliveryOutcome::Dropped { reason } => assert!(reason.contains("5 attempts")),
-            other => panic!("expected Drop, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn backoff_is_capped_and_never_overflows() {
-        assert_eq!(backoff_ms(0), 1_000);
-        assert_eq!(backoff_ms(6), 60_000);
-        assert_eq!(backoff_ms(64), MAX_BACKOFF_MS, "huge attempts stay capped");
-        assert_eq!(backoff_ms(u32::MAX), MAX_BACKOFF_MS);
-    }
-
-    #[test]
-    fn permanent_failures_are_not_retried() {
-        assert!(matches!(
-            plan_delivery(1, 5, false),
-            DeliveryOutcome::Dropped { .. }
-        ));
-    }
-
-    #[test]
-    fn queued_messages_flush_in_order_on_reconnect() {
-        let mut outbox = Outbox::new();
-        outbox.enqueue(msg("first"));
-        outbox.enqueue(msg("second"));
-        assert_eq!(outbox.len(), 2);
-
-        let flushed = outbox.on_reconnect();
-        assert_eq!(flushed.len(), 2);
-        assert_eq!(flushed[0].text, "first");
-        assert_eq!(flushed[1].text, "second");
-        assert!(
-            outbox.is_empty(),
-            "flushing must not replay on the next reconnect"
-        );
-    }
-}
+#[path = "delivery_tests.rs"]
+mod tests;

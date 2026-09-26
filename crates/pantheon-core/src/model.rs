@@ -39,25 +39,38 @@ impl FallbackChain {
 }
 
 /// Auxiliary model for a scoped capability (NOT a chat substitute).
+///
+/// Aids that have a config section (`[judge]`, `[embeddings]`, ...)
+/// resolve to the pinned target; the rest default to `auto` = the run's
+/// default model. Exceptions where `auto` would be wrong are documented
+/// on the variant (embeddings: absent = local embedder, never chat).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuxiliaryKind {
     Embeddings,
-    Rerank,
     Vision,
-    Extraction,
     SearchSynthesis,
-    /// Decision-layer model: classifies, routes, scores. Never generates chat.
-    /// Used for route selection, tool gating, verification thresholds.
-    DecisionRouter,
+    /// Judge model (config `[judge]`): classifies, routes, scores. Never
+    /// generates chat. Used for route selection, tool gating, verification
+    /// thresholds. Replaces the old `DecisionRouter` name.
+    Judge,
+    /// MCP tool-result synthesis model (config `[mcp_synthesis]`): bounds
+    /// large MCP tool results into a note before they enter context.
+    McpSynthesis,
+    /// Model for scheduled (background) runs (config `[scheduled]`): when a
+    /// scheduled job executes an agent turn it uses this model instead of
+    /// the interactive default — cheap background runs. `auto` = default.
+    Scheduled,
     /// Context-compression model: summarizes the oldest exchanges when the
     /// transcript overflows the window. Host-orchestrated; never chat.
     Compression,
-    /// Typed output from a decision model. Answer is a single token or enum label.
-    Decision,
+    /// Session-title model: names a conversation from its first user prompt.
+    /// Host-orchestrated, fire-and-forget beside the first turn; never chat.
+    /// Absent entry = `auto`: the runtime falls back to the default model.
+    TitleGen,
     Other(String),
 }
 
-/// The kind of decision being routed through a DecisionRouter aux model.
+/// The kind of decision being routed through a Judge aux model.
 /// Each maps to a narrow insertion point in the host code.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DecisionPoint {
@@ -90,7 +103,11 @@ pub enum DecisionAnswer {
     /// Must match one entry of the caller's `choices`; else overridden.
     Route { choice: String, confidence: f32 },
     /// A risk score and gate verdict for tool gating.
-    Gate { verdict: GateVerdict, confidence: f32, score: f32 },
+    Gate {
+        verdict: GateVerdict,
+        confidence: f32,
+        score: f32,
+    },
     /// A binary accept/reject with confidence.
     Binary { accepted: bool, confidence: f32 },
     /// A numeric threshold check.
@@ -214,18 +231,18 @@ pub struct DecisionRequest {
     pub context: Option<String>,
 }
 
-/// Host-side interface for a decision-layer model. Provider-agnostic:
+/// Host-side interface for the judge model. Provider-agnostic:
 /// implementations may talk to any typed classifier (hosted API, local
 /// endpoint, small specialized model) — the host picks one via the
-/// `DecisionRouter` auxiliary and validates every answer against live
-/// state before acting.
-pub trait DecisionRouter: Send + Sync {
+/// `Judge` auxiliary and validates every answer against live state
+/// before acting.
+pub trait Judge: Send + Sync {
     /// Returns the model identifier for logging/audit trail.
     fn model_name(&self) -> &str {
-        "aux-decision-model"
+        "aux-judge-model"
     }
 
-    /// Ask the decision model a typed question. Returns a typed answer,
+    /// Ask the judge a typed question. Returns a typed answer,
     /// never free text.
     fn decide(&self, req: &DecisionRequest) -> Result<DecisionAnswer, PantheonError>;
 }
@@ -250,7 +267,7 @@ pub struct CompressionResult {
 }
 
 /// Host-side interface for a context-compression model. Provider-agnostic
-/// like `DecisionRouter`: the host renders the transcript, bounds the
+/// like `Judge`: the host renders the transcript, bounds the
 /// summary, and falls back to deterministic dropping when this errors.
 pub trait ContextCompressor: Send + Sync {
     /// Model identifier for logging/audit.
@@ -263,3 +280,110 @@ pub trait ContextCompressor: Send + Sync {
     /// requirement for correctness.
     fn compress(&self, req: &CompressionRequest) -> Result<CompressionResult, PantheonError>;
 }
+
+/// Soft cap for a session title. Models overshoot; the host truncates at a
+/// char boundary so list rows stay readable in the CLI, TUI, and gateways.
+pub const TITLE_MAX_CHARS: usize = 60;
+
+/// What the host asks a title model to do: name the conversation whose
+/// first user prompt is `prompt`. One shot, no transcript — a title is
+/// derived from the opening message, not the whole exchange.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TitleRequest {
+    pub run_id: String,
+    /// The first user prompt of the session (host-capped before sending).
+    pub prompt: String,
+}
+
+/// A title model's output: the title text, nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TitleResult {
+    pub title: String,
+}
+
+/// Host-side interface for the session-title model. Provider-agnostic like
+/// `ContextCompressor`: the host picks the target (config `[title_gen]`,
+/// else `auto` = the run's default model), bounds the output, and falls
+/// back to [`fallback_title`] when this errors. Titles are cosmetic — a
+/// failed call never affects the conversation.
+pub trait TitleGenerator: Send + Sync {
+    /// Model identifier for logging/audit.
+    fn model_name(&self) -> &str {
+        "aux-title-model"
+    }
+
+    /// Name the session. On `Err` the host derives a deterministic title
+    /// from the prompt instead.
+    fn title(&self, req: &TitleRequest) -> Result<TitleResult, PantheonError>;
+}
+
+/// Normalize any raw text (a model's reply, or the first prompt itself in
+/// the fallback path) into a single-line title: first non-empty line,
+/// wrapping quotes stripped, a leading `Title:` label dropped, whitespace
+/// collapsed, hard-truncated at `max_chars` on a char boundary.
+/// Returns `""` when nothing usable remains.
+pub fn bound_title(raw: &str, max_chars: usize) -> String {
+    let mut s = raw
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string();
+    // Strip one layer of wrapping quotes (ASCII or curly).
+    for (a, b) in [('“', '”'), ('"', '"'), ('\'', '\'')] {
+        if s.chars().count() >= 2 && s.starts_with(a) && s.ends_with(b) {
+            let inner = s.strip_prefix(a).and_then(|t| t.strip_suffix(b));
+            if let Some(inner) = inner {
+                s = inner.trim().to_string();
+            }
+            break;
+        }
+    }
+    // Models love to answer "Title: ..." despite instructions.
+    for label in ["title:", "session title:", "name:"] {
+        if let Some(head) = s.get(..label.len()) {
+            if head.eq_ignore_ascii_case(label) {
+                s = s[label.len()..].trim_start().to_string();
+                break;
+            }
+        }
+    }
+    // Collapse remaining whitespace runs (including any inner newlines).
+    let mut out = String::with_capacity(s.len());
+    let mut prev_ws = false;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !prev_ws {
+                out.push(' ');
+            }
+            prev_ws = true;
+        } else {
+            out.push(c);
+            prev_ws = false;
+        }
+    }
+    let out = out.trim();
+    if out.chars().count() <= max_chars {
+        return out.to_string();
+    }
+    // Truncate on a char boundary at `max_chars` characters (not bytes —
+    // a byte cap would butcher multibyte scripts).
+    let end = out
+        .char_indices()
+        .nth(max_chars)
+        .map(|(i, _)| i)
+        .unwrap_or(out.len());
+    out[..end].trim_end().to_string()
+}
+
+/// Deterministic title for a session: the first prompt, bounded. This is
+/// the fallback when the title aux model is absent, errors, or times out —
+/// history always shows something meaningful, and a later successful call
+/// can replace it (last title wins).
+pub fn fallback_title(prompt: &str) -> String {
+    bound_title(prompt, TITLE_MAX_CHARS)
+}
+
+#[cfg(test)]
+#[path = "model_title_tests.rs"]
+mod title_tests;
