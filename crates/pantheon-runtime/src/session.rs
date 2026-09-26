@@ -827,11 +827,19 @@ impl Session {
         // session replays their results from persisted ToolMessage rows when
         // present, and re-runs the rest before the next model call.
         let entries = self.supervisor.replay(run_id)?;
-        let pending = if recovered {
+        let mut pending = if recovered {
             unfinished_calls(&entries)
         } else {
             Vec::new()
         };
+        // Granted-but-never-executed calls are pending too: a call parked on
+        // approval never emits ToolStarted, so without this the grant-resume
+        // hands the model a dangling tool_call and it invents an answer.
+        for cid in granted_unexecuted_calls(&entries) {
+            if !pending.contains(&cid) {
+                pending.push(cid);
+            }
+        }
         let grants: Vec<String> = entries
             .iter()
             .filter_map(|e| match &e.event {
@@ -1140,10 +1148,20 @@ impl Session {
                 .into_iter()
                 .partition(|tc| grants.iter().any(|s| s == &tc.id));
             if !ungranted.is_empty() {
-                // Ask with the real capability resolved from the registry.
+                // Report the capability that actually needs approval, not
+                // just the tool's static one: a `git push` through `shell`
+                // must surface GitPush, which is the rule the coder policy
+                // marks Approval.
                 let first = &ungranted[0];
                 let cap = reg
-                    .capability_of(&first.name)
+                    .required_capabilities(&first.name, &first.arguments)
+                    .into_iter()
+                    .find(|c| {
+                        matches!(
+                            pantheon_agent::gate(&loop_.policy, c),
+                            Ok(pantheon_agent::GateOutcome::NeedsApproval { .. })
+                        )
+                    })
                     .unwrap_or(pantheon_core::capability::Capability::Other("tool".into()));
                 for tc in &ungranted {
                     self.supervisor.emit(Event::ApprovalRequested {
@@ -1290,23 +1308,24 @@ impl Session {
                 // Phase 5: gate ALL calls first, then run them in parallel.
                 // Any approval needed parks the run before anything executes
                 // (no partial execution), matching the single-call path.
+                //
+                // Gate on every capability the call needs, not just the
+                // tool's static one: `shell` running `git push` needs
+                // GitPush as well as ShellExecute, and the coder policy
+                // marks GitPush as Approval. Checking only the first
+                // capability let every push run unattended.
                 for (call, r) in calls.iter().zip(refs.iter()) {
-                    let cap = reg
-                        .capability_of(&call.name)
-                        .unwrap_or(pantheon_core::capability::Capability::Other("tool".into()));
-                    let gated = pantheon_agent::ToolCall {
-                        name: call.name.clone(),
-                        capability: cap,
-                        args: call.args.clone(),
-                    };
-                    match pantheon_agent::gate(&loop_.policy, &gated.capability)? {
-                        pantheon_agent::GateOutcome::Allow => {}
-                        pantheon_agent::GateOutcome::NeedsApproval { capability } => {
-                            self.supervisor.emit(Event::ApprovalRequested {
-                                run_id: run_id.into(),
-                                scope: r.id.clone(),
-                            })?;
-                            return Ok(LoopOutcome::AwaitingApproval { capability });
+                    let caps = reg.required_capabilities(&call.name, &call.args);
+                    for cap in &caps {
+                        match pantheon_agent::gate(&loop_.policy, cap)? {
+                            pantheon_agent::GateOutcome::Allow => {}
+                            pantheon_agent::GateOutcome::NeedsApproval { capability } => {
+                                self.supervisor.emit(Event::ApprovalRequested {
+                                    run_id: run_id.into(),
+                                    scope: r.id.clone(),
+                                })?;
+                                return Ok(LoopOutcome::AwaitingApproval { capability });
+                            }
                         }
                     }
                 }
@@ -1486,6 +1505,30 @@ pub fn unfinished_calls(entries: &[pantheon_storage::LedgerEntry]) -> Vec<String
         }
     }
     started.difference(&done).cloned().collect()
+}
+
+/// Calls that were approval-granted but never executed. A call parked on
+/// approval never emits ToolStarted, so a grant-resume must treat it as
+/// pending or the model sees a dangling tool_call and invents an answer.
+pub fn granted_unexecuted_calls(entries: &[pantheon_storage::LedgerEntry]) -> Vec<String> {
+    let done = done_call_ids(entries);
+    entries
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::ApprovalGranted { scope, .. } if !done.contains(scope) => Some(scope.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn done_call_ids(entries: &[pantheon_storage::LedgerEntry]) -> std::collections::BTreeSet<String> {
+    entries
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::ToolCompleted { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]

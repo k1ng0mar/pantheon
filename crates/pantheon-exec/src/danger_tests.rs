@@ -63,3 +63,36 @@ fn normalization_collapses_quotes_and_case() {
     let a = assess("RM   -R -F   \"/\" ");
     assert_eq!(a.level, RiskLevel::Critical);
 }
+
+#[test]
+fn is_git_push_catches_every_spelling_the_model_would_try() {
+    for cmd in [
+        "git push",
+        "git push origin main",
+        "git -C /tmp/repo push origin main",
+        "git --git-dir=/tmp/repo/.git push",
+        "git -c user.email=a@b push",
+        "cd /tmp && git push",
+        "sudo git push",
+        "FOO=1 git push",
+        "echo hi && git push",
+        "git push --force",
+    ] {
+        assert!(is_git_push(cmd), "must gate: {cmd}");
+    }
+}
+
+#[test]
+fn is_git_push_ignores_non_push_git_and_non_git_commands() {
+    for cmd in [
+        "git status",
+        "git log --oneline",
+        "git commit -m x",
+        "ls -la",
+        "echo git push",
+        "git",
+        "pushd /tmp/repo",
+    ] {
+        assert!(!is_git_push(cmd), "must not gate: {cmd}");
+    }
+}

@@ -57,7 +57,7 @@ pub fn register_builtins(reg: &mut ToolRegistry) {
 /// atomic write — kept for callers that explicitly want the unsafe path.
 pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
     let sd = opts.safewrite_state_dir.clone();
-    reg.register(
+    reg.register_with(
         ToolSchema {
             name: "shell".into(),
             description: "Run a shell command with a timeout. Returns compacted stdout+stderr.".into(),
@@ -79,6 +79,23 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             crate::danger::gate(&command)?;
             run_shell(args)
         },
+        Some(Box::new(|args: &str| {
+            // `git push` is the one shell operation the policies single
+            // out (coder marks git.push Approval). The static ShellExecute
+            // capability alone let every push through unapproved, so the
+            // command is inspected and the call picks up GitPush.
+            let Ok(v) = parse_args(args) else {
+                return Vec::new();
+            };
+            let Some(cmd) = v.get("command").and_then(|c| c.as_str()) else {
+                return Vec::new();
+            };
+            if crate::danger::is_git_push(cmd) {
+                vec![Capability::GitPush]
+            } else {
+                Vec::new()
+            }
+        })),
     );
     reg.register(
         ToolSchema {

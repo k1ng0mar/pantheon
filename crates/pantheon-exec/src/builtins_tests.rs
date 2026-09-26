@@ -95,3 +95,31 @@ fn write_file_unsafe_fallback_when_no_state_dir() {
     assert!(!out.contains("checkpoint="), "got: {out}");
     assert_eq!(std::fs::read_to_string(&p).unwrap(), "hi\n");
 }
+
+#[test]
+fn shell_push_arg_escalates_to_git_push_capability() {
+    let mut reg = ToolRegistry::default();
+    crate::builtins::register_builtins(&mut reg);
+    for cmd in [
+        "git push",
+        "git -C /tmp/repo push origin main",
+        "sudo git push --force",
+    ] {
+        let args = serde_json::json!({ "command": cmd }).to_string();
+        let caps = reg.required_capabilities("shell", &args);
+        assert!(
+            caps.contains(&Capability::GitPush),
+            "`{cmd}` must escalate to GitPush, got {caps:?}"
+        );
+        assert_eq!(
+            pantheon_core::capability::Policy::coder().check(&Capability::GitPush),
+            pantheon_core::capability::Decision::Approval,
+            "`{cmd}` must park, not run"
+        );
+    }
+    // A non-push shell call must not drag GitPush in.
+    let args = serde_json::json!({ "command": "ls -la" }).to_string();
+    let caps = reg.required_capabilities("shell", &args);
+    assert!(!caps.contains(&Capability::GitPush), "got {caps:?}");
+    assert!(caps.contains(&Capability::ShellExecute));
+}
