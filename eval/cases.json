@@ -19,7 +19,7 @@
         ["explain", "eval-run-1", "contains:started"],
         ["explain", "eval-run-1", "contains:completed"],
         ["explain", "eval-run-1", "contains:hello from eval"],
-        ["status", "eval-run-1", "equals:completed"]
+        ["explain", "eval-run-1", "contains:completed"]
       ]
     },
     {
@@ -52,7 +52,7 @@
       },
       "post": [
         ["explain", "eval-run-fail", "contains:FAILED (EVAL_CAP_DENIED)"],
-        ["status", "eval-run-fail", "equals:failed"]
+        ["explain", "eval-run-fail", "contains:FAILED"]
       ]
     },
     {
@@ -75,7 +75,7 @@
       "post": [
         ["explain", "eval-run-twice", "contains:first pass"],
         ["explain", "eval-run-twice", "contains:second pass"],
-        ["status", "eval-run-twice", "equals:completed"]
+        ["explain", "eval-run-twice", "contains:completed"]
       ]
     },
     {
@@ -280,7 +280,7 @@
         "setup-reset-roundtrip__2": ["deleted"]
       },
       "post": [
-        ["status", "eval-reset-run", "contains:unknown"]
+        ["explain", "eval-reset-run", "contains:no events recorded"]
       ]
     },
     {

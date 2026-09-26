@@ -117,8 +117,11 @@ fn run_delivered_task(task_id: &Option<String>, say: &Option<String>, target: &s
             println!("{run_id}");
         }
         Err(e) if e.code == "RUN_PARKED" => {
-            // A parked run is a real outcome, not a failure.
-            println!("parked — run {run_id} (answer it with: pantheon run --taskID {run_id} --grant <scope>)");
+            // A parked run is a real outcome, not a failure. The error names
+            // the exact grant/deny command with the scope inlined, so it is
+            // printed verbatim instead of being restated with a placeholder.
+            println!("parked — run {run_id}");
+            println!("{e}");
         }
         Err(e) => {
             eprintln!("run {run_id}: {e}");
@@ -166,6 +169,8 @@ fn usage() -> String {
     s.push_str("  providers                    list cataloged providers and models\n");
     s.push_str("  fallback <add|list|remove>   ordered provider/model fallback chain\n");
     s.push_str("  doctor [<plugin_dir>]        system preflight (or per-plugin)\n");
+    s.push_str("  repair check                   ledger integrity + stranded runs (read-only)\n");
+    s.push_str("  repair runs [RUN_ID]           settle runs stranded by a crash\n");
     s.push_str("  reset [--config|--state|--everything] [--yes]\n\n");
 
     s.push_str("EXTEND\n");
@@ -185,9 +190,7 @@ fn usage() -> String {
     s.push_str("  swarm <N> \"task\" [roles...]\n");
     s.push_str("  gateway start|restart|stop [discord|telegram]\n");
     s.push_str("        start registers a background service (systemd / launchd)\n");
-    s.push_str("  serve [--port N] [--host H]   AG-UI SSE + RPC server\n");
-    s.push_str("  stream <run_id> [--thread T] [--after N]   follow a live run's events\n");
-    s.push_str("  channel <run_id> [--thread T]    a run's delivery channels\n\n");
+    s.push_str("  serve [--port N] [--host H]   AG-UI SSE + RPC server\n\n");
 
     s.push_str("WORKFLOWS\n");
     s.push_str("  pipeline <sub>                durable 6-stage workflow with human gates\n\n");
@@ -205,7 +208,6 @@ fn usage() -> String {
 /// kept in sync with the `match args[1]` arms in `main`.
 const KNOWN_VERBS: &[&str] = &[
     "audit",
-    "channel",
     "chat",
     "doctor",
     "explain",
@@ -221,13 +223,13 @@ const KNOWN_VERBS: &[&str] = &[
     "plugins",
     "provider",
     "providers",
+    "repair",
     "reset",
     "run",
     "schedule",
     "serve",
     "setup",
     "skills",
-    "stream",
     "swarm",
 ];
 
@@ -342,6 +344,7 @@ mod provider_cli;
 #[cfg(test)]
 #[path = "provider_cli_tests.rs"]
 mod provider_cli_tests;
+mod repair_cli;
 mod reset_cli;
 mod schedule_cli;
 mod session_cli;
@@ -1502,12 +1505,6 @@ timeout_ms = 5000
         "serve" => {
             agui_cli::cmd_serve(&args);
         }
-        "stream" => {
-            agui_cli::cmd_stream(&args);
-        }
-        "channel" => {
-            agui_cli::cmd_channel(&args);
-        }
         "gateway" => {
             gateway_cli::cmd_gateway(&args);
         }
@@ -1572,6 +1569,9 @@ timeout_ms = 5000
         }
         "fallback" => {
             fallback_cli::cmd_fallback(&args);
+        }
+        "repair" => {
+            repair_cli::cmd_repair(&args);
         }
         "migrate" => {
             migrate_cli::cmd_migrate(&args[2..]);
@@ -1722,11 +1722,10 @@ mod verb_guard_tests {
             "hook",
             "doctor",
             "serve",
-            "stream",
-            "channel",
             "fallback",
             "gateway",
             "setup",
+            "repair",
             "reset",
             "pipeline",
             "providers",

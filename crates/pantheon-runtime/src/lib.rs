@@ -568,6 +568,34 @@ impl Supervisor {
         })?;
         Ok(())
     }
+    /// Every approval scope still awaiting an operator decision, in the
+    /// order it was requested.
+    ///
+    /// This exists so a park message can name the exact scope instead of
+    /// sending the user to a second command to find it. The scope is
+    /// `call_id:tool:args` and the args are long JSON with embedded quotes,
+    /// so "run the other command and copy it" was a real papercut on the
+    /// approval path, not a hypothetical one.
+    ///
+    /// Scopes already granted or denied are filtered out, so the result is
+    /// exactly what still needs a human.
+    pub fn pending_approvals(&self, run_id: &str) -> Result<Vec<String>, PantheonError> {
+        let entries = self.ledger().replay(run_id)?;
+        let mut resolved: Vec<&str> = Vec::new();
+        let mut out: Vec<String> = Vec::new();
+        for e in &entries {
+            match &e.event {
+                Event::ApprovalRequested { scope, .. } => out.push(scope.clone()),
+                Event::ApprovalGranted { scope, .. } | Event::ApprovalDenied { scope, .. } => {
+                    resolved.push(scope);
+                }
+                _ => {}
+            }
+        }
+        out.retain(|s| !resolved.contains(&s.as_str()));
+        Ok(out)
+    }
+
     /// Deny one approval scope and leave the run alive.  This is intentionally
     /// different from `fail`: a scoped denial may be followed by another tool
     /// call, a model explanation, or a normal completion.
@@ -782,6 +810,30 @@ impl Supervisor {
 
     pub fn ledger_status(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
         self.ledger().status(run_id)
+    }
+
+    /// Runs left in a non-terminal state by a crash. See
+    /// [`Ledger::stuck_runs`](pantheon_storage::Ledger::stuck_runs).
+    pub fn stuck_runs(&self) -> Result<Vec<pantheon_storage::RunListing>, PantheonError> {
+        self.ledger().stuck_runs()
+    }
+
+    /// SQLite integrity check, verbatim. See
+    /// [`Ledger::integrity_check`](pantheon_storage::Ledger::integrity_check).
+    pub fn integrity_check(&self) -> Result<Vec<String>, PantheonError> {
+        self.ledger().integrity_check()
+    }
+
+    /// Whether a live run lease exists for this run. A stuck run holding one
+    /// is a session still working, not a corpse.
+    pub fn has_active_lease(&self, run_id: &str) -> Result<bool, PantheonError> {
+        self.ledger().has_active_lease(run_id)
+    }
+
+    /// Force a stuck run terminal by appending real events. See
+    /// [`Ledger::settle_stuck_run`](pantheon_storage::Ledger::settle_stuck_run).
+    pub fn settle_stuck_run(&self, run_id: &str, reason: &str) -> Result<(), PantheonError> {
+        self.ledger().settle_stuck_run(run_id, reason)
     }
     pub fn ledger_list_runs(
         &self,

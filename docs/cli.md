@@ -332,13 +332,24 @@ and whether each key resolves — without ever printing a value.
 ledger.db, memory.db, and gateway cursors, and refuses while a run lease is
 active. Typed confirmation (`reset`) is required unless `--yes`.
 
-## AG-UI verbs
+## AG-UI verb
 
 ```
 pantheon serve [--host H] [--port P]     # AG-UI server (web UI at /, RPC at /agui/rpc)
-pantheon stream <run_id> [--thread T] [--after N]  # SSE stream to stdout
-pantheon channel <run_id> [--thread T]   # replay frames through the channel seam
 ```
+
+`serve` owns the whole wire surface: `GET /agui/stream` (SSE replay and
+25s long-poll), `POST /agui/rpc` (JSON-RPC), `GET /agui/blob/<task>` (signed
+generative-UI bytes), and `GET /agui/health`. `PANTHEON_SERVE_TOKEN` gates
+every route except health.
+
+The `stream` and `channel` verbs were removed. Both were standalone CLI
+wrappers around the same `snapshot_frames` + `SseEncoder` calls the server
+makes internally, and `pantheon-api` never referenced them — `serve` does
+not depend on either. `channel` was, by its own doc comment, a demo that
+replays frames into an in-memory surface to prove the seam; nothing
+consumed its output. To watch a live run, use the SSE stream the server
+already exposes, or `pantheon explain <run_id>` for the durable event list.
 
 ## Gateway verbs
 

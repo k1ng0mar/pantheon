@@ -260,6 +260,47 @@ def run_case(case, bin_path, py3):
         shutil.rmtree(sandbox, ignore_errors=True)
 
 
+def check_verbs(cases: list) -> list:
+    """Every verb a case invokes must exist in the binary.
+
+    A removed verb does not fail a case, it fails the *harness run*, with
+    `unknown verb 'status'` buried in a post-probe and no indication that
+    the case file is the stale thing. That is exactly what happened when
+    the `status` and `stream`/`channel` verbs were removed: four cases kept
+    asserting against a command that no longer existed, and the suite kept
+    reporting 4 failures with no hint of the cause.
+
+    Read the live list out of `--help` so this tracks the binary rather than
+    a second hand-maintained copy of it.
+    """
+    import re
+    import subprocess
+
+    exe = str(ROOT / "target" / "debug" / "pantheon")
+    if not os.path.exists(exe):
+        return []  # binary not built yet; the cases will skip anyway
+    out = subprocess.run(
+        [exe, "--help"], capture_output=True, text=True, timeout=60
+    ).stdout
+    known = set(re.findall(r"^  ([a-z][a-z0-9_]*)[ \[]", out, re.M))
+    if not known:
+        return []  # could not parse; do not invent a failure
+    stale = set()
+    for c in cases:
+        for argv in list(c.get("commands", [])) + [
+            p for p in c.get("post", []) if isinstance(p, list)
+        ]:
+            # A leading underscore marks a harness helper (`_break_config`,
+            # `_audit_check`, `_compact`), not a verb, so it is exempt. Testing
+            # the convention instead of an allowlist means a new helper does
+            # not trip the guard.
+            if not argv or argv[0].startswith("_"):
+                continue
+            if argv[0] not in known:
+                stale.add(f"{c.get('id')}: {argv[0]}")
+    return sorted(stale)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Pantheon eval harness")
     ap.add_argument("--list", action="store_true", help="list cases and skip status")
@@ -285,7 +326,18 @@ def main():
             print(f"{case['id']:<40} {status}  — {case['title']}")
         return 0
 
+    # Refuse to run a suite that asserts against verbs the binary no longer
+    # has. Reported as its own failure line, not as N mysterious case errors.
+    stale = check_verbs(spec["cases"])
     results = []
+    if stale:
+        results.append(
+            (
+                "verbs-exist",
+                "fail",
+                "case file references removed verbs: " + "; ".join(stale),
+            )
+        )
 
     if args.cargo_tests:
         t0 = time.time()

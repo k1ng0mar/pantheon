@@ -223,3 +223,76 @@ fn pre_title_ledger_files_migrate_on_open() {
     assert_eq!(ledger.run_title("old-run").unwrap(), None);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A lease row outlives `kill -9`, because nothing gets to release it and its
+/// TTL keeps counting. Treating "unexpired lease" as "a session is working"
+/// means `repair check` reports a crashed run as healthy for a full TTL after
+/// the crash — precisely when the operator needs it most.
+///
+/// A lease counts as live only while it is being heartbeated. This is a
+/// regression test for exactly that: the first implementation of
+/// `has_active_lease` checked only `lease_until_ms > now` and reported the
+/// corpse below as healthy.
+#[test]
+fn an_unexpired_lease_with_a_dead_heartbeat_is_not_active() {
+    let dir = std::env::temp_dir().join(format!("pantheon-stale-lease-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("ledger.db");
+    let ledger = Ledger::open(&db).unwrap();
+    let leases = crate::leases::RunLeaseStore::open(&db).unwrap();
+    let run = "run_crashed";
+    // The run row is what makes it "stuck": a crash after RunStarted leaves
+    // status 'running' with no terminal event ever to clear it.
+    ledger
+        .append(&pantheon_core::events::Event::RunStarted { run_id: run.into() })
+        .unwrap();
+    assert_eq!(ledger.status(run).unwrap().as_deref(), Some("running"));
+    let _held = leases
+        .acquire(run, "lease-1", 60_000)
+        .unwrap()
+        .expect("lease should be free");
+    assert!(
+        ledger.has_active_lease(run).unwrap(),
+        "fresh lease is active"
+    );
+
+    // Simulate the crash: the row stays, the heartbeat stops moving.
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute(
+            "UPDATE run_leases SET heartbeat_ms = heartbeat_ms - 30000 WHERE run_id = ?1",
+            [run],
+        )
+        .unwrap();
+
+    // The lease is still inside its TTL, so a TTL-only check would call this
+    // active. Assert that precondition, or the test cannot fail.
+    let (until, beat): (i64, i64) = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT lease_until_ms, heartbeat_ms FROM run_leases WHERE run_id = ?1",
+            [run],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    assert!(
+        until > now,
+        "precondition: lease must still be unexpired for this test to bite"
+    );
+    assert!(
+        now - beat > 5_000,
+        "precondition: heartbeat must look stale"
+    );
+
+    assert!(
+        !ledger.has_active_lease(run).unwrap(),
+        "a lease nobody is renewing must not count as an active session"
+    );
+    // Which means the crashed run is repairable rather than invisible.
+    assert_eq!(ledger.stuck_runs().unwrap().len(), 1);
+}

@@ -688,12 +688,14 @@ pub fn run_session_inner(pinned_id: Option<String>) {
                 }
             }
             Err(e) => {
-                eprintln!("turn failed: {e}");
+                // RUN_PARKED already names the exact grant/deny command with
+                // the scope inlined, so printing a second line with a literal
+                // `<scope>` placeholder just told the user to do the lookup the
+                // error had already done for them.
                 if e.code == "RUN_PARKED" {
-                    println!(
-                        "grant with: pantheon run --taskID {} --grant <scope>",
-                        repl.run_id
-                    );
+                    println!("{e}");
+                } else {
+                    eprintln!("turn failed: {e}");
                 }
             }
         }
