@@ -10,6 +10,13 @@ use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::message::ToolSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+/// Serialize a tool result to pretty JSON, mapping failure to a
+/// PantheonError. A report that cannot serialize is still a failure worth
+/// reporting, not a reason to panic over whatever it was describing.
+fn json_out<T: serde::Serialize>(v: &T) -> Result<String, PantheonError> {
+    serde_json::to_string_pretty(v).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))
+}
+
 fn serr(code: &str, cause: String) -> PantheonError {
     PantheonError::new(
         code,
@@ -730,8 +737,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
                 .ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing 'content'".into()))?;
             let _ = &d0;
             let pv = preview_edit(Path::new(&path), content.as_bytes())?;
-            Ok(serde_json::to_string_pretty(&pv)
-                .map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
+            serde_json::to_string_pretty(&pv).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))
         },
     );
     let d1 = dir.clone();
@@ -748,8 +754,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d1).clone());
             let w = SafeWriter::new(sd)?;
             let batch = w.stage_edits(parse_edit_list(&v)?)?;
-            Ok(serde_json::to_string_pretty(&batch)
-                .map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
+            serde_json::to_string_pretty(&batch).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))
         },
     );
     let d2 = dir.clone();
@@ -761,7 +766,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
             let w = SafeWriter::new(sd)?;
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
             let r = w.apply_edits(parse_edit_list(&v)?, seq)?;
-            Ok(serde_json::to_string_pretty(&r).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
+            json_out(&r)
         });
     let d3 = dir.clone();
     reg.register(mk("apply_staged", "Atomically apply a staged batch by id.",
@@ -773,7 +778,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
             let sid = jstr(&v, "stage_id").ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing 'stage_id'".into()))?;
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
             let r = w.apply_staged(&sid, seq)?;
-            Ok(serde_json::to_string_pretty(&r).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
+            json_out(&r)
         });
     let d4 = dir.clone();
     reg.register(mk("checkpoint_files", "Snapshot pre-images for paths, anchored to a ledger seq.",
@@ -786,7 +791,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
                 .filter_map(|x| x.as_str()).map(PathBuf::from).collect()).unwrap_or_default();
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
             let cp = w.checkpoint(&paths, seq)?;
-            Ok(serde_json::to_string_pretty(&cp).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
+            json_out(&cp)
         });
     let d5 = dir.clone();
     reg.register(
@@ -802,8 +807,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d5).clone());
             let w = SafeWriter::new(sd)?;
             let list = w.list_checkpoints()?;
-            Ok(serde_json::to_string_pretty(&list)
-                .map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
+            json_out(&list)
         },
     );
     let d6 = dir.clone();
