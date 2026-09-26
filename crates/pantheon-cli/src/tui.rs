@@ -810,6 +810,8 @@ enum TuiEvent {
     Model(pantheon_core::model_event::ModelEvent),
     Runtime(pantheon_core::events::Event),
     TurnComplete,
+    /// The assistant's final text for a turn, rendered into the transcript.
+    Answered(String),
     Error(String),
     /// The run stopped because the user interrupted it (not a failure).
     Canceled,
@@ -911,6 +913,13 @@ fn tui_loop(
             match ev {
                 TuiEvent::Model(me) => state.handle_model_event(me),
                 TuiEvent::Runtime(re) => state.handle_runtime_event(&re),
+                TuiEvent::Answered(text) => {
+                    if !text.trim().is_empty() {
+                        state.blocks.push(TranscriptBlock {
+                            kind: BlockKind::AssistantMessage(text),
+                        });
+                    }
+                }
                 TuiEvent::TurnComplete => {
                     state.ready = true;
                     state.status_line = "ready".to_string();
@@ -1015,7 +1024,22 @@ fn tui_loop(
                                         let sess3 = session.clone();
                                         std::thread::spawn(move || {
                                             match sess3.chat_turn(&run3, "", "") {
-                                                Ok(_) => {
+                                                Ok(outcome) => {
+                                                    // Carry the answer through the
+                                                    // same event the normal
+                                                    // worker path uses, so a
+                                                    // resumed turn renders its
+                                                    // result instead of going
+                                                    // silent once the approval
+                                                    // clears.
+                                                    let text = match outcome {
+                                                        pantheon_agent::LoopOutcome::Answered {
+                                                            text,
+                                                            ..
+                                                        } => text,
+                                                        _ => String::new(),
+                                                    };
+                                                    let _ = tx3.send(TuiEvent::Answered(text));
                                                     let _ = tx3.send(TuiEvent::TurnComplete);
                                                 }
                                                 Err(e) => {

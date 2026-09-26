@@ -114,8 +114,9 @@ pub enum LoopOutcome {
     /// A capability was denied: the run stopped hard.
     Denied { capability: Capability },
     /// Policy wants approval before the tool can run. `scope` is the call
-    /// id that `pantheon grant` expects, so the message can name the exact
-    /// command instead of leaving the user to dig the id out of the ledger.
+    /// id that `pantheon run --taskID <id> --grant` expects, so the message can name
+    /// the exact command instead of leaving the user to dig the id out of
+    /// the ledger.
     AwaitingApproval {
         capability: Capability,
         scope: String,

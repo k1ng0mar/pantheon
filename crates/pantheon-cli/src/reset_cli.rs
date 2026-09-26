@@ -13,35 +13,39 @@
 //! the same as "it is safe". Confirmation is interactive by default; --yes
 //! skips it for scripts.
 //!
-//! Safewrite staging and signed-URL state are NOT removed by --everything.
-//! They are per-path working state, not configuration, and blowing them away
-//! alongside a config reset would discard in-flight edits the user may still
-//! want to apply.
+//! Safewrite staging is NOT removed by --everything. It is per-path working
+//! state, not configuration, and blowing it away alongside a config reset
+//! would discard in-flight edits the user may still want to apply.
+//!
+//! The gateway outbox IS removed by --state. A queued message is a
+//! deliverable: leaving it behind means `reset --state` still sends it, to a
+//! conversation whose ledger has just been deleted.
 
 use pantheon_core::error::PantheonError;
 use pantheon_storage::RunLeaseStore;
 use std::path::{Path, PathBuf};
 
+/// Files a reset scope removes. Directories (the gateway outbox) are listed
+/// too and removed recursively by the caller.
 fn target_files(data_dir: &Path, scope: &str) -> Vec<PathBuf> {
-    let mut v = match scope {
-        "config" => vec![
-            data_dir.join("config.toml"),
-            data_dir.join("memory-backend.toml"),
-        ],
-        "state" => vec![
-            data_dir.join("ledger.db"),
-            data_dir.join("memory.db"),
-            data_dir.join("gateway").join("tg-cursor"),
-            data_dir.join("gateway").join("discord-cursor"),
-        ],
-        _ => vec![
-            data_dir.join("config.toml"),
-            data_dir.join("memory-backend.toml"),
-            data_dir.join("ledger.db"),
-            data_dir.join("memory.db"),
-            data_dir.join("gateway").join("tg-cursor"),
-            data_dir.join("gateway").join("discord-cursor"),
-        ],
+    let config = [
+        data_dir.join("config.toml"),
+        data_dir.join("memory-backend.toml"),
+    ];
+    let state = [
+        data_dir.join("ledger.db"),
+        data_dir.join("memory.db"),
+        data_dir.join("gateway").join("tg-cursor"),
+        data_dir.join("gateway").join("discord-cursor"),
+        // Replies queued by `pantheon run --deliver` that the gateway has not
+        // sent yet. Leaving them behind means a state reset still delivers
+        // them, into a conversation whose ledger was just deleted.
+        data_dir.join("gateway").join("outbox"),
+    ];
+    let mut v: Vec<PathBuf> = match scope {
+        "config" => config.to_vec(),
+        "state" => state.to_vec(),
+        _ => config.iter().chain(state.iter()).cloned().collect(),
     };
     v.sort();
     v.dedup();
@@ -133,7 +137,15 @@ pub fn cmd_reset(args: &[String]) {
     }
     let mut deleted = 0;
     for t in &targets {
-        match std::fs::remove_file(t) {
+        // A target can be a directory (the gateway outbox). `remove_file` on
+        // one fails with EISDIR, which would print a scary error and leave
+        // queued messages queued.
+        let r = if t.is_dir() {
+            std::fs::remove_dir_all(t)
+        } else {
+            std::fs::remove_file(t)
+        };
+        match r {
             Ok(()) => deleted += 1,
             Err(e) => eprintln!("reset: could not delete {}: {e}", t.display()),
         }

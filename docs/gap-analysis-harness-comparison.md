@@ -94,33 +94,37 @@ doc comment says "inspect the MCP servers a migration declared."
 `ARCHITECTURE.md:469` admits this: "MCP server *attachment* ... no launcher yet". A user cannot run
 one MCP server. Migration bridges 4 server declarations and then has nowhere to put them.
 
-### 4. Tool breadth: 17 tools, none of them web, image, browser, grep, or patch
+### 4. Tool breadth: 16 tools, none of them web, image, browser, grep, or patch
 
 Who has it: Hermes registers roughly 45 model-facing tools. A representative set from
-`tools/*.py`: `web_search` (543), `web_extract` (549), `x_search`, `vision_analyze`,
-`vision_analyze` video (1082), `image_generate`, `video_generate`, `text_to_speech`,
-`computer_use`, `browser_cdp` (397), `browser_exec` (772), `browser_vault_*`, `execute_code` (925),
-`terminal`, `read_file`, `write_file`, `patch` (1395), `search_files`, `todo_list`, `delegate_task`,
-`cronjob_manage`, `skill_manage`, `session_search`, `memory`, `clarify`, `process_manage`,
-`annotate_preview`, `apply_layout`, `drive_preview`, `gh` (via OMP). OMP adds `lsp/`, `dap/`,
-`ast-grep`, `gh`, `read-pdf`, `read-sqlite`, `puppeteer/`, `security-scan`, `todo`, `review`.
+`tools/*.py`: `web_search`, `web_extract`, `x_search`, `vision_analyze`, `image_generate`,
+`video_generate`, `text_to_speech`, `computer_use`, `browser_cdp`, `browser_exec`,
+`execute_code`, `terminal`, `read_file`, `write_file`, `patch`, `search_files`, `todo_list`,
+`delegate_task`, `cronjob_manage`, `skill_manage`, `session_search`, `memory`, `clarify`,
+`process_manage`. OMP adds `lsp/`, `dap/`, `ast-grep`, `gh`, `read-pdf`, `read-sqlite`,
+`puppeteer/`, `security-scan`, `todo`, `review`.
 
-Pantheon registers, in a live session, via `session.rs:709-770` and the modules it calls:
+Pantheon registers, in a live session, from `session.rs:707-770` and the modules it calls:
 
-`shell`, `read_file`, `write_file`, `list_dir` (`builtins.rs:62,102,121,180`), `preview`/`stage`/
-`apply`/`checkpoint`/`rollback` (safewrite), `skills_list`, `skill_read` (`skills.rs:116,136`),
-`session_search` (`session_search_tools.rs:51`), `memory_recall`, `memory_list`, `memory_propose`,
-`memory_forget`, `memory_confirm` (`memory_tools.rs:183-447`), and `vault_archive`, `vault_read`,
-`vault_search`, `vault_list` (`vault_tools.rs:197-380`, only when a vault is configured).
+| module | tools |
+|---|---|
+| `builtins.rs` | `shell`, `read_file`, `write_file`, `list_dir` |
+| `safewrite.rs` | `apply_files`, `apply_staged`, `checkpoint_files`, `list_checkpoints`, `rollback_checkpoint` |
+| `skills.rs` | `skills_list`, `skill_read` |
+| `session_search_tools.rs` | `session_search` |
+| `memory_tools.rs` | `memory_recall`, `memory_list`, `memory_propose`, `memory_forget`, `memory_confirm` |
+| `vault_tools.rs` | `vault_archive`, `vault_read`, `vault_search`, `vault_list` (only when a vault is configured) |
 
-There is no grep, no glob, no file search, no patch or line-edit tool, no web fetch, no web search,
-no image input, no browser, no todo tracker, no subprocess management, no git tool.
+That is 16 core tools, plus whatever installed plugins contribute.
 
-`write_file` takes a full file body (`builtins.rs:124-131`: `path` and `content` required). With
-no read-modify-write tool and no patch tool, a model asked to change one line in a 2000-line file
-must emit the entire file. `read_file` has no offset or limit and always does
-`read_to_string` (`builtins.rs:114`), so reading a large file pulls the whole thing into context,
-where gap 1 means it never gets trimmed out.
+There is no grep, no glob, no file search, no patch or line-edit tool, no web fetch, no web
+search, no image input, no browser, no todo tracker, no subprocess management, no git tool.
+
+`write_file` takes a full file body (`builtins.rs`: `path` and `content` required). With no
+read-modify-write tool and no patch tool, a model asked to change one line in a 2000-line file
+must emit the entire file. `read_file` has no offset or limit and always does `read_to_string`,
+so reading a large file pulls the whole thing into context, where gap 1 means it never gets
+trimmed out.
 
 This is the gap a user hits on minute one of real work.
 
@@ -379,6 +383,28 @@ These are real. The gap list above is about the distance between the parts and t
 about the parts.
 
 ---
+
+## Verb-surface changes made during this audit
+
+Recorded so the doc does not drift from the binary:
+
+- Removed `preview`, `stage`, `apply`, `checkpoint`, `rollback` (top-level). The
+  model-facing `apply_files` / `apply_staged` / `checkpoint_files` /
+  `list_checkpoints` / `rollback_checkpoint` tools are unchanged, and
+  `write_file` still goes through `SafeWriter` internally. Git covers the
+  operator-facing case; the safety layer is not gone, it just stopped being
+  a verb.
+- Removed `sign`. There is no bundled web client, so nothing consumed a
+  signed artifact URL minted from the CLI.
+- Added `fallback <add|list|remove|insert>`, which edits `[model].fallbacks`
+  in config. The chain was already honoured by `ProviderChain`; it just had
+  no surface.
+- `run` gained `--taskID` and `--deliver session|telegram|discord`. With
+  `--deliver` it runs a real model turn; without it, it stays the synthetic
+  ledger writer for recovery tooling.
+- `gateway` became `start|stop|restart|status|run`. `start` writes a systemd
+  user unit (launchd on macOS) and confirms the unit reached `active`, so a
+  crash-loop is reported instead of silently returning 0.
 
 ## Recommendation order
 

@@ -976,7 +976,10 @@ impl Session {
 
         match &outcome {
             LoopOutcome::Answered { text, .. } => {
-                println!("{text}");
+                // No printing here. A library that writes to stdout makes
+                // every caller that renders its own output double-print, and
+                // hijacks the AG-UI server's and the TUI's own rendering.
+                // The answer is returned to the caller, which decides.
                 self.supervisor.emit(Event::RunProgress {
                     run_id: run_id.into(),
                     detail: text.chars().take(200).collect(),
@@ -1003,8 +1006,8 @@ impl Session {
                 } else {
                     format!(
                         "run {run_id} is awaiting approval for {capability:?}: \
-                         run `pantheon grant {run_id} {scope}` to allow it, or \
-                         `pantheon deny {run_id} {scope}` to refuse it"
+                         run `pantheon run --taskID {run_id} --grant {scope}` to allow it, or \
+                         `pantheon run --taskID {run_id} --deny {scope}` to refuse it"
                     )
                 };
                 self.supervisor.emit(Event::RunProgress {

@@ -1,7 +1,7 @@
-//! AG-UI CLI verbs: serve / stream / grant / deny / sign. Thin surface over
+//! AG-UI CLI verbs: serve / stream / channel. Thin surface over
 //! pantheon-api + pantheon-gateway; no business logic here.
 use super::{data_dir, ext_dir};
-use pantheon_gateway::{valid_task_id, GenUiSigner, SseEncoder};
+use pantheon_gateway::SseEncoder;
 use std::path::PathBuf;
 /// Reject a flag whose value cannot be used, naming the flag and what it
 /// expected. Silently falling back to a default meant the user talked to a
@@ -133,40 +133,6 @@ pub fn resume_after_grant(run_id: &str) {
         Ok(_) => println!("run {run_id} continued"),
         Err(e) => {
             eprintln!("resume {run_id}: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-pub fn cmd_sign(args: &[String]) {
-    if args.len() < 3 {
-        eprintln!("usage: pantheon sign <task_id> [--mime M] [--ttl MS]");
-        std::process::exit(2);
-    }
-    let task = &args[2];
-    if !valid_task_id(task) {
-        eprintln!("sign: bad task_id");
-        std::process::exit(2);
-    }
-    let mime = flag(args, "--mime").unwrap_or_else(|| "application/octet-stream".into());
-    let ttl: i64 = flag(args, "--ttl")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3_600_000);
-    if ttl <= 0 {
-        eprintln!("sign: ttl_ms must be positive");
-        std::process::exit(2);
-    }
-    let base = std::env::var("PANTHEON_GENUI_BASE")
-        .unwrap_or_else(|_| "http://127.0.0.1:18789/agui/blob".into());
-    let secret = std::env::var("PANTHEON_GENUI_SECRET")
-        .map(|s| s.into_bytes())
-        .unwrap_or_else(|_| b"pantheon-dev-genui-secret".to_vec());
-    let r = GenUiSigner::new(base, secret).sign(task, &mime, ttl);
-    // A report that cannot be serialized is still a failure worth reporting,
-    // not a reason to panic over the thing that went wrong.
-    match serde_json::to_string_pretty(&r) {
-        Ok(t) => println!("{t}"),
-        Err(e) => {
-            eprintln!("preview: could not serialize the report as JSON: {e}");
             std::process::exit(1);
         }
     }

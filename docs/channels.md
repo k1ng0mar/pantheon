@@ -29,8 +29,8 @@ Request bodies are capped at 1 MiB (413 beyond). Artifact bodies are
 capped at 8 MiB at the storage layer (`ARTIFACT_TOO_LARGE`).
 
 Signing: `PANTHEON_GENUI_SECRET` (default is a dev-only constant; set a
-real one before exposing the port). `pantheon sign <task_id>` mints a URL
-without the server running.
+real one before exposing the port). There is no CLI verb for minting a signed
+artifact URL; `/agui/blob/<task_id>` is the only consumer.
 
 Auth: set `PANTHEON_SERVE_TOKEN` and every `/agui` route except
 `/agui/health` requires it (HTTP header `Authorization: Bearer <token>`

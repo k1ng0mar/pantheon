@@ -64,3 +64,47 @@ fn a_truncated_ledger_is_also_an_error() {
         "an unreadable schema must refuse the reset"
     );
 }
+
+/// `reset --state` must clear the gateway outbox, not just the cursors.
+///
+/// A queued reply is a deliverable. Leaving it behind means the reset still
+/// sends it, into a conversation whose ledger the same command just deleted.
+#[test]
+fn state_reset_includes_the_gateway_outbox_directory() {
+    let dir = std::env::temp_dir().join(format!("pantheon-reset-outbox-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let outbox = dir.join("gateway").join("outbox");
+    std::fs::create_dir_all(&outbox).unwrap();
+    std::fs::write(outbox.join("m1.json"), "{}").unwrap();
+
+    let targets = target_files(&dir, "state");
+    assert!(
+        targets.iter().any(|t| t.ends_with("outbox")),
+        "outbox not in the state reset set: {targets:?}"
+    );
+
+    // And the removal path must actually delete a directory, not just a file.
+    let t = outbox.clone();
+    let r = if t.is_dir() {
+        std::fs::remove_dir_all(&t)
+    } else {
+        std::fs::remove_file(&t)
+    };
+    assert!(r.is_ok(), "{r:?}");
+    assert!(!outbox.exists());
+}
+
+/// A config reset must not touch queued messages: they are state, not config.
+#[test]
+fn config_reset_leaves_the_outbox_alone() {
+    let dir = std::env::temp_dir().join(format!("pantheon-reset-cfg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let outbox = dir.join("gateway").join("outbox");
+    std::fs::create_dir_all(&outbox).unwrap();
+
+    let targets = target_files(&dir, "config");
+    assert!(
+        !targets.iter().any(|t| t.ends_with("outbox")),
+        "config reset would delete queued messages"
+    );
+}
