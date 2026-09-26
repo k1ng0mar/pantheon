@@ -20,10 +20,10 @@ what to do.
 
 | Code | Meaning | Fix |
 |---|---|---|
-| `RUN_PARKED` | Run is awaiting an approval | `pantheon grant <run> <scope>` or deny |
+| `RUN_PARKED` | Run is awaiting an approval | answer the permission card in-session, or `pantheon run --id <run> --grant <scope>` / `--deny <scope>` |
 | `RUN_TERMINAL` | Run already completed/failed/canceled | Start a new run id |
 | `RT_NO_RUN` | No such run id | Check the id; `/history` lists runs |
-| `CAP_APPROVAL_REQUIRED` | Capability needs a human decision | `pantheon grant` / `deny`; the run parks, it does not crash |
+| `CAP_APPROVAL_REQUIRED` | Capability needs a human decision | answer in-session (TUI `y`/`n`), or `pantheon run --id <run> --grant <scope>`; the run parks, it does not crash |
 | `TOOL_BAD_ARGS` | Model supplied malformed tool arguments | The run fails with the bad args in the cause; resume with a corrected prompt |
 | `RT_LEASE_BUSY` | Another supervisor owns the run | Wait for it, or let the lease expire (TTL 30s) |
 | `LOST_LEASE` | This supervisor lost ownership mid-work | Stop tool work; reacquire; the run is recoverable |
@@ -37,7 +37,7 @@ what to do.
 |---|---|---|
 | `RT_APPROVAL_UNKNOWN` | Scope was never requested | Copy the scope from the ApprovalRequested event |
 | `RT_APPROVAL_RESOLVED` | Scope already granted/denied | Nothing to do |
-| `RT_NOT_PARKED` | Run is not in awaiting_approval | Check `pantheon status` first |
+| `RT_NOT_PARKED` | Run is not in awaiting_approval | Check `pantheon explain <run>` first |
 
 ## Tools and plugins
 

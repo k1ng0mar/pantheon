@@ -18,10 +18,9 @@ Every `pantheon` verb, its flags, and its exit codes. Shared rules first.
 
 ## Session verbs
 
-### (bare) / session
+### (bare)
 ```
 pantheon              # opens the interactive session
-pantheon session      # same thing, explicit
 ```
 Interactive REPL: every input is a turn on the current conversation, one
 ledger run, so history and approvals persist across process exits.
@@ -67,22 +66,29 @@ completed boundary so the run does not look interrupted to a later resume.
 For a real turn use `pantheon chat`. This verb exists so recovery and
 ledger tooling can seed a run without spending a model call.
 
-### explain / status / audit
+### explain / audit
 ```
 pantheon explain <run_id>
-pantheon status <run_id>
 pantheon audit <run_id> [OUT.jsonl]
 ```
-`explain` replays the ledger for a run in words. `status` prints the run
-state (`running`, `awaiting_approval`, `completed`, `failed`, `canceled`,
-or `unknown` for an id that never ran). `audit` writes a sequence-validated
-JSONL trajectory (3 events minimum for a simple run).
+`explain` replays the ledger for a run in words, and prints the run state
+(`running`, `awaiting_approval`, `completed`, `failed`, `canceled`). Inside
+a session, `/status` reports the current run and `/status <id>` any other.
+`audit` writes a sequence-validated JSONL trajectory (3 events minimum for a
+simple run).
 
-## Approval verbs
+## Approvals
+
+Approvals are answered in the session that raised them. The TUI shows a
+permission card (`y` allow, `n` deny); the REPL prompts inline.
+
+Out of band — a run parked from a script, a gateway message, or a second
+terminal:
 
 ```
-pantheon grant <run_id> <scope>     # approve a parked tool call
-pantheon deny <run_id> [scope]      # refuse; scope auto-detected if omitted
+pantheon run --id <run_id> --grant <scope>   # approve, then continue the run
+pantheon run --id <run_id> --deny  <scope>   # refuse
+pantheon run --id <run_id> --grant <scope> --no-resume   # record only
 ```
 A granted call re-executes on resume. A denied call settles into the
 transcript as "denied by operator" and the run continues. Both fail with

@@ -13,7 +13,7 @@ RunStarted -> ModelRequested -> [ToolStarted -> ToolOutput -> ToolCompleted]*
                         \-> RunFailed | RunCanceled
 ```
 
-The run status (`pantheon status <id>`) is derived state: `running`,
+The run status (shown by `pantheon explain <id>`, or `/status` in-session) is derived state: `running`,
 `awaiting_approval`, `completed`, `failed`, `canceled`, or `unknown`.
 Terminal statuses are immutable: a `RunFailed` after `RunCompleted` does
 not overwrite the completed status. The events still append (the ledger is
@@ -32,8 +32,8 @@ Tools declare the capability they need. The policy decides:
 Resolving a parked run:
 
 ```sh
-pantheon grant run_abc call_1_0     # approve, then continue the run
-pantheon deny run_abc call_1_0      # refuse; the call settles as denied
+pantheon run --id run_abc --grant call_1_0   # approve, then continue the run
+pantheon run --id run_abc --deny call_1_0    # refuse; the call settles as denied
 ```
 
 `grant` continues the run it unblocked, so the granted tool call actually

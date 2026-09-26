@@ -99,41 +99,10 @@ pub fn cmd_stream(args: &[String]) {
     let frames = pantheon_api::snapshot_frames(&data_dir(), &run_id, &thread, after);
     print!("{}", SseEncoder.frames(&frames));
 }
-pub fn cmd_grant(args: &[String]) {
-    if args.len() < 4 {
-        eprintln!("usage: pantheon grant <run_id> <scope>");
-        std::process::exit(2);
-    }
-    // Scope the supervisor so its write connection to ledger.db is closed
-    // before `resume_after_grant` opens a Session. Two live write handles on
-    // the same SQLite file make the Session's `BEGIN IMMEDIATE` block on the
-    // busy timeout, which presents to the user as `pantheon grant` hanging
-    // with no output. Recording the grant and continuing the run are
-    // sequential steps, not concurrent ones.
-    {
-        let sup = pantheon_runtime::Supervisor::open(data_dir()).unwrap_or_else(|e| {
-            eprintln!("open runtime: {e}");
-            std::process::exit(1);
-        });
-        if let Err(e) = sup.grant(&args[2], &args[3]) {
-            eprintln!("grant: {e}");
-            std::process::exit(1);
-        }
-    }
-    println!("granted {} {}", args[2], args[3]);
-    // A grant only records permission; the run is still parked and the
-    // granted call has not executed. Unless the caller opted out, continue it
-    // here so `grant` means "approve and finish", not "approve and go read
-    // the docs to find the next command".
-    if !args.iter().any(|a| a == "--no-resume") {
-        resume_after_grant(&args[2]);
-    }
-}
-
 /// Continue a parked run after a grant: an empty turn rebuilds the
 /// transcript from the ledger and settles the granted call. Never resends
 /// the original user message, which would append a duplicate turn.
-fn resume_after_grant(run_id: &str) {
+pub fn resume_after_grant(run_id: &str) {
     use crate::config_doc;
     use crate::session_cli::build_model_policy;
     let file_cfg = config_doc::Config::load_or_report(&data_dir());
@@ -164,54 +133,6 @@ fn resume_after_grant(run_id: &str) {
         Ok(_) => println!("run {run_id} continued"),
         Err(e) => {
             eprintln!("resume {run_id}: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-pub fn cmd_deny(args: &[String]) {
-    if args.len() < 3 {
-        eprintln!("usage: pantheon deny <run_id> [scope]");
-        std::process::exit(2);
-    }
-    let sup = pantheon_runtime::Supervisor::open(data_dir()).unwrap_or_else(|e| {
-        eprintln!("open runtime: {e}");
-        std::process::exit(1);
-    });
-    let scope = if let Some(scope) = args.get(3) {
-        scope.clone()
-    } else {
-        let entries = sup.replay(&args[2]).unwrap_or_else(|e| {
-            eprintln!("replay: {e}");
-            std::process::exit(1);
-        });
-        let resolved: std::collections::HashSet<String> = entries
-            .iter()
-            .filter_map(|entry| match &entry.event {
-                pantheon_core::events::Event::ApprovalGranted { scope, .. }
-                | pantheon_core::events::Event::ApprovalDenied { scope, .. } => Some(scope.clone()),
-                _ => None,
-            })
-            .collect();
-        entries
-            .iter()
-            .rev()
-            .find_map(|entry| match &entry.event {
-                pantheon_core::events::Event::ApprovalRequested { scope, .. }
-                    if !resolved.contains(scope) =>
-                {
-                    Some(scope.clone())
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| {
-                eprintln!("deny: no pending approval scope; pass one explicitly");
-                std::process::exit(1);
-            })
-    };
-    match sup.deny(&args[2], &scope) {
-        Ok(()) => println!("denied {}", args[2]),
-        Err(e) => {
-            eprintln!("deny: {e}");
             std::process::exit(1);
         }
     }

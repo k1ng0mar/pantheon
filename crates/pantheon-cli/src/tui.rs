@@ -1139,7 +1139,7 @@ fn handle_slash(state: &mut TuiState, supervisor: &pantheon_runtime::Supervisor,
         state.add_status("  /resume [ID]       resume a run by id".into());
         state
             .add_status("  /name [TITLE]      show this conversation's title, or rename it".into());
-        state.add_status("  /status <run_id>   run status line".into());
+        state.add_status("  /status [run_id]   this run's status, or another by id".into());
         state.add_status("  /cost              tokens and cost this session".into());
         state.add_status("  /clear             clear visible transcript".into());
         state.add_status("  /exit, /quit       leave pantheon".into());
@@ -1302,6 +1302,27 @@ fn handle_slash(state: &mut TuiState, supervisor: &pantheon_runtime::Supervisor,
         match supervisor.explain(id) {
             Ok(s) => state.add_status(s),
             Err(e) => state.add_status(format!("status: {e}")),
+        }
+        return;
+    }
+    if cmd == "/status" {
+        // Bare `/status` reports the run you are sitting in. The `pantheon
+        // status <run_id>` verb is gone, so this is the only way to ask
+        // that from inside a session; `/status <id>` still takes any run.
+        let id = state.session_id.clone();
+        let status = supervisor
+            .ledger_status(&id)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "new".into());
+        match supervisor
+            .ledger_title(&id)
+            .ok()
+            .flatten()
+            .filter(|t| !t.is_empty())
+        {
+            Some(title) => state.add_status(format!("run {id} ({status}) — {title}")),
+            None => state.add_status(format!("run {id} ({status})")),
         }
         return;
     }
