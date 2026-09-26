@@ -1,22 +1,21 @@
 //! Tests for `pantheon_cli::fallback_cli` — sibling file so sources stay
 //! test-free.
 use super::*;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use crate::dotenv::test_support::TEST_ENV_LOCK;
 
-/// `cmd_fallback` reads the data dir from `PANTHEON_DATA_DIR`, and Rust runs
-/// tests in parallel threads, so the env var is shared mutable state. Every
-/// test in this file therefore takes this lock for its whole body; without
-/// it two tests would race on one config file and assert each other's writes.
-fn env_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    let m = L.get_or_init(|| Mutex::new(()));
-    match m.lock() {
-        Ok(g) => g,
-        // A prior test panicked mid-critical-section. The env var may be
-        // wrong, but every test re-sets it on entry, so recovering the guard
-        // is safe and keeps one failure from cascading into five.
-        Err(poisoned) => poisoned.into_inner(),
-    }
+/// Every test that points `PANTHEON_DATA_DIR` at a scratch dir must hold the
+/// crate's shared `TEST_ENV_LOCK`.
+///
+/// This file originally declared its own private `OnceLock<Mutex<()>>`, which
+/// looked safer and was not: `model_cli_tests` and `provider_cli_tests` lock
+/// `TEST_ENV_LOCK`, so two locks means no mutual exclusion at all. A
+/// `cmd_model` running concurrently would then read a config this file had
+/// just replaced, and `std::process::exit` from the wrong verb would take the
+/// whole test binary down with no panic — which is exactly what CI reported.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    // Poison-tolerant: one failing test should not cascade into every other
+    // env-touching test in the crate. Each test re-seeds the var on entry.
+    TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A config with a default model and no fallbacks, written to a scratch dir,
