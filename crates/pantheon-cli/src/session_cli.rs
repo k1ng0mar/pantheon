@@ -35,15 +35,30 @@ struct Repl {
     run_id: String,
     model: Option<(String, String)>, // (provider, model) override for /new
     namespace: String,
+    /// Name of the configured preset, e.g. "coder". `Policy` is a resolved
+    /// capability set with no back-pointer, so /policy could only ever dump
+    /// capabilities. Kept beside it so the command can answer the question
+    /// the user actually asked.
+    policy_preset: String,
 }
 
 impl Repl {
     fn print_runs(&self, limit: usize) {
         match self.session.supervisor.ledger_list_runs(limit) {
             Ok(runs) => {
-                if runs.is_empty() {
+                // The current run has no ledger rows until its first message,
+                // so a fresh session reported "(no runs yet)" while the user
+                // was plainly sitting in one. Show it as unsaved.
+                let listed: std::collections::HashSet<&str> =
+                    runs.iter().map(|(id, ..)| id.as_str()).collect();
+                let current_missing =
+                    !self.run_id.is_empty() && !listed.contains(self.run_id.as_str());
+                if runs.is_empty() && !current_missing {
                     println!("(no runs yet)");
                     return;
+                }
+                if current_missing {
+                    println!("{:*>3}  {:<9}  {:<18} {}", "", "unsaved", "-", self.run_id);
                 }
                 for (i, (id, status, created_ms, title)) in runs.iter().enumerate() {
                     let label = title.as_deref().unwrap_or("");
@@ -330,6 +345,7 @@ fn command(repl: &mut Repl, line: &str) -> bool {
                 .iter()
                 .map(|c| format!("{c:?}"))
                 .collect();
+            println!("preset: {}", repl.policy_preset);
             println!("granted: {}", granted.join(", "));
             println!("needs approval: {}", approval.join(", "));
         }
@@ -595,11 +611,20 @@ pub fn run_session_inner(pinned_id: Option<String>) {
         }
     };
 
+    // Name the preset the way the user wrote it, so /policy can echo it.
+    let policy_preset = file_cfg
+        .as_ref()
+        .and_then(|c| c.policy)
+        .map(|p| p.as_str().to_string())
+        .or_else(|| std::env::var("PANTHEON_POLICY").ok())
+        .unwrap_or_else(|| "built-in default".to_string());
+
     let mut repl = Repl {
         session,
         run_id,
         model: None,
         namespace,
+        policy_preset,
     };
 
     let stdin = std::io::stdin();
