@@ -251,7 +251,20 @@ pub fn base_url_for(provider_id: &str) -> String {
             return u;
         }
     }
-    provider_id.to_string()
+    // Legacy passthrough: a custom provider's id IS its base URL. That is
+    // only true if the id is actually shaped like one. Without this check a
+    // typo such as `provider = "http"` became the literal base URL "http",
+    // so the request went to the relative path "http/chat/completions",
+    // failed as a retryable network error, and the chain reported
+    // PROVIDER_EXHAUSTED. The real cause -- an unknown provider -- never
+    // reached the user, and `doctor` called the config valid.
+    if provider_id.starts_with("http://") || provider_id.starts_with("https://") {
+        return provider_id.to_string();
+    }
+    // Unknown id that is not a URL. resolve_base_url turns this into a
+    // PROVIDER_CONFIG error naming the bad id, which is non-retryable and so
+    // surfaces directly instead of collapsing into PROVIDER_EXHAUSTED.
+    String::new()
 }
 
 /// Placeholder vars in a template base URL: `{resource}` → `["resource"]`.
@@ -311,7 +324,15 @@ pub fn required_config_vars(provider_id: &str) -> Vec<String> {
 /// every missing var and point at `pantheon model` — never let a raw
 /// `{placeholder}` reach the wire.
 pub fn resolve_base_url(provider_id: &str) -> Result<String, String> {
-    resolve_template(provider_id, &base_url_for(provider_id))
+    let base = base_url_for(provider_id);
+    if base.is_empty() {
+        return Err(format!(
+            "unknown provider {provider_id:?}: it is not in the catalog and is not a URL. \
+             run `pantheon model` to add it, or set PANTHEON_BASE_{} to its base URL",
+            provider_id.to_uppercase()
+        ));
+    }
+    resolve_template(provider_id, &base)
 }
 
 /// Resolve an explicit base string with the provider's env namespace.

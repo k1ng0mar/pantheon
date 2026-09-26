@@ -39,6 +39,29 @@ fn unknown_provider_id_passthrough_is_base_url() {
 }
 
 #[test]
+fn a_bare_word_is_not_mistaken_for_a_base_url() {
+    // A typo like `provider = "http"` used to become the literal base URL
+    // "http". The request then went to the relative path
+    // "http/chat/completions", failed as a retryable network error, and the
+    // chain reported PROVIDER_EXHAUSTED, so the user never learned the
+    // provider name was wrong. It must be a config error instead.
+    assert_eq!(base_url_for("http"), "");
+    let err = resolve_base_url("http").unwrap_err();
+    assert!(err.contains("http"), "error must name the bad id: {err}");
+    assert!(
+        err.contains("PANTHEON_BASE_HTTP"),
+        "error must name the env var to set: {err}"
+    );
+    // Every catalog provider still resolves.
+    for id in ["openai", "anthropic", "groq", "openrouter"] {
+        assert!(
+            resolve_base_url(id).is_ok(),
+            "catalog provider {id} must still resolve"
+        );
+    }
+}
+
+#[test]
 fn template_vars_parse_and_resolve() {
     assert!(template_vars("https://api.openai.com/v1").is_empty());
     assert_eq!(
