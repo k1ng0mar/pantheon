@@ -128,6 +128,12 @@ impl SecretVault for KeychainVault {
     }
 
     fn delete(&self, name: &str) -> Result<(), SecretsError> {
+        // Validate before touching the platform, exactly like get/set. A
+        // store-less host returned Ok(()) for every name, empty ones
+        // included, so `delete("")` only failed where a keyring happened to
+        // exist — the test passed locally and failed on a CI runner with
+        // one. A rejected name is rejected everywhere.
+        validate_name(name)?;
         // Nothing can be stored where there is no store: deleting every
         // conceivable name is a chain of no-ops, contract and all.
         if ensure_store().is_err() {
