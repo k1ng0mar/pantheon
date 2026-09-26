@@ -7,10 +7,11 @@
 //! Exhausted / Usage / Completed), resolving provider metadata — base URL,
 //! API key, wire mode, capability/cost facts — from the core catalog.
 
-use crate::http::{perr, AdapterTurn, ChatTransport, ResolvedModel};
+use crate::http::{AdapterTurn, ChatTransport, ResolvedModel};
 use crate::{anthropic, openai};
 use pantheon_agent::TurnOutcome;
 use pantheon_core::catalog::{self, ApiMode};
+use pantheon_core::error::Layer;
 use pantheon_core::error::PantheonError;
 use pantheon_core::message::{Message, ToolSchema};
 use pantheon_core::model::{DefaultModel, ModelPolicy};
@@ -213,10 +214,30 @@ impl<T: ChatTransport> ProviderChain<T> {
                         sink.emit(ModelEvent::Exhausted {
                             code: "PROVIDER_EXHAUSTED".into(),
                         });
-                        return Err(perr(
+                        // The tuple already carries the code of the failure
+                        // that ended the chain. Reporting only "all fallbacks
+                        // failed" threw away the only actionable part: a
+                        // connection refused and an auth rejection need
+                        // completely different fixes, and both arrived here
+                        // as the same three words.
+                        let (cause, entry) = match &failed {
+                            Some((_, fp, fm, fc)) => {
+                                (format!("last failure: {fc}"), format!("{fp}/{fm}"))
+                            }
+                            None => ("no provider was configured".to_string(), "none".into()),
+                        };
+                        let remedy = format!(
+                            "check {entry}: is the endpoint reachable, is the API key set, \
+                             and does that provider serve that model? `pantheon doctor` and \
+                             `pantheon model --list` check both"
+                        );
+                        return Err(PantheonError::new(
                             "PROVIDER_EXHAUSTED",
-                            "default and all fallbacks failed".into(),
+                            Layer::Provider,
                             false,
+                            format!("default and all fallbacks failed ({cause})"),
+                            remedy,
+                            "",
                         ));
                     }
                 },
