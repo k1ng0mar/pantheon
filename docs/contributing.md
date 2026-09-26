@@ -88,3 +88,39 @@ Rules that keep the architecture honest:
   public interface (docs/troubleshooting.md lists them).
 - No new async. The codebase is std threads by decision; if you need
   async for a dependency, isolate it behind a blocking trait.
+
+## Tests that mutate the environment
+
+`cargo test` runs test functions in parallel threads, and the process
+environment is global. Any test that sets `PANTHEON_DATA_DIR`,
+`PANTHEON_*`, or `SYSTEMD_*` must hold the crate's single lock for its
+whole body:
+
+```rust
+let _lock = crate::dotenv::test_support::TEST_ENV_LOCK
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
+```
+
+There is exactly one lock, defined once in `dotenv::test_support`. Do not
+declare a private `OnceLock<Mutex<()>>` in a test file: it is invisible to
+every other file, so it provides no exclusion at all, and the failure mode
+is the entire test binary exiting with status 1 and **no panic line**,
+which leaves CI logs with nothing to grep for. A source-level test
+(`dotenv_tests::no_test_file_declares_a_private_env_lock`) enforces this.
+
+Prefer `.unwrap_or_else(|e| e.into_inner())` over `.unwrap()`: a poisoned
+lock from one panicking test should not cascade into every other
+env-touching test in the crate.
+
+**A local pass is not evidence.** This class of race passed 25 consecutive
+local runs and 8 runs under forced `RUST_TEST_THREADS=16` on a 2-core host,
+then failed on the 4-core CI runner. Repetition on one host proves only that
+one host's interleaving is benign.
+
+## Before you push
+
+`gh run watch <id> --exit-status` and read the result. Do not report a
+change as done on the strength of a local green run: the CI runner has a
+different core count, a different filesystem, and no `PANTHEON_*` env, and
+each of those has caught a bug that local runs did not.
