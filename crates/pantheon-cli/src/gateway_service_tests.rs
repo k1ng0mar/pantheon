@@ -53,6 +53,13 @@ mod linux {
 
     #[test]
     fn unit_path_follows_systemd_user_config_dir() {
+        // `unit_path` reads the environment, so this shares the crate's env
+        // lock with every other test that mutates one. Setting a var that
+        // another test also reads is the same race as writing a config file
+        // another test also writes, and it fails just as silently.
+        let _lock = crate::dotenv::test_support::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("SYSTEMD_USER_CONFIG_DIR", "/tmp/pt-units-a7f3");
         let p = unit_path();
         assert!(p.ends_with("pantheon-gateway.service"), "{p:?}");

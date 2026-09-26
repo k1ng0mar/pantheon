@@ -13,7 +13,7 @@ fn provider_args(extra: &[&str]) -> Vec<String> {
 
 #[test]
 fn add_list_remove_round_trip() {
-    let _lock = TEST_ENV_LOCK.lock().unwrap();
+    let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("pantheon-provider-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::env::set_var("PANTHEON_DATA_DIR", &dir);
@@ -52,7 +52,7 @@ fn add_list_remove_round_trip() {
 
 #[test]
 fn add_rejects_bad_names_and_needs_url() {
-    let _lock = TEST_ENV_LOCK.lock().unwrap();
+    let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Name validation is shared with the model flow.
     assert!(!crate::model_cli::valid_provider_id("has space"));
     assert!(!crate::model_cli::valid_provider_id("has:colon"));
@@ -68,7 +68,7 @@ fn add_rejects_bad_names_and_needs_url() {
 fn remove_drops_row_and_optionally_the_key() {
     use crate::config_doc::ModelSection;
     use crate::dotenv as dotenv_mod;
-    let _lock = TEST_ENV_LOCK.lock().unwrap();
+    let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("pantheon-provider-rm-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::env::set_var("PANTHEON_DATA_DIR", &dir);
@@ -129,7 +129,7 @@ fn remove_drops_row_and_optionally_the_key() {
 
 #[test]
 fn remove_refuses_while_sections_use_the_provider() {
-    let _lock = TEST_ENV_LOCK.lock().unwrap();
+    let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("pantheon-provider-rmuse-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::env::set_var("PANTHEON_DATA_DIR", &dir);

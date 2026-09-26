@@ -64,7 +64,7 @@ fn template_vars_persist_and_gate() {
 
 #[test]
 fn non_interactive_save_writes_config_and_env() {
-    let _lock = TEST_ENV_LOCK.lock().unwrap();
+    let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("pantheon-model-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::env::set_var("PANTHEON_DATA_DIR", &dir);
@@ -93,7 +93,7 @@ fn non_interactive_save_writes_config_and_env() {
 
 #[test]
 fn non_interactive_custom_provider_persists_endpoint() {
-    let _lock = TEST_ENV_LOCK.lock().unwrap();
+    let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("pantheon-model-cust-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::env::set_var("PANTHEON_DATA_DIR", &dir);

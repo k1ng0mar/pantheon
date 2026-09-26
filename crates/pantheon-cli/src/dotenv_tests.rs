@@ -100,3 +100,52 @@ fn migrate_and_runtime_dotenv_parsers_agree_on_values() {
         );
     }
 }
+
+/// No test file may declare its own env lock.
+///
+/// The CLI crate mutates `PANTHEON_DATA_DIR` and other process-global vars
+/// from tests running in parallel, and serializing that correctly needs
+/// exactly one lock. A file-local `OnceLock<Mutex<()>>` reads as "this file
+/// is careful" while providing no exclusion against any other file, and the
+/// failure mode is a whole test binary exiting with status 1 and no panic
+/// message. That is what happened in CI on the commit that added
+/// `fallback_cli_tests`.
+///
+/// This is a source check, not a runtime one: the bug is in the shape of
+/// the code, and it can only be seen by reading the declarations.
+#[test]
+fn no_test_file_declares_a_private_env_lock() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("src dir readable") {
+        let p = entry.expect("dir entry").path();
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if !name.ends_with("_tests.rs") {
+            continue;
+        }
+        // This file names every pattern it searches for, so scanning it would
+        // always fail. It declares no lock of its own, which is the invariant.
+        if name == "dotenv_tests.rs" {
+            continue;
+        }
+        let body = std::fs::read_to_string(&p).expect("test file readable");
+        for (n, line) in body.lines().enumerate() {
+            let t = line.trim();
+            // Skip prose: doc comments name the patterns on purpose.
+            if t.starts_with("//") {
+                continue;
+            }
+            if t.contains("OnceLock<Mutex")
+                || t.contains("lazy_static")
+                || t.contains("static TEST_ENV_LOCK")
+            {
+                offenders.push(format!("{}:{}: {}", name, n + 1, t));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "use crate::dotenv::test_support::TEST_ENV_LOCK, not a private lock:\n{}",
+        offenders.join("\n")
+    );
+}

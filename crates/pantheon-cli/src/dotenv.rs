@@ -187,8 +187,20 @@ pub fn delete_dotenv_key(data_dir: &Path, key: &str) -> std::io::Result<bool> {
 }
 
 /// Process-global env/data-dir mutations must serialize: parallel test
-/// threads share one environment. Every test that sets `PANTHEON_*`
-/// holds this across the test. (Test-only; invisible in normal builds.)
+/// threads share one environment. Every test that sets `PANTHEON_*` or
+/// `SYSTEMD_*` holds this across the test. (Test-only; invisible in normal
+/// builds.)
+///
+/// There is exactly one lock, in one place, on purpose. A test file that
+/// declares its own `OnceLock<Mutex<()>>` is not safer, it is invisible to
+/// every other file: two locks provide no mutual exclusion, so a
+/// `cmd_model` and a `cmd_fallback` will happily race on one
+/// `PANTHEON_DATA_DIR`, and whichever verb calls `std::process::exit` first
+/// takes the whole test binary down without a panic line to find.
+///
+/// Lock with `TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())` rather
+/// than `.unwrap()`: one panicking test should not cascade into every other
+/// env-touching test in the crate.
 #[cfg(test)]
 pub mod test_support {
     use std::sync::Mutex;
