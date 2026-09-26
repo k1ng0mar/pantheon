@@ -467,3 +467,45 @@ impl SessionSearch {
 #[cfg(test)]
 #[path = "search_tests.rs"]
 mod tests;
+
+/// Whether the FTS5 sidecar can answer a query.
+///
+/// Separate from "has rows": a freshly created index has no rows and is
+/// perfectly healthy, while an index whose internal structures are damaged
+/// raises on `MATCH` and cannot be repaired by writing to it. Probing for a
+/// working query is the only way to tell those apart.
+pub fn search_index_health(db: &std::path::Path) -> Result<bool, PantheonError> {
+    let conn = rusqlite::Connection::open(db).map_err(|e| err("SEARCH_OPEN", e.to_string()))?;
+    // Match on tokens that appear in ordinary prose, so a populated index
+    // actually returns something to prove the query path works.
+    let probe: Result<i64, _> = conn.query_row(
+        "SELECT count(*) FROM session_fts WHERE session_fts MATCH 'the' OR session_fts MATCH 'run'",
+        [],
+        |r| r.get(0),
+    );
+    match probe {
+        Ok(_) => Ok(true),
+        // "no such table" means the sidecar was never created, which for a
+        // ledger that predates search is normal rather than broken.
+        Err(e) if e.to_string().contains("no such table") => Ok(false),
+        Err(e) => Err(err("SEARCH_FTS_UNUSABLE", e.to_string())),
+    }
+}
+
+/// Drop and recreate the FTS5 sidecar as an empty table.
+///
+/// This restores the *ability to search*; it does not restore the *contents*.
+/// Re-deriving rows from the ledger is not implemented, so previously indexed
+/// runs are not searchable until they are re-indexed. Callers must say so.
+pub fn recreate_search_index(db: &std::path::Path) -> Result<(), PantheonError> {
+    let conn = rusqlite::Connection::open(db).map_err(|e| err("SEARCH_OPEN", e.to_string()))?;
+    conn.execute_batch("DROP TABLE IF EXISTS session_fts;")
+        .map_err(|e| err("SEARCH_FTS_DROP", e.to_string()))?;
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE session_fts USING fts5(
+            chunk_id UNINDEXED, text, kind UNINDEXED, run_id UNINDEXED
+        );",
+    )
+    .map_err(|e| err("SEARCH_FTS_CREATE", e.to_string()))?;
+    Ok(())
+}

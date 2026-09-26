@@ -13,4 +13,5 @@ pub use claims::ClaimStore;
 pub use leases::{LostLeaseError, RunLease, RunLeaseStore};
 pub use ledger::{Artifact, Ledger, LedgerEntry, RunListing};
 pub use operations::{Operation, OperationConflict, OperationStatus, OperationStore};
+pub use search::{recreate_search_index, search_index_health};
 pub use search::{SearchHit, SessionChunk, SessionSearch};
