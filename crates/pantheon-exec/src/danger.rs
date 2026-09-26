@@ -181,6 +181,68 @@ const PATTERNS: &[Pattern] = &[
     ),
 ];
 
+/// True when a shell command performs a git push.
+///
+/// This drives the capability gate, not a block: a push is legal but the
+/// policies mark `git.push` as needing approval, so the call parks for the
+/// operator instead of running unattended. Normalization is the same as the
+/// destructive-pattern gate (lowercase, quotes stripped, whitespace
+/// collapsed), and compound commands are split so a push anywhere in a
+/// `&&` chain counts. Wrapper prefixes are stripped for the same reason
+/// `rm_rf_root` strips them.
+pub fn is_git_push(command: &str) -> bool {
+    let normalized = normalize(command);
+    normalized.split([';', '&', '|']).any(|seg| {
+        let seg = seg.trim();
+        // Strip sudo/env/nice/nohup/command/timeout prefixes and FOO=1.
+        let mut seg = seg;
+        loop {
+            let first = seg.split_whitespace().next().unwrap_or("");
+            let is_wrapper = matches!(
+                first,
+                "sudo" | "env" | "nice" | "nohup" | "command" | "timeout" | "xargs" | "time"
+            ) || (first.contains('=') && !first.starts_with('-'));
+            if !is_wrapper {
+                break;
+            }
+            match seg.split_once(char::is_whitespace) {
+                Some((_, rest)) => seg = rest.trim(),
+                None => return false,
+            }
+        }
+        let Some(rest) = seg.strip_prefix("git ") else {
+            return false;
+        };
+        // Skip git's global options to reach the subcommand. `git -C /repo
+        // push` is still a push, so a detector that stops at the first token
+        // is trivially bypassed by the model.
+        let mut words = rest.split_whitespace();
+        let mut sub = None;
+        while let Some(w) = words.next() {
+            if w.starts_with('-') {
+                if GIT_GLOBAL_OPTS_WITH_VALUE.contains(&w) {
+                    words.next();
+                }
+                continue;
+            }
+            sub = Some(w);
+            break;
+        }
+        sub.is_some_and(|sub| sub == "push" || sub == "push-options")
+    })
+}
+
+/// git global options that consume the following argument.
+const GIT_GLOBAL_OPTS_WITH_VALUE: &[&str] = &[
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--exec-path",
+    "--config-env",
+];
+
 /// Assess a command. Pure function, no I/O, safe to call on every shell
 /// request.
 pub fn assess(command: &str) -> DangerAssessment {

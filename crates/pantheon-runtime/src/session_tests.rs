@@ -290,3 +290,81 @@ fn a_gate_that_errors_blocks_rather_than_passes() {
     assert!(out.contains("blocked by extension policy"), "{out}");
     assert!(!out.contains("sk-live-abc123"), "gate failed open: {out}");
 }
+
+fn entry(id: i64, event: pantheon_core::events::Event) -> pantheon_storage::LedgerEntry {
+    pantheon_storage::LedgerEntry {
+        id,
+        run_id: "r".into(),
+        seq: id,
+        ts_ms: 0,
+        event,
+    }
+}
+
+#[test]
+fn granted_but_unexecuted_call_is_pending_after_resume() {
+    // A call parked on approval never emits ToolStarted, so it is invisible
+    // to unfinished_calls. Without this the grant-resume hands the model a
+    // dangling tool_call and it invents an answer instead of running the tool.
+    use pantheon_core::events::Event as E;
+    let entries = vec![
+        entry(
+            1,
+            E::ApprovalRequested {
+                run_id: "r".into(),
+                scope: "call_0_0".into(),
+            },
+        ),
+        entry(
+            2,
+            E::ApprovalGranted {
+                run_id: "r".into(),
+                scope: "call_0_0".into(),
+            },
+        ),
+    ];
+    assert!(
+        unfinished_calls(&entries).is_empty(),
+        "parked call never started"
+    );
+    assert_eq!(
+        granted_unexecuted_calls(&entries),
+        vec!["call_0_0".to_string()]
+    );
+
+    // Once it completes it is no longer pending.
+    let mut done = entries.clone();
+    done.push(entry(
+        3,
+        E::ToolCompleted {
+            run_id: "r".into(),
+            call_id: "call_0_0".into(),
+            tool: "shell".into(),
+            provenance: pantheon_core::provenance::Provenance::system("shell"),
+        },
+    ));
+    assert!(granted_unexecuted_calls(&done).is_empty());
+}
+
+#[test]
+fn a_denial_is_not_a_pending_call() {
+    use pantheon_core::events::Event as E;
+    let entries = vec![
+        entry(
+            1,
+            E::ApprovalRequested {
+                run_id: "r".into(),
+                scope: "call_0_0".into(),
+            },
+        ),
+        entry(
+            2,
+            E::ApprovalDenied {
+                run_id: "r".into(),
+                scope: "call_0_0".into(),
+            },
+        ),
+    ];
+    assert!(granted_unexecuted_calls(&entries).is_empty());
+    assert!(unfinished_calls(&entries).is_empty());
+}

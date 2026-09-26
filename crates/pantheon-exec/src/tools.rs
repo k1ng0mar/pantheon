@@ -23,7 +23,18 @@ pub struct Tool {
     pub schema: ToolSchema,
     pub capability: Capability,
     pub run: ToolFn,
+    /// Extra capabilities this call needs on top of `capability`, decided
+    /// from the arguments. A shell tool that sees `git push` returns
+    /// `[GitPush]` here, so the loop gates the call on both.
+    ///
+    /// Without this, an argument-insensitive static capability made the
+    /// `git push needs approval` policy rule unreachable: every push came
+    /// through `shell`, whose only capability is ShellExecute.
+    pub extra_capabilities: Option<ArgCapabilities>,
 }
+
+/// Derives extra required capabilities from one call's arguments.
+pub type ArgCapabilities = Box<dyn Fn(&str) -> Vec<Capability> + Send + Sync>;
 
 /// Boxed tool implementation: every tool is a sync string-in/string-out
 /// closure behind the registry.
@@ -46,12 +57,24 @@ impl ToolRegistry {
         capability: Capability,
         run: impl Fn(&str) -> Result<String, PantheonError> + Send + Sync + 'static,
     ) {
+        self.register_with(schema, capability, run, None);
+    }
+
+    /// Register a tool whose required capabilities depend on the arguments.
+    pub fn register_with(
+        &mut self,
+        schema: ToolSchema,
+        capability: Capability,
+        run: impl Fn(&str) -> Result<String, PantheonError> + Send + Sync + 'static,
+        extra_capabilities: Option<ArgCapabilities>,
+    ) {
         self.tools.insert(
             schema.name.clone(),
             Tool {
                 schema,
                 capability,
                 run: Box::new(run),
+                extra_capabilities,
             },
         );
     }
@@ -80,6 +103,28 @@ impl ToolRegistry {
     /// Capability a tool requires (for the loop's gate).
     pub fn capability_of(&self, name: &str) -> Option<Capability> {
         self.tools.get(name).map(|t| t.capability.clone())
+    }
+
+    /// Every capability one concrete call needs: the tool's static
+    /// capability plus anything the arguments add.
+    ///
+    /// The loop gates on the full set, not the first capability, so a
+    /// `git push` through `shell` is checked against GitPush (which the
+    /// coder policy marks Approval) and not silently waved through as
+    /// ShellExecute.
+    pub fn required_capabilities(&self, name: &str, args: &str) -> Vec<Capability> {
+        let Some(tool) = self.tools.get(name) else {
+            return vec![Capability::Other(name.to_string())];
+        };
+        let mut caps = vec![tool.capability.clone()];
+        if let Some(extra) = &tool.extra_capabilities {
+            for c in extra(args) {
+                if !caps.contains(&c) {
+                    caps.push(c);
+                }
+            }
+        }
+        caps
     }
 }
 

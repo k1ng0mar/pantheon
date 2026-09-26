@@ -104,9 +104,57 @@ pub fn cmd_grant(args: &[String]) {
         std::process::exit(1);
     });
     match sup.grant(&args[2], &args[3]) {
-        Ok(()) => println!("granted {} {}", args[2], args[3]),
+        Ok(()) => {
+            println!("granted {} {}", args[2], args[3]);
+            // A grant only records permission; the run is still parked and
+            // the granted call has not executed. Unless the caller opted
+            // out, continue it here so `grant` means "approve and finish",
+            // not "approve and go read the docs to find the next command".
+            if !args.iter().any(|a| a == "--no-resume") {
+                resume_after_grant(&args[2]);
+            }
+        }
         Err(e) => {
             eprintln!("grant: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Continue a parked run after a grant: an empty turn rebuilds the
+/// transcript from the ledger and settles the granted call. Never resends
+/// the original user message, which would append a duplicate turn.
+fn resume_after_grant(run_id: &str) {
+    use crate::config_doc;
+    use crate::session_cli::build_model_policy;
+    let file_cfg = config_doc::Config::load(&data_dir()).ok();
+    let model_policy = build_model_policy(&file_cfg, None, None);
+    let allow_memory = file_cfg
+        .as_ref()
+        .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
+        .unwrap_or_else(|| {
+            std::env::var("PANTHEON_ALLOW_MEMORY")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false)
+        });
+    let policy = if allow_memory {
+        pantheon_core::capability::Policy::coder_with_memory()
+    } else {
+        pantheon_core::capability::Policy::coder()
+    };
+    let secrets = config_doc::chat_secrets(file_cfg.as_ref());
+    let session =
+        match pantheon_runtime::session::Session::new(data_dir(), policy, model_policy, secrets) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("open session: {e}");
+                std::process::exit(1);
+            }
+        };
+    match session.chat_turn(run_id, "", "") {
+        Ok(_) => println!("run {run_id} continued"),
+        Err(e) => {
+            eprintln!("resume {run_id}: {e}");
             std::process::exit(1);
         }
     }
