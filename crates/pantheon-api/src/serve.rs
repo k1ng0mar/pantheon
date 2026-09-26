@@ -406,7 +406,28 @@ pub fn serve(mut cfg: ServeConfig) -> std::io::Result<()> {
         ));
     }
     let addr = format!("{}:{}", cfg.host, cfg.port);
-    let listener = TcpListener::bind(&addr)?;
+    // A bind failure is the one serve error users hit routinely, and the raw
+    // io::Error says neither the port nor what to do about it. Name both.
+    let listener = TcpListener::bind(&addr).map_err(|e| {
+        let remedy = match e.kind() {
+            std::io::ErrorKind::AddrInUse => format!(
+                "port {} on {} is already in use; stop that process or pass \
+                 --port <other> (or set the port in [server])",
+                cfg.port, cfg.host
+            ),
+            std::io::ErrorKind::PermissionDenied => format!(
+                "not allowed to bind {}:{}; ports below 1024 need elevated \
+                 privileges, so use --port <1024 or above>",
+                cfg.host, cfg.port
+            ),
+            std::io::ErrorKind::AddrNotAvailable => format!(
+                "cannot bind {}:{}; that address does not exist on this host",
+                cfg.host, cfg.port
+            ),
+            _ => format!("could not bind {addr}"),
+        };
+        std::io::Error::new(e.kind(), remedy)
+    })?;
     let bound = listener.local_addr()?;
     if cfg.port == 0 {
         cfg.port = bound.port();
