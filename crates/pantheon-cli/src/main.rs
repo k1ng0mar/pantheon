@@ -225,7 +225,16 @@ fn load_mgr() -> ExtensionManager {
     let mut m = ExtensionManager::new(RunnerConfig::default());
     let d = ext_dir();
     if d.exists() {
-        let _ = m.load_dir(&d);
+        // Report a failed load. Swallowing it made a broken plugin directory
+        // look identical to an empty one, so `pantheon extensions` cheerfully
+        // reported "no extensions loaded" while the user's plugins were
+        // sitting right there, broken.
+        if let Err(e) = m.load_dir(&d) {
+            eprintln!(
+                "warning: could not load extensions from {}: {e}",
+                d.display()
+            );
+        }
     }
     m
 }
@@ -755,6 +764,11 @@ fn main() {
                         &mut reg,
                         pantheon_exec::vault_tools::VaultToolOptions { vault_dir },
                     );
+                    // Same resolution order the agent loop uses, so
+                    // `pantheon memory vault …` obeys the policy the user
+                    // configured rather than running ungated.
+                    let vault_cfg = config_doc::Config::load_or_report(&data_dir());
+                    let policy = config_schema::policy_for_config(&vault_cfg);
                     match args.get(3).map(|s| s.as_str()) {
                         Some("search") => {
                             if args.len() < 5 {
@@ -763,7 +777,9 @@ fn main() {
                             }
                             let query = args[4..].join(" ");
                             let json_arg = serde_json::json!({ "query": query }).to_string();
-                            match reg.execute("vault_search", &json_arg) {
+                            // Gated: the vault tools read files, and an interactive `pantheon
+                            // memory vault …` must obey the same policy the agent loop enforces.
+                            match reg.execute_gated(&policy, "vault_search", &json_arg) {
                                 Ok(res) => println!("{res}"),
                                 Err(e) => {
                                     eprintln!("vault search: {e}");
@@ -778,7 +794,9 @@ fn main() {
                             }
                             let p = &args[4];
                             let json_arg = serde_json::json!({ "path": p }).to_string();
-                            match reg.execute("vault_read", &json_arg) {
+                            // Gated: the vault tools read files, and an interactive `pantheon
+                            // memory vault …` must obey the same policy the agent loop enforces.
+                            match reg.execute_gated(&policy, "vault_read", &json_arg) {
                                 Ok(res) => println!("{res}"),
                                 Err(e) => {
                                     eprintln!("vault read: {e}");
@@ -789,7 +807,9 @@ fn main() {
                         Some("list") => {
                             let cat = args.get(4).map(|s| s.as_str());
                             let json_arg = serde_json::json!({ "category": cat }).to_string();
-                            match reg.execute("vault_list", &json_arg) {
+                            // Gated: the vault tools read files, and an interactive `pantheon
+                            // memory vault …` must obey the same policy the agent loop enforces.
+                            match reg.execute_gated(&policy, "vault_list", &json_arg) {
                                 Ok(res) => println!("{res}"),
                                 Err(e) => {
                                     eprintln!("vault list: {e}");

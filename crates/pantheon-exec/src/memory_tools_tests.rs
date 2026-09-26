@@ -382,3 +382,23 @@ fn external_backend_confirm_is_structured_unsupported() {
         .unwrap_err();
     assert_eq!(err.code, "MEM_BACKEND_UNSUPPORTED");
 }
+
+/// The namespace is the memory isolation boundary, and the model chooses the
+/// `namespace` tool argument. A session confined to its own namespace must
+/// not be able to write into, or forget from, another one by naming it.
+#[test]
+fn a_model_supplied_namespace_cannot_escape_the_session() {
+    assert_eq!(resolve_namespace(None, "proj_a").unwrap(), "proj_a");
+    // Explicitly naming the session's own namespace is fine.
+    assert_eq!(
+        resolve_namespace(Some("proj_a"), "proj_a").unwrap(),
+        "proj_a"
+    );
+    // Blank/whitespace means "mine", not "anything".
+    assert_eq!(resolve_namespace(Some("  "), "proj_a").unwrap(), "proj_a");
+    // Another namespace is refused, and the error names the boundary.
+    let err = resolve_namespace(Some("proj_b"), "proj_a").unwrap_err();
+    assert_eq!(err.code, "MEM_NAMESPACE_DENIED");
+    assert!(err.cause.contains("proj_a"), "{}", err.cause);
+    assert!(err.cause.contains("proj_b"), "{}", err.cause);
+}

@@ -25,10 +25,6 @@ use std::time::{Duration, Instant};
 /// answers a different version is reported, not assumed compatible.
 pub const ACP_PROTOCOL_VERSION: u32 = 1;
 
-/// Candidate server commands, in preference order. Full paths are resolved
-/// with `PATH` lookup at spawn; anything else is an explicit argv.
-pub const KNOWN_SERVERS: &[&str] = &["omp", "hermes"];
-
 /// One JSON-RPC 2.0 message.
 #[derive(Debug, Clone)]
 pub enum RpcMessage {

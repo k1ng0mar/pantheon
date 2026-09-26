@@ -7,7 +7,7 @@
 //!
 //! Secrets: the wizard only asks for the ENV VAR NAME, never the value.
 
-use super::config_doc::{Config, FallbackEntry, MemorySection, ModelSection, ToolSection};
+use super::config_doc::{Config, FallbackEntry, MemorySection, ModelSection};
 use super::config_schema::PolicyPreset;
 use std::io::BufRead;
 use std::path::Path;
@@ -50,8 +50,6 @@ pub struct SetupAnswers {
     pub fallback_model: Option<String>,
     pub policy: Option<PolicyPreset>,
     pub memory_backend: Option<String>,
-    pub tool_packs: Option<Vec<String>>,
-    pub plugins: Option<Vec<String>>,
     /// A raw API key, for scripting setup. Never written to config.toml:
     /// it goes into `<data_dir>/.env` under `api_key_env` (or a derived
     /// `PANTHEON_KEY_<PROVIDER>` name) and the config stores only the name.
@@ -166,33 +164,6 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         }
     });
 
-    // 5. Tool pack.
-    let packs = answers.tool_packs.clone().unwrap_or_else(|| {
-        if assume_defaults {
-            vec!["core".into()]
-        } else {
-            let a = prompt("Tool packs (comma separated)", Some("core"));
-            a.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        }
-    });
-    let plugins = answers.plugins.clone().unwrap_or_else(|| {
-        if assume_defaults {
-            Vec::new()
-        } else {
-            let a = prompt(
-                "Plugins to auto-start (comma separated, empty = none)",
-                Some(""),
-            );
-            a.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        }
-    });
-
     let cfg = Config {
         profile: Some(profile),
         model: Some(ModelSection {
@@ -220,11 +191,11 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             backend: memory_backend.clone(),
             options: std::collections::HashMap::new(),
         }),
-        tools: Some(ToolSection { packs, plugins }),
         server: Some(super::config_doc::ServerSection {
             port: 18789,
             host: "127.0.0.1".into(),
         }),
+        tools: None,
         custom_providers: Default::default(),
         agents: Default::default(),
     };

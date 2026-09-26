@@ -153,16 +153,6 @@ pub struct MemorySection {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct ToolSection {
-    /// Enabled built-in tool packs by name.
-    #[serde(default)]
-    pub packs: Vec<String>,
-    /// Plugin names to auto-start with the session.
-    #[serde(default)]
-    pub plugins: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ServerSection {
     /// AG-UI HTTP port (0 = auto).
     #[serde(default)]
@@ -280,7 +270,13 @@ pub struct Config {
     pub tts: Option<VoiceSection>,
     pub policy: Option<PolicyPreset>,
     pub memory: Option<MemorySection>,
-    pub tools: Option<ToolSection>,
+    /// Retained so an existing config.toml with a `[tools]` table still
+    /// loads. The keys are inert: tool registration is unconditional and
+    /// nothing reads them. Kept as an ignored value rather than a typed
+    /// struct so an unfamiliar shape in a user's file is not a parse
+    /// error, and so the decision to drop tool packs stays reversible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<toml::Value>,
     pub server: Option<ServerSection>,
     /// User-defined providers (`pantheon model` → Custom provider).
     /// Empty for configs written before this existed (back-compat).

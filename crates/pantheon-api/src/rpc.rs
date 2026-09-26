@@ -168,14 +168,6 @@ impl Dispatcher {
             .insert(name.into(), Arc::new(handler));
     }
 
-    pub fn unregister(&self, name: &str) -> bool {
-        self.methods
-            .write()
-            .expect("dispatcher lock poisoned")
-            .remove(name)
-            .is_some()
-    }
-
     /// Registered method names, sorted.
     pub fn methods(&self) -> Vec<String> {
         let mut names: Vec<String> = self

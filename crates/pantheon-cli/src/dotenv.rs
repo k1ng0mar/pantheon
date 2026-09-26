@@ -65,16 +65,22 @@ fn dotenv_line_key(raw_line: &str) -> Option<&str> {
     Some(key)
 }
 
-/// Raw keys live here: owner-only permissions (best-effort, unix).
-fn restrict_permissions(path: &Path) {
+/// Restrict a key file to owner-only (unix).
+///
+/// Reports failure instead of swallowing it. This file holds live API keys,
+/// so a chmod that does not take effect leaves a world-readable credential on
+/// disk; the user needs to hear about that rather than be told the key was
+/// saved. A non-unix host has no equivalent to enforce, so it is a no-op.
+fn restrict_permissions(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
     }
     #[cfg(not(unix))]
     {
         let _ = path;
+        Ok(())
     }
 }
 
@@ -104,8 +110,7 @@ pub fn upsert_dotenv(data_dir: &Path, key: &str, value: &str) -> std::io::Result
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     if existing.is_empty() {
         std::fs::write(&path, format!("{rendered}\n"))?;
-        restrict_permissions(&path);
-        return Ok(());
+        restrict_permissions(&path)?;
     }
     let mut replaced = false;
     let mut lines: Vec<String> = Vec::new();
@@ -125,7 +130,7 @@ pub fn upsert_dotenv(data_dir: &Path, key: &str, value: &str) -> std::io::Result
     let mut text = lines.join("\n");
     text.push('\n');
     std::fs::write(&path, text)?;
-    restrict_permissions(&path);
+    restrict_permissions(&path)?;
     Ok(())
 }
 

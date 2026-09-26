@@ -104,25 +104,29 @@ pub fn cmd_grant(args: &[String]) {
         eprintln!("usage: pantheon grant <run_id> <scope>");
         std::process::exit(2);
     }
-    let sup = pantheon_runtime::Supervisor::open(data_dir()).unwrap_or_else(|e| {
-        eprintln!("open runtime: {e}");
-        std::process::exit(1);
-    });
-    match sup.grant(&args[2], &args[3]) {
-        Ok(()) => {
-            println!("granted {} {}", args[2], args[3]);
-            // A grant only records permission; the run is still parked and
-            // the granted call has not executed. Unless the caller opted
-            // out, continue it here so `grant` means "approve and finish",
-            // not "approve and go read the docs to find the next command".
-            if !args.iter().any(|a| a == "--no-resume") {
-                resume_after_grant(&args[2]);
-            }
-        }
-        Err(e) => {
+    // Scope the supervisor so its write connection to ledger.db is closed
+    // before `resume_after_grant` opens a Session. Two live write handles on
+    // the same SQLite file make the Session's `BEGIN IMMEDIATE` block on the
+    // busy timeout, which presents to the user as `pantheon grant` hanging
+    // with no output. Recording the grant and continuing the run are
+    // sequential steps, not concurrent ones.
+    {
+        let sup = pantheon_runtime::Supervisor::open(data_dir()).unwrap_or_else(|e| {
+            eprintln!("open runtime: {e}");
+            std::process::exit(1);
+        });
+        if let Err(e) = sup.grant(&args[2], &args[3]) {
             eprintln!("grant: {e}");
             std::process::exit(1);
         }
+    }
+    println!("granted {} {}", args[2], args[3]);
+    // A grant only records permission; the run is still parked and the
+    // granted call has not executed. Unless the caller opted out, continue it
+    // here so `grant` means "approve and finish", not "approve and go read
+    // the docs to find the next command".
+    if !args.iter().any(|a| a == "--no-resume") {
+        resume_after_grant(&args[2]);
     }
 }
 

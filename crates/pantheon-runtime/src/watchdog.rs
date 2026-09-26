@@ -42,6 +42,19 @@ impl TurnWatchdog {
         }
     }
 
+    /// Construct with an explicit clock base, so `poll_at` can be driven
+    /// by a test without sleeping. Production uses `new`.
+    pub fn new_at(stall_budget: Duration, now: Instant) -> Self {
+        Self {
+            stall_budget,
+            probe_timeout: Duration::from_secs(2),
+            last_activity: now,
+            probe_started: None,
+            paused: false,
+            killed: false,
+        }
+    }
+
     pub fn with_probe_timeout(mut self, timeout: Duration) -> Self {
         self.probe_timeout = timeout;
         self
@@ -64,7 +77,12 @@ impl TurnWatchdog {
     }
 
     pub fn activity(&mut self) {
-        self.last_activity = Instant::now();
+        self.activity_at(Instant::now());
+    }
+
+    /// Deterministic `activity` at an explicit clock sample.
+    pub fn activity_at(&mut self, now: Instant) {
+        self.last_activity = now;
         self.probe_started = None;
     }
 
@@ -82,15 +100,34 @@ impl TurnWatchdog {
         self.activity();
     }
 
+    /// Deterministic `resume` at an explicit clock sample.
+    pub fn resume_at(&mut self, now: Instant) {
+        self.paused = false;
+        self.activity_at(now);
+    }
+
     pub fn stall_for(&self) -> Duration {
         self.last_activity.elapsed()
+    }
+
+    /// Deterministic `stall_for` at an explicit clock sample.
+    pub fn stall_for_at(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_activity)
     }
 
     /// Report the result of the probe.  Only a failed probe escalates to a
     /// kill; a successful probe is ordinary activity.
     pub fn probe_result(&mut self, succeeded: bool) -> WatchdogAction {
+        self.probe_result_at(succeeded, Instant::now())
+    }
+
+    /// Deterministic `probe_result` at an explicit clock sample, so a test
+    /// can drive the full probe lifecycle on an injected timeline instead of
+    /// sleeping and racing the real clock.
+    pub fn probe_result_at(&mut self, succeeded: bool, now: Instant) -> WatchdogAction {
         if succeeded {
-            self.activity();
+            self.last_activity = now;
+            self.probe_started = None;
             WatchdogAction::Continue
         } else {
             self.killed = true;
@@ -136,8 +173,15 @@ impl TurnWatchdog {
     /// Treat an expired in-flight probe as a failed probe. This is explicit
     /// so merely observing silence can never escalate to a kill.
     pub fn probe_timed_out(&mut self) -> WatchdogAction {
+        self.probe_timed_out_at(Instant::now())
+    }
+
+    /// Deterministic `probe_timed_out` at an explicit clock sample.
+    pub fn probe_timed_out_at(&mut self, now: Instant) -> WatchdogAction {
         match self.probe_started {
-            Some(started) if started.elapsed() >= self.probe_timeout => self.probe_result(false),
+            Some(started) if now.saturating_duration_since(started) >= self.probe_timeout => {
+                self.probe_result_at(false, now)
+            }
             Some(_) => WatchdogAction::Probe,
             None => WatchdogAction::Continue,
         }

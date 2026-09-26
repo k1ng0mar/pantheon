@@ -5,6 +5,7 @@ use crate::channel::{
 };
 use crate::stream::{UiFrame, UiFrameKind};
 use serde_json::{json, Value};
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 pub const TELEGRAM_MESSAGE_LIMIT: usize = 4_096;
@@ -194,6 +195,16 @@ pub struct TelegramChannel {
     pub bot_token: String,
     transport: Arc<dyn TelegramTransport>,
     inbox: Mutex<Vec<ChannelEvent>>,
+}
+
+/// Hand-written so the bot token never reaches a log line. A `#[derive(Debug)]`
+/// here would print a live credential, and the token is a `pub` field, so any
+/// future derive is a leak. Same intent as `SecretValue`'s Debug, kept local
+/// to avoid a gateway -> secrets dependency for three fields.
+impl fmt::Debug for TelegramChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TelegramChannel {{ bot_token: *** }}")
+    }
 }
 
 impl TelegramChannel {

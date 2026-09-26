@@ -338,6 +338,25 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
     }
 }
 
+/// The approval scope for a parked tool call.
+///
+/// The scope is what an operator types into `pantheon grant <run> <scope>`,
+/// so it must be exactly what was shown to them at approval time and nothing
+/// more. A bare `call_{turn}_{i}` is a positional coordinate: `turn` restarts
+/// at 0 on resume, so the same coordinate gets minted again for a different
+/// call later in the session. Granting `call_2_0` would then also silently
+/// authorize whatever the model emitted at those coordinates next, with a
+/// different tool and different arguments.
+///
+/// Binding the tool name and arguments into the scope makes the grant
+/// specific to the call the operator actually saw. The arguments are
+/// carried verbatim rather than digested: a digest would hide the command
+/// the operator is being asked to approve, and the operator approving
+/// `git push --force origin main` should see exactly that.
+fn approval_scope(call_id: &str, tool: &str, args: &str) -> String {
+    format!("{call_id}:{tool}:{args}")
+}
+
 /// Everything one agent run needs.
 pub struct Session {
     pub supervisor: Supervisor,
@@ -1176,9 +1195,11 @@ impl Session {
             // Split by resolution status. Denied scopes must NOT re-park the
             // run: the operator already answered, so the call settles as a
             // denial result in the transcript and the turn proceeds.
-            let (denied, rest): (Vec<ToolCallRef>, Vec<ToolCallRef>) = not_done
-                .into_iter()
-                .partition(|tc| denied_scopes.iter().any(|s| s == &tc.id));
+            let (denied, rest): (Vec<ToolCallRef>, Vec<ToolCallRef>) =
+                not_done.into_iter().partition(|tc| {
+                    let scope = approval_scope(&tc.id, &tc.name, &tc.arguments);
+                    denied_scopes.iter().any(|d| d == &scope)
+                });
             for tc in &denied {
                 self.supervisor.emit(Event::ToolStarted {
                     run_id: run_id.into(),
@@ -1207,9 +1228,11 @@ impl Session {
             }
             // Split remaining by grant status: granted calls re-execute now,
             // ungranted ones park the run.
-            let (granted, ungranted): (Vec<ToolCallRef>, Vec<ToolCallRef>) = rest
-                .into_iter()
-                .partition(|tc| grants.iter().any(|s| s == &tc.id));
+            let (granted, ungranted): (Vec<ToolCallRef>, Vec<ToolCallRef>) =
+                rest.into_iter().partition(|tc| {
+                    let scope = approval_scope(&tc.id, &tc.name, &tc.arguments);
+                    grants.iter().any(|g| g == &scope)
+                });
             if !ungranted.is_empty() {
                 // Report the capability that actually needs approval, not
                 // just the tool's static one: a `git push` through `shell`
@@ -1229,14 +1252,14 @@ impl Session {
                 for tc in &ungranted {
                     self.supervisor.emit(Event::ApprovalRequested {
                         run_id: run_id.into(),
-                        scope: tc.id.clone(),
+                        scope: approval_scope(&tc.id, &tc.name, &tc.arguments),
                     })?;
                 }
                 return Ok(LoopOutcome::AwaitingApproval {
                     capability: cap,
                     scope: ungranted
                         .first()
-                        .map(|tc| tc.id.clone())
+                        .map(|tc| approval_scope(&tc.id, &tc.name, &tc.arguments))
                         .unwrap_or_default(),
                 });
             }
@@ -1391,11 +1414,11 @@ impl Session {
                             pantheon_agent::GateOutcome::NeedsApproval { capability } => {
                                 self.supervisor.emit(Event::ApprovalRequested {
                                     run_id: run_id.into(),
-                                    scope: r.id.clone(),
+                                    scope: approval_scope(&r.id, &call.name, &call.args),
                                 })?;
                                 return Ok(LoopOutcome::AwaitingApproval {
                                     capability,
-                                    scope: r.id.clone(),
+                                    scope: approval_scope(&r.id, &call.name, &call.args),
                                 });
                             }
                         }

@@ -42,10 +42,7 @@ fn round_trips_through_toml() {
             backend: "native".into(),
             options: Default::default(),
         }),
-        tools: Some(ToolSection {
-            packs: vec!["core".into()],
-            plugins: vec![],
-        }),
+        tools: None,
         server: Some(ServerSection {
             port: 18789,
             host: "127.0.0.1".into(),
@@ -696,4 +693,35 @@ fn config_validate_surfaces_bad_agent_tables() {
         problems.iter().any(|p| p.contains("collides")),
         "namespace clash surfaces: {problems:?}"
     );
+}
+
+/// A config written by an older Pantheon can contain a `[tools]` table with
+/// `packs` and `plugins`. Those keys are inert today (tool registration is
+/// unconditional and nothing reads them), so loading such a file must
+/// succeed rather than fail with a parse error. This is the compatibility
+/// guarantee that let the typed `ToolSection` be dropped.
+#[test]
+fn a_legacy_tools_table_still_loads() {
+    let dir = std::env::temp_dir().join(format!("pantheon-cfg-legacy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        r#"
+[model]
+provider = "local"
+model = "llama3.2"
+
+[tools]
+packs = ["core"]
+plugins = ["my-plugin"]
+"#,
+    )
+    .unwrap();
+
+    let cfg = Config::load(&dir).expect("legacy [tools] table must not be a parse error");
+    assert!(cfg.tools.is_some(), "the table should be retained verbatim");
+    let model = cfg.model.expect("model section should still parse");
+    assert_eq!(model.model, "llama3.2");
+    let _ = std::fs::remove_dir_all(&dir);
 }

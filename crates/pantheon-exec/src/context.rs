@@ -25,9 +25,6 @@ use pantheon_core::model::{CompressionRequest, ContextCompressor};
 
 /// Tool rows are re-compacted down to this floor (bytes) in step 2.
 pub const TOOL_FLOOR_BYTES: usize = 2 * 1024;
-/// Output tokens reserved for the model's reply when the catalog has no
-/// `max_output_tokens` for the model.
-pub const DEFAULT_OUTPUT_RESERVE: u32 = 4096;
 /// Estimator margin: fit to 85% of the usable window, since bytes/4 is
 /// approximate and providers count wire overhead we cannot see.
 pub const DEFAULT_SAFETY: f32 = 0.85;
