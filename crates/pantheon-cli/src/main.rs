@@ -1,7 +1,6 @@
 //! pantheon CLI: thin surface over the runtime. No business logic here.
 use pantheon_core::capability::Policy;
 use pantheon_core::events::Event;
-use pantheon_exec::safewrite::{preview_edit, SafeWriter};
 use pantheon_extensions::{doctor, ExtensionManager, Hook, RunnerConfig};
 use pantheon_memory::{markdown, BackendSelection, LayerKind, MemoryStore, Proposal, Provenance};
 use pantheon_runtime::{new_run_id, Supervisor};
@@ -31,9 +30,6 @@ fn ext_dir() -> PathBuf {
     }
     data_dir().join("extensions")
 }
-fn safewrite_dir() -> PathBuf {
-    data_dir().join("safewrite")
-}
 fn load_backend_selection(data_dir: &Path) -> BackendSelection {
     pantheon_memory::load_selection(data_dir)
 }
@@ -60,6 +56,89 @@ fn print_json<T: serde::Serialize>(label: &str, v: &T) {
 /// `pantheon --help`. Grouped by what a user is trying to do, because the
 /// flat verb list was 29 lines of equal weight with no way to tell the two
 /// commands you need daily from the six you install once.
+/// `pantheon --help`. Grouped by what a user is trying to do, because a
+/// flat verb list gives the two commands you need daily the same weight as
+/// the six you install once.
+/// Run a real model turn and hand the answer to a delivery target.
+///
+/// `--deliver session` is the default and just prints. A channel name means
+/// the reply is queued in the durable outbox for the running gateway to pick
+/// up, so the user sees it where they asked for it instead of on a terminal
+/// nobody is watching.
+fn run_delivered_task(task_id: &Option<String>, say: &Option<String>, target: &str) {
+    let text = match say {
+        Some(s) => s.clone(),
+        None => {
+            eprintln!("run --deliver {target} needs --say \"text\" (the task to run)");
+            std::process::exit(2);
+        }
+    };
+    if !matches!(target, "telegram" | "discord" | "session") {
+        eprintln!("unknown delivery target '{target}'; use session, telegram, or discord");
+        std::process::exit(2);
+    }
+    // Reuse an existing run when the caller named one, so a delivered task
+    // continues its conversation instead of starting an orphan.
+    let run_id = task_id.clone().unwrap_or_else(pantheon_runtime::new_run_id);
+
+    use crate::config_doc;
+    use crate::session_cli::build_model_policy;
+    let file_cfg = config_doc::Config::load_or_report(&data_dir());
+    let model_policy = build_model_policy(&file_cfg, None, None);
+    let allow_memory = file_cfg
+        .as_ref()
+        .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
+        .unwrap_or(false);
+    let policy = if allow_memory {
+        pantheon_core::capability::Policy::coder_with_memory()
+    } else {
+        pantheon_core::capability::Policy::coder()
+    };
+    let secrets = config_doc::chat_secrets(file_cfg.as_ref());
+    let session =
+        match pantheon_runtime::session::Session::new(data_dir(), policy, model_policy, secrets) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("open session: {e}");
+                std::process::exit(1);
+            }
+        };
+    match session.chat_turn(&run_id, "", &text) {
+        Ok(outcome) => {
+            let answer = outcome_text(&outcome);
+            if target == "session" {
+                println!("{answer}");
+            } else if let Err(e) = gateway_cli::enqueue_outbound(&data_dir(), target, &answer) {
+                eprintln!("queue for {target}: {e}");
+                std::process::exit(1);
+            } else {
+                println!("queued for {target} — run {run_id}");
+            }
+            println!("{run_id}");
+        }
+        Err(e) if e.code == "RUN_PARKED" => {
+            // A parked run is a real outcome, not a failure.
+            println!("parked — run {run_id} (answer it with: pantheon run --taskID {run_id} --grant <scope>)");
+        }
+        Err(e) => {
+            eprintln!("run {run_id}: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Best-effort extraction of the assistant text from a loop outcome. The
+/// ledger has the authoritative transcript; this only shapes what gets
+/// delivered, so a shape we do not recognize falls back to empty rather than
+/// inventing text.
+fn outcome_text(outcome: &pantheon_agent::LoopOutcome) -> String {
+    use pantheon_agent::LoopOutcome;
+    match outcome {
+        LoopOutcome::Answered { text, .. } => text.clone(),
+        _ => String::new(),
+    }
+}
+
 fn usage() -> String {
     let mut s = String::new();
     s.push_str("pantheon - a durable agent runtime\n\n");
@@ -72,29 +151,20 @@ fn usage() -> String {
 
     s.push_str("TALK TO IT\n");
     s.push_str("  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n");
-    s.push_str(
-        "  run  [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n",
-    );
-    s.push_str("        synthetic ledger events, no model - for testing a surface\n\n");
+    s.push_str("  run  --taskID <id> [--say TEXT] [--fail CODE] [--ext]\n");
+    s.push_str("        [--deliver session|telegram|discord]\n");
+    s.push_str("        run a task by id; delivery defaults to an in-session turn\n\n");
 
     s.push_str("INSPECT A RUN\n");
     s.push_str("  explain <run_id>             full event trace\n");
-    s.push_str("  audit <run_id> [OUT.jsonl]   sequence-validated JSONL trajectory\n");
-    s.push_str("  stream <run_id> [--thread T] [--after N]   print SSE frames\n");
-    s.push_str("  channel <run_id> [--thread T]  replay frames through the transport seam\n\n");
-
-    s.push_str("EDIT FILES SAFELY\n");
-    s.push_str("  preview <path> <file>        read-only diff\n");
-    s.push_str("  stage <path> <file> [--expect HASH]     stage one edit\n");
-    s.push_str("  apply <path> <file> [--expect HASH] [--run ID]   checkpoint + atomic write\n");
-    s.push_str("  checkpoint <path>... [--run ID]          snapshot pre-images\n");
-    s.push_str("  rollback (--ckpt ID | --seq N)          restore a checkpoint\n\n");
+    s.push_str("  audit <run_id> [OUT.jsonl]   sequence-validated JSONL trajectory\n\n");
 
     s.push_str("SET UP\n");
     s.push_str("  setup                         wizard: API key, default model, policy\n");
     s.push_str("  model [--list] [--auxiliary KIND]        provider picker, keys -> .env\n");
     s.push_str("  provider <add|list|remove>   custom-endpoint registry\n");
     s.push_str("  providers                    list cataloged providers and models\n");
+    s.push_str("  fallback <add|list|remove>   ordered provider/model fallback chain\n");
     s.push_str("  doctor [<plugin_dir>]        system preflight (or per-plugin)\n");
     s.push_str("  reset [--config|--state|--everything] [--yes]\n\n");
 
@@ -112,34 +182,35 @@ fn usage() -> String {
 
     s.push_str("RUN UNATTENDED\n");
     s.push_str("  schedule <task> --30m | list|pause|resume|cancel|run <id>\n");
-    s.push_str("  swarm <N> \"task\" [roles...] [--delivery telegram]\n");
-    s.push_str("  pipeline <run_id> [--approve STAGE|--deny STAGE]\n");
-    s.push_str("  gateway                       Discord/Telegram surfaces (env tokens)\n\n");
-
-    s.push_str("SERVE\n");
+    s.push_str("  swarm <N> \"task\" [roles...]\n");
+    s.push_str("  gateway start|restart|stop [discord|telegram]\n");
+    s.push_str("        start registers a background service (systemd / launchd)\n");
     s.push_str("  serve [--port N] [--host H]   AG-UI SSE + RPC server\n");
-    s.push_str("  sign <task_id> [--mime M] [--ttl MS]   signed generative-UI URL\n\n");
+    s.push_str("  stream <run_id> [--thread T] [--after N]   follow a live run's events\n");
+    s.push_str("  channel <run_id> [--thread T]    a run's delivery channels\n\n");
+
+    s.push_str("WORKFLOWS\n");
+    s.push_str("  pipeline <sub>                durable 6-stage workflow with human gates\n\n");
 
     s.push_str("APPROVALS\n");
     s.push_str("  Approvals are answered in the session that raised them - the TUI shows a\n");
     s.push_str("  permission card (y/n), the REPL prompts inline. A run parked on approval\n");
     s.push_str("  can also be answered out of band:\n");
-    s.push_str("    pantheon run --id <id> --grant <scope>    allow one exact call\n");
-    s.push_str("    pantheon run --id <id> --deny  <scope>    refuse it\n");
+    s.push_str("    pantheon run --taskID <id> --grant <scope>   allow one exact call\n");
+    s.push_str("    pantheon run --taskID <id> --deny  <scope>   refuse it\n");
     s
 }
 
 /// OMP RESERVED_TOP_LEVEL_WORDS guard: every top-level dispatch target,
 /// kept in sync with the `match args[1]` arms in `main`.
 const KNOWN_VERBS: &[&str] = &[
-    "apply",
     "audit",
     "channel",
     "chat",
-    "checkpoint",
     "doctor",
     "explain",
     "extensions",
+    "fallback",
     "gateway",
     "hook",
     "mcp",
@@ -148,18 +219,14 @@ const KNOWN_VERBS: &[&str] = &[
     "model",
     "pipeline",
     "plugins",
-    "preview",
     "provider",
     "providers",
     "reset",
-    "rollback",
     "run",
     "schedule",
     "serve",
     "setup",
-    "sign",
     "skills",
-    "stage",
     "stream",
     "swarm",
 ];
@@ -262,6 +329,7 @@ mod dotenv;
 #[cfg(test)]
 #[path = "dotenv_tests.rs"]
 mod dotenv_tests;
+mod fallback_cli;
 mod gateway_cli;
 mod mcp_cli;
 mod migrate_cli;
@@ -630,8 +698,23 @@ fn main() {
                 }
             };
             let run_id = id.unwrap_or_else(pantheon_runtime::new_run_id);
+            // `Session::chat` returns the outcome and prints nothing. The
+            // answer used to surface as a side effect of a println! buried in
+            // the runtime, which meant every other caller (the TUI, the AG-UI
+            // worker, `run --deliver`) had to work around a library writing
+            // to their stdout. Printing the returned text here is the fix.
             match session.chat(&run_id, &message) {
-                Ok(_) => eprintln!("[run {run_id}]"),
+                Ok(outcome) => {
+                    let answer = outcome_text(&outcome);
+                    if !answer.is_empty() {
+                        println!("{answer}");
+                    } else {
+                        eprintln!(
+                            "run {run_id} produced no answer text; see `pantheon explain {run_id}`"
+                        );
+                    }
+                    eprintln!("[run {run_id}]");
+                }
                 Err(e) => {
                     eprintln!("run failed: {e}");
                     std::process::exit(1);
@@ -1100,13 +1183,25 @@ timeout_ms = 5000
             // stays short and the approval surface stays one place.
             let mut grant_scope: Option<String> = None;
             let mut deny_scope: Option<String> = None;
+            // Where the run's output goes. `session` is the default and means
+            // an ordinary in-process turn; the channel names hand the turn to
+            // the gateway so the reply lands where the user is.
+            let mut deliver: Option<String> = None;
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--id" => {
+                    // `--taskID` is the documented name; `--id` stays as an
+                    // alias because eval/run.py and muscle memory use it.
+                    "--taskID" | "--id" => {
                         i += 1;
                         if i < args.len() {
                             id = Some(args[i].clone());
+                        }
+                    }
+                    "--deliver" => {
+                        i += 1;
+                        if i < args.len() {
+                            deliver = Some(args[i].clone());
                         }
                     }
                     "--grant" => {
@@ -1185,6 +1280,23 @@ timeout_ms = 5000
                     agui_cli::resume_after_grant(&run_id);
                 }
                 return;
+            }
+            // A named delivery target means a real turn, not a synthetic
+            // ledger write: the whole point is that the answer arrives where
+            // the user is. Without one, `run` stays the synthetic writer the
+            // eval harness depends on.
+            if let Some(target) = deliver {
+                if !matches!(target.as_str(), "session" | "telegram" | "discord") {
+                    eprintln!(
+                        "unknown --deliver target '{target}'; use session, telegram, or discord"
+                    );
+                    std::process::exit(2);
+                }
+                // `session` is the default target, and it is a real model
+                // turn printed to this terminal — not the synthetic ledger
+                // writer below. Gating it on `target != "session"` meant the
+                // default path produced an event trace with no model call.
+                return run_delivered_task(&id, &say, &target);
             }
             // `run` writes ledger events directly. It does not call a model
             // and does not execute the named tool, so it is a synthetic-run
@@ -1387,198 +1499,11 @@ timeout_ms = 5000
                 }
             }
         }
-        "preview" => {
-            if args.len() < 4 {
-                eprintln!("usage: pantheon preview <path> <file-with-new-content>");
-                std::process::exit(2);
-            }
-            let new_bytes = std::fs::read(&args[3]).unwrap_or_else(|e| {
-                eprintln!("read new content {}: {e}", args[3]);
-                std::process::exit(1);
-            });
-            match preview_edit(std::path::Path::new(&args[2]), &new_bytes) {
-                Ok(pv) => print_json("preview", &pv),
-                Err(e) => {
-                    eprintln!("preview: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        "stage" => {
-            if args.len() < 4 {
-                eprintln!("usage: pantheon stage <path> <file-with-new-content> [--expect HASH]");
-                std::process::exit(2);
-            }
-            let mut expect: Option<String> = None;
-            let mut i = 4;
-            while i < args.len() {
-                if args[i] == "--expect" && i + 1 < args.len() {
-                    expect = Some(args[i + 1].clone());
-                    i += 1;
-                }
-                i += 1;
-            }
-            let new_bytes = std::fs::read(&args[3]).unwrap_or_else(|e| {
-                eprintln!("read new content {}: {e}", args[3]);
-                std::process::exit(1);
-            });
-            let w = SafeWriter::new(safewrite_dir()).unwrap_or_else(|e| {
-                eprintln!("open safewrite state: {e}");
-                std::process::exit(1);
-            });
-            let edit = pantheon_exec::safewrite::FileEdit {
-                path: PathBuf::from(&args[2]),
-                new_content: new_bytes,
-                expected_hash: expect,
-            };
-            match w.stage_edits(vec![edit]) {
-                Ok(b) => print_json("apply", &b),
-                Err(e) => {
-                    eprintln!("stage: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        "apply" => {
-            if args.len() < 4 {
-                eprintln!("usage: pantheon apply <path> <file-with-new-content> [--expect HASH] [--run ID]");
-                std::process::exit(2);
-            }
-            let mut expect: Option<String> = None;
-            let mut run_id: Option<String> = None;
-            let mut i = 4;
-            while i < args.len() {
-                if args[i] == "--expect" && i + 1 < args.len() {
-                    expect = Some(args[i + 1].clone());
-                    i += 1;
-                } else if args[i] == "--run" && i + 1 < args.len() {
-                    run_id = Some(args[i + 1].clone());
-                    i += 1;
-                }
-                i += 1;
-            }
-            let new_bytes = std::fs::read(&args[3]).unwrap_or_else(|e| {
-                eprintln!("read new content {}: {e}", args[3]);
-                std::process::exit(1);
-            });
-            let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
-                eprintln!("open runtime: {e}");
-                std::process::exit(1);
-            });
-            let seq = sup.max_seq().unwrap_or(0);
-            let w = SafeWriter::new(safewrite_dir()).unwrap_or_else(|e| {
-                eprintln!("open safewrite state: {e}");
-                std::process::exit(1);
-            });
-            let edit = pantheon_exec::safewrite::FileEdit {
-                path: PathBuf::from(&args[2]),
-                new_content: new_bytes,
-                expected_hash: expect,
-            };
-            match w.apply_edits(vec![edit], seq) {
-                Ok(r) => {
-                    let rid = run_id.unwrap_or_else(pantheon_runtime::new_run_id);
-                    let _ = sup.emit(Event::RunProgress {
-                        run_id: rid,
-                        detail: format!(
-                            "safewrite apply ckpt={} files={}",
-                            r.checkpoint_id,
-                            r.files.len()
-                        ),
-                    });
-                    print_json("apply", &r);
-                }
-                Err(e) => {
-                    eprintln!("apply: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        "checkpoint" => {
-            if args.len() < 3 {
-                eprintln!("usage: pantheon checkpoint <path>... [--run ID]");
-                std::process::exit(2);
-            }
-            let mut paths: Vec<PathBuf> = vec![];
-            let mut i = 2;
-            while i < args.len() {
-                if args[i] == "--run" {
-                    i += 2;
-                    continue;
-                }
-                paths.push(PathBuf::from(&args[i]));
-                i += 1;
-            }
-            let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
-                eprintln!("open runtime: {e}");
-                std::process::exit(1);
-            });
-            let seq = sup.max_seq().unwrap_or(0);
-            let w = SafeWriter::new(safewrite_dir()).unwrap_or_else(|e| {
-                eprintln!("open safewrite state: {e}");
-                std::process::exit(1);
-            });
-            match w.checkpoint(&paths, seq) {
-                Ok(cp) => print_json("checkpoint", &cp),
-                Err(e) => {
-                    eprintln!("checkpoint: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        "rollback" => {
-            let mut ckpt: Option<String> = None;
-            let mut seq: Option<i64> = None;
-            let mut i = 2;
-            while i < args.len() {
-                if args[i] == "--ckpt" && i + 1 < args.len() {
-                    ckpt = Some(args[i + 1].clone());
-                    i += 1;
-                } else if args[i] == "--seq" && i + 1 < args.len() {
-                    seq = args[i + 1].parse().ok();
-                    i += 1;
-                }
-                i += 1;
-            }
-            let w = SafeWriter::new(safewrite_dir()).unwrap_or_else(|e| {
-                eprintln!("open safewrite state: {e}");
-                std::process::exit(1);
-            });
-            if let Some(id) = ckpt {
-                match w.restore_checkpoint(&id) {
-                    Ok(paths) => print_json(
-                        "rollback",
-                        &serde_json::json!({"checkpoint": id, "restored": paths}),
-                    ),
-                    Err(e) => {
-                        eprintln!("rollback: {e}");
-                        std::process::exit(1);
-                    }
-                }
-            } else if let Some(n) = seq {
-                match w.rollback_to_seq(n) {
-                    Ok((id, paths)) => print_json(
-                        "rollback",
-                        &serde_json::json!({"checkpoint": id, "restored": paths}),
-                    ),
-                    Err(e) => {
-                        eprintln!("rollback: {e}");
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                eprintln!("usage: pantheon rollback (--ckpt ID | --seq N)");
-                std::process::exit(2);
-            }
-        }
         "serve" => {
             agui_cli::cmd_serve(&args);
         }
         "stream" => {
             agui_cli::cmd_stream(&args);
-        }
-        "sign" => {
-            agui_cli::cmd_sign(&args);
         }
         "channel" => {
             agui_cli::cmd_channel(&args);
@@ -1645,6 +1570,9 @@ timeout_ms = 5000
                 }
             }
         }
+        "fallback" => {
+            fallback_cli::cmd_fallback(&args);
+        }
         "migrate" => {
             migrate_cli::cmd_migrate(&args[2..]);
         }
@@ -1705,9 +1633,9 @@ mod verb_guard_tests {
         // against the live list rather than hardcoded to a name that used
         // to exist.
         assert_eq!(
-            suggest_verbs("stge", 3).first(),
-            Some(&"stage"),
-            "'stge' should suggest stage"
+            suggest_verbs("serv", 3).first(),
+            Some(&"serve"),
+            "'serv' should suggest serve"
         );
         // `status` and `session` were removed; they must never come back as
         // a suggestion for a near-miss.
@@ -1793,15 +1721,10 @@ mod verb_guard_tests {
             "extensions",
             "hook",
             "doctor",
-            "preview",
-            "stage",
-            "apply",
-            "checkpoint",
-            "rollback",
             "serve",
             "stream",
-            "sign",
             "channel",
+            "fallback",
             "gateway",
             "setup",
             "reset",

@@ -533,7 +533,7 @@ pub fn run_session_with_resume(resume_id: Option<String>) {
     run_session_inner(Some(pinned));
 }
 
-/// Entry: `pantheon` with no args, or `pantheon session`.
+/// Entry: `pantheon` with no args.
 pub fn run_session() {
     run_session_inner(None);
 }
@@ -690,7 +690,10 @@ pub fn run_session_inner(pinned_id: Option<String>) {
             Err(e) => {
                 eprintln!("turn failed: {e}");
                 if e.code == "RUN_PARKED" {
-                    println!("grant with: pantheon grant {} <scope>", repl.run_id);
+                    println!(
+                        "grant with: pantheon run --taskID {} --grant <scope>",
+                        repl.run_id
+                    );
                 }
             }
         }

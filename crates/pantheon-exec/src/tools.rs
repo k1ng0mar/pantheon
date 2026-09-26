@@ -164,7 +164,7 @@ impl ToolRegistry {
                         "TOOL_DENIED",
                         format!(
                             "tool '{name}' needs capability {cap:?}, policy says {other:?}; \
-                             grant it with `pantheon grant` or widen the policy preset"
+                             grant it with `pantheon run --taskID <run> --grant <scope>` or widen the policy preset"
                         ),
                     ))
                 }

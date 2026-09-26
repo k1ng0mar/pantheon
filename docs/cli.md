@@ -55,16 +55,32 @@ fail with `MOCK_PROVIDER_UNCONFIGURED`.
 
 ### run
 ```
+pantheon run --taskID <id> --say "text" [--deliver session|telegram|discord]
 pantheon run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]
 ```
-Writes synthetic ledger events for a run. It never calls a model and never
-executes the tool named by `--tool`; the tool event is recorded with a
-completed boundary so the run does not look interrupted to a later resume.
-`--say` records a progress line, `--fail CODE` ends the run failed, and
-`--ext` fires `pre_llm_call` and prints whatever context it injects.
+Two modes, decided by whether `--deliver` is passed:
 
-For a real turn use `pantheon chat`. This verb exists so recovery and
-ledger tooling can seed a run without spending a model call.
+**With `--deliver`** it runs a real model turn and delivers the answer
+somewhere other than this terminal. `--taskID` names the run to continue (a
+new one is created if omitted), `--say` is the task, and the target picks
+the destination:
+
+| target | effect |
+|---|---|
+| `session` (default) | print the answer here, then the run id |
+| `telegram` | queue it for the gateway to send |
+| `discord` | queue it for the gateway to send |
+
+`telegram`/`discord` write to a durable outbox under
+`<data_dir>/gateway/outbox/`, which `pantheon gateway` drains. The queue
+outlives the process, so a delivered task is not lost if the gateway is
+down when it is queued.
+
+**Without `--deliver`** it writes synthetic ledger events and never calls a
+model. `--say` records a progress line, `--fail CODE` ends the run failed,
+and `--ext` fires `pre_llm_call` and prints whatever context it injects. This
+mode exists so recovery and ledger tooling can seed a run without spending a
+model call.
 
 ### explain / audit
 ```
@@ -86,27 +102,13 @@ Out of band — a run parked from a script, a gateway message, or a second
 terminal:
 
 ```
-pantheon run --id <run_id> --grant <scope>   # approve, then continue the run
-pantheon run --id <run_id> --deny  <scope>   # refuse
-pantheon run --id <run_id> --grant <scope> --no-resume   # record only
+pantheon run --taskID <run_id> --grant <scope>   # approve, then continue the run
+pantheon run --taskID <run_id> --deny  <scope>   # refuse
+pantheon run --taskID <run_id> --grant <scope> --no-resume   # record only
 ```
 A granted call re-executes on resume. A denied call settles into the
 transcript as "denied by operator" and the run continues. Both fail with
 `RT_APPROVAL_RESOLVED` if the scope was already answered.
-
-## File-edit verbs (safewrite)
-
-```
-pantheon preview <path> <file-with-new-content>
-pantheon stage <path> <file-with-new-content> [--expect HASH]
-pantheon apply <path> <file-with-new-content> [--expect HASH] [--run ID]
-pantheon checkpoint <path>... [--run ID]
-pantheon rollback (--ckpt ID | --seq N)
-```
-`preview` is read-only. `apply` snapshots a checkpoint first, writes
-atomically (tmp+fsync+rename), and journals the apply. A stale
-`--expect` hash fails with `SAFE_STALE` and changes nothing. `rollback`
-restores by checkpoint id or ledger sequence.
 
 ## Memory verbs
 
@@ -308,6 +310,10 @@ pantheon doctor              # system preflight (config, key, ledger, memory,
 pantheon doctor <plugin_dir> # per-plugin preflight (as above)
 pantheon reset --config | --state | --everything [--yes]
 pantheon providers           # catalog listing
+pantheon fallback list                    # the ordered fallback chain
+pantheon fallback add <provider> <model>  # append
+pantheon fallback insert <i> <p> <m>      # insert at position
+pantheon fallback remove <i>             # by index (names may repeat)
 pantheon provider <add|list|remove>   # custom-endpoint registry
                              # add [--name N|--provider N] [--base-url U|:port] [--api-mode M]
                              #     [--key K1,K2] [--api-key-env E] [--set V=W]...
@@ -331,20 +337,43 @@ active. Typed confirmation (`reset`) is required unless `--yes`.
 ```
 pantheon serve [--host H] [--port P]     # AG-UI server (web UI at /, RPC at /agui/rpc)
 pantheon stream <run_id> [--thread T] [--after N]  # SSE stream to stdout
-pantheon sign <task_id> [--mime M] [--ttl MS]   # signed artifact URL
 pantheon channel <run_id> [--thread T]   # replay frames through the channel seam
 ```
 
 ## Gateway verbs
 
 ```
-pantheon gateway                  # run Discord + Telegram surfaces (env tokens)
+pantheon gateway start            # install + start a supervised service
+pantheon gateway restart          # restart it
+pantheon gateway stop             # stop it
+pantheon gateway status           # is it running?
+pantheon gateway run              # foreground (what start wraps)
 ```
-`pantheon gateway` runs the channel daemon: Discord gateway websocket
-and Telegram long-poll feeding the runtime. Gate resolution lives under
-`pantheon pipeline RUN_ID --approve/--deny`, not here. Tokens:
-`PANTHEON_DISCORD_TOKEN`, `PANTHEON_TELEGRAM_BOT_TOKEN`.
-Pairing is allowlist-gated: see `PANTHEON_GATEWAY_ALLOW` below.
+`gateway run` is the process: Discord gateway websocket and Telegram
+long-poll feeding the runtime, plus a drain loop for the outbox that
+`pantheon run --deliver` writes to.
+
+`gateway start` is what you normally want. It writes a service unit
+(`~/.config/systemd/user/pantheon-gateway.service` on Linux, a launchd
+agent on macOS) with an **absolute** `ExecStart` — a bare `pantheon` would
+resolve against the unit's own `PATH`, not your shell's — then starts and
+enables it, so it comes back after a reboot. The unit sets
+`PANTHEON_DATA_DIR` and nothing else: tokens stay in `<data_dir>/.env`
+rather than being baked into a file you might paste somewhere.
+
+`start` runs the same preflight as `run` before it installs anything, and
+then confirms the unit actually reached `active`. `systemctl start` returns
+0 for a unit that immediately crash-loops, which would otherwise leave you
+with a bot that silently answers nothing.
+
+`status` never writes a unit — asking whether it is running must not
+install it.
+
+Tokens: `PANTHEON_DISCORD_TOKEN`, `PANTHEON_TELEGRAM_BOT_TOKEN`.
+Pairing is allowlist-gated and **required**: see `PANTHEON_GATEWAY_ALLOW`
+below.
+
+`pipeline` is where gate resolution lives, not here.
 
 ## Pipeline verbs
 

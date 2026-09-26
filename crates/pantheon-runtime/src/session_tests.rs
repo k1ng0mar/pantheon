@@ -540,3 +540,39 @@ fn the_production_executor_leaves_a_tool_alone_without_extensions() {
     assert_eq!(exec(&adapter(&reg, &mgr)), "sk-live-abc123");
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// The runtime must not write to the caller's stdout.
+///
+/// `Session::chat_turn` used to `println!` the answer as a side effect, and
+/// `pantheon chat` relied on that: it discarded the returned outcome and
+/// printed nothing itself. The result was a library that hijacked stdout —
+/// the AG-UI worker and the TUI had their rendering interleaved with it, and
+/// `pantheon run --deliver session` double-printed every answer.
+///
+/// This is a source-level check on purpose: asserting on captured stdout
+/// would need a live provider, and the property that matters is a layering
+/// rule (a library does not render), not a runtime value.
+#[test]
+fn the_runtime_does_not_print_to_stdout() {
+    let src = include_str!("session.rs");
+    // Ignore the test module at the bottom: tests legitimately print.
+    let body = match src.find("#[cfg(test)]") {
+        Some(i) => &src[..i],
+        None => src,
+    };
+    for (n, line) in body.lines().enumerate() {
+        let t = line.trim();
+        // A println! inside a doc comment or a string literal is not a print.
+        if t.starts_with("//") || t.starts_with("///") || t.starts_with('"') {
+            continue;
+        }
+        // `eprintln!` is fine: stderr for a genuine failure the caller
+        // cannot otherwise see. It is stdout that a library must not claim.
+        assert!(
+            !t.contains("println!") || t.contains("eprintln!"),
+            "session.rs:{} writes to stdout: {t}\n\
+             the runtime returns the answer; the caller renders it",
+            n + 1
+        );
+    }
+}

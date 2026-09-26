@@ -486,7 +486,7 @@ fn run_job_now(job: &StoredJob, data_dir: &Path) {
             // grant before it can finish.
             if e.code == "RUN_PARKED" {
                 println!(
-                    "parked {} — run {run_id} (grant: pantheon grant {run_id} <scope>)",
+                    "parked {} — run {run_id} (grant: pantheon run --taskID {run_id} --grant <scope>)",
                     job.task
                 );
             } else {
