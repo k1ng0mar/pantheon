@@ -137,7 +137,7 @@ fn pids_cap_is_applied_as_rlimit_nproc() {
     let want = u64::from(profile.max_pids.expect("High carries a pids cap"));
     let soft = proc_limit(&profile, "Max processes").expect("NPROC must be finite");
     assert!(
-        soft >= want + 1,
+        soft > want,
         "nproc limit {soft} must grant max_pids ({want}) above at least our own process"
     );
     if let Some(hard) = host_limit("Max processes") {
@@ -168,7 +168,7 @@ fn in_process_boundary_also_gets_the_limits() {
         Some(512 * 1024 * 1024)
     );
     let soft = proc_limit(&profile, "Max processes").expect("NPROC must be finite");
-    assert!(soft >= 8 + 1, "nproc limit {soft} must cover the 8-pid cap");
+    assert!(soft > 8, "nproc limit {soft} must cover the 8-pid cap");
     if let Some(hard) = host_limit("Max processes") {
         assert!(soft <= hard, "got {soft}, host hard {hard}");
     }

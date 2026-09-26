@@ -212,6 +212,16 @@ impl Supervisor {
         std::sync::Arc::clone(&self.inner.search)
     }
 
+    /// The embeddings client used to index chunks, or None when no
+    /// embeddings auxiliary is configured. The search tool needs the same
+    /// client to embed a query: indexing and querying with different
+    /// embedders would make the vector scores meaningless.
+    pub fn shared_embedder(
+        &self,
+    ) -> Option<std::sync::Arc<pantheon_providers::embeddings::EmbedClient>> {
+        self.inner.embedder.lock().ok().and_then(|g| g.clone())
+    }
+
     /// Attach the embeddings client resolved from the session's model
     /// policy. Called by `Session::new`; before that, indexing falls back
     /// to the local hashing embedder.
@@ -339,18 +349,6 @@ impl Supervisor {
 
     pub fn operation(&self, id: &str) -> Result<Option<Operation>, PantheonError> {
         self.inner.operations.get(id)
-    }
-
-    pub fn transition_operation(
-        &self,
-        id: &str,
-        expected_version: u64,
-        status: OperationStatus,
-        state: serde_json::Value,
-    ) -> Result<Operation, PantheonError> {
-        self.inner
-            .operations
-            .transition(id, expected_version, status, state)
     }
 
     /// Persist cancellation intent before a caller performs process-group
@@ -711,12 +709,6 @@ impl Supervisor {
                 .unregister_process_group_owned(run_id, pgid, &self.inner.lease_id)?;
         }
         Ok(())
-    }
-
-    pub fn unregister_process_group(&self, run_id: &str, pgid: i32) -> Result<(), PantheonError> {
-        self.assert_lease_owned(run_id)?;
-        self.ledger()
-            .unregister_process_group_owned(run_id, pgid, &self.inner.lease_id)
     }
 
     fn assert_lease_owned(&self, run_id: &str) -> Result<(), PantheonError> {

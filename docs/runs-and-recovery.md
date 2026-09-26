@@ -32,9 +32,22 @@ Tools declare the capability they need. The policy decides:
 Resolving a parked run:
 
 ```sh
-pantheon grant run_abc call_1_0     # approve; the call re-executes on resume
+pantheon grant run_abc call_1_0     # approve, then continue the run
 pantheon deny run_abc call_1_0      # refuse; the call settles as denied
 ```
+
+`grant` continues the run it unblocked, so the granted tool call actually
+executes and the model gets its real result. Pass `--no-resume` to only
+record the permission and leave the run parked.
+
+A call parked on approval emits no `ToolStarted` event, so it is invisible
+to crash recovery, which only sees started-but-unfinished calls. Grant-resume
+therefore treats granted-but-unexecuted calls as pending too. Without that,
+the model would see a tool call with no result and answer from imagination.
+
+The `git.push` capability is reached through the `shell` tool, not a
+dedicated push tool: a shell call whose command is a git push picks up
+`GitPush` and parks like any other approval.
 
 Denial semantics (important): a denied call does not fail the run. On
 resume, the transcript receives a tool result reading "denied by operator:

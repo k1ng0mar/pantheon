@@ -31,3 +31,13 @@ authors = ["Pantheon"]
 [profile.release]
 lto = true
 codegen-units = 1
+
+# `PantheonError` is a structured value that carries code, layer,
+# retryability, cause, remediation, evidence, and a recovery class to the
+# CLI, the ledger, and the API. It is 128 bytes, so every `Result` in the
+# workspace is a fat enum. Boxing it would add an allocation to every error
+# path and touch every signature for a size win that does not matter here:
+# failures are rare and already do disk and network I/O.
+[workspace.lints.clippy]
+result_large_err = "allow"
+

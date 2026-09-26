@@ -39,7 +39,7 @@ fn full_pipeline_with_approved_gates_completes() {
     for stage in GATES_AFTER {
         store
             .create(
-                &format!("run1:{stage}"),
+                format!("run1:{stage}"),
                 "pipeline.gate",
                 json!({
                     "phase": "gate",
@@ -150,7 +150,7 @@ fn implement_loops_until_the_evaluator_accepts() {
     for stage in GATES_AFTER {
         store
             .create(
-                &format!("run1:{stage}"),
+                format!("run1:{stage}"),
                 "pipeline.gate",
                 json!({
                     "phase": "gate",
@@ -189,7 +189,7 @@ fn implement_fails_after_max_iterations() {
     for stage in GATES_AFTER {
         store
             .create(
-                &format!("run1:{stage}"),
+                format!("run1:{stage}"),
                 "pipeline.gate",
                 json!({
                     "phase": "gate",

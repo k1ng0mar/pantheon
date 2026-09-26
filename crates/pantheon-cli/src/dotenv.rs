@@ -146,7 +146,7 @@ pub fn read_dotenv_value(data_dir: &Path, key: &str) -> Option<String> {
         .into_iter()
         .filter(|(k, _)| k == key)
         .map(|(_, v)| v)
-        .last()
+        .next_back()
 }
 
 /// Delete `KEY` from `<data_dir>/.env`, preserving every other line.

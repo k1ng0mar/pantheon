@@ -168,16 +168,6 @@ impl RunLeaseStore {
         }))
     }
 
-    /// Alias with an explicit name that reads well at call sites.
-    pub fn acquire_run(
-        &self,
-        run_id: &str,
-        lease_id: &str,
-        ttl_ms: i64,
-    ) -> Result<Option<RunLease>, PantheonError> {
-        self.acquire(run_id, lease_id, ttl_ms)
-    }
-
     /// Heartbeat / renew.  A failed renewal means the caller must abandon the
     /// run; it must not continue executing tools under a stale ownership
     /// assumption.
@@ -233,15 +223,6 @@ impl RunLeaseStore {
             lease_until_ms: until,
             heartbeat_ms: now,
         })
-    }
-
-    pub fn renew_run(
-        &self,
-        run_id: &str,
-        lease_id: &str,
-        ttl_ms: i64,
-    ) -> Result<RunLease, PantheonError> {
-        self.renew(run_id, lease_id, ttl_ms)
     }
 
     /// Release only the caller's lease.  Releasing someone else's lease is a

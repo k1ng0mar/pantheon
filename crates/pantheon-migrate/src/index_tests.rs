@@ -142,11 +142,7 @@ fn a_huge_tool_result_is_truncated() {
     let d = tmp("huge");
     let p = d.join("s.jsonl");
     let big = "x".repeat(MAX_CHUNK_CHARS + 500);
-    fs::write(
-        &p,
-        &format!("{{\"role\":\"tool\",\"content\":\"{big}\"}}\n"),
-    )
-    .unwrap();
+    fs::write(&p, format!("{{\"role\":\"tool\",\"content\":\"{big}\"}}\n")).unwrap();
     let c = parse_transcript(&p, "hermes", "s");
     assert!(c[0].text.chars().count() <= MAX_CHUNK_CHARS + 1, "ellipsis");
     assert!(c[0].text.ends_with('…'));

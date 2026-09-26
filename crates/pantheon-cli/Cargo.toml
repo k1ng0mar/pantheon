@@ -31,3 +31,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 ctrlc = "3.4"
 
+
+[lints]
+workspace = true

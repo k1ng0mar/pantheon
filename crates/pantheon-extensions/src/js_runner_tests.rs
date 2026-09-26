@@ -88,7 +88,7 @@ fn an_unmapped_event_produces_no_context() {
     assert!(fire_hook(&p, Hook::PreLlmCall, &input(), &cfg)
         .unwrap()
         .is_none());
-    assert!(p.provides(Hook::PreLlmCall) == false);
+    assert!(!p.provides(Hook::PreLlmCall));
 }
 
 #[test]

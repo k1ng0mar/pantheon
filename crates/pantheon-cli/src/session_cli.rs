@@ -92,7 +92,7 @@ pub fn pick_run(runs: &[(String, String, i64, Option<String>)]) -> Option<String
         if all.is_empty() {
             println!("(no matches)");
         } else {
-            println!("{:>3}  {:<18} {:<10} {}", "#", "RUN ID", "STATUS", "AGE");
+            println!("{:>3}  {:<18} {:<10} AGE", "#", "RUN ID", "STATUS");
             for (i, (id, status, created_ms, title)) in all.iter().enumerate() {
                 let label = title.as_deref().unwrap_or("");
                 println!(
@@ -215,19 +215,16 @@ fn command(repl: &mut Repl, line: &str) -> bool {
             } else {
                 Some(rest.to_string())
             };
-            match target {
-                Some(id) => {
-                    // Prove the run exists before switching.
-                    match repl.session.supervisor.ledger_status(&id) {
-                        Ok(Some(_)) => {
-                            println!("resumed {}", id);
-                            repl.run_id = id;
-                        }
-                        Ok(None) => println!("no run {}", id),
-                        Err(e) => eprintln!("status: {e}"),
+            if let Some(id) = target {
+                // Prove the run exists before switching.
+                match repl.session.supervisor.ledger_status(&id) {
+                    Ok(Some(_)) => {
+                        println!("resumed {}", id);
+                        repl.run_id = id;
                     }
+                    Ok(None) => println!("no run {}", id),
+                    Err(e) => eprintln!("status: {e}"),
                 }
-                None => {}
             }
         }
         "/status" => {
@@ -564,12 +561,7 @@ pub fn run_session_inner(pinned_id: Option<String>) {
                 let _ = std::io::stdout().flush();
             }
             ModelEvent::ReasoningDelta { text } => {
-                let _ = writeln!(
-                    std::io::stdout(),
-                    "\n{thought_prefix}{text}\n{thought_suffix}",
-                    thought_prefix = "◊|",
-                    thought_suffix = "|◊"
-                );
+                let _ = writeln!(std::io::stdout(), "\n◊|{text}\n|◊");
             }
             ModelEvent::ToolCall { name, .. } => {
                 let _ = writeln!(std::io::stdout(), "\n[tool: {name}]");

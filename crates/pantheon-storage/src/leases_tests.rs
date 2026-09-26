@@ -8,7 +8,7 @@ fn only_one_live_owner_and_expiry_takeover() {
     assert!(s.acquire("r", "b", 60_000).unwrap().is_none());
     assert!(s.renew("r", "a", 60_000).is_ok());
     assert!(s.renew("r", "b", 60_000).is_err());
-    assert!(s.release("r", "b").unwrap() == false);
+    assert!(!s.release("r", "b").unwrap());
     assert!(s.release("r", "a").unwrap());
     assert!(s.acquire("r", "b", 60_000).unwrap().is_some());
 }

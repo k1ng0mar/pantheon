@@ -160,37 +160,6 @@ impl GateVerdict {
             GateVerdict::Deny { .. } => 2,
         }
     }
-
-    /// Returns true if `self` (classifier proposal) is at or above the
-    /// host policy floor. Host `Allow` + classifier `Deny` => honor.
-    /// Host `Deny` + classifier `Allow` => reject (return false).
-    pub fn escalates_or_matches(&self, host_floor: &GateVerdict) -> bool {
-        self.escalation_level() >= host_floor.escalation_level()
-    }
-}
-
-/// The recorded outcome of a decision, for the ledger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DecisionReceipt {
-    pub run_id: String,
-    pub point: DecisionPoint,
-    pub model: String,
-    pub answer: DecisionAnswer,
-    /// Conservative: the host's final action, validated against live state.
-    pub action_taken: DecisionAction,
-    pub timestamp_ms: u128,
-}
-
-/// What the host actually did with the decision, after validating against live state.
-/// The decision model proposes; the host validates and enforces.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DecisionAction {
-    /// Decision accepted, host executed the model's choice.
-    Accepted,
-    /// Decision rejected: host used a hardcoded fallback instead.
-    Overridden { fallback_used: String },
-    /// Decision denied: host blocked the action entirely.
-    Denied { reason: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

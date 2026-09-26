@@ -12,3 +12,6 @@ ureq = { version = "2", features = ["json"] }
 pantheon-core = { path = "../pantheon-core" }
 pantheon-storage = { path = "../pantheon-storage" }
 tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+
+[lints]
+workspace = true

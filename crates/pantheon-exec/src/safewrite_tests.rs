@@ -150,7 +150,7 @@ fn recover_restores_uncommitted_begin() {
     // simulate a torn apply by replaying the journal on a torn state:
     // a checkpoint exists, a `begin` entry exists, no `commit` follows.
     let w = SafeWriter::new(dir.clone()).unwrap();
-    let cp = w.checkpoint(&[p.clone()], 1).unwrap();
+    let cp = w.checkpoint(std::slice::from_ref(&p), 1).unwrap();
     // Manually journal a `begin` for that checkpoint — no matching commit.
     w.journal_append_for_test("begin", "manual", Some(cp.id.clone()), 1, vec![p.clone()])
         .unwrap();

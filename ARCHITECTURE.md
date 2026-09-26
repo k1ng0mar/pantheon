@@ -341,9 +341,9 @@ schedule → durable run request → agent/session/context policy
         → execution → delivery
 ```
 
-Supports cron, one-shot, interval, webhook, conditional, manual. Plus pause/resume, missed-run handling, locks, idempotency, delivery targets, fresh/inherited context policies, and per-job model/provider pins (`--model`/`--provider`; Hermes parity with its per-job model + provider snapshot; blank pins rejected, `None` inherits the runtime default via `effective_model`). Still open: honoring the pin at fire time once live runs are driven end-to-end.
+Supports cron, one-shot, interval, webhook, conditional, manual. Plus pause/resume, missed-run handling, locks, idempotency, delivery targets, fresh/inherited context policies, and per-job model/provider pins (`--model`/`--provider`; Hermes parity with its per-job model + provider snapshot; blank pins rejected, `None` inherits the runtime default via `effective_model`). Pins are honored at fire time: `schedule run` resolves the job's own model and provider and applies its auxiliaries, overriding the runtime default.
 
-**Implemented:** `pantheon-scheduler` — 5-field cron (UTC, Vixie dom/dow OR-rule), interval/one-shot, webhook path routing + request-id occurrence, missed-run policy, durable claim ledger on storage. Not yet driving live agent runs end-to-end.
+**Implemented:** `pantheon-scheduler` — 5-field cron (UTC, Vixie dom/dow OR-rule), interval/one-shot, webhook path routing + request-id occurrence, missed-run policy, durable claim ledger on storage. `schedule run` drives a real model-backed agent turn, and records the resulting run id and last-run time on the job.
 
 ## 22. Package ecosystem
 
@@ -467,7 +467,7 @@ Eval: `eval/run.py` + `eval/cases.json` — regression harness driving the real 
 - Durable agent identity configs (identity/config/memory-namespace/skills/capability/mode per persistent agent)
 - Package ecosystem (`packages/` format, install/verify/resolve/sandbox/test/approve/activate/rollback, channels + pinning)
 - MCP server *attachment* (`pantheon mcp` lists what a migration declared and whether it can register; no launcher yet — spec section 15)
-- Scheduler end-to-end live run driving + honoring per-job pins at fire time (pins persist/validate/surface; durable scheduling logic implemented and tested)
+- Scheduler missed-run catch-up after a long outage (jobs fire on the next `schedule run`, not retroactively)
 - Live OTel exporter (OTLP push target)
 
 ## Audit trail

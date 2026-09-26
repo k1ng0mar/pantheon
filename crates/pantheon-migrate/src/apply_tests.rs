@@ -566,7 +566,7 @@ fn copy_tree_is_depth_bounded() {
         "the depth bound should have been reported: {skipped:?}"
     );
     assert!(
-        !d.join("dst").join("n").exists() || skipped.len() > 0,
+        !d.join("dst").join("n").exists() || !skipped.is_empty(),
         "the run must complete rather than recurse forever"
     );
 }

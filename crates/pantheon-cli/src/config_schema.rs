@@ -57,29 +57,18 @@ impl SecretRef {
 /// Execution policy preset. Maps to `Policy` at load time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum PolicyPreset {
     /// Read-only: filesystem + memory read, nothing executes.
     Reader,
     /// Default coding policy: shell and edits allowed, memory gated.
+    #[default]
     Coder,
     /// Coder plus memory tools enabled.
     CoderMemory,
 }
 
-impl Default for PolicyPreset {
-    fn default() -> Self {
-        Self::Coder
-    }
-}
-
 impl PolicyPreset {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Reader => "reader",
-            Self::Coder => "coder",
-            Self::CoderMemory => "coder_memory",
-        }
-    }
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "reader" => Some(Self::Reader),

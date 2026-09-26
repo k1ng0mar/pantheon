@@ -9,3 +9,6 @@ authors.workspace = true
 pantheon-core = { path = "../pantheon-core" }
 pantheon-capability = { path = "../pantheon-capability" }
 
+
+[lints]
+workspace = true

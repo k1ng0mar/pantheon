@@ -268,8 +268,17 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
                 }
             } else if let Some(env) = cfg.model.as_ref().and_then(|m| m.api_key_env.clone()) {
                 println!("make sure {env} is exported before starting a session");
+            } else if let Some(provider) = cfg.model.as_ref().map(|m| m.provider.as_str()) {
+                // A bare endpoint is not evidence that it is unauthenticated.
+                // Local servers usually need no key, but a hosted
+                // OpenAI-compatible gateway almost always does, and guessing
+                // wrong costs the user a confusing 401 on first chat.
+                println!(
+                    "no API key configured for {provider}; if it needs one, \
+                     rerun with --api-key-env <NAME> --key <SECRET>"
+                );
             } else {
-                println!("no API key configured (a local provider needs none)");
+                println!("no API key configured");
             }
             println!("next: pantheon doctor");
         }

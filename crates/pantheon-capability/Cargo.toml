@@ -7,3 +7,6 @@ authors.workspace = true
 
 [dependencies]
 pantheon-core = { path = "../pantheon-core" }
+
+[lints]
+workspace = true
