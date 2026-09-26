@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+# Cancel superseded runs on the same ref. A push while a PR is open runs
+# twice otherwise, and the second run is the only one that matters.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Release-profile assertions are the point of this job; debug misses them.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Dependency cache. Keyed on the lockfile so an unchanged manifest
+      # reuses the compiled deps.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features
+
+      - name: test
+        run: cargo test --workspace
+
+  build:
+    name: release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --workspace
+      # The installer promises a working binary. Prove the artifact runs,
+      # so a green test suite cannot ship a binary that does not start.
+      - name: smoke test the release binary
+        run: |
+          ./target/release/pantheon --version
+          ./target/release/pantheon --help > /dev/null
