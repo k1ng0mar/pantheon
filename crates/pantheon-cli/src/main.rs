@@ -1535,6 +1535,17 @@ timeout_ms = 5000
         }
         _ => {
             match classify_first_arg(&args) {
+                // `--help` and `--version` are questions with real answers.
+                // They were treated as bare flags, so both printed the whole
+                // usage block to stderr and exited 2. `pantheon --version`
+                // must print a version, and `--help` is the one place a user
+                // looks first, so it goes to stdout with exit 0.
+                FirstArg::Flag if args[1] == "--version" || args[1] == "-V" => {
+                    println!("pantheon {}", env!("CARGO_PKG_VERSION"));
+                }
+                FirstArg::Flag if args[1] == "--help" || args[1] == "-h" => {
+                    print!("{}", usage());
+                }
                 FirstArg::Flag => {
                     eprint!("{}", usage());
                     std::process::exit(2);
@@ -1593,6 +1604,28 @@ mod verb_guard_tests {
                 !suggest_verbs(f, 3).contains(&"--help"),
                 "flags must never be suggested as verbs"
             );
+        }
+    }
+
+    #[test]
+    fn version_and_help_have_real_handlers() {
+        // Both used to fall into the bare-flag arm, which printed usage to
+        // stderr and exited 2. `pantheon --version` answering with a usage
+        // dump makes "what version am I running" unanswerable, and it broke
+        // the release smoke test.
+        let v = argv(&["pantheon", "--version"]);
+        assert_eq!(classify_first_arg(&v), FirstArg::Flag);
+        assert!(
+            v.get(1).map(String::as_str) == Some("--version"),
+            "version must be handled before the bare-flag arm"
+        );
+        for f in ["--version", "-V", "--help", "-h"] {
+            let a = argv(&["pantheon", f]);
+            let handled = a.get(1).map(String::as_str) == Some("--version")
+                || a.get(1).map(String::as_str) == Some("-V")
+                || a.get(1).map(String::as_str) == Some("--help")
+                || a.get(1).map(String::as_str) == Some("-h");
+            assert!(handled, "{f} must have a dedicated handler");
         }
     }
 
