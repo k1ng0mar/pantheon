@@ -169,14 +169,62 @@ pub fn run_system_doctor(data_dir: &Path) -> SystemReport {
         )),
     }
 
-    // 5. Plugins: run the extension doctor over the extension dir.
+    // 5. Skills: a broken SKILL.md is dropped silently by discovery, so
+    // count what parsed and say so. Surface the roots, not every skill body
+    // (that is what `skills list` is for).
+    match crate::skills_cli::scan_summary() {
+        Ok(s) => checks.push(check(
+            "skills",
+            if s.broken > 0 { "warn" } else { "ok" },
+            s.detail(),
+            if s.broken > 0 {
+                "run `pantheon skills doctor` for the broken ones"
+            } else {
+                ""
+            },
+        )),
+        Err(e) => checks.push(check(
+            "skills",
+            "fail",
+            e.cause,
+            "check permissions on the skill roots",
+        )),
+    }
+
+    // 6. Gateway: no token means the surface is simply off, which is a
+    // legitimate configuration, not a fault. Name the env var so the user
+    // knows the one line that would enable it.
+    let mut live = Vec::new();
+    if std::env::var("PANTHEON_DISCORD_TOKEN").is_ok_and(|t| !t.is_empty()) {
+        live.push("discord");
+    }
+    if std::env::var("PANTHEON_TELEGRAM_BOT_TOKEN").is_ok_and(|t| !t.is_empty()) {
+        live.push("telegram");
+    }
+    checks.push(check(
+        "gateway",
+        if live.is_empty() { "warn" } else { "ok" },
+        if live.is_empty() {
+            "no channel tokens set; gateway is idle".to_string()
+        } else {
+            format!("{} surface(s) enabled: {}", live.len(), live.join(", "))
+        },
+        if live.is_empty() {
+            "set PANTHEON_DISCORD_TOKEN and/or PANTHEON_TELEGRAM_BOT_TOKEN to run `pantheon gateway`"
+        } else {
+            ""
+        },
+    ));
+
+    // 7. Plugins: run the extension doctor over the extension dir.
     let ext_dir = crate::ext_dir();
     let entries = match std::fs::read_dir(&ext_dir) {
         Ok(entries) => entries,
+        // A missing directory is an empty plugin set, not a failure, and it
+        // must not short-circuit the sections below it.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             checks.push(check("plugins", "ok", "no plugins installed", ""));
-            let ok = !checks.iter().any(|c| c.status == "fail");
-            return SystemReport { ok, checks };
+            return finish(checks);
         }
         Err(e) => {
             checks.push(check(
@@ -185,7 +233,7 @@ pub fn run_system_doctor(data_dir: &Path) -> SystemReport {
                 format!("cannot read {}: {e}", ext_dir.display()),
                 "check permissions on the extension dir",
             ));
-            return SystemReport { ok: false, checks };
+            return finish(checks);
         }
     };
     let mut dirs: Vec<PathBuf> = entries
@@ -223,6 +271,13 @@ pub fn run_system_doctor(data_dir: &Path) -> SystemReport {
         ));
     }
 
+    let ok = !checks.iter().any(|c| c.status == "fail");
+    SystemReport { ok, checks }
+}
+
+/// Single exit point for the section list so the `ok` verdict can never be
+/// computed at one return site and missed at another.
+fn finish(checks: Vec<Check>) -> SystemReport {
     let ok = !checks.iter().any(|c| c.status == "fail");
     SystemReport { ok, checks }
 }
