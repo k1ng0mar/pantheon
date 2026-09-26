@@ -123,3 +123,40 @@ fn shell_push_arg_escalates_to_git_push_capability() {
     assert!(!caps.contains(&Capability::GitPush), "got {caps:?}");
     assert!(caps.contains(&Capability::ShellExecute));
 }
+
+#[test]
+fn shell_result_states_whether_the_sandbox_actually_ran() {
+    // `run_shell` used to discard `SandboxOutcome::sandboxed`, so on a host
+    // where user namespaces are unavailable — most EC2 and container
+    // instances, where `bwrap` fails with "setting up uid map: Permission
+    // denied" — a command the tool documents as HIGH isolation ran
+    // un-isolated with nothing in the tool result, the ledger, or /explain to
+    // record the downgrade. The invariant is that the result is never silent
+    // about degraded isolation.
+    let mut reg = ToolRegistry::default();
+    crate::builtins::register_builtins(&mut reg);
+    let args = serde_json::json!({ "command": "echo pantheon-sandbox-probe" }).to_string();
+
+    let probe = pantheon_sandbox::runner::run_sandboxed(
+        &SandboxProfile::from(SandboxLevel::High),
+        "sh",
+        &["-c", "true"],
+        &std::env::temp_dir().to_string_lossy(),
+    );
+    let sandbox_works = probe.map(|r| r.sandboxed).unwrap_or(false);
+
+    let out = reg.execute("shell", &args).expect(
+        "shell must still run when isolation is unavailable; the capability \
+                 gate already ran, so degraded isolation is a notice, not a failure",
+    );
+    assert!(
+        out.contains("pantheon-sandbox-probe"),
+        "the command must actually have run, got {out:?}"
+    );
+    assert_eq!(
+        out.contains("ran WITHOUT namespace isolation"),
+        !sandbox_works,
+        "the degraded-isolation notice must appear exactly when the sandbox did not \
+         initialize (sandbox_works={sandbox_works}), got {out:?}"
+    );
+}
