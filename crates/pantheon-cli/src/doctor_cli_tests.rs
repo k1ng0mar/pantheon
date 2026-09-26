@@ -85,3 +85,23 @@ fn doctor_lists_agent_identities_by_display_name() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn doctor_fails_when_config_parses_but_has_no_model() {
+    // The preflight a user runs before a first session must not pass a
+    // config that cannot run one. It used to warn and exit 0.
+    let dir = std::env::temp_dir().join(format!("pantheon-doctor-nomodel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        "profile = \"default\"\npolicy = \"coder\"\n",
+    )
+    .unwrap();
+
+    let rep = run_system_doctor(&dir);
+    assert!(!rep.ok, "a config with no [model] must not pass");
+    let model = rep.checks.iter().find(|c| c.section == "model").unwrap();
+    assert_eq!(model.status, "fail");
+    assert!(model.fix.contains("setup"));
+}
