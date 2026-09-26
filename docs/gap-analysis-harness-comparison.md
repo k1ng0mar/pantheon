@@ -396,6 +396,11 @@ Recorded so the doc does not drift from the binary:
   a verb.
 - Removed `sign`. There is no bundled web client, so nothing consumed a
   signed artifact URL minted from the CLI.
+- Removed `stream` and `channel`. Both were standalone CLI wrappers over the
+  same `snapshot_frames` + `SseEncoder` calls `pantheon-api/src/serve.rs`
+  makes internally; the server never called them. An earlier claim in this
+  file's history that `serve` depended on them was wrong. `channel` was, by
+  its own doc comment, a demo proving the channel seam with no consumer.
 - Added `fallback <add|list|remove|insert>`, which edits `[model].fallbacks`
   in config. The chain was already honoured by `ProviderChain`; it just had
   no surface.
@@ -405,6 +410,12 @@ Recorded so the doc does not drift from the binary:
 - `gateway` became `start|stop|restart|status|run`. `start` writes a systemd
   user unit (launchd on macOS) and confirms the unit reached `active`, so a
   crash-loop is reported instead of silently returning 0.
+- Added `Supervisor::pending_approvals`, and the `RUN_PARKED` message now
+  inlines the exact copy-pasteable `--grant` / `--deny` command with the scope
+  in it. The scope is `call_id:tool:args` — JSON with embedded quotes — so
+  making the operator extract it from a table by hand was a real papercut on
+  the one path that already needs a human. `explain` is no longer a
+  prerequisite for answering an approval.
 
 ## Recommendation order
 

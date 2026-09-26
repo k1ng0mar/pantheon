@@ -596,6 +596,141 @@ impl Ledger {
         conn.query_row("SELECT COALESCE(MAX(seq),0) FROM events", [], |r| r.get(0))
             .map_err(|e| err("LEDGER_STATUS", e.to_string()))
     }
+    /// A run whose persisted status says it is still live.
+    ///
+    /// `running` and `awaiting_approval` are the two non-terminal states, and
+    /// both are wrong once the process holding them is gone. A crash between
+    /// "tool started" and "tool completed" leaves a `running` row forever,
+    /// because only the terminal events clear it and they never arrive.
+    pub fn stuck_runs(&self) -> Result<Vec<RunListing>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT run_id, status, created_ms, title FROM runs \
+                 WHERE status IN ('running','awaiting_approval') \
+                 ORDER BY created_ms ASC",
+            )
+            .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| err("LEDGER_QUERY", e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// Whether a run lease is still held by a process that is actually alive.
+    ///
+    /// A lease row outlives a `kill -9`: nothing gets to release it, and its
+    /// TTL keeps counting for the full window. Testing `lease_until_ms > now`
+    /// alone therefore reports a crashed run as busy for up to a full TTL,
+    /// which is exactly when the operator most needs `repair` to work — the
+    /// moment right after the crash.
+    ///
+    /// So a lease counts as live only if it is both unexpired *and* recently
+    /// heartbeated. A supervisor that is gone stops heartbeating
+    /// immediately, so the stale-heartbeat test is the one that means
+    /// "someone is still driving this run".
+    pub fn has_active_lease(&self, run_id: &str) -> Result<bool, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let now = now_ms();
+        let row: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT lease_until_ms, heartbeat_ms FROM run_leases WHERE run_id = ?1",
+                params![run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        let Some((until, beat)) = row else {
+            return Ok(false);
+        };
+        if until <= now {
+            return Ok(false);
+        }
+        // A heartbeat older than a fifth of the TTL, with at least a 2s floor,
+        // means the holder is not renewing. Tuned to be well inside the TTL so
+        // a busy-but-alive run is never mistaken for a corpse.
+        let window = (until - beat).max(2_000) / 5;
+        Ok(now - beat <= window)
+    }
+
+    /// SQLite's own integrity check, verbatim. Returns the rows it reports,
+    /// which is `["ok"]` on a healthy database.
+    ///
+    /// This is the check nothing in the repo performed. A corrupted ledger
+    /// previously surfaced as a confusing downstream read error with no way
+    /// to tell "your data is damaged" from "this query has a bug".
+    pub fn integrity_check(&self) -> Result<Vec<String>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare("PRAGMA integrity_check")
+            .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| err("LEDGER_QUERY", e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// Force a stuck run to a terminal state, refusing while a live lease
+    /// exists.
+    ///
+    /// This appends a real `RunFailed` rather than issuing an `UPDATE`, so the
+    /// event trail explains itself: a reader replaying the ledger sees why the
+    /// run ended instead of finding a status that contradicts its last event.
+    /// A `repair` that rewrites history is a `repair` you cannot audit.
+    pub fn settle_stuck_run(&self, run_id: &str, reason: &str) -> Result<(), PantheonError> {
+        if self.has_active_lease(run_id)? {
+            return Err(err(
+                "REPAIR_LEASE_ACTIVE",
+                format!("run {run_id} still holds a live lease; stop the session first"),
+            ));
+        }
+        let status = self
+            .status(run_id)?
+            .ok_or_else(|| err("REPAIR_NO_RUN", format!("no run {run_id} in ledger")))?;
+        if !matches!(status.as_str(), "running" | "awaiting_approval") {
+            return Err(err(
+                "REPAIR_NOT_STUCK",
+                format!("run {run_id} is {status}, which is already terminal"),
+            ));
+        }
+        // `RunFailed` carries only a code, so the reason goes out as a
+        // progress event first. That is what a reader replaying the ledger
+        // actually needs: the terminal event says the run was repaired, and
+        // the event before it says what was wrong.
+        self.append(&Event::RunProgress {
+            run_id: run_id.into(),
+            detail: format!("repair: {reason}"),
+        })?;
+        self.append(&Event::RunFailed {
+            run_id: run_id.into(),
+            code: "REPAIRED".into(),
+        })
+        .map(|_| ())
+    }
+
     pub fn explain(&self, run_id: &str) -> Result<String, PantheonError> {
         let entries = self.replay(run_id)?;
         if entries.is_empty() {

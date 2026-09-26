@@ -485,10 +485,11 @@ fn run_job_now(job: &StoredJob, data_dir: &Path) {
             // A parked run is a real outcome, not a failure: it needs a
             // grant before it can finish.
             if e.code == "RUN_PARKED" {
-                println!(
-                    "parked {} — run {run_id} (grant: pantheon run --taskID {run_id} --grant <scope>)",
-                    job.task
-                );
+                // The error carries the copy-pasteable grant command with the
+                // scope already inlined, so a placeholder here was worse than
+                // useless: it looked actionable and was not.
+                println!("parked {}", job.task);
+                println!("{e}");
             } else {
                 eprintln!("scheduled task failed: {e}");
                 std::process::exit(1);

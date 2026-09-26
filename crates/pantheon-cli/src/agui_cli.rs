@@ -1,8 +1,6 @@
-//! AG-UI CLI verbs: serve / stream / channel. Thin surface over
+//! AG-UI CLI verb: serve, plus the post-grant resume. Thin surface over
 //! pantheon-api + pantheon-gateway; no business logic here.
-use super::{data_dir, ext_dir};
-use pantheon_gateway::SseEncoder;
-use std::path::PathBuf;
+use super::data_dir;
 /// Reject a flag whose value cannot be used, naming the flag and what it
 /// expected. Silently falling back to a default meant the user talked to a
 /// different server than the one they asked for.
@@ -20,14 +18,6 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         i += 1;
     }
     None
-}
-fn threads_file() -> PathBuf {
-    data_dir().join("threads.json")
-}
-fn read_thread(run_id: &str) -> Option<String> {
-    let raw = std::fs::read_to_string(threads_file()).ok()?;
-    let map: std::collections::HashMap<String, String> = serde_json::from_str(&raw).ok()?;
-    map.get(run_id).cloned()
 }
 pub fn cmd_serve(args: &[String]) {
     use crate::config_doc;
@@ -84,21 +74,6 @@ pub fn cmd_serve(args: &[String]) {
         std::process::exit(1);
     }
 }
-pub fn cmd_stream(args: &[String]) {
-    if args.len() < 3 {
-        eprintln!("usage: pantheon stream <run_id> [--thread T] [--after N]");
-        std::process::exit(2);
-    }
-    let run_id = args[2].clone();
-    let thread = flag(args, "--thread")
-        .or_else(|| read_thread(&run_id))
-        .unwrap_or_else(|| format!("cli:{run_id}"));
-    let after: i64 = flag(args, "--after")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let frames = pantheon_api::snapshot_frames(&data_dir(), &run_id, &thread, after);
-    print!("{}", SseEncoder.frames(&frames));
-}
 /// Continue a parked run after a grant: an empty turn rebuilds the
 /// transcript from the ledger and settles the granted call. Never resends
 /// the original user message, which would append a duplicate turn.
@@ -135,31 +110,5 @@ pub fn resume_after_grant(run_id: &str) {
             eprintln!("resume {run_id}: {e}");
             std::process::exit(1);
         }
-    }
-}
-/// Channel demo: replay a run's frames through the transport seam into an
-/// in-memory surface and print the shared text fallback. Proves discord /
-/// slack / web consume the same stream without a live surface.
-pub fn cmd_channel(args: &[String]) {
-    use pantheon_gateway::{format_text, Channel, ChannelEnvelope, MemoryChannel};
-    if args.len() < 3 {
-        eprintln!("usage: pantheon channel <run_id> [--thread T]");
-        std::process::exit(2);
-    }
-    let run_id = args[2].clone();
-    let thread = flag(args, "--thread")
-        .or_else(|| read_thread(&run_id))
-        .unwrap_or_else(|| format!("cli:{run_id}"));
-    let frames = pantheon_api::snapshot_frames(&data_dir(), &run_id, &thread, 0);
-    let web = MemoryChannel::new("web");
-    let _ = ext_dir;
-    for f in &frames {
-        let _ = web.send(ChannelEnvelope {
-            thread_id: thread.clone(),
-            frame: f.clone(),
-        });
-    }
-    for env in web.drain_outbound() {
-        println!("{}", format_text(&env.frame));
     }
 }

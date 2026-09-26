@@ -591,14 +591,24 @@ impl Session {
         let mut reopened = false;
         match self.supervisor.ledger_status(run_id)?.as_deref() {
             Some("awaiting_approval") => {
-                return Err(aerr(
-                    "RUN_PARKED",
-                    format!(
-                        "run {run_id} is parked on approval; \
-                         check `pantheon explain {run_id}` for the call id, then \
-                         `pantheon grant {run_id} <call_id>`"
+                // Name the scope. This used to point at `pantheon explain` and
+                // leave the operator to copy `call_id:tool:args` — JSON with
+                // embedded quotes — out of a table by hand. An approval flow
+                // cannot ask for that.
+                let pending = self.supervisor.pending_approvals(run_id)?;
+                let how = match pending.first() {
+                    Some(scope) => format!(
+                        "run {run_id} is parked on approval; allow it with\n  \
+                         pantheon run --taskID {run_id} --grant '{scope}'\n\
+                         or refuse it with\n  \
+                         pantheon run --taskID {run_id} --deny '{scope}'"
                     ),
-                ));
+                    None => format!(
+                        "run {run_id} is parked on approval but lists no pending \
+                         scope; see `pantheon explain {run_id}`"
+                    ),
+                };
+                return Err(aerr("RUN_PARKED", how));
             }
             Some("completed") | Some("failed") | Some("canceled") => {
                 // Interactive continuation: flip the terminal status back

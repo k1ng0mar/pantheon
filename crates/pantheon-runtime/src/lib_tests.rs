@@ -353,3 +353,67 @@ fn chat_on_parked_run_is_refused() {
     let err = session.chat("run_park", "again").unwrap_err();
     assert_eq!(err.code, "RUN_PARKED");
 }
+
+/// The park message names the scope so nobody has to read the ledger to
+/// answer an approval. That is only true if `pending_approvals` returns
+/// exactly the unresolved scopes, so assert both halves: it lists what is
+/// open, and it drops what has been decided.
+#[test]
+fn pending_approvals_lists_open_scopes_and_drops_resolved_ones() {
+    let dir = std::env::temp_dir().join(format!("pantheon-pending-appr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let sup = Supervisor::open(dir).unwrap();
+    let run = "run_pending";
+    sup.start_run(run).unwrap();
+    for scope in ["call_0_0:shell:{\"cmd\":\"ls\"}", "call_0_1:write_file"] {
+        sup.emit(Event::ApprovalRequested {
+            run_id: run.into(),
+            scope: scope.into(),
+        })
+        .unwrap();
+    }
+    // Order is request order, and a scope with embedded JSON must survive
+    // verbatim: the operator is going to paste it into a shell.
+    assert_eq!(
+        sup.pending_approvals(run).unwrap(),
+        vec![
+            "call_0_0:shell:{\"cmd\":\"ls\"}".to_string(),
+            "call_0_1:write_file".to_string(),
+        ]
+    );
+
+    // A denial is a decision: it must leave the pending set, and a denial is
+    // scoped, not terminal, so the other scope stays open.
+    sup.deny(run, "call_0_0:shell:{\"cmd\":\"ls\"}").unwrap();
+    assert_eq!(
+        sup.pending_approvals(run).unwrap(),
+        vec!["call_0_1:write_file".to_string()],
+        "a denied scope is still listed as pending"
+    );
+
+    sup.grant(run, "call_0_1:write_file").unwrap();
+    assert!(
+        sup.pending_approvals(run).unwrap().is_empty(),
+        "a granted scope is still listed as pending"
+    );
+}
+
+/// A run that was never parked has nothing pending, and asking must not
+/// invent a scope. The park message falls back to pointing at `explain` when
+/// this returns empty, so an empty result is a real branch, not a curiosity.
+#[test]
+fn pending_approvals_is_empty_for_a_run_that_never_parked() {
+    let dir = std::env::temp_dir().join(format!("pantheon-pending-none-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let sup = Supervisor::open(dir).unwrap();
+    sup.start_run("run_never_parked").unwrap();
+    sup.emit(Event::RunProgress {
+        run_id: "run_never_parked".into(),
+        detail: "just working".into(),
+    })
+    .unwrap();
+    assert!(sup
+        .pending_approvals("run_never_parked")
+        .unwrap()
+        .is_empty());
+}
