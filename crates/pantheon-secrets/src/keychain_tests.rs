@@ -115,4 +115,12 @@ fn bad_names_are_rejected_before_touching_the_store() {
         vault.get(&long).unwrap_err(),
         SecretsError::Invalid(_)
     ));
+    assert!(matches!(
+        vault.set(&long, SecretValue::new("x")).unwrap_err(),
+        SecretsError::Invalid(_)
+    ));
+    assert!(matches!(
+        vault.delete(&long).unwrap_err(),
+        SecretsError::Invalid(_)
+    ));
 }
