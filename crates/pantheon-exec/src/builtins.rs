@@ -217,7 +217,20 @@ fn run_shell(args: &str) -> Result<String, PantheonError> {
     } else {
         format!("{}\n(exit {code})", result.output)
     };
-    let compacted = compact_output(&raw, &Default::default());
+    // The runner reports whether isolation actually happened, because a host
+    // without working user namespaces silently falls back to a direct spawn
+    // (a common case: most EC2/container instances block `bwrap`'s uid map).
+    // Discarding the flag let a command the tool documents as HIGH isolation
+    // run un-isolated with nothing in the tool result, the ledger, or
+    // /explain to record the downgrade. Say so in every result rather than
+    // failing the call — the capability gate still ran, so this is degraded
+    // isolation, not a bypassed policy.
+    let notice = if result.sandboxed {
+        String::new()
+    } else {
+        "[sandbox unavailable on this host: ran WITHOUT namespace isolation]\n".to_string()
+    };
+    let compacted = compact_output(&format!("{notice}{raw}"), &Default::default());
     Ok(compacted.text)
 }
 
