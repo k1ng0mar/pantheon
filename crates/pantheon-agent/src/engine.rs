@@ -113,8 +113,13 @@ pub enum LoopOutcome {
     },
     /// A capability was denied: the run stopped hard.
     Denied { capability: Capability },
-    /// Policy wants approval before the tool can run.
-    AwaitingApproval { capability: Capability },
+    /// Policy wants approval before the tool can run. `scope` is the call
+    /// id that `pantheon grant` expects, so the message can name the exact
+    /// command instead of leaving the user to dig the id out of the ledger.
+    AwaitingApproval {
+        capability: Capability,
+        scope: String,
+    },
     /// A budget cap stopped the run.
     BudgetExhausted { cap: &'static str },
     /// The user interrupted the run. Distinct from Denied and from a
@@ -385,7 +390,10 @@ impl<'a> AgentLoop<'a> {
                                     run_id: self.run_id.clone(),
                                     scope: call_id.clone(),
                                 });
-                                return Ok(LoopOutcome::AwaitingApproval { capability });
+                                return Ok(LoopOutcome::AwaitingApproval {
+                                    capability,
+                                    scope: call_id.clone(),
+                                });
                             }
                         }
                         // Only executed calls consume budget. Denials and

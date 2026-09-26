@@ -21,6 +21,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// A subscriber to the run's event stream. Cheap to clone, shared across threads.
+pub type EventObserver = std::sync::Arc<dyn Fn(&Event) + Send + Sync>;
 pub use watchdog::{TurnWatchdog, WatchdogAction};
 
 fn rerr(code: &str, cause: String) -> PantheonError {
@@ -75,7 +78,7 @@ struct SupervisorInner {
     /// ledger append. Registration is via `register_observer` on the
     /// handle; the list itself lives behind a mutex because registration
     /// happens while runs are already in flight.
-    observers: std::sync::Mutex<Vec<std::sync::Arc<dyn Fn(&Event) + Send + Sync>>>,
+    observers: std::sync::Mutex<Vec<EventObserver>>,
 }
 
 /// Holds a run lease until the work scope exits.  Dropping the guard is the

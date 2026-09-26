@@ -43,7 +43,7 @@ fn save_backend_selection(data_dir: &Path, sel: &BackendSelection) {
     }
 }
 fn usage() -> String {
-    "pantheon <chat|run|schedule|swarm|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback|serve|stream|grant|deny|sign|setup|session|reset|gateway|skills|migrate|mcp|audit|pipeline> ...\n  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n  run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]\n  schedule <task> --30m [--agent NAME] | list|pause|resume|cancel|run <id>\n  swarm <N> \"<task>\" [roles...] [--delivery telegram]\n  explain <run_id>\n  status <run_id>\n  extensions  list loaded extensions\n  hook <name> [--session S] [--platform P]  fire a hook\n  doctor <plugin_dir>  loud preflight report\n  preview <path> <file-with-new-content>  read-only diff preview\n  stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n  apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n  checkpoint <path>... [--run ID]  snapshot pre-images\n  rollback (--ckpt ID | --seq N)  restore a checkpoint\n  serve [--port N] [--host H]  AG-UI SSE + RPC server (cline-style interactive)\n  stream <run_id> [--thread T] [--after N]  print SSE frames for a run\n  grant <run_id> <scope>  approve a parked tool call\n  deny <run_id> [scope]  refuse a parked tool call\n  sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n  channel <run_id> [--thread T]  replay frames through the transport seam\n  gateway                    run Discord/Telegram surfaces (env tokens)\n  setup                      interactive wizard: API key, default model, policy\n  model [--list] [--auxiliary KIND]  provider picker, stacked keys → .env, live model fetch\n  provider <add|list|remove>  custom-endpoint registry (keys → <data_dir>/.env)\n  session                    start the interactive REPL (default if no args)\n  reset [--config|--state|--everything] [--yes]  wipe data with confirmation\n  audit <run_id> [OUT.jsonl]  sequence-validated JSONL trajectory export\n  pipeline <run_id> [--approve STAGE|--deny STAGE]  six-stage orchestration gates\n  providers                  list cataloged providers and models\n  mcp list [--json]                     MCP servers declared by a migration, and whether they can register
+    "pantheon <chat|run|schedule|swarm|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback|serve|stream|grant|deny|sign|setup|session|reset|gateway|skills|migrate|mcp|audit|pipeline> ...\n  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n  run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]  synthetic ledger events, no model\n  schedule <task> --30m [--agent NAME] | list|pause|resume|cancel|run <id>\n  swarm <N> \"<task>\" [roles...] [--delivery telegram]\n  explain <run_id>\n  status <run_id>\n  extensions  list loaded extensions\n  hook <name> [--session S] [--platform P]  fire a hook\n  doctor <plugin_dir>  loud preflight report\n  preview <path> <file-with-new-content>  read-only diff preview\n  stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n  apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n  checkpoint <path>... [--run ID]  snapshot pre-images\n  rollback (--ckpt ID | --seq N)  restore a checkpoint\n  serve [--port N] [--host H]  AG-UI SSE + RPC server (cline-style interactive)\n  stream <run_id> [--thread T] [--after N]  print SSE frames for a run\n  grant <run_id> <scope>  approve a parked tool call\n  deny <run_id> [scope]  refuse a parked tool call\n  sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n  channel <run_id> [--thread T]  replay frames through the transport seam\n  gateway                    run Discord/Telegram surfaces (env tokens)\n  setup                      interactive wizard: API key, default model, policy\n  model [--list] [--auxiliary KIND]  provider picker, stacked keys → .env, live model fetch\n  provider <add|list|remove>  custom-endpoint registry (keys → <data_dir>/.env)\n  session                    start the interactive REPL (default if no args)\n  reset [--config|--state|--everything] [--yes]  wipe data with confirmation\n  audit <run_id> [OUT.jsonl]  sequence-validated JSONL trajectory export\n  pipeline <run_id> [--approve STAGE|--deny STAGE]  six-stage orchestration gates\n  providers                  list cataloged providers and models\n  mcp list [--json]                     MCP servers declared by a migration, and whether they can register
   migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp> [path] [--kind K] [--json] [--yes] [--merge-providers]  section 23 import pipeline
   skills list|import <name>|doctor  discover/import/check SKILL.md skills\n"
         .into()
@@ -356,10 +356,13 @@ fn open_memory() -> MemoryStore {
 }
 
 fn memory_help() {
-    eprintln!("usage: pantheon memory <import|export|recall|put|confirm|sync|backend|vault> ...");
+    eprintln!(
+        "usage: pantheon memory <import|export|list|recall|put|confirm|sync|backend|vault> ..."
+    );
     eprintln!("  import [FILE]       import MEMORY.md into native memory");
     eprintln!("  export [FILE]       export native agent memory to MEMORY.md");
     eprintln!("  sync [FILE]         reconcile MEMORY.md and the native store");
+    eprintln!("  list                show every memory in the agent namespace");
     eprintln!("  recall QUERY        search native memory");
     eprintln!("  put KEY VALUE       store an agent memory (explicit write)");
     eprintln!("  backend list        show registered memory backends");
@@ -658,6 +661,26 @@ fn main() {
                             hit.record.value,
                             hit.record.provenance.origin
                         );
+                    }
+                }
+                // `recall` needs a query, so there was no way to see what
+                // was stored. This lists the agent namespace directly.
+                "list" => {
+                    let backend = pantheon_memory::open_selected(&data_dir()).unwrap_or_else(|e| {
+                        eprintln!("memory list: backend: {e}");
+                        std::process::exit(1);
+                    });
+                    let rows = backend.list_agent(&namespace).unwrap_or_else(|e| {
+                        eprintln!("memory list: {e}");
+                        std::process::exit(1);
+                    });
+                    if rows.is_empty() {
+                        println!("no memories in namespace {namespace}");
+                    } else {
+                        for (key, value) in &rows {
+                            println!("{key} = {value}");
+                        }
+                        println!("({} in namespace {namespace})", rows.len());
                     }
                 }
                 "confirm" => {
@@ -1025,6 +1048,21 @@ timeout_ms = 5000
                 }
                 i += 1;
             }
+            // `run` writes ledger events directly. It does not call a model
+            // and does not execute the named tool, so it is a synthetic-run
+            // writer for ledger and recovery testing. It is not an
+            // alternative to `chat`, and saying so up front is cheaper than
+            // letting someone discover it from an empty transcript.
+            if say.is_none() && tool.is_none() && fail.is_none() && !with_ext {
+                eprintln!("usage: pantheon run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]");
+                eprintln!();
+                eprintln!("run writes synthetic ledger events only: it never calls a model and");
+                eprintln!(
+                    "never executes the tool named by --tool. Use `pantheon chat` for a real"
+                );
+                eprintln!("turn, or `pantheon run --say TEXT` to seed a run for recovery testing.");
+                std::process::exit(2);
+            }
             let sup = match Supervisor::open(data_dir()) {
                 Ok(s) => s,
                 Err(e) => {
@@ -1057,12 +1095,23 @@ timeout_ms = 5000
                 }
             }
             if let Some(t) = tool {
+                // Started and completed, so the run does not end with a
+                // dangling call id. An unfinished call makes the next resume
+                // treat the run as interrupted and re-drive it.
+                let prov = pantheon_core::provenance::Provenance::system("cli");
                 sup.emit(Event::ToolStarted {
                     run_id: run_id.clone(),
                     call_id: "cli".into(),
-                    tool: t,
+                    tool: t.clone(),
                     args: String::new(),
-                    provenance: pantheon_core::provenance::Provenance::system("cli"),
+                    provenance: prov.clone(),
+                })
+                .unwrap_or_else(|e| die(&format!("ledger: {e}")));
+                sup.emit(Event::ToolCompleted {
+                    run_id: run_id.clone(),
+                    call_id: "cli".into(),
+                    tool: t,
+                    provenance: prov,
                 })
                 .unwrap_or_else(|e| die(&format!("ledger: {e}")));
             }

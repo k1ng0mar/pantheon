@@ -232,12 +232,15 @@ fn approval_parks_instead_of_running() {
     let out = loop_with(Policy::coder(), &sink, &tools)
         .run(&model, "go", &mut t)
         .unwrap();
-    assert_eq!(
-        out,
-        LoopOutcome::AwaitingApproval {
-            capability: Capability::GitPush
+    // The scope must be the real call id, because that is what the user
+    // types into `pantheon grant`.
+    match out {
+        LoopOutcome::AwaitingApproval { capability, scope } => {
+            assert_eq!(capability, Capability::GitPush);
+            assert!(!scope.is_empty(), "the parked outcome names its call id");
         }
-    );
+        other => panic!("expected AwaitingApproval, got {other:?}"),
+    }
     assert!(!t.iter().any(|l| l.starts_with("tool[push]")));
 }
 
@@ -437,12 +440,13 @@ fn gate_escalates_allow_to_approval_but_never_lowers_deny() {
     };
     let mut t = vec![];
     let out = loop_.run(&model, "go", &mut t).unwrap();
-    assert_eq!(
-        out,
-        LoopOutcome::AwaitingApproval {
-            capability: Capability::ShellExecute
+    match out {
+        LoopOutcome::AwaitingApproval { capability, scope } => {
+            assert_eq!(capability, Capability::ShellExecute);
+            assert!(!scope.is_empty(), "the parked outcome names its call id");
         }
-    );
+        other => panic!("expected AwaitingApproval, got {other:?}"),
+    }
     let sink2 = CapSink(RefCell::new(vec![]));
     let model2 = Scripted {
         steps: RefCell::new(vec![TurnOutcome::Tools {

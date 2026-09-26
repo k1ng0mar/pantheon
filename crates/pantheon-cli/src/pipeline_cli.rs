@@ -5,6 +5,8 @@
 //! pipeline; `pantheon pipeline <run_id> --approve <stage>` / `--deny
 //! <stage>` resolve them and resume.
 
+use std::path::Path;
+
 use crate::config_doc::Config;
 use crate::config_schema::PolicyPreset;
 use pantheon_runtime::pipeline::{AcceptAllEvaluator, StageEvaluator, StageExecutor};
@@ -79,7 +81,7 @@ Reply with exactly ACCEPT or REJECT followed by one reason line.\n\n{output}"
 }
 
 fn open_session(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     policy: pantheon_core::capability::Policy,
 ) -> Result<pantheon_runtime::session::Session, pantheon_core::error::PantheonError> {
     let cfg = Config::load(data_dir).ok();
@@ -105,7 +107,7 @@ fn open_session(
         ),
     };
     let secrets = crate::config_doc::chat_secrets(cfg.as_ref());
-    pantheon_runtime::session::Session::new(data_dir.clone(), policy, model_policy, secrets)
+    pantheon_runtime::session::Session::new(data_dir.to_path_buf(), policy, model_policy, secrets)
 }
 
 pub fn cmd_pipeline(args: &[String]) {

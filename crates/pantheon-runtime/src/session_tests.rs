@@ -386,7 +386,7 @@ fn recalled_memory_is_never_a_bare_system_message() {
     );
 
     // The provider must actually apply the envelope to it.
-    let body = pantheon_providers::openai::body_value("m", &[m.clone()], &[]);
+    let body = pantheon_providers::openai::body_value("m", std::slice::from_ref(&m), &[]);
     let content = body["messages"][0]["content"].as_str().unwrap();
     assert!(
         content.starts_with("[provenance: source=memory:recall trust=memory]"),

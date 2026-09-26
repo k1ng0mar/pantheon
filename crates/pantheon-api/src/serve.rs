@@ -20,7 +20,7 @@ use pantheon_gateway::{
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct ServeConfig {
@@ -118,7 +118,7 @@ fn query_map(path: &str) -> HashMap<String, String> {
     }
     out
 }
-fn thread_for(data_dir: &PathBuf, run_id: &str, fallback: &str) -> String {
+fn thread_for(data_dir: &Path, run_id: &str, fallback: &str) -> String {
     if !fallback.is_empty() {
         return fallback.to_string();
     }
@@ -144,8 +144,8 @@ pub fn remember_thread(data_dir: &PathBuf, run_id: &str, thread_id: &str) {
         let _ = std::fs::write(&p, raw);
     }
 }
-pub fn snapshot_frames(data_dir: &PathBuf, run_id: &str, thread: &str, after: i64) -> Vec<UiFrame> {
-    let sup = match pantheon_runtime::Supervisor::open(data_dir.clone()) {
+pub fn snapshot_frames(data_dir: &Path, run_id: &str, thread: &str, after: i64) -> Vec<UiFrame> {
+    let sup = match pantheon_runtime::Supervisor::open(data_dir.to_path_buf()) {
         Ok(s) => s,
         Err(_) => return vec![],
     };

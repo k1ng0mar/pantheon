@@ -215,7 +215,7 @@ pub fn cmd_sign(args: &[String]) {
     let mime = flag(args, "--mime").unwrap_or_else(|| "application/octet-stream".into());
     let ttl: i64 = flag(args, "--ttl")
         .and_then(|v| v.parse().ok())
-        .unwrap_or(3600_000);
+        .unwrap_or(3_600_000);
     if ttl <= 0 {
         eprintln!("sign: ttl_ms must be positive");
         std::process::exit(2);

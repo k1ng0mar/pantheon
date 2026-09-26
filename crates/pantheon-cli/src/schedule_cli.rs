@@ -65,11 +65,11 @@ fn parse_duration(s: &str) -> Result<u64, String> {
     Ok(n * unit)
 }
 
-fn store_path(data_dir: &PathBuf) -> PathBuf {
+fn store_path(data_dir: &Path) -> PathBuf {
     data_dir.join("schedule.json")
 }
 
-fn load_jobs(data_dir: &PathBuf) -> Vec<StoredJob> {
+fn load_jobs(data_dir: &Path) -> Vec<StoredJob> {
     let path = store_path(data_dir);
     std::fs::read_to_string(&path)
         .ok()
@@ -77,7 +77,7 @@ fn load_jobs(data_dir: &PathBuf) -> Vec<StoredJob> {
         .unwrap_or_default()
 }
 
-fn save_jobs(data_dir: &PathBuf, jobs: &[StoredJob]) -> Result<(), String> {
+fn save_jobs(data_dir: &Path, jobs: &[StoredJob]) -> Result<(), String> {
     let path = store_path(data_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -88,7 +88,7 @@ fn save_jobs(data_dir: &PathBuf, jobs: &[StoredJob]) -> Result<(), String> {
 }
 
 /// Schedule a task to run repeatedly.
-pub fn cmd_schedule(args: &[String], data_dir: &PathBuf) {
+pub fn cmd_schedule(args: &[String], data_dir: &Path) {
     if args.len() < 3 {
         eprintln!("usage: pantheon schedule <task> --30m [--agent nyx]");
         eprintln!("       pantheon schedule list|pause|resume|cancel|run <id>");
@@ -102,7 +102,14 @@ pub fn cmd_schedule(args: &[String], data_dir: &PathBuf) {
     }
 
     // Create: pantheon schedule <task> [--every|N<unit>] [--agent NAME] [--cron EXPR] [--model M] [--provider P]
-    let (task, every, agent, cron, model, provider) = parse_create_args(&args[2..]);
+    let CreateArgs {
+        task,
+        every,
+        agent,
+        cron,
+        model,
+        provider,
+    } = parse_create_args(&args[2..]);
 
     let kind = if let Some(expr) = &cron {
         ScheduleKind::Cron { expr: expr.clone() }
@@ -157,7 +164,7 @@ pub fn cmd_schedule(args: &[String], data_dir: &PathBuf) {
     );
 }
 
-fn handle_subcommand(parts: &[String], data_dir: &PathBuf) {
+fn handle_subcommand(parts: &[String], data_dir: &Path) {
     match parts[0].as_str() {
         "list" => {
             let jobs = load_jobs(data_dir);
@@ -177,7 +184,7 @@ fn handle_subcommand(parts: &[String], data_dir: &PathBuf) {
                     // Full id, not a byte-prefix: ids are `job_run_<ts>_<n>`,
                     // so the first 8 bytes are the shared `job_run_` and
                     // the truncated form was identical for every job.
-                    &j.id,
+                    j.id.as_str(),
                     status,
                     format_kind(&j.kind),
                     j.task,
@@ -258,16 +265,19 @@ fn handle_subcommand(parts: &[String], data_dir: &PathBuf) {
     }
 }
 
-fn parse_create_args(
-    args: &[String],
-) -> (
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+/// What `schedule <task> ...` parsed out of the command line. Named because
+/// a six-element tuple gave no clue what any position meant at the call
+/// site.
+struct CreateArgs {
+    task: String,
+    every: Option<String>,
+    agent: Option<String>,
+    cron: Option<String>,
+    model: Option<String>,
+    provider: Option<String>,
+}
+
+fn parse_create_args(args: &[String]) -> CreateArgs {
     let mut task = String::new();
     let mut every = None;
     let mut agent = None;
@@ -320,7 +330,14 @@ fn parse_create_args(
         }
         i += 1;
     }
-    (task, every, agent, cron, model, provider)
+    CreateArgs {
+        task,
+        every,
+        agent,
+        cron,
+        model,
+        provider,
+    }
 }
 
 fn format_kind(kind: &ScheduleKind) -> String {

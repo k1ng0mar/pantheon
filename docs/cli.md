@@ -57,8 +57,14 @@ fail with `MOCK_PROVIDER_UNCONFIGURED`.
 ```
 pantheon run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]
 ```
-Direct runtime entry used by evals and tests: record a run with optional
-tool execution or failure. Not a user verb, but stable.
+Writes synthetic ledger events for a run. It never calls a model and never
+executes the tool named by `--tool`; the tool event is recorded with a
+completed boundary so the run does not look interrupted to a later resume.
+`--say` records a progress line, `--fail CODE` ends the run failed, and
+`--ext` fires `pre_llm_call` and prints whatever context it injects.
+
+For a real turn use `pantheon chat`. This verb exists so recovery and
+ledger tooling can seed a run without spending a model call.
 
 ### explain / status / audit
 ```
@@ -102,6 +108,7 @@ pantheon memory import [PATH]      # markdown -> store (through the policy gate)
 pantheon memory export [PATH]      # store -> markdown
 pantheon memory sync [PATH]        # bidirectional with conflict detection
 pantheon memory put KEY VALUE
+pantheon memory list                    # every memory in the agent namespace
 pantheon memory recall QUERY
 pantheon memory backend list|select NAME
 pantheon memory backend select NAME [k=v ...]   # bridge options (url, key, ...)
