@@ -47,13 +47,36 @@ fi
 ok "system deps ready"
 
 # --- 2. install Rust if missing ---
+# `command -v rustc` is not enough. A rustup shim can be on PATH with no
+# default toolchain configured: `rustc --version` then fails, and the build
+# later dies with "rustup could not choose a version of rustc to run". That
+# is a broken install, so test that rustc actually runs and set a default if
+# it does not.
+need_rust=0
 if ! command -v rustc >/dev/null 2>&1; then
+    need_rust=1
+elif ! rustc --version >/dev/null 2>&1; then
+    log "rustup shim found but no default toolchain is set..."
+    if command -v rustup >/dev/null 2>&1; then
+        rustup default stable
+    else
+        need_rust=1
+    fi
+fi
+
+if [ "$need_rust" -eq 1 ]; then
     log "installing Rust toolchain..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    # shellcheck disable=SC1091
     . "$HOME/.cargo/env"
-else
-    ok "rustc $(rustc --version)"
 fi
+# Verify, do not assume: everything below depends on a working cargo.
+if ! cargo --version >/dev/null 2>&1; then
+    warn "cargo is still not usable after install."
+    warn "open a new shell (or: . \"$HOME/.cargo/env\") and re-run this script."
+    exit 1
+fi
+ok "$(cargo --version)"
 
 # --- 3. clone or update source ---
 if [ -d "$SRC_DIR/.git" ]; then
