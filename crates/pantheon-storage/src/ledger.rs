@@ -626,47 +626,35 @@ impl Ledger {
             .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
         let mut out = Vec::new();
         for row in rows {
-            out.push(row.map_err(|e| err("LEDGER_QUERY", e.to_string()))?);
+            let row = row.map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+            // A run in a non-terminal state is only *stuck* if nobody is
+            // driving it. One holding a live lease is a session mid-turn, and
+            // reporting it as a corpse would have repair settle live work.
+            //
+            // The lease test is inlined rather than calling
+            // `has_active_lease` because this method already holds `conn`, and
+            // a second `lock()` on the same std Mutex would deadlock.
+            if lease_is_live(&conn, &row.0)? {
+                continue;
+            }
+            out.push(row);
         }
         Ok(out)
     }
 
-    /// Whether a run lease is still held by a process that is actually alive.
+    /// Whether a run lease is held by a process that is actually alive.
     ///
-    /// A lease row outlives a `kill -9`: nothing gets to release it, and its
-    /// TTL keeps counting for the full window. Testing `lease_until_ms > now`
-    /// alone therefore reports a crashed run as busy for up to a full TTL,
-    /// which is exactly when the operator most needs `repair` to work — the
-    /// moment right after the crash.
-    ///
-    /// So a lease counts as live only if it is both unexpired *and* recently
-    /// heartbeated. A supervisor that is gone stops heartbeating
-    /// immediately, so the stale-heartbeat test is the one that means
-    /// "someone is still driving this run".
+    /// A lease row outlives a `kill -9` — nothing gets to release it and its
+    /// TTL keeps counting — so testing `lease_until_ms > now` alone reports a
+    /// crashed run as busy for a full TTL, precisely when the operator most
+    /// needs `repair` to work. See [`lease_is_live`] for the full argument;
+    /// this is the `&self` form of the same predicate.
     pub fn has_active_lease(&self, run_id: &str) -> Result<bool, PantheonError> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
-        let now = now_ms();
-        let row: Option<(i64, i64)> = conn
-            .query_row(
-                "SELECT lease_until_ms, heartbeat_ms FROM run_leases WHERE run_id = ?1",
-                params![run_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .ok();
-        let Some((until, beat)) = row else {
-            return Ok(false);
-        };
-        if until <= now {
-            return Ok(false);
-        }
-        // A heartbeat older than a fifth of the TTL, with at least a 2s floor,
-        // means the holder is not renewing. Tuned to be well inside the TTL so
-        // a busy-but-alive run is never mistaken for a corpse.
-        let window = (until - beat).max(2_000) / 5;
-        Ok(now - beat <= window)
+        lease_is_live(&conn, run_id)
     }
 
     /// SQLite's own integrity check, verbatim. Returns the rows it reports,
@@ -832,3 +820,30 @@ fn describe(ev: &Event) -> String {
 #[cfg(test)]
 #[path = "ledger_tests.rs"]
 mod tests;
+
+/// Whether `run_id` holds a lease that a live process is renewing.
+///
+/// Takes `&Connection` rather than `&Ledger` so it can be called from a method
+/// that already holds the connection lock; going back through `&self` would
+/// deadlock on the same non-re-entrant `Mutex`.
+fn lease_is_live(conn: &rusqlite::Connection, run_id: &str) -> Result<bool, PantheonError> {
+    let now = now_ms();
+    let row: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT lease_until_ms, heartbeat_ms FROM run_leases WHERE run_id = ?1",
+            params![run_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let Some((until, beat)) = row else {
+        return Ok(false);
+    };
+    if until <= now {
+        return Ok(false);
+    }
+    // A heartbeat older than a fifth of the TTL, with a 2s floor, means the
+    // holder is not renewing. Well inside the TTL, so a busy-but-alive run is
+    // never mistaken for a corpse.
+    let window = (until - beat).max(2_000) / 5;
+    Ok(now - beat <= window)
+}

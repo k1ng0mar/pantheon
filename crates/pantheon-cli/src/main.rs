@@ -170,8 +170,11 @@ fn usage() -> String {
     s.push_str("  providers                    list cataloged providers and models\n");
     s.push_str("  fallback <add|list|remove>   ordered provider/model fallback chain\n");
     s.push_str("  doctor [<plugin_dir>]        system preflight (or per-plugin)\n");
-    s.push_str("  repair check                   ledger integrity + stranded runs (read-only)\n");
-    s.push_str("  repair runs [RUN_ID]           settle runs stranded by a crash\n");
+    s.push_str(
+        "  repair [--dry-run]              find and fix anything wrong with this install;\n",
+    );
+    s.push_str("                                --dry-run reports without changing anything.\n");
+    s.push_str("                                (pantheon doctor is diagnose-only)\n");
     s.push_str("  reset [--config|--state|--everything] [--yes]\n\n");
 
     s.push_str("EXTEND\n");

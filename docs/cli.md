@@ -344,29 +344,47 @@ active. Typed confirmation (`reset`) is required unless `--yes`.
 
 ### repair
 
-`repair` is what a crash leaves behind. `reset` is not a substitute: it deletes
-state, so a user whose run died mid-turn is choosing between losing everything
-and hand-editing SQLite.
-
-`repair check` is read-only. It reports `PRAGMA integrity_check` verbatim, then
-any run left in a non-terminal state (`running`, `awaiting_approval`):
+`repair` finds and fixes anything wrong with this install. `doctor` is
+diagnosis and changes nothing; `repair` is the fixing half, kept as a separate
+verb so neither can quietly do the other's job (a `doctor` that mutated state
+would be unsafe to run in a loop).
 
 ```
-$ pantheon repair check
-warn: run run_1790460358409_7904 is still 'running' with no live lease
-  fix: pantheon repair runs run_1790460358409_7904
+pantheon repair              # find and fix
+pantheon repair --dry-run    # report what would change, touch nothing
+pantheon repair --json       # machine-readable
 ```
 
-`repair runs [id]` settles them. It appends real events (a `RunProgress` naming
-the reason, then `RunFailed` with code `REPAIRED`) rather than overwriting the
-status, so the ledger still explains how the run ended. With no id it settles
-every stranded run and prints a count.
+The mechanism is one check body with two callers, not two implementations:
+each entry in the registry pairs a read-only `diagnose` with a `repair`, and
+`diagnose` always runs first. So `repair` on a healthy install changes
+nothing, and a problem with no safe automatic fix is reported as `manual`
+rather than skipped. Currently: `data-dir-layout`, `ledger-integrity`,
+`stranded-runs`, `search-index`.
 
-A run holding a live lease is never touched: that one is a session still
-working, not a corpse. "Live" means the lease is unexpired **and** recently
-heartbeated. Testing only the TTL would be wrong, because a lease row outlives
-`kill -9` — nothing gets to release it — so a crashed run reads as busy for a
-full lease TTL, exactly when an operator reaches for `repair`.
+Every fixer that mutates takes a backup first and names the copy:
+
+```
+$ pantheon repair
+fixed  stranded-runs: run_1790460358409_7904 is still 'running' → settled 1 stranded run(s)
+fixed  search-index: FTS index is missing or empty → recreated the FTS index as an
+       empty table. A full re-index of existing runs is NOT implemented, so
+       previously indexed runs are not searchable until they are re-indexed.
+       Backup: /home/you/.pantheon/ledger.db.1790462014193.bak
+
+2 fixed, 0 need a human, 0 failed
+```
+
+Settling a stranded run appends real events (`RunProgress` naming the reason,
+then `RunFailed` with code `REPAIRED`) rather than overwriting status, so the
+ledger still explains how the run ended. A run holding a **live** lease is
+never touched: that one is a session still working, not a corpse. "Live" means
+the lease is unexpired *and* recently heartbeated, because a lease row outlives
+`kill -9` — nothing gets to release it, so a TTL-only test would report a
+crashed run as busy for a full lease TTL after the crash.
+
+Structurally damaged SQLite has no in-place fix. `repair` takes the backup and
+tells you exactly what is left rather than writing to a damaged file.
 
 ## AG-UI verb
 
