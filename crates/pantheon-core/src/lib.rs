@@ -11,6 +11,7 @@ pub mod capability;
 pub mod catalog;
 pub mod error;
 pub mod events;
+pub mod logging;
 pub mod message;
 pub mod model;
 pub mod model_event;

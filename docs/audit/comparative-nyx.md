@@ -65,7 +65,7 @@ this for some, inconsistently).
 
 ## Things that are good and must not be regressed
 
-- Event-sourced ledger as single source of truth; `pantheon logs` offline.
+- Event-sourced ledger as single source of truth; `pantheon runs <id>` offline.
 - The deny-settle semantics (denied approval becomes a transcript result).
 - Lease CAS + PID-reuse protections in process-group kills.
 - MockTransport-driven deterministic evals.

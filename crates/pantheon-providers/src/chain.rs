@@ -199,6 +199,18 @@ impl<T: ChatTransport> ProviderChain<T> {
                 None => (0usize, &self.policy.default),
                 Some((f, fp, fm, fc)) => match self.next_in_chain(*f) {
                     Some((ni, nm)) => {
+                        // The ledger records the fallback, but the ledger is
+                        // per-run and a chain that fails before any run is
+                        // recorded leaves no trace at all. This is the one
+                        // path that answers "why was it slow / why did it end
+                        // up on that model", so it goes to the log too.
+                        pantheon_core::logging::warn(
+                            "provider",
+                            format!(
+                                "fallback {f} ({fp}/{fm}, {fc}) → {ni} ({}/{})",
+                                nm.provider, nm.model
+                            ),
+                        );
                         sink.emit(ModelEvent::Fallback {
                             from_index: *f,
                             from_provider: fp.clone(),
@@ -211,6 +223,15 @@ impl<T: ChatTransport> ProviderChain<T> {
                         (ni, nm)
                     }
                     None => {
+                        pantheon_core::logging::error(
+                            "provider",
+                            match &failed {
+                                Some((_, fp, fm, fc)) => {
+                                    format!("chain exhausted; last failure {fc} on {fp}/{fm}")
+                                }
+                                None => "chain exhausted; no provider was configured".to_string(),
+                            },
+                        );
                         sink.emit(ModelEvent::Exhausted {
                             code: "PROVIDER_EXHAUSTED".into(),
                         });

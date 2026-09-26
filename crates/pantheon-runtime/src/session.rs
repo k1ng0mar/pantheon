@@ -583,6 +583,16 @@ impl Session {
         _turn_id: &str,
         user_message: &str,
     ) -> Result<LoopOutcome, PantheonError> {
+        // A turn that starts and produces no log line is a turn nobody can
+        // debug. The ledger records the run, but not the model, the provider,
+        // or which turn it was.
+        pantheon_core::logging::info(
+            "turn",
+            format!(
+                "start run={run_id} turn={_turn_id} msg={} bytes",
+                user_message.len()
+            ),
+        );
         // Activity-based watchdog: only a failed probe after stall escalates,
         // never wall-clock duration. Pauses (human approval) do not eat the
         // clock because the watchdog only advances inside drive().
@@ -608,6 +618,10 @@ impl Session {
                          scope; see `pantheon logs {run_id}`"
                     ),
                 };
+                pantheon_core::logging::info(
+                    "turn",
+                    format!("run={run_id} is parked on approval; not starting a turn"),
+                );
                 return Err(aerr("RUN_PARKED", how));
             }
             Some("completed") | Some("failed") | Some("canceled") => {

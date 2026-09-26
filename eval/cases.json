@@ -16,10 +16,10 @@
         ]
       },
       "post": [
-        ["logs", "eval-run-1", "contains:started"],
-        ["logs", "eval-run-1", "contains:completed"],
-        ["logs", "eval-run-1", "contains:hello from eval"],
-        ["logs", "eval-run-1", "contains:completed"]
+        ["runs", "eval-run-1", "contains:started"],
+        ["runs", "eval-run-1", "contains:completed"],
+        ["runs", "eval-run-1", "contains:hello from eval"],
+        ["runs", "eval-run-1", "contains:completed"]
       ]
     },
     {
@@ -28,7 +28,7 @@
       "origin": "wave1: offline log replay path",
       "skip": "needs binary",
       "commands": [
-        ["logs", "eval-never-ran"]
+        ["runs", "eval-never-ran"]
       ],
       "expect": {
         "logs-unknown-run-is-empty": [
@@ -51,8 +51,8 @@
         ]
       },
       "post": [
-        ["logs", "eval-run-fail", "contains:FAILED (EVAL_CAP_DENIED)"],
-        ["logs", "eval-run-fail", "contains:FAILED"]
+        ["runs", "eval-run-fail", "contains:FAILED (EVAL_CAP_DENIED)"],
+        ["runs", "eval-run-fail", "contains:FAILED"]
       ]
     },
     {
@@ -73,9 +73,9 @@
         ]
       },
       "post": [
-        ["logs", "eval-run-twice", "contains:first pass"],
-        ["logs", "eval-run-twice", "contains:second pass"],
-        ["logs", "eval-run-twice", "contains:completed"]
+        ["runs", "eval-run-twice", "contains:first pass"],
+        ["runs", "eval-run-twice", "contains:second pass"],
+        ["runs", "eval-run-twice", "contains:completed"]
       ]
     },
     {
@@ -280,7 +280,7 @@
         "setup-reset-roundtrip__2": ["deleted"]
       },
       "post": [
-        ["logs", "eval-reset-run", "contains:no events recorded"]
+        ["runs", "eval-reset-run", "contains:no events recorded"]
       ]
     },
     {
