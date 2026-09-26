@@ -209,6 +209,40 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
         .filter(|s| !s.starts_with("--"))
         .map(|s| s.to_string())
 }
+/// Aggregate view of the skill scan, for `pantheon doctor`.
+///
+/// Discovery drops a broken or shadowed SKILL.md silently, so the only way
+/// to know the count is to ask the scanner. Deliberately reports counts and
+/// nothing else: the per-skill detail is `skills list` / `skills doctor`.
+pub struct SkillScanSummary {
+    pub loaded: usize,
+    pub broken: usize,
+}
+
+impl SkillScanSummary {
+    pub fn detail(&self) -> String {
+        if self.loaded == 0 && self.broken == 0 {
+            return "no skills discovered".to_string();
+        }
+        if self.broken == 0 {
+            return format!("{} skill(s) parsed cleanly", self.loaded);
+        }
+        format!(
+            "{} skill(s) parsed, {} broken or shadowed",
+            self.loaded, self.broken
+        )
+    }
+}
+
+pub fn scan_summary() -> Result<SkillScanSummary, pantheon_core::error::PantheonError> {
+    let dd = data_dir();
+    let scan = scan_skills_ext(&dd, &project_root(), &extra_roots());
+    Ok(SkillScanSummary {
+        loaded: scan.loaded.len(),
+        broken: scan.rejected.len(),
+    })
+}
+
 pub fn cmd_skills_doctor(_args: &[String]) {
     let dd = data_dir();
     let scan = scan_skills_ext(&dd, &project_root(), &extra_roots());

@@ -295,9 +295,10 @@ absent from the report is the signal, not an error.
 ```
 pantheon setup [--yes] [--profile P] [--provider P] [--model M]
                [--api-key-env ENV] [--policy reader|coder|coder_memory]
-               [--memory BACKEND] [--packs a,b] [--plugins a,b]
+               [--memory BACKEND]
                [--fallback-provider P] [--fallback-model M]
-pantheon doctor              # system preflight (config, key, ledger, memory, plugins)
+pantheon doctor              # system preflight (config, key, ledger, memory,
+                             #   skills, gateway, plugins)
 pantheon doctor <plugin_dir> # per-plugin preflight (as above)
 pantheon reset --config | --state | --everything [--yes]
 pantheon providers           # catalog listing
