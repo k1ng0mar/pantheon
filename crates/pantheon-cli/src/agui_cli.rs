@@ -236,7 +236,15 @@ pub fn cmd_sign(args: &[String]) {
         .map(|s| s.into_bytes())
         .unwrap_or_else(|_| b"pantheon-dev-genui-secret".to_vec());
     let r = GenUiSigner::new(base, secret).sign(task, &mime, ttl);
-    println!("{}", serde_json::to_string_pretty(&r).unwrap());
+    // A report that cannot be serialized is still a failure worth reporting,
+    // not a reason to panic over the thing that went wrong.
+    match serde_json::to_string_pretty(&r) {
+        Ok(t) => println!("{t}"),
+        Err(e) => {
+            eprintln!("preview: could not serialize the report as JSON: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 /// Channel demo: replay a run's frames through the transport seam into an
 /// in-memory surface and print the shared text fallback. Proves discord /

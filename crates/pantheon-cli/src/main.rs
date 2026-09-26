@@ -42,6 +42,21 @@ fn save_backend_selection(data_dir: &Path, sel: &BackendSelection) {
         eprintln!("memory backend: {e}");
     }
 }
+/// Print a value as pretty JSON, or a plain error if it cannot be
+/// serialized. Serializing a struct that just round-tripped through serde is
+/// not expected to fail, but a panic here would replace a report with a
+/// backtrace, which is the worst possible output for whatever went wrong
+/// upstream that the report was describing.
+fn print_json<T: serde::Serialize>(label: &str, v: &T) {
+    match serde_json::to_string_pretty(v) {
+        Ok(s) => println!("{s}"),
+        Err(e) => {
+            eprintln!("{label}: could not serialize the report as JSON: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn usage() -> String {
     "pantheon <chat|run|schedule|swarm|explain|status|providers|extensions|hook|doctor|memory|plugins|preview|stage|apply|checkpoint|rollback|serve|stream|grant|deny|sign|setup|session|reset|gateway|skills|migrate|mcp|audit|pipeline> ...\n  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n  run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]  synthetic ledger events, no model\n  schedule <task> --30m [--agent NAME] | list|pause|resume|cancel|run <id>\n  swarm <N> \"<task>\" [roles...] [--delivery telegram]\n  explain <run_id>\n  status <run_id>\n  extensions  list loaded extensions\n  hook <name> [--session S] [--platform P]  fire a hook\n  doctor <plugin_dir>  loud preflight report\n  preview <path> <file-with-new-content>  read-only diff preview\n  stage <path> <file-with-new-content> [--expect HASH]  stage one edit\n  apply <path> <file-with-new-content> [--expect HASH] [--run ID]  checkpoint + atomic write\n  checkpoint <path>... [--run ID]  snapshot pre-images\n  rollback (--ckpt ID | --seq N)  restore a checkpoint\n  serve [--port N] [--host H]  AG-UI SSE + RPC server (cline-style interactive)\n  stream <run_id> [--thread T] [--after N]  print SSE frames for a run\n  grant <run_id> <scope>  approve a parked tool call\n  deny <run_id> [scope]  refuse a parked tool call\n  sign <task_id> [--mime M] [--ttl MS]  mint a signed generative-UI URL\n  channel <run_id> [--thread T]  replay frames through the transport seam\n  gateway                    run Discord/Telegram surfaces (env tokens)\n  setup                      interactive wizard: API key, default model, policy\n  model [--list] [--auxiliary KIND]  provider picker, stacked keys → .env, live model fetch\n  provider <add|list|remove>  custom-endpoint registry (keys → <data_dir>/.env)\n  session                    start the interactive REPL (default if no args)\n  reset [--config|--state|--everything] [--yes]  wipe data with confirmation\n  audit <run_id> [OUT.jsonl]  sequence-validated JSONL trajectory export\n  pipeline <run_id> [--approve STAGE|--deny STAGE]  six-stage orchestration gates\n  providers                  list cataloged providers and models\n  mcp list [--json]                     MCP servers declared by a migration, and whether they can register
   migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp> [path] [--kind K] [--json] [--yes] [--merge-providers]  section 23 import pipeline
@@ -1241,14 +1256,14 @@ timeout_ms = 5000
             if args.len() >= 3 {
                 // Plugin-dir form: keep the original extension doctor.
                 let rep = doctor(std::path::Path::new(&args[2]));
-                println!("{}", serde_json::to_string_pretty(&rep).unwrap());
+                print_json("doctor", &rep);
                 if !rep.ok {
                     std::process::exit(1);
                 }
             } else {
                 // System doctor: config, model, ledger, memory, plugins.
                 let rep = doctor_cli::run_system_doctor(&data_dir());
-                println!("{}", serde_json::to_string_pretty(&rep).unwrap());
+                print_json("doctor", &rep);
                 if !rep.ok {
                     std::process::exit(1);
                 }
@@ -1264,7 +1279,7 @@ timeout_ms = 5000
                 std::process::exit(1);
             });
             match preview_edit(std::path::Path::new(&args[2]), &new_bytes) {
-                Ok(pv) => println!("{}", serde_json::to_string_pretty(&pv).unwrap()),
+                Ok(pv) => print_json("preview", &pv),
                 Err(e) => {
                     eprintln!("preview: {e}");
                     std::process::exit(1);
@@ -1299,7 +1314,7 @@ timeout_ms = 5000
                 expected_hash: expect,
             };
             match w.stage_edits(vec![edit]) {
-                Ok(b) => println!("{}", serde_json::to_string_pretty(&b).unwrap()),
+                Ok(b) => print_json("apply", &b),
                 Err(e) => {
                     eprintln!("stage: {e}");
                     std::process::exit(1);
@@ -1353,7 +1368,7 @@ timeout_ms = 5000
                             r.files.len()
                         ),
                     });
-                    println!("{}", serde_json::to_string_pretty(&r).unwrap());
+                    print_json("apply", &r);
                 }
                 Err(e) => {
                     eprintln!("apply: {e}");
@@ -1386,7 +1401,7 @@ timeout_ms = 5000
                 std::process::exit(1);
             });
             match w.checkpoint(&paths, seq) {
-                Ok(cp) => println!("{}", serde_json::to_string_pretty(&cp).unwrap()),
+                Ok(cp) => print_json("checkpoint", &cp),
                 Err(e) => {
                     eprintln!("checkpoint: {e}");
                     std::process::exit(1);
@@ -1413,12 +1428,9 @@ timeout_ms = 5000
             });
             if let Some(id) = ckpt {
                 match w.restore_checkpoint(&id) {
-                    Ok(paths) => println!(
-                        "{}",
-                        serde_json::to_string_pretty(
-                            &serde_json::json!({"checkpoint": id, "restored": paths})
-                        )
-                        .unwrap()
+                    Ok(paths) => print_json(
+                        "rollback",
+                        &serde_json::json!({"checkpoint": id, "restored": paths}),
                     ),
                     Err(e) => {
                         eprintln!("rollback: {e}");
@@ -1427,12 +1439,9 @@ timeout_ms = 5000
                 }
             } else if let Some(n) = seq {
                 match w.rollback_to_seq(n) {
-                    Ok((id, paths)) => println!(
-                        "{}",
-                        serde_json::to_string_pretty(
-                            &serde_json::json!({"checkpoint": id, "restored": paths})
-                        )
-                        .unwrap()
+                    Ok((id, paths)) => print_json(
+                        "rollback",
+                        &serde_json::json!({"checkpoint": id, "restored": paths}),
                     ),
                     Err(e) => {
                         eprintln!("rollback: {e}");

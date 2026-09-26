@@ -730,7 +730,8 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
                 .ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing 'content'".into()))?;
             let _ = &d0;
             let pv = preview_edit(Path::new(&path), content.as_bytes())?;
-            Ok(serde_json::to_string_pretty(&pv).unwrap())
+            Ok(serde_json::to_string_pretty(&pv)
+                .map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
         },
     );
     let d1 = dir.clone();
@@ -747,7 +748,8 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d1).clone());
             let w = SafeWriter::new(sd)?;
             let batch = w.stage_edits(parse_edit_list(&v)?)?;
-            Ok(serde_json::to_string_pretty(&batch).unwrap())
+            Ok(serde_json::to_string_pretty(&batch)
+                .map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
         },
     );
     let d2 = dir.clone();
@@ -759,7 +761,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
             let w = SafeWriter::new(sd)?;
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
             let r = w.apply_edits(parse_edit_list(&v)?, seq)?;
-            Ok(serde_json::to_string_pretty(&r).unwrap())
+            Ok(serde_json::to_string_pretty(&r).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
         });
     let d3 = dir.clone();
     reg.register(mk("apply_staged", "Atomically apply a staged batch by id.",
@@ -771,7 +773,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
             let sid = jstr(&v, "stage_id").ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing 'stage_id'".into()))?;
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
             let r = w.apply_staged(&sid, seq)?;
-            Ok(serde_json::to_string_pretty(&r).unwrap())
+            Ok(serde_json::to_string_pretty(&r).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
         });
     let d4 = dir.clone();
     reg.register(mk("checkpoint_files", "Snapshot pre-images for paths, anchored to a ledger seq.",
@@ -784,7 +786,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
                 .filter_map(|x| x.as_str()).map(PathBuf::from).collect()).unwrap_or_default();
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
             let cp = w.checkpoint(&paths, seq)?;
-            Ok(serde_json::to_string_pretty(&cp).unwrap())
+            Ok(serde_json::to_string_pretty(&cp).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
         });
     let d5 = dir.clone();
     reg.register(
@@ -800,7 +802,8 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d5).clone());
             let w = SafeWriter::new(sd)?;
             let list = w.list_checkpoints()?;
-            Ok(serde_json::to_string_pretty(&list).unwrap())
+            Ok(serde_json::to_string_pretty(&list)
+                .map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?)
         },
     );
     let d6 = dir.clone();
