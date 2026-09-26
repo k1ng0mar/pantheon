@@ -472,9 +472,10 @@ impl<'a> AgentLoop<'a> {
     /// Route advisory: validate choice against `allowed`, record outcome.
     /// Returns validated choice or None (host keeps default). Never panics.
     ///
-    /// `pub` because the canonical-message driver (`pantheon-runtime`'s
-    /// `Session::drive`) consults the judge inline too — one advisory
-    /// implementation for both loop paths.
+    /// Reachable only through `AgentLoop::run`. `Session::drive`, the
+    /// production path, builds its `AgentLoop` with `judge: None` and never
+    /// consults a judge, so a configured `[judge]` does not currently
+    /// influence routing. See the note in lib.rs.
     pub fn consult_route_advisory(
         &self,
         judge: &dyn pantheon_core::model::Judge,

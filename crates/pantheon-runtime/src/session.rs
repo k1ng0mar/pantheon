@@ -265,6 +265,13 @@ impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
 struct RegistryToolAdapter<'a> {
     registry: &'a ToolRegistry,
     name: String,
+    /// Extension hooks. The adapter is the only executor the production
+    /// path uses, so `pre_tool_call` and `transform_tool_result` are
+    /// enforced here. They used to live in RegRunner, which the parallel
+    /// tool path never constructed, so a plugin could not deny a call and
+    /// could not redact a secret out of tool output.
+    hooks: Option<&'a ExtensionManager>,
+    run_id: String,
 }
 
 impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
@@ -283,9 +290,43 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
             .get("args")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        Ok(serde_json::Value::String(
-            self.registry.execute(name, args)?,
-        ))
+        let Some(mgr) = self.hooks else {
+            return Ok(serde_json::Value::String(
+                self.registry.execute(name, args)?,
+            ));
+        };
+        // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy plugin
+        // blocks the call rather than waving it through. Returned as a
+        // tool-shaped refusal so the model can see why and try something
+        // else, instead of the run dying.
+        let verdict = mgr.fire_gate(
+            pantheon_extensions::Hook::PreToolCall,
+            &self.run_id,
+            "runtime",
+            [
+                ("tool".to_string(), name.to_string()),
+                ("args".to_string(), args.to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        if let pantheon_extensions::GateDecision::Deny { reason, .. } = verdict {
+            return Ok(serde_json::Value::String(format!(
+                "[blocked by extension policy] {reason}"
+            )));
+        }
+        let out = self.registry.execute(name, args)?;
+        // Transform last: the plugin sees the real output and may replace
+        // it. Fails OPEN, so redaction degrades to no-op, never to outage.
+        Ok(serde_json::Value::String(mgr.fire_transform(
+            pantheon_extensions::Hook::TransformToolResult,
+            &self.run_id,
+            "runtime",
+            [("tool".to_string(), name.to_string())]
+                .into_iter()
+                .collect(),
+            &out,
+        )))
     }
     fn translate_result(
         &self,
@@ -432,6 +473,8 @@ impl Session {
         let adapter = RegistryToolAdapter {
             registry,
             name: name.to_string(),
+            hooks: Some(&self.hooks),
+            run_id: run_id.to_string(),
         };
         let operation_id = format!("{run_id}:{call_id}");
         let op = run_tool_operation(

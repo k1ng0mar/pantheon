@@ -10,12 +10,19 @@
 //! this loop. Tools are behind `ToolRunner` and gated by
 //! pantheon_capability::enforce before anything executes.
 //!
-//! NOTE — two loops exist by design:
+//! Two loops exist, and only one runs in production:
 //! - `pantheon-runtime::Session::drive` is the CANONICAL wired path
 //!   (typed `Message` transcript + provenance + real provider chain).
-//! - `pantheon-agent::AgentLoop` is the TEST HARNESS for the engine
-//!   crate: `Vec<String>` transcript, scripted `ModelTurn`s, no network.
-//!   Do not add provider/network behavior here; keep it deterministic.
+//! - `pantheon-agent::AgentLoop::run` has no production caller. It is the
+//!   engine crate's deterministic harness: `Vec<String>` transcript,
+//!   scripted `ModelTurn`s, no network. Do not add provider or network
+//!   behavior here; keep it deterministic.
+//!
+//! Known gap: `AgentLoop::run` consults a judge for route selection and gate
+//! review, and `Session::drive` does not. `Session` builds its `AgentLoop`
+//! with `judge: None`, so a configured `[judge]` section is validated by
+//! `doctor` and then never asked anything. Collapsing the two loops is the
+//! fix; until then, do not configure `[judge]` expecting routing to change.
 pub mod engine;
 pub mod tool;
 
