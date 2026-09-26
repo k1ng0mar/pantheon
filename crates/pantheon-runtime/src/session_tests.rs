@@ -507,7 +507,10 @@ fn the_production_executor_blocks_a_denied_tool() {
     let out = exec(&adapter(&reg, &mgr));
     assert!(out.contains("blocked by extension policy"), "{out}");
     assert!(out.contains("reads credential files"), "{out}");
-    assert!(!out.contains("sk-live-abc123"), "secret leaked past the gate: {out}");
+    assert!(
+        !out.contains("sk-live-abc123"),
+        "secret leaked past the gate: {out}"
+    );
     let _ = std::fs::remove_dir_all(&base);
 }
 

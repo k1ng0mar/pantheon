@@ -267,9 +267,9 @@ struct RegistryToolAdapter<'a> {
     name: String,
     /// Extension hooks. The adapter is the only executor the production
     /// path uses, so `pre_tool_call` and `transform_tool_result` are
-    /// enforced here. They used to live in RegRunner, which the parallel
-    /// tool path never constructed, so a plugin could not deny a call and
-    /// could not redact a secret out of tool output.
+    /// enforced here. They used to live only in RegRunner, which the
+    /// parallel tool path in drive never used, so a plugin could not deny
+    /// a call there and could not redact a secret out of tool output.
     hooks: Option<&'a ExtensionManager>,
     run_id: String,
 }
@@ -318,15 +318,17 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
         let out = self.registry.execute(name, args)?;
         // Transform last: the plugin sees the real output and may replace
         // it. Fails OPEN, so redaction degrades to no-op, never to outage.
-        Ok(serde_json::Value::String(mgr.fire_transform(
-            pantheon_extensions::Hook::TransformToolResult,
-            &self.run_id,
-            "runtime",
-            [("tool".to_string(), name.to_string())]
-                .into_iter()
-                .collect(),
-            &out,
-        )))
+        Ok(serde_json::Value::String(
+            mgr.fire_transform(
+                pantheon_extensions::Hook::TransformToolResult,
+                &self.run_id,
+                "runtime",
+                [("tool".to_string(), name.to_string())]
+                    .into_iter()
+                    .collect(),
+                &out,
+            ),
+        ))
     }
     fn translate_result(
         &self,
@@ -840,10 +842,10 @@ impl Session {
             hooks: Some(&self.hooks),
             run_id: run_id.to_string(),
         };
-        let _ = (&sink, &runner); // adapters used by the legacy loop path below
-                                  // Title generation runs in parallel with the first turn (not before
-                                  // it): the handle is joined after the turn settles so one-shot CLI
-                                  // invocations can't exit before the SessionTitled event lands.
+        let _ = &sink;
+        // Title generation runs in parallel with the first turn (not before
+        // it): the handle is joined after the turn settles so one-shot CLI
+        // invocations can't exit before the SessionTitled event lands.
         let title_task = if first_prompt {
             self.spawn_title_task(run_id, user_message)
         } else {

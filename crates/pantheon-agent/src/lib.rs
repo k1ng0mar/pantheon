@@ -13,10 +13,12 @@
 //! Two loops exist, and only one runs in production:
 //! - `pantheon-runtime::Session::drive` is the CANONICAL wired path
 //!   (typed `Message` transcript + provenance + real provider chain).
-//! - `pantheon-agent::AgentLoop::run` has no production caller. It is the
-//!   engine crate's deterministic harness: `Vec<String>` transcript,
-//!   scripted `ModelTurn`s, no network. Do not add provider or network
-//!   behavior here; keep it deterministic.
+//! - `pantheon-agent::AgentLoop::run` has no production caller. The
+//!   production path builds an `AgentLoop` but drives its own typed
+//!   `Message` turn loop over the same policy, budget, and run identity.
+//!   `run` is the engine crate's deterministic harness: `Vec<String>`
+//!   transcript, scripted `ModelTurn`s, no network. Do not add provider or
+//!   network behavior here; keep it deterministic.
 //!
 //! Known gap: `AgentLoop::run` consults a judge for route selection and gate
 //! review, and `Session::drive` does not. `Session` builds its `AgentLoop`
