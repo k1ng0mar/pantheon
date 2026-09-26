@@ -266,6 +266,10 @@ pub fn cmd_skills_doctor(_args: &[String]) {
 }
 
 /// Resolve a `SkillSource` from a name, for `--scope` provenance tagging.
+///
+/// `bundled` is not a `SkillSource`: those skills live in the pantheon data
+/// dir and carry `origin: bundled` in their frontmatter, so the filter keys
+/// on that string rather than on a source variant.
 pub fn parse_scope(s: &str) -> Option<SkillSource> {
     match s.to_lowercase().as_str() {
         "hermes" => Some(SkillSource::Hermes),
@@ -291,6 +295,14 @@ pub fn filter_by_scope<T>(
     };
     if scope.eq_ignore_ascii_case("all") {
         return items;
+    }
+    // `bundled` is an origin string, not a SkillSource, so it is matched
+    // literally here instead of going through parse_scope.
+    if scope.eq_ignore_ascii_case("bundled") {
+        return items
+            .into_iter()
+            .filter(|it| origin_of(it) == "bundled")
+            .collect();
     }
     let Some(want) = parse_scope(scope) else {
         return Vec::new();

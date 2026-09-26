@@ -375,6 +375,12 @@ pub fn discover_skills_ext(
 /// malformed third-party skill vanishes during discovery and the doctor
 /// reports a healthy tree.
 pub fn scan_skills_ext(data_dir: &Path, project_root: &Path, extra_roots: &[PathBuf]) -> SkillScan {
+    // Materialize bundled skills before the first root is scanned, so every
+    // caller (session, `skills list`, `skills doctor`) sees the same tree.
+    // Seeding is idempotent and never clobbers a user-edited copy, so
+    // running it here rather than per call site is safe. A seed failure is
+    // reported by the seeder and does not abort discovery.
+    let _ = crate::bundled_skills::seed_bundled_skills(data_dir);
     scan_skills_with_home(data_dir, project_root, extra_roots, &home_dir())
 }
 

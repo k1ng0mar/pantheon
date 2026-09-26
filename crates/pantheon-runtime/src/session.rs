@@ -717,6 +717,8 @@ impl Session {
         // (pantheon + project + Hermes/OpenClaw/.agents/.claude +
         // PANTHEON_SKILLS_DIR extra roots), gated on FilesystemRead.
         // Empty skill list registers nothing.
+        // Bundled skills are seeded inside the scan itself, so they are
+        // already on disk by the time discovery returns.
         let extra_roots: Vec<std::path::PathBuf> = std::env::var("PANTHEON_SKILLS_DIR")
             .map(|v| {
                 v.split(':')

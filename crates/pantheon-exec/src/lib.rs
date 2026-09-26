@@ -7,6 +7,7 @@
 
 pub mod acp;
 pub mod builtins;
+pub mod bundled_skills;
 pub mod context;
 pub mod danger;
 pub mod memory_tools;
