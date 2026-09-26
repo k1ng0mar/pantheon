@@ -10,6 +10,7 @@ use crate::tools::{parse_args, ToolRegistry};
 use pantheon_core::capability::Capability;
 use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::message::ToolSchema;
+use pantheon_providers::embeddings::EmbedderClient;
 use std::sync::Arc;
 
 fn serr(code: &str, cause: String) -> PantheonError {
@@ -35,11 +36,16 @@ fn arg_str(v: &serde_json::Value, key: &str) -> Result<String, PantheonError> {
 #[derive(Clone)]
 pub struct SessionSearchOptions {
     pub store: Arc<pantheon_storage::search::SessionSearch>,
+    /// The same client the indexer used. Without it the query cannot be
+    /// embedded, semantic recall is unreachable, and every embedding
+    /// already on disk would be silently ignored.
+    pub embedder: Option<Arc<pantheon_providers::embeddings::EmbedClient>>,
 }
 
 /// Register the `session_search` tool on a registry.
 pub fn register_session_search(reg: &mut ToolRegistry, opts: SessionSearchOptions) {
     let store = opts.store;
+    let embedder = opts.embedder;
     reg.register(
         ToolSchema {
             name: "session_search".into(),
@@ -58,9 +64,22 @@ pub fn register_session_search(reg: &mut ToolRegistry, opts: SessionSearchOption
             let v = parse_args(args)?;
             let query = arg_str(&v, "query")?;
             let limit = v.get("limit").and_then(|x| x.as_u64()).unwrap_or(8) as usize;
-            let hits = store
-                .search(&query, limit)
-                .map_err(|e| serr("TOOL_SEARCH", e.cause.clone()))?;
+            // Embed the query with the indexer's own client so the vector
+            // term is comparable. A failed embed is not an error: lexical
+            // plus recency is a complete answer, just a narrower one.
+            let qvec: Option<Vec<f32>> = embedder
+                .as_ref()
+                .and_then(|c| c.embed(std::slice::from_ref(&query)).ok())
+                .and_then(|mut v| v.drain(..).next())
+                .map(|e| e.vec);
+            let hits = match qvec.as_deref() {
+                Some(q) => store
+                    .search_hybrid(&query, Some(q), limit)
+                    .map_err(|e| serr("TOOL_SEARCH", e.cause.clone()))?,
+                None => store
+                    .search(&query, limit)
+                    .map_err(|e| serr("TOOL_SEARCH", e.cause.clone()))?,
+            };
             if hits.is_empty() {
                 return Ok(format!("no sessions matched '{query}'"));
             }

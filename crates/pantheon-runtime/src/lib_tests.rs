@@ -320,7 +320,6 @@ fn grant_rejects_duplicate_scope() {
 
 #[test]
 fn chat_on_parked_run_is_refused() {
-    use std::path::PathBuf;
     let dir = std::env::temp_dir().join(format!("pantheon-rt7-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let sup = Supervisor::open(dir.clone()).unwrap();
@@ -338,7 +337,7 @@ fn chat_on_parked_run_is_refused() {
     // Build a session whose chat() must refuse before talking to any model.
     // Use an unreachable endpoint to prove the refusal happens pre-flight.
     let session = crate::session::Session::new(
-        PathBuf::from(dir),
+        dir,
         pantheon_core::capability::Policy::coder(),
         pantheon_core::model::ModelPolicy {
             default: pantheon_core::model::DefaultModel {

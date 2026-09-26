@@ -13,3 +13,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 toml = "0.8"
 
+
+[lints]
+workspace = true

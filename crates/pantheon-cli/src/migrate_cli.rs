@@ -170,7 +170,7 @@ pub fn cmd_migrate_detect(args: &[String]) {
         println!("no known source detected under {}", roots[0].display());
         return;
     }
-    println!("{:<10} {:<7} {}", "SOURCE", "ITEMS", "ROOT");
+    println!("{:<10} {:<7} ROOT", "SOURCE", "ITEMS");
     for r in &rows {
         println!(
             "{:<10} {:<7} {}",
@@ -477,7 +477,7 @@ pub fn cmd_migrate_show(args: &[String]) {
         print_json(&detected);
         return;
     }
-    println!("{:<12} {:<5} {}", "KIND", "MAP", "PATH");
+    println!("{:<12} {:<5} PATH", "KIND", "MAP");
     for d in &detected {
         println!(
             "{:<12} {:<5} {}",

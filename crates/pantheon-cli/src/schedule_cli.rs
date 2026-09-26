@@ -4,10 +4,9 @@
 //! (§21) is handled by the scheduler's DurableClaimLedger over the
 //! ClaimStore.
 
-use pantheon_runtime::Supervisor;
 use pantheon_scheduler::{Job, MissedPolicy, ScheduleKind};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A stored scheduled job with its run state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,16 +46,18 @@ impl From<StoredJob> for Job {
 /// Parse a duration string like "30m", "6h", "1d" into milliseconds.
 fn parse_duration(s: &str) -> Result<u64, String> {
     let s = s.trim();
-    let (num, unit) = if s.ends_with("ms") {
-        (&s[..s.len() - 2], 1)
-    } else if s.ends_with('s') {
-        (&s[..s.len() - 1], 1000)
-    } else if s.ends_with('m') {
-        (&s[..s.len() - 1], 60_000)
-    } else if s.ends_with('h') {
-        (&s[..s.len() - 1], 3_600_000)
-    } else if s.ends_with('d') {
-        (&s[..s.len() - 1], 86_400_000)
+    // Longest suffix first: "ms" must win over "s", and slicing a char
+    // boundary that ends_with already matched is safe.
+    let (num, unit) = if let Some(n) = s.strip_suffix("ms") {
+        (n, 1)
+    } else if let Some(n) = s.strip_suffix('s') {
+        (n, 1000)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60_000)
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 3_600_000)
+    } else if let Some(n) = s.strip_suffix('d') {
+        (n, 86_400_000)
     } else {
         return Err(format!("unknown unit in {s} (use ms, s, m, h, d)"));
     };
@@ -87,7 +88,6 @@ fn save_jobs(data_dir: &PathBuf, jobs: &[StoredJob]) -> Result<(), String> {
 }
 
 /// Schedule a task to run repeatedly.
-
 pub fn cmd_schedule(args: &[String], data_dir: &PathBuf) {
     if args.len() < 3 {
         eprintln!("usage: pantheon schedule <task> --30m [--agent nyx]");
@@ -150,10 +150,9 @@ pub fn cmd_schedule(args: &[String], data_dir: &PathBuf) {
     }
 
     println!(
-        "scheduled {} [{}] — {} | cancel: pantheon schedule cancel {}",
+        "scheduled {} [{}] — runs | cancel: pantheon schedule cancel {}",
         job_id,
         format_kind(&kind),
-        "runs",
         job_id
     );
 }
@@ -175,7 +174,10 @@ fn handle_subcommand(parts: &[String], data_dir: &PathBuf) {
                 };
                 println!(
                     "{}  {}  {}  [{}]{}  last: {}  | cancel: pantheon schedule cancel {}",
-                    &j.id[..8],
+                    // Full id, not a byte-prefix: ids are `job_run_<ts>_<n>`,
+                    // so the first 8 bytes are the shared `job_run_` and
+                    // the truncated form was identical for every job.
+                    &j.id,
                     status,
                     format_kind(&j.kind),
                     j.task,
@@ -225,6 +227,21 @@ fn handle_subcommand(parts: &[String], data_dir: &PathBuf) {
             match jobs.iter().find(|j| j.id == *id) {
                 Some(j) => {
                     run_job_now(j, data_dir);
+                    // Record the fire time, otherwise `schedule list` keeps
+                    // reporting "last: never" after a successful run and the
+                    // user cannot tell a working job from a dead one.
+                    let mut jobs = jobs;
+                    if let Some(slot) = jobs.iter_mut().find(|j| j.id == *id) {
+                        slot.last_run = Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0),
+                        );
+                    }
+                    if let Err(e) = save_jobs(data_dir, &jobs) {
+                        eprintln!("warning: could not record last_run: {e}");
+                    }
                 }
                 None => {
                     eprintln!("not found: {id}");
@@ -326,27 +343,53 @@ fn format_last(last: Option<i64>) -> String {
     }
 }
 
-fn run_job_now(job: &StoredJob, data_dir: &PathBuf) {
-    let sup = match Supervisor::open(data_dir.clone()) {
+/// Fire a job now: a real agent turn against the configured model, with the
+/// job's own model/provider pin applied when it has one.
+///
+/// This used to open a run, log a progress line, and mark it complete
+/// without ever calling a model. The user saw "ran <task>" and an idle
+/// ledger. A scheduled task that never executes the task is worse than one
+/// that fails loudly.
+fn run_job_now(job: &StoredJob, data_dir: &Path) {
+    use crate::config_doc;
+    use crate::session_cli::build_model_policy;
+    use pantheon_runtime::session::Session;
+
+    let file_cfg = config_doc::Config::load(data_dir).ok();
+    let model_policy = build_model_policy(&file_cfg, job.provider.clone(), job.model.clone());
+    let allow_memory = file_cfg
+        .as_ref()
+        .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
+        .unwrap_or(false);
+    let policy = if allow_memory {
+        pantheon_core::capability::Policy::coder_with_memory()
+    } else {
+        pantheon_core::capability::Policy::coder()
+    };
+    let secrets = config_doc::chat_secrets(file_cfg.as_ref());
+    let session = match Session::new(data_dir.to_path_buf(), policy, model_policy, secrets) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("open runtime: {e}");
+            eprintln!("open session: {e}");
             std::process::exit(1);
         }
     };
+
     let run_id = pantheon_runtime::new_run_id();
-    let recovered = sup.start_run(&run_id).unwrap_or_else(|e| {
-        eprintln!("start: {e}");
-        std::process::exit(1);
-    });
-    if recovered {
-        println!("(recovered run {run_id})");
+    match session.chat(&run_id, &job.task) {
+        Ok(_) => println!("ran {} — run {run_id}", job.task),
+        Err(e) => {
+            // A parked run is a real outcome, not a failure: it needs a
+            // grant before it can finish.
+            if e.code == "RUN_PARKED" {
+                println!(
+                    "parked {} — run {run_id} (grant: pantheon grant {run_id} <scope>)",
+                    job.task
+                );
+            } else {
+                eprintln!("scheduled task failed: {e}");
+                std::process::exit(1);
+            }
+        }
     }
-    sup.emit(pantheon_core::events::Event::RunProgress {
-        run_id: run_id.clone(),
-        detail: format!("scheduled task: {}", job.task),
-    })
-    .unwrap();
-    let _ = sup.complete(&run_id);
-    println!("ran {} — run {}", job.task, run_id);
 }

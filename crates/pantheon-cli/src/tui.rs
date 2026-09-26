@@ -202,7 +202,7 @@ impl TuiState {
     /// delta so the counter ticks like Claude Code's. Snapped to the
     /// authoritative number when Usage arrives.
     fn bump_estimate(&mut self, text: &str) {
-        self.turn_estimate += (text.len() as u32 + 3) / 4;
+        self.turn_estimate += (text.len() as u32).div_ceil(4);
     }
 
     /// Process a model event into a transcript block or state update.
@@ -299,11 +299,7 @@ impl TuiState {
                     }
                 }
             }
-            RuntimeErrorEvent::ToolOutput {
-                tool: _,
-                truncated: _,
-                ..
-            } => {
+            RuntimeErrorEvent::ToolOutput { .. } => {
                 // Output content rides the ToolMessage into the transcript;
                 // the card itself flips on ToolCompleted.
             }
@@ -875,7 +871,7 @@ pub fn run_tui_session() -> Result<(), Box<dyn std::error::Error>> {
     disable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, LeaveAlternateScreen, DisableMouseCapture)?;
-    Ok(result?)
+    result
 }
 
 fn tui_loop(

@@ -19,6 +19,12 @@ pub fn data_dir() -> PathBuf {
     }
     PathBuf::from(".pantheon-data")
 }
+/// Report a fatal error and exit. Every user-reachable failure path goes
+/// through here so the process never panics on bad state.
+fn die(msg: &str) -> ! {
+    eprintln!("pantheon: {msg}");
+    std::process::exit(1);
+}
 fn ext_dir() -> PathBuf {
     if let Ok(d) = std::env::var("PANTHEON_EXT_DIR") {
         return PathBuf::from(d);
@@ -426,6 +432,17 @@ fn main() {
                     }
                     "--choose" => {
                         choose = true;
+                    }
+                    // A leading "-" is a flag, not the prompt. Swallowing it
+                    // as the message sends the user's typo to the model as if
+                    // they had typed it, which is worse than an error.
+                    a if a.starts_with('-') => {
+                        eprintln!("pantheon chat: unknown option {a}");
+                        eprintln!("usage: pantheon chat [--id ID] [--model M] [--provider P] [--key K] [--choose] \"message\"");
+                        eprintln!(
+                            "  --id: continue an existing run instead of starting a new session"
+                        );
+                        std::process::exit(2);
                     }
                     _ if message.is_empty() => message = args[i].clone(),
                     _ => {}
@@ -1033,7 +1050,7 @@ timeout_ms = 5000
                         run_id: run_id.clone(),
                         detail: format!("ext pre_llm_call injected {} chars", ctx.len()),
                     })
-                    .unwrap();
+                    .unwrap_or_else(|e| die(&format!("ledger: {e}")));
                     println!("--- injected context ---\n{ctx}\n--- end ---");
                 } else {
                     println!("(no extension context)");
@@ -1047,19 +1064,21 @@ timeout_ms = 5000
                     args: String::new(),
                     provenance: pantheon_core::provenance::Provenance::system("cli"),
                 })
-                .unwrap();
+                .unwrap_or_else(|e| die(&format!("ledger: {e}")));
             }
             if let Some(s) = say {
                 sup.emit(Event::RunProgress {
                     run_id: run_id.clone(),
                     detail: s,
                 })
-                .unwrap();
+                .unwrap_or_else(|e| die(&format!("ledger: {e}")));
             }
             if let Some(code) = fail {
-                sup.fail(&run_id, &code).unwrap();
+                sup.fail(&run_id, &code)
+                    .unwrap_or_else(|e| die(&format!("ledger: {e}")));
             } else {
-                sup.complete(&run_id).unwrap();
+                sup.complete(&run_id)
+                    .unwrap_or_else(|e| die(&format!("ledger: {e}")));
             }
             println!("{run_id}");
         }

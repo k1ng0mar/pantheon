@@ -352,15 +352,6 @@ impl OperationStore {
             .ok_or_else(|| operation_err("OPERATION_GET", "updated operation disappeared".into()))
     }
 
-    pub fn await_operation(
-        &self,
-        id: &str,
-        expected_version: u64,
-        state: Value,
-    ) -> Result<Operation, PantheonError> {
-        self.transition(id, expected_version, OperationStatus::Awaiting, state)
-    }
-
     pub fn complete(
         &self,
         id: &str,

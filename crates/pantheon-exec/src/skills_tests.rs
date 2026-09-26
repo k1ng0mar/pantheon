@@ -126,7 +126,7 @@ fn ext_collects_explicit_codedot_dir_extra_root() {
     }
     let dot_root = dir.join("fake-codex").join("skills").join(".system");
     skill_dir(&dot_root, "dot-skill", "d");
-    let found = discover_skills_ext_with_home(&data, &proj, &[dot_root.clone()], &home);
+    let found = discover_skills_ext_with_home(&data, &proj, std::slice::from_ref(&dot_root), &home);
     assert!(
         found.iter().any(|s| s.meta.name == "dot-skill"),
         "{found:?}"

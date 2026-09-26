@@ -22,43 +22,38 @@ fn read_thread(run_id: &str) -> Option<String> {
     map.get(run_id).cloned()
 }
 pub fn cmd_serve(args: &[String]) {
-    // The API executes through pantheon-runtime::Session. Translate the CLI's
-    // config document into the runtime's environment contract once at server
-    // startup so setup.toml is honored without duplicating execution logic in
-    // the HTTP surface.
-    if let Ok(config) = super::config_doc::Config::load(&data_dir()) {
-        if let Some(model) = &config.model {
-            if std::env::var("PANTHEON_PROVIDER").is_err() {
-                std::env::set_var("PANTHEON_PROVIDER", &model.provider);
-            }
-            if std::env::var("PANTHEON_MODEL").is_err() {
-                std::env::set_var("PANTHEON_MODEL", &model.model);
-            }
-            if let Some(env_name) = &model.api_key_env {
-                if std::env::var("PANTHEON_API_KEY_ENV").is_err() {
-                    std::env::set_var("PANTHEON_API_KEY_ENV", env_name);
-                }
-            }
-        }
-        if let Some(judge) = &config.judge {
-            if std::env::var("PANTHEON_JUDGE_PROVIDER").is_err() {
-                std::env::set_var("PANTHEON_JUDGE_PROVIDER", &judge.provider);
-            }
-            if std::env::var("PANTHEON_JUDGE_MODEL").is_err() {
-                std::env::set_var("PANTHEON_JUDGE_MODEL", &judge.model);
-            }
-            if let Some(env_name) = &judge.api_key_env {
-                if std::env::var("PANTHEON_JUDGE_API_KEY_ENV").is_err() {
-                    std::env::set_var("PANTHEON_JUDGE_API_KEY_ENV", env_name);
-                }
-            }
-        }
-        if let Some(policy) = config.policy {
-            if std::env::var("PANTHEON_POLICY").is_err() {
-                std::env::set_var("PANTHEON_POLICY", policy.as_str());
-            }
-        }
-    }
+    use crate::config_doc;
+    use crate::session_cli::build_model_policy;
+    use std::sync::Arc;
+
+    // Resolve the Session exactly as `pantheon chat` and the REPL do: the
+    // config document, its key names, and its auxiliary models. The AG-UI
+    // surface used to translate a subset of config.toml into environment
+    // variables and let the runtime read those, which silently dropped
+    // every auxiliary section and any key name the runtime does not know.
+    // A builder keeps one definition of "what a turn runs on".
+    let factory_dir = data_dir();
+    let file_cfg = config_doc::Config::load(&factory_dir).ok();
+    pantheon_api::agui::set_session_factory(Arc::new(move |dir: &std::path::PathBuf| {
+        // Reload per turn so a config edited while the server runs is
+        // picked up without a restart.
+        let cfg = config_doc::Config::load(dir)
+            .ok()
+            .or_else(|| file_cfg.clone());
+        let model_policy = build_model_policy(&cfg, None, None);
+        let allow_memory = cfg
+            .as_ref()
+            .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
+            .unwrap_or(false);
+        let policy = if allow_memory {
+            pantheon_core::capability::Policy::coder_with_memory()
+        } else {
+            pantheon_core::capability::Policy::coder()
+        };
+        let secrets = config_doc::chat_secrets(cfg.as_ref());
+        pantheon_runtime::session::Session::new(dir.clone(), policy, model_policy, secrets)
+    }));
+
     let port: u16 = flag(args, "--port")
         .and_then(|v| v.parse().ok())
         .unwrap_or(18789);

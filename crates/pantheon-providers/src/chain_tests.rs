@@ -347,7 +347,7 @@ fn live_usage_reports_tokens() {
         c.0.borrow()
             .iter()
             .find_map(|e| match e {
-                ModelEvent::Usage { usage } => Some(usage.clone()),
+                ModelEvent::Usage { usage } => Some(*usage),
                 _ => None,
             })
             .expect("usage event");

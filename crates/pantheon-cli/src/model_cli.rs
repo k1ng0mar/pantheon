@@ -168,8 +168,8 @@ pub fn pick(title: &str, items: &[PickItem]) -> Option<usize> {
                 return None;
             }
         };
-        match ev {
-            Event::Key(k) => match k.code {
+        if let Event::Key(k) = ev {
+            match k.code {
                 KeyCode::Esc => {
                     leave(&mut stdout);
                     return None;
@@ -214,8 +214,7 @@ pub fn pick(title: &str, items: &[PickItem]) -> Option<usize> {
                     selected = 0;
                 }
                 _ => {}
-            },
-            _ => {}
+            }
         }
     }
 }
@@ -502,8 +501,7 @@ pub fn save_choice(data_dir: &std::path::Path, choice: &ModelChoice) -> Result<(
             base,
             choice.api_mode,
             &choice.key_env,
-        )
-        .map_err(|e| e)?;
+        )?;
     }
     // Reload: the row writer above persisted + registered already.
     let mut cfg = Config::load(data_dir).unwrap_or_default();
@@ -801,13 +799,10 @@ fn interactive(target: Target) -> Option<ModelChoice> {
                 }
             })
             .collect();
-        let prov_idx = match pick(
+        let prov_idx = pick(
             &format!("pantheon model — {scope}: pick a provider"),
             &items,
-        ) {
-            Some(i) => i,
-            None => return None,
-        };
+        )?;
         if prov_idx >= all.len() {
             // Defensive: rows are exactly the providers today.
             return None;

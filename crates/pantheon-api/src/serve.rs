@@ -34,6 +34,19 @@ pub struct ServeConfig {
     /// the token appended for the web UI.
     pub auth_token: Option<String>,
 }
+
+/// Opens a Session for one turn. Installed by `pantheon serve` through
+/// `agui::set_session_factory` rather than threaded through every
+/// constructor, so this crate does not depend on pantheon-cli, which owns
+/// config.toml and the key-name conventions.
+pub type SessionFactory = std::sync::Arc<
+    dyn Fn(
+            &PathBuf,
+        )
+            -> Result<pantheon_runtime::session::Session, pantheon_core::error::PantheonError>
+        + Send
+        + Sync,
+>;
 impl ServeConfig {
     fn effective_genui_base(&self) -> String {
         self.genui_base
@@ -399,7 +412,7 @@ pub fn serve(mut cfg: ServeConfig) -> std::io::Result<()> {
         cfg.port = bound.port();
         cfg.genui_base = cfg
             .genui_base
-            .replace(&format!(":0/"), &format!(":{}/", cfg.port));
+            .replace(&":0/".to_string(), &format!(":{}/", cfg.port));
     }
     eprintln!(
         "pantheon agui on http://{}:{}/agui/stream",

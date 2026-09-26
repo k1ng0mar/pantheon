@@ -97,6 +97,22 @@ impl Message {
         self.provenance = Some(provenance);
         self
     }
+
+    /// Recalled memory as its own row type. Memory is context, not
+    /// instruction, so it never borrows System role: a System row with no
+    /// provenance is authoritative by definition, which would let a record
+    /// written from untrusted tool output speak with the harness's voice.
+    /// A User row carrying Memory-tier provenance gets the provider's
+    /// `[provenance: ...]` envelope and is treated as data.
+    pub fn recall(content: impl Into<String>, source: impl Into<String>) -> Self {
+        Self {
+            role: Role::User,
+            content: content.into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            provenance: Some(Provenance::memory(source)),
+        }
+    }
 }
 
 /// Tool schema in OpenAI wire format: {"type":"function","function":{...}}.

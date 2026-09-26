@@ -8,7 +8,7 @@
 ## Install (recommended)
 
 ```sh
-curl -fsSL https://pantheon.run/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash
 ```
 
 Installs Rust if missing, builds from source, links the binary into
@@ -17,7 +17,7 @@ Installs Rust if missing, builds from source, links the binary into
 ## Build (from source)
 
 ```sh
-git clone <repo> pantheon && cd pantheon
+git clone https://github.com/k1ng0mar/pantheon && cd pantheon
 cargo build --release          # or cargo build for a debug binary
 ```
 

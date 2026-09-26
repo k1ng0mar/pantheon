@@ -124,8 +124,8 @@ fn list(args: &[String]) {
         return;
     }
     println!(
-        "{:<10} {:<26} {:<7} {:<7} {}",
-        "SOURCE", "NAME", "TRANS", "READY", "TARGET"
+        "{:<10} {:<26} {:<7} {:<7} TARGET",
+        "SOURCE", "NAME", "TRANS", "READY"
     );
     for r in &rows {
         println!(

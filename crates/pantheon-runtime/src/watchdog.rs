@@ -82,10 +82,6 @@ impl TurnWatchdog {
         self.activity();
     }
 
-    pub fn is_paused(&self) -> bool {
-        self.paused
-    }
-
     pub fn stall_for(&self) -> Duration {
         self.last_activity.elapsed()
     }

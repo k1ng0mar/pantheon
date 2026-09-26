@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pantheon installer — one line, done.
-#   curl -fsSL https://pantheon.run/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash
 #
 # Installs Rust (if missing), builds Pantheon from source,
 # and puts the binary in ~/.local/bin. Works on Linux and macOS.

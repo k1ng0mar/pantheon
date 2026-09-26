@@ -15,13 +15,14 @@ fn secret_ref_rejects_non_env_sources() {
 }
 
 #[test]
-fn policy_preset_round_trips() {
-    for p in [
-        PolicyPreset::Reader,
-        PolicyPreset::Coder,
-        PolicyPreset::CoderMemory,
-    ] {
-        assert_eq!(PolicyPreset::from_str(p.as_str()), Some(p));
-    }
+fn policy_preset_parses_the_config_toml_spellings() {
+    // Literal strings, not `as_str`, so the test fails if a spelling in
+    // config.toml drifts from what the parser accepts.
+    assert_eq!(PolicyPreset::from_str("reader"), Some(PolicyPreset::Reader));
+    assert_eq!(PolicyPreset::from_str("coder"), Some(PolicyPreset::Coder));
+    assert_eq!(
+        PolicyPreset::from_str("coder_memory"),
+        Some(PolicyPreset::CoderMemory)
+    );
     assert_eq!(PolicyPreset::from_str("nope"), None);
 }

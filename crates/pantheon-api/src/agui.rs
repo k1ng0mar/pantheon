@@ -4,7 +4,8 @@
 use crate::rpc::{Dispatcher, MethodHandler, RpcError};
 use pantheon_gateway::{valid_task_id, GenUiSigner};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 /// Build a dispatcher with AG-UI commands bound to a data dir.
 /// Methods: agui.send, agui.grant, agui.deny, agui.frames, agui.sign, agui.serve_hint.
 pub fn dispatcher_for(data_dir: PathBuf) -> Dispatcher {
@@ -87,15 +88,39 @@ pub fn dispatcher_for_with_hint_and_host(
     );
     d
 }
-fn sup_for(dir: &PathBuf) -> Result<pantheon_runtime::Supervisor, RpcError> {
+fn sup_for(dir: &Path) -> Result<pantheon_runtime::Supervisor, RpcError> {
     // NOTE (group-C): one fresh Supervisor per RPC call — 3 SQLite
     // connections + migrations, then dropped. Fine for a local
     // single-user server (milliseconds); introduce a SupervisorPool
     // if this ever goes multi-user. Do NOT cache across threads
     // without it: the ledger uses immediate transactions + a Mutex.
-    pantheon_runtime::Supervisor::open(dir.clone())
+    pantheon_runtime::Supervisor::open(dir.to_path_buf())
         .map_err(|e| RpcError::internal(format!("open runtime: {e}")))
 }
+/// How a turn opens its Session. Set once by `pantheon serve` so the AG-UI
+/// path resolves the same provider, secrets, and auxiliary models as the
+/// CLI, instead of falling back to bare environment variables.
+static SESSION_FACTORY: std::sync::OnceLock<crate::serve::SessionFactory> =
+    std::sync::OnceLock::new();
+
+/// Install the process-wide session factory. Called by the CLI before the
+/// server starts. A second call is ignored so an embedder that already set
+/// one is not silently overridden.
+pub fn set_session_factory(f: crate::serve::SessionFactory) {
+    let _ = SESSION_FACTORY.set(f);
+}
+
+/// The installed factory, or the environment-only default used by library
+/// embedders and tests.
+fn session_factory_for(_dir: &PathBuf) -> Result<crate::serve::SessionFactory, RpcError> {
+    if let Some(f) = SESSION_FACTORY.get() {
+        return Ok(Arc::clone(f));
+    }
+    Ok(Arc::new(|dir: &PathBuf| {
+        pantheon_runtime::session::Session::from_env(dir.clone())
+    }))
+}
+
 fn thread_of(params: &Value, run_id: &str) -> String {
     if let Some(t) = params.get("thread_id").and_then(|x| x.as_str()) {
         return t.to_string();
@@ -131,8 +156,9 @@ impl MethodHandler for SendMsg {
                 )));
             }
         }
-        let session = pantheon_runtime::session::Session::from_env(dir.clone())
-            .map_err(|e| RpcError::internal(format!("open session: {e}")))?;
+        let factory = session_factory_for(&dir)?;
+        let session =
+            factory(&dir).map_err(|e| RpcError::internal(format!("open session: {e}")))?;
         crate::serve::remember_thread(&dir, &run_id, &thread_id);
         let turn_id = pantheon_runtime::new_turn_id();
         let worker_run = run_id.clone();

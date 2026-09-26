@@ -47,10 +47,7 @@ pub fn cmd_skills_list(args: &[String]) {
     if found.is_empty() {
         println!("no skills discovered");
     } else {
-        println!(
-            "{:24} {:12} {:12} {}",
-            "NAME", "SCOPE", "ORIGIN", "DESCRIPTION"
-        );
+        println!("{:24} {:12} {:12} DESCRIPTION", "NAME", "SCOPE", "ORIGIN");
         for s in &found {
             println!(
                 "{:24} {:12} {:12} {}",
@@ -175,14 +172,11 @@ pub fn cmd_skills_import(args: &[String]) {
     let mut scope: Option<PathBuf> = None;
     let mut i = 2;
     while i < args.len() {
-        match args[i].as_str() {
-            "--scope" => {
-                i += 1;
-                if i < args.len() {
-                    scope = Some(PathBuf::from(&args[i]));
-                }
+        if args[i].as_str() == "--scope" {
+            i += 1;
+            if i < args.len() {
+                scope = Some(PathBuf::from(&args[i]));
             }
-            _ => {}
         }
         i += 1;
     }

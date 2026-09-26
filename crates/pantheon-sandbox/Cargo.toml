@@ -9,3 +9,6 @@ authors.workspace = true
 pantheon-core = { path = "../pantheon-core" }
 serde = { version = "1", features = ["derive"] }
 libc = "0.2"
+
+[lints]
+workspace = true

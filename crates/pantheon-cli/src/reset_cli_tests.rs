@@ -14,7 +14,7 @@ fn scopes_pick_the_right_files() {
     assert_eq!(state_files, vec![dir.join("ledger.db")]);
     let everything = target_files(&dir, "everything");
     assert_eq!(everything.len(), 2);
-    assert!(active_lease_exists(&dir) == false);
+    assert!(!active_lease_exists(&dir));
 }
 
 #[test]

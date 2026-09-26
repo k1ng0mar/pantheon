@@ -115,7 +115,7 @@ fn default_roles(n: usize) -> Vec<&'static str> {
         DEFAULT_ROLES[..n].to_vec()
     } else {
         // Repeat research-heavy roles for larger swarms.
-        DEFAULT_ROLES.iter().cycle().take(n).map(|s| *s).collect()
+        DEFAULT_ROLES.iter().cycle().take(n).copied().collect()
     }
 }
 
@@ -229,7 +229,7 @@ fn spawn_swarm(
 
     // Check we can spawn N agents up front.
     for (i, role) in role_names.iter().enumerate() {
-        if let Err(refusal) = swarm.check_spawn(0, &role) {
+        if let Err(refusal) = swarm.check_spawn(0, role) {
             eprintln!("cannot spawn agent {i} ({role}): {}", refusal.message());
             std::process::exit(1);
         }
