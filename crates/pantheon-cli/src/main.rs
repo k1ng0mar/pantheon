@@ -159,8 +159,9 @@ fn usage() -> String {
     s.push_str("        run a task by id; delivery defaults to an in-session turn\n\n");
 
     s.push_str("INSPECT A RUN\n");
-    s.push_str("  logs                         list runs and their status\n");
-    s.push_str("  logs <run_id>                full event trace for one run\n");
+    s.push_str("  runs                         list runs and their status\n");
+    s.push_str("  runs <run_id>                full event trace for one run\n");
+    s.push_str("  logs [agent|errors|gateway]  read the log files (-n, -f, --level)\n");
     s.push_str("  audit <run_id> [OUT.jsonl]   sequence-validated JSONL trajectory\n\n");
 
     s.push_str("SET UP\n");
@@ -230,6 +231,7 @@ const KNOWN_VERBS: &[&str] = &[
     "repair",
     "reset",
     "run",
+    "runs",
     "schedule",
     "serve",
     "setup",
@@ -337,6 +339,7 @@ mod dotenv;
 mod dotenv_tests;
 mod fallback_cli;
 mod gateway_cli;
+mod logs_cli;
 mod mcp_cli;
 mod migrate_cli;
 mod model_cli;
@@ -540,6 +543,15 @@ fn main() {
     // process env var that is not already set (exports always win).
     // Custom endpoints from config are registered before any verb runs.
     config_doc::init_env_and_catalog(&data_dir());
+    // Point the logger at the data dir before any verb runs, so a failure in
+    // setup is already recorded by the time anyone goes looking. Level comes
+    // from PANTHEON_LOG_LEVEL and defaults to INFO, because a DEBUG default
+    // would fill the disk with records nobody reads.
+    let level = std::env::var("PANTHEON_LOG_LEVEL")
+        .ok()
+        .and_then(|v| pantheon_core::logging::Level::parse(&v))
+        .unwrap_or(pantheon_core::logging::Level::Info);
+    pantheon_core::logging::init(&data_dir(), level);
     if args.len() < 2 {
         // Bare `pantheon` opens the agent cockpit TUI when a TTY is available.
         // Falls back to the text REPL if stdin is not a tty or TUI init fails.
@@ -717,7 +729,7 @@ fn main() {
                         println!("{answer}");
                     } else {
                         eprintln!(
-                            "run {run_id} produced no answer text; see `pantheon logs {run_id}`"
+                            "run {run_id} produced no answer text; see `pantheon runs {run_id}`"
                         );
                     }
                     eprintln!("[run {run_id}]");
@@ -1394,10 +1406,9 @@ timeout_ms = 5000
         "swarm" => {
             swarm_cli::cmd_swarm(&args, &data_dir());
         }
-        "logs" => {
+        "runs" => {
             // No run id: the operator wants to know what exists and what
-            // state each run is in. This is the question `logs` answers and
-            // `explain` never could, because `explain` demanded a run id.
+            // state each run is in.
             if args.len() < 3 {
                 let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
                     eprintln!("open runtime: {e}");
@@ -1432,6 +1443,10 @@ timeout_ms = 5000
                 }
             }
         }
+        "logs" => {
+            logs_cli::cmd_logs(&args);
+        }
+
         "audit" => {
             // Export a run's ledger as a sequence-validated JSONL trajectory.
             // Usage: pantheon audit <run_id> [OUT]  (default: <run_id>.jsonl)
@@ -1739,6 +1754,7 @@ mod verb_guard_tests {
         for v in [
             "chat",
             "run",
+            "runs",
             "logs",
             "audit",
             "memory",

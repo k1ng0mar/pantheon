@@ -219,7 +219,7 @@ How it behaves on overflow, in order:
    `CONTEXT_OVERFLOW` (see troubleshooting).
 
 Each pass is recorded in the ledger as `ContextCompressed`, and any
-trimming as `ContextTrimmed`, so `pantheon logs <run>` shows exactly
+trimming as `ContextTrimmed`, so `pantheon runs <run>` shows exactly
 what the model saw and why. Compression is bounded: 30-second timeout,
 100 KB input render cap, summary hard-capped at twice its target.
 

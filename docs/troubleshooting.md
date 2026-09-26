@@ -14,7 +14,7 @@ what to do.
 | `PROVIDER_PARSE` / `PROVIDER_CONFIG` | Provider returned unusable output / bad endpoint config | Check the cause; for CONFIG, `pantheon model` to refill base URL and key |
 | `JUDGE_HTTP` / `TITLEGEN_HTTP` / `STT_HTTP` / `TTS_HTTP` | Aux/service call failed | Aux failures fall back to defaults; STT/TTS fail the turn — check the service |
 | `VOICE_TIMEOUT` | STT/TTS subprocess over deadline | Raise the timeout or check the backend command |
-| `CONTEXT_OVERFLOW` | Essential rows (system + last turn) alone exceed the model's window | Shorten the system prompt/extension context, or pick a model with a larger `context_limit`. Long runs normally trim oldest context automatically — `ContextTrimmed` in `pantheon logs` shows what went |
+| `CONTEXT_OVERFLOW` | Essential rows (system + last turn) alone exceed the model's window | Shorten the system prompt/extension context, or pick a model with a larger `context_limit`. Long runs normally trim oldest context automatically — `ContextTrimmed` in `pantheon runs <id>` shows what went |
 
 ## Run lifecycle
 
@@ -37,7 +37,7 @@ what to do.
 |---|---|---|
 | `RT_APPROVAL_UNKNOWN` | Scope was never requested | Copy the scope from the ApprovalRequested event |
 | `RT_APPROVAL_RESOLVED` | Scope already granted/denied | Nothing to do |
-| `RT_NOT_PARKED` | Run is not in awaiting_approval | Check `pantheon logs <run>` first |
+| `RT_NOT_PARKED` | Run is not in awaiting_approval | Check `pantheon runs <run>` first |
 
 ## Tools and plugins
 
@@ -87,7 +87,7 @@ what to do.
 ## Generic debugging order
 
 1. `pantheon doctor` — most "it doesn't work" is config or env.
-2. `pantheon logs <run_id>` — the answer to "why did it do that" is in
+2. `pantheon runs <run_id>` — the answer to "why did it do that" is in
    the event replay.
 3. `cargo test --workspace && python3 eval/run.py` — if these are green,
    the bug is in your config or environment, not the build.

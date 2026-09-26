@@ -72,7 +72,7 @@ bundled. No async runtime: everything is std threads.
 pantheon setup --yes --provider openai --model gpt-4o-mini --api-key-env OPENAI_API_KEY
 export OPENAI_API_KEY=sk-...
 pantheon                           # interactive session (or: pantheon chat "...")
-pantheon logs <run_id>          # why everything happened
+pantheon runs <run_id>          # why everything happened
 pantheon doctor                    # is everything healthy
 ```
 
@@ -83,7 +83,7 @@ docs/configuration.md before pointing it at anything you care about.
 ## Design position (short version)
 
 Event-sourced everything: every run is a sequence of events in SQLite, which
-is why `pantheon logs`, crash recovery, and audit export all read the same rows.
+is why `pantheon runs <id>`, crash recovery, and audit export all read the same rows.
 Capability-gated everything: tools declare the capability they need, the
 policy decides allow/deny/approve. Human approval parks a run durably; a
 denial becomes a transcript result, not a crashed run. Durability is

@@ -37,7 +37,7 @@ Fresh conversations get a one-line **session title** generated from the
 first prompt by the title auxiliary (config `[title_gen]`, default
 `auto` = the run's default model — see docs/configuration.md). `/runs`,
 `/history`, and `/status` show it; the title is a `SessionTitled` ledger
-event, so `pantheon logs <run>` shows how it was produced.
+event, so `pantheon runs <run>` shows how it was produced.
 
 ### chat
 ```
@@ -82,24 +82,54 @@ and `--ext` fires `pre_llm_call` and prints whatever context it injects. This
 mode exists so recovery and ledger tooling can seed a run without spending a
 model call.
 
-### logs / audit
+### runs / logs / audit
+
+Three different questions, three verbs. They used to be conflated.
+
 ```
-pantheon logs
-pantheon logs <run_id>
+pantheon runs                 # every run, with status and title
+pantheon runs <run_id>        # one run's event trace, in words
 pantheon audit <run_id> [OUT.jsonl]
+pantheon logs [name] [filters]   # the runtime's log FILES
 ```
-`logs` with no argument lists every run with its status and title, using the
-same status vocabulary as the in-session `/runs` view. With a run id it
-replays that run's ledger in words. This verb used to be called `explain`,
-which described nothing: it renders the event log, so it is named for that.
-`audit` writes a sequence-validated JSONL trajectory (3 events minimum for a
-simple run).
+
+**`runs`** reads the ledger. With no argument it lists every run with its
+status and title, using the same status vocabulary as the in-session `/runs`
+view. With a run id it replays that run's events. This verb was `explain`,
+which described nothing, and then briefly `logs`, which described something
+else. `audit` writes a sequence-validated JSONL trajectory (3 events minimum
+for a simple run).
 
 Run state (`running`, `awaiting_approval`, `completed`, `failed`, `canceled`)
-is *not* part of the per-run trace, despite what this page used to claim. From
-the shell, `pantheon logs` with no argument is the listing. Inside a session,
-`/status` reports the current run and `/status <id>` any other. To settle a
-run stranded by a crash, see [repair](#repair).
+is *not* part of the per-run trace. It is the listing, and inside a session
+`/status`. To settle a run stranded by a crash, see [repair](#repair).
+
+**`logs`** reads log files, not runs. The runtime writes
+`<data_dir>/logs/agent.log` (everything), `errors.log` (warnings and worse),
+and `gateway.log`:
+
+```
+pantheon logs list                          what exists and how big
+pantheon logs                               tail agent.log
+pantheon logs errors                        tail errors.log
+pantheon logs agent -n 200                  last 200 lines
+pantheon logs -f                            follow, like tail -f
+pantheon logs --level error                 only ERROR and above
+pantheon logs --since 1h                    only the last hour
+pantheon logs --grep PROVIDER_EXHAUSTED     only matching lines
+```
+
+The file list is a closed set, not a `*.log` glob, so the `ledger.db.<stamp>.bak`
+copies `repair` writes and any editor swap file cannot show up as a log. Levels
+come from `PANTHEON_LOG_LEVEL` (`debug`/`info`/`warning`/`error`, default
+`info`).
+
+The two answer different questions and neither substitutes for the other. "Why
+did that turn end the way it did" is a ledger question — `runs <id>`, which has
+the full event trail including the approval decisions. "What has the process
+been doing" is a log question — `logs`, which also covers the failures that
+happen *before* a run exists, like a provider chain exhausting on a config with
+no run recorded at all.
 
 ## Approvals
 
@@ -403,7 +433,7 @@ makes internally, and `pantheon-api` never referenced them — `serve` does
 not depend on either. `channel` was, by its own doc comment, a demo that
 replays frames into an in-memory surface to prove the seam; nothing
 consumed its output. To watch a live run, use the SSE stream the server
-already exposes, or `pantheon logs <run_id>` for the durable event list.
+already exposes, or `pantheon runs <run_id>` for the durable event list.
 
 ## Gateway verbs
 
@@ -510,6 +540,7 @@ TUI surface is `/help /runs /history /resume /status /name /cost
 | Variable | Effect |
 |---|---|
 | `PANTHEON_DATA_DIR` | Data directory (default `~/.pantheon`) |
+| `PANTHEON_LOG_LEVEL` | Log threshold: `debug`, `info` (default), `warning`, `error` |
 | `PANTHEON_EXT_DIR` | Extension directory (default `<data>/extensions`) |
 | `PANTHEON_PROVIDER` / `PANTHEON_MODEL` | Default model when no config/flags |
 | `PANTHEON_API_KEY` | API key fallback (config names better ones) |
