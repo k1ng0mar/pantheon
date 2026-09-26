@@ -73,13 +73,15 @@ fn remove_drops_row_and_optionally_the_key() {
     let _ = std::fs::remove_dir_all(&dir);
     std::env::set_var("PANTHEON_DATA_DIR", &dir);
     // Custom provider referenced by NOTHING (default rides catalog router).
-    let mut cfg = Config::default();
-    cfg.model = Some(ModelSection {
-        provider: "router".into(),
-        model: "chat".into(),
-        api_key_env: None,
-        fallbacks: vec![],
-    });
+    let mut cfg = Config {
+        model: Some(ModelSection {
+            provider: "router".into(),
+            model: "chat".into(),
+            api_key_env: None,
+            fallbacks: vec![],
+        }),
+        ..Default::default()
+    };
     cfg.custom_providers.insert(
         "rmcustom1".into(),
         CustomProviderSection {

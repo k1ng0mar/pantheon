@@ -380,7 +380,10 @@ impl MethodHandler for Sign {
             .get("mime")
             .and_then(|x| x.as_str())
             .unwrap_or("application/octet-stream");
-        let ttl = p.get("ttl_ms").and_then(|x| x.as_i64()).unwrap_or(3600_000);
+        let ttl = p
+            .get("ttl_ms")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(3_600_000);
         if ttl <= 0 {
             return Err(RpcError::invalid_params("ttl_ms must be positive"));
         }

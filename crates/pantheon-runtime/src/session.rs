@@ -53,6 +53,18 @@ struct LedgerMemorySink {
     sup: Arc<Supervisor>,
     run_id: String,
 }
+/// What the user has already decided about tool calls in this run.
+///
+/// `pending` are call ids recovered from a previous process that never ran;
+/// a call in this set executes before the model is consulted again.
+/// `granted` and `denied` are the user's answers, and both persist for the
+/// whole run so a resumed turn does not ask twice.
+struct Approvals {
+    pending: Vec<String>,
+    granted: Vec<String>,
+    denied: Vec<String>,
+}
+
 impl MemoryToolSink for LedgerMemorySink {
     fn record(&self, event: MemoryToolEvent) {
         let detail = match &event {
@@ -517,7 +529,11 @@ impl Session {
             Some("awaiting_approval") => {
                 return Err(aerr(
                     "RUN_PARKED",
-                    format!("run {run_id} is parked on approval; grant then resume"),
+                    format!(
+                        "run {run_id} is parked on approval; \
+                         check `pantheon explain {run_id}` for the call id, then \
+                         `pantheon grant {run_id} <call_id>`"
+                    ),
                 ));
             }
             Some("completed") | Some("failed") | Some("canceled") => {
@@ -844,9 +860,11 @@ impl Session {
             run_id,
             0,
             &reg,
-            pending,
-            &grants,
-            &denied_scopes,
+            &Approvals {
+                pending,
+                granted: grants.clone(),
+                denied: denied_scopes.clone(),
+            },
             &mut tool_calls_used,
             &watchdog,
         ) {
@@ -910,10 +928,22 @@ impl Session {
                     detail: format!("canceled: {reason}"),
                 })?;
             }
-            LoopOutcome::AwaitingApproval { capability } => {
+            LoopOutcome::AwaitingApproval { capability, scope } => {
+                // Name the command the user has to run. Telling them which
+                // capability is gated but not which call id to approve left
+                // them digging through `explain` to find it.
+                let next = if scope.is_empty() {
+                    format!("run {run_id} is awaiting approval for {capability:?}")
+                } else {
+                    format!(
+                        "run {run_id} is awaiting approval for {capability:?}: \
+                         run `pantheon grant {run_id} {scope}` to allow it, or \
+                         `pantheon deny {run_id} {scope}` to refuse it"
+                    )
+                };
                 self.supervisor.emit(Event::RunProgress {
                     run_id: run_id.into(),
-                    detail: format!("awaiting approval for {capability:?}"),
+                    detail: next,
                 })?;
                 // Parked, not failed.
             }
@@ -995,6 +1025,12 @@ impl Session {
     /// carries the running total across turns so the max_tool_calls cap
     /// is enforced over the whole run, not per turn. `watchdog` observes
     /// turn progress and escalates only on a failed liveness probe.
+    // Ten parameters, all distinct and all needed on every call. The
+    // approval decisions are already grouped into `Approvals`; the rest is
+    // the agent loop's genuine working set (transport, transcript, run
+    // identity, turn, tools, counters, watchdog). A struct here would only
+    // move the same fields behind another name at the two call sites.
+    #[allow(clippy::too_many_arguments)]
     fn drive(
         &self,
         loop_: &AgentLoop,
@@ -1003,12 +1039,15 @@ impl Session {
         run_id: &str,
         turn: u32,
         reg: &ToolRegistry,
-        pending: Vec<String>,
-        grants: &[String],
-        denied_scopes: &[String],
+        approvals: &Approvals,
         tool_calls_used: &mut u32,
         watchdog: &std::sync::Mutex<TurnWatchdog>,
     ) -> Result<LoopOutcome, PantheonError> {
+        let Approvals {
+            pending,
+            granted: grants,
+            denied: denied_scopes,
+        } = approvals;
         if turn >= loop_.budget.max_turns {
             return Err(PantheonError::new(
                 "BUDGET_EXHAUSTED",
@@ -1056,7 +1095,7 @@ impl Session {
         // call. Tools already completed (matching ToolMessage rows in the
         // ledger) are skipped; tools that crashed before completing run.
         if !pending.is_empty() {
-            let pending_set: std::collections::BTreeSet<String> = pending.into_iter().collect();
+            let pending_set: std::collections::BTreeSet<String> = pending.iter().cloned().collect();
             let mut not_done: Vec<ToolCallRef> = Vec::new();
             for cid in &pending_set {
                 // If a ToolMessage row exists for this call id, it's done.
@@ -1148,7 +1187,13 @@ impl Session {
                         scope: tc.id.clone(),
                     })?;
                 }
-                return Ok(LoopOutcome::AwaitingApproval { capability: cap });
+                return Ok(LoopOutcome::AwaitingApproval {
+                    capability: cap,
+                    scope: ungranted
+                        .first()
+                        .map(|tc| tc.id.clone())
+                        .unwrap_or_default(),
+                });
             }
             // Re-execute granted calls through the same parallel path as a
             // fresh batch: gate (already granted), run, emit, append results.
@@ -1303,7 +1348,10 @@ impl Session {
                                     run_id: run_id.into(),
                                     scope: r.id.clone(),
                                 })?;
-                                return Ok(LoopOutcome::AwaitingApproval { capability });
+                                return Ok(LoopOutcome::AwaitingApproval {
+                                    capability,
+                                    scope: r.id.clone(),
+                                });
                             }
                         }
                     }
@@ -1386,9 +1434,11 @@ impl Session {
                     run_id,
                     turn + 1,
                     reg,
-                    Vec::new(),
-                    grants,
-                    denied_scopes,
+                    &Approvals {
+                        pending: Vec::new(),
+                        granted: grants.clone(),
+                        denied: denied_scopes.clone(),
+                    },
                     tool_calls_used,
                     watchdog,
                 )

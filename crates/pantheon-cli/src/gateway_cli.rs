@@ -10,7 +10,7 @@
 //! Missing tokens disable that surface; at least one must be set.
 
 use pantheon_core::capability::Policy;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// The runtime-backed sink. Maps channel threads to run ids through a
@@ -43,7 +43,7 @@ impl RuntimeSink {
 }
 
 fn open_session(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     policy: Policy,
 ) -> Result<pantheon_runtime::session::Session, pantheon_core::error::PantheonError> {
     let cfg = crate::config_doc::Config::load(data_dir).ok();
@@ -57,7 +57,7 @@ fn open_session(
         auxiliaries: crate::config_doc::auxiliaries(cfg.as_ref(), &default),
     };
     let secrets = crate::config_doc::chat_secrets(cfg.as_ref());
-    pantheon_runtime::session::Session::new(data_dir.clone(), policy, model_policy, secrets)
+    pantheon_runtime::session::Session::new(data_dir.to_path_buf(), policy, model_policy, secrets)
 }
 
 impl RuntimeSink {
@@ -99,8 +99,9 @@ impl pantheon_gateway::EventSink for RuntimeSink {
             Ok(outcome) => {
                 let text = match outcome {
                     pantheon_agent::LoopOutcome::Answered { text: t, .. } => t,
-                    pantheon_agent::LoopOutcome::AwaitingApproval { capability } => format!(
-                        "approval needed: {capability:?}. Reply 'grant {run_id} <scope>' or 'deny'."
+                    pantheon_agent::LoopOutcome::AwaitingApproval { capability, scope } => format!(
+                        "approval needed: {capability:?}. Reply 'grant {run_id} {scope}' to \
+                         allow it, or 'deny {run_id} {scope}' to refuse it."
                     ),
                     pantheon_agent::LoopOutcome::Denied { capability } => {
                         format!("denied: {capability:?}")

@@ -119,7 +119,7 @@ fn default_roles(n: usize) -> Vec<&'static str> {
     }
 }
 
-pub fn cmd_swarm(args: &[String], data_dir: &PathBuf) {
+pub fn cmd_swarm(args: &[String], data_dir: &Path) {
     if args.len() < 3 {
         eprintln!("usage: pantheon swarm <N> \"<task>\" [roles...] [--delivery telegram]");
         eprintln!("       pantheon swarm status [<swarm_id>]");
@@ -198,9 +198,9 @@ fn spawn_swarm(
     task: &str,
     explicit_roles: Vec<String>,
     delivery: Option<String>,
-    data_dir: &PathBuf,
+    data_dir: &Path,
 ) {
-    let sup = match Supervisor::open(data_dir.clone()) {
+    let sup = match Supervisor::open(data_dir.to_path_buf()) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("open runtime: {e}");
@@ -289,8 +289,8 @@ fn spawn_swarm(
     }
 }
 
-fn handle_swarm_query(args: &[String], data_dir: &PathBuf) {
-    let sup = match Supervisor::open(data_dir.clone()) {
+fn handle_swarm_query(args: &[String], data_dir: &Path) {
+    let sup = match Supervisor::open(data_dir.to_path_buf()) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("open runtime: {e}");

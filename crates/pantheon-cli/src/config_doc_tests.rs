@@ -185,12 +185,14 @@ fn aux_slots_cover_all_capabilities() {
         ]
     );
     // Every slot resolves against a matching section.
-    let mut cfg = Config::default();
-    cfg.judge = Some(AuxSection {
-        provider: "p".into(),
-        model: "m".into(),
-        api_key_env: None,
-    });
+    let cfg = Config {
+        judge: Some(AuxSection {
+            provider: "p".into(),
+            model: "m".into(),
+            api_key_env: None,
+        }),
+        ..Default::default()
+    };
     let kinds: Vec<String> = auxiliaries(
         Some(&cfg),
         &pantheon_core::model::DefaultModel {
@@ -609,8 +611,8 @@ fn agent_identity_defaults_isolate_namespaces() {
 #[test]
 fn agent_identity_validation_rejects_slugs_policies_clashes() {
     use super::*;
-    use std::collections::HashMap;
-    let mut all: HashMap<String, AgentIdentity> = HashMap::new();
+    let mut all: std::collections::HashMap<String, AgentIdentity> =
+        std::collections::HashMap::default();
     all.insert("nyx".into(), AgentIdentity::default());
     assert!(AgentIdentity::validate("nyx", &all).is_ok());
     // Bad slug.
@@ -661,10 +663,12 @@ fn agents_table_round_trips_and_old_configs_stay_empty() {
 #[test]
 fn config_validate_surfaces_bad_agent_tables() {
     use super::*;
-    use std::collections::HashMap;
-    let mut cfg = Config::default();
-    cfg.model = None; // keep focus: agent problems must appear regardless
-    cfg.agents = HashMap::new();
+    // model: None keeps the focus on agent problems, which must surface
+    // regardless of what the model section says.
+    let mut cfg = Config {
+        model: None,
+        ..Default::default()
+    };
     cfg.agents.insert(
         "ero".into(),
         AgentIdentity {

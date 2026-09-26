@@ -327,6 +327,37 @@ impl TuiState {
         }
     }
 
+    /// How long the first Esc stays armed. The second Esc inside this
+    /// window is what actually cancels the run.
+    pub const ARM_WINDOW: Duration = Duration::from_millis(1500);
+
+    /// Handle an Esc press. Returns true when the caller must cancel the
+    /// run in flight, which happens only on a confirmed second Esc.
+    ///
+    /// Extracted from the event loop so the arm/confirm/stale rules are
+    /// testable against the shipped code rather than a copy of it.
+    pub fn press_esc(&mut self) -> bool {
+        if !self.ready && !self.interrupted {
+            match self.interrupt_armed_at {
+                Some(t) if t.elapsed() < Self::ARM_WINDOW => {
+                    self.interrupt_armed_at = None;
+                    self.interrupted = true;
+                    self.status_line = "interrupting…".into();
+                    return true;
+                }
+                _ => {
+                    self.interrupt_armed_at = Some(Instant::now());
+                    self.status_line = "press esc again to interrupt".into();
+                }
+            }
+        } else if self.interrupt_armed_at.is_some() {
+            // Disarm if the run finished before the second Esc.
+            self.interrupt_armed_at = None;
+            self.status_line = "ready".into();
+        }
+        false
+    }
+
     pub fn add_user_message(&mut self, text: String) {
         self.blocks.push(TranscriptBlock {
             kind: BlockKind::UserMessage(text),
@@ -402,8 +433,8 @@ pub fn render(state: &TuiState, f: &mut Frame) {
 /// Up/Down to move, Enter to resume, Esc to close. Mirrors the REPL's
 /// /history picker, rendered as a centered list.
 fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
-    let w = area.width.min(80).max(40);
-    let h = area.height.min(20).max(7);
+    let w = area.width.clamp(40, 80);
+    let h = area.height.clamp(7, 20);
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
     let area = Rect {
@@ -626,14 +657,14 @@ fn render_header(f: &mut Frame, area: Rect, state: &TuiState) {
         None => state.session_id[..state.session_id.len().min(6)].to_string(),
     };
     let title = format!(
-        "◈ PANTHEON  {}  {}  {:02}:{:02}:{:02}  {}  ${}",
+        "◈ PANTHEON  {}  {}  {:02}:{:02}:{:02}  {}  ${:.2}",
         session_label,
         state.model,
         state.elapsed.as_secs() / 3600,
         (state.elapsed.as_secs() % 3600) / 60,
         state.elapsed.as_secs() % 60,
         tokens_display,
-        format!("{:.2}", state.cost_cents as f64 / 100.0),
+        state.cost_cents as f64 / 100.0,
     );
     let header = Paragraph::new(Line::from(Span::styled(
         title,
@@ -1092,26 +1123,11 @@ fn tui_loop(
                     }
                     KeyCode::Esc => {
                         state.is_inputting = false;
-                        // Double-Esc interrupts the active run. First Esc arms,
-                        // second Esc inside the window cancels for real.
-                        if !state.ready && !state.interrupted {
-                            const ARM_WINDOW: Duration = Duration::from_millis(1500);
-                            match state.interrupt_armed_at {
-                                Some(t) if t.elapsed() < ARM_WINDOW => {
-                                    state.interrupt_armed_at = None;
-                                    state.interrupted = true;
-                                    state.status_line = "interrupting\u{2026}".into();
-                                    session.cancel_current_run(run_id, "user pressed esc twice");
-                                }
-                                _ => {
-                                    state.interrupt_armed_at = Some(Instant::now());
-                                    state.status_line = "press esc again to interrupt".into();
-                                }
-                            }
-                        } else if state.interrupt_armed_at.is_some() {
-                            // Disarm if the run finished before the second Esc.
-                            state.interrupt_armed_at = None;
-                            state.status_line = "ready".into();
+                        // Double-Esc interrupts the active run. The arm and
+                        // confirm rules live in `press_esc` so they are
+                        // testable without a terminal.
+                        if state.press_esc() {
+                            session.cancel_current_run(run_id, "user pressed esc twice");
                         }
                     }
                     _ => {}
