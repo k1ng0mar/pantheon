@@ -172,6 +172,31 @@ Several subsystems have working code with incomplete product connection. Context
 
 The planned product includes container and stronger VM sandboxing, durable agent identity, a package format and lifecycle, live scheduler execution, a migrated-item command, richer API coverage, external coding-agent adapters, live OpenTelemetry export, and a richer local interface. Default token and cost ceilings are also planned. The package plan also includes stable, beta, and nightly channels with pinning and rollback. The coding engine plan names LSP, DAP, AST, test, build, and package tools alongside external agent adapters. None should be described as available until the main runtime invokes it and the repository documents a real user path.
 
+## The two agent loops
+
+There are two, and this is the first thing to understand before reading the
+runtime.
+
+**`Session::drive` (pantheon-runtime) is the production loop.** It owns a
+typed `Message` transcript, streams from a real provider chain, persists every
+turn to the ledger, honours the run lease and watchdog, and enforces tool
+gates. Everything a user does goes through it.
+
+**`AgentLoop::run` (pantheon-agent) is a test harness.** It runs a
+`Vec<String>` transcript against scripted `ModelTurn`s with no network and no
+provider. It exists so the engine's budget, cancel, and tool-call logic can be
+tested deterministically. It has no production caller.
+
+`AgentLoop` the *struct* is used by both: `drive` constructs one to carry the
+policy, budget, and run identity, then runs its own turn loop over those
+fields. So the struct is shared and the loop is not. That distinction is the
+confusing part, and it is why the two must not be collapsed casually:
+`drive` is where the ledger, lease, streaming, and extension gates live.
+
+Consequence worth knowing: because only `AgentLoop::run` consults a judge, a
+`[judge]` in config validates and then does nothing. See
+[configuration.md](configuration.md#judge-model).
+
 ## Security and recovery model
 
 Pantheon's security model has four linked controls: capability policy, provenance, dangerous-pattern detection, and durable approval. A tool's capability comes from the runtime registry, not from a model's description of the tool. Policy then decides whether the call may execute, must stop for approval, or is denied. Shell commands receive an additional in-process danger gate before a subprocess starts. Plugin tools do not receive a bypass.
