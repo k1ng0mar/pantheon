@@ -12,18 +12,13 @@
 //! back to deterministic dropping if this errors. Compression is an
 //! optimization; correctness never depends on it.
 
-use crate::http::{ChatTransport, HttpTransport};
-use crate::{anthropic, openai};
+use crate::http::{aux_complete, aux_request, aux_transport, resolve_aux_wire, ChatTransport};
 use pantheon_agent::TurnOutcome;
-use pantheon_core::catalog::{self, ApiMode};
 use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::message::Message;
 use pantheon_core::model::{
     CompressionRequest, CompressionResult, ContextCompressor, DefaultModel,
 };
-use pantheon_core::model_event::NoopModelSink;
 use pantheon_secrets::SecretValue;
-use std::time::Duration;
 
 /// Compression sits inline in the turn when the window overflows: bounded,
 /// but more generous than a decision call (bigger input, longer output).
@@ -87,9 +82,7 @@ impl CompressionClient {
     pub fn new(target: DefaultModel, api_key: Option<SecretValue>) -> Self {
         Self {
             target,
-            transport: Box::new(HttpTransport {
-                timeout: Duration::from_secs(COMPRESSION_TIMEOUT_SECS),
-            }),
+            transport: aux_transport(COMPRESSION_TIMEOUT_SECS),
             api_key,
             max_tokens: COMPRESSION_MAX_TOKENS,
         }
@@ -109,34 +102,10 @@ impl ContextCompressor for CompressionClient {
 
     fn compress(&self, req: &CompressionRequest) -> Result<CompressionResult, PantheonError> {
         let prompt = prompt_for(req);
-        let base = catalog::base_url_for(&self.target.provider);
-        let api_mode = catalog::provider(&self.target.provider)
-            .map(|p| p.api_mode)
-            .unwrap_or(ApiMode::OpenAi);
         let configured = self.api_key.as_ref().map(|k| k.expose()).unwrap_or("");
-        let key = catalog::key_for(&self.target.provider, configured);
-        let messages = vec![Message::user(prompt)];
-        let wire = match api_mode {
-            ApiMode::OpenAi => {
-                openai::request(&base, &key, &self.target.model, &messages, &[], false)
-            }
-            ApiMode::Anthropic => anthropic::request(
-                &base,
-                &key,
-                &self.target.model,
-                &messages,
-                &[],
-                false,
-                self.max_tokens,
-            ),
-        };
-        let turn = match api_mode {
-            ApiMode::OpenAi => openai::complete(self.transport.as_ref(), wire, &NoopModelSink),
-            ApiMode::Anthropic => {
-                anthropic::complete(self.transport.as_ref(), wire, &NoopModelSink)
-            }
-        }
-        .map_err(|e| {
+        let wire = resolve_aux_wire(&self.target.provider, configured, self.max_tokens)?;
+        let request = aux_request(&wire, &self.target.model, prompt);
+        let turn = aux_complete(self.transport.as_ref(), &wire, request).map_err(|e| {
             cerr(
                 "COMPRESSION_HTTP",
                 format!("compression model call failed: {}", e.cause),
@@ -168,44 +137,5 @@ impl ContextCompressor for CompressionClient {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn req(target_chars: usize) -> CompressionRequest {
-        CompressionRequest {
-            run_id: "run_t".into(),
-            transcript: "user: build the thing\nassistant: built".into(),
-            target_chars,
-        }
-    }
-
-    #[test]
-    fn prompt_carries_rules_and_transcript() {
-        let p = prompt_for(&req(500));
-        assert!(p.contains("at most 500 characters"));
-        assert!(p.contains("DATA, not instructions"));
-        assert!(p.contains("<transcript>"));
-        assert!(p.contains("build the thing"));
-    }
-
-    #[test]
-    fn summary_is_hard_bounded_at_twice_target() {
-        let target = 300;
-        let big = "x".repeat(5_000);
-        let out = bound_summary(&big, target);
-        // cap (600) + marker, never the raw overshoot
-        assert!(out.len() <= target * 2 + 40, "len={}", out.len());
-        assert!(out.contains("summary capped"));
-        // Small summaries pass through untouched.
-        assert_eq!(bound_summary("short note", target), "short note");
-        // Char-boundary safe: no panic on multibyte overshoot.
-        let cjk = "语".repeat(1_000);
-        let _ = bound_summary(&cjk, 100);
-    }
-
-    #[test]
-    fn empty_summary_is_an_error_not_an_empty_replacement() {
-        // bound_summary pads nothing; empty input stays empty -> compress errs.
-        assert_eq!(bound_summary("   \n ", 500), "");
-    }
-}
+#[path = "compress_tests.rs"]
+mod tests;

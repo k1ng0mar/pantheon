@@ -6,8 +6,10 @@
 //! `_seen_sessions`, which our subprocess runner can't preserve) fire at
 //! most once per (plugin, hook, session). The manager owns this, not the
 //! plugin process — required because each fire spawns fresh.
-use crate::hooks::Hook;
-use crate::python_runner::{fire_hook, HookInput, PythonPlugin, RunnerConfig};
+use crate::hooks::{Hook, HookClass};
+use crate::python_runner::{
+    fire_hook, fire_hook_full, HookDirective, HookInput, PythonPlugin, RunnerConfig,
+};
 use pantheon_core::error::{Layer, PantheonError};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -33,6 +35,17 @@ pub struct ExtensionManager {
     /// consecutive failures it is skipped for the rest of the session
     /// (in-memory only; a new session retries it).
     timeout_streaks: Mutex<HashMap<String, u32>>,
+}
+
+/// The verdict of a gate hook.
+///
+/// `Deny` is the fail-closed direction: a plugin that crashes, times out, or
+/// has been skipped after repeated failures denies rather than allows. A gate
+/// that fails open is not a gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateDecision {
+    Allow,
+    Deny { reason: String, plugin: String },
 }
 
 /// Consecutive hook failures after which a plugin is skipped for the
@@ -177,6 +190,192 @@ impl ExtensionManager {
             Some(parts.join("\n"))
         }
     }
+    /// Fire a gate hook (`pre_tool_call`) and resolve a verdict.
+    ///
+    /// Contract, deliberately asymmetric:
+    /// - No plugin provides the hook => `Allow` (nothing configured to gate).
+    /// - A plugin answers cleanly without `deny` => `Allow`.
+    /// - A plugin answers `{"deny": true, ...}` => `Deny` (first deny wins).
+    /// - A plugin errors, times out, or returns junk => `Deny` (fail closed).
+    /// - A plugin skipped for repeated failures => `Deny` (fail closed), so a
+    ///   wedged security plugin cannot quietly turn itself off.
+    pub fn fire_gate(
+        &self,
+        hook: Hook,
+        session: &str,
+        platform: &str,
+        extra: std::collections::HashMap<String, String>,
+    ) -> GateDecision {
+        debug_assert_eq!(
+            hook.class(),
+            HookClass::Gate,
+            "fire_gate on a non-gate hook"
+        );
+        for pl in &self.plugins {
+            if !pl.provides(hook) {
+                continue;
+            }
+            if self.is_streak_exhausted(&pl.manifest.name) {
+                return GateDecision::Deny {
+                    reason: format!(
+                        "plugin '{}' is disabled after {SKIP_AFTER_FAILURES} consecutive hook \
+                         failures; refusing because the gate could not be consulted",
+                        pl.manifest.name
+                    ),
+                    plugin: pl.manifest.name.clone(),
+                };
+            }
+            let input = HookInput {
+                hook: hook.name().into(),
+                session_id: session.into(),
+                platform: platform.into(),
+                extra: extra.clone(),
+            };
+            match fire_hook_full(pl, hook, &input, &self.cfg) {
+                Ok(out) => {
+                    // The shim CATCHES plugin exceptions and reports them as a
+                    // clean envelope with `error` set, so a raising plugin
+                    // arrives here as Ok, not Err. A gate must read both as
+                    // "no answer" — otherwise the most likely real-world
+                    // failure (a plugin with a bug) fails OPEN.
+                    if let Some(msg) = out.error {
+                        self.bump_streak(&pl.manifest.name);
+                        return GateDecision::Deny {
+                            reason: format!(
+                                "security gate '{}' errored ({msg}); denying because it could not \
+                                 be consulted",
+                                pl.manifest.name
+                            ),
+                            plugin: pl.manifest.name.clone(),
+                        };
+                    }
+                    self.clear_streak(&pl.manifest.name);
+                    if let Some(HookDirective {
+                        deny: true, reason, ..
+                    }) = out.directive
+                    {
+                        return GateDecision::Deny {
+                            reason: reason.unwrap_or_else(|| {
+                                format!("plugin '{}' denied this action", pl.manifest.name)
+                            }),
+                            plugin: pl.manifest.name.clone(),
+                        };
+                    }
+                }
+                Err(e) => {
+                    self.bump_streak(&pl.manifest.name);
+                    // Fail closed, and say why: a silent allow here would be
+                    // indistinguishable from "no policy configured".
+                    return GateDecision::Deny {
+                        reason: format!(
+                            "security gate '{}' failed ({e}); denying because it could not be \
+                             consulted",
+                            pl.manifest.name
+                        ),
+                        plugin: pl.manifest.name.clone(),
+                    };
+                }
+            }
+        }
+        GateDecision::Allow
+    }
+
+    /// Fire a transform hook (`transform_tool_result`) and return the payload
+    /// the model should actually see.
+    ///
+    /// Contract, the mirror image of the gate: fails OPEN. The first plugin to
+    /// return a non-empty `replacement` wins; a plugin that errors, times out,
+    /// or returns nothing leaves `input` untouched. Redaction must not become
+    /// an outage.
+    pub fn fire_transform(
+        &self,
+        hook: Hook,
+        session: &str,
+        platform: &str,
+        extra: std::collections::HashMap<String, String>,
+        input: &str,
+    ) -> String {
+        debug_assert_eq!(
+            hook.class(),
+            HookClass::Transform,
+            "fire_transform on a non-transform hook"
+        );
+        for pl in &self.plugins {
+            if !pl.provides(hook) || self.is_streak_exhausted(&pl.manifest.name) {
+                continue;
+            }
+            let mut payload = extra.clone();
+            payload.insert("result".to_string(), input.to_string());
+            let hin = HookInput {
+                hook: hook.name().into(),
+                session_id: session.into(),
+                platform: platform.into(),
+                extra: payload,
+            };
+            match fire_hook_full(pl, hook, &hin, &self.cfg) {
+                Ok(out) => {
+                    self.clear_streak(&pl.manifest.name);
+                    if let Some(rep) = out.directive.and_then(|d| d.replacement) {
+                        if !rep.is_empty() {
+                            return rep;
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.bump_streak(&pl.manifest.name);
+                    eprintln!("transform {}: {e} (payload unchanged)", pl.manifest.name);
+                }
+            }
+        }
+        input.to_string()
+    }
+
+    fn is_streak_exhausted(&self, plugin: &str) -> bool {
+        self.timeout_streaks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(plugin)
+            .copied()
+            .unwrap_or(0)
+            >= SKIP_AFTER_FAILURES
+    }
+    fn clear_streak(&self, plugin: &str) {
+        self.timeout_streaks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(plugin);
+    }
+    fn bump_streak(&self, plugin: &str) {
+        let mut streaks = self
+            .timeout_streaks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let n = streaks.entry(plugin.to_string()).or_insert(0);
+        *n += 1;
+    }
+
+    /// Notify observers for one event-derived fire. The return value is
+    /// discarded on purpose: [`HookClass::Observer`] promises the host ignores
+    /// it, and discarding here keeps that promise honest. A gate/transform
+    /// routed here would silently lose its power, so it is refused loudly.
+    pub fn notify(
+        &self,
+        hook: Hook,
+        session: &str,
+        platform: &str,
+        extra: std::collections::HashMap<String, String>,
+    ) {
+        if hook.class() != HookClass::Observer {
+            eprintln!(
+                "notify: '{}' is not an observer hook and needs fire_gate/fire_transform; \
+                 refusing to notify",
+                hook.name()
+            );
+            return;
+        }
+        let _ = self.fire(hook, session, platform, extra);
+    }
+
     pub fn plugin_dir(&self, name: &str) -> Option<PathBuf> {
         self.plugins
             .iter()
@@ -186,89 +385,5 @@ impl ExtensionManager {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    fn plug(dir: &std::path::Path, name: &str, once: bool, ctx_text: &str) {
-        std::fs::create_dir_all(dir).unwrap();
-        let man = format!(
-            "name: {name}\nprovides_hooks:\n  - pre_llm_call\n{}\n",
-            if once { "once_per_session: true" } else { "" }
-        );
-        std::fs::write(dir.join("plugin.yaml"), man).unwrap();
-        let init = format!(
-            "def register(ctx):\n    ctx.register_hook('pre_llm_call', _h)\n\
-             def _h(**kw):\n    return {{'context': '{}'}} \n",
-            ctx_text
-        );
-        let mut f = std::fs::File::create(dir.join("__init__.py")).unwrap();
-        f.write_all(init.as_bytes()).unwrap();
-    }
-
-    #[test]
-    fn once_per_session_dedups() {
-        let base = std::env::temp_dir().join(format!("pantheon-mgr-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        plug(&base.join("p"), "p", true, "CTX");
-        let mut m = ExtensionManager::new(RunnerConfig::default());
-        m.load_dir(&base).unwrap();
-        assert_eq!(
-            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
-            Some("CTX".into())
-        );
-        assert_eq!(
-            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
-            None
-        );
-        assert_eq!(
-            m.fire(Hook::PreLlmCall, "s2", "cli", Default::default()),
-            Some("CTX".into())
-        );
-    }
-
-    #[test]
-    fn seen_sessions_sniff_dedups_without_manifest_flag() {
-        let base = std::env::temp_dir().join(format!("pantheon-mgr2-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let d = base.join("q");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(
-            d.join("plugin.yaml"),
-            "name: q\nprovides_hooks:\n  - pre_llm_call\n",
-        )
-        .unwrap();
-        std::fs::write(
-            d.join("__init__.py"),
-            "_seen_sessions = set()\ndef register(ctx):\n    ctx.register_hook('pre_llm_call', _h)\ndef _h(**kw):\n    return {'context': 'Q'}\n",
-        )
-        .unwrap();
-        let mut m = ExtensionManager::new(RunnerConfig::default());
-        m.load_dir(&base).unwrap();
-        assert_eq!(
-            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
-            Some("Q".into())
-        );
-        assert_eq!(
-            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
-            None
-        );
-    }
-
-    #[test]
-    fn normal_plugin_fires_every_time() {
-        let base = std::env::temp_dir().join(format!("pantheon-mgr3-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        plug(&base.join("r"), "r", false, "R");
-        let mut m = ExtensionManager::new(RunnerConfig::default());
-        m.load_dir(&base).unwrap();
-        assert_eq!(
-            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
-            Some("R".into())
-        );
-        assert_eq!(
-            m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
-            Some("R".into())
-        );
-    }
-}
+#[path = "manager_tests.rs"]
+mod tests;

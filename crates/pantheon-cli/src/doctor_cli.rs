@@ -71,7 +71,37 @@ pub fn run_system_doctor(data_dir: &Path) -> SystemReport {
         }
     };
 
-    // 2. Model API key present in the environment (config-only check; the
+    // 2. Agent identities: visible by effective display name so a
+    //    misconfigured [agents.*] table is obvious, not silent.
+    if let Some(c) = cfg.as_ref() {
+        if c.agents.is_empty() {
+            checks.push(check(
+                "agents",
+                "ok",
+                "no [agents] tables (anonymous runs)",
+                "",
+            ));
+        } else {
+            let mut tables: Vec<&String> = c.agents.keys().collect();
+            tables.sort();
+            for t in tables {
+                let id = &c.agents[t];
+                checks.push(check(
+                    "agents",
+                    "ok",
+                    format!(
+                        "{t} (name {:?}, namespace {:?}, policy {:?})",
+                        id.name(t),
+                        id.namespace(t),
+                        id.policy.as_deref().unwrap_or("default"),
+                    ),
+                    "",
+                ));
+            }
+        }
+    }
+
+    // 3. Model API key present in the environment (config-only check; the
     //    network reachability probe is opt-in via --ping).
     if let Some(m) = cfg.as_ref().and_then(|c| c.model.clone()) {
         match &m.api_key_env {
@@ -95,7 +125,7 @@ pub fn run_system_doctor(data_dir: &Path) -> SystemReport {
         }
     }
 
-    // 3. Memory backend: the ledger must open and the store must list.
+    // 4. Memory backend: the ledger must open and the store must list.
     let ledger_path = data_dir.join("ledger.db");
     match pantheon_storage::Ledger::open(&ledger_path) {
         Ok(ledger) => {
@@ -125,50 +155,57 @@ pub fn run_system_doctor(data_dir: &Path) -> SystemReport {
         )),
     }
 
-    // 4. Plugins: run the extension doctor over the extension dir.
+    // 5. Plugins: run the extension doctor over the extension dir.
     let ext_dir = crate::ext_dir();
-    if ext_dir.exists() {
-        let entries = std::fs::read_dir(&ext_dir).unwrap_or_else(|_| unreachable!());
-        let mut dirs: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
-        dirs.sort();
-        if dirs.is_empty() {
+    let entries = match std::fs::read_dir(&ext_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             checks.push(check("plugins", "ok", "no plugins installed", ""));
+            let ok = !checks.iter().any(|c| c.status == "fail");
+            return SystemReport { ok, checks };
         }
-        for d in dirs {
-            let rep = pantheon_extensions::doctor::doctor(&d);
-            let status = if !rep.ok {
-                "fail"
-            } else if rep.unknown_hooks.is_empty() {
-                "ok"
-            } else {
-                "warn"
-            };
-            let detail = if rep.findings.is_empty() {
-                format!("{} verified", rep.plugin)
-            } else {
-                rep.findings
-                    .iter()
-                    .map(|x| format!("{}: {}", x.code, x.detail))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            };
+        Err(e) => {
             checks.push(check(
                 "plugins",
-                status,
-                detail,
-                "reinstall the plugin or fix its manifest",
+                "fail",
+                format!("cannot read {}: {e}", ext_dir.display()),
+                "check permissions on the extension dir",
             ));
+            return SystemReport { ok: false, checks };
         }
-    } else {
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    if dirs.is_empty() {
+        checks.push(check("plugins", "ok", "no plugins installed", ""));
+    }
+    for d in dirs {
+        let rep = pantheon_extensions::doctor::doctor(&d);
+        let status = if !rep.ok {
+            "fail"
+        } else if rep.unknown_hooks.is_empty() {
+            "ok"
+        } else {
+            "warn"
+        };
+        let detail = if rep.findings.is_empty() {
+            format!("{} verified", rep.plugin)
+        } else {
+            rep.findings
+                .iter()
+                .map(|x| format!("{}: {}", x.code, x.detail))
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
         checks.push(check(
             "plugins",
-            "ok",
-            format!("no extension dir at {}", ext_dir.display()),
-            "",
+            status,
+            detail,
+            "reinstall the plugin or fix its manifest",
         ));
     }
 
@@ -177,41 +214,5 @@ pub fn run_system_doctor(data_dir: &Path) -> SystemReport {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn empty_data_dir_fails_config_but_reports_the_fix() {
-        let dir = std::env::temp_dir().join(format!("pantheon-doctor-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let rep = run_system_doctor(&dir);
-        assert!(!rep.ok);
-        let cfg_check = rep.checks.iter().find(|c| c.section == "config").unwrap();
-        assert_eq!(cfg_check.status, "fail");
-        assert!(cfg_check.fix.contains("setup"));
-        // Ledger and memory still get checked even without config.
-        assert!(rep.checks.iter().any(|c| c.section == "ledger"));
-        assert!(rep.checks.iter().any(|c| c.section == "memory"));
-    }
-
-    #[test]
-    fn configured_data_dir_passes() {
-        let dir = std::env::temp_dir().join(format!("pantheon-doctor-ok-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        crate::setup_cli::run_setup(
-            &dir,
-            crate::setup_cli::SetupAnswers {
-                provider: Some("local".into()),
-                model: Some("llama3.2".into()),
-                ..Default::default()
-            },
-            true,
-        );
-        let rep = run_system_doctor(&dir);
-        let cfg_check = rep.checks.iter().find(|c| c.section == "config").unwrap();
-        assert_eq!(cfg_check.status, "ok");
-        assert!(rep.ok, "checks: {:?}", rep.checks);
-    }
-}
+#[path = "doctor_cli_tests.rs"]
+mod tests;

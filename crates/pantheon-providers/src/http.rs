@@ -5,9 +5,12 @@
 //! Fallback policy does NOT live here — see `chain.rs`. Adapters are
 //! single-attempt; the chain decides what happens on failure.
 
+use crate::{anthropic, openai};
 use pantheon_agent::TurnOutcome;
+use pantheon_core::catalog::{self, ApiMode};
 use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::model_event::ModelUsage;
+use pantheon_core::message::Message;
+use pantheon_core::model_event::{ModelUsage, NoopModelSink};
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
@@ -47,7 +50,7 @@ pub struct WireRequest {
     pub body: String,
 }
 
-/// Transport seam. Fakes implement this in tests; `HttpTransport` in prod.
+/// Transport seam. Test doubles implement this in tests; `HttpTransport` in prod.
 pub trait ChatTransport: Send + Sync {
     /// POST the request and return the full response body.
     fn post(&self, req: &WireRequest) -> Result<String, PantheonError>;
@@ -110,7 +113,101 @@ fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, Panthe
     })
 }
 
-/// Boxed transport: lets runtime code pick mock vs HTTP at runtime while
+/// Resolve a provider's effective base URL, interpolating `{var}`
+/// endpoint templates (azure resource, bedrock region, vertex
+/// project/location, cloudflare account). Missing values are a
+/// *config* error (`PROVIDER_CONFIG`, fail-fast with remediation),
+/// never a network error — a raw `{placeholder}` must not reach the wire.
+pub fn resolve_base(provider_id: &str) -> Result<String, PantheonError> {
+    catalog::resolve_base_url(provider_id).map_err(|cause| {
+        PantheonError::new(
+            "PROVIDER_CONFIG",
+            Layer::Provider,
+            false,
+            cause,
+            "run `pantheon model` to fill the provider's required values",
+            "",
+        )
+    })
+}
+
+/// Resolved single-shot wire target for aux clients (title, judge,
+/// compression): base URL + wire mode + key, in one place so the three
+/// clients can't drift.
+pub struct AuxWire {
+    pub base: String,
+    pub key: String,
+    pub key_header: String,
+    pub api_mode: ApiMode,
+    pub max_tokens: u32,
+}
+
+/// Resolve everything one aux turn needs: base, mode, key.
+pub fn resolve_aux_wire(
+    provider_id: &str,
+    configured_key: &str,
+    max_tokens: u32,
+) -> Result<AuxWire, PantheonError> {
+    let base = resolve_base(provider_id)?;
+    let api_mode = catalog::provider(provider_id)
+        .map(|p| p.api_mode)
+        .unwrap_or(ApiMode::OpenAi);
+    let key = catalog::key_for(provider_id, configured_key);
+    let key_header = catalog::key_header_for(provider_id);
+    Ok(AuxWire {
+        base,
+        key,
+        key_header,
+        api_mode,
+        max_tokens,
+    })
+}
+
+/// Build the wire request for one prompt: no tools, no streaming.
+pub fn aux_request(wire: &AuxWire, model: &str, prompt: String) -> WireRequest {
+    let messages = vec![Message::user(prompt)];
+    match wire.api_mode {
+        ApiMode::OpenAi => openai::request(
+            &wire.base,
+            &wire.key,
+            &wire.key_header,
+            model,
+            &messages,
+            &[],
+            false,
+        ),
+        ApiMode::Anthropic => anthropic::request(
+            &wire.base,
+            &wire.key,
+            model,
+            &messages,
+            &[],
+            false,
+            wire.max_tokens,
+        ),
+    }
+}
+
+/// Complete one single-shot aux turn.
+pub fn aux_complete(
+    transport: &dyn ChatTransport,
+    wire: &AuxWire,
+    req: WireRequest,
+) -> Result<AdapterTurn, PantheonError> {
+    match wire.api_mode {
+        ApiMode::OpenAi => openai::complete(transport, req, &NoopModelSink),
+        ApiMode::Anthropic => anthropic::complete(transport, req, &NoopModelSink),
+    }
+}
+
+/// Short-timeout transport for single-shot aux clients.
+pub fn aux_transport(timeout_secs: u64) -> Box<dyn ChatTransport> {
+    Box::new(HttpTransport {
+        timeout: Duration::from_secs(timeout_secs),
+    })
+}
+
+/// Boxed transport: lets runtime code pick the HTTP transport at runtime while
 /// keeping one concrete `ProviderChain` type.
 impl ChatTransport for Box<dyn ChatTransport> {
     fn post(&self, req: &WireRequest) -> Result<String, PantheonError> {

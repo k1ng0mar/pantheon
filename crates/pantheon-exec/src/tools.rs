@@ -22,8 +22,12 @@ fn terr(code: &str, cause: String) -> PantheonError {
 pub struct Tool {
     pub schema: ToolSchema,
     pub capability: Capability,
-    pub run: Box<dyn Fn(&str) -> Result<String, PantheonError> + Send + Sync>,
+    pub run: ToolFn,
 }
+
+/// Boxed tool implementation: every tool is a sync string-in/string-out
+/// closure behind the registry.
+pub type ToolFn = Box<dyn Fn(&str) -> Result<String, PantheonError> + Send + Sync>;
 
 /// Registry of available tools for a run.
 #[derive(Default)]

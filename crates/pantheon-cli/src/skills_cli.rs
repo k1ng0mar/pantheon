@@ -12,8 +12,7 @@
 //! that writes, and only into <data_dir>/skills.
 
 use crate::data_dir;
-use pantheon_core::error::PantheonError;
-use pantheon_exec::skills::{discover_skills_ext, import_skill, SkillSource};
+use pantheon_exec::skills::{discover_skills_ext, import_skill, scan_skills_ext, SkillSource};
 use std::path::{Path, PathBuf};
 
 /// Extra discovery roots beyond the built-in cross-tool scopes.
@@ -38,23 +37,39 @@ fn scope_label(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// List every discovered skill.
-pub fn cmd_skills_list(_args: &[String]) {
+/// List every discovered skill. `pantheon skills list [--scope hermes|openclaw|agents|claude|external|all]`
+/// filters rows by source provenance.
+pub fn cmd_skills_list(args: &[String]) {
     let dd = data_dir();
-    let found = discover_skills_ext(&dd, &project_root(), &extra_roots());
+    let scan = scan_skills_ext(&dd, &project_root(), &extra_roots());
+    let scope = flag_value(args, "--scope");
+    let found = filter_by_scope(scan.loaded, |s| s.meta.origin.as_str(), scope.as_deref());
     if found.is_empty() {
         println!("no skills discovered");
-        return;
-    }
-    println!("{:24} {:12} {:12} {}", "NAME", "SCOPE", "ORIGIN", "DESCRIPTION");
-    for s in &found {
+    } else {
         println!(
             "{:24} {:12} {:12} {}",
-            s.meta.name,
-            scope_label(&s.path),
-            s.meta.origin,
-            s.meta.description
+            "NAME", "SCOPE", "ORIGIN", "DESCRIPTION"
         );
+        for s in &found {
+            println!(
+                "{:24} {:12} {:12} {}",
+                s.meta.name,
+                scope_label(&s.path),
+                s.meta.origin,
+                s.meta.description
+            );
+        }
+    }
+    // A skill that never loaded is invisible above. Naming it here is the
+    // difference between "my skill is gone" and "here is why".
+    if !scan.rejected.is_empty() {
+        println!();
+        println!("{} skill(s) skipped:", scan.rejected.len());
+        for r in &scan.rejected {
+            println!("  {} — {}", r.path.display(), r.reason);
+        }
+        println!("run `pantheon skills doctor` for details");
     }
 }
 
@@ -68,10 +83,15 @@ pub fn cmd_skills_list(_args: &[String]) {
 ///   `pantheon skills import --repo <URL> [--sub DIR]`
 ///       shallow-clone a repo and import every SKILL.md found in it.
 ///   `pantheon skills import --clawhub <slug> [--owner OWNER]`
-///       import a skill from the OpenClaw ClawHub registry (public API).
+///       import a skill from the OpenClaw ClawHub registry (public API,
+///       full ZIP bundle including scripts/references).
+///   `pantheon skills import --hermes <docs-url-or-path>`
+///       import a skill from the Hermes agent GitHub repo, resolving a
+///       docs page URL through its `Path |` metadata row, or accepting a
+///       raw repo path like `skills/creative/claude-design`.
 pub fn cmd_skills_import(args: &[String]) {
     if args.len() < 2 {
-        eprintln!("usage: pantheon skills import <name> [--scope DIR] | --url <URL> [name] | --repo <URL> [--sub DIR] | --clawhub <slug> [--owner OWNER]");
+        eprintln!("usage: pantheon skills import <name> [--scope DIR] | --url <URL> [name] | --repo <URL> [--sub DIR] | --clawhub <slug> [--owner OWNER] | --hermes <docs-url-or-path>");
         std::process::exit(2);
     }
     let dd = data_dir();
@@ -100,7 +120,11 @@ pub fn cmd_skills_import(args: &[String]) {
     if let Some(slug) = flag_value(args, "--clawhub") {
         let owner = flag_value(args, "--owner").map(|s| s.to_string());
         match pantheon_exec::skills::import_skill_from_clawhub(&dd, &slug, owner.as_deref()) {
-            Ok((path, skill)) => println!("imported {} <- clawhub://{slug} -> {}", skill.meta.name, path.display()),
+            Ok((path, skill)) => println!(
+                "imported {} <- clawhub://{slug} -> {}",
+                skill.meta.name,
+                path.display()
+            ),
             Err(e) => {
                 eprintln!("skills import: {e}");
                 std::process::exit(1);
@@ -108,6 +132,30 @@ pub fn cmd_skills_import(args: &[String]) {
         }
         return;
     }
+    if let Some(url) = flag_value(args, "--hermes") {
+        // Accept either a docs page URL (resolved via the `Path |` row in
+        // the generated page) or a raw repo path.
+        let repo_path = match pantheon_exec::skills::hermes_docs_path(&url) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("skills import: {e}");
+                std::process::exit(1);
+            }
+        };
+        match pantheon_exec::skills::import_skill_from_hermes(&dd, &repo_path) {
+            Ok((path, skill)) => println!(
+                "imported {} <- hermes://{repo_path} -> {}",
+                skill.meta.name,
+                path.display()
+            ),
+            Err(e) => {
+                eprintln!("skills import: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     if let Some(url) = flag_value(args, "--url") {
         let name = flag_value(args, "--name");
         match pantheon_exec::skills::import_skill_from_url(&dd, &url) {
@@ -143,10 +191,13 @@ pub fn cmd_skills_import(args: &[String]) {
         roots.push(s);
     }
     let found = discover_skills_ext(&dd, &project_root(), &roots);
-    let skill = found.iter().find(|s| s.meta.name == *name).unwrap_or_else(|| {
-        eprintln!("skills import: no skill named '{name}'");
-        std::process::exit(1);
-    });
+    let skill = found
+        .iter()
+        .find(|s| s.meta.name == *name)
+        .unwrap_or_else(|| {
+            eprintln!("skills import: no skill named '{name}'");
+            std::process::exit(1);
+        });
     match import_skill(&dd, skill) {
         Ok(p) => println!("imported {} -> {}", name, p.display()),
         Err(e) => {
@@ -166,28 +217,27 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
 }
 pub fn cmd_skills_doctor(_args: &[String]) {
     let dd = data_dir();
-    let found = discover_skills_ext(&dd, &project_root(), &extra_roots());
-    let mut errors = 0usize;
-    for s in &found {
-        match pantheon_exec::skills::load_skill(&s.path) {
-            Some(_) => println!("ok   {} ({})", s.meta.name, s.meta.origin),
-            None => {
-                errors += 1;
-                eprintln!("fail {} — broken SKILL.md", s.meta.name);
-            }
-        }
+    let scan = scan_skills_ext(&dd, &project_root(), &extra_roots());
+    for s in &scan.loaded {
+        println!("ok   {} ({})", s.meta.name, s.meta.origin);
     }
-    if found.is_empty() {
+    for r in &scan.rejected {
+        println!("fail {} — {}", r.path.display(), r.reason);
+    }
+    if scan.loaded.is_empty() && scan.rejected.is_empty() {
         println!("(no skills discovered)");
     }
-    if errors > 0 {
-        eprintln!("{} broken skill(s)", errors);
+    if !scan.rejected.is_empty() {
+        eprintln!(
+            "{} broken or shadowed skill(s) — fix the SKILL.md, or remove the \
+             duplicate that loses the name collision",
+            scan.rejected.len()
+        );
         std::process::exit(1);
     }
 }
 
 /// Resolve a `SkillSource` from a name, for `--scope` provenance tagging.
-#[allow(dead_code)]
 pub fn parse_scope(s: &str) -> Option<SkillSource> {
     match s.to_lowercase().as_str() {
         "hermes" => Some(SkillSource::Hermes),
@@ -199,7 +249,27 @@ pub fn parse_scope(s: &str) -> Option<SkillSource> {
     }
 }
 
-/// Top-level error helper for the skills verb.
-fn _aerr(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(code, pantheon_core::error::Layer::Execution, false, cause, "see docs", "")
+/// Filter `pantheon skills list` rows by source tag (`hermes`, `openclaw`,
+/// `agents`, `claude`, `external`, `pantheon`). `None`/empty/`all` =
+/// everything; unknown names match nothing (loud empty table, not an
+/// error, so scripts can probe).
+pub fn filter_by_scope<T>(
+    items: Vec<T>,
+    origin_of: impl Fn(&T) -> &str,
+    scope: Option<&str>,
+) -> Vec<T> {
+    let Some(scope) = scope.map(str::trim).filter(|s| !s.is_empty()) else {
+        return items;
+    };
+    if scope.eq_ignore_ascii_case("all") {
+        return items;
+    }
+    let Some(want) = parse_scope(scope) else {
+        return Vec::new();
+    };
+    let tag = want.tag();
+    items
+        .into_iter()
+        .filter(|it| origin_of(it) == tag)
+        .collect()
 }

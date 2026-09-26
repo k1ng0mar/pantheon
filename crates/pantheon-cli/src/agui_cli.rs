@@ -40,29 +40,22 @@ pub fn cmd_serve(args: &[String]) {
                 }
             }
         }
-        if let Some(decision) = &config.decision {
-            if std::env::var("PANTHEON_DECISION_PROVIDER").is_err() {
-                std::env::set_var("PANTHEON_DECISION_PROVIDER", &decision.provider);
+        if let Some(judge) = &config.judge {
+            if std::env::var("PANTHEON_JUDGE_PROVIDER").is_err() {
+                std::env::set_var("PANTHEON_JUDGE_PROVIDER", &judge.provider);
             }
-            if std::env::var("PANTHEON_DECISION_MODEL").is_err() {
-                std::env::set_var("PANTHEON_DECISION_MODEL", &decision.model);
+            if std::env::var("PANTHEON_JUDGE_MODEL").is_err() {
+                std::env::set_var("PANTHEON_JUDGE_MODEL", &judge.model);
             }
-            if let Some(env_name) = &decision.api_key_env {
-                if std::env::var("PANTHEON_DECISION_API_KEY_ENV").is_err() {
-                    std::env::set_var("PANTHEON_DECISION_API_KEY_ENV", env_name);
+            if let Some(env_name) = &judge.api_key_env {
+                if std::env::var("PANTHEON_JUDGE_API_KEY_ENV").is_err() {
+                    std::env::set_var("PANTHEON_JUDGE_API_KEY_ENV", env_name);
                 }
             }
         }
         if let Some(policy) = config.policy {
             if std::env::var("PANTHEON_POLICY").is_err() {
-                std::env::set_var(
-                    "PANTHEON_POLICY",
-                    match policy {
-                        super::config_schema::PolicyPreset::Reader => "reader",
-                        super::config_schema::PolicyPreset::Coder => "coder",
-                        super::config_schema::PolicyPreset::CoderMemory => "coder_memory",
-                    },
-                );
+                std::env::set_var("PANTHEON_POLICY", policy.as_str());
             }
         }
     }

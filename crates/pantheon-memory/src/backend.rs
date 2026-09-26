@@ -150,11 +150,40 @@ impl std::fmt::Debug for BackendEntry {
 /// URL/key come from selection options (`url`, `key`) or env
 /// `PANTHEON_MEMORY_<NAME>_URL` / `PANTHEON_MEMORY_<NAME>_KEY`.
 const PLUGIN_BACKENDS: &[(&str, &str)] = &[
-    ("galaxymem", "GalaxyMem via HTTP bridge (Pantheon /v1/memory protocol)"),
-    ("mnemosyne", "Mnemosyne via HTTP bridge (Pantheon /v1/memory protocol)"),
-    ("honcho", "Honcho via HTTP bridge (Pantheon /v1/memory protocol)"),
-    ("hindsight", "Hindsight via HTTP bridge (Pantheon /v1/memory protocol)"),
-    ("openviking", "OpenViking via HTTP bridge (Pantheon /v1/memory protocol)"),
+    (
+        "galaxymem",
+        "GalaxyMem via HTTP bridge (Pantheon /v1/memory protocol)",
+    ),
+    (
+        "mnemosyne",
+        "Mnemosyne via HTTP bridge (Pantheon /v1/memory protocol)",
+    ),
+    (
+        "honcho",
+        "Honcho via HTTP bridge (Pantheon /v1/memory protocol)",
+    ),
+    (
+        "hindsight",
+        "Hindsight via HTTP bridge (Pantheon /v1/memory protocol)",
+    ),
+    (
+        "openviking",
+        "OpenViking via HTTP bridge (Pantheon /v1/memory protocol)",
+    ),
+    // OMP ships two more real backends (`memory.backend` in its
+    // settings-schema): `mnemopi` is OMP's local SQLite memory, and
+    // `sharpshooter` is its project decision memory ("friction-earned"
+    // decisions). Neither speaks Pantheon's /v1/memory protocol natively,
+    // so both go through the same thin-bridge deal as the rest: point them
+    // at a bridge, or at an OMP sidecar that exposes the protocol.
+    (
+        "mnemopi",
+        "OMP local SQLite memory via HTTP bridge (needs a thin bridge)",
+    ),
+    (
+        "sharpshooter",
+        "OMP project decision memory via HTTP bridge (needs a thin bridge)",
+    ),
 ];
 
 fn bridge_factory(
@@ -176,9 +205,12 @@ fn bridge_factory(
             }
         };
         let env_key = format!("PANTHEON_MEMORY_{}_KEY", name.to_uppercase());
-        let key = sel.options.get("key").cloned().or_else(|| std::env::var(&env_key).ok());
-        Ok(Arc::new(crate::http_backend::HttpBackend::new(base, key))
-            as Arc<dyn MemoryBackend>)
+        let key = sel
+            .options
+            .get("key")
+            .cloned()
+            .or_else(|| std::env::var(&env_key).ok());
+        Ok(Arc::new(crate::http_backend::HttpBackend::new(base, key)) as Arc<dyn MemoryBackend>)
     }
 }
 
@@ -203,15 +235,12 @@ impl BackendRegistry {
                     "memory.md".into(),
                 ],
             },
-            |_| {
-                Ok(Arc::new(MemoryStore::open_in_memory()?) as Arc<dyn MemoryBackend>)
-            },
+            |_| Ok(Arc::new(MemoryStore::open_in_memory()?) as Arc<dyn MemoryBackend>),
         );
         r.register_with(
             BackendInfo {
                 name: "http".into(),
-                label: "External memory backend over HTTP (Pantheon /v1/memory protocol)"
-                    .into(),
+                label: "External memory backend over HTTP (Pantheon /v1/memory protocol)".into(),
                 kind: BackendKind::Http,
                 capabilities: vec!["memory.read".into(), "memory.write".into()],
             },
@@ -336,7 +365,10 @@ mod tests {
             "hindsight",
             "openviking",
         ] {
-            assert!(names.contains(&want.to_string()), "missing {want}: {names:?}");
+            assert!(
+                names.contains(&want.to_string()),
+                "missing {want}: {names:?}"
+            );
         }
         assert!(r.contains("native"));
         assert!(r.contains("http"));

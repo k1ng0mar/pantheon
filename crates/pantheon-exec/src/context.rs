@@ -18,7 +18,7 @@
 //! safety factor. It is not a tokenizer; it only has to trigger trimming
 //! before the provider rejects the request.
 
-use crate::{CompactionPolicy, compact_output};
+use crate::{compact_output, CompactionPolicy};
 use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::message::{Message, Role};
 use pantheon_core::model::{CompressionRequest, ContextCompressor};
@@ -49,7 +49,10 @@ pub fn row_tokens(m: &Message) -> u32 {
 
 /// Estimated input tokens for a whole transcript.
 pub fn estimate_messages(messages: &[Message]) -> u32 {
-    messages.iter().map(row_tokens).fold(0u32, |a, b| a.saturating_add(b))
+    messages
+        .iter()
+        .map(row_tokens)
+        .fold(0u32, |a, b| a.saturating_add(b))
 }
 
 /// What the fit may spend on input tokens.
@@ -287,8 +290,7 @@ pub fn compress_oldest(
             break;
         }
         let end = starts[k + 1];
-        if chunk_tokens > 0
-            && render_exchanges(messages, starts[0]..end).len() >= RENDER_MAX_CHARS
+        if chunk_tokens > 0 && render_exchanges(messages, starts[0]..end).len() >= RENDER_MAX_CHARS
         {
             break; // input cap: leave the rest to the deterministic drop
         }
@@ -361,256 +363,5 @@ pub fn compress_oldest(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use pantheon_core::message::ToolCallRef;
-
-    fn budget(limit: u32) -> WindowBudget {
-        WindowBudget::new(limit, 0)
-    }
-
-    fn big_tool(id: &str, kb: usize) -> Message {
-        Message::tool(id, "x".repeat(kb * 1024))
-    }
-
-    #[test]
-    fn estimate_is_bytes_over_four_rounded_up() {
-        assert_eq!(estimate_tokens(""), 0);
-        assert_eq!(estimate_tokens("abcd"), 1);
-        assert_eq!(estimate_tokens("abcde"), 2);
-        // Rows carry overhead so an empty transcript is not "free".
-        assert!(row_tokens(&Message::user("hi")) > estimate_tokens("hi"));
-    }
-
-    #[test]
-    fn under_budget_is_a_noop() {
-        let msgs = vec![
-            Message::system("sys"),
-            Message::user("hello"),
-            Message::assistant("hi"),
-        ];
-        let (out, report) = fit_to_window(msgs.clone(), &budget(10_000)).unwrap();
-        assert_eq!(out, msgs);
-        assert!(!report.changed());
-        assert_eq!(report.dropped_rows, 0);
-    }
-
-    #[test]
-    fn oversized_tool_rows_are_compacted_before_anything_is_dropped() {
-        let msgs = vec![
-            Message::system("sys"),
-            Message::user("go"),
-            Message::assistant_tool_calls(vec![ToolCallRef {
-                id: "c1".into(),
-                name: "shell".into(),
-                arguments: "{}".into(),
-            }]),
-            big_tool("c1", 50),
-            Message::user("next"),
-            Message::assistant("ok"),
-        ];
-        let (out, report) = fit_to_window(msgs, &budget(4_000)).unwrap();
-        // Compaction alone sufficed: nothing was dropped, pairing intact.
-        assert_eq!(report.compacted_rows, 1);
-        assert_eq!(report.dropped_rows, 0);
-        let tool_row = out.iter().find(|m| m.role == Role::Tool).unwrap();
-        // `compact_output` may append a ~20-byte byte-cap marker past max_bytes.
-        assert!(tool_row.content.len() <= TOOL_FLOOR_BYTES + 32);
-        assert!(out.iter().any(|m| m.role == Role::User));
-        assert!(report.estimated <= report.window);
-    }
-
-    #[test]
-    fn oldest_exchange_drops_as_a_whole_group_system_and_tail_survive() {
-        let msgs = vec![
-            Message::system("sys"),
-            Message::user("first task ".repeat(400)),
-            Message::assistant("thinking ".repeat(400)),
-            Message::user("second task ".repeat(400)),
-            Message::assistant("more ".repeat(400)),
-            Message::user("latest"),
-        ];
-        let (out, report) = fit_to_window(msgs, &budget(1_200)).unwrap();
-        assert!(report.dropped_rows >= 1);
-        // System preamble and the live tail survive.
-        assert_eq!(out.first().unwrap().role, Role::System);
-        assert_eq!(out.last().unwrap().content, "latest");
-        // The dropped exchange is gone wholesale: no orphaned assistant
-        // "thinking" row left without its user row.
-        assert!(!out.iter().any(|m| m.content.contains("thinking")));
-        // Grouping is preserved: every exchange still starts with a user row.
-        let first_non_system = out.iter().find(|m| m.role != Role::System).unwrap();
-        assert_eq!(first_non_system.role, Role::User);
-    }
-
-    #[test]
-    fn pairing_survives_dropping() {
-        let msgs = vec![
-            Message::system("sys"),
-            Message::user("task one ".repeat(500)),
-            Message::assistant_tool_calls(vec![ToolCallRef {
-                id: "c1".into(),
-                name: "shell".into(),
-                arguments: "{}".into(),
-            }]),
-            Message::tool("c1", "result ".repeat(500)),
-            Message::user("task two ".repeat(500)),
-            Message::assistant_tool_calls(vec![ToolCallRef {
-                id: "c2".into(),
-                name: "shell".into(),
-                arguments: "{}".into(),
-            }]),
-            Message::tool("c2", "fresh"),
-        ];
-        let (out, report) = fit_to_window(msgs, &budget(1_500)).unwrap();
-        assert!(
-            report.dropped_rows >= 3,
-            "first exchange (user + assistant + tool) should drop: {report:?}"
-        );
-        // If c1's assistant row is gone, its tool row must be gone too.
-        let has_assistant_c1 = out.iter().any(|m| {
-            m.role == Role::Assistant && m.tool_calls.iter().any(|c| c.id == "c1")
-        });
-        let has_tool_c1 = out
-            .iter()
-            .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c1"));
-        assert_eq!(has_assistant_c1, has_tool_c1);
-        // The live pairing always survives.
-        assert!(out.iter().any(|m| {
-            m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c2")
-        }));
-    }
-
-    #[test]
-    fn essential_rows_over_window_is_a_structured_error() {
-        let msgs = vec![
-            Message::system("s".repeat(4_000)),
-            Message::user("only exchange ".repeat(1_000)),
-        ];
-        let err = fit_to_window(msgs, &budget(500)).unwrap_err();
-        assert_eq!(err.code, "CONTEXT_OVERFLOW");
-        assert!(!err.retryable);
-        assert!(!err.remediation.is_empty());
-    }
-
-    #[test]
-    fn budget_reserves_output_and_pads() {
-        let b = WindowBudget::new(100_000, 4_096);
-        let usable = b.usable();
-        assert!(usable < 100_000 - 4_096);
-        assert!(usable > 80_000);
-        // Unknown huge reserve must not underflow.
-        let b2 = WindowBudget::new(1_000, 10_000);
-        assert_eq!(b2.usable(), 0);
-    }
-
-    // --- compression (scripted compressors, no network) ---
-
-    use pantheon_core::model::CompressionResult;
-
-    struct FakeCompressor;
-    impl ContextCompressor for FakeCompressor {
-        fn model_name(&self) -> &str {
-            "fake-summarizer"
-        }
-        fn compress(
-            &self,
-            req: &CompressionRequest,
-        ) -> Result<CompressionResult, PantheonError> {
-            Ok(CompressionResult {
-                summary: format!("compressed note of {} chars", req.transcript.len()),
-            })
-        }
-    }
-
-    struct BrokenCompressor;
-    impl ContextCompressor for BrokenCompressor {
-        fn compress(
-            &self,
-            _req: &CompressionRequest,
-        ) -> Result<CompressionResult, PantheonError> {
-            Err(PantheonError::new(
-                "COMPRESSION_DOWN",
-                Layer::Provider,
-                true,
-                "summarizer offline".to_string(),
-                "deterministic fit still runs".to_string(),
-                "",
-            ))
-        }
-    }
-
-    fn overflowing_transcript() -> Vec<Message> {
-        vec![
-            Message::system("sys"),
-            Message::user("task ".repeat(1_000)),
-            Message::assistant("work ".repeat(1_000)),
-            Message::user("task ".repeat(1_000)),
-            Message::assistant("work ".repeat(1_000)),
-            Message::user("live"),
-        ]
-    }
-
-    #[test]
-    fn compression_skips_when_under_budget_or_no_exchange() {
-        let msgs = vec![Message::system("sys"), Message::user("hi")];
-        assert!(
-            compress_oldest(&msgs, &FakeCompressor, &budget(100_000), "r").unwrap()
-                .is_none()
-        );
-        // Only one exchange — nothing droppable, nothing to compress.
-        assert!(compress_oldest(&msgs, &FakeCompressor, &budget(10), "r").unwrap().is_none());
-    }
-
-    #[test]
-    fn compression_absorbs_oldest_exchanges_splicing_a_memory_note() {
-        let msgs = overflowing_transcript();
-        let before = estimate_messages(&msgs);
-        let (out, report) =
-            compress_oldest(&msgs, &FakeCompressor, &budget(1_200), "r1")
-                .unwrap()
-                .expect("overflow should compress");
-
-        // Preamble and the live exchange survive; middle absorbed into one note.
-        assert_eq!(out.first().unwrap().role, Role::System);
-        assert_eq!(out.first().unwrap().content, "sys");
-        assert_eq!(out.last().unwrap().content, "live");
-        let note = &out[1];
-        assert_eq!(note.role, Role::System);
-        assert!(note.content.contains("<compressed_context>"));
-        assert_eq!(
-            note.provenance.as_ref().map(|p| p.trust),
-            Some(pantheon_core::provenance::TrustTier::Memory)
-        );
-
-        assert_eq!(report.exchanges, 2);
-        assert_eq!(report.rows, 4);
-        assert!(report.chars_before > report.chars_after);
-        // The result must be strictly smaller than what it replaced.
-        assert!(estimate_messages(&out) < before);
-    }
-
-    #[test]
-    fn compressor_error_propagates_for_deterministic_fallback() {
-        let msgs = overflowing_transcript();
-        let err = compress_oldest(&msgs, &BrokenCompressor, &budget(1_200), "r1")
-            .unwrap_err();
-        assert_eq!(err.code, "COMPRESSION_DOWN");
-        // Input was borrowed, not consumed: caller still has it for fit_to_window.
-        assert_eq!(estimate_messages(&msgs), estimate_messages(&overflowing_transcript()));
-    }
-
-    #[test]
-    fn render_caps_each_row_and_the_total() {
-        let long_row = Message::tool("c1", "z".repeat(5_000));
-        let msgs = vec![long_row];
-        let rendered = render_exchanges(&msgs, 0..1);
-        assert!(rendered.contains("[...]"));
-        assert!(rendered.len() < 5_000);
-
-        let many: Vec<Message> = (0..80).map(|_| Message::user("y".repeat(1_900))).collect();
-        let rendered = render_exchanges(&many, 0..80);
-        assert!(rendered.contains("[... render cap ...]"));
-        assert!(rendered.len() < RENDER_MAX_CHARS + 64);
-    }
-}
+#[path = "context_tests.rs"]
+mod tests;

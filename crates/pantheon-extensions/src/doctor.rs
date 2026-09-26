@@ -98,6 +98,21 @@ pub fn doctor(dir: &Path) -> DoctorReport {
     for u in &unknown {
         findings.push(f("warn", "UNKNOWN_HOOK", format!("unknown hook '{u}'")));
     }
+    // A hook Pantheon knows but cannot fire is the dangerous case: the
+    // plugin author believes it runs. Say so loudly rather than letting the
+    // manifest look healthy.
+    for h in &hooks {
+        if !h.is_wired() {
+            findings.push(f(
+                "warn",
+                "UNWIRED_HOOK",
+                format!(
+                    "'{}' is a known hook with no fire site yet; this plugin's handler will not run",
+                    h.name()
+                ),
+            ));
+        }
+    }
     if hooks.is_empty() {
         findings.push(f(
             "warn",

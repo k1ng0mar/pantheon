@@ -99,6 +99,7 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::DecisionRecorded { run_id, .. }
         | Event::ContextTrimmed { run_id, .. }
         | Event::ContextCompressed { run_id, .. }
+        | Event::SessionTitled { run_id, .. }
         | Event::AssistantMessage { run_id, .. }
         | Event::ToolMessage { run_id, .. } => run_id,
     }
@@ -107,7 +108,8 @@ pub fn run_id_of(event: &Event) -> &str {
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY,
   created_ms INTEGER NOT NULL,
-  status TEXT NOT NULL DEFAULT 'running'
+  status TEXT NOT NULL DEFAULT 'running',
+  title TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +136,18 @@ CREATE TABLE IF NOT EXISTS run_process_groups (
   created_ms INTEGER NOT NULL,
   PRIMARY KEY (run_id, pgid)
 );";
+
+/// One row of [`Ledger::list_runs`]: `(run_id, status, created_ms, title)`.
+/// `title` is `None` when the run has never been titled.
+pub type RunListing = (String, String, i64, Option<String>);
+
+/// Forward-only column migrations for ledgers created before a column
+/// existed. Fresh databases already carry every column from SCHEMA, so the
+/// ALTER fails harmlessly with "duplicate column name" and is ignored.
+fn migrate(conn: &Connection) -> Result<(), PantheonError> {
+    let _ = conn.execute("ALTER TABLE runs ADD COLUMN title TEXT", []);
+    Ok(())
+}
 
 fn has_pending_approval(
     conn: &Connection,
@@ -179,6 +193,7 @@ impl Ledger {
             .map_err(|e| err("LEDGER_BUSY_TIMEOUT", e.to_string()))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| err("LEDGER_SCHEMA", e.to_string()))?;
+        migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -189,6 +204,7 @@ impl Ledger {
             .map_err(|e| err("LEDGER_BUSY_TIMEOUT", e.to_string()))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| err("LEDGER_SCHEMA", e.to_string()))?;
+        migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -209,6 +225,16 @@ impl Ledger {
                 "INSERT OR IGNORE INTO runs (run_id, created_ms, status) VALUES (?1, ?2, 'running')",
                 params![run_id, ts],
             ).map_err(|e| err("LEDGER_RUN", e.to_string()))?;
+        }
+        // Derived read model: the latest title event is the run's display
+        // title. Overwrites unconditionally so a manual rename or a newer
+        // model pass wins (last write is authoritative).
+        if let Event::SessionTitled { title, .. } = event {
+            conn.execute(
+                "UPDATE runs SET title = ?2 WHERE run_id = ?1",
+                params![run_id, title],
+            )
+            .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
         }
         if matches!(event, Event::RunFailed { .. } | Event::TurnFailed { .. }) {
             conn.execute(
@@ -319,13 +345,13 @@ impl Ledger {
             .conn
             .lock()
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
-        let n = conn
+        let inserted = conn
             .execute(
                 "INSERT OR IGNORE INTO claims (key, ts_ms) VALUES (?1, ?2)",
                 params![key, now_ms()],
             )
-            .map_err(|e| err("LEDGER_CLAIM", e.to_string()))? as usize;
-        Ok(n == 1)
+            .map_err(|e| err("LEDGER_CLAIM", e.to_string()))?;
+        Ok(inserted == 1)
     }
 
     /// Store generative-UI bytes by task id.  `INSERT OR REPLACE` makes
@@ -504,15 +530,16 @@ impl Ledger {
     }
 
     /// List recent runs, newest first. Powers the REPL `/runs` picker and
-    /// auto-resume. `limit` bounds the row count.
-    pub fn list_runs(&self, limit: usize) -> Result<Vec<(String, String, i64)>, PantheonError> {
+    /// auto-resume. `limit` bounds the row count. The fourth element is the
+    /// run's current display title (`None` = never titled).
+    pub fn list_runs(&self, limit: usize) -> Result<Vec<RunListing>, PantheonError> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT run_id, status, created_ms FROM runs ORDER BY created_ms DESC, rowid DESC LIMIT ?1",
+                "SELECT run_id, status, created_ms, title FROM runs ORDER BY created_ms DESC, rowid DESC LIMIT ?1",
             )
             .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
         let rows = stmt
@@ -521,6 +548,7 @@ impl Ledger {
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
                 ))
             })
             .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
@@ -529,6 +557,23 @@ impl Ledger {
             out.push(row.map_err(|e| err("LEDGER_QUERY", e.to_string()))?);
         }
         Ok(out)
+    }
+
+    /// The current display title for one run (latest `SessionTitled`
+    /// event), or `None` when the run was never titled.
+    pub fn run_title(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.query_row(
+            "SELECT title FROM runs WHERE run_id=?1",
+            params![run_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| err("LEDGER_STATUS", e.to_string()))
+        .map(|o| o.flatten())
     }
 
     /// Reopen a terminal run for continued conversation. Only terminal
@@ -637,6 +682,12 @@ fn describe(ev: &Event) -> String {
             "context compressed by {model}: {exchanges} exchanges \
              ({chars_before} -> {chars_after} chars)"
         ),
+        Event::SessionTitled {
+            title,
+            model,
+            source,
+            ..
+        } => format!("session titled \"{title}\" ({source} by {model})"),
         Event::AssistantMessage { message, .. } => {
             format!(
                 "assistant: {}",
@@ -653,132 +704,5 @@ fn describe(ev: &Event) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn artifacts_are_stored_in_the_ledger_database() {
-        let ledger = Ledger::open_in_memory().unwrap();
-        ledger
-            .put_artifact("task-1", "image/png", &[1, 2, 3])
-            .unwrap();
-        let a = ledger.artifact("task-1").unwrap().unwrap();
-        assert_eq!(a.mime, "image/png");
-        assert_eq!(a.bytes, vec![1, 2, 3]);
-        assert!(ledger.artifact("task-2").unwrap().is_none());
-        assert_eq!(
-            ledger
-                .put_artifact("bad", "text/plain\r\nX-Test: yes", b"x")
-                .unwrap_err()
-                .code,
-            "ARTIFACT_MIME"
-        );
-        assert_eq!(
-            ledger
-                .put_artifact("bad/id", "text/plain", b"x")
-                .unwrap_err()
-                .code,
-            "ARTIFACT_ID"
-        );
-    }
-
-    #[test]
-    fn terminal_run_status_cannot_be_overwritten() {
-        let ledger = Ledger::open_in_memory().unwrap();
-        ledger
-            .append(&Event::RunStarted { run_id: "r".into() })
-            .unwrap();
-        ledger
-            .append(&Event::RunCanceled {
-                run_id: "r".into(),
-                reason: "stop".into(),
-            })
-            .unwrap();
-        ledger
-            .append(&Event::RunFailed {
-                run_id: "r".into(),
-                code: "late".into(),
-            })
-            .unwrap();
-        assert_eq!(ledger.status("r").unwrap().as_deref(), Some("canceled"));
-    }
-
-    #[test]
-    fn round_trip_and_explain() {
-        let ledger = Ledger::open_in_memory().unwrap();
-        ledger
-            .append(&Event::RunStarted {
-                run_id: "r1".into(),
-            })
-            .unwrap();
-        ledger
-            .append(&Event::ToolStarted {
-                run_id: "r1".into(),
-                call_id: "call_0_0".into(),
-                tool: "shell".into(),
-                args: String::new(),
-                provenance: pantheon_core::provenance::Provenance::system("test"),
-            })
-            .unwrap();
-        ledger
-            .append(&Event::RunCompleted {
-                run_id: "r1".into(),
-            })
-            .unwrap();
-        assert_eq!(ledger.replay("r1").unwrap().len(), 3);
-        assert!(ledger.explain("r1").unwrap().contains("completed"));
-        assert_eq!(ledger.status("r1").unwrap().as_deref(), Some("completed"));
-    }
-
-    #[test]
-    fn context_trimmed_round_trips_and_explains() {
-        let ledger = Ledger::open_in_memory().unwrap();
-        ledger
-            .append(&Event::RunStarted {
-                run_id: "r1".into(),
-            })
-            .unwrap();
-        ledger
-            .append(&Event::ContextTrimmed {
-                run_id: "r1".into(),
-                estimated: 11_000,
-                window: 16_000,
-                dropped_rows: 4,
-                compacted_rows: 1,
-            })
-            .unwrap();
-        // run_id_of must attribute it to the run: replay finds it.
-        let entries = ledger.replay("r1").unwrap();
-        assert_eq!(entries.len(), 2);
-        assert!(matches!(entries[1].event, Event::ContextTrimmed { dropped_rows: 4, .. }));
-        let explain = ledger.explain("r1").unwrap();
-        assert!(explain.contains("context trimmed"), "explain: {explain}");
-    }
-
-    #[test]
-    fn context_compressed_round_trips_and_explains() {
-        let ledger = Ledger::open_in_memory().unwrap();
-        ledger
-            .append(&Event::RunStarted {
-                run_id: "r1".into(),
-            })
-            .unwrap();
-        ledger
-            .append(&Event::ContextCompressed {
-                run_id: "r1".into(),
-                model: "summarizer".into(),
-                exchanges: 2,
-                rows: 4,
-                chars_before: 20_000,
-                chars_after: 400,
-            })
-            .unwrap();
-        let entries = ledger.replay("r1").unwrap();
-        assert_eq!(entries.len(), 2);
-        assert!(matches!(
-            entries[1].event,
-            Event::ContextCompressed { exchanges: 2, .. }
-        ));
-        let explain = ledger.explain("r1").unwrap();
-        assert!(explain.contains("context compressed by summarizer"), "explain: {explain}");
-    }
-}
+#[path = "ledger_tests.rs"]
+mod tests;

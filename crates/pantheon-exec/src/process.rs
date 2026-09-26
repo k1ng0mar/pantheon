@@ -73,12 +73,5 @@ impl ProcessGroup {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn rejects_pid_zero_and_one() {
-        assert!(ProcessGroup::new(0).is_none());
-        assert!(ProcessGroup::new(1).is_none());
-        assert!(ProcessGroup::new(42).is_some());
-    }
-}
+#[path = "process_tests.rs"]
+mod tests;

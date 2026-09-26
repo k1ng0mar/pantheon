@@ -72,9 +72,15 @@ pub fn poll_telegram_once(
     let updates = transport
         .get_updates(offset, timeout_secs)
         .map_err(|e| e.to_string())?;
+    Ok(collect_telegram_events(&updates, offset))
+}
+
+/// Fold polled updates into channel events + the next offset. Pure:
+/// unit-tested directly with inline update JSON, no transport involved.
+pub fn collect_telegram_events(updates: &[Value], offset: i64) -> (Vec<ChannelEvent>, i64) {
     let mut events = Vec::new();
     let mut highest = offset;
-    for update in &updates {
+    for update in updates {
         let id = update.get("update_id").and_then(Value::as_i64).unwrap_or(0);
         if id >= highest {
             highest = id + 1;
@@ -84,7 +90,7 @@ pub fn poll_telegram_once(
             events.push(event);
         }
     }
-    Ok((events, highest))
+    (events, highest)
 }
 
 /// True when the outbound queue is empty (used for backoff decisions).
@@ -147,6 +153,10 @@ impl ChannelDaemon {
     ) {
         let cursor = UpdateCursor::new(self.state_path.clone());
         let mut backoff = 0u32;
+        // Longest server-asked wait outstanding (from `Retry-After` /
+        // `parameters.retry_after` on a 429). The platform knows its window;
+        // our exponential guess does not override it.
+        let mut rate_wait_ms = 0u64;
         let mut claimed: Vec<String> = Vec::new();
         while !stop() {
             let mut progressed = false;
@@ -220,6 +230,10 @@ impl ChannelDaemon {
                                 eprintln!("daemon: deliver to {} failed: {e}", channel.name());
                                 if e.is_rate_limited() {
                                     rate_limited = true;
+                                    // Honor the platform's own wait hint, not
+                                    // just our backoff guess.
+                                    rate_wait_ms = rate_wait_ms
+                                        .max(crate::delivery::retry_delay_ms(&e, backoff));
                                 }
                                 pending.push(msg);
                             } else {
@@ -246,15 +260,21 @@ impl ChannelDaemon {
                     }
                 }
             }
-            if progressed && pending_none(&outbound) {
+            if progressed && pending_none(outbound) {
                 backoff = 0;
+                rate_wait_ms = 0;
             } else if !progressed {
                 backoff = backoff.saturating_add(1);
             }
-            // Idle backoff between empty polls; capped like delivery.
-            let wait = if backoff > 0 {
-                Duration::from_millis(crate::delivery::backoff_ms(backoff.min(6)))
-                    .min(self.poll_interval.max(Duration::from_secs(5)))
+            // Idle backoff between empty polls; capped like delivery. A
+            // server-asked wait overrides the guess when it is longer.
+            let wait = if backoff > 0 || rate_wait_ms > 0 {
+                Duration::from_millis(crate::delivery::backoff_ms(backoff.min(6)).max(rate_wait_ms))
+                    .min(
+                        self.poll_interval
+                            .max(Duration::from_secs(5))
+                            .max(Duration::from_millis(rate_wait_ms)),
+                    )
             } else {
                 self.poll_interval
             };
@@ -264,162 +284,5 @@ impl ChannelDaemon {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::channel::{ApprovalAnswer, ChannelError};
-    use serde_json::json;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct RecordingSink {
-        messages: Mutex<Vec<(String, String)>>,
-        approvals: Mutex<Vec<(String, String, bool)>>,
-    }
-    impl EventSink for RecordingSink {
-        fn on_message(&self, thread: &str, _sender: Option<&str>, text: &str) {
-            self.messages
-                .lock()
-                .unwrap()
-                .push((thread.into(), text.into()));
-        }
-        fn on_approval(&self, thread: &str, _sender: Option<&str>, scope: &str, grant: bool) {
-            self.approvals
-                .lock()
-                .unwrap()
-                .push((thread.into(), scope.into(), grant));
-        }
-    }
-
-    #[test]
-    fn cursor_advances_and_persists() {
-        let dir = std::env::temp_dir().join(format!("pantheon-cursor-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("cursor");
-        let c = UpdateCursor::new(path.clone());
-        assert_eq!(c.get(), 0);
-        c.advance(41);
-        assert_eq!(c.get(), 41);
-        // Reload from disk.
-        let c2 = UpdateCursor::new(path);
-        assert_eq!(c2.get(), 41);
-        // Never goes backwards.
-        c2.advance(7);
-        assert_eq!(c2.get(), 41);
-    }
-
-    #[test]
-    fn events_route_to_messages_and_approvals() {
-        let sink = RecordingSink {
-            messages: Mutex::new(vec![]),
-            approvals: Mutex::new(vec![]),
-        };
-        route_event(
-            &sink,
-            &ChannelEvent {
-                thread_id: "42".into(),
-                run_id: None,
-                text: "hello".into(),
-                approval: None,
-                scope: None,
-                sender: None,
-            },
-        );
-        route_event(
-            &sink,
-            &ChannelEvent {
-                thread_id: "42".into(),
-                run_id: None,
-                text: String::new(),
-                approval: Some(ApprovalAnswer::Grant),
-                scope: Some("call_0_0".into()),
-                sender: None,
-            },
-        );
-        assert_eq!(
-            *sink.messages.lock().unwrap(),
-            vec![("42".to_string(), "hello".to_string())]
-        );
-        assert_eq!(
-            *sink.approvals.lock().unwrap(),
-            vec![("42".to_string(), "call_0_0".to_string(), true)]
-        );
-    }
-
-    #[test]
-    fn daemon_stops_when_asked() {
-        let dir = std::env::temp_dir().join(format!("pantheon-daemon-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let daemon = ChannelDaemon::new(dir.join("cursor"));
-        let sink = RecordingSink {
-            messages: Mutex::new(vec![]),
-            approvals: Mutex::new(vec![]),
-        };
-        let outbound = Mutex::new(vec![]);
-        let ticks = AtomicUsize::new(0);
-        let stop_fn = || {
-            let _ = ticks.fetch_add(1, Ordering::SeqCst) > 0;
-            true
-        };
-        daemon.run(vec![], None, &sink, &outbound, &stop_fn);
-        assert!(sink.messages.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn poll_telegram_parses_updates_through_the_trait() {
-        struct FakeTransport;
-        impl TelegramTransport for FakeTransport {
-            fn send_message(&self, _chat_id: &str, _payload: &Value) -> Result<(), ChannelError> {
-                Ok(())
-            }
-            fn get_updates(
-                &self,
-                _offset: i64,
-                _timeout_secs: u64,
-            ) -> Result<Vec<Value>, ChannelError> {
-                Ok(vec![
-                    json!({
-                        "update_id": 100,
-                        "message": {"chat": {"id": 42}, "text": "hello"}
-                    }),
-                    json!({
-                        "update_id": 101,
-                        "callback_query": {
-                            "data": "grant:call_1_0",
-                            "message": {"chat": {"id": 42}}
-                        }
-                    }),
-                ])
-            }
-        }
-        let (events, next) = poll_telegram_once(&FakeTransport, 0, 1).unwrap();
-        assert_eq!(next, 102);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].text, "hello");
-        assert_eq!(events[0].thread_id, "42");
-        assert!(events[1].approval.is_some());
-        assert_eq!(events[1].scope.as_deref(), Some("call_1_0"));
-    }
-
-    #[test]
-    fn poll_telegram_error_is_returned_not_panicked() {
-        struct BrokenTransport;
-        impl TelegramTransport for BrokenTransport {
-            fn send_message(&self, _chat_id: &str, _payload: &Value) -> Result<(), ChannelError> {
-                Ok(())
-            }
-            fn get_updates(
-                &self,
-                _offset: i64,
-                _timeout_secs: u64,
-            ) -> Result<Vec<Value>, ChannelError> {
-                Err(ChannelError::new(
-                    "TELEGRAM_HTTP",
-                    "unreachable".to_string(),
-                ))
-            }
-        }
-        let result = poll_telegram_once(&BrokenTransport, 0, 1);
-        assert!(result.is_err());
-    }
-}
+#[path = "daemon_tests.rs"]
+mod tests;

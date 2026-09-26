@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -19,35 +21,36 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Paragraph},
-    DefaultTerminal,
-    Frame,
+    DefaultTerminal, Frame,
 };
 
-use pantheon_core::model_event::ModelEvent;
 use pantheon_core::events::Event as RuntimeErrorEvent;
+use pantheon_core::model_event::ModelEvent;
 use pantheon_runtime::session::Session;
-
 
 /// A single block in the conversation transcript.
 #[derive(Debug, Clone)]
 pub enum BlockKind {
     UserMessage(String),
     AssistantMessage(String),
-    Thinking { text: String, duration_ms: Option<u64>, tokens: Option<u32> },
+    Thinking(String),
     /// Tool card: running until the matching runtime completion event
-    /// sets `ok`. Args are shown; output lands in ToolResult.
-    ToolCall { name: String, args: String, ok: Option<bool> },
-    ToolResult { name: String, output: String, ok: bool, duration_ms: Option<u64> },
-    FileChange { path: String, added: u32, removed: u32, ok: bool },
-    WebSearch { query: String, results: u32, relevant: u32 },
-    Swarm { agents: u32, task: String },
+    /// sets `ok`. Args are shown inline.
+    ToolCall {
+        name: String,
+        args: String,
+        ok: Option<bool>,
+    },
+    Swarm {
+        agents: u32,
+        task: String,
+    },
     Status(String),
 }
 
 #[derive(Debug, Clone)]
 pub struct TranscriptBlock {
     pub kind: BlockKind,
-    pub timestamp: Instant,
 }
 
 /// Runtime state for the TUI session.
@@ -81,6 +84,16 @@ pub struct TuiState {
     pub interrupt_armed_at: Option<Instant>,
     /// True once the user confirmed; shows the canceled card.
     pub interrupted: bool,
+    /// Open session-history overlay: Some(runs) while /history is open.
+    /// runs: (run_id, status, created_ms, title), newest first.
+    pub history: Option<Vec<pantheon_storage::RunListing>>,
+    /// Live filter typed into the history overlay.
+    pub history_input: String,
+    /// Selected index into the filtered history list.
+    pub history_sel: usize,
+    /// The conversation's current title: set by the title auxiliary
+    /// (SessionTitled), by /name, and refreshed when resuming a run.
+    pub title: Option<String>,
 }
 
 impl Default for TuiState {
@@ -105,6 +118,10 @@ impl Default for TuiState {
             last_tool: None,
             interrupt_armed_at: None,
             interrupted: false,
+            history: None,
+            history_input: String::new(),
+            history_sel: 0,
+            title: None,
         }
     }
 }
@@ -131,7 +148,54 @@ impl TuiState {
             last_tool: None,
             interrupt_armed_at: None,
             interrupted: false,
+            history: None,
+            history_input: String::new(),
+            history_sel: 0,
+            title: None,
         }
+    }
+
+    /// Runs matching the current filter, in list order.
+    pub fn filtered_history(&self) -> Vec<pantheon_storage::RunListing> {
+        match &self.history {
+            None => Vec::new(),
+            Some(runs) => {
+                let f = self.history_input.to_lowercase();
+                if f.is_empty() {
+                    runs.clone()
+                } else {
+                    runs.iter()
+                        .filter(|(id, status, _, title)| {
+                            id.to_lowercase().contains(&f)
+                                || status.to_lowercase().contains(&f)
+                                || title
+                                    .as_deref()
+                                    .map(|t| t.to_lowercase().contains(&f))
+                                    .unwrap_or(false)
+                        })
+                        .cloned()
+                        .collect()
+                }
+            }
+        }
+    }
+
+    /// Move the overlay selection by n, clamped to the filtered list.
+    pub fn history_move(&mut self, n: isize) {
+        let len = self.filtered_history().len();
+        if len == 0 {
+            self.history_sel = 0;
+            return;
+        }
+        let sel = self.history_sel as isize + n;
+        self.history_sel = sel.clamp(0, len as isize - 1) as usize;
+    }
+
+    /// Close the overlay and reset its state.
+    pub fn history_close(&mut self) {
+        self.history = None;
+        self.history_input.clear();
+        self.history_sel = 0;
     }
 
     /// Live token estimate: ~4 chars per token, updated on every streamed
@@ -144,7 +208,9 @@ impl TuiState {
     /// Process a model event into a transcript block or state update.
     pub fn handle_model_event(&mut self, ev: ModelEvent) {
         match ev {
-            ModelEvent::Attempt { provider, model, .. } => {
+            ModelEvent::Attempt {
+                provider, model, ..
+            } => {
                 // Track mid-session model switches (fallback chain).
                 if self.model != model {
                     self.blocks.push(TranscriptBlock {
@@ -152,7 +218,6 @@ impl TuiState {
                             "routing: {} unavailable, falling back to {provider}/{model}",
                             self.model
                         )),
-                        timestamp: Instant::now(),
                     });
                     self.model = model;
                 }
@@ -168,41 +233,32 @@ impl TuiState {
                 } else {
                     self.blocks.push(TranscriptBlock {
                         kind: BlockKind::AssistantMessage(text),
-                        timestamp: Instant::now(),
                     });
                 }
             }
             ModelEvent::ReasoningDelta { text } => {
                 self.bump_estimate(&text);
                 if let Some(TranscriptBlock {
-                    kind:
-                        BlockKind::Thinking {
-                            text: ref mut t,
-                            ..
-                        },
+                    kind: BlockKind::Thinking(ref mut t),
                     ..
                 }) = self.blocks.last_mut()
                 {
                     t.push_str(&text);
                 } else {
                     self.blocks.push(TranscriptBlock {
-                        kind: BlockKind::Thinking {
-                            text,
-                            duration_ms: None,
-                            tokens: None,
-                        },
-                        timestamp: Instant::now(),
+                        kind: BlockKind::Thinking(text),
                     });
                 }
             }
-            ModelEvent::ToolCall { name, arguments, .. } => {
+            ModelEvent::ToolCall {
+                name, arguments, ..
+            } => {
                 self.blocks.push(TranscriptBlock {
                     kind: BlockKind::ToolCall {
                         name,
                         args: arguments,
                         ok: None,
                     },
-                    timestamp: Instant::now(),
                 });
             }
             ModelEvent::Usage { usage } => {
@@ -228,7 +284,6 @@ impl TuiState {
                         args: args.clone(),
                         ok: None,
                     },
-                    timestamp: Instant::now(),
                 });
             }
             RuntimeErrorEvent::ToolCompleted { tool, .. } => {
@@ -265,8 +320,12 @@ impl TuiState {
                         agents: 1,
                         task: agent.clone(),
                     },
-                    timestamp: Instant::now(),
                 });
+            }
+            // Title generation (aux or /name) lands as a durable event;
+            // the header follows it with no polling.
+            RuntimeErrorEvent::SessionTitled { title, .. } => {
+                self.title = Some(title.clone());
             }
             _ => {}
         }
@@ -275,7 +334,6 @@ impl TuiState {
     pub fn add_user_message(&mut self, text: String) {
         self.blocks.push(TranscriptBlock {
             kind: BlockKind::UserMessage(text),
-            timestamp: Instant::now(),
         });
         self.scroll_to_bottom();
     }
@@ -283,7 +341,6 @@ impl TuiState {
     pub fn add_status(&mut self, text: String) {
         self.blocks.push(TranscriptBlock {
             kind: BlockKind::Status(text),
-            timestamp: Instant::now(),
         });
         self.scroll_to_bottom();
     }
@@ -297,18 +354,16 @@ impl TuiState {
     }
 }
 
-/// Icons matching the design spec.
+/// Icons for transcript cards and the status bar. Every entry is used
+/// by `render_block` or `render_status` below — no speculative glyphs.
 mod icon {
     pub const PANTHEON: &str = "◈";
-    pub const RUNNING: char = '●';
-    pub const SUCCESS: char = '✓';
-    pub const WARNING: char = '!';
-    pub const FAILURE: char = '×';
+    pub const RUNNING: &str = "●";
+    pub const SUCCESS: &str = "✓";
+    pub const WARNING: &str = "!";
+    pub const FAILURE: &str = "×";
     pub const THINKING: &str = "◇";
-    pub const WEB: &str = "◎";
     pub const TOOL: &str = "⚙";
-    pub const FILE: &str = "✎";
-    pub const SWARM: &str = " Swarm";
     pub const AGENT: &str = "→";
 }
 
@@ -332,6 +387,10 @@ pub fn render(state: &TuiState, f: &mut Frame) {
     ]);
     let [header_area, chat_area, input_area, status_area] = outer.areas(f.area());
 
+    if state.history.is_some() {
+        render_history(f, f.area(), state);
+        return;
+    }
     if state.pending_approval.is_some() {
         // Steal the input row: permission card replaces it until resolved.
         render_permission(f, input_area, state);
@@ -341,6 +400,104 @@ pub fn render(state: &TuiState, f: &mut Frame) {
     render_header(f, header_area, state);
     render_transcript(f, chat_area, state);
     render_status(f, status_area, state);
+}
+
+/// Searchable scrollable history overlay: /history. Type-to-filter,
+/// Up/Down to move, Enter to resume, Esc to close. Mirrors the REPL's
+/// /history picker, rendered as a centered list.
+fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
+    let w = area.width.min(80).max(40);
+    let h = area.height.min(20).max(7);
+    let x = area.x + (area.width - w) / 2;
+    let y = area.y + (area.height - h) / 2;
+    let area = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+
+    let runs = state.filtered_history();
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "  type to filter, Up/Down to move, Enter to resume, Esc to close",
+            Style::default().fg(color::PRIMARY),
+        )),
+        Line::from(""),
+    ];
+    if runs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no matches)",
+            Style::default().fg(color::FAILURE),
+        )));
+    }
+    for (i, (id, status, ts, title)) in runs.iter().enumerate() {
+        let glyph = match status.as_str() {
+            "completed" => "\u{2713}",
+            "failed" => "\u{d7}",
+            "running" => "\u{25cf}",
+            _ => "\u{25d0}",
+        };
+        let short: String = id.chars().skip(4).take(8).collect();
+        // The generated session title leads; untitled runs fall back to
+        // the run id stem so the row still reads as an identity.
+        let label = match title.as_deref().filter(|t| !t.is_empty()) {
+            Some(t) => t.chars().take(38).collect::<String>(),
+            None => short.clone(),
+        };
+        let style = if i == state.history_sel {
+            Style::default()
+                .fg(color::PRIMARY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {:>3}  {glyph} {:<10} {:<38} {}",
+                i,
+                status,
+                label,
+                fmt_age(*ts)
+            ),
+            style,
+        )));
+    }
+    if !state.history_input.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!("  filter: {}", state.history_input)));
+    }
+    let title = " conversations (/history) ";
+    let card = Paragraph::new(lines).block(
+        Block::bordered()
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(color::PRIMARY))
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(color::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    );
+    f.render_widget(card, area);
+}
+
+/// Local-relative age for the history overlay.
+fn fmt_age(ms: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let s = (now - ms).max(0) / 1000;
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else if s < 86400 {
+        format!("{}h", s / 3600)
+    } else {
+        format!("{}d", s / 86400)
+    }
 }
 
 /// Permission-required card. Shown when a run parked on approval.
@@ -402,10 +559,7 @@ fn render_input(f: &mut Frame, area: Rect, state: &TuiState) {
     let input = Paragraph::new(line).block(
         Block::bordered()
             .border_type(BorderType::Rounded)
-            .title(Span::styled(
-                " Input ",
-                Style::default().fg(color::PRIMARY),
-            )),
+            .title(Span::styled(" Input ", Style::default().fg(color::PRIMARY))),
     );
     f.render_widget(input, area);
 }
@@ -429,7 +583,11 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
     };
     let live_tokens = state.tokens_used + state.turn_estimate;
     let ctx = if state.tokens_max > 0 {
-        format!("{:.1}k/{}k", live_tokens as f64 / 1000.0, state.tokens_max / 1000)
+        format!(
+            "{:.1}k/{}k",
+            live_tokens as f64 / 1000.0,
+            state.tokens_max / 1000
+        )
     } else {
         format!("{:.1}k", live_tokens as f64 / 1000.0)
     };
@@ -455,13 +613,25 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
 /// Draw the persistent top header bar.
 fn render_header(f: &mut Frame, area: Rect, state: &TuiState) {
     let tokens_display = if state.tokens_max > 0 {
-        format!("{:.1}k/{}k", state.tokens_used as f64 / 1000.0, state.tokens_max / 1000)
+        format!(
+            "{:.1}k/{}k",
+            state.tokens_used as f64 / 1000.0,
+            state.tokens_max / 1000
+        )
     } else {
         format!("{:.1}k", state.tokens_used as f64 / 1000.0)
     };
+    let session_label = match state.title.as_deref().filter(|t| !t.is_empty()) {
+        Some(t) => format!(
+            "{} \u{2022} {}",
+            &state.session_id[..state.session_id.len().min(6)],
+            t.chars().take(40).collect::<String>()
+        ),
+        None => state.session_id[..state.session_id.len().min(6)].to_string(),
+    };
     let title = format!(
         "◈ PANTHEON  {}  {}  {:02}:{:02}:{:02}  {}  ${}",
-        &state.session_id[..state.session_id.len().min(6)],
+        session_label,
         state.model,
         state.elapsed.as_secs() / 3600,
         (state.elapsed.as_secs() % 3600) / 60,
@@ -490,7 +660,9 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &TuiState) {
             Line::from(""),
             Line::from(Span::styled(
                 "◈ PANTHEON",
-                Style::default().fg(color::PRIMARY).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(color::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
             Line::from("Ask me anything. /help for commands."),
@@ -522,17 +694,14 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &TuiState) {
 /// Render a single transcript block as Lines. `is_last` marks the streaming
 /// head: thinking blocks stay expanded while they are the live block and
 /// collapse to a summary line once anything else lands after them.
-fn render_block(
-    lines: &mut Vec<Line>,
-    block: &TranscriptBlock,
-    is_last: bool,
-    interrupted: bool,
-) {
+fn render_block(lines: &mut Vec<Line>, block: &TranscriptBlock, is_last: bool, interrupted: bool) {
     match &block.kind {
         BlockKind::UserMessage(text) => {
             lines.push(Line::from(Span::styled(
                 "╭─ You ──",
-                Style::default().fg(color::PRIMARY).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(color::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
             )));
             for line in text.lines() {
                 lines.push(Line::from(format!("│  {line}")));
@@ -540,17 +709,19 @@ fn render_block(
         }
         BlockKind::AssistantMessage(text) => {
             lines.push(Line::from(Span::styled(
-                "╭─ ◈ Pantheon ──",
-                Style::default().fg(color::PRIMARY).add_modifier(Modifier::BOLD),
+                format!("╭─ {} Pantheon ──", icon::PANTHEON),
+                Style::default()
+                    .fg(color::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
             )));
             for line in text.lines() {
                 lines.push(Line::from(format!("│  {line}")));
             }
         }
-        BlockKind::Thinking { text, .. } => {
+        BlockKind::Thinking(text) => {
             if is_last {
                 lines.push(Line::from(Span::styled(
-                    format!("┌─ ◇ Thinking ──"),
+                    format!("┌─ {} Thinking ──", icon::THINKING),
                     Style::default().fg(color::WARNING),
                 )));
                 for line in text.lines().take(40) {
@@ -577,12 +748,12 @@ fn render_block(
                 // A tool still marked running after an interrupt was stopped
                 // from the outside: show that honestly instead of spinning.
                 None if interrupted => ("■", color::WARNING),
-                None => ("●", color::RUNNING),
-                Some(true) => ("✓", color::SUCCESS),
-                Some(false) => ("×", color::FAILURE),
+                None => (icon::RUNNING, color::RUNNING),
+                Some(true) => (icon::SUCCESS, color::SUCCESS),
+                Some(false) => (icon::FAILURE, color::FAILURE),
             };
             lines.push(Line::from(Span::styled(
-                format!("┌─ ⚙ {name} ── {glyph}"),
+                format!("┌─ {} {name} ── {glyph}", icon::TOOL),
                 Style::default().fg(col),
             )));
             if !args.is_empty() {
@@ -591,38 +762,9 @@ fn render_block(
                 }
             }
         }
-        BlockKind::ToolResult { name, output, ok, .. } => {
-            let color = if *ok { color::SUCCESS } else { color::FAILURE };
-            let icon = if *ok { icon::SUCCESS } else { icon::FAILURE };
-            lines.push(Line::from(Span::styled(
-                format!("└─ {icon} {name}"),
-                Style::default().fg(color),
-            )));
-            let _ = output;
-        }
-        BlockKind::FileChange { path, added, removed, ok } => {
-            let color = if *ok { color::SUCCESS } else { color::FAILURE };
-            let icon = if *ok { icon::SUCCESS } else { icon::FAILURE };
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "┌─ ✎ {path}  +{added} −{removed}  {icon}"
-                ),
-                Style::default().fg(color),
-            )));
-        }
-        BlockKind::WebSearch { query, results, relevant } => {
-            lines.push(Line::from(Span::styled(
-                format!("┌─ ◎ Web Search: {query}"),
-                Style::default().fg(color::PRIMARY),
-            )));
-            lines.push(Line::from(format!(
-                "│  {} results, {} relevant",
-                results, relevant
-            )));
-        }
         BlockKind::Swarm { agents, task } => {
             lines.push(Line::from(Span::styled(
-                format!("┌─→ Swarm · {agents} agents"),
+                format!("┌─{} Swarm · {agents} agents", icon::AGENT),
                 Style::default().fg(color::PRIMARY),
             )));
             lines.push(Line::from(format!("│  {task}")));
@@ -669,12 +811,7 @@ pub fn run_tui_session() -> Result<(), Box<dyn std::error::Error>> {
     };
     let secrets = config_doc::chat_secrets(file_cfg.as_ref());
 
-    let mut session = match Session::new(
-        crate::data_dir(),
-        policy,
-        model_policy,
-        secrets,
-    ) {
+    let mut session = match Session::new(crate::data_dir(), policy, model_policy, secrets) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("open session: {e}");
@@ -725,7 +862,15 @@ pub fn run_tui_session() -> Result<(), Box<dyn std::error::Error>> {
     let run_id = pantheon_runtime::new_run_id();
     let _ = session.supervisor.start_run(&run_id);
 
-    let result = tui_loop(&mut terminal, &mut state, session, &tx, &run_id, &rx, &running);
+    let result = tui_loop(
+        &mut terminal,
+        &mut state,
+        session,
+        &tx,
+        &run_id,
+        &rx,
+        &running,
+    );
 
     disable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -733,7 +878,6 @@ pub fn run_tui_session() -> Result<(), Box<dyn std::error::Error>> {
     Ok(result?)
 }
 
-#[allow(unused_mut, unused_assignments)]
 fn tui_loop(
     terminal: &mut DefaultTerminal,
     state: &mut TuiState,
@@ -743,8 +887,6 @@ fn tui_loop(
     rx: &std::sync::mpsc::Receiver<TuiEvent>,
     running: &Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut worker: Option<std::thread::JoinHandle<()>> = None;
-
     loop {
         if !running.load(Ordering::SeqCst) || state.shutting_down {
             break;
@@ -760,15 +902,12 @@ fn tui_loop(
                     state.interrupt_armed_at = None;
                     state.interrupted = false;
                     session.reset_cancel();
-                    worker = None;
                 }
                 TuiEvent::Error(msg) => {
                     state.blocks.push(TranscriptBlock {
                         kind: BlockKind::Status(format!("error: {msg}")),
-                        timestamp: Instant::now(),
                     });
                     state.ready = true;
-                    worker = None;
                 }
                 TuiEvent::Canceled => {
                     // Honest report: the run was stopped by the user, and the
@@ -778,14 +917,11 @@ fn tui_loop(
                     state.status_line = "interrupted".to_string();
                     state.blocks.push(TranscriptBlock {
                         kind: BlockKind::Status(
-                            "interrupted \u{2014} run stopped, transcript saved"
-                                .to_string(),
+                            "interrupted \u{2014} run stopped, transcript saved".to_string(),
                         ),
-                        timestamp: Instant::now(),
                     });
                     // Clear the token so the next turn starts clean.
                     session.reset_cancel();
-                    worker = None;
                 }
             }
         }
@@ -798,6 +934,55 @@ fn tui_loop(
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+                if state.history.is_some() {
+                    match key.code {
+                        KeyCode::Char(c) => state.history_input.push(c),
+                        KeyCode::Backspace => {
+                            state.history_input.pop();
+                        }
+                        KeyCode::Up => state.history_move(-1),
+                        KeyCode::Down => state.history_move(1),
+                        KeyCode::Esc => state.history_close(),
+                        KeyCode::Enter => {
+                            let sel = state.history_sel;
+                            let target = state.filtered_history().get(sel).map(|r| r.0.clone());
+                            state.history_close();
+                            if let Some(id) = target {
+                                // Switch the run: reopen a terminal run and
+                                // rebuild the transcript from the ledger.
+                                if id != run_id {
+                                    let _ = session.supervisor.ledger_reopen_run(&id);
+                                    if let Ok(entries) = session.supervisor.replay(&id) {
+                                        state.blocks.clear();
+                                        state.session_id = id.clone();
+                                        state.title =
+                                            session.supervisor.ledger_title(&id).ok().flatten();
+                                        for m in
+                                            pantheon_runtime::session::rebuild_messages(entries)
+                                        {
+                                            let kind = match m.role {
+                                                pantheon_core::message::Role::User => {
+                                                    BlockKind::UserMessage(m.content.clone())
+                                                }
+                                                _ => BlockKind::AssistantMessage(m.content.clone()),
+                                            };
+                                            state.blocks.push(TranscriptBlock { kind });
+                                        }
+                                        state.scroll_to_bottom();
+                                    }
+                                    state.blocks.push(TranscriptBlock {
+                                        kind: BlockKind::Status(format!("resumed {}", id)),
+                                    });
+                                    state.ready = true;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
                 match key.code {
                     KeyCode::Char(c) => {
                         if state.pending_approval.is_some() {
@@ -805,9 +990,7 @@ fn tui_loop(
                             match c {
                                 'y' | 'Y' => {
                                     if let Some((run, scope)) = state.pending_approval.take() {
-                                        let _ = session
-                                            .supervisor
-                                            .grant(&run, &scope);
+                                        let _ = session.supervisor.grant(&run, &scope);
                                         state.status_line = "granted; resuming".into();
                                         state.ready = false;
                                         // Resume: chat_turn with empty message rebuilds
@@ -815,16 +998,17 @@ fn tui_loop(
                                         let tx3 = tx.clone();
                                         let run3 = run.clone();
                                         let sess3 = session.clone();
-                                        worker = Some(std::thread::spawn(move || {
+                                        std::thread::spawn(move || {
                                             match sess3.chat_turn(&run3, "", "") {
                                                 Ok(_) => {
                                                     let _ = tx3.send(TuiEvent::TurnComplete);
                                                 }
                                                 Err(e) => {
-                                                    let _ = tx3.send(TuiEvent::Error(e.to_string()));
+                                                    let _ =
+                                                        tx3.send(TuiEvent::Error(e.to_string()));
                                                 }
                                             }
-                                        }));
+                                        });
                                     }
                                 }
                                 'n' | 'N' => {
@@ -841,7 +1025,14 @@ fn tui_loop(
                         } else {
                             match c {
                                 'q' | 'Q' => break,
-                                _ => {}
+                                // Start typing into the input box on the first
+                                // printable char. Without this the box never
+                                // becomes active, so slash commands never
+                                // reached the handler.
+                                _ => {
+                                    state.is_inputting = true;
+                                    state.input.push(c);
+                                }
                             }
                         }
                     }
@@ -864,22 +1055,19 @@ fn tui_loop(
                                 continue;
                             }
 
-                            state.blocks.push(TranscriptBlock {
-                                kind: BlockKind::UserMessage(msg.clone()),
-                                timestamp: Instant::now(),
-                                                            });
+                            state.add_user_message(msg.clone());
 
                             state.ready = false;
                             state.status_line = "working".to_string();
                             state.interrupt_armed_at = None;
                             state.interrupted = false;
                             session.reset_cancel();
-                            
+
                             let tx2 = tx.clone();
                             let run_id_owned = run_id.to_string();
                             let msg_owned = msg.clone();
                             let session_owned = session.clone();
-                            worker = Some(std::thread::spawn(move || {
+                            std::thread::spawn(move || {
                                 match session_owned.chat(&run_id_owned, &msg_owned) {
                                     Ok(outcome) => match outcome {
                                         pantheon_agent::LoopOutcome::AwaitingApproval {
@@ -901,7 +1089,7 @@ fn tui_loop(
                                         let _ = tx2.send(TuiEvent::Error(e.to_string()));
                                     }
                                 }
-                            }));
+                            });
                         } else {
                             state.is_inputting = true;
                         }
@@ -916,17 +1104,12 @@ fn tui_loop(
                                 Some(t) if t.elapsed() < ARM_WINDOW => {
                                     state.interrupt_armed_at = None;
                                     state.interrupted = true;
-                                    state.status_line =
-                                        "interrupting\u{2026}".into();
-                                    session.cancel_current_run(
-                                        run_id,
-                                        "user pressed esc twice",
-                                    );
+                                    state.status_line = "interrupting\u{2026}".into();
+                                    session.cancel_current_run(run_id, "user pressed esc twice");
                                 }
                                 _ => {
                                     state.interrupt_armed_at = Some(Instant::now());
-                                    state.status_line =
-                                        "press esc again to interrupt".into();
+                                    state.status_line = "press esc again to interrupt".into();
                                 }
                             }
                         } else if state.interrupt_armed_at.is_some() {
@@ -945,22 +1128,21 @@ fn tui_loop(
 }
 
 fn handle_slash(state: &mut TuiState, supervisor: &pantheon_runtime::Supervisor, cmd: &str) {
-    let mut push = |s: String| {
-        state.blocks.push(TranscriptBlock {
-            kind: BlockKind::Status(s),
-            timestamp: Instant::now(),
-        });
-    };
     // /help shows the real command surface.
     if cmd == "/help" {
-        push("commands:".into());
-        push("  /help              this list".into());
-        push("  /runs [N]          recent runs (default 10)".into());
-        push("  /status <run_id>   run status line".into());
-        push("  /cost              tokens and cost this session".into());
-        push("  /clear             clear visible transcript".into());
-        push("  /exit, /quit       leave pantheon".into());
-        state.scroll_to_bottom();
+        state.add_status("commands:".into());
+        state.add_status("  /help              this list".into());
+        state.add_status("  /runs [N]          recent runs (default 10)".into());
+        state.add_status(
+            "  /history           interactive searchable history (pick + resume)".into(),
+        );
+        state.add_status("  /resume [ID]       resume a run by id".into());
+        state
+            .add_status("  /name [TITLE]      show this conversation's title, or rename it".into());
+        state.add_status("  /status <run_id>   run status line".into());
+        state.add_status("  /cost              tokens and cost this session".into());
+        state.add_status("  /clear             clear visible transcript".into());
+        state.add_status("  /exit, /quit       leave pantheon".into());
         return;
     }
     if cmd == "/exit" || cmd == "/quit" {
@@ -972,13 +1154,109 @@ fn handle_slash(state: &mut TuiState, supervisor: &pantheon_runtime::Supervisor,
         return;
     }
     if cmd == "/cost" {
-        push(format!(
+        state.add_status(format!(
             "tokens {} \u{2022} cost ${:.2} \u{2022} ctx {:.1}k/{}k",
             state.tokens_used + state.turn_estimate,
             state.cost_cents as f64 / 100.0,
             (state.tokens_used + state.turn_estimate) as f64 / 1000.0,
             state.tokens_max / 1000
         ));
+        return;
+    }
+    if cmd == "/name" || cmd.starts_with("/name ") {
+        let rest = cmd.strip_prefix("/name").unwrap_or("").trim();
+        if rest.is_empty() {
+            match state.title.as_deref().filter(|t| !t.is_empty()) {
+                Some(t) => state.add_status(format!("title: {t}")),
+                None => state.add_status("(untitled)".into()),
+            }
+            state.add_status("rename with: /name <new title>".into());
+            return;
+        }
+        // Same normalization contract as the aux: one bounded line.
+        let title = pantheon_core::model::bound_title(rest, pantheon_core::model::TITLE_MAX_CHARS);
+        if title.is_empty() {
+            state.add_status("/name: nothing to title with".into());
+            return;
+        }
+        // A never-chatted run has no row yet; create it so the rename
+        // survives and shows up in /history.
+        if supervisor
+            .ledger_status(&state.session_id)
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            let _ = supervisor.start_run(&state.session_id);
+        }
+        let ev = pantheon_core::events::Event::SessionTitled {
+            run_id: state.session_id.clone(),
+            title: title.clone(),
+            model: "user".into(),
+            source: "manual".into(),
+        };
+        match supervisor.emit(ev) {
+            Ok(()) => {
+                state.title = Some(title.clone());
+                state.add_status(format!("renamed \u{201c}{title}\u{201d}"));
+            }
+            Err(e) => state.add_status(format!("/name: {e}")),
+        }
+        return;
+    }
+    if cmd == "/history" {
+        // Open the interactive history overlay; key handling lives in
+        // tui_loop while state.history is Some.
+        match supervisor.ledger_list_runs(50) {
+            Ok(runs) => {
+                if runs.is_empty() {
+                    state.add_status("no runs yet".into());
+                } else {
+                    state.history = Some(runs);
+                    state.history_input.clear();
+                    state.history_sel = 0;
+                }
+            }
+            Err(e) => state.add_status(format!("runs: {e}")),
+        }
+        return;
+    }
+    if let Some(id) = cmd.strip_prefix("/resume ") {
+        let id = id.trim();
+        // Prove the run exists before switching; reopen a terminal run.
+        match supervisor.ledger_status(id) {
+            Ok(Some(_)) => {
+                let _ = supervisor.ledger_reopen_run(id);
+                state.session_id = id.to_string();
+                state.title = supervisor.ledger_title(id).ok().flatten();
+                match supervisor.replay(id) {
+                    Ok(entries) => {
+                        state.blocks.clear();
+                        for m in pantheon_runtime::session::rebuild_messages(entries) {
+                            let kind = match m.role {
+                                pantheon_core::message::Role::User => {
+                                    BlockKind::UserMessage(m.content.clone())
+                                }
+                                _ => BlockKind::AssistantMessage(m.content.clone()),
+                            };
+                            state.blocks.push(TranscriptBlock { kind });
+                        }
+                        state.scroll_to_bottom();
+                    }
+                    Err(e) => state.add_status(format!("replay: {e}")),
+                }
+                state.blocks.push(TranscriptBlock {
+                    kind: BlockKind::Status(format!("resumed {id}")),
+                });
+                state.ready = true;
+            }
+            Ok(None) => state.add_status(format!("no run {id}")),
+            Err(e) => state.add_status(format!("status: {e}")),
+        }
+        return;
+    }
+    if cmd == "/resume" {
+        state.add_status("resume which? give an id, or /history to pick".into());
         return;
     }
     if cmd == "/runs" || cmd.starts_with("/runs ") {
@@ -989,9 +1267,9 @@ fn handle_slash(state: &mut TuiState, supervisor: &pantheon_runtime::Supervisor,
         match supervisor.ledger_list_runs(n) {
             Ok(runs) => {
                 if runs.is_empty() {
-                    push("no runs yet".into());
+                    state.add_status("no runs yet".into());
                 }
-                for (run_id, status, _ts) in runs {
+                for (run_id, status, _ts, title) in runs {
                     let glyph = match status.as_str() {
                         "completed" => "\u{2713}",
                         "failed" => "\u{d7}",
@@ -999,163 +1277,28 @@ fn handle_slash(state: &mut TuiState, supervisor: &pantheon_runtime::Supervisor,
                         _ => "\u{25d0}",
                     };
                     let short: String = run_id.chars().skip(4).take(8).collect();
-                    push(format!("{glyph} {short}  {status}"));
+                    let label = title.filter(|t| !t.is_empty()).unwrap_or(short);
+                    state.add_status(format!("{glyph} {label}  {status}"));
                 }
             }
-            Err(e) => push(format!("runs: {e}")),
+            Err(e) => state.add_status(format!("runs: {e}")),
         }
         return;
     }
     if let Some(id) = cmd.strip_prefix("/status ") {
         let id = id.trim();
         match supervisor.explain(id) {
-            Ok(s) => push(s),
-            Err(e) => push(format!("status: {e}")),
+            Ok(s) => state.add_status(s),
+            Err(e) => state.add_status(format!("status: {e}")),
         }
         return;
     }
-    push(format!("unknown command: {cmd} (try /help)"));
+    state.add_status(format!("unknown command: {cmd} (try /help)"));
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn thinking_collapses_when_not_last() {
-        let mut lines = Vec::new();
-        let block = TranscriptBlock {
-            kind: BlockKind::Thinking {
-                text: "first line of reasoning\nsecond line\nthird".into(),
-                duration_ms: None,
-                tokens: None,
-            },
-            timestamp: Instant::now(),
-        };
-        render_block(&mut lines, &block, false, false);
-        // Collapsed: exactly one line, contains the marker.
-        assert_eq!(lines.len(), 1, "collapsed thinking is one line");
-        let s = format!("{:?}", lines[0]);
-        assert!(s.contains("Thought"), "summary marker present: {s}");
-        assert!(s.contains("first line"), "summary carries head of text");
-    }
-
-    #[test]
-    fn thinking_expands_when_last() {
-        let mut lines = Vec::new();
-        let block = TranscriptBlock {
-            kind: BlockKind::Thinking {
-                text: "line one\nline two".into(),
-                duration_ms: None,
-                tokens: None,
-            },
-            timestamp: Instant::now(),
-        };
-        render_block(&mut lines, &block, true, false);
-        // Expanded: header + 2 content lines.
-        assert_eq!(lines.len(), 3, "expanded thinking shows all lines");
-    }
-
-    #[test]
-    fn tool_call_flips_status_glyph() {
-        let mut lines = Vec::new();
-        let mut block = TranscriptBlock {
-            kind: BlockKind::ToolCall {
-                name: "shell.exec".into(),
-                args: "ls".into(),
-                ok: None,
-            },
-            timestamp: Instant::now(),
-        };
-        render_block(&mut lines, &block, true, false);
-        let running = format!("{:?}", lines[0]);
-        assert!(running.contains('\u{25cf}'), "running glyph while ok=None: {running}");
-
-        if let BlockKind::ToolCall { ok, .. } = &mut block.kind {
-            *ok = Some(true);
-        }
-        lines.clear();
-        render_block(&mut lines, &block, true, false);
-        let done = format!("{:?}", lines[0]);
-        assert!(done.contains('\u{2713}'), "done glyph after completion: {done}");
-    }
-
-    #[test]
-    fn live_estimate_accumulates_and_snaps() {
-        let mut state = TuiState::new("sess1234".into(), "opus".into(), 200_000);
-        state.handle_model_event(ModelEvent::TextDelta { text: "x".repeat(40) });
-        assert_eq!(state.turn_estimate, 10, "40 chars / 4 = 10 tokens");
-        state.handle_model_event(ModelEvent::Usage {
-            usage: pantheon_core::model_event::ModelUsage {
-                input_tokens: 100,
-                output_tokens: 10,
-                total_tokens: 110,
-                cost_usd: Some(0.01),
-            },
-        });
-        assert_eq!(state.tokens_used, 110, "snapped to authoritative");
-        assert_eq!(state.turn_estimate, 0, "estimate reset after snap");
-        assert_eq!(state.cost_cents, 1);
-    }
-}
+#[path = "tui_tests.rs"]
+mod tests;
 
 #[cfg(test)]
-mod interrupt_tests {
-    use super::*;
-
-    /// Build a real running-session state (no hand-maintained field list,
-    /// so this test cannot rot when the struct grows).
-    fn state() -> TuiState {
-        let mut s = TuiState::new("sess_test01".into(), "test".into(), 128_000);
-        s.ready = false;
-        s.is_inputting = true;
-        s.status_line = "working".into();
-        s
-    }
-
-    const ARM_WINDOW: Duration = Duration::from_millis(1500);
-
-    /// First Esc arms; it must not claim the run is interrupted yet.
-    #[test]
-    fn first_esc_only_arms() {
-        let mut s = state();
-        assert!(s.interrupt_armed_at.is_none());
-        s.interrupt_armed_at = Some(Instant::now());
-        assert!(s.interrupt_armed_at.is_some(), "armed");
-        assert!(!s.interrupted, "arming is not interruption");
-    }
-
-    /// A second Esc inside the window confirms the interrupt.
-    #[test]
-    fn second_esc_inside_window_interrupts() {
-        let mut s = state();
-        s.interrupt_armed_at = Some(Instant::now());
-        let confirms = s
-            .interrupt_armed_at
-            .is_some_and(|t| t.elapsed() < ARM_WINDOW);
-        assert!(confirms, "second esc inside the window is a confirm");
-        s.interrupted = true;
-        s.interrupt_armed_at = None;
-        assert!(s.interrupted);
-    }
-
-    /// An arm that goes stale (user wandered off) must not fire later.
-    #[test]
-    fn stale_arm_does_not_interrupt() {
-        let mut s = state();
-        s.interrupt_armed_at = Some(Instant::now() - ARM_WINDOW - Duration::from_millis(50));
-        let confirms = s
-            .interrupt_armed_at
-            .is_some_and(|t| t.elapsed() < ARM_WINDOW);
-        assert!(!confirms, "stale arm is re-armed, not fired");
-    }
-
-    /// Idle sessions must not be interruptible: the arm path is gated on
-    /// !ready, so an Esc while ready cannot cancel anything.
-    #[test]
-    fn idle_session_cannot_arm() {
-        let mut s = state();
-        s.ready = true;
-        let armable = !s.ready && !s.interrupted;
-        assert!(!armable, "no interrupt affordance while idle");
-    }
-}
+#[path = "tui_interrupt_tests.rs"]
+mod interrupt_tests;

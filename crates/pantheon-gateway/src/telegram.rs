@@ -9,6 +9,31 @@ use std::sync::{Arc, Mutex};
 
 pub const TELEGRAM_MESSAGE_LIMIT: usize = 4_096;
 
+/// Map a send failure. Telegram puts the 429 wait in the JSON body
+/// (`parameters.retry_after`, seconds) rather than a `Retry-After` header,
+/// so the generic header parse in `from_ureq` would miss it; read the body
+/// first (falling back to the header), and cap like the shared parser.
+fn send_err(e: ureq::Error) -> ChannelError {
+    match e {
+        ureq::Error::Status(429, resp) => {
+            let header = crate::channel::parse_retry_after(resp.header("retry-after"));
+            let body_secs = resp
+                .into_string()
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .and_then(|v| {
+                    v.pointer("/parameters/retry_after")
+                        .and_then(|n| n.as_u64())
+                })
+                .map(|n| n.min(600));
+            // A zero-second body hint means "no hint", not "send now".
+            let body_secs = body_secs.filter(|n| *n > 0);
+            ChannelError::rate_limited("TELEGRAM_HTTP", "sendMessage", body_secs.or(header))
+        }
+        other => ChannelError::from_ureq("TELEGRAM_HTTP", other),
+    }
+}
+
 /// Bot API boundary. A live implementation can use any HTTP client; the
 /// adapter only owns Telegram's inline keyboard and message limit semantics.
 pub trait TelegramTransport: Send + Sync {
@@ -53,10 +78,7 @@ impl TelegramTransport for TelegramRestTransport {
         if let Some(object) = body.as_object_mut() {
             object.insert("chat_id".into(), json!(chat_id));
         }
-        self.agent
-            .post(&url)
-            .send_json(body)
-            .map_err(|e| ChannelError::from_ureq("TELEGRAM_HTTP", e))?;
+        self.agent.post(&url).send_json(body).map_err(send_err)?;
         Ok(())
     }
     fn get_updates(&self, offset: i64, timeout_secs: u64) -> Result<Vec<Value>, ChannelError> {
@@ -235,55 +257,5 @@ impl Channel for TelegramChannel {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::stream::{UiFrame, UiFrameKind};
-    use std::sync::Mutex;
-    struct Recorder(Mutex<Vec<(String, Value)>>);
-    impl TelegramTransport for Recorder {
-        fn send_message(&self, chat: &str, payload: &Value) -> Result<(), ChannelError> {
-            self.0.lock().unwrap().push((chat.into(), payload.clone()));
-            Ok(())
-        }
-    }
-    #[test]
-    fn parses_telegram_approval_callbacks() {
-        let event = parse_event(&json!({
-            "callback_query": {
-                "data": "grant:call_2_0",
-                "message": {"chat": {"id": 42}}
-            }
-        }))
-        .unwrap()
-        .unwrap();
-        assert_eq!(event.thread_id, "42");
-        assert_eq!(event.approval, Some(crate::channel::ApprovalAnswer::Grant));
-        assert_eq!(event.scope.as_deref(), Some("call_2_0"));
-        assert!(parse_event(&json!({"callback_query": {"data": "no-scope"}})).is_err());
-    }
-
-    #[test]
-    fn approval_uses_inline_keyboard() {
-        let api = Arc::new(Recorder(Mutex::new(vec![])));
-        let c = TelegramChannel::new("token", api.clone());
-        c.send(ChannelEnvelope {
-            thread_id: "42".into(),
-            frame: UiFrame {
-                id: 1,
-                kind: UiFrameKind::Approval,
-                run_id: "r".into(),
-                thread_id: "42".into(),
-                name: "requested".into(),
-                text: "scope".into(),
-                interrupt: true,
-                genui: None,
-            },
-        })
-        .unwrap();
-        let rows = api.0.lock().unwrap();
-        assert_eq!(
-            rows[0].1["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
-            "grant:scope"
-        );
-    }
-}
+#[path = "telegram_tests.rs"]
+mod tests;

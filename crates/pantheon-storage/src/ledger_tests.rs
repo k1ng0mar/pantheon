@@ -1,0 +1,225 @@
+//! Tests for `pantheon_storage::ledger::tests` — sibling file so sources stay test-free.
+use super::*;
+#[test]
+fn artifacts_are_stored_in_the_ledger_database() {
+    let ledger = Ledger::open_in_memory().unwrap();
+    ledger
+        .put_artifact("task-1", "image/png", &[1, 2, 3])
+        .unwrap();
+    let a = ledger.artifact("task-1").unwrap().unwrap();
+    assert_eq!(a.mime, "image/png");
+    assert_eq!(a.bytes, vec![1, 2, 3]);
+    assert!(ledger.artifact("task-2").unwrap().is_none());
+    assert_eq!(
+        ledger
+            .put_artifact("bad", "text/plain\r\nX-Test: yes", b"x")
+            .unwrap_err()
+            .code,
+        "ARTIFACT_MIME"
+    );
+    assert_eq!(
+        ledger
+            .put_artifact("bad/id", "text/plain", b"x")
+            .unwrap_err()
+            .code,
+        "ARTIFACT_ID"
+    );
+}
+
+#[test]
+fn terminal_run_status_cannot_be_overwritten() {
+    let ledger = Ledger::open_in_memory().unwrap();
+    ledger
+        .append(&Event::RunStarted { run_id: "r".into() })
+        .unwrap();
+    ledger
+        .append(&Event::RunCanceled {
+            run_id: "r".into(),
+            reason: "stop".into(),
+        })
+        .unwrap();
+    ledger
+        .append(&Event::RunFailed {
+            run_id: "r".into(),
+            code: "late".into(),
+        })
+        .unwrap();
+    assert_eq!(ledger.status("r").unwrap().as_deref(), Some("canceled"));
+}
+
+#[test]
+fn round_trip_and_explain() {
+    let ledger = Ledger::open_in_memory().unwrap();
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "r1".into(),
+        })
+        .unwrap();
+    ledger
+        .append(&Event::ToolStarted {
+            run_id: "r1".into(),
+            call_id: "call_0_0".into(),
+            tool: "shell".into(),
+            args: String::new(),
+            provenance: pantheon_core::provenance::Provenance::system("test"),
+        })
+        .unwrap();
+    ledger
+        .append(&Event::RunCompleted {
+            run_id: "r1".into(),
+        })
+        .unwrap();
+    assert_eq!(ledger.replay("r1").unwrap().len(), 3);
+    assert!(ledger.explain("r1").unwrap().contains("completed"));
+    assert_eq!(ledger.status("r1").unwrap().as_deref(), Some("completed"));
+}
+
+#[test]
+fn context_trimmed_round_trips_and_explains() {
+    let ledger = Ledger::open_in_memory().unwrap();
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "r1".into(),
+        })
+        .unwrap();
+    ledger
+        .append(&Event::ContextTrimmed {
+            run_id: "r1".into(),
+            estimated: 11_000,
+            window: 16_000,
+            dropped_rows: 4,
+            compacted_rows: 1,
+        })
+        .unwrap();
+    // run_id_of must attribute it to the run: replay finds it.
+    let entries = ledger.replay("r1").unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(matches!(
+        entries[1].event,
+        Event::ContextTrimmed {
+            dropped_rows: 4,
+            ..
+        }
+    ));
+    let explain = ledger.explain("r1").unwrap();
+    assert!(explain.contains("context trimmed"), "explain: {explain}");
+}
+
+#[test]
+fn context_compressed_round_trips_and_explains() {
+    let ledger = Ledger::open_in_memory().unwrap();
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "r1".into(),
+        })
+        .unwrap();
+    ledger
+        .append(&Event::ContextCompressed {
+            run_id: "r1".into(),
+            model: "summarizer".into(),
+            exchanges: 2,
+            rows: 4,
+            chars_before: 20_000,
+            chars_after: 400,
+        })
+        .unwrap();
+    let entries = ledger.replay("r1").unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(matches!(
+        entries[1].event,
+        Event::ContextCompressed { exchanges: 2, .. }
+    ));
+    let explain = ledger.explain("r1").unwrap();
+    assert!(
+        explain.contains("context compressed by summarizer"),
+        "explain: {explain}"
+    );
+}
+
+#[test]
+fn session_titled_drives_the_run_title_and_last_write_wins() {
+    let ledger = Ledger::open_in_memory().unwrap();
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "r1".into(),
+        })
+        .unwrap();
+    // Untitled until a title event lands.
+    assert_eq!(ledger.run_title("r1").unwrap(), None);
+    ledger
+        .append(&Event::SessionTitled {
+            run_id: "r1".into(),
+            title: "Fix login bug".into(),
+            model: "namer".into(),
+            source: "model".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        ledger.run_title("r1").unwrap().as_deref(),
+        Some("Fix login bug")
+    );
+    // A newer title (manual rename, second pass) replaces the old one.
+    ledger
+        .append(&Event::SessionTitled {
+            run_id: "r1".into(),
+            title: "Renamed by hand".into(),
+            model: "user".into(),
+            source: "manual".into(),
+        })
+        .unwrap();
+    let runs = ledger.list_runs(10).unwrap();
+    assert_eq!(runs[0].0, "r1");
+    assert_eq!(runs[0].3.as_deref(), Some("Renamed by hand"));
+    assert_eq!(
+        ledger.run_title("r1").unwrap().as_deref(),
+        Some("Renamed by hand")
+    );
+    let explain = ledger.explain("r1").unwrap();
+    assert!(
+        explain.contains("session titled \"Renamed by hand\" (manual by user)"),
+        "explain: {explain}"
+    );
+    // The event itself replays for /explain and the audit trail.
+    assert!(ledger
+        .replay("r1")
+        .unwrap()
+        .iter()
+        .any(|e| matches!(e.event, Event::SessionTitled { .. })));
+}
+
+#[test]
+fn pre_title_ledger_files_migrate_on_open() {
+    let dir = std::env::temp_dir().join(format!(
+        "pantheon-ledger-migrate-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ledger.db");
+    // A ledger written before the title column existed.
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE runs (
+                   run_id TEXT PRIMARY KEY,
+                   created_ms INTEGER NOT NULL,
+                   status TEXT NOT NULL DEFAULT 'running'
+                 );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO runs (run_id, created_ms, status) VALUES ('old-run', 1, 'completed')",
+            [],
+        )
+        .unwrap();
+    }
+    let ledger = Ledger::open(&path).unwrap();
+    let runs = ledger.list_runs(10).unwrap();
+    assert_eq!(runs[0].0, "old-run");
+    assert_eq!(runs[0].3, None, "old rows stay untitled, not broken");
+    assert_eq!(ledger.run_title("old-run").unwrap(), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}

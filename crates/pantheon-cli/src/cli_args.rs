@@ -21,8 +21,16 @@ impl Args {
                 if let Some((k, v)) = stripped.split_once('=') {
                     flags.insert(k.to_string(), v.to_string());
                 } else if let Some(v) = raw.get(i + 1) {
-                    flags.insert(stripped.to_string(), v.clone());
-                    i += 1;
+                    if v.starts_with("--") {
+                        // A bare flag followed by another flag is a boolean
+                        // switch. Without this the following flag is eaten as
+                        // its value and silently disappears: `--yes
+                        // --provider openai` lost the provider entirely.
+                        flags.insert(stripped.to_string(), String::new());
+                    } else {
+                        flags.insert(stripped.to_string(), v.clone());
+                        i += 1;
+                    }
                 } else {
                     // Boolean flag at end of argv.
                     flags.insert(stripped.to_string(), String::new());
@@ -38,7 +46,6 @@ impl Args {
         self.flags.get(name).filter(|v| !v.is_empty()).cloned()
     }
     /// True when the flag appeared, even without a value (boolean flags).
-    #[allow(dead_code)] // part of the shared parser surface; used by upcoming verb migrations
     pub fn has(&self, name: &str) -> bool {
         self.flags.contains_key(name)
     }
@@ -48,32 +55,5 @@ impl Args {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn raw(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn both_flag_forms_parse() {
-        let a = Args::parse(&raw(&[
-            "--model",
-            "m1",
-            "--provider=openai",
-            "pos1",
-            "--dry-run",
-        ]));
-        assert_eq!(a.flag("model").as_deref(), Some("m1"));
-        assert_eq!(a.flag("provider").as_deref(), Some("openai"));
-        assert_eq!(a.positional(0).as_deref(), Some("pos1"));
-        assert!(a.has("dry-run"));
-        assert_eq!(a.flag("dry-run"), None, "no value = not a value flag");
-    }
-
-    #[test]
-    fn last_occurrence_wins() {
-        let a = Args::parse(&raw(&["--model", "a", "--model", "b"]));
-        assert_eq!(a.flag("model").as_deref(), Some("b"));
-    }
-}
+#[path = "cli_args_tests.rs"]
+mod tests;

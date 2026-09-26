@@ -7,7 +7,7 @@
 //! Static data; the runtime reads it, agents never choose from it.
 
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 /// Wire format a provider speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +53,12 @@ pub struct ProviderMeta {
     /// Env var that overrides the API key, e.g. `PANTHEON_KEY_OPENAI`.
     #[serde(default)]
     pub key_env: String,
+    /// HTTP header carrying the key. Default `Authorization` (sent as
+    /// `Bearer <key>`). Some vendors differ — Xiaomi MiMo wants the raw
+    /// key in an `api-key` header — so this is per-provider data, not a
+    /// protocol assumption. Any non-Authorization name sends the raw key.
+    #[serde(default = "default_auth_header")]
+    pub key_header: String,
     /// Curated model rows for this provider (catalog says which models are
     /// tested and their capabilities). Empty means "no curated models,
     /// use the generic OpenAI/Anthropic adapter with whatever model name
@@ -97,6 +103,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_auth_header() -> String {
+    "Authorization".into()
+}
+
 /// The full catalog: one slice of providers, each with their model rows.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Catalog {
@@ -115,11 +125,7 @@ static CATALOG: OnceLock<Catalog> = OnceLock::new();
 fn load_catalog() -> &'static Catalog {
     CATALOG.get_or_init(|| {
         let raw = if let Ok(p) = std::env::var("PANTHEON_CATALOG") {
-            if let Ok(text) = std::fs::read_to_string(&p) {
-                Some(text)
-            } else {
-                None
-            }
+            std::fs::read_to_string(&p).ok()
         } else {
             None
         };
@@ -147,9 +153,36 @@ pub fn catalog() -> &'static Catalog {
     load_catalog()
 }
 
+/// User-defined providers from `[custom_providers.*]` in config.toml.
+/// Registered at CLI startup; consulted by every lookup below so custom
+/// endpoints behave exactly like cataloged ones.
+static CUSTOM: RwLock<Vec<ProviderMeta>> = RwLock::new(Vec::new());
+
+/// Register (or replace, by id) a user-defined provider. Idempotent.
+pub fn register_custom_provider(meta: ProviderMeta) {
+    if let Ok(mut customs) = CUSTOM.write() {
+        if let Some(slot) = customs.iter_mut().find(|p| p.id == meta.id) {
+            *slot = meta;
+        } else {
+            customs.push(meta);
+        }
+    }
+}
+
 /// Iterate providers.
 pub fn providers() -> &'static [ProviderMeta] {
     &catalog().providers
+}
+
+/// All providers: cataloged plus user-registered customs. The picker and
+/// the `providers` verb use this; the runtime path (`provider`) resolves
+/// either way.
+pub fn all_providers() -> Vec<ProviderMeta> {
+    let mut out: Vec<ProviderMeta> = catalog().providers.clone();
+    if let Ok(customs) = CUSTOM.read() {
+        out.extend(customs.iter().cloned());
+    }
+    out
 }
 
 /// Iterate all model rows across all providers.
@@ -161,9 +194,14 @@ pub fn models() -> Vec<&'static ModelMeta> {
         .collect()
 }
 
-/// Look up a provider by id.
-pub fn provider(id: &str) -> Option<&'static ProviderMeta> {
-    providers().iter().find(|p| p.id == id)
+/// Look up a provider by id (cataloged or user-registered custom).
+pub fn provider(id: &str) -> Option<ProviderMeta> {
+    if let Ok(customs) = CUSTOM.read() {
+        if let Some(p) = customs.iter().find(|p| p.id == id) {
+            return Some(p.clone());
+        }
+    }
+    providers().iter().find(|p| p.id == id).cloned()
 }
 
 /// Look up a model's static metadata (exact provider + model match).
@@ -195,6 +233,8 @@ pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
 
 /// Base URL for a provider: env override → catalog → the provider id
 /// itself (treated as a full base URL, legacy passthrough).
+/// NOTE: may still contain `{var}` template placeholders — use
+/// [`resolve_base_url`] when building requests.
 pub fn base_url_for(provider_id: &str) -> String {
     if let Some(p) = provider(provider_id) {
         if !p.base_env.is_empty() {
@@ -214,6 +254,104 @@ pub fn base_url_for(provider_id: &str) -> String {
     provider_id.to_string()
 }
 
+/// Placeholder vars in a template base URL: `{resource}` → `["resource"]`.
+/// Doubled braces are not templates; empty `{}` is ignored.
+pub fn template_vars(base_url: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = base_url.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            if let Some(end) = base_url[i..].find('}') {
+                let name = base_url[i + 1..i + end].trim();
+                if !name.is_empty()
+                    && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    && !out.iter().any(|n: &String| n == name)
+                {
+                    out.push(name.to_string());
+                }
+                i += end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Env-safe fragment: `my-llm` → `MY_LLM`. Shared by
+/// [`config_env_name`] and the CLI's `sanitize_env_suffix` so both build
+/// the same `PANTHEON_*` names.
+pub fn env_part(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Env var holding one template value: provider `azure` + var `resource`
+/// → `PANTHEON_AZURE_RESOURCE`. Values live in `<data_dir>/.env`
+/// (written by `pantheon model`), same as API keys.
+pub fn config_env_name(provider_id: &str, var: &str) -> String {
+    format!("PANTHEON_{}_{}", env_part(provider_id), env_part(var))
+}
+
+/// Required template vars for a provider id (empty = ready to use).
+pub fn required_config_vars(provider_id: &str) -> Vec<String> {
+    template_vars(&base_url_for(provider_id))
+}
+
+/// Resolve a provider's effective base URL, interpolating `{var}`
+/// placeholders from `PANTHEON_<PROVIDER>_<VAR>` env values. Errors name
+/// every missing var and point at `pantheon model` — never let a raw
+/// `{placeholder}` reach the wire.
+pub fn resolve_base_url(provider_id: &str) -> Result<String, String> {
+    resolve_template(provider_id, &base_url_for(provider_id))
+}
+
+/// Resolve an explicit base string with the provider's env namespace.
+/// Same as [`resolve_base_url`] but for a URL not (yet) in the catalog —
+/// the `pantheon model` flow uses this before the custom row is saved.
+pub fn resolve_template(provider_id: &str, base: &str) -> Result<String, String> {
+    let vars = template_vars(base);
+    if vars.is_empty() {
+        return Ok(base.to_string());
+    }
+    let mut out = base.to_string();
+    let mut missing = Vec::new();
+    for v in &vars {
+        let env_name = config_env_name(provider_id, v);
+        match std::env::var(&env_name) {
+            Ok(val) if !val.trim().is_empty() => {
+                out = out.replace(&format!("{{{v}}}"), val.trim());
+            }
+            _ => missing.push(format!("{env_name} (for {{{v}}})")),
+        }
+    }
+    if missing.is_empty() {
+        Ok(out)
+    } else {
+        Err(format!(
+            "provider {provider_id:?} needs {} — run `pantheon model` to fill them (stored in <data_dir>/.env)",
+            missing.join(", ")
+        ))
+    }
+}
+
+/// HTTP header carrying the key for a provider (`Authorization` unless
+/// the row says otherwise). Consults customs too.
+pub fn key_header_for(provider_id: &str) -> String {
+    provider(provider_id)
+        .map(|p| p.key_header)
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(default_auth_header)
+}
+
 /// API key for a provider: env override → `fallback` (the configured key).
 pub fn key_for(provider_id: &str, fallback: &str) -> String {
     let env_name = provider(provider_id)
@@ -229,59 +367,5 @@ pub fn key_for(provider_id: &str, fallback: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn providers_resolve_with_wire_modes() {
-        assert!(provider("anthropic").is_some());
-        assert_eq!(provider("anthropic").unwrap().api_mode, ApiMode::Anthropic);
-        assert_eq!(provider("openai").unwrap().api_mode, ApiMode::OpenAi);
-        assert!(provider("router").is_some());
-        assert!(provider("nope").is_none());
-    }
-
-    #[test]
-    fn model_capabilities_and_cost() {
-        let m = model("openai", "gpt-4o").unwrap();
-        assert_eq!(m.context_limit, Some(128_000));
-        assert!(m.tools && m.vision && m.streaming && !m.reasoning);
-        let cost = m.cost.estimate(1_000_000, 1_000_000).unwrap();
-        assert!((cost - 12.50).abs() < 1e-9);
-
-        let c = model("anthropic", "claude-sonnet-4").unwrap();
-        assert!(c.reasoning && c.vision && c.tools);
-    }
-
-    #[test]
-    fn unknown_model_gets_conservative_defaults() {
-        let m = model_meta("local", "llama3.2");
-        assert_eq!(m.context_limit, None);
-        assert!(m.tools && m.streaming && !m.vision && !m.reasoning);
-        assert!(m.cost.estimate(10, 10).is_none());
-    }
-
-    #[test]
-    fn unknown_provider_id_passthrough_is_base_url() {
-        assert_eq!(
-            base_url_for("https://proxy.example/v1"),
-            "https://proxy.example/v1"
-        );
-    }
-
-    #[test]
-    fn prominent_providers_include_curated_labs() {
-        let prom: Vec<&str> = providers()
-            .iter()
-            .filter(|p| p.prominent)
-            .map(|p| p.id.as_str())
-            .collect();
-        // Should include the major labs from the catalog.
-        assert!(prom.contains(&"anthropic"), "anthropic prominent: {prom:?}");
-        assert!(prom.contains(&"openai"), "openai prominent: {prom:?}");
-        assert!(prom.contains(&"google"), "google prominent: {prom:?}");
-        assert!(prom.contains(&"deepseek"), "deepseek prominent: {prom:?}");
-        assert!(prom.contains(&"groq"), "groq prominent: {prom:?}");
-        assert!(prom.contains(&"xai"), "xai prominent: {prom:?}");
-    }
-}
+#[path = "catalog_tests.rs"]
+mod tests;

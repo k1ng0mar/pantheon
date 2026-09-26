@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pantheon — Rust Agent Runtime</title>
+  <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="https://cdn.tailwindcss.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0d0d0d', fg: '#e8e6e1', muted: '#71717a', accent: '#7027c5',
+            card: '#1c1c1e', border: '#2e2e30',
+          },
+          fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Inter', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { background: #0d0d0d; color: #e8e6e1; font-family: 'Inter', sans-serif; }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7027c5, transparent); }
+    .radial-core { background: radial-gradient(ellipse at center, rgba(112,39,197,0.06) 0%, transparent 70%); }
+    .logo-mark { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark img { height: 32px; width: auto; }
+    .logo-mark-sm { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark-sm img { height: 22px; width: auto; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    pre { background: #1c1c1e; border: 1px solid #2e2e30; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+    pre code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #e8e6e1; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: #7027c5; background: rgba(112,39,197,0.1); padding: 0.15em 0.3em; border-radius: 3px; }
+    h1, h2, h3, h4 { font-family: 'JetBrains Mono', monospace; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
+    th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
+    tr:hover td { background: rgba(112,39,197,0.05); }
+    details { cursor: pointer; }
+    details summary { list-style: none; }
+    details summary::-webkit-details-marker { display: none; }
+    details[open] summary .chevron { transform: rotate(90deg); }
+    .chevron { display: inline-block; transition: transform 0.15s; }
+  </style>
+</head>
+<body class="antialiased">
+
+  <nav class="fixed top-0 left-0 right-0 z-50 bg-bg/80 backdrop-blur border-b border-border">
+    <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="index.html" class="flex items-center gap-3">
+        <div class="logo-mark"><img src="logo.png" alt="Pantheon" width="32" height="32"></div>
+        <span class="font-mono font-bold text-fg text-lg tracking-tight">pantheon</span>
+      </a>
+      <div class="flex items-center gap-6 text-sm">
+        <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
+        <a href="getting-started.html" class="text-muted hover:text-fg transition-colors">Docs</a>
+        <a href="configuration.html" class="text-muted hover:text-fg transition-colors">Configuration</a>
+        <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
+        <a href="channels.html" class="text-muted hover:text-fg transition-colors">Channels</a>
+        <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <h1 class="text-3xl md:text-4xl font-bold text-fg mb-4 mt-8">CLI reference</h1>
+<p class="text-muted text-sm leading-relaxed mb-3">Every <code>pantheon</code> verb, its flags, and its exit codes. Shared rules first.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Conventions</h2>
+<li class="mb-2 text-muted text-sm">Exit 0 = success. Exit 1 = operation failed (the error message names a</li>
+<p class="text-muted text-sm leading-relaxed mb-3">structured code like <code>SAFE_STALE</code> or <code>LEDGER_OPEN</code>). Exit 2 = usage error</p>
+<p class="text-muted text-sm leading-relaxed mb-3">(bad arguments).</p>
+<li class="mb-2 text-muted text-sm">Flags are <code>--flag value</code> or <code>--flag=value</code>. Boolean flags (<code>--yes</code>) take</li>
+<p class="text-muted text-sm leading-relaxed mb-3">no value.</p>
+<li class="mb-2 text-muted text-sm"><code>PANTHEON_DATA_DIR</code> overrides the data dir (default <code>~/.pantheon</code>) for</li>
+<p class="text-muted text-sm leading-relaxed mb-3">every verb.</p>
+<li class="mb-2 text-muted text-sm">JSON on stdout means the command is for scripts: <code>doctor</code>, <code>audit</code>,</li>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>extensions</code>, <code>plugins list</code>, <code>status</code> (in some modes). Everything else is</p>
+<p class="text-muted text-sm leading-relaxed mb-3">human-oriented text.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Session verbs</h2>
+<h3 class="text-xl font-bold text-fg mb-3 mt-6">(bare) / session</h3>
+<pre><code>pantheon              # opens the interactive session
+pantheon session      # same thing, explicit</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Interactive REPL: every input is a turn on the current conversation, one</p>
+<p class="text-muted text-sm leading-relaxed mb-3">ledger run, so history and approvals persist across process exits.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Auto-resumes the most recent run on open; <code>/new</code> starts fresh.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Commands: <code>/help</code>, <code>/new</code>, <code>/runs</code>, <code>/resume [ID|n]</code>, <code>/history</code>,</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>/status</code>, <code>/name [TITLE]</code>, <code>/memory QUERY</code>, <code>/remember KEY TEXT</code>,</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>/policy</code>, <code>/model P M</code>, <code>/exit</code>. Slash commands are session-local and</p>
+<p class="text-muted text-sm leading-relaxed mb-3">never reach the model. <code>/name</code> alone prints the current session title;</p>
+<p class="text-muted text-sm leading-relaxed mb-3">with a title it renames the conversation (durable <code>SessionTitled</code> event,</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>source: manual</code>, overwriting any generated title).</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Fresh conversations get a one-line <strong>session title</strong> generated from the</p>
+<p class="text-muted text-sm leading-relaxed mb-3">first prompt by the title auxiliary (config <code>[title_gen]</code>, default</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>auto</code> = the run's default model — see docs/configuration.md). <code>/runs</code>,</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>/history</code>, and <code>/status</code> show it; the title is a <code>SessionTitled</code> ledger</p>
+<p class="text-muted text-sm leading-relaxed mb-3">event, so <code>pantheon explain <run></code> shows how it was produced.</p>
+<h3 class="text-xl font-bold text-fg mb-3 mt-6">chat</h3>
+<pre><code>pantheon chat [--id ID] [--model M] [--provider P] [--key K] [--choose] "message"</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">One-shot turn: runs one conversation turn with the full tool loop, then</p>
+<p class="text-muted text-sm leading-relaxed mb-3">exits. <code>--id</code> continues a named run (terminal runs are reopened); <code>--choose</code></p>
+<p class="text-muted text-sm leading-relaxed mb-3">opens an interactive model picker from the catalog.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Model/provider flags override config.toml, which overrides</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>PANTHEON_MODEL</code>/<code>PANTHEON_PROVIDER</code>.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">There is no offline or fixture provider. Every chat turn hits the</p>
+<p class="text-muted text-sm leading-relaxed mb-3">configured endpoint over HTTP; unknown provider ids (including <code>mock</code>)</p>
+<p class="text-muted text-sm leading-relaxed mb-3">fail with <code>MOCK_PROVIDER_UNCONFIGURED</code>.</p>
+<h3 class="text-xl font-bold text-fg mb-3 mt-6">run</h3>
+<pre><code>pantheon run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Direct runtime entry used by evals and tests: record a run with optional</p>
+<p class="text-muted text-sm leading-relaxed mb-3">tool execution or failure. Not a user verb, but stable.</p>
+<h3 class="text-xl font-bold text-fg mb-3 mt-6">explain / status / audit</h3>
+<pre><code>pantheon explain <run_id>
+pantheon status <run_id>
+pantheon audit <run_id> [OUT.jsonl]</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>explain</code> replays the ledger for a run in words. <code>status</code> prints the run</p>
+<p class="text-muted text-sm leading-relaxed mb-3">state (<code>running</code>, <code>awaiting_approval</code>, <code>completed</code>, <code>failed</code>, <code>canceled</code>,</p>
+<p class="text-muted text-sm leading-relaxed mb-3">or <code>unknown</code> for an id that never ran). <code>audit</code> writes a sequence-validated</p>
+<p class="text-muted text-sm leading-relaxed mb-3">JSONL trajectory (3 events minimum for a simple run).</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Approval verbs</h2>
+<pre><code>pantheon grant <run_id> <scope>     # approve a parked tool call
+pantheon deny <run_id> [scope]      # refuse; scope auto-detected if omitted</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">A granted call re-executes on resume. A denied call settles into the</p>
+<p class="text-muted text-sm leading-relaxed mb-3">transcript as "denied by operator" and the run continues. Both fail with</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>RT_APPROVAL_RESOLVED</code> if the scope was already answered.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">File-edit verbs (safewrite)</h2>
+<pre><code>pantheon preview <path> <file-with-new-content>
+pantheon stage <path> <file-with-new-content> [--expect HASH]
+pantheon apply <path> <file-with-new-content> [--expect HASH] [--run ID]
+pantheon checkpoint <path>... [--run ID]
+pantheon rollback (--ckpt ID | --seq N)</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>preview</code> is read-only. <code>apply</code> snapshots a checkpoint first, writes</p>
+<p class="text-muted text-sm leading-relaxed mb-3">atomically (tmp+fsync+rename), and journals the apply. A stale</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>--expect</code> hash fails with <code>SAFE_STALE</code> and changes nothing. <code>rollback</code></p>
+<p class="text-muted text-sm leading-relaxed mb-3">restores by checkpoint id or ledger sequence.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Memory verbs</h2>
+<pre><code>pantheon memory import [PATH]      # markdown -> store (through the policy gate)
+pantheon memory export [PATH]      # store -> markdown
+pantheon memory sync [PATH]        # bidirectional with conflict detection
+pantheon memory put KEY VALUE
+pantheon memory recall QUERY
+pantheon memory backend list|select NAME</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">The default file is <code>MEMORY.md</code> in the data dir. Values containing lines</p>
+<p class="text-muted text-sm leading-relaxed mb-3">that look like <code># headings</code> are escaped on export and unescaped on import.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Sync refuses with a conflict report when both sides changed since the last</p>
+<p class="text-muted text-sm leading-relaxed mb-3">sync.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Plugin verbs</h2>
+<pre><code>pantheon extensions                     # list loaded extensions (JSON)
+pantheon plugins list                   # installed plugins
+pantheon plugins install <name>         # from the catalog
+pantheon plugins enable|disable <name>
+pantheon hook <name> [--session S]      # fire a hook once (eval/debug)
+pantheon doctor <plugin_dir>            # static preflight for one plugin</code></pre>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Migration verbs</h2>
+<pre><code>pantheon migrate detect                        # which sources are installed here
+pantheon migrate show <source> [path]          # every detected item + its disposition
+pantheon migrate plan <source> [path]          # dry run: import / archive / skip
+pantheon migrate apply <source> [path] [--yes] # backup → import → validate
+pantheon migrate validate <source> [path]      # re-check current targets, no writes</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3"><code><source></code> is <code>hermes</code>, <code>openclaw</code>, or <code>omp</code> (aliases: <code>oh-my-pi</code>, <code>pi</code>).</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>[path]</code> defaults to <code>~/.hermes</code>, <code>~/.openclaw</code>, <code>~/.omp</code>. Flags: <code>--path DIR</code></p>
+<p class="text-muted text-sm leading-relaxed mb-3">to point at a different root, <code>--kind skill,agent,...</code> to restrict the plan,</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>--json</code> for machine-readable output, <code>--yes</code> to skip the approval gate.</p>
+<pre><code>detect    read-only  lists sources, item counts, versions
+show      read-only  one line per item: kind, mappable, path, and why
+plan      read-only  renders the full plan; writes nothing
+apply     WRITES     backs up every existing target, imports, then validates
+validate  read-only  re-reads targets and proves each import landed</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>apply</code> is the only verb that writes, and it needs either <code>--yes</code> or the</p>
+<p class="text-muted text-sm leading-relaxed mb-3">source name typed at the prompt. It always runs <code>backup → apply → validate</code></p>
+<p class="text-muted text-sm leading-relaxed mb-3">and exits non-zero if any import or validation step failed.</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><strong>Credentials are never imported.</strong> <code>.env</code>, <code>auth.json</code>, <code>models.yml</code>,</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>config.yaml</code>, <code>agent.db</code>, <code>broker.token</code>, <code>*.pem</code>, <code>*.key</code> and friends are</p>
+<p class="text-muted text-sm leading-relaxed mb-3">reported as <code>secret</code> and skipped — not imported *and* not archived, because</p>
+<p class="text-muted text-sm leading-relaxed mb-3">archiving a credential would turn this verb into an exfil path.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Imported skills land in <code><data_dir>/skills/<name>/</code>, extensions in</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>PANTHEON_EXT_DIR</code>, and persona/memory files route to the memory plane as</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>memory://<kind>/<name></code> — write those with <code>pantheon memory put</code>. Pre-images</p>
+<p class="text-muted text-sm leading-relaxed mb-3">of anything overwritten go to <code><data_dir>/migrate-backups/<timestamp>/</code> with a</p>
+<p class="text-muted text-sm leading-relaxed mb-3">JSON manifest beside them.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">System verbs</h2>
+<pre><code>pantheon setup [--yes] [--profile P] [--provider P] [--model M]
+               [--api-key-env ENV] [--policy reader|coder|coder_memory]
+               [--memory BACKEND] [--packs a,b] [--plugins a,b]
+pantheon doctor              # system preflight (config, key, ledger, memory, plugins)
+pantheon doctor <plugin_dir> # per-plugin preflight (as above)
+pantheon reset --config | --state | --everything [--yes]
+pantheon providers           # catalog listing
+pantheon provider <add|list|remove>   # custom-endpoint registry
+                             # add [--name N] [--base-url U|:port] [--api-mode M]
+                             #     [--key K1,K2] [--api-key-env E] [--set V=W]...
+                             # remove [NAME] [--delete-key]; no NAME opens a picker
+pantheon model [--list] [--auxiliary judge|compression|title_gen|embeddings|search_synthesis|vision|scheduled|mcp_synthesis]
+                             # 39 builtins + customs. provider picker → wire mode →
+                             # comma-stacked keys (→ <data_dir>/.env) → live /models
+                             # fetch → model pick → auxiliary step at the bottom.
+                             # :port shorthand = http://127.0.0.1:port/v1</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Stacked keys (<code>PANTHEON_KEY_X=k1,k2</code>) rotate on 401/403/429 inside one</p>
+<p class="text-muted text-sm leading-relaxed mb-3">turn. <code>model --list</code> shows the default, auxiliaries, custom providers,</p>
+<p class="text-muted text-sm leading-relaxed mb-3">and whether each key resolves — without ever printing a value.</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>reset --config</code> removes config files only. <code>reset --state</code> removes</p>
+<p class="text-muted text-sm leading-relaxed mb-3">ledger.db, memory.db, and gateway cursors, and refuses while a run lease is</p>
+<p class="text-muted text-sm leading-relaxed mb-3">active. Typed confirmation (<code>reset</code>) is required unless <code>--yes</code>.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">AG-UI verbs</h2>
+<pre><code>pantheon serve [--host H] [--port P]     # AG-UI server (web UI at /, RPC at /agui/rpc)
+pantheon stream <run_id> [--after N]     # SSE stream to stdout
+pantheon sign <task_id> [--mime M] [--ttl MS]   # signed artifact URL
+pantheon channel <run_id> [--thread T]   # replay frames through the channel seam</code></pre>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Gateway verbs</h2>
+<pre><code>pantheon gateway                  # run Discord + Telegram surfaces (env tokens)
+pantheon gateway <run_id> --approve <stage> | --deny <stage>  # pipeline gates</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>pantheon gateway</code> (no args) runs the channel daemon: Discord gateway</p>
+<p class="text-muted text-sm leading-relaxed mb-3">websocket and Telegram long-poll feeding the runtime. Tokens:</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>PANTHEON_DISCORD_TOKEN</code>, <code>PANTHEON_TELEGRAM_BOT_TOKEN</code>.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Pipeline verbs</h2>
+<pre><code>pantheon pipeline --spec "task" [RUN_ID]
+pantheon pipeline RUN_ID --approve plan|review
+pantheon pipeline RUN_ID --deny plan|review</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Without a positional run id one is generated and printed on the park line.</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>PANTHEON_PIPELINE_EVAL=1</code> enables the strict evaluator loop inside</p>
+<p class="text-muted text-sm leading-relaxed mb-3">implement.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Environment variables</h2>
+<table>
+<thead><tr><th>Variable</th><th>Effect</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_DATA_DIR`</th><th>Data directory (default `~/.pantheon`)</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_EXT_DIR`</th><th>Extension directory (default `<data>/extensions`)</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_PROVIDER` / `PANTHEON_MODEL`</th><th>Default model when no config/flags</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_API_KEY`</th><th>API key fallback (config names better ones)</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_DISCORD_TOKEN`</th><th>Discord bot token for `pantheon gateway`</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_TELEGRAM_BOT_TOKEN`</th><th>Telegram bot token for `pantheon gateway`</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_GENUI_SECRET`</th><th>HMAC secret for signed artifact URLs</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_GENUI_BASE`</th><th>Base URL signed URLs point at</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_STALL_BUDGET_MS` / `PANTHEON_PROBE_TIMEOUT_MS`</th><th>Watchdog tuning</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_RUN_LEASE_TTL_MS`</th><th>Run lease TTL (default 30000)</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_ALLOW_MEMORY`</th><th>Legacy memory-policy toggle (config policy wins)</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_MEMORY_NAMESPACE`</th><th>Namespace for memory verbs (default `nyx`)</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_PIPELINE_EVAL`</th><th>Enable the strict pipeline evaluator</th></tr></thead>
+<tbody>
+<thead><tr><th>`PANTHEON_SECRET_*`</th><th>Env vault entries for the secrets broker</th></tr></thead>
+<tbody>
+</tbody></table>
+
+
+  <div class="glow-line max-w-5xl mx-auto"></div>
+
+  <footer class="py-16">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+        <div class="flex items-center gap-3">
+          <div class="logo-mark-sm"><img src="logo.png" alt="Pantheon" width="22" height="22"></div>
+          <div>
+            <span class="font-mono font-bold text-fg text-sm">pantheon</span>
+            <p class="text-muted text-xs mt-0.5">Rust agent runtime. MIT licensed. <span class="font-mono">pantheon-agent/pantheon</span> on GitHub.</p>
+          </div>
+        </div>
+        <div class="flex gap-8 text-sm">
+          <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
+          <a href="https://github.com/pantheon-agent/pantheon/blob/main/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
+          <a href="https://github.com/pantheon-agent/pantheon/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+        </div>
+      </div>
+      <div class="glow-line my-8"></div>
+      <p class="text-muted text-xs text-center">No hosted tier. No subscription. Your data stays on your machine.</p>
+    </div>
+  </footer>
+
+</body>
+</html>

@@ -94,9 +94,15 @@ fn open_session(
             )
         });
     let model_policy = pantheon_core::model::ModelPolicy {
-        default: pantheon_core::model::DefaultModel { provider, model },
+        default: pantheon_core::model::DefaultModel {
+            provider: provider.clone(),
+            model: model.clone(),
+        },
         fallbacks: pantheon_core::model::FallbackChain::default(),
-        auxiliaries: crate::config_doc::auxiliaries(cfg.as_ref()),
+        auxiliaries: crate::config_doc::auxiliaries(
+            cfg.as_ref(),
+            &pantheon_core::model::DefaultModel { provider, model },
+        ),
     };
     let secrets = crate::config_doc::chat_secrets(cfg.as_ref());
     pantheon_runtime::session::Session::new(data_dir.clone(), policy, model_policy, secrets)
@@ -104,6 +110,12 @@ fn open_session(
 
 pub fn cmd_pipeline(args: &[String]) {
     let parsed = crate::cli_args::Args::parse(&args[2.min(args.len())..]);
+    if parsed.has("help") || parsed.has("h") {
+        eprintln!(
+            "usage: pantheon pipeline [--spec \"task\"] | <run_id> --approve <stage> | <run_id> --deny <stage>"
+        );
+        return;
+    }
     // First positional (if any) is the run id.
     let run_id = parsed
         .positional(0)
@@ -118,7 +130,9 @@ pub fn cmd_pipeline(args: &[String]) {
         std::process::exit(1);
     });
 
-    // Gate resolution mode.
+    // Gate resolution mode: settle the gate, then resume the pipeline
+    // from its persisted spec. Without the resume the approval would be
+    // a dead letter: the run would sit `running` forever.
     let denied_flag = approve.is_none();
     if let Some(stage) = approve.clone().or_else(|| deny.clone()) {
         let denied = denied_flag;
@@ -142,19 +156,21 @@ pub fn cmd_pipeline(args: &[String]) {
         } else {
             OperationStatus::Completed
         };
-        match store.transition(&op_id, op.version, next, state) {
-            Ok(_) => {
-                println!(
-                    "gate {op_id} {}",
-                    if denied { "denied" } else { "approved" }
-                );
-                return;
-            }
-            Err(e) => {
-                eprintln!("pipeline: {e}");
-                std::process::exit(1);
+        if let Err(e) = store.transition(&op_id, op.version, next, state) {
+            eprintln!("pipeline: {e}");
+            std::process::exit(1);
+        }
+        println!(
+            "gate {op_id} {}",
+            if denied { "denied" } else { "approved" }
+        );
+        match load_spec(&sup, &run_id) {
+            Some(spec) => drive(&sup, &data_dir, &run_id, &spec),
+            None => {
+                println!("no persisted spec for {run_id}: re-run with --spec to continue");
             }
         }
+        return;
     }
 
     // Run mode.
@@ -171,6 +187,30 @@ pub fn cmd_pipeline(args: &[String]) {
         std::process::exit(1);
     });
 
+    drive(&sup, &data_dir, &run_id, &spec);
+}
+
+/// The pipeline spec, persisted at the first park so a later
+/// `--approve`/`--deny` invocation (a different process) can resume.
+fn spec_op_id(run_id: &str) -> String {
+    format!("{run_id}:$spec")
+}
+
+fn load_spec(sup: &Supervisor, run_id: &str) -> Option<String> {
+    sup.operations()
+        .get(&spec_op_id(run_id))
+        .ok()
+        .flatten()
+        .and_then(|op| {
+            op.state
+                .get("spec")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+}
+
+fn drive(sup: &Supervisor, data_dir: &std::path::Path, run_id: &str, spec: &str) {
+    let data_dir = data_dir.to_path_buf();
     let policy = policy_for(Config::load(&data_dir).ok().as_ref());
     let exec = RuntimeExecutor {
         data_dir: data_dir.clone(),
@@ -188,24 +228,33 @@ pub fn cmd_pipeline(args: &[String]) {
     };
     let runner = PipelineRunner {
         store: sup.operations(),
-        run_id: run_id.clone(),
+        run_id: run_id.to_string(),
         executor: &exec,
         evaluator: if eval_enabled { &strict } else { &noop },
         max_iterations: 3,
     };
-    match runner.run(&spec) {
+    match runner.run(spec) {
         Ok(outcome) => {
             for (stage, text) in &outcome.outputs {
                 println!("== {stage} ==");
                 println!("{text}");
                 println!();
             }
-            sup.complete(&run_id).unwrap_or_else(|e| {
+            sup.complete(run_id).unwrap_or_else(|e| {
                 eprintln!("pipeline: complete run: {e}");
             });
         }
         Err(e) => match e.code.as_str() {
             "PIPELINE_GATE" => {
+                // Persist the spec so the approving process can resume.
+                let store = sup.operations();
+                if store.get(&spec_op_id(run_id)).ok().flatten().is_none() {
+                    let _ = store.create(
+                        spec_op_id(run_id),
+                        "pipeline.spec",
+                        serde_json::json!({"spec": spec}),
+                    );
+                }
                 println!("run id: {run_id}");
                 println!("pipeline parked: {e}");
                 println!("approve with: pantheon pipeline {run_id} --approve <stage>");
@@ -213,7 +262,7 @@ pub fn cmd_pipeline(args: &[String]) {
             }
             _ => {
                 eprintln!("pipeline: {e}");
-                sup.fail(&run_id, &e.code).unwrap_or_else(|x| {
+                sup.fail(run_id, &e.code).unwrap_or_else(|x| {
                     eprintln!("pipeline: mark failed: {x}");
                 });
                 std::process::exit(1);
@@ -221,3 +270,7 @@ pub fn cmd_pipeline(args: &[String]) {
         },
     }
 }
+
+#[cfg(test)]
+#[path = "pipeline_cli_tests.rs"]
+mod tests;

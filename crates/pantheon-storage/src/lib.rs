@@ -7,8 +7,10 @@ pub mod ledger;
 pub mod operations;
 
 pub mod audit;
+pub mod search;
 pub use audit::{audit_line, export_jsonl};
 pub use claims::ClaimStore;
 pub use leases::{LostLeaseError, RunLease, RunLeaseStore};
-pub use ledger::{Artifact, Ledger, LedgerEntry};
+pub use ledger::{Artifact, Ledger, LedgerEntry, RunListing};
 pub use operations::{Operation, OperationConflict, OperationStatus, OperationStore};
+pub use search::{SearchHit, SessionChunk, SessionSearch};

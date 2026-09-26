@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pantheon — Rust Agent Runtime</title>
+  <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="https://cdn.tailwindcss.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0d0d0d', fg: '#e8e6e1', muted: '#71717a', accent: '#7027c5',
+            card: '#1c1c1e', border: '#2e2e30',
+          },
+          fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Inter', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { background: #0d0d0d; color: #e8e6e1; font-family: 'Inter', sans-serif; }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7027c5, transparent); }
+    .radial-core { background: radial-gradient(ellipse at center, rgba(112,39,197,0.06) 0%, transparent 70%); }
+    .logo-mark { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark img { height: 32px; width: auto; }
+    .logo-mark-sm { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark-sm img { height: 22px; width: auto; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    pre { background: #1c1c1e; border: 1px solid #2e2e30; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+    pre code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #e8e6e1; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: #7027c5; background: rgba(112,39,197,0.1); padding: 0.15em 0.3em; border-radius: 3px; }
+    h1, h2, h3, h4 { font-family: 'JetBrains Mono', monospace; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
+    th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
+    tr:hover td { background: rgba(112,39,197,0.05); }
+    details { cursor: pointer; }
+    details summary { list-style: none; }
+    details summary::-webkit-details-marker { display: none; }
+    details[open] summary .chevron { transform: rotate(90deg); }
+    .chevron { display: inline-block; transition: transform 0.15s; }
+  </style>
+</head>
+<body class="antialiased">
+
+  <nav class="fixed top-0 left-0 right-0 z-50 bg-bg/80 backdrop-blur border-b border-border">
+    <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="index.html" class="flex items-center gap-3">
+        <div class="logo-mark"><img src="logo.png" alt="Pantheon" width="32" height="32"></div>
+        <span class="font-mono font-bold text-fg text-lg tracking-tight">pantheon</span>
+      </a>
+      <div class="flex items-center gap-6 text-sm">
+        <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
+        <a href="getting-started.html" class="text-muted hover:text-fg transition-colors">Docs</a>
+        <a href="configuration.html" class="text-muted hover:text-fg transition-colors">Configuration</a>
+        <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
+        <a href="channels.html" class="text-muted hover:text-fg transition-colors">Channels</a>
+        <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <h1 class="text-3xl md:text-4xl font-bold text-fg mb-4 mt-8">Memory</h1>
+<p class="text-muted text-sm leading-relaxed mb-3">Five layers, a gated write path, provenance on everything, and</p>
+<p class="text-muted text-sm leading-relaxed mb-3">bidirectional markdown sync. This is the agent's long-term state.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Layers</h2>
+<pre><code>GLOBAL      -> cross-everything facts          (narrowest first at recall)
+AGENT       -> per-agent-identity facts
+PROJECT     -> per-project facts
+TASK/SESSION-> per-task state
+EPHEMERAL   -> this turn only, never stored</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Recall queries all layers and returns hits narrowest-first, each with</p>
+<p class="text-muted text-sm leading-relaxed mb-3">provenance (where the record came from and when it was written).</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">The write path</h2>
+<p class="text-muted text-sm leading-relaxed mb-3">There is exactly one path for a write, and it is the same for the model,</p>
+<p class="text-muted text-sm leading-relaxed mb-3">the CLI, and imports:</p>
+<pre><code>propose -> policy check -> provenance attach -> validation -> store</code></pre>
+<li class="mb-2 text-muted text-sm">Policy: memory writes need the <code>MemoryWrite</code> capability (<code>coder_memory</code></li>
+<p class="text-muted text-sm leading-relaxed mb-3">policy, or an explicit grant).</p>
+<li class="mb-2 text-muted text-sm">Provenance: source (who/what wrote it), imported_at. Recall returns it.</li>
+<li class="mb-2 text-muted text-sm">Validation: size caps and shape checks.</li>
+<p class="text-muted text-sm leading-relaxed mb-3">No silent prompt-injection writes: anything the model wants remembered</p>
+<p class="text-muted text-sm leading-relaxed mb-3">goes through the same gate as anything you write by hand.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Trust tiers</h2>
+<p class="text-muted text-sm leading-relaxed mb-3">Every record carries a trust tier from where it came from:</p>
+<pre><code>system     harness-authored, authoritative
+user       you wrote it (CLI put, /remember, hand-edited MEMORY.md)
+memory     user-confirmed records (memory_confirm promotion)
+untrusted  model-proposed, tool- or web-derived material</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">The invariant: content never gains trust by being copied. A model</p>
+<p class="text-muted text-sm leading-relaxed mb-3">proposal lands untrusted no matter what it claims; only an explicit</p>
+<p class="text-muted text-sm leading-relaxed mb-3">user action promotes it (<code>pantheon memory confirm KEY</code>, or a human</p>
+<p class="text-muted text-sm leading-relaxed mb-3">edit in MEMORY.md). Recalled records show their tier inline, and</p>
+<p class="text-muted text-sm leading-relaxed mb-3">untrusted records are flagged <code>[untrusted: source]</code> in the context the</p>
+<p class="text-muted text-sm leading-relaxed mb-3">model sees.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">CLI</h2>
+<pre><code>pantheon memory put KEY VALUE          # store (user trust, goes through the gate)
+pantheon memory recall QUERY           # FTS search, provenance included
+pantheon memory confirm KEY            # promote a record to memory tier
+pantheon memory export [PATH]          # store -> markdown (default MEMORY.md)
+pantheon memory import [PATH]          # markdown -> store, each section a proposal
+pantheon memory sync [PATH]            # bidirectional, conflict-detecting
+pantheon memory backend list|select    # switch native/http</code></pre>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">MEMORY.md format</h2>
+<p class="text-muted text-sm leading-relaxed mb-3">The Agent layer syncs to markdown so a human can read and edit it:</p>
+<pre><code><!-- pantheon:agent-memory v1 -->
+
+# Agent memory
+
+# city
+
+Kano
+
+# notes
+
+line one
+\# escaped heading-looking line inside a value</code></pre>
+<li class="mb-2 text-muted text-sm"><code># <key></code> headings delimit records; the body until the next heading is</li>
+<p class="text-muted text-sm leading-relaxed mb-3">the value.</p>
+<li class="mb-2 text-muted text-sm">Value lines that start with <code># </code> (or are exactly <code>#</code>) are escaped with</li>
+<p class="text-muted text-sm leading-relaxed mb-3">a leading backslash on export and unescaped on import, so a value can</p>
+<p class="text-muted text-sm leading-relaxed mb-3">contain heading-looking text without corrupting the file.</p>
+<li class="mb-2 text-muted text-sm">The sentinel comment marks v1. In v1 files a record literally keyed</li>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>Agent memory</code> round-trips; legacy files (no sentinel) treat the first</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code># Agent memory</code> as the document header.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Sync semantics</h2>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>memory sync</code> compares three hashes: the file's current hash, the store's</p>
+<p class="text-muted text-sm leading-relaxed mb-3">current hash, and the last-synced hash (stored in <code><path>.sync-hash</code>,</p>
+<p class="text-muted text-sm leading-relaxed mb-3">e.g. <code>MEMORY.md.sync-hash</code>).</p>
+<table>
+<thead><tr><th>File changed</th><th>Store changed</th><th>Result</th></tr></thead>
+<tbody>
+<thead><tr><th>no</th><th>no</th><th>nothing to do</th></tr></thead>
+<tbody>
+<thead><tr><th>yes</th><th>no</th><th>file -> store (import)</th></tr></thead>
+<tbody>
+<thead><tr><th>no</th><th>yes</th><th>store -> file (export)</th></tr></thead>
+<tbody>
+<thead><tr><th>yes</th><th>yes</th><th>**conflict**: sync refuses, prints both sides</th></tr></thead>
+<tbody>
+</tbody></table>
+
+<p class="text-muted text-sm leading-relaxed mb-3">Both-sides-changed requires a human decision; sync never picks a winner.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Backends</h2>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>native</code> is the bundled SQLite store. External services are reached</p>
+<p class="text-muted text-sm leading-relaxed mb-3">through the same <code>MemoryBackend</code> seam, selected by name:</p>
+<pre><code>pantheon memory backend list                       # native, http, and plugins
+# url is the service root (paths add /v1/memory/...):
+pantheon memory backend select honcho url=http://127.0.0.1:8000 key=...</code></pre>
+<table>
+<thead><tr><th>Backend</th><th>Kind</th><th>Notes</th></tr></thead>
+<tbody>
+<thead><tr><th>`native`</th><th>SQLite + FTS5</th><th>default; persistent `memory.db`; trust tiers, MEMORY.md sync</th></tr></thead>
+<tbody>
+<thead><tr><th>`http`</th><th>HTTP bridge</th><th>generic adapter to Pantheon's small `/v1/memory` JSON API</th></tr></thead>
+<tbody>
+<thead><tr><th>`galaxymem`</th><th>HTTP bridge</th><th>same protocol; `url=`/`key=` options or `PANTHEON_MEMORY_GALAXYMEM_URL`/`_KEY`</th></tr></thead>
+<tbody>
+<thead><tr><th>`mnemosyne`</th><th>HTTP bridge</th><th>same, `PANTHEON_MEMORY_MNEMOSYNE_URL`/`_KEY`</th></tr></thead>
+<tbody>
+<thead><tr><th>`honcho`</th><th>HTTP bridge</th><th>same, `PANTHEON_MEMORY_HONCHO_URL`/`_KEY`</th></tr></thead>
+<tbody>
+<thead><tr><th>`hindsight`</th><th>HTTP bridge</th><th>same, `PANTHEON_MEMORY_HINDSIGHT_URL`/`_KEY`</th></tr></thead>
+<tbody>
+<thead><tr><th>`openviking`</th><th>HTTP bridge</th><th>same, `PANTHEON_MEMORY_OPENVIKING_URL`/`_KEY`</th></tr></thead>
+<tbody>
+</tbody></table>
+
+<p class="text-muted text-sm leading-relaxed mb-3">Selection is persisted at <code><data_dir>/memory-backend.toml</code> and is honored</p>
+<p class="text-muted text-sm leading-relaxed mb-3">by the runtime session (recall before each turn, <code>memory_*</code> tools) and by</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>pantheon memory recall|put|confirm</code>. <code>import</code>/<code>export</code>/<code>sync</code> remain</p>
+<p class="text-muted text-sm leading-relaxed mb-3">native-only because MEMORY.md is the native store's file format.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Honesty note: the plugin entries speak the Pantheon <code>/v1/memory</code> protocol.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Point them at a service that exposes it (or a thin bridge in front of</p>
+<p class="text-muted text-sm leading-relaxed mb-3">GalaxyMem/Mnemosyne/Honcho/Hindsight/OpenViking). Construction is offline</p>
+<p class="text-muted text-sm leading-relaxed mb-3">— a wrong URL fails at first call with a structured error</p>
+<p class="text-muted text-sm leading-relaxed mb-3">(<code>MEM_HTTP_CONN</code>), a missing URL fails at selection time</p>
+<p class="text-muted text-sm leading-relaxed mb-3">(<code>MEM_BACKEND_CONFIG</code>).</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Guarantees that hold for every backend, including plugins:</p>
+<li class="mb-2 text-muted text-sm">Policy and validation run **at the boundary** (<code>recall_via</code> /</li>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>write_via</code> / <code>confirm_via</code>) before the backend sees anything. A</p>
+<p class="text-muted text-sm leading-relaxed mb-3">backend is never the party that decides to ignore policy.</p>
+<li class="mb-2 text-muted text-sm">Model-authored writes reach plugins already clamped to <code>untrusted</code>.</li>
+<li class="mb-2 text-muted text-sm">Operations a backend cannot represent (<code>forget</code>, <code>confirm</code> on</li>
+<p class="text-muted text-sm leading-relaxed mb-3">non-native) return structured <code>MEM_BACKEND_UNSUPPORTED</code> instead of</p>
+<p class="text-muted text-sm leading-relaxed mb-3">silently pretending.</p>
+<li class="mb-2 text-muted text-sm">A misconfigured selection degrades to native with a warning line; a</li>
+<p class="text-muted text-sm leading-relaxed mb-3">session never runs memory-less because of a typo in TOML.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Protocol (what a bridge must implement):</p>
+<pre><code>GET  /v1/memory/recall?query=...&limit=N&layers=...
+   -> [{"key":..,"value":..,"rank":..,"provenance":{...}}]
+POST /v1/memory/write        {"layer","namespace","key","value","provenance","max_bytes"}
+   -> {"key":..,"value":..,"provenance":{...}}
+GET  /v1/memory/list_agent?namespace=...
+   -> [["key","value"], ...]</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Errors: 4xx/5xx with <code>{"error":"CODE","cause":"..."}</code> map back onto</p>
+<p class="text-muted text-sm leading-relaxed mb-3">structured Pantheon errors.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Plugin backends can also be registered from Rust (a plugin crate calls</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>BackendRegistry::register_with</code>, factory receives the persisted</p>
+<p class="text-muted text-sm leading-relaxed mb-3">selection), so a backend can hold its own config beyond <code>url</code>/<code>key</code></p>
+<p class="text-muted text-sm leading-relaxed mb-3">without Pantheon owning that config.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Custom memory plugins</h2>
+<p class="text-muted text-sm leading-relaxed mb-3">Any backend, not just the pre-named ones, is installable by dropping a</p>
+<p class="text-muted text-sm leading-relaxed mb-3">manifest file — no Rust changes:</p>
+<pre><code>pantheon memory backend scaffold mybrain http    # writes the template
+$EDITOR ~/.pantheon/memory-plugins/mybrain.toml
+pantheon memory backend select mybrain           # now the active backend</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Manifests live at <code><data_dir>/memory-plugins/<name>.toml</code>; the **file</p>
+<p class="text-muted text-sm leading-relaxed mb-3">name is the backend name**, and selection options override the manifest</p>
+<p class="text-muted text-sm leading-relaxed mb-3">(<code>select mybrain url=... key=...</code>), so one manifest can serve several</p>
+<p class="text-muted text-sm leading-relaxed mb-3">deployments.</p>
+<h3 class="text-xl font-bold text-fg mb-3 mt-6">`kind = "http"`</h3>
+<pre><code>name = "mybrain"
+label = "MyBrain memory service"
+kind = "http"
+url = "http://127.0.0.1:9000"   # service root
+key = "token"                   # optional bearer token
+prefix = "/v1/memory"           # protocol mount point (default)</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Use this for any service that exposes (or is bridged to) the</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>/v1/memory</code> protocol above. <code>prefix</code> lets a bridge mount the protocol</p>
+<p class="text-muted text-sm leading-relaxed mb-3">anywhere, e.g. <code>/api/memory</code>.</p>
+<h3 class="text-xl font-bold text-fg mb-3 mt-6">`kind = "stdio"`</h3>
+<pre><code>name = "mybrain"
+kind = "stdio"
+command = "python3"
+args = ["/opt/mybrain/bridge.py"]
+timeout_ms = 5000</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">A subprocess bridge: the runtime spawns the command per call, writes one</p>
+<p class="text-muted text-sm leading-relaxed mb-3">JSON request line to stdin, reads one JSON response line from stdout</p>
+<p class="text-muted text-sm leading-relaxed mb-3">(stderr is ignored). No long-lived process to supervise, and a hung</p>
+<p class="text-muted text-sm leading-relaxed mb-3">plugin is <strong>killed on timeout</strong> (<code>MEM_PLUGIN_TIMEOUT</code>) instead of</p>
+<p class="text-muted text-sm leading-relaxed mb-3">wedging the turn.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Requests the bridge must handle:</p>
+<pre><code>{"op":"recall","query":"...","limit":8,"layers":["Agent","Project","Global"]}
+{"op":"write","layer":"Agent","namespace":"nyx","key":"k","value":"v","provenance":{...},"max_bytes":4096}
+{"op":"list_agent","namespace":"nyx"}
+{"op":"get","namespace":"nyx","key":"k"}
+{"op":"forget","layer":"Agent","namespace":"nyx","key":"k"}
+{"op":"confirm","namespace":"nyx","key":"k"}</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Responses are <code>{"ok":true, ...}</code> with <code>hits</code> / <code>record</code> / <code>rows</code> /</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>found</code> / <code>removed</code> as appropriate, or</p>
+<p class="text-muted text-sm leading-relaxed mb-3"><code>{"ok":false,"code":"MYBRAIN_DOWN","cause":"..."}</code> — the code surfaces</p>
+<p class="text-muted text-sm leading-relaxed mb-3">to the caller unchanged, so plugin failures stay debuggable.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Broken manifests are skipped with a loud line at load time (one bad file</p>
+<p class="text-muted text-sm leading-relaxed mb-3">never bricks the registry); <code>pantheon memory backend list</code> shows what</p>
+<p class="text-muted text-sm leading-relaxed mb-3">loaded, and the CLI validates names on <code>select</code>. Because user manifests</p>
+<p class="text-muted text-sm leading-relaxed mb-3">are plain files under the data dir, they are versionable, shareable, and</p>
+<p class="text-muted text-sm leading-relaxed mb-3">removable without touching the runtime.</p>
+<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Vault archive (Obsidian library)</h2>
+<p class="text-muted text-sm leading-relaxed mb-3">Long material that should not live in the working memory store — design</p>
+<p class="text-muted text-sm leading-relaxed mb-3">docs, research reports, course notes, project write-ups — gets archived</p>
+<p class="text-muted text-sm leading-relaxed mb-3">into the Obsidian vault instead: a human-readable, linked markdown</p>
+<p class="text-muted text-sm leading-relaxed mb-3">library that survives outside the agent's SQLite state.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Vault root resolution: <code>PANTHEON_VAULT_DIR</code>, else <code>$HOME/vault</code>.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">The agent gets four tools (registered in every session):</p>
+<table>
+<thead><tr><th>Tool</th><th>Capability</th><th>What it does</th></tr></thead>
+<tbody>
+<thead><tr><th>`vault_archive`</th><th>FilesystemWrite</th><th>Write a markdown doc under a vault category (`notes/`, `projects/`, `reference/`, `people/`) with YAML frontmatter (title, date, tags)</th></tr></thead>
+<tbody>
+<thead><tr><th>`vault_read`</th><th>FilesystemRead</th><th>Read one note; output goes through deterministic compaction like any other tool</th></tr></thead>
+<tbody>
+<thead><tr><th>`vault_search`</th><th>FilesystemRead</th><th>Keyword search across vault `.md` files; returns `[[wikilink]]` hits with a snippet</th></tr></thead>
+<tbody>
+<thead><tr><th>`vault_list`</th><th>FilesystemRead</th><th>List notes in a category or across the vault</th></tr></thead>
+<tbody>
+</tbody></table>
+
+<p class="text-muted text-sm leading-relaxed mb-3">The same surface is available from the CLI:</p>
+<pre><code>pantheon memory vault search continuity [category]
+pantheon memory vault read notes/ideation/2026-09-15-webhookwatch.md
+pantheon memory vault list projects</code></pre>
+<p class="text-muted text-sm leading-relaxed mb-3">Guarantees and limits:</p>
+<li class="mb-2 text-muted text-sm">Path traversal is rejected (<code>..</code> in any argument -> <code>VAULT_PATH_TRAVERSAL</code>).</li>
+<li class="mb-2 text-muted text-sm">Traversal runs under a wall-clock budget (2.5s) because the vault may</li>
+<p class="text-muted text-sm leading-relaxed mb-3">sit on a FUSE network mount; partial results are labeled instead of</p>
+<p class="text-muted text-sm leading-relaxed mb-3">stalling the turn. Narrow with <code>category</code> when you see the note.</p>
+<li class="mb-2 text-muted text-sm">Markdown files over 512 KiB are skipped during search (read them by</li>
+<p class="text-muted text-sm leading-relaxed mb-3">path with <code>vault_read</code>, which compacts).</p>
+<li class="mb-2 text-muted text-sm">Vault writes are plain <code>FilesystemWrite</code> — no memory trust tiers. The</li>
+<p class="text-muted text-sm leading-relaxed mb-3">vault is user-owned space; anything the model archives there is just a</p>
+<p class="text-muted text-sm leading-relaxed mb-3">file you can delete or edit in Obsidian.</p>
+<p class="text-muted text-sm leading-relaxed mb-3">Division of labor: the native store holds small keyed facts with trust</p>
+<p class="text-muted text-sm leading-relaxed mb-3">tiers and provenance; the vault holds big documents. When a record grows</p>
+<p class="text-muted text-sm leading-relaxed mb-3">past what belongs in <code>MEMORY.md</code>, archive it and keep only a pointer.</p>
+
+  <div class="glow-line max-w-5xl mx-auto"></div>
+
+  <footer class="py-16">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+        <div class="flex items-center gap-3">
+          <div class="logo-mark-sm"><img src="logo.png" alt="Pantheon" width="22" height="22"></div>
+          <div>
+            <span class="font-mono font-bold text-fg text-sm">pantheon</span>
+            <p class="text-muted text-xs mt-0.5">Rust agent runtime. MIT licensed. <span class="font-mono">pantheon-agent/pantheon</span> on GitHub.</p>
+          </div>
+        </div>
+        <div class="flex gap-8 text-sm">
+          <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
+          <a href="https://github.com/pantheon-agent/pantheon/blob/main/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
+          <a href="https://github.com/pantheon-agent/pantheon/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+        </div>
+      </div>
+      <div class="glow-line my-8"></div>
+      <p class="text-muted text-xs text-center">No hosted tier. No subscription. Your data stays on your machine.</p>
+    </div>
+  </footer>
+
+</body>
+</html>
