@@ -151,8 +151,31 @@ fn layer_str_to_kind(s: &str) -> Option<LayerKind> {
     }
 }
 
-/// Register `memory_recall`, `memory_list`, `memory_propose`,
-/// `memory_forget` on a registry.
+/// Resolve a tool-supplied namespace against the session's own.
+///
+/// The namespace is the memory isolation boundary: a session confined to
+/// `proj_a` must not be able to read, write, or forget records belonging to
+/// `proj_b` just by naming it in the tool arguments. The model chooses the
+/// argument, so the harness has to hold the boundary, not the model.
+///
+/// An absent or empty argument means "this session's namespace", which keeps
+/// the common case working. An explicit argument that is anything else is
+/// refused with a message naming the boundary, rather than silently
+/// redirected, so a caller that expected cross-namespace access finds out.
+fn resolve_namespace(requested: Option<&str>, session_ns: &str) -> Result<String, PantheonError> {
+    match requested.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(session_ns.to_string()),
+        Some(ns) if ns == session_ns => Ok(ns.to_string()),
+        Some(other) => Err(merr(
+            "MEM_NAMESPACE_DENIED",
+            format!(
+                "this session may only use namespace '{session_ns}'; \
+                 '{other}' belongs to another session"
+            ),
+        )),
+    }
+}
+
 pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
     let recall_opts = opts.clone();
     reg.register(
@@ -301,11 +324,10 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
                 .and_then(|x| x.as_str())
                 .and_then(layer_str_to_kind)
                 .unwrap_or(LayerKind::Agent);
-            let namespace = v
-                .get("namespace")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| propose_opts.namespace.clone());
+            let namespace = resolve_namespace(
+                v.get("namespace").and_then(|x| x.as_str()),
+                &propose_opts.namespace,
+            )?;
             // Origin is harness-assigned ("model"), not model-claimed: a
             // proposal cannot launder untrusted material into trusted
             // memory by passing origin:"user". propose_write clamps the
@@ -386,11 +408,10 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
                 .and_then(|x| x.as_str())
                 .and_then(layer_str_to_kind)
                 .unwrap_or(LayerKind::Agent);
-            let namespace = v
-                .get("namespace")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| forget_opts.namespace.clone());
+            let namespace = resolve_namespace(
+                v.get("namespace").and_then(|x| x.as_str()),
+                &forget_opts.namespace,
+            )?;
 
             forget_opts.sink.record(MemoryToolEvent::Forgotten {
                 layer,

@@ -466,19 +466,10 @@ impl Ledger {
         Ok(out)
     }
 
-    pub fn unregister_process_group(&self, run_id: &str, pgid: i32) -> Result<(), PantheonError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
-        conn.execute(
-            "DELETE FROM run_process_groups WHERE run_id=?1 AND pgid=?2",
-            params![run_id, pgid],
-        )
-        .map_err(|e| err("LEDGER_PGID", e.to_string()))?;
-        Ok(())
-    }
-
+    /// Delete a run's process-group row. Takes `lease_id` deliberately:
+    /// an unowned variant would let any process with ledger access reap
+    /// another lease's process group, so the ownership check is not
+    /// optional and there is no ungated twin of this method.
     pub fn unregister_process_group_owned(
         &self,
         run_id: &str,

@@ -114,7 +114,7 @@ impl pantheon_gateway::EventSink for RuntimeSink {
                 self.push_outbound(thread_id, text);
             }
             Err(e) => {
-                self.push_outbound(thread_id, format!("error: {}", e.code));
+                self.push_outbound(thread_id, format!("error: {e}"));
             }
         }
     }
@@ -157,7 +157,7 @@ impl pantheon_gateway::EventSink for RuntimeSink {
                     },
                 );
             }
-            Err(e) => self.push_outbound(thread_id, format!("error: {}", e.code)),
+            Err(e) => self.push_outbound(thread_id, format!("error: {e}")),
         }
     }
 }

@@ -83,10 +83,6 @@ policy = "coder"             # reader | coder | coder_memory  (top-level key)
 backend = "native"           # native | http (options below)
 [memory.options]             # backend-specific (e.g. url for http)
 
-[tools]
-packs = ["core"]             # enabled built-in tool packs
-plugins = []                 # plugin names to auto-start
-
 [server]
 port = 18789                 # AG-UI server port (0 = auto-assign)
 host = "127.0.0.1"           # bind address: one of 127.0.0.1, 0.0.0.0, localhost, ::

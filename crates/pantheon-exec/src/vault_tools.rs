@@ -48,17 +48,98 @@ impl Default for VaultToolOptions {
     }
 }
 
-/// Helper to sanitize relative path and avoid traversal outside the vault.
+/// Resolve a vault-relative path and prove it stays inside the vault.
+///
+/// A substring check for `..` is not confinement: a symlink planted inside
+/// the vault (`vault/notes -> /etc`) passes it and then reads or writes
+/// wherever it points. The check is therefore structural — canonicalize the
+/// deepest existing ancestor, then confirm the result is still under the
+/// canonical vault root.
+///
+/// A path that does not exist yet is fine (writes create it), so the walk
+/// stops at the first component that is missing and the remaining suffix is
+/// appended lexically. Components are rejected on the way, so no `..` can be
+/// smuggled in through a name that only looks harmless.
 fn resolve_safe_vault_path(vault_dir: &Path, rel_path: &str) -> Result<PathBuf, PantheonError> {
     let rel = rel_path.trim().trim_start_matches('/');
-    if rel.contains("..") {
+    if rel.is_empty() {
+        return Err(verr("VAULT_BAD_PATH", "empty vault path".into()));
+    }
+    for comp in rel.split('/') {
+        if comp.is_empty() || comp == "." {
+            continue;
+        }
+        if comp == ".." {
+            return Err(verr(
+                "VAULT_PATH_TRAVERSAL",
+                "path traversal (..) is not permitted".into(),
+            ));
+        }
+    }
+
+    // Canonical root, so the comparison below is against real paths and not
+    // against a vault dir that is itself reached through a symlink.
+    let root = vault_dir
+        .canonicalize()
+        .map_err(|e| verr("VAULT_NO_ROOT", format!("vault dir unavailable: {e}")))?;
+    // Walk down to the deepest component that exists on disk.
+    let mut probe = root.clone();
+    let mut tail: Option<std::ffi::OsString> = None;
+    for comp in rel.split('/') {
+        if comp.is_empty() || comp == "." {
+            continue;
+        }
+        match probe.join(comp).canonicalize() {
+            Ok(real) => {
+                if !real.starts_with(&root) {
+                    return Err(verr(
+                        "VAULT_ESCAPE",
+                        format!("path resolves outside the vault: {rel_path}"),
+                    ));
+                }
+                probe = real;
+            }
+            Err(_) => {
+                // First missing component: everything after it is new, and
+                // cannot contain a symlink.
+                let mut rest = std::ffi::OsString::from(comp);
+                for later in rel.split('/').skip_while(|c| *c != comp).skip(1) {
+                    rest.push("/");
+                    rest.push(later);
+                }
+                tail = Some(rest);
+                break;
+            }
+        }
+    }
+
+    let mut final_path = match tail {
+        Some(rest) => probe.join(rest),
+        None => probe,
+    };
+    if final_path == root {
         return Err(verr(
-            "VAULT_PATH_TRAVERSAL",
-            "path traversal (..) is not permitted".into(),
+            "VAULT_BAD_PATH",
+            "path is the vault root, not a file in it".into(),
         ));
     }
-    let target = vault_dir.join(rel);
-    Ok(target)
+    // Normalize away any `.` components the loop skipped.
+    final_path = normalize_lexically(&final_path);
+    Ok(final_path)
+}
+
+/// Strip `.` components without touching the filesystem. `canonicalize`
+/// already removed them for the existing prefix; this handles the appended
+/// suffix so the returned path is the one a caller will actually open.
+fn normalize_lexically(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 #[derive(Deserialize)]

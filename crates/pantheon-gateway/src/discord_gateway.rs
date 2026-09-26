@@ -13,6 +13,7 @@
 //! AG-UI server's thread-per-connection.
 
 use serde_json::{json, Value};
+use std::fmt;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use tungstenite::client::IntoClientRequest;
@@ -86,6 +87,16 @@ pub struct DiscordGateway {
     /// Intents to request: GUIL_MESSAGES (1<<9) | GUIL_MESSAGES (1<<15)
     /// | DIRECT_MESSAGES (1<<12). Minimal set for a chat/app surface.
     pub intents: u64,
+}
+
+/// Hand-written so the bot token never reaches a log line. A `#[derive(Debug)]`
+/// here would print a live credential, and the token is a `pub` field, so any
+/// future derive is a leak. Same intent as `SecretValue`'s Debug, kept local
+/// to avoid a gateway -> secrets dependency for three fields.
+impl fmt::Debug for DiscordGateway {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DiscordGateway {{ token: *** }}")
+    }
 }
 
 impl DiscordGateway {

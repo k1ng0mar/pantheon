@@ -12,8 +12,9 @@ Every `pantheon` verb, its flags, and its exit codes. Shared rules first.
 - `PANTHEON_DATA_DIR` overrides the data dir (default `~/.pantheon`) for
   every verb.
 - JSON on stdout means the command is for scripts: `doctor`, `audit`,
-  `extensions`, `plugins list`, `status` (in some modes). Everything else is
-  human-oriented text.
+  `explain`, `stream`, `mcp list --json`. Every other verb, including
+  `status`, `extensions` and `plugins list`, prints human-oriented text.
+  (`status` prints a bare run state such as `running` or `complete`.)
 
 ## Session verbs
 
@@ -355,10 +356,14 @@ implement.
 pantheon schedule <task> [--every 30m | --cron "*/5 * * * *"] [--agent NAME]
                   [--model M] [--provider P]
 pantheon schedule list|pause|resume|cancel|run <id>
+pantheon schedule tick [--watch]
 ```
-Schedules are durable (claim ledger) with cron, interval, one-shot, and
-webhook triggers plus missed-run policy. Per-job `--model`/`--provider`
-pins persist and validate; live run driving honors them at fire time.
+Schedules are durable (claim ledger) and the scheduler supports four
+trigger kinds: `--every` (interval), `--cron`, one-shot, and webhook. The
+CLI can create interval and cron jobs only; one-shot and webhook jobs exist
+in the scheduler and fire correctly, but nothing in the CLI authors them
+today. Per-job `--model`/`--provider` pins persist and validate, and live
+run driving honors them at fire time.
 
 ## Swarm verbs
 

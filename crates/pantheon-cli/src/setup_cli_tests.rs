@@ -15,8 +15,6 @@ fn flag_only_setup_writes_a_complete_config_without_stdin() {
             api_key_env: Some("PANTHEON_API_KEY".into()),
             policy: Some(PolicyPreset::CoderMemory),
             memory_backend: Some("native".into()),
-            tool_packs: Some(vec!["core".into()]),
-            plugins: Some(vec![]),
             ..Default::default()
         },
         true,

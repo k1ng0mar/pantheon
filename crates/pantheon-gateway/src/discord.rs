@@ -10,6 +10,7 @@ use crate::channel::{
 };
 use crate::stream::{UiFrame, UiFrameKind};
 use serde_json::{json, Value};
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 pub const DISCORD_CONTENT_LIMIT: usize = 2_000;
@@ -150,6 +151,16 @@ pub struct DiscordChannel {
     pub token: String,
     transport: Arc<dyn DiscordTransport>,
     inbox: Mutex<Vec<ChannelEvent>>,
+}
+
+/// Hand-written so the bot token never reaches a log line. A `#[derive(Debug)]`
+/// here would print a live credential, and the token is a `pub` field, so
+/// any future derive is a leak. Same intent as `SecretValue`'s Debug, kept
+/// local to avoid a gateway -> secrets dependency for three fields.
+impl fmt::Debug for DiscordChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DiscordChannel {{ token: *** }}")
+    }
 }
 
 impl DiscordChannel {

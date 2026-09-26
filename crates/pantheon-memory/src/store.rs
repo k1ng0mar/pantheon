@@ -98,6 +98,58 @@ fn trust_from(s: &str) -> TrustTier {
     TrustTier::parse(s).unwrap_or(TrustTier::Memory)
 }
 
+/// SQL rank of a stored trust tier. `col` is a column reference in the
+/// upsert (`memories.trust` = the row already stored, `excluded.trust` =
+/// the incoming one). Mirrors `TrustTier::rank` in pantheon-core.
+fn sql_rank(col: &str) -> String {
+    format!(
+        "(CASE WHEN {col} = 'system' THEN 3          WHEN {col} = 'user' THEN 2          WHEN {col} = 'memory' THEN 1          ELSE 0 END)"
+    )
+}
+
+/// The `put` upsert. Trust is a ceiling on the write, not a field the
+/// writer sets: a low-trust (model-origin) write must not clobber the value
+/// of a record a human already confirmed, nor reset its tier.
+///
+/// The guard is `existing_rank > incoming_rank`, strictly greater, so a
+/// repeat write at the same tier still overwrites (an agent re-asserting
+/// its own note works) and only a strictly-higher-trust write wins. On a
+/// blocked write every column is held, so the caller's `put` still returns
+/// a record and the outcome is a clean no-op rather than a silent
+/// downgrade the user never consented to.
+fn upsert_memory_sql() -> String {
+    let held = sql_rank("memories.trust");
+    let incoming = sql_rank("excluded.trust");
+    let guard = format!("{held} > {incoming}");
+    let keep = |col: &str| format!("CASE WHEN {guard} THEN memories.{col} ELSE excluded.{col} END");
+    format!(
+        "INSERT INTO memories (layer, namespace, key, value, source, origin, trust, recorded_at_ms)\n         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)\n         ON CONFLICT(layer, namespace, key) DO UPDATE SET\n           value={v}, source={s}, origin={o}, trust={t}, recorded_at_ms={ts}",
+        v = keep("value"),
+        s = keep("source"),
+        o = keep("origin"),
+        t = keep("trust"),
+        ts = keep("recorded_at_ms"),
+    )
+}
+
+/// Map a `memories` row (selected in the order used by `get`) to a record.
+/// Shared by `get` and `put` so the re-read in `put` is identical to a normal
+/// read.
+fn record_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecord> {
+    Ok(MemoryRecord {
+        layer: layer_from(&r.get::<_, String>(0)?),
+        namespace: r.get(1)?,
+        key: r.get(2)?,
+        value: r.get(3)?,
+        provenance: Provenance {
+            source: r.get(4)?,
+            origin: r.get(5)?,
+            trust: trust_from(&r.get::<_, String>(6)?),
+            recorded_at_ms: r.get(7)?,
+        },
+    })
+}
+
 fn layer_str(l: LayerKind) -> &'static str {
     match l {
         LayerKind::Global => "global",
@@ -284,20 +336,7 @@ impl MemoryStore {
             )
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
         let mut rows = stmt
-            .query_map(params![namespace, key], |r| {
-                Ok(MemoryRecord {
-                    layer: layer_from(&r.get::<_, String>(0)?),
-                    namespace: r.get(1)?,
-                    key: r.get(2)?,
-                    value: r.get(3)?,
-                    provenance: Provenance {
-                        source: r.get(4)?,
-                        origin: r.get(5)?,
-                        trust: trust_from(&r.get::<_, String>(6)?),
-                        recorded_at_ms: r.get(7)?,
-                    },
-                })
-            })
+            .query_map(params![namespace, key], record_from_row)
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
         match rows.next() {
             Some(row) => row.map(Some).map_err(|e| serr("MEM_QUERY", e.to_string())),
@@ -311,12 +350,14 @@ impl MemoryStore {
             .lock()
             .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
         conn.execute(
-            "INSERT INTO memories (layer, namespace, key, value, source, origin, trust, recorded_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(layer, namespace, key) DO UPDATE SET
-               value=excluded.value, source=excluded.source,
-               origin=excluded.origin, trust=excluded.trust,
-               recorded_at_ms=excluded.recorded_at_ms",
+            // Trust is a ceiling on the write, not a field the writer sets.
+            // A low-trust (model-origin) write must not clobber the value of
+            // a record a human already confirmed, nor reset its tier. Ranks:
+            // untrusted(0) < memory(1) < user(2) < system(3). Equal rank is
+            // treated as "existing wins" so a repeat write at the same tier
+            // still updates (an agent re-asserting its own note works), and
+            // only a strictly-higher-trust write overwrites.
+            &upsert_memory_sql(),
             params![
                 layer_str(p.layer),
                 p.namespace,
@@ -329,13 +370,29 @@ impl MemoryStore {
             ],
         )
         .map_err(|e| serr("MEM_PUT", e.to_string()))?;
-        Ok(MemoryRecord {
-            layer: p.layer,
-            namespace: p.namespace.clone(),
-            key: p.key.clone(),
-            value: p.value.clone(),
-            provenance: p.provenance.clone(),
-        })
+        // Re-read rather than echo the proposal: when a higher-trust row
+        // held, the stored value is the old one, and returning `p` would tell
+        // the caller its write landed when it did not.
+        //
+        // The read runs on the connection already checked out above, NOT via
+        // `self.get`: `conn` is a `std::sync::Mutex` guard and `get` locks it
+        // again, so calling it here deadlocks on a non-reentrant mutex.
+        let mut stmt = conn
+            .prepare(
+                "SELECT layer, namespace, key, value, source, origin, trust, recorded_at_ms
+                 FROM memories WHERE namespace=?1 AND key=?2",
+            )
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        let mut rows = stmt
+            .query_map(params![p.namespace, p.key], record_from_row)
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        match rows.next() {
+            Some(row) => row.map_err(|e| serr("MEM_QUERY", e.to_string())),
+            None => Err(serr(
+                "MEM_PUT",
+                format!("record vanished after write: {}/{}", p.namespace, p.key),
+            )),
+        }
     }
 
     /// FTS recall across the given layers, narrowest-first ordering applied

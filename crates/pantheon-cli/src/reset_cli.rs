@@ -2,12 +2,23 @@
 //!
 //! --config   delete config.toml + memory-backend.toml (fast to redo)
 //! --state    delete ledger.db, memory.db, gateway cursors (run history)
-//! --everything   both, plus safewrite staging and signed-URL state
+//! --everything   everything --config and --state remove, and nothing more
 //!
-//! Runs are refused while any active lease exists: reset under a live
-//! session would corrupt the durability guarantees. Confirmation is
-//! interactive by default; --yes skips it for scripts.
+//! The three flags are mutually exclusive; passing two is an error rather
+//! than a silent precedence rule.
+//!
+//! State resets are refused while any active lease exists, and also refused
+//! when the lease store cannot be read: reset under a live session would
+//! corrupt the durability guarantees, and "cannot prove it is safe" is not
+//! the same as "it is safe". Confirmation is interactive by default; --yes
+//! skips it for scripts.
+//!
+//! Safewrite staging and signed-URL state are NOT removed by --everything.
+//! They are per-path working state, not configuration, and blowing them away
+//! alongside a config reset would discard in-flight edits the user may still
+//! want to apply.
 
+use pantheon_core::error::PantheonError;
 use pantheon_storage::RunLeaseStore;
 use std::path::{Path, PathBuf};
 
@@ -38,32 +49,49 @@ fn target_files(data_dir: &Path, scope: &str) -> Vec<PathBuf> {
     v
 }
 
-/// Refuse when a lease row is still unexpired: another supervisor may be
-/// mid-run and deleting the ledger under it breaks recovery guarantees.
-pub fn active_lease_exists(data_dir: &Path) -> bool {
+/// Whether a run lease is still active, i.e. whether a destructive state
+/// reset must be refused.
+///
+/// Returns `Err` when the lease store cannot be read. The caller must treat
+/// that as "refuse", not "proceed": an unreadable ledger is exactly the case
+/// where we cannot prove no session is live, and deleting `ledger.db` under a
+/// running session destroys its recovery guarantees. Failing open here means
+/// the one case that most needs the guard is the one case that skips it.
+pub fn active_lease_exists(data_dir: &Path) -> Result<bool, PantheonError> {
     let path = data_dir.join("ledger.db");
     if !path.exists() {
-        return false;
+        return Ok(false);
     }
-    match RunLeaseStore::open(&path) {
-        Ok(store) => match store.list_active() {
-            Ok(leases) => !leases.is_empty(),
-            Err(_) => false, // unreadable store: let the delete proceed
-        },
-        Err(_) => false,
-    }
+    let store = RunLeaseStore::open(&path)?;
+    Ok(!store.list_active()?.is_empty())
 }
 
 pub fn cmd_reset(args: &[String]) {
-    let scope = if args.iter().any(|a| a == "--config") {
-        "config"
-    } else if args.iter().any(|a| a == "--state") {
-        "state"
-    } else if args.iter().any(|a| a == "--everything") {
-        "everything"
-    } else {
-        eprintln!("usage: pantheon reset --config|--state|--everything [--yes]");
-        std::process::exit(2);
+    // Collect every scope flag first. Chaining `if/else if` meant
+    // `--config --state` silently reset only the config and said nothing
+    // about the state the user also asked to clear.
+    let wanted: Vec<&str> = ["config", "state", "everything"]
+        .into_iter()
+        .filter(|s| args.iter().any(|a| a == &format!("--{s}")))
+        .collect();
+    let scope = match wanted.as_slice() {
+        [] => {
+            eprintln!("usage: pantheon reset --config|--state|--everything [--yes]");
+            std::process::exit(2);
+        }
+        // `--everything` is a superset, so it wins over the narrower flags
+        // rather than being silently ignored behind them.
+        [s] => *s,
+        many => {
+            eprintln!(
+                "reset: {} are mutually exclusive; pass exactly one",
+                many.iter()
+                    .map(|s| format!("--{s}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            std::process::exit(2);
+        }
     };
     let data_dir = crate::data_dir();
     let targets = target_files(&data_dir, scope);
@@ -71,9 +99,21 @@ pub fn cmd_reset(args: &[String]) {
         println!("nothing to reset for scope {scope}");
         return;
     }
-    if scope != "config" && active_lease_exists(&data_dir) {
-        eprintln!("reset: a run lease is active; stop the session first");
-        std::process::exit(1);
+    if scope != "config" {
+        match active_lease_exists(&data_dir) {
+            Ok(true) => {
+                eprintln!("reset: a run lease is active; stop the session first");
+                std::process::exit(1);
+            }
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!(
+                    "reset: cannot read the lease store, refusing to delete state: {e}\n\
+                     hint: if no session is running, remove the ledger yourself"
+                );
+                std::process::exit(1);
+            }
+        }
     }
     let assume_yes = args.iter().any(|a| a == "--yes");
     if !assume_yes {

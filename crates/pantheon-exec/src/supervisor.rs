@@ -434,8 +434,13 @@ unsafe impl Send for PluginSupervisor {}
 ///
 /// The manifest's `ToolCapability` entries declare the tool name, the
 /// `Capability` the session must grant, and the JSON schema shown to the
-/// model. The loop-level gate from `Tool` still applies; the closure
-/// re-checks cheaply so direct `registry.execute` callers are gated too.
+/// model. That declared capability is what the registry hands the agent
+/// loop's gate, so a plugin tool is gated exactly like a builtin.
+///
+/// The closure itself does not re-check: it has no `Policy` to check
+/// against, and a second check would either duplicate the loop's decision
+/// or silently disagree with it. Callers outside the loop go through
+/// `ToolRegistry::execute_gated`, which is the single place the gate lives.
 pub fn register_plugin_tools(
     reg: &mut ToolRegistry,
     manifest: &PluginManifest,

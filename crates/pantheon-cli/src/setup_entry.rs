@@ -16,18 +16,6 @@ pub fn cmd_setup(args: &[String]) {
             }
             None
         });
-    let packs = flag("packs").map(|s| {
-        s.split(',')
-            .map(|x| x.trim().to_string())
-            .filter(|x| !x.is_empty())
-            .collect()
-    });
-    let plugins = flag("plugins").map(|s| {
-        s.split(',')
-            .map(|x| x.trim().to_string())
-            .filter(|x| !x.is_empty())
-            .collect()
-    });
     let answers = SetupAnswers {
         profile: flag("profile"),
         provider: flag("provider"),
@@ -37,8 +25,6 @@ pub fn cmd_setup(args: &[String]) {
         fallback_model: flag("fallback-model"),
         policy,
         memory_backend: flag("memory"),
-        tool_packs: packs,
-        plugins,
         key: flag("key"),
     };
     // --yes: accept defaults for anything without a flag (non-interactive).

@@ -2,7 +2,7 @@
 //! behind the agent-loop gate. Tools are runtime-owned; the model only sees
 //! schemas and gets results.
 
-use pantheon_core::capability::Capability;
+use pantheon_core::capability::{Capability, Decision, Policy};
 use pantheon_core::error::{Layer, PantheonError};
 use pantheon_core::message::ToolSchema;
 use std::collections::HashMap;
@@ -126,6 +126,52 @@ impl ToolRegistry {
         }
         caps
     }
+
+    /// Execute by name with the capability gate applied.
+    ///
+    /// `execute` above is capability-free by construction: it resolves a name
+    /// and calls the closure. That is the right primitive for a caller that
+    /// has *already* gated the call (the agent loop does, and it needs the
+    /// approval/diagnostic flow), but it means any other caller that reaches
+    /// for `execute` runs the tool ungated. Two did: the CLI's direct
+    /// `reg.execute("vault_*", ..)` calls and the plugin tool closures in
+    /// `supervisor.rs`, whose doc comment claimed they re-checked policy and
+    /// did not.
+    ///
+    /// This is the choke point: the gate lives here, so a new caller gets
+    /// policy enforcement by default rather than by remembering. Denials
+    /// return a structured error naming the tool and the missing capability
+    /// rather than a silent refusal, so the failure is debuggable.
+    pub fn execute_gated(
+        &self,
+        policy: &Policy,
+        name: &str,
+        args: &str,
+    ) -> Result<String, PantheonError> {
+        // Resolve the name before gating. `required_capabilities` maps an
+        // unknown name to `Other(name)`, so gating first would report a
+        // capability denial for a tool that does not exist, hiding the one
+        // error the caller can actually fix (a typo in the tool name).
+        if !self.tools.contains_key(name) {
+            return Err(terr("TOOL_UNKNOWN", format!("no tool named '{name}'")));
+        }
+        let required = self.required_capabilities(name, args);
+        for cap in &required {
+            match policy.check(cap) {
+                Decision::Allow => {}
+                other => {
+                    return Err(terr(
+                        "TOOL_DENIED",
+                        format!(
+                            "tool '{name}' needs capability {cap:?}, policy says {other:?}; \
+                             grant it with `pantheon grant` or widen the policy preset"
+                        ),
+                    ))
+                }
+            }
+        }
+        self.execute(name, args)
+    }
 }
 
 /// Parse a JSON args string; empty means empty object.
@@ -135,3 +181,7 @@ pub fn parse_args(args: &str) -> Result<serde_json::Value, PantheonError> {
     }
     serde_json::from_str(args).map_err(|e| terr("TOOL_BAD_ARGS", format!("invalid JSON args: {e}")))
 }
+
+#[cfg(test)]
+#[path = "tools_tests.rs"]
+mod tools_tests;
