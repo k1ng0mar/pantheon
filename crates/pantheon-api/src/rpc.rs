@@ -45,11 +45,6 @@ impl RpcError {
         }
     }
 
-    pub fn with_data(mut self, data: Value) -> Self {
-        self.data = Some(data);
-        self
-    }
-
     pub fn parse_error() -> Self {
         Self::new(
             PARSE_ERROR_CODE,
