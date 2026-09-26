@@ -466,3 +466,74 @@ fn extension_context_is_provenanced_data_not_system() {
     assert_ne!(injected.role, pantheon_core::message::Role::System);
     assert!(injected.provenance.is_some());
 }
+
+// The adapter is the executor the production tool path uses. The three
+// tests above cover RegRunner, which the production path never constructs,
+// so they could pass while a policy plugin did nothing. These repeat the
+// same assertions through RegistryToolAdapter.
+
+fn adapter<'a>(
+    reg: &'a ToolRegistry,
+    mgr: &'a pantheon_extensions::ExtensionManager,
+) -> RegistryToolAdapter<'a> {
+    RegistryToolAdapter {
+        registry: reg,
+        name: "read_secret".into(),
+        hooks: Some(mgr),
+        run_id: "run_adapter".into(),
+    }
+}
+
+fn exec(a: &RegistryToolAdapter<'_>) -> String {
+    let req = serde_json::json!({"name": "read_secret", "args": "{}"});
+    <RegistryToolAdapter as ToolOperationAdapter>::execute(a, &req)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn the_production_executor_blocks_a_denied_tool() {
+    let base = std::env::temp_dir().join(format!("pt-adapter-gate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    write_plugin(
+        &base,
+        "security-guidance",
+        "pre_tool_call",
+        "{'deny': True, 'reason': 'reads credential files'}",
+    );
+    let (reg, mgr) = reg_and_mgr(&base);
+    let out = exec(&adapter(&reg, &mgr));
+    assert!(out.contains("blocked by extension policy"), "{out}");
+    assert!(out.contains("reads credential files"), "{out}");
+    assert!(!out.contains("sk-live-abc123"), "secret leaked past the gate: {out}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn the_production_executor_applies_a_redaction() {
+    let base = std::env::temp_dir().join(format!("pt-adapter-xform-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    write_plugin(
+        &base,
+        "redact",
+        "transform_tool_result",
+        "{'replacement': '[redacted by extension]'}",
+    );
+    let (reg, mgr) = reg_and_mgr(&base);
+    let out = exec(&adapter(&reg, &mgr));
+    assert_eq!(out, "[redacted by extension]");
+    assert!(!out.contains("sk-live-abc123"));
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn the_production_executor_leaves_a_tool_alone_without_extensions() {
+    let base = std::env::temp_dir().join(format!("pt-adapter-none-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let (reg, mgr) = reg_and_mgr(&base);
+    assert_eq!(exec(&adapter(&reg, &mgr)), "sk-live-abc123");
+    let _ = std::fs::remove_dir_all(&base);
+}

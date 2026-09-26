@@ -160,6 +160,12 @@ provider/model pair — any catalog provider, any OpenAI-compatible base
 URL, local or hosted. Nothing in the runtime is tied to a specific
 decision model.
 
+> **Not yet consulted.** `doctor` validates this section and setup writes
+> it, but the production loop (`Session::drive`) builds its agent with no
+> judge and never asks one. Configuring `[judge]` today validates and then
+> changes nothing. The advisory path exists and is tested in
+> `pantheon-agent`, but only that crate's own harness calls it.
+
 ```toml
 [judge]
 provider = "openai"
