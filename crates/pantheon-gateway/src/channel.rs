@@ -6,6 +6,18 @@
 use crate::stream::UiFrame;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// Lock a mutex without letting a poisoned lock take the process down.
+///
+/// A panic while the lock is held poisons it, and every later `poll`/`send`
+/// then panics too. For an inbox/outbox that turns one bad message into a
+/// permanently dead channel: the bot stops responding and a restart is the
+/// only way out. The data in here is plain queued envelopes, so recovering
+/// the guard is safe and strictly better than propagating the poison. The
+/// panic that caused it is already reported by its own thread.
+pub(crate) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 /// Approval answer from a user/surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -241,10 +253,10 @@ impl MemoryChannel {
         }
     }
     pub fn push_inbound(&self, ev: ChannelEvent) {
-        self.inbox.lock().unwrap().push(ev);
+        lock(&self.inbox).push(ev);
     }
     pub fn drain_outbound(&self) -> Vec<ChannelEnvelope> {
-        std::mem::take(&mut *self.outbox.lock().unwrap())
+        std::mem::take(&mut *lock(&self.outbox))
     }
 }
 impl Channel for MemoryChannel {
@@ -252,11 +264,11 @@ impl Channel for MemoryChannel {
         &self.name
     }
     fn send(&self, envelope: ChannelEnvelope) -> Result<(), ChannelError> {
-        self.outbox.lock().unwrap().push(envelope);
+        lock(&self.outbox).push(envelope);
         Ok(())
     }
     fn poll(&self) -> Vec<ChannelEvent> {
-        std::mem::take(&mut *self.inbox.lock().unwrap())
+        std::mem::take(&mut *lock(&self.inbox))
     }
 }
 #[cfg(test)]

@@ -57,3 +57,50 @@ fn retry_after_parses_delta_seconds_and_caps() {
     // A hostile header cannot park the daemon.
     assert_eq!(parse_retry_after(Some("99999")), Some(600));
 }
+
+// A panic while the inbox lock is held poisons it. Before, every later poll
+// panicked too, so one bad handler permanently killed the channel and only a
+// restart recovered it. Recovering the guard keeps queued events flowing.
+#[test]
+fn a_poisoned_inbox_does_not_permanently_kill_the_channel() {
+    let ch = MemoryChannel::new("mem");
+    ch.push_inbound(ChannelEvent {
+        thread_id: "t1".into(),
+        run_id: None,
+        text: "first".into(),
+        approval: None,
+        scope: None,
+        sender: None,
+    });
+
+    // Poison the inbox by panicking while the lock is held. A raw pointer
+    // keeps the test inside the same crate without needing an Arc clone.
+    let m: *const std::sync::Mutex<Vec<ChannelEvent>> = &ch.inbox;
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: `m` points at `ch.inbox`, which outlives this closure, and
+        // the guard is dropped before the panic unwinds past the borrow.
+        let m = unsafe { &*m };
+        let _guard = m.lock().unwrap();
+        panic!("handler blew up");
+    }));
+    assert!(
+        ch.inbox.is_poisoned(),
+        "the lock should be poisoned for this test to mean anything"
+    );
+
+    // The channel must still work.
+    ch.push_inbound(ChannelEvent {
+        thread_id: "t2".into(),
+        run_id: None,
+        text: "second".into(),
+        approval: None,
+        scope: None,
+        sender: None,
+    });
+    let got = ch.poll();
+    let texts: Vec<&str> = got.iter().map(|e| e.text.as_str()).collect();
+    assert!(
+        texts.contains(&"first") && texts.contains(&"second"),
+        "queued events must survive a poisoned lock, got {texts:?}"
+    );
+}
