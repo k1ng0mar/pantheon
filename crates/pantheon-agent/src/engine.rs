@@ -89,6 +89,16 @@ pub struct Budget {
     /// Maximum cost in US cents (e.g. 500 = $5.00).
     /// `None` means no cost cap.
     pub max_cost_cents: Option<u32>,
+    /// Maximum delegation depth. A loop running at `depth` may spawn a
+    /// child (which runs at `depth + 1`) only while
+    /// `depth + 1 <= max_delegate_depth`; deeper requests are refused
+    /// with `SWARM_SPAWN_DENIED`, never recorded as fake completions.
+    /// Default 2 mirrors `pantheon_swarm::Caps::default().max_depth`, the
+    /// canonical swarm cap. pantheon-agent deliberately does not depend
+    /// on pantheon-swarm (see the circular-dep note in engine_tests.rs),
+    /// so keep this default in sync with the swarm crate; the runtime
+    /// may override it per session from real swarm caps.
+    pub max_delegate_depth: u32,
 }
 
 impl Default for Budget {
@@ -98,6 +108,7 @@ impl Default for Budget {
             max_tool_calls: 32,
             max_tokens: None,
             max_cost_cents: None,
+            max_delegate_depth: 2,
         }
     }
 }
@@ -439,6 +450,19 @@ impl<'a> AgentLoop<'a> {
                         run_id: self.run_id.clone(),
                         agent: agent.clone(),
                     });
+                    // Depth cap (engine-side guard): the child would run at
+                    // depth + 1. Refuse beyond the runtime's max delegation
+                    // depth with a clear error — never a fabricated
+                    // completion record. The spawner enforces caps too; this
+                    // stops a misbehaving spawner from recursing past the
+                    // limit before it is even invoked.
+                    let child_depth = self.depth + 1;
+                    if child_depth > self.budget.max_delegate_depth {
+                        return Err(sberr(format!(
+                            "delegation depth {child_depth} exceeds max_delegate_depth {}",
+                            self.budget.max_delegate_depth
+                        )));
+                    }
                     // No spawner wired: delegation is denied by the host
                     // (session.rs also denies today pending swarm Caps).
                     // Fail loud — never silently continue as if delegated.

@@ -906,6 +906,7 @@ fn drive_test_loop<'a>(
             max_tool_calls: 8,
             max_tokens: None,
             max_cost_cents: None,
+            max_delegate_depth: 2,
         },
         sink,
         tools: runner,
