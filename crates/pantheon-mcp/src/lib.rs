@@ -1,6 +1,20 @@
 //! MCP adapter (spec section 15): external interop boundary, not internal
 //! architecture. Internal code speaks the native Capability API; MCP servers
 //! are projected into it, and every projected tool is capability-gated.
+//!
+//! Two halves: [`client`] is the real stdio MCP client (`initialize`,
+//! `tools/list`, `tools/call`) with call-time capability enforcement;
+//! the projection helpers below map a server's advertised tools through a
+//! [`Policy`](pantheon_api::capability::Policy).
+pub mod client;
+pub mod framed;
+
+pub use client::{
+    CapabilityGate, McpClient, McpError, McpServerConfig, McpToolDef,
+    DEFAULT_MAX_MESSAGE_BYTES, DEFAULT_REQUEST_TIMEOUT, MCP_PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
+};
+
 use pantheon_api::capability::{Capability, Policy};
 use serde::{Deserialize, Serialize};
 
