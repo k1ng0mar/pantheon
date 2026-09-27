@@ -2,8 +2,10 @@
 
 ## Prerequisites
 
-- A Rust toolchain (rustup, edition 2021). Any recent stable works.
-- System deps: `sh` and `git` (bundled SQLite needs neither).
+- A prebuilt binary (the installer below), or a Rust toolchain
+  (rustup, edition 2021) if you are building from source.
+- For the installer: `curl` and `tar` only. No Node, npm, Git,
+  Python, Rust, or Cargo required.
 
 ## Install (recommended)
 
@@ -11,8 +13,23 @@
 curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash
 ```
 
-Installs Rust if missing, builds from source, links the binary into
-`~/.local/bin`. Re-running is idempotent.
+Downloads the latest GitHub release, verifies it, links the binary
+into `~/.local/bin`, writes a default config to `~/.pantheon/`, and
+runs a verification pass. Re-running is idempotent and never
+overwrites an existing `config.toml`.
+
+Pin a version:
+
+```sh
+PANTHEON_VERSION=v0.1.0 bash install.sh
+```
+
+Stages are explicit so a failure names its stage: `[1/4] Checking
+environment`, `[2/4] Installing Pantheon`, `[3/4] Initializing`,
+`[4/4] Verifying installation`. If the runtime probe times out you
+get exactly that (`⚠ Runtime probe timed out after 10s`) plus
+confirmation that the install itself succeeded — then run
+`pantheon doctor`.
 
 ## Build (from source)
 

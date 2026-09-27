@@ -342,6 +342,9 @@ pantheon setup [--yes] [--profile P] [--provider P] [--model M]
 pantheon doctor              # system preflight (config, key, ledger, memory,
                              #   skills, gateway, plugins)
 pantheon doctor <plugin_dir> # per-plugin preflight (as above)
+pantheon update [--check] [--version TAG] [--repo OWNER/REPO]
+                             # replace this binary with the latest release;
+                             # --check reports without changing anything
 pantheon reset --config | --state | --everything [--yes]
 pantheon providers           # catalog listing
 pantheon fallback list                    # the ordered fallback chain

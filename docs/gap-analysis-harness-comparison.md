@@ -162,7 +162,15 @@ Who has it: Hermes ships `agent/monitoring/otlp_exporter.py` and
 `http/protobuf` OTLP graph, lazily loaded) and `pi-agent-core/src/telemetry.ts`. OpenClaw has
 `docs/logging.md` and a diagnostics tree.
 
-Pantheon: `crates/pantheon-otel/src/lib.rs` is 150 lines. `span_for` (42) maps events to
+**Status: the crate is deleted (`e0ef274`+).** The gap was partly self-inflicted: the
+span records as designed could not be exported even by an exporter, so the
+choice was delete or redesign, and there is no collector to export to. The
+useful piece — `metrics_from`, a fold over the event log — moved to
+`Ledger::metrics` and is reachable as `pantheon runs <id> --metrics`, derived
+from the ledger so it cannot disagree with the trace. The original audit
+noted this correctly: the span records as designed cannot be exported
+
+Pantheon: `crates/pantheon-otel/src/lib.rs` was 150 lines. `span_for` (42) mapped events to
 `SpanRecord` structs. `metrics_from` (122) folds into seven `u64` counters. `explain` (140)
 formats one line. `SpanRecord` has no start time, no end time, no duration, no trace ID, no span
 ID, no parent, no attributes, no status code. `Metrics` has no labels at all.
@@ -382,7 +390,7 @@ Worth stating, because the brief asked for skepticism in both directions.
   refusing to report an unwired hook as mapped, is stricter than anything in the three harnesses.
 - **The durable safe-write path as the default**, not an opt-in: `write_file` routes through
   `SafeWriter` with checkpoint, journal, atomic publish, and stale-hash rejection.
-- **Migration provenance.** `pantheon-migrate` archives 105 OpenClaw extensions with specific
+- **Migration provenance.** `pantheon-migration` archives 105 OpenClaw extensions with specific
   reasons rather than dropping them, never writes a credential outside `<data_dir>/.env`, and
   refuses to clobber an existing key.
 
