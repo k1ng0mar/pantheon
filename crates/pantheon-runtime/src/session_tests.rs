@@ -11,9 +11,11 @@ fn streaming_deltas_persist_as_model_delta_rows() {
     let _ = std::fs::remove_dir_all(&dir);
     let sup = Supervisor::open(dir).unwrap();
     sup.start_run("run_stream").unwrap();
+    let poison = LedgerPoison::default();
     let sink = LedgerModelSink {
         sup: &sup,
         run_id: "run_stream",
+        poison: &poison,
     };
     sink.emit(ModelEvent::Attempt {
         provider: "router".into(),
@@ -678,4 +680,510 @@ fn reasoning_defaults_off_and_switches_live() {
     );
     s.set_reasoning(ReasoningLevel::Off).unwrap();
     assert_eq!(s.reasoning(), ReasoningLevel::Off);
+}
+// ---------------------------------------------------------------------------
+// Overnight-fix regression tests: session durability (approval recovery,
+// call-id uniqueness, whole-run budget, child policy, ledger failure).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn approval_scope_parses_back_to_call_id() {
+    // Scopes are `call_id:tool:args`; the grant-resume needs the call-id
+    // half to find the persisted ToolCallRef. Args may contain colons.
+    assert_eq!(
+        approval_call_id("call_0_0:shell:{\"cmd\":\"ls\"}"),
+        "call_0_0"
+    );
+    assert_eq!(
+        approval_call_id("turn_1693000000000_0001-call_2_3:shell:{\"cmd\":\"a:b\"}"),
+        "turn_1693000000000_0001-call_2_3"
+    );
+    // Scopes written before the `call_id:tool:args` shape (bare call ids)
+    // still parse.
+    assert_eq!(approval_call_id("call_0_0"), "call_0_0");
+}
+
+#[test]
+fn granted_scope_returns_call_id_not_whole_scope() {
+    use pantheon_api::events::Event as E;
+    let scope = "turn_1-call_0_0:shell:{\"cmd\":\"git push\"}".to_string();
+    let entries = vec![
+        entry(
+            1,
+            E::ApprovalRequested {
+                run_id: "r".into(),
+                scope: scope.clone(),
+            },
+        ),
+        entry(
+            2,
+            E::ApprovalGranted {
+                run_id: "r".into(),
+                scope: scope.clone(),
+            },
+        ),
+    ];
+    // The pending lookup needs the CALL ID, not the whole scope string:
+    // treating the scope as an id fabricated a "no persisted call record"
+    // recovery error instead of executing the granted call.
+    assert_eq!(
+        granted_unexecuted_calls(&entries),
+        vec!["turn_1-call_0_0".to_string()]
+    );
+    // An executed grant is not pending. Comparing the whole scope against
+    // completed call ids never matched, so even finished grants came back
+    // as pending and fabricated the same recovery error on resume.
+    let mut done = entries.clone();
+    done.push(entry(
+        3,
+        E::ToolCompleted {
+            run_id: "r".into(),
+            call_id: "turn_1-call_0_0".into(),
+            tool: "shell".into(),
+            provenance: pantheon_api::provenance::Provenance::system("shell"),
+        },
+    ));
+    assert!(granted_unexecuted_calls(&done).is_empty());
+}
+
+#[test]
+fn tool_call_ids_are_unique_across_chat_turns() {
+    // Every chat_turn restarts its turn counter at 0; without the per-turn
+    // nonce, turn 2 reused turn 1's ids and an identical call silently
+    // replayed the stale result.
+    let ids: Vec<String> = ["turn_1000_0001", "turn_2000_0002"]
+        .iter()
+        .flat_map(|tid| (0..2).map(move |i| tool_call_id(tid, 0, i)))
+        .collect();
+    let uniq: std::collections::BTreeSet<&str> =
+        ids.iter().map(String::as_str).collect();
+    assert_eq!(uniq.len(), 4, "collision across turns: {ids:?}");
+    // The nonce never breaks scope parsing (no ':').
+    for id in &ids {
+        assert!(!id.contains(':'), "{id}");
+        assert_eq!(approval_call_id(&format!("{id}:shell:{{}}")), id.as_str());
+    }
+}
+
+#[test]
+fn budget_counter_seeds_from_ledger_not_zero() {
+    use pantheon_api::events::Event as E;
+    // Whole-run budget: a continued run must not get a fresh allowance.
+    let prov = || pantheon_api::provenance::Provenance::system("t");
+    let entries = vec![
+        entry(
+            1,
+            E::ToolCompleted {
+                run_id: "r".into(),
+                call_id: "a".into(),
+                tool: "t".into(),
+                provenance: prov(),
+            },
+        ),
+        entry(
+            2,
+            E::ToolCompleted {
+                run_id: "r".into(),
+                call_id: "b".into(),
+                tool: "t".into(),
+                provenance: prov(),
+            },
+        ),
+        // Started but never completed: not counted.
+        entry(
+            3,
+            E::ToolStarted {
+                run_id: "r".into(),
+                call_id: "c".into(),
+                tool: "t".into(),
+                args: "{}".into(),
+                provenance: prov(),
+            },
+        ),
+    ];
+    assert_eq!(completed_tool_calls(&entries), 2);
+    assert_eq!(completed_tool_calls(&[]), 0);
+}
+
+#[test]
+fn child_policy_comes_from_the_child_preset() {
+    use pantheon_api::capability::{Capability, Decision};
+    // A reader child of a coder parent must not inherit coder privileges.
+    let reader = policy_for_preset("reader").unwrap();
+    assert_eq!(reader.check(&Capability::FilesystemRead), Decision::Allow);
+    assert_eq!(reader.check(&Capability::ShellExecute), Decision::Deny);
+    let coder = policy_for_preset("coder").unwrap();
+    assert_eq!(coder.check(&Capability::ShellExecute), Decision::Allow);
+    let coder_mem = policy_for_preset("coder_memory").unwrap();
+    assert_eq!(coder_mem.check(&Capability::MemoryWrite), Decision::Allow);
+    // Unknown presets fail closed rather than falling back to the parent.
+    assert!(policy_for_preset("superuser").is_err());
+}
+
+#[test]
+fn ledger_poison_latches_the_first_failure() {
+    let poison = LedgerPoison::default();
+    assert!(poison.take().is_none());
+    poison.poison(aerr("FIRST", "boom".into()));
+    poison.poison(aerr("SECOND", "later".into()));
+    let e = poison.take().expect("latched");
+    assert_eq!(e.code, "FIRST", "first failure wins");
+    assert!(poison.take().is_none(), "latch drains");
+}
+
+// --- drive-level harness: scripted provider, no network --------------------
+
+/// Scripted provider transport (the sanctioned test-double seam:
+/// "Test doubles implement this in tests"). Counts hits so a test can
+/// assert the provider was never consulted.
+struct ScriptTransport {
+    body: String,
+    hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl pantheon_providers::ChatTransport for ScriptTransport {
+    fn post(
+        &self,
+        _req: &pantheon_providers::http::WireRequest,
+    ) -> Result<String, PantheonError> {
+        self.hits
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.body.clone())
+    }
+    fn post_stream(
+        &self,
+        _req: &pantheon_providers::http::WireRequest,
+        _on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+    ) -> Result<(), PantheonError> {
+        Err(PantheonError::new(
+            "NO_STREAM",
+            pantheon_api::error::Layer::Provider,
+            false,
+            "scripted transport has no stream".to_string(),
+            "",
+            "",
+        ))
+    }
+}
+
+struct NoopSink;
+impl pantheon_agent::EventSink for NoopSink {
+    fn emit(&self, _event: Event) {}
+}
+
+struct NoopRunner;
+impl pantheon_agent::ToolRunner for NoopRunner {
+    fn run(&self, _name: &str, _args: &str) -> Result<String, PantheonError> {
+        Ok(String::new())
+    }
+}
+
+fn drive_test_policy() -> pantheon_api::model::ModelPolicy {
+    pantheon_api::model::ModelPolicy {
+        default: pantheon_api::model::DefaultModel {
+            provider: "openai".into(),
+            model: "test-model".into(),
+        },
+        fallbacks: pantheon_api::model::FallbackChain {
+            fallbacks: Vec::new(),
+        },
+        auxiliaries: Vec::new(),
+        reasoning: pantheon_api::model::ReasoningLevel::default(),
+        reasoning_budget: None,
+    }
+}
+
+fn drive_test_loop<'a>(
+    sink: &'a NoopSink,
+    runner: &'a NoopRunner,
+    run_id: &str,
+) -> pantheon_agent::AgentLoop<'a> {
+    pantheon_agent::AgentLoop {
+        run_id: run_id.into(),
+        policy: Policy::coder(),
+        budget: Budget {
+            max_turns: 4,
+            max_tool_calls: 8,
+            max_tokens: None,
+            max_cost_cents: None,
+        },
+        sink,
+        tools: runner,
+        spawner: None,
+        judge: None,
+        cancel: None,
+        depth: 0,
+    }
+}
+
+fn drive_test_chain(
+    body: String,
+    hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> pantheon_providers::ProviderChain<Box<dyn pantheon_providers::ChatTransport>> {
+    pantheon_providers::ProviderChain::new(
+        drive_test_policy(),
+        Box::new(ScriptTransport { body, hits })
+            as Box<dyn pantheon_providers::ChatTransport>,
+        Vec::new(),
+        pantheon_secrets::SecretValue::new(""),
+    )
+}
+
+/// OpenAI-format chat-completions body where the model requests `calls`.
+fn tool_calls_body(calls: &[(&str, &str)]) -> String {
+    let tcs: Vec<serde_json::Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(i, (name, args))| {
+            serde_json::json!({
+                "id": format!("provider-{i}"),
+                "type": "function",
+                "function": {"name": name, "arguments": args},
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "choices": [{
+            "message": {"role": "assistant", "content": null, "tool_calls": tcs},
+            "finish_reason": "tool_calls",
+        }],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    })
+    .to_string()
+}
+
+fn text_body(text: &str) -> String {
+    serde_json::json!({
+        "choices": [{
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    })
+    .to_string()
+}
+
+fn drive_test_session(tag: &str) -> Session {
+    let dir = std::env::temp_dir().join(format!("pantheon-rt-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    Session::new(
+        dir,
+        Policy::coder(),
+        drive_test_policy(),
+        pantheon_secrets::SecretsBroker::from_system_env(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn poisoned_ledger_parks_the_turn_before_any_work() {
+    use std::sync::atomic::Ordering;
+    let session = drive_test_session("poison");
+    session.supervisor.start_run("run_poison").unwrap();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let chain = drive_test_chain(text_body("hello"), std::sync::Arc::clone(&hits));
+    let sink = NoopSink;
+    let runner = NoopRunner;
+    let agent_loop = drive_test_loop(&sink, &runner, "run_poison");
+    let reg = ToolRegistry::new();
+    let approvals = Approvals {
+        pending: Vec::new(),
+        granted: Vec::new(),
+        denied: Vec::new(),
+    };
+    let mut used = 0u32;
+    let watchdog = std::sync::Mutex::new(TurnWatchdog::from_env());
+    // Simulate the latch tripped by an infallible sink's failed write.
+    let poison = LedgerPoison::default();
+    poison.poison(aerr("LEDGER_DEAD", "simulated ledger failure".into()));
+
+    let mut messages = Vec::new();
+    let err = session
+        .drive(
+            &agent_loop,
+            &chain,
+            &mut messages,
+            "run_poison",
+            "turn_p1",
+            0,
+            &reg,
+            &approvals,
+            &mut used,
+            &watchdog,
+            &poison,
+        )
+        .expect_err("a dead ledger must park the turn");
+    assert_eq!(err.code, "LEDGER_DEAD");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "provider must not be consulted on a dead ledger"
+    );
+}
+
+#[test]
+fn batch_with_two_approval_calls_parks_and_settles_both() {
+    use pantheon_api::capability::Capability;
+    use std::sync::atomic::Ordering;
+    let session = drive_test_session("batch");
+    // Lease held for the whole test: the settle path asserts it.
+    let (_recovered, _lease) = session
+        .supervisor
+        .start_run_with_lease("run_batch")
+        .unwrap();
+
+    // One approval-gated tool; the model asks for it twice in one batch.
+    let executed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let ex = std::sync::Arc::clone(&executed);
+    let mut reg = ToolRegistry::new();
+    reg.register(
+        pantheon_api::message::ToolSchema {
+            name: "push_tool".into(),
+            description: "push".into(),
+            parameters: serde_json::json!({}),
+        },
+        Capability::GitPush,
+        move |_args| {
+            ex.fetch_add(1, Ordering::SeqCst);
+            Ok("pushed".into())
+        },
+    );
+
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let chain = drive_test_chain(
+        tool_calls_body(&[
+            ("push_tool", "{\"ref\":\"a\"}"),
+            ("push_tool", "{\"ref\":\"b\"}"),
+        ]),
+        std::sync::Arc::clone(&hits),
+    );
+    let sink = NoopSink;
+    let runner = NoopRunner;
+    let agent_loop = drive_test_loop(&sink, &runner, "run_batch");
+    let watchdog = std::sync::Mutex::new(TurnWatchdog::from_env());
+    let poison = LedgerPoison::default();
+
+    // Turn 1: the model requests two gated calls in one batch.
+    let approvals = Approvals {
+        pending: Vec::new(),
+        granted: Vec::new(),
+        denied: Vec::new(),
+    };
+    let mut used = 0u32;
+    let mut messages = Vec::new();
+    let outcome = session
+        .drive(
+            &agent_loop,
+            &chain,
+            &mut messages,
+            "run_batch",
+            "turn_b1",
+            0,
+            &reg,
+            &approvals,
+            &mut used,
+            &watchdog,
+            &poison,
+        )
+        .unwrap();
+    match outcome {
+        LoopOutcome::AwaitingApproval { capability, .. } => {
+            assert_eq!(capability, Capability::GitPush);
+        }
+        other => panic!("expected AwaitingApproval, got {other:?}"),
+    }
+    // BOTH calls recorded their own ApprovalRequested row: parking on the
+    // first call's scope left the sibling with no scope to grant.
+    let entries = session.supervisor.replay("run_batch").unwrap();
+    let requested: Vec<String> = entries
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::ApprovalRequested { scope, .. } => Some(scope.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        requested.len(),
+        2,
+        "both batch calls must be requestable, got {requested:?}"
+    );
+    assert_ne!(requested[0], requested[1]);
+    assert_eq!(
+        executed.load(Ordering::SeqCst),
+        0,
+        "no partial execution before approval"
+    );
+
+    // Grant both, then resume the way chat_turn does: pending call ids from
+    // the ledger, transcript rebuilt, granted scopes collected.
+    for scope in &requested {
+        session.supervisor.grant("run_batch", scope).unwrap();
+    }
+    let entries = session.supervisor.replay("run_batch").unwrap();
+    let pending = granted_unexecuted_calls(&entries);
+    assert_eq!(
+        pending.len(),
+        2,
+        "both granted calls must be pending, got {pending:?}"
+    );
+    let grants: Vec<String> = entries
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::ApprovalGranted { scope, .. } => Some(scope.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut messages = rebuild_messages(entries);
+    // After settling, the provider answers text so the turn can complete.
+    let chain2 = drive_test_chain(text_body("all pushed"), std::sync::Arc::clone(&hits));
+    let approvals = Approvals {
+        pending,
+        granted: grants,
+        denied: Vec::new(),
+    };
+    let mut used = completed_tool_calls(&session.supervisor.replay("run_batch").unwrap());
+    let outcome = session
+        .drive(
+            &agent_loop,
+            &chain2,
+            &mut messages,
+            "run_batch",
+            "turn_b2",
+            0,
+            &reg,
+            &approvals,
+            &mut used,
+            &watchdog,
+            &poison,
+        )
+        .unwrap();
+    match outcome {
+        LoopOutcome::Answered { text, .. } => assert!(text.contains("all pushed"), "{text}"),
+        other => panic!("expected Answered, got {other:?}"),
+    }
+    assert_eq!(
+        executed.load(Ordering::SeqCst),
+        2,
+        "both granted calls must execute on resume"
+    );
+    // No fabricated recovery errors: every pending call found its record.
+    let entries = session.supervisor.replay("run_batch").unwrap();
+    let fabrications = entries
+        .iter()
+        .filter(|e| {
+            matches!(&e.event, Event::ToolMessage { message, .. } if message.content.contains("recovery error"))
+        })
+        .count();
+    assert_eq!(
+        fabrications, 0,
+        "resume must not fabricate recovery errors"
+    );
+    let completed: Vec<&str> = entries
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::ToolCompleted { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(completed.len(), 2, "both calls settled: {completed:?}");
 }

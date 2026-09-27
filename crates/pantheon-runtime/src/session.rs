@@ -34,12 +34,51 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Adapter: supervisor as the loop's event sink.
-struct SupSink<'a>(&'a Supervisor);
+struct SupSink<'a> {
+    sup: &'a Supervisor,
+    poison: &'a LedgerPoison,
+}
 impl<'a> pantheon_agent::EventSink for SupSink<'a> {
     fn emit(&self, event: Event) {
-        if let Err(e) = self.0.emit(event) {
-            eprintln!("ledger write failed: {e}");
+        // `EventSink::emit` is infallible by trait, so a dead ledger cannot
+        // travel as a `Result`. Latch the first failure instead of logging
+        // and continuing: the turn checks the latch at its boundaries and
+        // fails, so a run never advances with no recoverable events.
+        if let Err(e) = self.sup.emit(event) {
+            self.poison.poison(e);
         }
+    }
+}
+
+/// Latch for a ledger write failure inside an infallible sink.
+///
+/// `pantheon_agent::EventSink::emit`, `ModelEventSink::emit`, and
+/// `MemoryToolSink::record` all return `()`, so a failure there cannot
+/// propagate as a `Result`. The first failure is latched here; the turn
+/// checks the latch at its boundaries and fails the run. A run that
+/// proceeds after its ledger died looks fine and is unrecoverable, so
+/// failing the turn is the only safe response.
+#[derive(Debug, Default)]
+struct LedgerPoison {
+    inner: Mutex<Option<PantheonError>>,
+}
+
+impl LedgerPoison {
+    /// Record the first failure; later ones are dropped. The turn is
+    /// already doomed by the first, and the first error is the most
+    /// diagnostic. A poisoned mutex is skipped: a previous holder
+    /// panicked mid-record, which is a bigger problem than this latch.
+    fn poison(&self, err: PantheonError) {
+        if let Ok(mut slot) = self.inner.lock() {
+            if slot.is_none() {
+                *slot = Some(err);
+            }
+        }
+    }
+
+    /// Take the latched failure, if any.
+    fn take(&self) -> Option<PantheonError> {
+        self.inner.lock().ok()?.take()
     }
 }
 
@@ -54,6 +93,7 @@ impl<'a> pantheon_agent::EventSink for SupSink<'a> {
 struct LedgerMemorySink {
     sup: Arc<Supervisor>,
     run_id: String,
+    poison: Arc<LedgerPoison>,
 }
 /// What the user has already decided about tool calls in this run.
 ///
@@ -103,14 +143,16 @@ impl MemoryToolSink for LedgerMemorySink {
         if let Err(e) = self.sup.emit(Event::MemoryProposed {
             run_id: self.run_id.clone(),
         }) {
-            eprintln!("ledger write failed: {e}");
+            // Infallible by trait: latch it so the turn fails instead of
+            // advancing with no recoverable events.
+            self.poison.poison(e);
             return;
         }
         if let Err(e) = self.sup.emit(Event::RunProgress {
             run_id: self.run_id.clone(),
             detail,
         }) {
-            eprintln!("ledger write failed: {e}");
+            self.poison.poison(e);
         }
     }
 }
@@ -167,6 +209,7 @@ impl Drop for PluginCleanup {
 struct LedgerModelSink<'a> {
     sup: &'a Supervisor,
     run_id: &'a str,
+    poison: &'a LedgerPoison,
 }
 /// Sink that forwards to the ledger AND fires an optional callback per event.
 struct TeeModelSink<'a> {
@@ -188,7 +231,9 @@ impl<'a> ModelEventSink for LedgerModelSink<'a> {
         match event.to_event(self.run_id) {
             Some(ev) => {
                 if let Err(e) = self.sup.emit(ev) {
-                    eprintln!("ledger write failed: {e}");
+                    // Infallible by trait: latch it so the turn fails
+                    // instead of advancing with no recoverable events.
+                    self.poison.poison(e);
                 }
             }
             None => {
@@ -201,7 +246,7 @@ impl<'a> ModelEventSink for LedgerModelSink<'a> {
                         run_id: self.run_id.to_string(),
                         delta: text.clone(),
                     }) {
-                        eprintln!("ledger write failed: {e}");
+                        self.poison.poison(e);
                     }
                 }
             }
@@ -355,8 +400,43 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
 /// carried verbatim rather than digested: a digest would hide the command
 /// the operator is being asked to approve, and the operator approving
 /// `git push --force origin main` should see exactly that.
+/// Tool call id for one model-requested call. The stable per-turn nonce
+/// (`turn_id`, recorded in the ledger as `TurnStarted`) keeps ids unique
+/// across `chat_turn` calls: every turn restarts its own `turn` counter at
+/// 0, so `call_{turn}_{i}` alone collided and an identical call silently
+/// replayed a stale result. The nonce contains no ':', so approval scopes
+/// (`call_id:tool:args`) stay parseable by [`approval_call_id`].
+fn tool_call_id(turn_id: &str, turn: u32, i: usize) -> String {
+    format!("{turn_id}-call_{turn}_{i}")
+}
+
 fn approval_scope(call_id: &str, tool: &str, args: &str) -> String {
     format!("{call_id}:{tool}:{args}")
+}
+
+/// The call-id half of an approval scope (`call_id:tool:args`). Call ids
+/// never contain `:`, so the first segment is always the id — including
+/// for scopes written by older runs, whose ids were `call_{turn}_{i}`.
+fn approval_call_id(scope: &str) -> &str {
+    scope.split(':').next().unwrap_or(scope)
+}
+
+/// Map a resolved profile's policy preset name to the `Policy` a child
+/// session enforces. Mirrors the CLI's `PolicyPreset::to_policy`; the
+/// runtime cannot depend on the TUI crate, so the three known preset names
+/// (validated at profile declaration) live here next to the spawner that
+/// needs them. Unknown names fail closed rather than falling back to the
+/// parent's policy.
+fn policy_for_preset(preset: &str) -> Result<Policy, PantheonError> {
+    match preset {
+        "reader" => Ok(Policy::researcher_readonly()),
+        "coder" => Ok(Policy::coder()),
+        "coder_memory" => Ok(Policy::coder_with_memory()),
+        other => Err(aerr(
+            "UNKNOWN_POLICY_PRESET",
+            format!("agent profile resolved to unknown policy preset {other:?}"),
+        )),
+    }
 }
 
 /// Everything one agent run needs.
@@ -851,16 +931,27 @@ impl Session {
     pub fn chat_turn(
         &self,
         run_id: &str,
-        _turn_id: &str,
+        turn_id: &str,
         user_message: &str,
     ) -> Result<LoopOutcome, PantheonError> {
+        // The turn id seeds tool call ids; an empty one (callers that
+        // predate the parameter pass "") would collapse every turn's ids
+        // onto one namespace and reintroduce the collision. Generate a
+        // stable id for the turn instead.
+        let generated_turn_id;
+        let turn_id = if turn_id.is_empty() {
+            generated_turn_id = crate::new_turn_id();
+            generated_turn_id.as_str()
+        } else {
+            turn_id
+        };
         // A turn that starts and produces no log line is a turn nobody can
         // debug. The ledger records the run, but not the model, the provider,
         // or which turn it was.
         pantheon_api::logging::info(
             "turn",
             format!(
-                "start run={run_id} turn={_turn_id} msg={} bytes",
+                "start run={run_id} turn={turn_id} msg={} bytes",
                 user_message.len()
             ),
         );
@@ -917,6 +1008,18 @@ impl Session {
         }
         let (recovered, _lease) = self.supervisor.start_run_with_lease(run_id)?;
         let _lease_guard = RunLeaseGuard::try_new(self.supervisor.clone(), run_id)?;
+        // Record the turn's stable id in the ledger. Tool call ids derive
+        // from it, so a second `chat_turn` on the same run can never reuse
+        // the previous turn's call ids (which would silently replay stale
+        // tool results on an identical call).
+        self.supervisor.emit(Event::TurnStarted {
+            run_id: run_id.into(),
+            turn_id: turn_id.into(),
+        })?;
+        // Ledger failures inside infallible sinks (SupSink, the model sink,
+        // the memory sink) latch here; the turn checks at its boundaries
+        // and fails rather than advancing with no recoverable events.
+        let ledger_poison = Arc::new(LedgerPoison::default());
         let prior_entries = self.supervisor.replay(run_id)?;
         let has_prior_history = prior_entries.iter().any(|e| {
             matches!(
@@ -1058,6 +1161,7 @@ impl Session {
             let mem_sink = LedgerMemorySink {
                 sup: Arc::new(self.supervisor.clone()),
                 run_id: run_id.to_string(),
+                poison: Arc::clone(&ledger_poison),
             };
             register_memory_tools(
                 &mut reg,
@@ -1204,7 +1308,10 @@ impl Session {
             ProviderChain::new(self.policy_snapshot(), transport, reg.schemas(), api_key)
         };
 
-        let sink = SupSink(&self.supervisor);
+        let sink = SupSink {
+            sup: &self.supervisor,
+            poison: &ledger_poison,
+        };
         // Lifecycle hooks (on_session_start/end, subagent_*, stream, api
         // request) are driven off the canonical event stream; the bridge is
         // registered once per session in `Session::new` so terminal events
@@ -1234,13 +1341,11 @@ impl Session {
         // profile — a full Pantheon execution, not a function pretending to
         // be one.
         let agent_opt = self.agent();
-        let policy = self.policy.clone();
         let model_policy = self.policy_snapshot();
         let data_dir = self.supervisor.data_dir().clone();
         let spawner: Option<Box<dyn pantheon_agent::AgentSpawner>> = agent_opt.map(|agent| {
             struct SessionSpawner {
                 agent: AgentRuntime,
-                policy: Policy,
                 model_policy: ModelPolicy,
                 data_dir: PathBuf,
             }
@@ -1253,6 +1358,13 @@ impl Session {
                     _depth: u32,
                 ) -> Result<String, PantheonError> {
                     let child = self.agent.for_profile(agent)?;
+                    // The child runs under its OWN profile's policy preset,
+                    // never the parent's: a reader child of a coder parent
+                    // must not inherit coder privileges. `for_profile`
+                    // resolves the effective preset (inheritance included),
+                    // and the preset names are validated at declaration, so
+                    // an unknown name here fails closed.
+                    let child_policy = policy_for_preset(child.policy_preset())?;
                     let child_run_id = crate::new_run_id();
                     child.bind_run(&child_run_id)?;
                     // The child rebuilds its own secrets broker from the
@@ -1263,7 +1375,7 @@ impl Session {
                     let child_secrets = SecretsBroker::from_system_env();
                     let child_session = Session::new(
                         self.data_dir.clone(),
-                        self.policy.clone(),
+                        child_policy,
                         self.model_policy.clone(),
                         child_secrets,
                     )?;
@@ -1327,7 +1439,6 @@ impl Session {
             }
             Box::new(SessionSpawner {
                 agent,
-                policy,
                 model_policy,
                 data_dir,
             }) as Box<dyn pantheon_agent::AgentSpawner>
@@ -1378,12 +1489,17 @@ impl Session {
 
         // Drive the loop through the canonical-message path: each turn feeds
         // messages to the provider, appends assistant/tool rows, repeats.
-        let mut tool_calls_used: u32 = 0;
+        //
+        // The tool-call budget is whole-run, not per-turn: seed the counter
+        // from the ledger's completed calls so a resumed or continued run
+        // does not get a fresh budget every `chat_turn`.
+        let mut tool_calls_used: u32 = completed_tool_calls(&entries);
         let outcome = match self.drive(
             &loop_,
             &chain,
             &mut messages,
             run_id,
+            turn_id,
             0,
             &reg,
             &Approvals {
@@ -1393,6 +1509,7 @@ impl Session {
             },
             &mut tool_calls_used,
             &watchdog,
+            &ledger_poison,
         ) {
             Ok(o) => o,
             Err(e) => {
@@ -1418,6 +1535,15 @@ impl Session {
                 return Err(e);
             }
         };
+        // A ledger failure inside an infallible sink (SupSink, the model
+        // sink, the memory sink) cannot travel as a `Result`: it latches in
+        // `ledger_poison`. Fail the turn rather than completing a run whose
+        // events never landed — a run that advances with no recoverable
+        // events looks fine and is unrecoverable.
+        if let Some(e) = ledger_poison.take() {
+            let _ = self.supervisor.fail(run_id, &e.code);
+            return Err(e);
+        }
         if matches!(
             self.supervisor.ledger_status(run_id)?.as_deref(),
             Some("canceled")
@@ -1458,17 +1584,25 @@ impl Session {
                 })?;
             }
             LoopOutcome::AwaitingApproval { capability, scope } => {
-                // Name the command the user has to run. Telling them which
-                // capability is gated but not which call id to approve left
-                // them digging through `explain` to find it.
-                let next = if scope.is_empty() {
+                // Name every scope awaiting a decision, not just the first.
+                // A batch can park several calls at once, and a scope with no
+                // ApprovalRequested row is one the operator can never grant.
+                let mut scopes = self.supervisor.pending_approvals(run_id).unwrap_or_default();
+                if scopes.is_empty() && !scope.is_empty() {
+                    scopes.push(scope.clone());
+                }
+                let next = if scopes.is_empty() {
                     format!("run {run_id} is awaiting approval for {capability:?}")
                 } else {
-                    format!(
-                        "run {run_id} is awaiting approval for {capability:?}: \
-                         run `pantheon run --taskID {run_id} --grant {scope}` to allow it, or \
-                         `pantheon run --taskID {run_id} --deny {scope}` to refuse it"
-                    )
+                    let mut next = format!(
+                        "run {run_id} is awaiting approval for {capability:?}; \
+                         allow a call with `pantheon run --taskID {run_id} --grant '<scope>'` \
+                         (refuse with `--deny '<scope>'`) for each pending scope:"
+                    );
+                    for s in &scopes {
+                        next.push_str(&format!("\n  {s}"));
+                    }
+                    next
                 };
                 self.supervisor.emit(Event::RunProgress {
                     run_id: run_id.into(),
@@ -1715,14 +1849,19 @@ impl Session {
     /// Canonical-message driver: replaces the legacy string-transcript loop.
     /// `pending` holds tool calls that crashed mid-execution; `grants`
     /// records scopes the user has already approved. `tool_calls_used`
-    /// carries the running total across turns so the max_tool_calls cap
-    /// is enforced over the whole run, not per turn. `watchdog` observes
-    /// turn progress and escalates only on a failed liveness probe.
-    // Ten parameters, all distinct and all needed on every call. The
+    /// carries the running total across turns AND across `chat_turn` calls,
+    /// seeded from the ledger, so the max_tool_calls cap is enforced over
+    /// the whole run, not per turn. `turn_id` is the stable per-turn nonce
+    /// tool call ids derive from. `ledger_poison` latches ledger failures
+    /// from infallible sinks; the turn fails instead of proceeding with no
+    /// recoverable events. `watchdog` observes turn progress and escalates
+    /// only on a failed liveness probe.
+    // Twelve parameters, all distinct and all needed on every call. The
     // approval decisions are already grouped into `Approvals`; the rest is
     // the agent loop's genuine working set (transport, transcript, run
-    // identity, turn, tools, counters, watchdog). A struct here would only
-    // move the same fields behind another name at the two call sites.
+    // identity, turn, tools, counters, watchdog, ledger health). A struct
+    // here would only move the same fields behind another name at the two
+    // call sites.
     #[allow(clippy::too_many_arguments)]
     fn drive(
         &self,
@@ -1730,12 +1869,21 @@ impl Session {
         chain: &ProviderChain<Box<dyn pantheon_providers::ChatTransport>>,
         messages: &mut Vec<Message>,
         run_id: &str,
+        turn_id: &str,
         turn: u32,
         reg: &ToolRegistry,
         approvals: &Approvals,
         tool_calls_used: &mut u32,
         watchdog: &std::sync::Mutex<TurnWatchdog>,
+        ledger_poison: &LedgerPoison,
     ) -> Result<LoopOutcome, PantheonError> {
+        // A dead ledger parks the turn: the infallible sinks (SupSink, the
+        // model sink, the memory sink) latch the first write failure here
+        // because their traits return `()`. Proceeding would advance a run
+        // with no recoverable events.
+        if let Some(e) = ledger_poison.take() {
+            return Err(e);
+        }
         let Approvals {
             pending,
             granted: grants,
@@ -1942,6 +2090,10 @@ impl Session {
                     // and the turn continues: the model can correct the
                     // arguments, choose another tool, or explain.
                     let out = tool_result_text(out);
+                    // Counted like any executed call: the whole-run budget
+                    // seeds from the ledger's ToolCompleted rows, so the
+                    // in-turn counter must agree with the durable record.
+                    *tool_calls_used += 1;
                     self.supervisor.emit(Event::ToolOutput {
                         run_id: run_id.into(),
                         call_id: tc.id.clone(),
@@ -1986,6 +2138,7 @@ impl Session {
             let msink = LedgerModelSink {
                 sup: &self.supervisor,
                 run_id,
+                poison: ledger_poison,
             };
             let sink = TeeModelSink {
                 inner: msink,
@@ -1996,6 +2149,7 @@ impl Session {
             let msink = LedgerModelSink {
                 sup: &self.supervisor,
                 run_id,
+                poison: ledger_poison,
             };
             chain.turn_with_sink(messages, &msink)?
         };
@@ -2031,7 +2185,7 @@ impl Session {
                     .iter()
                     .enumerate()
                     .map(|(i, c)| ToolCallRef {
-                        id: format!("call_{turn}_{i}"),
+                        id: tool_call_id(turn_id, turn, i),
                         name: c.name.clone(),
                         arguments: c.args.clone(),
                     })
@@ -2045,28 +2199,48 @@ impl Session {
                 // Any approval needed parks the run before anything executes
                 // (no partial execution), matching the single-call path.
                 //
+                // Every approval-needing call gets its own ApprovalRequested
+                // row before the park: bailing on the first one left sibling
+                // calls without a recorded scope, so the operator could
+                // never grant them and the resume path had nothing to
+                // settle. The whole batch is already persisted above as an
+                // assistant_tool_calls row, so the resume settles every
+                // call before the next provider turn.
+                //
                 // Gate on every capability the call needs, not just the
                 // tool's static one: `shell` running `git push` needs
                 // GitPush as well as ShellExecute, and the coder policy
                 // marks GitPush as Approval. Checking only the first
                 // capability let every push run unattended.
+                let mut needs_approval: Vec<(String, pantheon_api::capability::Capability)> =
+                    Vec::new();
                 for (call, r) in calls.iter().zip(refs.iter()) {
                     let caps = reg.required_capabilities(&call.name, &call.args);
                     for cap in &caps {
                         match pantheon_agent::gate(&loop_.policy, cap)? {
                             pantheon_agent::GateOutcome::Allow => {}
                             pantheon_agent::GateOutcome::NeedsApproval { capability } => {
+                                let scope = approval_scope(&r.id, &call.name, &call.args);
                                 self.supervisor.emit(Event::ApprovalRequested {
                                     run_id: run_id.into(),
-                                    scope: approval_scope(&r.id, &call.name, &call.args),
+                                    scope: scope.clone(),
                                 })?;
-                                return Ok(LoopOutcome::AwaitingApproval {
-                                    capability,
-                                    scope: approval_scope(&r.id, &call.name, &call.args),
-                                });
+                                // One request per call: further gated
+                                // capabilities on the same call add no new
+                                // information for the operator.
+                                if !needs_approval.iter().any(|(s, _)| s == &scope) {
+                                    needs_approval.push((scope, capability));
+                                }
+                                break;
                             }
                         }
                     }
+                }
+                if let Some((first_scope, capability)) = needs_approval.into_iter().next() {
+                    return Ok(LoopOutcome::AwaitingApproval {
+                        capability,
+                        scope: first_scope,
+                    });
                 }
                 // All calls allowed: emit ToolStarted per call, then run the
                 // batch concurrently on worker threads.
@@ -2144,6 +2318,7 @@ impl Session {
                     chain,
                     messages,
                     run_id,
+                    turn_id,
                     turn + 1,
                     reg,
                     &Approvals {
@@ -2153,6 +2328,7 @@ impl Session {
                     },
                     tool_calls_used,
                     watchdog,
+                    ledger_poison,
                 )
             }
             pantheon_agent::TurnOutcome::Delegate { agent, task, .. } => {
@@ -2335,18 +2511,38 @@ pub fn unfinished_calls(entries: &[pantheon_storage::LedgerEntry]) -> Vec<String
     started.difference(&done).cloned().collect()
 }
 
-/// Calls that were approval-granted but never executed. A call parked on
-/// approval never emits ToolStarted, so a grant-resume must treat it as
-/// pending or the model sees a dangling tool_call and invents an answer.
+/// Call ids that were approval-granted but never executed. A call parked
+/// on approval never emits ToolStarted, so a grant-resume must treat it
+/// as pending or the model sees a dangling tool_call and invents an
+/// answer.
+///
+/// The ledger stores grants as whole scopes (`call_id:tool:args`), not
+/// call ids: the id half is extracted for the pending lookup, and the
+/// completed check compares ids against ids (comparing a scope against
+/// completed call ids never matched, so even an already-executed grant
+/// came back as "pending" and fabricated a recovery error).
 pub fn granted_unexecuted_calls(entries: &[pantheon_storage::LedgerEntry]) -> Vec<String> {
     let done = done_call_ids(entries);
     entries
         .iter()
         .filter_map(|e| match &e.event {
-            Event::ApprovalGranted { scope, .. } if !done.contains(scope) => Some(scope.clone()),
+            Event::ApprovalGranted { scope, .. } => {
+                let call_id = approval_call_id(scope);
+                (!done.contains(call_id)).then(|| call_id.to_string())
+            }
             _ => None,
         })
         .collect()
+}
+
+/// Tool calls already executed in this run, from the durable record.
+/// The max_tool_calls budget is whole-run, so each `chat_turn` seeds its
+/// counter here instead of zeroing it; recovery sees the same total.
+fn completed_tool_calls(entries: &[pantheon_storage::LedgerEntry]) -> u32 {
+    entries
+        .iter()
+        .filter(|e| matches!(&e.event, Event::ToolCompleted { .. }))
+        .count() as u32
 }
 
 fn done_call_ids(entries: &[pantheon_storage::LedgerEntry]) -> std::collections::BTreeSet<String> {
