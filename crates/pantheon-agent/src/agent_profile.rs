@@ -3,7 +3,7 @@
 //! # Why this lives in core
 //!
 //! `[agents.<name>]` was originally declared in the CLI crate
-//! (`pantheon-cli::config_doc`). That made the profile *config* readable by
+//! (`pantheon-tui::config`). That made the profile *config* readable by
 //! the CLI but unreadable by the runtime, which is the only thing that can
 //! actually give a session an identity. The type moved here so
 //! `pantheon-runtime`, `pantheon-storage`, and `pantheon-agent` can all

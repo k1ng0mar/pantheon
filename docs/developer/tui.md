@@ -1,8 +1,12 @@
 # Pantheon UI State Machine
 
 > Internal implementation spec for TUI work, not end-user documentation.
-> Slash commands and verbs listed here describe design targets; the
-> authoritative surface is `docs/reference/cli.md`.
+> Slash commands and verbs listed here describe design targets unless marked
+> shipped; the authoritative surface is `docs/reference/terminal.md`.
+> Shipped today: the §06 RUNTIME list, the history/models overlays, the
+> permission card, double-Esc interrupt, PgUp/PgDn transcript scroll.
+> Everything else in this file (palette, Ctrl+K/O/R/P/L hotkeys, side
+> inspector, modes, compaction progress UI) is a target, not a claim.
 
 The interaction/state matrix. Each state maps to: what triggers it, what the
 screen shows, and what transitions out. Implementation order follows the
@@ -105,8 +109,7 @@ may spend one compression-model call), `/export [markdown|json]` (writes
 `exports/<run>.md|json`).
 
 Removed from the surface: `/memory` (`/remember` covers it), `/policy`,
-`/cost` (header shows tokens), `/tools`, `/reasoning` (no effort knob
-exists in the provider chain), `/debug`, `/provenance`, `/events`
+`/cost` (header shows tokens), `/tools`, `/debug`, `/provenance`, `/events`
 (`runs`/`audit`/`logs` cover them).
 
 | State | Screen |

@@ -80,7 +80,7 @@ struct AgentRuntimeInner {
     collaboration: CollaborationStore,
     data_dir: PathBuf,
     /// Policy preset the profile resolved to. Kept as a string so the
-    /// capability layer (which lives in the CLI crate) stays the single
+    /// capability layer (which lives in the terminal crate) stays the single
     /// place that maps a preset name to a `Policy`.
     policy_preset: String,
 }

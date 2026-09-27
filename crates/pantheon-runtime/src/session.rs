@@ -29,6 +29,7 @@ use pantheon_tools::memory_tools::{
 use pantheon_tools::safewrite_tools::register_safewrite;
 use pantheon_tools::session_search_tools::{register_session_search, SessionSearchOptions};
 use pantheon_tools::tools::ToolRegistry;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -1206,13 +1207,120 @@ impl Session {
         } else {
             None
         };
+        // Wire the agent spawner when this session has an attached profile.
+        // Without a profile there is no identity to delegate to, so the
+        // spawner stays None and Delegate turns are denied (as before).
+        //
+        // The spawner captures the session's policy, model policy, secrets,
+        // and data dir so it can build a real child Session for the target
+        // profile — a full Pantheon execution, not a function pretending to
+        // be one.
+        let agent_opt = self.agent();
+        let policy = self.policy.clone();
+        let model_policy = self.policy_snapshot();
+        let data_dir = self.supervisor.data_dir().clone();
+        let spawner: Option<Box<dyn pantheon_agent::AgentSpawner>> = agent_opt.map(|agent| {
+            struct SessionSpawner {
+                agent: AgentRuntime,
+                policy: Policy,
+                model_policy: ModelPolicy,
+                data_dir: PathBuf,
+            }
+            impl pantheon_agent::AgentSpawner for SessionSpawner {
+                fn spawn(
+                    &self,
+                    agent: &str,
+                    _model: &str,
+                    task: &str,
+                    _depth: u32,
+                ) -> Result<String, PantheonError> {
+                    let child = self.agent.for_profile(agent)?;
+                    let child_run_id = crate::new_run_id();
+                    child.bind_run(&child_run_id)?;
+                    // The child rebuilds its own secrets broker from the
+                    // system environment. This is correct: each session
+                    // resolves secrets independently from the platform
+                    // stores, and the child should not inherit a snapshot
+                    // of the parent's resolution state.
+                    let child_secrets = SecretsBroker::from_system_env();
+                    let child_session = Session::new(
+                        self.data_dir.clone(),
+                        self.policy.clone(),
+                        self.model_policy.clone(),
+                        child_secrets,
+                    )?;
+                    child_session.with_agent(child)?;
+                    child_session.set_current_run(&child_run_id);
+                    let outcome = child_session.chat(&child_run_id, task)?;
+                    match outcome {
+                        pantheon_agent::LoopOutcome::Answered { text, .. } => Ok(text),
+                        pantheon_agent::LoopOutcome::Denied { capability } => {
+                            Err(PantheonError::new(
+                                "SWARM_CHILD_DENIED",
+                                pantheon_api::error::Layer::Agent,
+                                false,
+                                format!("child agent {agent} was denied: {capability:?}"),
+                                "check the child agent's policy",
+                                "",
+                            ))
+                        }
+                        pantheon_agent::LoopOutcome::Canceled { reason } => {
+                            Err(PantheonError::new(
+                                "SWARM_CHILD_CANCELED",
+                                pantheon_api::error::Layer::Agent,
+                                false,
+                                format!("child agent {agent} was canceled: {reason}"),
+                                "retry the delegation",
+                                "",
+                            ))
+                        }
+                        pantheon_agent::LoopOutcome::BudgetExhausted { cap } => {
+                            Err(PantheonError::new(
+                                "SWARM_CHILD_BUDGET",
+                                pantheon_api::error::Layer::Agent,
+                                false,
+                                format!("child agent {agent} exhausted {cap}"),
+                                "raise the budget or simplify the task",
+                                "",
+                            ))
+                        }
+                        pantheon_agent::LoopOutcome::AwaitingApproval { .. } => {
+                            Err(PantheonError::new(
+                                "SWARM_CHILD_APPROVAL",
+                                pantheon_api::error::Layer::Agent,
+                                false,
+                                format!("child agent {agent} needs approval"),
+                                "approve the child's task and retry",
+                                "",
+                            ))
+                        }
+                        pantheon_agent::LoopOutcome::Delegated { agent: sub } => {
+                            Err(PantheonError::new(
+                                "SWARM_CHILD_DELEGATED",
+                                pantheon_api::error::Layer::Agent,
+                                false,
+                                format!("child agent {agent} delegated to {sub}"),
+                                "delegation depth is capped by swarm limits",
+                                "",
+                            ))
+                        }
+                    }
+                }
+            }
+            Box::new(SessionSpawner {
+                agent,
+                policy,
+                model_policy,
+                data_dir,
+            }) as Box<dyn pantheon_agent::AgentSpawner>
+        });
         let loop_ = AgentLoop {
             run_id: run_id.into(),
             policy: self.policy.clone(),
             budget: self.budget.clone(),
             sink: &sink,
             tools: &runner,
-            spawner: None,
+            spawner: spawner.as_deref(),
             judge: None,
             cancel: Some(&self.cancel),
             depth: 0,

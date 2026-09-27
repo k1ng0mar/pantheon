@@ -66,7 +66,7 @@
         <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
         <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
         <a href="docs.html" class="text-muted hover:text-fg transition-colors">Docs</a>
-        <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
+        <a href="terminal.html" class="text-muted hover:text-fg transition-colors">Terminal</a>
         <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
       </div>
     </div>
@@ -84,12 +84,12 @@
 <tr><td>A plugin manifest feature</td><td><code>pantheon-extensions</code></td><td>Manifest, hooks, manager live together</td></tr>
 <tr><td>A storage table or migration</td><td><code>pantheon-storage</code></td><td>SQLite owns all durable state</td></tr>
 <tr><td>A memory layer change</td><td><code>pantheon-memory</code></td><td>Write path stays propose → policy → provenance</td></tr>
-<tr><td>A CLI verb</td><td><code>pantheon-cli</code> dispatch + its own module</td><td>Thin surface; logic goes in the owning crate</td></tr>
+<tr><td>A terminal verb</td><td><code>pantheon-tui</code> dispatch + its own module</td><td>Thin surface; logic goes in the owning crate</td></tr>
 <tr><td>A channel surface</td><td><code>pantheon-gateway</code> or <code>pantheon-api</code></td><td>The channel seam normalizes; adapters format</td></tr>
 </tbody></table>
 <p class="my-3 leading-relaxed">Rules that keep the architecture honest:</p>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><strong>No business logic in pantheon-cli.</strong> It parses arguments and calls into crates.</li>
+<li><strong>No business logic in pantheon-tui.</strong> It parses arguments and calls into crates.</li>
 <li><strong>No model SDKs above pantheon-providers.</strong> The agent loop speaks ModelTurn/ModelEvent, never HTTP.</li>
 <li><strong>Events over prints.</strong> A runtime transition that matters emits an Event; eprintln is for operator warnings only.</li>
 <li><strong>Durable before clever.</strong> New long-running work gets an operation state machine, not an in-memory variable.</li>
@@ -101,11 +101,11 @@
 <li>Nothing ships until both are green.</li>
 </ul>
 <h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Common changes</h2>
-<h3 class="font-bold mt-6 mb-2">Adding a CLI verb</h3>
-<p>1. Add dispatch in <code>pantheon-cli/src/main.rs</code> + register in <code>KNOWN_VERBS</code> and <code>usage()</code></p>
+<h3 class="font-bold mt-6 mb-2">Adding a terminal verb</h3>
+<p>1. Add dispatch in <code>pantheon-tui/src/terminal.rs</code> + register in <code>KNOWN_VERBS</code> and <code>usage()</code></p>
 <p>2. Implement logic in the owning crate</p>
 <p>3. Add tests (<code>*_tests.rs</code>)</p>
-<p>4. Document it in <code>docs/reference/cli.md</code></p>
+<p>4. Document it in <code>docs/reference/terminal.md</code></p>
 <p>5. Green workspace tests + evals</p>
 <h3 class="font-bold mt-6 mb-2">Adding a tool</h3>
 <p>1. Define it in <code>pantheon-tools/src/builtins.rs</code></p>
@@ -121,7 +121,7 @@
 <h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="architecture.html">Architecture</a> — system design, crate map, locked decisions</li>
-<li><a href="cli.html">CLI reference</a> — the surface your verb joins</li>
+<li><a href="terminal.html">Terminal reference</a> — the surface your verb joins</li>
 </ul>
 </main>
 

@@ -62,6 +62,7 @@ pub enum SourceKind {
     Hermes,
     OpenClaw,
     Omp,
+    ClaudeCode,
 }
 
 impl SourceKind {
@@ -70,12 +71,18 @@ impl SourceKind {
             SourceKind::Hermes => "hermes",
             SourceKind::OpenClaw => "openclaw",
             SourceKind::Omp => "omp",
+            SourceKind::ClaudeCode => "claude",
         }
     }
 
     /// Every source the CLI accepts, in help order.
-    pub fn all() -> [SourceKind; 3] {
-        [SourceKind::Hermes, SourceKind::OpenClaw, SourceKind::Omp]
+    pub fn all() -> [SourceKind; 4] {
+        [
+            SourceKind::Hermes,
+            SourceKind::OpenClaw,
+            SourceKind::Omp,
+            SourceKind::ClaudeCode,
+        ]
     }
 
     /// Parse a user-supplied source name. `omp` also answers to `oh-my-pi`
@@ -85,14 +92,166 @@ impl SourceKind {
             "hermes" => Some(SourceKind::Hermes),
             "openclaw" => Some(SourceKind::OpenClaw),
             "omp" | "oh-my-pi" | "pi" => Some(SourceKind::Omp),
+            "claude" | "claude-code" | "claudecode" => Some(SourceKind::ClaudeCode),
             _ => None,
         }
+    }
+
+    /// Claude Code's home directory name.
+    pub fn claude_dir_name() -> &'static str {
+        ".claude"
     }
 }
 
 impl std::fmt::Display for SourceKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Migration categories (user-facing filter groups)
+// ---------------------------------------------------------------------------
+
+/// User-facing migration categories that group item kinds into selectable
+/// buckets. Each category maps to one or more [`ItemKind`]s, so a user can
+/// say "migrate sessions and skills but not config" without knowing the
+/// internal kind names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationCategory {
+    /// Session transcripts (JSONL conversation logs).
+    Sessions,
+    /// Portable skills (SKILL.md directories).
+    Skills,
+    /// Agent identity files (SOUL.md, AGENTS.md, profile.yaml).
+    Identity,
+    /// Memory files (MEMORY.md, USER.md).
+    Memory,
+    /// Runtime plugins/extensions.
+    Plugins,
+    /// Provider/model endpoint configuration.
+    Config,
+    /// Credentials (API keys, tokens — names only, values carried into .env).
+    Credentials,
+    /// MCP server declarations.
+    Mcp,
+    /// Scheduled jobs.
+    Schedules,
+    /// Agent definitions (subagent markdown files).
+    Agents,
+    /// Rules and context files.
+    Rules,
+    /// Slash commands.
+    Commands,
+    /// Reusable prompt files.
+    Prompts,
+}
+
+impl MigrationCategory {
+    pub fn name(&self) -> &'static str {
+        match self {
+            MigrationCategory::Sessions => "sessions",
+            MigrationCategory::Skills => "skills",
+            MigrationCategory::Identity => "identity",
+            MigrationCategory::Memory => "memory",
+            MigrationCategory::Plugins => "plugins",
+            MigrationCategory::Config => "config",
+            MigrationCategory::Credentials => "credentials",
+            MigrationCategory::Mcp => "mcp",
+            MigrationCategory::Schedules => "schedules",
+            MigrationCategory::Agents => "agents",
+            MigrationCategory::Rules => "rules",
+            MigrationCategory::Commands => "commands",
+            MigrationCategory::Prompts => "prompts",
+        }
+    }
+
+    /// The item kinds this category covers.
+    pub fn kinds(&self) -> &'static [ItemKind] {
+        match self {
+            MigrationCategory::Sessions => &[ItemKind::Session],
+            MigrationCategory::Skills => &[ItemKind::Skill],
+            MigrationCategory::Identity => &[ItemKind::Persona],
+            MigrationCategory::Memory => &[ItemKind::Memory],
+            MigrationCategory::Plugins => &[ItemKind::Extension],
+            MigrationCategory::Config => &[ItemKind::Provider],
+            MigrationCategory::Credentials => &[ItemKind::Credentials],
+            MigrationCategory::Mcp => &[ItemKind::Mcp],
+            MigrationCategory::Schedules => &[ItemKind::Schedule],
+            MigrationCategory::Agents => &[ItemKind::Agent],
+            MigrationCategory::Rules => &[ItemKind::Rule],
+            MigrationCategory::Commands => &[ItemKind::Command],
+            MigrationCategory::Prompts => &[ItemKind::Prompt],
+        }
+    }
+
+    /// Every category, in help order.
+    pub fn all() -> &'static [MigrationCategory] {
+        &[
+            MigrationCategory::Sessions,
+            MigrationCategory::Skills,
+            MigrationCategory::Identity,
+            MigrationCategory::Memory,
+            MigrationCategory::Plugins,
+            MigrationCategory::Config,
+            MigrationCategory::Credentials,
+            MigrationCategory::Mcp,
+            MigrationCategory::Schedules,
+            MigrationCategory::Agents,
+            MigrationCategory::Rules,
+            MigrationCategory::Commands,
+            MigrationCategory::Prompts,
+        ]
+    }
+
+    /// Parse a category name (case-insensitive).
+    pub fn parse(s: &str) -> Option<MigrationCategory> {
+        let s = s.trim().to_ascii_lowercase();
+        Self::all().iter().copied().find(|c| c.name() == s)
+    }
+}
+
+/// A migration filter: which categories to include. All categories are
+/// enabled by default; the CLI's `--categories` flag selects a subset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationFilter {
+    pub categories: Vec<MigrationCategory>,
+}
+
+impl MigrationFilter {
+    /// All categories enabled (the default).
+    pub fn all() -> Self {
+        Self {
+            categories: MigrationCategory::all().to_vec(),
+        }
+    }
+
+    /// Only the named categories enabled.
+    pub fn only(categories: Vec<MigrationCategory>) -> Self {
+        Self { categories }
+    }
+
+    /// Check if an item kind passes this filter.
+    pub fn allows(&self, kind: ItemKind) -> bool {
+        self.categories.iter().any(|c| c.kinds().contains(&kind))
+    }
+
+    /// Apply this filter to a plan, returning a new plan with only the
+    /// selected categories' items. Items that don't match any category
+    /// (Secret, Opaque) are always excluded.
+    pub fn apply(&self, plan: &MigrationPlan) -> MigrationPlan {
+        MigrationPlan {
+            source: plan.source.clone(),
+            root: plan.root.clone(),
+            source_version: plan.source_version.clone(),
+            items: plan
+                .items
+                .iter()
+                .filter(|i| self.allows(i.kind))
+                .cloned()
+                .collect(),
+        }
     }
 }
 
@@ -221,7 +380,7 @@ impl Targets {
 
     /// Default layout: skills under `<data_dir>/skills`, extensions under
     /// `PANTHEON_EXT_DIR` (or `<data_dir>/extensions`), matching
-    /// `pantheon-cli`'s `data_dir()` / `ext_dir()`.
+    /// `pantheon-tui`'s `data_dir()` / `ext_dir()`.
     pub fn from_data_dir(data_dir: PathBuf) -> Self {
         let ext = std::env::var("PANTHEON_EXT_DIR")
             .map(PathBuf::from)
@@ -474,7 +633,8 @@ pub fn validate_skill_md(path: &Path) -> Result<String, String> {
 ///
 /// Hermes ships `config.yaml` + `plugins/` + `skills/`; OpenClaw ships
 /// `openclaw.plugin.json` manifests inside `plugins/`; OMP ships
-/// `agent/config.yml` under an `agent/` dir alongside an install id.
+/// `agent/config.yml` under an `agent/` dir alongside an install id;
+/// Claude Code ships `settings.json` + `projects/` + `todos/`.
 pub fn detect(root: &Path) -> Vec<SourceKind> {
     let mut found: Vec<SourceKind> = Vec::new();
     if is_hermes(root) {
@@ -485,6 +645,9 @@ pub fn detect(root: &Path) -> Vec<SourceKind> {
     }
     if is_omp(root) {
         found.push(SourceKind::Omp);
+    }
+    if is_claude_code(root) {
+        found.push(SourceKind::ClaudeCode);
     }
     found
 }
@@ -527,6 +690,15 @@ fn is_omp(root: &Path) -> bool {
         || root.join("install-id").exists()
 }
 
+/// Claude Code: `~/.claude/` with settings.json, projects/, todos/, or
+/// agents/ subdirs. The anchor is `settings.json` (always present in a
+/// working install) or a `projects/` dir with JSONL transcripts.
+fn is_claude_code(root: &Path) -> bool {
+    root.join("settings.json").exists()
+        || (root.join("projects").is_dir() && root.join("todos").is_dir())
+        || root.join("agents").is_dir()
+}
+
 // ---------------------------------------------------------------------------
 // analyze
 // ---------------------------------------------------------------------------
@@ -538,6 +710,7 @@ pub fn analyze(root: &Path, kind: SourceKind) -> Vec<Detected> {
         SourceKind::Hermes => analyze_hermes(root),
         SourceKind::OpenClaw => analyze_openclaw(root),
         SourceKind::Omp => analyze_omp(root),
+        SourceKind::ClaudeCode => analyze_claude_code(root),
     };
     out.sort_by_key(|a| (a.kind, a.path.clone()));
     out
@@ -1098,6 +1271,71 @@ fn package_declares_extension(pkg: &Path) -> bool {
     v.get("omp").is_some() || v.get("pi").is_some()
 }
 
+/// Claude Code analyzer: sessions, skills, agents, memory, plugins, config.
+///
+/// Claude Code stores its data under `~/.claude/`:
+/// - `projects/<project-hash>/*.jsonl` — session transcripts
+/// - `skills/<name>/SKILL.md` — portable skills
+/// - `agents/<name>.md` — subagent definitions
+/// - `todos/*.md` — memory/task files
+/// - `plugins/<name>/` — plugin directories
+/// - `settings.json` — config (may hold keys)
+fn analyze_claude_code(root: &Path) -> Vec<Detected> {
+    let mut out = Vec::new();
+
+    // Session transcripts under projects/
+    scan_sessions(&[root.join("projects")], &mut out, "claude");
+
+    // Skills
+    scan_skills(&root.join("skills"), &mut out);
+
+    // Agent definitions
+    scan_md(&root.join("agents"), ItemKind::Agent, &mut out);
+
+    // Memory files (todos/ and MEMORY.md / USER.md at root)
+    scan_md(&root.join("todos"), ItemKind::Memory, &mut out);
+    for name in ["MEMORY.md", "USER.md"] {
+        let p = root.join(name);
+        if p.is_file() {
+            out.push(Detected {
+                kind: ItemKind::Memory,
+                path: p.to_string_lossy().to_string(),
+                mappable: true,
+                note: "memory file; imports into the memory plane with provenance".to_string(),
+            });
+        }
+    }
+
+    // Plugins
+    if let Ok(rd) = std::fs::read_dir(root.join("plugins")) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_dir() || is_hidden(&p) {
+                continue;
+            }
+            if is_secret_path(&p) {
+                out.push(detected_secret(&p, "plugin dir named like a credential"));
+                continue;
+            }
+            out.push(analyze_foreign_extension(&p));
+        }
+    }
+
+    // Config and credentials
+    scan_mcp_and_credentials(root, &mut out);
+
+    // Settings.json is config that may hold keys
+    let settings = root.join("settings.json");
+    if settings.is_file() {
+        out.push(detected_secret(
+            &settings,
+            "claude settings / config (may hold keys)",
+        ));
+    }
+
+    out
+}
+
 // ---------------------------------------------------------------------------
 // plan
 // ---------------------------------------------------------------------------
@@ -1245,6 +1483,16 @@ pub fn source_version(root: &Path, kind: SourceKind) -> Option<String> {
             }
         }
         SourceKind::OpenClaw => None,
+        SourceKind::ClaudeCode => {
+            // Claude Code does not write a version stamp. The closest thing is
+            // the settings.json "version" field (added in recent releases).
+            let p = root.join("settings.json");
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
+            v.get("version")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+        }
     }
 }
 

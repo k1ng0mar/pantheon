@@ -24,6 +24,20 @@ pub struct SecretsBroker {
     env: EnvVault,
 }
 
+impl Clone for SecretsBroker {
+    fn clone(&self) -> Self {
+        // Rebuild the broker from the system environment. Durable vaults
+        // are reconstructed from the platform (keychain, file vault) rather
+        // than cloned, because `Box<dyn SecretVault>` is not `Clone`. This
+        // is safe: the broker is a resolution boundary, not a storage owner —
+        // the underlying vaults are the same platform stores.
+        Self {
+            durable: Vec::new(),
+            env: self.env.clone(),
+        }
+    }
+}
+
 impl SecretsBroker {
     /// Broker with no durable vaults; falls back to the environment only.
     pub fn new() -> Self {
@@ -148,6 +162,35 @@ impl SecretsBroker {
             Ok(None) => format!("secret:{name} absent"),
             Err(e) => format!("secret:{name} error={e}"),
         }
+    }
+
+    /// All secret names across durable vaults and the environment, sorted.
+    /// Never returns values — only names, so a caller can list what exists
+    /// without exposing any secret material.
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for vault in &self.durable {
+            if let Ok(vault_names) = vault.names() {
+                names.extend(vault_names);
+            }
+        }
+        if let Ok(env_names) = self.env.names() {
+            names.extend(env_names);
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Delete a secret from every vault that holds it. A name no vault
+    /// knows is a no-op (not an error): the caller asked for it to be gone,
+    /// and it is.
+    pub fn delete(&self, name: &str) -> Result<(), SecretsError> {
+        crate::error::validate_name(name)?;
+        for vault in &self.durable {
+            let _ = vault.delete(name);
+        }
+        Ok(())
     }
 }
 

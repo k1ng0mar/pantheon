@@ -1855,34 +1855,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pantheon-cli"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "ctrlc",
- "pantheon-agent",
- "pantheon-api",
- "pantheon-exec",
- "pantheon-extensions",
- "pantheon-gateway",
- "pantheon-memory",
- "pantheon-migration",
- "pantheon-providers",
- "pantheon-runtime",
- "pantheon-scheduler",
- "pantheon-secrets",
- "pantheon-storage",
- "pantheon-swarm",
- "pantheon-tools",
- "pantheon-tui",
- "ratatui",
- "serde",
- "serde_json",
- "toml",
- "ureq",
-]
-
-[[package]]
 name = "pantheon-exec"
 version = "0.1.0"
 dependencies = [
@@ -2058,12 +2030,26 @@ name = "pantheon-tui"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "ctrlc",
  "pantheon-agent",
+ "pantheon-api",
+ "pantheon-exec",
+ "pantheon-extensions",
+ "pantheon-gateway",
+ "pantheon-memory",
+ "pantheon-migration",
  "pantheon-providers",
  "pantheon-runtime",
+ "pantheon-scheduler",
+ "pantheon-secrets",
  "pantheon-storage",
+ "pantheon-swarm",
+ "pantheon-tools",
  "ratatui",
+ "serde",
  "serde_json",
+ "toml",
+ "ureq",
 ]
 
 [[package]]

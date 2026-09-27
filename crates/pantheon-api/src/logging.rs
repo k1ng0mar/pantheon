@@ -198,6 +198,51 @@ pub fn error(component: &str, msg: impl AsRef<str>) {
     );
 }
 
+// --- redaction -----------------------------------------------------------
+
+/// Redact secrets from a message before it reaches a log file.
+///
+/// The redaction pipeline is fail-closed: when a secret pattern is detected,
+/// the entire match is replaced with `[REDACTED]`. This is deliberately
+/// aggressive — a partial leak is still a leak.
+///
+/// Patterns redacted:
+/// - `sk-or-v1-...` (OpenRouter keys)
+/// - `sk-...` (OpenAI-style keys)
+/// - `Bearer <value>` (Authorization headers)
+/// - `api-key: <value>` (API key headers)
+/// - `PANTHEON_SECRET_<name>=<value>` (env-style secrets)
+pub fn redact(msg: &str) -> String {
+    let mut out = msg.to_string();
+    out = redact_prefix(&out, "sk-or-v1-");
+    out = redact_prefix(&out, "sk-");
+    out = redact_prefix(&out, "Bearer ");
+    out = redact_prefix(&out, "api-key: ");
+    out = redact_prefix(&out, "api-key=");
+    out = redact_prefix(&out, "PANTHEON_SECRET_");
+    out
+}
+
+/// Redact a secret that starts with a known prefix. The secret runs until
+/// the next whitespace or end of string.
+fn redact_prefix(input: &str, prefix: &str) -> String {
+    if !input.contains(prefix) {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(pos) = rest.find(prefix) {
+        out.push_str(&rest[..pos]);
+        out.push_str("[REDACTED]");
+        rest = &rest[pos + prefix.len()..];
+        // Consume the secret value: everything up to the next whitespace
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Gateway-scoped records go to their own file so `logs gateway` is not mostly
 /// agent turns.
 pub fn gateway(level: Level, component: &str, msg: impl AsRef<str>) {

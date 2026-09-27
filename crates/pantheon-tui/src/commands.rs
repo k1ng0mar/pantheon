@@ -124,6 +124,51 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "session",
         },
         CommandMeta {
+            name: "approvals",
+            desc: "pending approvals for this run",
+            category: "runtime",
+        },
+        CommandMeta {
+            name: "approve",
+            desc: "approve a pending approval by index",
+            category: "runtime",
+        },
+        CommandMeta {
+            name: "deny",
+            desc: "deny a pending approval by index",
+            category: "runtime",
+        },
+        CommandMeta {
+            name: "schedule",
+            desc: "scheduled jobs",
+            category: "runtime",
+        },
+        CommandMeta {
+            name: "mcp",
+            desc: "MCP server declarations",
+            category: "runtime",
+        },
+        CommandMeta {
+            name: "migrate",
+            desc: "import from other harnesses (hermes, openclaw, omp, claude)",
+            category: "runtime",
+        },
+        CommandMeta {
+            name: "migrate",
+            desc: "import from other harnesses (hermes, openclaw, omp, claude)",
+            category: "runtime",
+        },
+        CommandMeta {
+            name: "migrate",
+            desc: "import from other harnesses (hermes, openclaw, omp, claude)",
+            category: "runtime",
+        },
+        CommandMeta {
+            name: "env",
+            desc: "secret names and status (never values)",
+            category: "runtime",
+        },
+        CommandMeta {
             name: "settings",
             desc: "configure pantheon",
             category: "runtime",

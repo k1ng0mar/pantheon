@@ -6,7 +6,6 @@ members = [
   "crates/pantheon-storage",
   "crates/pantheon-runtime",
   "crates/pantheon-api",
-  "crates/pantheon-cli",
   "crates/pantheon-agent",
   "crates/pantheon-swarm",
   "crates/pantheon-exec",
@@ -24,9 +23,8 @@ members = [
   "crates/pantheon-scheduler",
   "crates/pantheon-gateway",
   "crates/pantheon-migration",
-  # The TUI lives here, as a library crate, not in pantheon-cli. It is the
-  # terminal product: one interface, and pantheon-cli keeps only the
-  # non-interactive automation verbs. Its `src/lib.rs` now exists.
+  # pantheon-tui is the one terminal application: the `pantheon` binary
+  # (interactive session + non-interactive verbs) lives here.
   "crates/pantheon-tui",
 ]
 

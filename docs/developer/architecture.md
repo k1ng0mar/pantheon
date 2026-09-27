@@ -96,11 +96,10 @@ CLI, TUI, web (`serve`), and gateways (Discord, Telegram) all drive the same Ses
 | `pantheon-swarm` | Spawn caps |
 | `pantheon-mcp` | Token → capability projection |
 | `pantheon-migration` | Source importers |
-| `pantheon-cli` | Thin dispatch surface |
-| `pantheon-tui` | Terminal interface |
+| `pantheon-tui` | Terminal application: interactive session + non-interactive verbs |
 
 ## See also
 
 - [Contributing](contributing.md) — boundaries and change mechanics
 - [Decisions](decisions/) — records behind the locks above
-- [CLI reference](../reference/cli.md) — the surface this architecture serves
+- [Terminal reference](../reference/terminal.md) — the surface this architecture serves

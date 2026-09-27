@@ -4,7 +4,7 @@
 //! routing design: push a screen, feed it keys, assert what popped.
 
 use super::*;
-use crate::widget::{Item, MultiSelect, Select, TextInput};
+use crate::widget::{Confirm, Item, MultiSelect, Select, TextInput};
 use std::sync::{Arc, Mutex};
 
 fn pick() -> Select {
@@ -72,31 +72,24 @@ fn a_continuation_receives_a_many_selection() {
 
 #[test]
 fn a_key_the_top_screen_ignores_reaches_the_one_below() {
-    // A filterable list consumes printable characters, so a screen below it
-    // can never see one. This is the property that makes stacking safe.
-    #[derive(Default)]
-    struct Counter(Arc<Mutex<u32>>);
-    impl RawHandler for Counter {
-        fn draw(&mut self, _f: &mut ratatui::Frame) {}
-        fn key(&mut self, key: Key) -> Option<ScreenResult> {
-            if key == Key::CtrlK {
-                *self.0.lock().unwrap() += 1;
-            }
-            None
-        }
-    }
-    let hits = Arc::new(Mutex::new(0));
+    // A confirm only answers y/n; anything else falls through to the
+    // screen below. The 'z' is invisible until the confirm is gone and
+    // the text field submits what it received.
     let mut app = TuiApp::new();
-    app.push(Screen::raw("base", Box::new(Counter(hits.clone()))));
-    app.push(Screen::select("model", pick()));
-    app.on_key(Key::Char('o'));
-    app.on_key(Key::CtrlK);
+    app.push(Screen::text("name", TextInput::new("name")));
+    app.push(Screen::confirm("sure?", Confirm::new("sure?", "proceed?")));
+    app.on_key(Key::Char('z'));
+    assert_eq!(app.depth(), 2, "nothing consumed the key outright");
+    app.on_key(Key::Esc);
+    assert_eq!(app.depth(), 1, "the confirm answered no and popped");
+    app.on_key(Key::Enter);
     assert_eq!(
-        *hits.lock().unwrap(),
-        1,
-        "the chord reached the base screen"
+        app.take_value()
+            .and_then(|s| s.text().map(str::to_string))
+            .as_deref(),
+        Some("z"),
+        "the key reached the field below"
     );
-    assert_eq!(app.depth(), 2, "nothing popped");
 }
 
 #[test]

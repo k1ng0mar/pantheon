@@ -42,5 +42,5 @@ Debug order: `doctor` (usually a manifest typo), `extensions` (did it load?), fi
 ## See also
 
 - [Memory](memory.md) — skills, the knowledge half
-- [CLI reference](../reference/cli.md#extend) — plugin and hook verbs
+- [Terminal reference](../reference/terminal.md#extend) — plugin and hook verbs
 - [Architecture](../developer/architecture.md) — hooks, compat adapter, capabilities

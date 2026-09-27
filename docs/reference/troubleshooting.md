@@ -56,4 +56,4 @@ pantheon repair              # fix what can be fixed safely (backs up first)
 
 - [Getting started](../getting-started.md) — install and setup
 - [Configuration](configuration.md) — config fields and data directory
-- [CLI reference](cli.md) — `doctor`, `repair`, `reset` flags
+- [Terminal reference](terminal.md) — `doctor`, `repair`, `reset` flags

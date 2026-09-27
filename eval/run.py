@@ -63,7 +63,7 @@ def find_python3():
 def skip_reason(case, bin_path, py3):
     why = case.get("skip")
     if why == "needs binary" and bin_path is None:
-        return "pantheon binary not found (cargo build -p pantheon-cli)"
+        return "pantheon binary not found (cargo build -p pantheon-tui)"
     if why == "needs binary" and bin_path is not None:
         return None
     if why == "python3" and py3 is None:

@@ -56,4 +56,4 @@ Skills are portable knowledge (instructions, workflows, examples). They explain 
 
 - [Agents](agents.md) — memory scoping per identity
 - [Extensions](extensions.md) — hooks and executable plugins
-- [CLI reference](../reference/cli.md#memory) — full flags
+- [Terminal reference](../reference/terminal.md#memory) — full flags

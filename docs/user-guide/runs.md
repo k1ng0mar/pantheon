@@ -56,4 +56,4 @@ pantheon schedule list|pause|resume|cancel|run <id>
 
 - [Sessions](sessions.md) — interacting with runs, approvals in the terminal
 - [Agents](agents.md) — whose work this is
-- [CLI reference](../reference/cli.md) — `run`, `runs`, `pipeline`, `schedule`, `swarm`, `repair`
+- [Terminal reference](../reference/terminal.md) — `run`, `runs`, `pipeline`, `schedule`, `swarm`, `repair`

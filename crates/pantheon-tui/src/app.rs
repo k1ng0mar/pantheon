@@ -48,32 +48,13 @@ pub struct Screen {
 }
 
 /// The widgets a screen may hold. A screen holds exactly one, so key routing
-/// is a match with four arms rather than a trait-object dance.
+/// is a match with five arms rather than a trait-object dance.
 pub enum ScreenWidget {
     Select(crate::widget::Select),
     MultiSelect(crate::widget::MultiSelect),
     TextInput(crate::widget::TextInput),
     Confirm(crate::widget::Confirm),
     SearchList(crate::widget::SearchList),
-    /// A screen with no widget of its own: the session view, the finished
-    /// screen, anything that handles its own keys.
-    Raw(RawScreen),
-}
-
-/// A screen that renders and handles keys itself.
-pub trait RawHandler: Send {
-    /// A ratatui frame, to draw into.
-    fn draw(&mut self, f: &mut ratatui::Frame);
-    /// Handle a key. Return `None` to fall through to the next screen.
-    fn key(&mut self, key: Key) -> Option<ScreenResult>;
-    /// How tall this screen wants the shared status area to be, in rows.
-    fn status_rows(&self) -> u16 {
-        1
-    }
-}
-
-pub struct RawScreen {
-    pub handler: Box<dyn RawHandler>,
 }
 
 impl Screen {
@@ -112,22 +93,11 @@ impl Screen {
             on_finish: None,
         }
     }
-    pub fn raw(title: impl Into<String>, h: Box<dyn RawHandler>) -> Self {
-        Self {
-            title: title.into(),
-            widget: ScreenWidget::Raw(RawScreen { handler: h }),
-            on_finish: None,
-        }
-    }
 
     /// Set the continuation run when this screen finishes.
     pub fn then<F: FnOnce(Selection) + Send + 'static>(mut self, f: F) -> Self {
         self.on_finish = Some(Box::new(f));
         self
-    }
-
-    pub fn is_raw(&self) -> bool {
-        matches!(self.widget, ScreenWidget::Raw(_))
     }
 }
 
@@ -244,12 +214,6 @@ impl TuiApp {
         }
     }
 
-    /// The base screen is whatever is at the bottom of the stack; the session
-    /// view lives there and every overlay stacks above it.
-    pub fn base(&self) -> Option<&Screen> {
-        self.stack.first()
-    }
-
     /// Offer a key to the stack: top screen first, then down, then the global
     /// bindings. Returns true when something consumed it.
     pub fn on_key(&mut self, key: Key) -> bool {
@@ -264,7 +228,6 @@ impl TuiApp {
                 ScreenWidget::TextInput(w) => submit(w.handle_key(key)),
                 ScreenWidget::Confirm(w) => submit(w.handle_key(key)),
                 ScreenWidget::SearchList(w) => submit(w.handle_key(key)),
-                ScreenWidget::Raw(r) => r.handler.key(key),
             };
             if let Some(r) = r {
                 result = Some((i, r));
@@ -346,7 +309,6 @@ impl TuiApp {
                 ScreenWidget::TextInput(w) => crate::render::draw_text(f, target, w),
                 ScreenWidget::Confirm(w) => crate::render::draw_confirm(f, target, w),
                 ScreenWidget::SearchList(w) => crate::render::draw_search(f, target, w),
-                ScreenWidget::Raw(r) => r.handler.draw(f),
             }
         }
     }
