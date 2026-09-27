@@ -16,24 +16,35 @@ use crate::env::EnvVault;
 use crate::error::SecretsError;
 use crate::value::SecretValue;
 use crate::vault::SecretVault;
+use std::sync::Arc;
 
 /// Resolves and injects secrets for a run.
 #[derive(Debug, Default)]
 pub struct SecretsBroker {
-    durable: Vec<Box<dyn SecretVault>>,
+    /// Durable backends behind `Arc`: every vault guards its state with a
+    /// `Mutex` and takes `&self`, so sharing is sound — and `clone()` keeps
+    /// resolving against the same platform stores instead of silently
+    /// dropping to memory-only.
+    durable: Vec<Arc<dyn SecretVault>>,
     env: EnvVault,
+    /// Host env names the plugin supervisor may copy into plugin
+    /// subprocesses. Carried on the broker because the broker owns the
+    /// run's secrets-boundary policy. Empty (default) = plugins receive no
+    /// host vars beyond the curated minimum (PATH); manifest-declared names
+    /// only cross the boundary on an explicit operator allowlist hit.
+    plugin_env_allowlist: Vec<String>,
 }
 
 impl Clone for SecretsBroker {
     fn clone(&self) -> Self {
-        // Rebuild the broker from the system environment. Durable vaults
-        // are reconstructed from the platform (keychain, file vault) rather
-        // than cloned, because `Box<dyn SecretVault>` is not `Clone`. This
-        // is safe: the broker is a resolution boundary, not a storage owner —
-        // the underlying vaults are the same platform stores.
+        // Vaults are shared, not dropped: the `Arc`s clone cheaply and the
+        // clone resolves against the same platform stores. (An earlier
+        // version rebuilt from the system environment here and silently
+        // fell back to memory-only, losing every durable backend.)
         Self {
-            durable: Vec::new(),
+            durable: self.durable.clone(),
             env: self.env.clone(),
+            plugin_env_allowlist: self.plugin_env_allowlist.clone(),
         }
     }
 }
@@ -48,14 +59,18 @@ impl SecretsBroker {
     /// plus the OS keychain first when this host has a usable platform
     /// credential store (spec §13 ranks it above every other durable
     /// backend).
+    ///
+    /// The `env:` literal form resolves nothing unless an allowlist is
+    /// installed via [`Self::with_env_allowlist`]: fail closed by default.
     pub fn from_system_env() -> Self {
-        let mut durable: Vec<Box<dyn SecretVault>> = Vec::new();
+        let mut durable: Vec<Arc<dyn SecretVault>> = Vec::new();
         if crate::keychain::KeychainVault::platform_available().is_ok() {
-            durable.push(Box::new(crate::keychain::KeychainVault::new()));
+            durable.push(Arc::new(crate::keychain::KeychainVault::new()));
         }
         Self {
             durable,
             env: EnvVault::system(),
+            plugin_env_allowlist: Vec::new(),
         }
     }
 
@@ -79,7 +94,7 @@ impl SecretsBroker {
     /// Add a durable vault (OS keychain, encrypted local, memory). Durable
     /// vaults are consulted in insertion order before the environment.
     pub fn with_vault(mut self, vault: Box<dyn SecretVault>) -> Self {
-        self.durable.push(vault);
+        self.durable.push(Arc::from(vault));
         self
     }
 
@@ -87,7 +102,7 @@ impl SecretsBroker {
     /// (a `--key` flag, a per-call credential) must beat config- and
     /// env-seeded vaults, and durable vaults resolve in insertion order.
     pub fn with_vault_front(mut self, vault: Box<dyn SecretVault>) -> Self {
-        self.durable.insert(0, vault);
+        self.durable.insert(0, Arc::from(vault));
         self
     }
 
@@ -95,6 +110,33 @@ impl SecretsBroker {
     pub fn with_env(mut self, env: EnvVault) -> Self {
         self.env = env;
         self
+    }
+
+    /// Restrict the `env:` literal secret form to the allowlist (exact
+    /// names or `PREFIX_*`; see [`crate::env::env_var_allowed`]). Default
+    /// is empty: `env:` reads fail closed. Applies to the broker's own
+    /// environment vault.
+    pub fn with_env_allowlist(mut self, allowlist: Vec<String>) -> Self {
+        self.env = self.env.with_env_allowlist(allowlist);
+        self
+    }
+
+    /// Host env names the plugin supervisor may copy into plugin
+    /// subprocesses (same entry syntax as the `env:` allowlist). Default is
+    /// empty: plugins receive no host vars beyond the curated minimum.
+    pub fn with_plugin_env_allowlist(mut self, allowlist: Vec<String>) -> Self {
+        self.plugin_env_allowlist = allowlist;
+        self
+    }
+
+    /// The plugin env allowlist (see [`Self::with_plugin_env_allowlist`]).
+    pub fn plugin_env_allowlist(&self) -> &[String] {
+        &self.plugin_env_allowlist
+    }
+
+    /// The `env:` literal-lookup allowlist on this broker's environment vault.
+    pub fn env_allowlist(&self) -> &[String] {
+        self.env.env_allowlist()
     }
 
     /// Resolve a secret: durable vaults first, then the environment.

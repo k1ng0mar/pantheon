@@ -98,6 +98,17 @@ model    = &quot;claude-sonnet-4-5&quot;
 backend = &quot;native&quot;
 </code></pre>
 <p class="my-3 leading-relaxed">Backend selection is mirrored in <code>memory-backend.toml</code>. See <a href="memory.html">Memory</a>.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Secrets</h2>
+<pre><code>
+[secrets]
+env_allowlist = [&quot;MY_API_KEY&quot;, &quot;PANTHEON_*&quot;]
+plugin_env_allowlist = [&quot;MY_PLUGIN_TOKEN&quot;]
+</code></pre>
+<p class="my-3 leading-relaxed">The run&#x27;s secrets-boundary policy. Both lists are empty by default (fail closed):</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><code>env_allowlist</code>: env vars readable through the <code>env:</code> secret-name form. Entries are exact names or <code>PREFIX_*</code> wildcards; <code>&quot;*&quot;</code> alone allows all (explicit opt-out). Without an entry, <code>env:</code> lookups resolve nothing — secrets must come from <code>PANTHEON_SECRET_*</code> or a durable vault, so a name like <code>env:AWS_SECRET_ACCESS_KEY</code> can never exfiltrate an arbitrary host variable.</li>
+<li><code>plugin_env_allowlist</code>: manifest-declared env vars the plugin supervisor may copy from the host into plugin subprocesses (same entry syntax). A project-controlled manifest can declare any name it likes, so a declared name alone never crosses the boundary — only an entry here lets a host var reach plugin code. Extension (Python/JS) hook subprocesses always run with a cleared environment (PATH only) regardless of this list.</li>
+</ul>
 <h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Agents</h2>
 <pre><code>
 profile = &quot;default&quot;   # informational label only; does NOT select an agent

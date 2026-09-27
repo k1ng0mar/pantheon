@@ -22,7 +22,7 @@ fn resolves_namespaced_env_var() {
 
 #[test]
 fn resolves_literal_env_reference() {
-    let vault = EnvVault::from_map([("FOO", "bar")]);
+    let vault = EnvVault::from_map([("FOO", "bar")]).with_env_allowlist(vec!["FOO".into()]);
     assert_eq!(
         vault
             .get("env:FOO")
@@ -30,6 +30,62 @@ fn resolves_literal_env_reference() {
             .map(|s| s.expose().to_string()),
         Some("bar".into())
     );
+}
+
+#[test]
+fn env_literal_fails_closed_without_allowlist() {
+    // Same map as above, no allowlist: the read must NOT leak the var.
+    let vault = EnvVault::from_map([("FOO", "bar")]);
+    assert_eq!(vault.get("env:FOO").unwrap(), None);
+}
+
+#[test]
+fn env_literal_allowlist_prefix_match() {
+    let vault = EnvVault::from_map([
+        ("PANTHEON_API_KEY", "k1"),
+        ("AWS_SECRET_ACCESS_KEY", "leak-me"),
+    ])
+    .with_env_allowlist(vec!["PANTHEON_*".into()]);
+    assert_eq!(
+        vault
+            .get("env:PANTHEON_API_KEY")
+            .unwrap()
+            .map(|s| s.expose().to_string()),
+        Some("k1".into())
+    );
+    // Non-allowlisted var fails closed even though it is in the map.
+    assert_eq!(vault.get("env:AWS_SECRET_ACCESS_KEY").unwrap(), None);
+}
+
+#[test]
+fn env_literal_system_vault_reads_live_env_when_allowlisted() {
+    std::env::set_var("PANTHEON_TEST_ALLOWLISTED", "yes");
+    let vault = EnvVault::system().with_env_allowlist(vec!["PANTHEON_TEST_ALLOWLISTED".into()]);
+    assert_eq!(
+        vault
+            .get("env:PANTHEON_TEST_ALLOWLISTED")
+            .unwrap()
+            .map(|s| s.expose().to_string()),
+        Some("yes".into())
+    );
+    std::env::remove_var("PANTHEON_TEST_ALLOWLISTED");
+    // Same vault, no allowlist hit for an unrelated var: closed.
+    std::env::set_var("PANTHEON_TEST_NOT_ALLOWLISTED", "no");
+    assert_eq!(vault.get("env:PANTHEON_TEST_NOT_ALLOWLISTED").unwrap(), None);
+    std::env::remove_var("PANTHEON_TEST_NOT_ALLOWLISTED");
+}
+
+#[test]
+fn allowlist_matcher_semantics() {
+    let list = vec!["FOO".into(), "PANTHEON_*".into(), "  ".into()];
+    assert!(env_var_allowed(&list, "FOO"));
+    assert!(!env_var_allowed(&list, "FOOBAR"));
+    assert!(env_var_allowed(&list, "PANTHEON_SECRET_X"));
+    assert!(!env_var_allowed(&list, "AWS_SECRET"));
+    // "*" alone is the explicit allow-all escape hatch.
+    assert!(env_var_allowed(&["*".into()], "ANYTHING"));
+    // Empty allowlist denies everything.
+    assert!(!env_var_allowed(&[], "FOO"));
 }
 
 #[test]

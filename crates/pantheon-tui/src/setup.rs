@@ -201,6 +201,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         tools: None,
         custom_providers: Default::default(),
         agents: Default::default(),
+        secrets: None,
     };
 
     match cfg.save(data_dir) {

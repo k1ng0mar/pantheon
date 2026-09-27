@@ -173,8 +173,17 @@ impl AcpBackend {
     /// Spawn `program [args...]` with piped stdio. Fails fast when the
     /// program does not exist, so a missing harness reads as "not installed"
     /// rather than a hung handshake.
+    ///
+    /// The child is a third-party agent harness: its environment is cleared
+    /// down to PATH (see [`crate::supervisor`] for the same treatment of
+    /// plugin processes) so host secrets never leak across the boundary.
     pub fn spawn(program: &str, args: &[&str]) -> Result<Self, String> {
-        let mut child = Command::new(program)
+        let mut cmd = Command::new(program);
+        cmd.env_clear();
+        if let Ok(p) = std::env::var("PATH") {
+            cmd.env("PATH", p);
+        }
+        let mut child = cmd
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

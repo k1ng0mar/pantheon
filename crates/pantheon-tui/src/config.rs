@@ -172,6 +172,31 @@ pub struct ServerSection {
     pub host: String,
 }
 
+/// `[secrets]`: the run's secrets-boundary policy. Both lists are empty by
+/// default (fail closed).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SecretsSection {
+    /// Env vars readable through the `env:` secret-name form. Entries are
+    /// exact var names (`"MY_KEY"`) or `PREFIX_*` wildcards
+    /// (`"PANTHEON_*"`); `"*"` alone allows all (explicit opt-out).
+    ///
+    /// Default: empty — `env:` lookups resolve nothing. Secrets must come
+    /// from `PANTHEON_SECRET_*` or a durable vault, so a name like
+    /// `env:AWS_SECRET_ACCESS_KEY` can never be used to exfiltrate an
+    /// arbitrary host variable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_allowlist: Vec<String>,
+    /// Manifest-declared env vars the plugin supervisor may copy from the
+    /// host into plugin subprocesses (same entry syntax as above).
+    ///
+    /// Default: empty — plugins receive PATH plus Pantheon-set vars only.
+    /// A project-controlled manifest can declare any name it likes, so a
+    /// declared name alone never crosses the boundary; only an entry here
+    /// lets a host var (including API keys) reach plugin code.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugin_env_allowlist: Vec<String>,
+}
+
 /// The whole config file. Everything optional-tolerant so doctor can
 /// describe exactly what is missing instead of failing to parse.
 /// `[agents.<name>]`: a durable identity for one persistent agent (§4).
@@ -265,6 +290,10 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<toml::Value>,
     pub server: Option<ServerSection>,
+    /// Secrets-boundary policy (`env:` lookups, plugin subprocess env).
+    /// Absent = both allowlists empty (fail closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<SecretsSection>,
     /// User-defined providers (`pantheon model` → Custom provider).
     /// Empty for configs written before this existed (back-compat).
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -876,12 +905,21 @@ pub fn register_custom_providers(cfg: &Config) {
 /// [`SecretsBroker::with_vault_front`](pantheon_secrets::SecretsBroker::with_vault_front)
 /// so the flag beats config and environment.
 pub fn chat_secrets(cfg: Option<&Config>) -> pantheon_secrets::SecretsBroker {
-    with_aux_keys(
+    let broker = with_aux_keys(
         pantheon_secrets::SecretsBroker::from_system_env_with_api_key(
             model_key_env(cfg).as_deref(),
         ),
         cfg,
-    )
+    );
+    // Fail closed by default: without a `[secrets]` section both
+    // allowlists are empty, so `env:` lookups resolve nothing and plugin
+    // subprocesses receive no host vars beyond the curated minimum.
+    match cfg.and_then(|c| c.secrets.as_ref()) {
+        Some(s) => broker
+            .with_env_allowlist(s.env_allowlist.clone())
+            .with_plugin_env_allowlist(s.plugin_env_allowlist.clone()),
+        None => broker,
+    }
 }
 
 /// Resolve the model policy for one session: explicit override > environment >

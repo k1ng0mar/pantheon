@@ -15,8 +15,10 @@
 //!   wedged plugin can never wedge the agent loop. Timeout kills the whole
 //!   process group, not just the root, so plugin-spawned helpers die too.
 //! - The child runs in its own process group (setsid on Unix). Stop is
-//!   TERM, poll, then KILL. Env is filtered: only manifest-declared vars
-//!   plus PATH reach the child. Pantheon secrets never cross the boundary.
+//!   TERM, poll, then KILL. Env is filtered twice: `env_clear()` wipes
+//!   inheritance, then only manifest-declared vars that ALSO match the
+//!   operator's env allowlist (plus PATH) reach the child. Pantheon
+//!   secrets never cross the boundary.
 //! - Large plugin output goes through `compact_output` before it reaches the
 //!   caller, same as shell output.
 use crate::plugins::PluginManifest;
@@ -103,13 +105,23 @@ pub struct PluginSupervisor {
 
 impl PluginSupervisor {
     /// Spawn the plugin runner. `runner` must already be verified by
-    /// `verify_plugin`. Only manifest-declared env vars (plus PATH) reach
-    /// the child.
+    /// `verify_plugin`.
+    ///
+    /// Env is filtered twice: `env_clear()` wipes inheritance, then only
+    /// manifest-declared vars that ALSO match `env_allowlist` (exact names
+    /// or `PREFIX_*`, see [`pantheon_secrets::env::env_var_allowed`]) are
+    /// copied from the host. A project-controlled manifest can declare any
+    /// name it likes, so a declared name alone never crosses the boundary —
+    /// the operator's allowlist is the second, mandatory gate. Empty
+    /// allowlist (default) = no host vars reach the plugin. Pantheon
+    /// secrets never cross the boundary; they travel through the secrets
+    /// broker, not ambient env.
     pub fn spawn(
         runner: &Path,
         manifest: &PluginManifest,
         data_dir: &Path,
         timeout: Duration,
+        env_allowlist: &[String],
     ) -> Result<Self, PantheonError> {
         let mut cmd = Command::new(runner);
         cmd.stdin(Stdio::piped())
@@ -120,8 +132,11 @@ impl PluginSupervisor {
         if let Ok(p) = std::env::var("PATH") {
             cmd.env("PATH", p);
         }
-        // Plus only what the manifest declares, resolved from the host.
+        // Plus only what the manifest declares AND the operator allowlists.
         for decl in &manifest.env_vars {
+            if !pantheon_secrets::env::env_var_allowed(env_allowlist, &decl.name) {
+                continue;
+            }
             if let Ok(v) = std::env::var(&decl.name) {
                 cmd.env(&decl.name, v);
             }
