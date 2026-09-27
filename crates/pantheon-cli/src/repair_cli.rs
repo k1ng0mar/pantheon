@@ -52,13 +52,21 @@ pub struct Fixer {
     pub repair: fn(&Path) -> Result<String, String>,
 }
 
+/// Checks that deliberately have no automatic fix, because the only correct
+/// action needs a human decision. A fixer that declines one of these is
+/// working, not failing.
+const FIXERS_WITHOUT_A_SAFE_FIX: &[&str] = &["skills", "config"];
+
 /// Registry order is report order.
 pub fn registry() -> Vec<Fixer> {
     vec![
         data_dir_layout(),
+        config(),
         ledger_integrity(),
         stranded_runs(),
         search_index(),
+        memory_index(),
+        skills(),
     ]
 }
 
@@ -147,10 +155,17 @@ pub fn cmd_repair(args: &[String]) {
                 // A fixer that names a backup in its message left one behind.
                 // Surfacing the path is the difference between a recoverable
                 // failure and a scary one.
+                //
+                // A fixer that *declined* has not failed. It correctly refused
+                // something unsafe and left the file alone, which is exactly
+                // the outcome the registry is designed to produce. Calling
+                // that "failed" would train the operator to ignore the word,
+                // and would make a deliberate refusal exit non-zero.
+                let declined = FIXERS_WITHOUT_A_SAFE_FIX.contains(&fixer.check);
                 let backup = extract_backup(&e);
                 outcomes.push(RepairOutcome {
                     check: fixer.check.to_string(),
-                    status: if backup.is_some() {
+                    status: if declined || backup.is_some() {
                         "manual".into()
                     } else {
                         "failed".into()
@@ -164,14 +179,28 @@ pub fn cmd_repair(args: &[String]) {
     }
 
     if as_json {
+        // One document, one shape. The previous version printed a bare `true`
+        // and then the array on a second call, which is two JSON documents and
+        // parses as neither.
+        #[derive(Serialize)]
+        struct Report<'a> {
+            ok: bool,
+            fixed: usize,
+            manual: usize,
+            failed: usize,
+            outcomes: &'a [RepairOutcome],
+        }
         let ok = outcomes
             .iter()
             .all(|o| o.status == "clean" || o.status == "fixed");
-        crate::print_json("repair", &ok);
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&outcomes).unwrap_or_else(|e| e.to_string())
-        );
+        let report = Report {
+            ok,
+            fixed: outcomes.iter().filter(|o| o.status == "fixed").count(),
+            manual: outcomes.iter().filter(|o| o.status == "manual").count(),
+            failed: outcomes.iter().filter(|o| o.status == "failed").count(),
+            outcomes: &outcomes,
+        };
+        crate::print_json("repair", &report);
         if !ok {
             std::process::exit(1);
         }
@@ -179,6 +208,9 @@ pub fn cmd_repair(args: &[String]) {
     }
 
     render(&outcomes, dry_run);
+    // Only a genuine failure exits 1. A `manual` finding is something the
+    // operator has to decide about, and `repair` did its job — a registry
+    // whose expected outcome set a non-zero exit would be useless in a script.
     if outcomes.iter().any(|o| o.status == "failed") {
         std::process::exit(1);
     }
@@ -225,6 +257,177 @@ fn extract_backup(msg: &str) -> Option<PathBuf> {
         .find(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == ')')
         .unwrap_or(rest.len());
     Some(PathBuf::from(&rest[..end]))
+}
+
+// ---------------------------------------------------------------- config
+
+/// A missing or unparseable `config.toml`.
+///
+/// The absent case is fixable and the malformed case is not: a config that
+/// does not parse may contain anything, and writing over it would destroy a
+/// file the user hand-edited and cannot reconstruct. So the fixer creates a
+/// default when the file is simply missing, and for a parse failure it backs
+/// the file up and reports — never overwrites.
+fn config() -> Fixer {
+    Fixer {
+        check: "config",
+        // A missing file and a malformed file are different problems with
+        // different fixes, so they must not arrive as the same finding.
+        // `Config::load` reports ENOENT as a load error, which made every
+        // fresh install look like a corrupt config.
+        diagnose: |dd| {
+            if !crate::config_doc::Config::path(dd).exists() {
+                return Ok(Some("no config.toml; run `pantheon setup`".to_string()));
+            }
+            match crate::config_doc::Config::load(dd) {
+                Ok(c) => {
+                    let problems = c.validate();
+                    if problems.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(problems.join("; ")))
+                    }
+                }
+                Err(e) => Ok(Some(format!(
+                    "{} does not parse: {}",
+                    crate::config_doc::Config::path(dd).display(),
+                    e.cause
+                ))),
+            }
+        },
+        repair: |dd| {
+            let path = crate::config_doc::Config::path(dd);
+            if !path.exists() {
+                // A default config is a working starting point, not a guess:
+                // `Config::default` is the same one `setup` starts from, so
+                // repair leaves the user in the state setup would have.
+                let cfg = crate::config_doc::Config::default();
+                cfg.save(dd)
+                    .map_err(|e| format!("cannot write {}: {}", path.display(), e.cause))?;
+                // The default has no [model] section, which `validate()`
+                // rejects — a config with no provider cannot run a turn. So
+                // this fix is partial by nature and says so, rather than
+                // implying the install is now runnable.
+                return Ok(format!(
+                    "wrote a default {} (it has no [model] section yet, so \
+                     `pantheon setup` is still needed before a turn will run)",
+                    path.display()
+                ));
+            }
+            // It exists. If it loads but does not validate, the parse succeeded
+            // and the message must say that, not "does not parse" — the two
+            // have completely different fixes (add a model section vs. repair
+            // TOML by hand), and conflating them sent the operator to the
+            // wrong one.
+            if let Ok(c) = crate::config_doc::Config::load(dd) {
+                let problems = c.validate();
+                if !problems.is_empty() {
+                    return Err(format!(
+                        "config.toml is valid TOML but not a runnable config: {}. \
+                         Repair is yours to make here: `pantheon setup` writes a \
+                         [model] section, or set provider and model in the file.",
+                        problems.join("; ")
+                    ));
+                }
+            }
+            // It exists and does not parse. Preserve it: the user's own edits
+            // are in there, and a fixer that overwrites a config it merely
+            // failed to understand is the most destructive thing this command
+            // could do.
+            let backup = backup_file(&path, "config.toml")?;
+            Err(format!(
+                "{} does not parse, and its contents are preserved at {}. Repair it by \
+                 hand, or delete it and re-run `pantheon repair` to get a default.",
+                path.display(),
+                backup.display()
+            ))
+        },
+    }
+}
+
+// ---------------------------------------------------------------- memory
+
+/// The memory FTS5 index. Unlike the ledger's sidecar this one is fully
+/// rebuildable, because it is an external-content table kept in sync by
+/// triggers with `memories` as the source of truth.
+fn memory_index() -> Fixer {
+    Fixer {
+        check: "memory-index",
+        diagnose: |dd| {
+            let path = dd.join("memory.db");
+            if !path.exists() {
+                return Ok(None);
+            }
+            match pantheon_memory::fts_health(&path) {
+                Ok(healthy) if healthy => Ok(None),
+                Ok(_) => Ok(Some("the memory FTS index is missing or empty".to_string())),
+                Err(e) => Ok(Some(format!(
+                    "the memory FTS index is unusable: {}",
+                    e.cause
+                ))),
+            }
+        },
+        repair: |dd| {
+            let path = dd.join("memory.db");
+            if !path.exists() {
+                return Ok(format!(
+                    "{} does not exist; it is created on the first memory write",
+                    path.display()
+                ));
+            }
+            let backup = backup_file(&path, "memory.db")?;
+            let rows = pantheon_memory::rebuild_fts(&path)
+                .map_err(|e| format!("rebuild failed: {}", e.cause))?;
+            Ok(format!(
+                "rebuilt the memory FTS index from {rows} record(s). Backup: {}",
+                backup.display()
+            ))
+        },
+    }
+}
+
+// ---------------------------------------------------------------- skills
+
+/// Skills that discovery rejected. The report names each one; the repair
+/// removes the broken files after a backup.
+///
+/// This is destructive to the user's own skill files, so it is the one fixer
+/// that needs a human decision: a rejected skill is usually a typo in front
+/// matter, and deleting the file discards work rather than fixing it. It is
+/// therefore reported as manual and NOT deleted.
+fn skills() -> Fixer {
+    Fixer {
+        check: "skills",
+        diagnose: |dd| {
+            let rejected = crate::skills_cli::rejected_at(dd);
+            if rejected.is_empty() {
+                return Ok(None);
+            }
+            // `reason` already embeds the file path for parse failures, so
+            // prefixing `path` again printed it twice. Use the reason alone
+            // and fall back to the path only when the reason has none.
+            Ok(Some(
+                rejected
+                    .iter()
+                    .map(|(path, reason)| {
+                        if reason.contains(&path.display().to_string()) {
+                            reason.clone()
+                        } else {
+                            format!("{}: {}", path.display(), reason)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ))
+        },
+        repair: |_dd| {
+            Err(
+                "a rejected skill is usually a typo in its front matter, so the file is kept \
+             and the problem is reported instead"
+                    .to_string(),
+            )
+        },
+    }
 }
 
 // ---------------------------------------------------------------- layout

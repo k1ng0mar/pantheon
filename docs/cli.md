@@ -346,8 +346,6 @@ pantheon setup [--yes] [--profile P] [--provider P] [--model M]
 pantheon doctor              # system preflight (config, key, ledger, memory,
                              #   skills, gateway, plugins)
 pantheon doctor <plugin_dir> # per-plugin preflight (as above)
-pantheon repair check        # integrity + stranded runs (read-only)
-pantheon repair runs [<id>]  # settle runs stranded by a crash
 pantheon reset --config | --state | --everything [--yes]
 pantheon providers           # catalog listing
 pantheon fallback list                    # the ordered fallback chain
@@ -389,8 +387,22 @@ The mechanism is one check body with two callers, not two implementations:
 each entry in the registry pairs a read-only `diagnose` with a `repair`, and
 `diagnose` always runs first. So `repair` on a healthy install changes
 nothing, and a problem with no safe automatic fix is reported as `manual`
-rather than skipped. Currently: `data-dir-layout`, `ledger-integrity`,
-`stranded-runs`, `search-index`.
+rather than skipped.
+
+Seven checks, spanning the same ground as `doctor`:
+
+| check | automatic | notes |
+|---|---|---|
+| `data-dir-layout` | yes | creates a missing data dir; a file where a dir belongs is never overwritten |
+| `config` | partly | writes a default when missing; a config that exists is **never** overwritten |
+| `ledger-integrity` | no | structural damage has no in-place fix, so it backs up and says so |
+| `stranded-runs` | yes | settles runs no live session is driving |
+| `search-index` | partly | recreates the FTS table; re-indexing existing runs is **not** implemented |
+| `memory-index` | yes | a full rebuild — `memories_fts` is external-content, so records come back |
+| `skills` | no | a rejected skill is usually a front-matter typo, so the file is kept |
+
+Only a genuine failure exits 1. A `manual` finding means the operator has a
+decision to make, which is the registry working as designed, not a failure.
 
 Every fixer that mutates takes a backup first and names the copy:
 

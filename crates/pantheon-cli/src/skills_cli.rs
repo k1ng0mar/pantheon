@@ -234,6 +234,20 @@ impl SkillScanSummary {
     }
 }
 
+/// The rejected skills for an explicit data dir, for `pantheon repair`.
+///
+/// `scan_summary` reads the process-global data dir and reports counts only.
+/// Repair needs both a caller-supplied directory (it is handed one, and the
+/// global may point elsewhere) and the per-skill reason, because the whole
+/// point of the check is naming the file that needs fixing.
+pub fn rejected_at(data_dir: &Path) -> Vec<(PathBuf, String)> {
+    let scan = scan_skills_ext(data_dir, &project_root(), &extra_roots());
+    scan.rejected
+        .into_iter()
+        .map(|r| (r.path, r.reason))
+        .collect()
+}
+
 pub fn scan_summary() -> Result<SkillScanSummary, pantheon_core::error::PantheonError> {
     let dd = data_dir();
     let scan = scan_skills_ext(&dd, &project_root(), &extra_roots());
