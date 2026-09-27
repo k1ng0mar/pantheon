@@ -113,6 +113,13 @@ pub struct TuiState {
     /// The conversation's current title: set by the title auxiliary
     /// (SessionTitled), by /name, and refreshed when resuming a run.
     pub title: Option<String>,
+    /// Message typed while a turn was running. Enter queues it instead of
+    /// spawning a second agent loop; it fires when the turn ends.
+    pub queued_message: Option<String>,
+    /// Run id of the turn currently in flight, if any. Esc interrupts this
+    /// run (not the selected session) so a mid-turn resume cannot retarget
+    /// the interrupt at the wrong loop.
+    pub active_run: Option<String>,
 }
 
 impl Default for TuiState {
@@ -144,6 +151,8 @@ impl Default for TuiState {
             models_input: String::new(),
             models_sel: 0,
             title: None,
+            queued_message: None,
+            active_run: None,
         }
     }
 }
@@ -177,6 +186,8 @@ impl TuiState {
             models_input: String::new(),
             models_sel: 0,
             title: None,
+            queued_message: None,
+            active_run: None,
         }
     }
 
@@ -423,6 +434,37 @@ impl TuiState {
             self.status_line = "ready".into();
         }
         false
+    }
+
+    /// Begin a turn for `msg`. Returns true when the caller should start
+    /// the agent loop now; returns false and queues the message when a turn
+    /// is already running, so Enter never spawns a second loop on the same
+    /// run. A newer queued message replaces an older one: the single slot
+    /// holds the latest intent, and it drains on the next TurnComplete.
+    ///
+    /// Extracted from the event loop so the guard rules are testable
+    /// against the shipped code rather than a copy of it.
+    pub fn begin_turn(&mut self, msg: String) -> bool {
+        if !self.ready {
+            self.queued_message = Some(msg);
+            return false;
+        }
+        self.ready = false;
+        self.status_line = "working".to_string();
+        self.interrupt_armed_at = None;
+        self.interrupted = false;
+        true
+    }
+
+    /// Take the message queued while a turn was running, if any.
+    pub fn take_queued(&mut self) -> Option<String> {
+        self.queued_message.take()
+    }
+
+    /// Which run an interrupt should cancel: the in-flight turn's run when
+    /// there is one, else the selected session. Pure, tested below.
+    pub fn interrupt_target(&self) -> &str {
+        self.active_run.as_deref().unwrap_or(&self.session_id)
     }
 
     pub fn add_user_message(&mut self, text: String) {
@@ -1115,14 +1157,22 @@ pub fn run_tui_session_with(
     // A resume id means the caller already validated the run exists, so the
     // session opens onto it. Otherwise this is a new run.
     let run_id = resume.unwrap_or_else(pantheon_runtime::new_run_id);
-    let _ = session.supervisor.start_run(&run_id);
+    if let Err(e) = session.supervisor.start_run(&run_id) {
+        // The TUI is not up yet, so this goes straight to stderr and the
+        // process exits: running on a supervisor that cannot open the run
+        // would take turns against a broken session.
+        eprintln!("pantheon: cannot start run: {e}");
+        std::process::exit(1);
+    }
+    // The send path resolves state.session_id at send time, so it must
+    // start as the run the loop opens on — not the throwaway id new() made.
+    state.session_id = run_id.clone();
 
     let result = tui_loop(
         &mut terminal,
         &mut state,
         session,
         &tx,
-        &run_id,
         &rx,
         &running,
     );
@@ -1133,12 +1183,102 @@ pub fn run_tui_session_with(
     result
 }
 
+/// The run id the next turn sends to: the currently selected session.
+/// Kept as a helper (not inlined) so tests pin the resolution point:
+/// history-resume, /resume and /new all write `state.session_id`, and the
+/// send path must follow the selection, never the run the loop opened on.
+fn resolve_send_run_id(state: &TuiState) -> &str {
+    &state.session_id
+}
+
+/// Spawn the worker thread for one agent turn. The run id arrives resolved
+/// at send time from the caller; it is never captured from loop state, so
+/// a mid-turn /resume, /new, or history-resume cannot address the turn at a
+/// stale run.
+fn spawn_turn(
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+    session: &Arc<Session>,
+    run_id: &str,
+    msg: &str,
+) {
+    let tx2 = tx.clone();
+    let run_id_owned = run_id.to_string();
+    let msg_owned = msg.to_string();
+    let session_owned = session.clone();
+    std::thread::spawn(move || {
+        match session_owned.chat(&run_id_owned, &msg_owned) {
+            Ok(outcome) => match outcome {
+                pantheon_agent::LoopOutcome::AwaitingApproval { .. } => {
+                    // The ApprovalRequested runtime event (via the observer)
+                    // carries scope; the worker just marks the turn parked.
+                    let _ = tx2.send(TuiEvent::TurnComplete);
+                }
+                pantheon_agent::LoopOutcome::Canceled { .. } => {
+                    let _ = tx2.send(TuiEvent::Canceled);
+                }
+                _ => {
+                    let _ = tx2.send(TuiEvent::TurnComplete);
+                }
+            },
+            Err(e) => {
+                let _ = tx2.send(TuiEvent::Error(e.to_string()));
+            }
+        }
+    });
+}
+
+/// Start an agent turn for `msg`, or queue it when one is already running.
+/// Returns true when a turn was started. The run id resolves from the
+/// currently selected session at send time.
+fn start_turn(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+    msg: String,
+) -> bool {
+    if !state.begin_turn(msg.clone()) {
+        return false;
+    }
+    session.reset_cancel();
+    let run_id = resolve_send_run_id(state).to_string();
+    state.active_run = Some(run_id.clone());
+    spawn_turn(tx, session, &run_id, &msg);
+    true
+}
+
+/// Fire a message queued while a turn was running, now that the turn is
+/// over. Skipped while an approval is pending: the parked run must be
+/// resolved first, and the queue waits for the turn that follows it.
+fn drain_queued_message(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+) {
+    if state.pending_approval.is_some() {
+        return;
+    }
+    // The ApprovalRequested event and the worker's TurnComplete race on the
+    // channel; the supervisor's pending list is the ground truth for
+    // whether the selected run is parked, so a queued message never starts
+    // a turn on a run that is waiting for a decision.
+    let parked = session
+        .supervisor
+        .pending_approvals(&state.session_id)
+        .map(|p| !p.is_empty())
+        .unwrap_or(false);
+    if parked {
+        return;
+    }
+    if let Some(msg) = state.take_queued() {
+        let _ = start_turn(state, session, tx, msg);
+    }
+}
+
 fn tui_loop(
     terminal: &mut DefaultTerminal,
     state: &mut TuiState,
     session: Arc<Session>,
     tx: &std::sync::mpsc::Sender<TuiEvent>,
-    run_id: &str,
     rx: &std::sync::mpsc::Receiver<TuiEvent>,
     running: &Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1163,13 +1303,19 @@ fn tui_loop(
                     state.status_line = "ready".to_string();
                     state.interrupt_armed_at = None;
                     state.interrupted = false;
+                    state.active_run = None;
                     session.reset_cancel();
+                    // A message typed while the turn ran goes out now, to
+                    // the currently selected run.
+                    drain_queued_message(state, &session, tx);
                 }
                 TuiEvent::Error(msg) => {
                     state.blocks.push(TranscriptBlock {
                         kind: BlockKind::Status(format!("error: {msg}")),
                     });
                     state.ready = true;
+                    state.active_run = None;
+                    drain_queued_message(state, &session, tx);
                 }
                 TuiEvent::Canceled => {
                     // Honest report: the run was stopped by the user, and the
@@ -1182,6 +1328,14 @@ fn tui_loop(
                             "interrupted \u{2014} run stopped, transcript saved".to_string(),
                         ),
                     });
+                    state.active_run = None;
+                    // The user stopped the work; do not surprise them by
+                    // firing a queued message. Say it was dropped.
+                    if state.take_queued().is_some() {
+                        state.blocks.push(TranscriptBlock {
+                            kind: BlockKind::Status("interrupted — dropped queued message".into()),
+                        });
+                    }
                     // Clear the token so the next turn starts clean.
                     session.reset_cancel();
                 }
@@ -1247,7 +1401,9 @@ fn tui_loop(
                             if let Some(id) = target {
                                 // Switch the run: reopen a terminal run and
                                 // rebuild the transcript from the ledger.
-                                if id != run_id {
+                                // Compare against the selected session, not
+                                // the run the loop opened on.
+                                if id != state.session_id {
                                     let _ = session.supervisor.ledger_reopen_run(&id);
                                     if let Ok(entries) = session.supervisor.replay(&id) {
                                         state.blocks.clear();
@@ -1270,7 +1426,10 @@ fn tui_loop(
                                     state.blocks.push(TranscriptBlock {
                                         kind: BlockKind::Status(format!("resumed {}", id)),
                                     });
-                                    state.ready = true;
+                                    // Do not force ready here: a turn may
+                                    // still be running for the previous run,
+                                    // and the Enter guard must keep applying
+                                    // to it.
                                 }
                             }
                         }
@@ -1295,6 +1454,7 @@ fn tui_loop(
                                         let tx3 = tx.clone();
                                         let run3 = run.clone();
                                         let sess3 = session.clone();
+                                        state.active_run = Some(run3.clone());
                                         std::thread::spawn(move || {
                                             match sess3.chat_turn(&run3, "", "") {
                                                 Ok(outcome) => {
@@ -1328,6 +1488,10 @@ fn tui_loop(
                                         let _ = session.supervisor.deny(&run, &scope);
                                         state.status_line = "denied".into();
                                         state.ready = true;
+                                        state.active_run = None;
+                                        // Deny ends the parked turn without a
+                                        // TurnComplete event, so drain here.
+                                        drain_queued_message(state, &session, tx);
                                     }
                                 }
                                 _ => {}
@@ -1369,39 +1533,17 @@ fn tui_loop(
 
                             state.add_user_message(msg.clone());
 
-                            state.ready = false;
-                            state.status_line = "working".to_string();
-                            state.interrupt_armed_at = None;
-                            state.interrupted = false;
-                            session.reset_cancel();
-
-                            let tx2 = tx.clone();
-                            let run_id_owned = run_id.to_string();
-                            let msg_owned = msg.clone();
-                            let session_owned = session.clone();
-                            std::thread::spawn(move || {
-                                match session_owned.chat(&run_id_owned, &msg_owned) {
-                                    Ok(outcome) => match outcome {
-                                        pantheon_agent::LoopOutcome::AwaitingApproval {
-                                            ..
-                                        } => {
-                                            // The ApprovalRequested runtime event
-                                            // (via the observer) carries scope; the
-                                            // worker just marks the turn parked.
-                                            let _ = tx2.send(TuiEvent::TurnComplete);
-                                        }
-                                        pantheon_agent::LoopOutcome::Canceled { .. } => {
-                                            let _ = tx2.send(TuiEvent::Canceled);
-                                        }
-                                        _ => {
-                                            let _ = tx2.send(TuiEvent::TurnComplete);
-                                        }
-                                    },
-                                    Err(e) => {
-                                        let _ = tx2.send(TuiEvent::Error(e.to_string()));
-                                    }
-                                }
-                            });
+                            // No second loop on a running turn: begin_turn
+                            // queues the message instead, and the queue
+                            // drains when the turn ends. start_turn resolves
+                            // the run id at send time, so a resume that
+                            // happened mid-turn sends to the run that is
+                            // selected now, not the one the turn used.
+                            if !start_turn(state, &session, tx, msg) {
+                                state.add_status(
+                                    "already working — queued for after this turn".into(),
+                                );
+                            }
                         } else {
                             state.is_inputting = true;
                         }
@@ -1412,7 +1554,8 @@ fn tui_loop(
                         // confirm rules live in `press_esc` so they are
                         // testable without a terminal.
                         if state.press_esc() {
-                            session.cancel_current_run(run_id, "user pressed esc twice");
+                            let target = state.interrupt_target().to_string();
+                            session.cancel_current_run(&target, "user pressed esc twice");
                         }
                     }
                     KeyCode::PageUp if state.pending_approval.is_none() => {
@@ -1979,7 +2122,9 @@ fn handle_slash(
                 state.blocks.push(TranscriptBlock {
                     kind: BlockKind::Status(format!("resumed {id}")),
                 });
-                state.ready = true;
+                // Do not force ready here: a turn may still be running for
+                // the previous run, and the Enter guard must keep applying
+                // to it.
             }
             Ok(None) => state.add_status(format!("no run {id}")),
             Err(e) => state.add_status(format!("status: {e}")),
@@ -2169,7 +2314,8 @@ fn handle_slash(
         state.blocks.clear();
         state.title = None;
         state.scroll_offset = 0;
-        state.ready = true;
+        // Do not force ready here: a turn may still be running for the
+        // previous run, and the Enter guard must keep applying to it.
         state.add_status("new conversation (unsaved until the first turn)".into());
         return;
     }
@@ -2452,6 +2598,7 @@ fn handle_slash(
                 let tx4 = tx.clone();
                 let run4 = state.session_id.clone();
                 let sess4 = session.clone();
+                state.active_run = Some(run4.clone());
                 std::thread::spawn(move || match sess4.chat_turn(&run4, "", "") {
                     Ok(outcome) => {
                         let text = match outcome {
