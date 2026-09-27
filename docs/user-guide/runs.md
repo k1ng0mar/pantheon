@@ -52,6 +52,8 @@ pantheon schedule "nightly review" --every 24h
 pantheon schedule list|pause|resume|cancel|run <id>
 ```
 
+Due jobs fire on a tick: `pantheon schedule tick [--watch]` is the primitive a daemon, cron entry, or CI step calls (`--watch` keeps it running in the foreground). Cron expressions are validated at creation — an invalid or never-firing expression is rejected rather than stored as a job that would silently never run. Occurrences are claimed atomically in the ledger, so a restart never double-fires a run.
+
 ## See also
 
 - [Sessions](sessions.md) — interacting with runs, approvals in the terminal

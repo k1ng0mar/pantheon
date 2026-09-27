@@ -37,7 +37,7 @@ pantheon doctor <plugin_dir>        # static preflight: manifest, hooks, entry f
 
 Debug order: `doctor` (usually a manifest typo), `extensions` (did it load?), fire the hook by hand (`echo '{"hook":"pre_llm_call",...}' | python3 __init__.py`). Hermes plugins load natively; OpenClaw TypeScript entries are flagged — Python is the supported runtime.
 
-`pantheon mcp list` (read-only) shows migration-declared MCP servers and whether each could register. No launcher yet.
+`pantheon mcp list` (read-only) shows migration-declared MCP servers and whether each could register. A stdio JSON-RPC client exists in the `pantheon-mcp` crate (connect, list tools, call tools), but no CLI verb or tool surface wires it up yet — agents can't reach MCP servers today. No launcher yet.
 
 ## See also
 

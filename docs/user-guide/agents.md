@@ -23,14 +23,16 @@ Field details: [Configuration](../reference/configuration.md#agents).
 
 ## Work together
 
-Multiple agents in one installation collaborate natively: delegate, divide, review, combine. Ask for it in plain language:
+One agent can hand a subtask to another mid-turn — delegate, divide, review, combine — by naming it in plain language:
 
-> "Work with Zeus and Athena on this. Split the research, then combine the results."
+> "Ask Zeus to research the error handling, then combine it with what you found."
 
-Each keeps its own perspective and memory while participating in the larger task. Spawns are runtime-capped (depth, concurrency, budgets); over-cap fails with `SWARM_SPAWN_DENIED` instead of exploding.
+The child runs as the named agent — its own identity, memory, and policy — and returns a transcript fragment. The parent never fabricates its result: a child that stalls on approval, budget, or a further delegation reports a structured error (`SWARM_CHILD_APPROVAL`, `SWARM_CHILD_BUDGET`, `SWARM_CHILD_DELEGATED`) instead of silently dying.
+
+Delegation is runtime-capped: delegation depth is bounded (`max_delegate_depth`, default 2) alongside concurrency and budgets, and over-cap fails with `SWARM_SPAWN_DENIED`.
 
 ```sh
-pantheon swarm 5 "research this topic"
+pantheon swarm status [<id>] | list   # inspect recorded swarms; the verb doesn't spawn
 ```
 
 ## See also

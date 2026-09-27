@@ -10,6 +10,10 @@ GLOBAL → AGENT → PROJECT → TASK/SESSION → EPHEMERAL (this turn only)
 
 Recall searches all layers, narrowest first, each hit carrying where it came from and when it was written.
 
+## Budgets
+
+Every layer has a byte budget. A write that would exceed it evicts lowest-trust, oldest-first records until the write fits — recall stays fast and bounded no matter how much the agent remembers. A write that can't fit even after eviction fails with `MEM_BUDGET_EXCEEDED` instead of growing the store.
+
 ## Writes go through the gate
 
 One path for the model, the CLI, and imports alike:

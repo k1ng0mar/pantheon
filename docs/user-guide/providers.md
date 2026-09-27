@@ -35,6 +35,10 @@ pantheon provider models my-llm
 
 Only model ids you name by hand are recorded in config. Live endpoint listings are fetched on demand, never baked in — a third party's list goes stale, and config shouldn't bless snapshots.
 
+## Reliability
+
+The provider HTTP layer honors `Retry-After` on 429s (parsed from delta-seconds or an HTTP date, capped at 60s) with backoff, and provider errors stay structured — code, layer, and retryability survive the trip. Structured output is opt-in: requests that carry a JSON Schema ask for a conforming response, on both the OpenAI and Anthropic wires.
+
 ## See also
 
 - [Agents](agents.md) — per-agent provider settings

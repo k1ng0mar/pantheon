@@ -42,7 +42,7 @@ The security backbone: granular capabilities (`filesystem.read`, `shell.execute`
 
 ## Execution
 
-Tools run under policy-chosen sandbox boundaries (process isolation up through container/VM). File writes go through checkpointed, atomic apply with stale-check rejection and rollback.
+Tools run under policy-chosen sandbox boundaries (process isolation up through container/VM). A boundary that can't initialize fails closed — `SANDBOX_UNAVAILABLE` rather than running unconfined. File writes go through checkpointed, atomic apply with stale-check rejection and rollback.
 
 ## Memory and storage
 
@@ -62,7 +62,7 @@ CLI, TUI, web (`serve`), and gateways (Discord, Telegram) all drive the same Ses
 
 ## Migration
 
-`pantheon migrate hermes|openclaw|omp`: detect → plan → approve → backup → apply → validate. Everything detected is imported or archived with a reason — nothing silently dropped, credentials never written outside `<data_dir>/.env`.
+`pantheon migrate hermes|openclaw|omp`: detect → plan → approve → backup → apply → validate. The apply itself is transactional (stage → validate → commit): everything detected is imported or archived with a reason — nothing silently dropped, credentials never written outside `<data_dir>/.env`.
 
 ## Locked decisions
 
