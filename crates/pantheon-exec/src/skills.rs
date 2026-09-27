@@ -24,6 +24,148 @@ fn serr(code: &str, cause: String) -> PantheonError {
     )
 }
 
+/// A skill or plugin name must be a single safe path segment: ASCII
+/// alphanumerics plus `-`/`_`, 1..=64 chars. This rejects `.`, `..`,
+/// `/`, absolute paths, and unicode tricks — anything that could make a
+/// `root.join(name)` escape the skills/plugins directory.
+pub fn valid_slug(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 64
+        && b.iter()
+            .all(|c| c.is_ascii_alphanumeric() || *c == b'-' || *c == b'_')
+}
+
+fn bad_name(name: &str, what: &str) -> PantheonError {
+    serr(
+        "SKILL_BAD_NAME",
+        format!("{what} {name:?}: names must match [a-zA-Z0-9_-]{{1,64}}"),
+    )
+}
+
+/// Join `root/<name>` and prove (via canonicalization) the result is
+/// still inside `root`. Fails closed on slug violations, symlinked
+/// escapes, and I/O errors. Creates both directories.
+fn contained_skill_dir(root: &Path, name: &str) -> Result<PathBuf, PantheonError> {
+    if !valid_slug(name) {
+        return Err(bad_name(name, "skill name"));
+    }
+    std::fs::create_dir_all(root)
+        .map_err(|e| serr("SKILL_IMPORT_IO", format!("create {}: {e}", root.display())))?;
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| serr("SKILL_IMPORT_IO", format!("create {}: {e}", dir.display())))?;
+    let canon_root = root
+        .canonicalize()
+        .map_err(|e| serr("SKILL_IMPORT_IO", format!("canonicalize {}: {e}", root.display())))?;
+    let canon_dir = dir
+        .canonicalize()
+        .map_err(|e| serr("SKILL_IMPORT_IO", format!("canonicalize {}: {e}", dir.display())))?;
+    if !canon_dir.starts_with(&canon_root) {
+        return Err(serr(
+            "SKILL_BAD_NAME",
+            format!("skill dir escapes the skills root: {}", dir.display()),
+        ));
+    }
+    Ok(dir)
+}
+
+/// Cap for any single HTTP response body during skill import.
+pub const MAX_HTTP_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+/// Cap for the total inflated bytes of one imported bundle (ZIP or tree).
+pub const MAX_BUNDLE_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
+/// Cap for the number of entries in a skill ZIP (zip-bomb guard).
+pub const MAX_ZIP_ENTRIES: usize = 1000;
+
+/// Read at most `cap` bytes from `r`; error if the stream is longer.
+/// Guards against unbounded HTTP bodies.
+fn read_capped<R: std::io::Read>(
+    r: R,
+    cap: u64,
+    what: &str,
+) -> Result<Vec<u8>, PantheonError> {
+    let mut buf = Vec::new();
+    r.take(cap + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| serr("SKILL_FETCH_BODY", format!("{what}: {e}")))?;
+    if buf.len() as u64 > cap {
+        return Err(serr(
+            "SKILL_FETCH_TOO_LARGE",
+            format!("{what}: exceeds {} MiB cap", cap / (1024 * 1024)),
+        ));
+    }
+    Ok(buf)
+}
+
+/// Limits for inflating a skill ZIP. `unzip_skill` uses the defaults;
+/// tests pass tighter limits via `unzip_skill_with_limits`.
+#[derive(Debug, Clone, Copy)]
+pub struct ZipLimits {
+    pub max_entries: usize,
+    pub max_total_bytes: u64,
+}
+
+const DEFAULT_ZIP_LIMITS: ZipLimits = ZipLimits {
+    max_entries: MAX_ZIP_ENTRIES,
+    max_total_bytes: MAX_BUNDLE_BYTES,
+};
+
+/// Resolve `--sub DIR` under the cloned temp dir. Rejects absolute paths
+/// and `..` components, then proves containment via canonicalization.
+/// Extracted so the traversal checks are unit-testable without a clone.
+fn resolve_repo_subpath(tmp: &Path, subpath: Option<&str>) -> Result<PathBuf, PantheonError> {
+    let Some(s) = subpath.filter(|s| !s.is_empty()) else {
+        return Ok(tmp.to_path_buf());
+    };
+    let p = Path::new(s);
+    if p.is_absolute()
+        || p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(serr(
+            "SKILL_BAD_SUBPATH",
+            format!("subpath {s:?} must be a relative path without '..'"),
+        ));
+    }
+    let root = tmp.join(p);
+    let canon_tmp = tmp
+        .canonicalize()
+        .map_err(|e| serr("SKILL_REPO_TMP", format!("canonicalize {}: {e}", tmp.display())))?;
+    let canon_root = root.canonicalize().map_err(|_| {
+        serr(
+            "SKILL_BAD_SUBPATH",
+            format!("subpath {s:?} does not exist inside the cloned repo"),
+        )
+    })?;
+    if !canon_root.starts_with(&canon_tmp) {
+        return Err(serr(
+            "SKILL_BAD_SUBPATH",
+            format!("subpath {s:?} escapes the cloned repo"),
+        ));
+    }
+    Ok(root)
+}
+
+/// Validate a Hermes repo path (`skills/creative/claude-design`): relative,
+/// no `..` components. The path is interpolated into GitHub API URLs, so a
+/// `..` here would walk the API path, and it later seeds bundle structure.
+fn check_repo_path(path: &str) -> Result<String, PantheonError> {
+    let p = path.trim_matches('/');
+    let rel = Path::new(p);
+    if p.is_empty()
+        || rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(serr(
+            "SKILL_HERMES_PATH",
+            format!("unsafe repo path: {path:?}"),
+        ));
+    }
+    Ok(p.to_string())
+}
+
 /// Parsed frontmatter of one skill.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillMeta {
@@ -358,9 +500,9 @@ fn fetch_skill_md(url: &str) -> Result<String, PantheonError> {
                     ));
                     continue;
                 }
-                let body = resp
-                    .into_string()
-                    .map_err(|e| serr("SKILL_FETCH_BODY", format!("{e}")))?;
+                let bytes = read_capped(resp.into_reader(), MAX_HTTP_BYTES, url)?;
+                let body = String::from_utf8(bytes)
+                    .map_err(|e| serr("SKILL_FETCH_BODY", format!("{url}: {e}")))?;
                 return Ok(body);
             }
             Err(e) => {
@@ -409,16 +551,12 @@ pub fn import_skill_from_url(
     let raw = fetch_skill_md(url)?;
     let parsed = parse_skill(&raw, &PathBuf::from(url))?;
     let name = parsed.meta.name.clone();
-    let dest_dir = data_dir.join("skills").join(&name);
+    // Slug-validated + canonical containment: a hostile frontmatter
+    // `name: ../../evil` must not escape <data_dir>/skills.
+    let dest_dir = contained_skill_dir(&data_dir.join("skills"), &name)?;
     let dest = dest_dir.join("SKILL.md");
     let mut s = parsed;
     if !dest.exists() {
-        std::fs::create_dir_all(&dest_dir).map_err(|e| {
-            serr(
-                "SKILL_IMPORT_IO",
-                format!("create {}: {e}", dest_dir.display()),
-            )
-        })?;
         std::fs::write(&dest, raw)
             .map_err(|e| serr("SKILL_IMPORT_IO", format!("write {}: {e}", dest.display())))?;
     }
@@ -455,10 +593,7 @@ pub fn import_skills_from_repo(
             ),
         ));
     }
-    let root = subpath
-        .filter(|s| !s.is_empty())
-        .map(|s| tmp.join(s.trim_start_matches('/')))
-        .unwrap_or(tmp.clone());
+    let root = resolve_repo_subpath(&tmp, subpath)?;
     let imported = import_skill_dirs(data_dir, &root)?;
     let _ = std::fs::remove_dir_all(&tmp);
     Ok(imported)
@@ -509,13 +644,14 @@ fn fetch_clawhub_json_with_status(url: &str) -> Result<(String, u16), PantheonEr
     {
         Ok(resp) => {
             let status = resp.status();
-            let body = resp
-                .into_string()
-                .map_err(|e| serr("SKILL_FETCH_BODY", format!("{e}")))?;
+            let bytes = read_capped(resp.into_reader(), MAX_HTTP_BYTES, url)?;
+            let body = String::from_utf8(bytes)
+                .map_err(|e| serr("SKILL_FETCH_BODY", format!("{url}: {e}")))?;
             Ok((body, status))
         }
         Err(ureq::Error::Status(code, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
+            let bytes = read_capped(resp.into_reader(), MAX_HTTP_BYTES, url).unwrap_or_default();
+            let body = String::from_utf8(bytes).unwrap_or_default();
             Ok((body, code))
         }
         Err(e) => Err(serr("SKILL_FETCH", format!("{url}: {e}"))),
@@ -538,6 +674,16 @@ pub fn import_skill_from_clawhub(
     slug: &str,
     owner: Option<&str>,
 ) -> Result<(PathBuf, Skill), PantheonError> {
+    // The slug and owner are interpolated into API URLs; validate them as
+    // slugs so a crafted value cannot walk the URL path or the dest dir.
+    if !valid_slug(slug) {
+        return Err(bad_name(slug, "clawhub slug"));
+    }
+    if let Some(o) = owner {
+        if !valid_slug(o) {
+            return Err(bad_name(o, "clawhub owner"));
+        }
+    }
     // Detail endpoint first: it resolves ambiguity with a useful error
     // and is cheap, while the download ZIP is the bulk transfer.
     let detail = match owner {
@@ -598,7 +744,7 @@ pub fn import_skill_from_clawhub(
             display_name.clone()
         }
     };
-    let dest_dir = data_dir.join("skills").join(&name);
+    let dest_dir = contained_skill_dir(&data_dir.join("skills"), &name)?;
     write_bundle(&bundle, &dest_dir)?;
     let mut s = Skill {
         meta: SkillMeta {
@@ -616,24 +762,42 @@ pub fn import_skill_from_clawhub(
 }
 
 /// Fetch raw bytes from a URL (binary-safe; no charset re-encoding).
+/// Capped at MAX_HTTP_BYTES so a hostile endpoint cannot OOM the importer.
 fn fetch_bytes(url: &str) -> Result<Vec<u8>, PantheonError> {
     let resp = ureq::get(url)
         .timeout(std::time::Duration::from_secs(30))
         .set("User-Agent", "pantheon-skill-import")
         .call()
         .map_err(|e| serr("SKILL_FETCH", format!("{url}: {e}")))?;
-    let mut buf = Vec::new();
-    resp.into_reader()
-        .read_to_end(&mut buf)
-        .map_err(|e| serr("SKILL_FETCH_BODY", format!("{url}: {e}")))?;
-    Ok(buf)
+    read_capped(resp.into_reader(), MAX_HTTP_BYTES, url)
 }
 
 /// Inflate a skill ZIP into (relative path, bytes) pairs, dropping the
 /// registry's `_meta.json` and directory entries.
+///
+/// Fail-closed on:
+/// - entry paths that are absolute or contain `..` (traversal),
+/// - more than `limits.max_entries` entries,
+/// - total inflated bytes past `limits.max_total_bytes` (zip-bomb guard;
+///   the bound is enforced on actual bytes read, not the header's claim).
 fn unzip_skill(bytes: &[u8]) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+    unzip_skill_with_limits(bytes, &DEFAULT_ZIP_LIMITS)
+}
+
+fn unzip_skill_with_limits(
+    bytes: &[u8],
+    limits: &ZipLimits,
+) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
     let reader = std::io::Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(reader).map_err(|e| format!("open zip: {e}"))?;
+    if zip.len() > limits.max_entries {
+        return Err(format!(
+            "zip has {} entries (max {})",
+            zip.len(),
+            limits.max_entries
+        ));
+    }
+    let mut total: u64 = 0;
     let mut out = Vec::new();
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(|e| format!("entry {i}: {e}"))?;
@@ -643,11 +807,26 @@ fn unzip_skill(bytes: &[u8]) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
         }
         // Reject path traversal: entry names must stay inside the bundle.
         let rel = std::path::PathBuf::from(&name);
-        if rel.is_absolute() || name.contains("..") {
+        if rel.is_absolute()
+            || rel
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
             return Err(format!("unsafe entry path: {name}"));
         }
+        // Zip-bomb guard: cap total inflated bytes on actual bytes read.
+        let remaining = limits.max_total_bytes.saturating_sub(total);
         let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut f, &mut buf).map_err(|e| format!("read {name}: {e}"))?;
+        let n = std::io::Read::take(&mut f, remaining + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("read {name}: {e}"))?;
+        total = total.saturating_add(n as u64);
+        if total > limits.max_total_bytes {
+            return Err(format!(
+                "zip inflates past {} MiB cap",
+                limits.max_total_bytes / (1024 * 1024)
+            ));
+        }
         out.push((rel, buf));
     }
     Ok(out)
@@ -724,13 +903,15 @@ pub fn import_skill_from_hermes(
     data_dir: &Path,
     repo_path: &str,
 ) -> Result<(PathBuf, Skill), PantheonError> {
-    let path = repo_path.trim_matches('/');
+    // Validate before it is interpolated into API URLs or seeds paths.
+    let path = check_repo_path(repo_path)?;
     let api = format!("https://api.github.com/repos/NousResearch/hermes-agent/contents/{path}");
     let body = fetch_skill_md(&api)?;
     let entries: Vec<GithubContentEntry> = serde_json::from_str(&body)
         .map_err(|e| serr("SKILL_HERMES_DECODE", format!("github {path}: {e}")))?;
     let mut bundle: Vec<(PathBuf, Vec<u8>)> = Vec::new();
-    fetch_hermes_tree(path, &entries, &mut bundle, 0)?;
+    let mut total: u64 = 0;
+    fetch_hermes_tree(&path, &entries, &mut bundle, &mut total, 0)?;
     let skill_md = bundle
         .iter()
         .find(|(p, _)| p.file_name().and_then(|n| n.to_str()) == Some("SKILL.md"))
@@ -741,7 +922,7 @@ pub fn import_skill_from_hermes(
     let name = parse_skill(&raw, &PathBuf::from(format!("hermes://{path}")))?
         .meta
         .name;
-    let dest_dir = data_dir.join("skills").join(&name);
+    let dest_dir = contained_skill_dir(&data_dir.join("skills"), &name)?;
     write_bundle(&bundle, &dest_dir)?;
     let mut s = load_skill(&dest_dir.join("SKILL.md"))
         .ok_or_else(|| serr("SKILL_HUB_EMPTY", format!("hermes {path}: re-parse failed")))?;
@@ -759,11 +940,13 @@ struct GithubContentEntry {
 }
 
 /// Recursively fetch one directory of the Hermes skill from raw
-/// GitHub URLs. Depth-limited as a guard against pathological trees.
+/// GitHub URLs. Depth-limited as a guard against pathological trees, and
+/// total bytes are capped at MAX_BUNDLE_BYTES.
 fn fetch_hermes_tree(
     prefix: &str,
     entries: &[GithubContentEntry],
     bundle: &mut Vec<(PathBuf, Vec<u8>)>,
+    total: &mut u64,
     depth: usize,
 ) -> Result<(), PantheonError> {
     if depth > 4 {
@@ -784,10 +967,20 @@ fn fetch_hermes_tree(
                 serde_json::from_str(&body).map_err(|err| {
                     serr("SKILL_HERMES_DECODE", format!("github {sub_prefix}: {err}"))
                 })?;
-            fetch_hermes_tree(&sub_prefix, &sub_entries, bundle, depth + 1)?;
+            fetch_hermes_tree(&sub_prefix, &sub_entries, bundle, total, depth + 1)?;
         } else if e.kind == "file" {
             if let Some(url) = &e.download_url {
                 let bytes = fetch_bytes(url)?;
+                *total = total.saturating_add(bytes.len() as u64);
+                if *total > MAX_BUNDLE_BYTES {
+                    return Err(serr(
+                        "SKILL_FETCH_TOO_LARGE",
+                        format!(
+                            "{prefix}: bundle exceeds {} MiB cap",
+                            MAX_BUNDLE_BYTES / (1024 * 1024)
+                        ),
+                    ));
+                }
                 bundle.push((rel, bytes));
             }
         }
@@ -802,17 +995,11 @@ fn fetch_hermes_tree(
 /// Copies the raw file verbatim — frontmatter + body — so the imported
 /// skill round-trips through `parse_skill` on the next discovery pass.
 pub fn import_skill(data_dir: &Path, skill: &Skill) -> Result<PathBuf, PantheonError> {
-    let dest_dir = data_dir.join("skills").join(&skill.meta.name);
+    let dest_dir = contained_skill_dir(&data_dir.join("skills"), &skill.meta.name)?;
     let dest = dest_dir.join("SKILL.md");
     if dest.exists() {
         return Ok(dest);
     }
-    std::fs::create_dir_all(&dest_dir).map_err(|e| {
-        serr(
-            "SKILL_IMPORT_IO",
-            format!("create {}: {e}", dest_dir.display()),
-        )
-    })?;
     let raw = std::fs::read_to_string(&skill.path).map_err(|e| {
         serr(
             "SKILL_IMPORT_IO",
@@ -840,7 +1027,9 @@ pub fn import_skill_dir(data_dir: &Path, src: &Path, name: &str) -> Result<PathB
             format!("{}: no SKILL.md", src.display()),
         ));
     }
-    let dest_dir = data_dir.join("skills").join(name);
+    // Slug-validated + canonical containment: `name` comes from directory
+    // names (repo clones, user input) and must not escape skills/.
+    let dest_dir = contained_skill_dir(&data_dir.join("skills"), name)?;
     copy_tree(src, &dest_dir)?;
     Ok(dest_dir.join("SKILL.md"))
 }

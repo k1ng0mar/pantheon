@@ -143,8 +143,9 @@ pantheon migrate &lt;detect|show|plan|apply|validate&gt; &lt;hermes|openclaw|omp
 <pre><code>
 pantheon schedule &lt;task&gt; [--every 30m | --cron &quot;*/5 * * * *&quot;] [--agent N] [--model M] [--provider P]
 pantheon schedule list|pause|resume|cancel|run &lt;id&gt;
-pantheon swarm &lt;N&gt; &quot;task&quot; [roles...]
-pantheon swarm status [&lt;id&gt;] | list
+pantheon swarm status [&lt;id&gt;] | list   # recorded swarms only; spawn is unsupported
+# (sub-agent execution is not wired — spawn refuses rather than recording
+# runs that would never execute)
 pantheon gateway start|restart|stop|status|run [discord|telegram]
 pantheon serve [--port N] [--host H]      # AG-UI server
 pantheon pipeline --spec &quot;task&quot; [RUN_ID]

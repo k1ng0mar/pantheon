@@ -181,3 +181,176 @@ fn scan_reports_a_duplicate_name_and_keeps_the_winner() {
     assert!(scan.rejected[0].reason.contains("duplicate"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- path traversal / size cap regression tests ----
+
+#[test]
+fn valid_slug_accepts_safe_names() {
+    assert!(valid_slug("alpha"));
+    assert!(valid_slug("my-skill_2"));
+    assert!(valid_slug("A"));
+    assert!(valid_slug(&"x".repeat(64)));
+}
+
+#[test]
+fn valid_slug_rejects_traversal_and_junk() {
+    for bad in [
+        "",
+        ".",
+        "..",
+        "../evil",
+        "..\\evil",
+        "a/b",
+        "/abs",
+        "evil!",
+        "has space",
+        "ünïcödé",
+        "a..b/c",
+    ] {
+        assert!(!valid_slug(bad), "{bad:?} must be rejected");
+    }
+    assert!(!valid_slug(&"x".repeat(65)), "over 64 chars must be rejected");
+}
+
+#[test]
+fn import_skill_dir_rejects_traversal_name() {
+    let dir = std::env::temp_dir().join(format!("skimp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("SKILL.md"), "---\nname: x\n---\nbody\n").unwrap();
+    let data = dir.join("data");
+    for bad in ["../evil", "..", "/abs", "a/b", ""] {
+        let err = import_skill_dir(&data, &src, bad).unwrap_err();
+        assert_eq!(err.code, "SKILL_BAD_NAME", "{bad:?}");
+    }
+    // Nothing escaped the data dir: the rejection happens before any write.
+    assert!(!dir.join("evil").exists());
+    assert!(!data.join("skills").join("evil").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn import_skill_rejects_bad_meta_name() {
+    let dir = std::env::temp_dir().join(format!("skimp2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let skill = Skill {
+        meta: SkillMeta {
+            name: "../../evil".into(),
+            description: String::new(),
+            origin: String::new(),
+        },
+        path: dir.join("x"),
+    };
+    let err = import_skill(&dir.join("data"), &skill).unwrap_err();
+    assert_eq!(err.code, "SKILL_BAD_NAME");
+    assert!(!dir.join("evil").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn repo_subpath_rejects_traversal() {
+    let dir = std::env::temp_dir().join(format!("sksub-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    assert!(resolve_repo_subpath(&dir, Some("sub")).is_ok());
+    assert_eq!(resolve_repo_subpath(&dir, None).unwrap(), dir);
+    for bad in ["../evil", "../../evil", "/abs", "sub/../../evil"] {
+        let err = resolve_repo_subpath(&dir, Some(bad)).unwrap_err();
+        assert_eq!(err.code, "SKILL_BAD_SUBPATH", "{bad:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hermes_repo_path_rejects_dotdot() {
+    assert!(check_repo_path("skills/creative/claude-design").is_ok());
+    // Leading/trailing slashes are normalized (pre-existing behavior), so
+    // "/abs/" is fine; `..` components anywhere are rejected.
+    assert_eq!(check_repo_path("/abs/").unwrap(), "abs");
+    for bad in ["../../etc", "..", "skills/../../x", ""] {
+        assert!(check_repo_path(bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn read_capped_rejects_oversize_stream() {
+    let err = read_capped(std::io::Cursor::new(vec![7u8; 16]), 8, "test").unwrap_err();
+    assert_eq!(err.code, "SKILL_FETCH_TOO_LARGE");
+    let out = read_capped(std::io::Cursor::new(vec![7u8; 8]), 8, "test").unwrap();
+    assert_eq!(out.len(), 8);
+}
+
+#[cfg(unix)]
+#[test]
+fn contained_skill_dir_rejects_symlink_escape() {
+    let dir = std::env::temp_dir().join(format!("sklink-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("skills");
+    std::fs::create_dir_all(&root).unwrap();
+    let outside = dir.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+    let err = contained_skill_dir(&root, "link").unwrap_err();
+    assert_eq!(err.code, "SKILL_BAD_NAME");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, data) in entries {
+        w.start_file(*name, opts).unwrap();
+        w.write_all(data).unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
+#[test]
+fn unzip_rejects_dotdot_and_absolute_entries() {
+    for evil in ["../evil.txt", "sub/../../evil.txt", "/abs.txt"] {
+        let bytes = make_zip(&[(evil, b"evil")]);
+        let err = unzip_skill(&bytes).unwrap_err();
+        assert!(
+            err.contains("unsafe entry path"),
+            "{evil:?}: got {err}"
+        );
+    }
+    // A benign nested entry still inflates fine.
+    let bytes = make_zip(&[("refs/guide.md", b"hello")]);
+    let out = unzip_skill(&bytes).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].0, PathBuf::from("refs/guide.md"));
+}
+
+#[test]
+fn unzip_rejects_too_many_entries() {
+    let entries: Vec<(String, Vec<u8>)> =
+        (0..5).map(|i| (format!("f{i}.txt"), b"x".to_vec())).collect();
+    let refs: Vec<(&str, &[u8])> = entries
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.as_slice()))
+        .collect();
+    let bytes = make_zip(&refs);
+    let limits = ZipLimits {
+        max_entries: 3,
+        max_total_bytes: 1024 * 1024,
+    };
+    let err = unzip_skill_with_limits(&bytes, &limits).unwrap_err();
+    assert!(err.contains("entries"), "{err}");
+}
+
+#[test]
+fn unzip_rejects_inflated_bomb() {
+    // 4 KiB of zeros compresses to almost nothing but inflates past the cap.
+    let data = vec![0u8; 4096];
+    let bytes = make_zip(&[("bomb.bin", &data[..])]);
+    let limits = ZipLimits {
+        max_entries: 1000,
+        max_total_bytes: 100,
+    };
+    let err = unzip_skill_with_limits(&bytes, &limits).unwrap_err();
+    assert!(err.contains("inflates past"), "{err}");
+}
