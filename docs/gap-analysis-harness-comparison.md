@@ -51,10 +51,17 @@ A user hits this on any conversation past a few hundred KB of tool output. The p
 `ContextCompressed` events exist in `pantheon-core/src/events.rs:195` and are mapped by the otel
 fold and the extension bridge, so an operator watching `pantheon runs <id>` will never see one emitted.
 
-This is the worst gap because `ARCHITECTURE.md:80` describes the behaviour in the present tense
+This was the worst gap because `ARCHITECTURE.md:80` describes the behaviour in the present tense
 ("assembled messages are fitted to the catalog `context_limit` before each provider call") and
-`product-overview.md:169` correctly says it is not in the ordinary path. The architecture doc is
-the document that is wrong.
+`product-overview.md:169` correctly said it was not in the ordinary path. The architecture doc was
+the document that was wrong.
+
+**Status: fixed (`70de790`+).** `Session::window_budget` derives the budget from the *serving*
+model — `last_resolved` when a fallback has taken over, else the configured default — and
+`Session::fit_context` runs before every provider call in `drive`, compression first then the
+deterministic fit. An uncataloged model gets no budget and is left untouched, which is the only
+defensible default: assuming a small limit truncates a 1M-window conversation, and assuming none
+eats a provider 400. `ContextTrimmed` and `ContextCompressed` now actually reach the ledger.
 
 ### 2. Sub-agent delegation is refused at runtime
 

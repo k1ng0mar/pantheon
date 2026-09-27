@@ -811,6 +811,52 @@ pub fn chat_secrets(cfg: Option<&Config>) -> pantheon_secrets::SecretsBroker {
     )
 }
 
+/// Resolve the model policy for one session: explicit override > environment >
+/// `config.toml` > the hardcoded local default, plus the configured fallback
+/// chain and every auxiliary slot.
+///
+/// This lives here, not in an interface module, because it is a property of
+/// the config document rather than of any surface. The TUI, the AG-UI
+/// session factory, and the scheduler all resolve a session the same way, and
+/// a resolution rule that lives beside a UI keeps drifting from the one
+/// beside the verb that replaced it.
+pub fn build_model_policy(
+    cfg: Option<&Config>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> pantheon_core::model::ModelPolicy {
+    let cfg_model = cfg
+        .and_then(|c| c.model.clone())
+        .map(|m| (m.provider, m.model));
+    let default = pantheon_core::model::DefaultModel {
+        provider: provider
+            .or_else(|| cfg_model.as_ref().map(|(p, _)| p.clone()))
+            .or_else(|| std::env::var("PANTHEON_PROVIDER").ok())
+            .unwrap_or_else(|| "local".into()),
+        model: model
+            .or_else(|| cfg_model.as_ref().map(|(_, m)| m.clone()))
+            .or_else(|| std::env::var("PANTHEON_MODEL").ok())
+            .unwrap_or_else(|| "llama3.2".into()),
+    };
+    let mut chain = pantheon_core::model::FallbackChain::default();
+    if let Some(fallbacks) = cfg
+        .and_then(|c| c.model.as_ref())
+        .map(|m| m.fallbacks.clone())
+    {
+        for f in fallbacks {
+            chain.fallbacks.push(pantheon_core::model::DefaultModel {
+                provider: f.provider,
+                model: f.model,
+            });
+        }
+    }
+    pantheon_core::model::ModelPolicy {
+        default: default.clone(),
+        fallbacks: chain,
+        auxiliaries: auxiliaries(cfg, &default),
+    }
+}
+
 /// Every auxiliary for this host with a resolved target: an explicit
 /// `[judge]` / `[compression]` / `[title_gen]` / `[search_synthesis]` /
 /// `[vision]` / `[scheduled]` / `[mcp_synthesis]` section (or its env

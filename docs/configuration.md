@@ -136,7 +136,7 @@ yet wired to chat; see ARCHITECTURE.md section 13.
 
 ## Model selection order
 
-For `pantheon chat`, the default model resolves as:
+For any session (TUI, `run --deliver`, `serve`), the default model resolves as:
 
 1. `--provider` / `--model` flags
 2. `config.toml [model]`
@@ -215,8 +215,11 @@ How it behaves on overflow, in order:
 2. The deterministic fit runs afterward and drops whatever still does not
    fit; if the compressor is unreachable or errors, that fallback is the
    whole story (a warning prints, the run continues).
-3. If even the essential rows cannot fit, the run fails with
-   `CONTEXT_OVERFLOW` (see troubleshooting).
+3. If even the essential rows cannot fit, the fit gives up and leaves the
+   transcript intact, logging `CONTEXT_OVERFLOW` to `logs/errors.log`. The
+   turn still reaches the provider, which rejects it with its own, more
+   specific error. Failing here instead would replace a real error with a
+   generic one and look like the run had silently lost its history.
 
 Each pass is recorded in the ledger as `ContextCompressed`, and any
 trimming as `ContextTrimmed`, so `pantheon runs <run>` shows exactly
@@ -251,7 +254,7 @@ Behavior:
 - **Fire-and-forget.** The title call runs on a worker thread *beside*
   the first turn, so it never delays the first token. The turn joins the
   worker before reporting done, so the title is durable even for one-shot
-  `pantheon chat` invocations.
+  session turns.
 - **First prompt only.** A fresh conversation titles once; resumed and
   reopened runs never retitle.
 - **Bounded output.** The reply is normalized to a single line, quotes and

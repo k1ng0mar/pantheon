@@ -64,7 +64,7 @@ full ledger history across exits; `/help` lists the session commands.
 One-shot (scripts, CI):
 
 ```sh
-pantheon chat "what files are in this directory"
+pantheon run --say "what files are in this directory" --deliver session
 ```
 
 The model can call tools (shell, file read/write, git) according to the
