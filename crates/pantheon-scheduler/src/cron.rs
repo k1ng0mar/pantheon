@@ -68,6 +68,15 @@ impl CronSchedule {
         })
     }
 
+    /// Validate an expression without keeping the parsed schedule.
+    ///
+    /// This is the registration-time gate: a broken expression must be
+    /// rejected when the job is created, never stored as a job that
+    /// silently never fires.
+    pub fn validate(expr: &str) -> Result<(), CronError> {
+        Self::parse(expr).map(|_| ())
+    }
+
     /// Does this expression select the given minute?
     pub fn matches(&self, at: CivilTime) -> bool {
         if !self.minute.matches(at.minute)
@@ -209,6 +218,14 @@ impl Field {
                 self.allowed.push(0);
             }
             self.allowed.sort_unstable();
+            // Folding 7 onto 0 shrinks the set by one, so keep `range` in
+            // sync: after the fold the canonical day-of-week range is 0-6.
+            // Without this, `is_wildcard` stopped recognizing a literal `*`
+            // in the day-of-week field (7 values vs a range of 8), the
+            // day-of-week arm read as "restricted", and `0 0 1 * *` fell
+            // into the dom/dow OR-arm and fired every day instead of on the
+            // 1st of the month.
+            self.range = (0, 6);
         }
         self
     }
