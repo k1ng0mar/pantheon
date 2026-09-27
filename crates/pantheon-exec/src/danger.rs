@@ -36,7 +36,11 @@ pub enum RiskLevel {
 pub struct RuleMatch {
     pub rule: &'static str,
     pub description: &'static str,
-    /// The normalized command text that tripped the rule.
+    /// NOT the command. A blocked command may contain secrets (`curl -H
+    /// "Authorization: Bearer sk-..." | sh`), and this struct travels into
+    /// errors and logs. It carries a stable hash of the normalized command
+    /// plus its length — enough to correlate hits across runs, nothing an
+    /// attacker can read a secret out of.
     pub snippet: String,
 }
 
@@ -46,7 +50,9 @@ pub struct DangerAssessment {
     pub level: RiskLevel,
     pub matches: Vec<RuleMatch>,
     /// Command after normalization (quote collapsing, whitespace squeeze).
-    /// Kept for future AST-aware analysis and for audit logging.
+    /// Kept in-process for future AST-aware analysis. Never log or display
+    /// this raw: it may embed secrets, which is why `gate()` reports a hash
+    /// instead.
     pub normalized: String,
 }
 
@@ -348,13 +354,14 @@ const GIT_GLOBAL_OPTS_WITH_VALUE: &[&str] = &[
 /// request.
 pub fn assess(command: &str) -> DangerAssessment {
     let normalized = normalize(command);
+    let digest = cmd_digest(&normalized);
     let mut matches = Vec::new();
     for (rule, description, is_match) in PATTERNS {
         if is_match(&normalized) {
             matches.push(RuleMatch {
                 rule,
                 description,
-                snippet: normalized.clone(),
+                snippet: digest.clone(),
             });
         }
     }
@@ -370,19 +377,40 @@ pub fn assess(command: &str) -> DangerAssessment {
     }
 }
 
+/// Stable, non-secret identifier for a normalized command: `sha1:0123abcd`
+/// (first 8 hex of an FNV-1a 64 hash) plus the char length. Deterministic
+/// across runs so repeated blocks of the same command correlate, but
+/// irreversible, so an error or log line carrying it cannot leak the
+/// command text — which may itself contain secrets.
+///
+/// FNV-1a rather than a crypto hash because this is an identifier, not
+/// authentication; it needs to be std-only and fast on the hot path.
+fn cmd_digest(normalized: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_4842_2235;
+    for b in normalized.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("cmd:{:08x} len:{}", (h >> 32) as u32, normalized.len())
+}
+
 /// Assess and return a structured refusal for anything Critical. The
 /// refusal names every matched rule so the model can correct its plan
-/// instead of retrying blindly.
+/// instead of retrying blindly. It never carries the raw command: the
+/// refusal is logged and shown to the model, and the command may contain
+/// secrets. The digest plus length is enough to correlate the block with
+/// the request that caused it.
 pub fn gate(command: &str) -> Result<(), PantheonError> {
     let a = assess(command);
     if a.level == RiskLevel::Critical {
         let rules: Vec<&str> = a.matches.iter().map(|m| m.rule).collect();
+        let digest = a.matches.first().map(|m| m.snippet.clone()).unwrap_or_default();
         return Err(eerr(
             "DANGER_BLOCKED",
             format!(
-                "command blocked by dangerous-pattern gate: {} (normalized: `{}`)",
+                "command blocked by dangerous-pattern gate: {} ({})",
                 rules.join(", "),
-                a.normalized
+                digest
             ),
         ));
     }

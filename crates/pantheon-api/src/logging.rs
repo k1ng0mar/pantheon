@@ -19,6 +19,11 @@
 //! Each line is `TIMESTAMP LEVEL [component] message`, which is the shape
 //! `hermes logs` parses back out with a regex. Keeping the two in agreement is
 //! what makes the reader possible at all.
+//!
+//! Every line passes through `redact()` before it is written, so API keys
+//! and bearer tokens never reach disk even when a caller logs a raw request
+//! dump. Files rotate at 10 MiB, keeping 5 generations (`agent.log.1`..=
+//! `agent.log.5`), enforced on the write path so no call site can forget.
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -73,6 +78,16 @@ pub const GATEWAY_LOG: &str = "gateway.log";
 /// `repair` writes (`ledger.db.<stamp>.bak`) and any editor swap file would
 /// show up as a log.
 pub const KNOWN_LOGS: &[&str] = &[AGENT_LOG, ERRORS_LOG, GATEWAY_LOG];
+
+/// Size at which a log file is rotated. 10 MiB is small enough that a
+/// `logs tail` never chokes and large enough that rotation is rare: a
+/// busy turn writes kilobytes, so one generation covers weeks.
+pub const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Rotated generations kept per log file: `agent.log.1` ..= `agent.log.5`.
+/// `.1` is always the newest. Oldest is deleted on rotation, never archived,
+/// so a forgotten debug session cannot fill a disk.
+pub const LOG_ROTATE_GENERATIONS: u32 = 5;
 
 /// Where the logs live, and the threshold. Set once from the CLI entry point
 /// at startup; until then logging is a no-op, so a library test or an embedded
@@ -135,15 +150,23 @@ pub fn log_dir() -> Option<PathBuf> {
 /// take down the operation being logged, and a missing log line is far less
 /// damaging than a failed turn.
 ///
+/// The message is redacted before writing, so an API key or bearer token in
+/// a request dump never reaches the file even when the caller forgot to
+/// sanitize. Rotation is enforced on the way in, so the files cannot grow
+/// forever no matter who writes to them.
+///
 /// Takes a full path and reads no global, so the formatting and the
 /// warn+ mirroring are testable without racing for the process-wide `SINK`.
 pub(crate) fn append(file: &Path, level: Level, component: &str, msg: &str) {
+    // Redact first: this is the single choke point every log line passes
+    // through, so secrets cannot reach disk via a forgotten call site.
+    let redacted = redact(msg);
     // Escape newlines before writing. A caller passing a multi-line tool
     // result is the ordinary case, and an unescaped one would let the message
     // forge additional log lines — including ones that look like a different
     // component's ERROR. The reader is line-oriented, so this is what keeps a
     // record one record.
-    let flat = msg.replace('\r', "\\r").replace('\n', "\\n");
+    let flat = redacted.replace('\r', "\\r").replace('\n', "\\n");
     let line = format!("{} {level} [{component}] {flat}\n", stamp(now_ms()));
     if let Ok(mut f) = open_append(file) {
         let _ = f.write_all(line.as_bytes());
@@ -162,7 +185,48 @@ fn open_append(path: &Path) -> std::io::Result<File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // Enforce the size cap before every write. Best-effort: a failed rotation
+    // degrades to the old unbounded behaviour rather than losing the line.
+    rotate_if_needed(path);
     OpenOptions::new().create(true).append(true).open(path)
+}
+
+/// Rotate `path` when it has reached `LOG_ROTATE_BYTES`: `path` becomes
+/// `path.1`, the old `path.1` becomes `path.2`, and so on up to
+/// `LOG_ROTATE_GENERATIONS`, at which point the oldest generation is deleted.
+/// Called before every append, so all three log files rotate no matter which
+/// entry point wrote them.
+///
+/// Best-effort by design. Two processes can race a rename, and a full disk
+/// fails every op inside; either way logging must never take down the turn
+/// being logged. Every failure here is swallowed.
+fn rotate_if_needed(path: &Path) {
+    rotate_sized(path, LOG_ROTATE_BYTES, LOG_ROTATE_GENERATIONS);
+}
+
+fn rotate_sized(path: &Path, limit_bytes: u64, generations: u32) {
+    let too_big = std::fs::metadata(path)
+        .map(|m| m.len() >= limit_bytes)
+        .unwrap_or(false);
+    if !too_big {
+        return;
+    }
+    rotate_log(path, generations);
+}
+
+/// Unconditionally rotate `path` through `generations` generations. Public
+/// so a CLI `logs rotate` or a startup sweep can rotate files the append
+/// path has not seen yet; the append path calls it only when the size cap
+/// is hit.
+pub fn rotate_log(path: &Path, generations: u32) {
+    let name = path.to_string_lossy();
+    // Drop the oldest generation first so the chain of renames has a free
+    // slot; a missing file anywhere in the chain is fine (first rotation).
+    let _ = std::fs::remove_file(format!("{name}.{generations}"));
+    for i in (1..generations).rev() {
+        let _ = std::fs::rename(format!("{name}.{i}"), format!("{name}.{}", i + 1));
+    }
+    let _ = std::fs::rename(path, format!("{name}.1"));
 }
 
 /// The one place level filtering and file routing happen, so no call site can
