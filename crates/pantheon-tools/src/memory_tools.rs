@@ -1,8 +1,10 @@
-//! Model-facing memory tools: four tools the agent can call to recall,
-//! list, propose, and forget records. All writes go through
+//! Model-facing memory tools: five tools the agent can call to recall,
+//! list, propose, forget, and confirm records. All writes go through
 //! `propose -> policy -> provenance -> validation` and emit ledger events.
 //! Reads respect `MemoryRead`. Writes require `MemoryWrite` and may
-//! require approval per the runtime policy.
+//! require approval per the runtime policy. Confirming (trust-tier
+//! promotion) requires the separate `MemoryConfirm` capability, which
+//! the default policies mark as needing human approval.
 //!
 //! The tools never touch the SQLite layer directly; they call the same
 //! `MemoryBackend` capability gate the CLI does. A backend swap (native
@@ -112,7 +114,7 @@ impl MemoryToolSink for Arc<std::sync::Mutex<Vec<MemoryToolEvent>>> {
 }
 
 /// Options for `register_memory_tools`. The store and policy are shared
-/// across the four tools. `max_bytes` caps proposal sizes the same way
+/// across the five tools. `max_bytes` caps proposal sizes the same way
 /// the CLI does.
 #[derive(Clone)]
 pub struct MemoryToolOptions {
@@ -268,15 +270,25 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
     reg.register(
         ToolSchema {
             name: "memory_list".into(),
-            description: "List every Agent-layer record in the current namespace.".into(),
+            description: "List Agent-layer records in the current namespace. Output is bounded: at most `limit` records (default 50, max 500); a `truncated: true` marker says when more exist.".into(),
             parameters: serde_json::json!({
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max records to return (default 50, max 500)."}
+                }
             }),
         },
         Capability::MemoryRead,
         move |args| {
-            let _ = parse_args(args)?;
+            let v = parse_args(args)?;
+            // Bound the output: an unbounded list dumps the whole agent
+            // memory into the model's context. Clamp to [1, 500].
+            let limit = v
+                .get("limit")
+                .and_then(|x| x.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(50)
+                .clamp(1, 500);
             let rows = match list_opts.store.list_agent(&list_opts.namespace) {
                 Ok(r) => r,
                 Err(e) => {
@@ -287,16 +299,23 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
                     return Err(e);
                 }
             };
+            let truncated = rows.len() > limit;
+            let shown = rows.len().min(limit);
             list_opts.sink.record(MemoryToolEvent::Listed {
                 namespace: list_opts.namespace.clone(),
-                rows: rows.len(),
+                rows: shown,
             });
             let mut out = String::new();
-            for (k, v) in &rows {
-                out.push_str(&format!("- {k} = {v}\n"));
+            for (k, val) in rows.iter().take(limit) {
+                out.push_str(&format!("- {k} = {val}\n"));
             }
             if out.is_empty() {
                 out.push_str("(no agent records)\n");
+            } else if truncated {
+                out.push_str(&format!(
+                    "truncated: true (showing first {limit} of {} records)\n",
+                    rows.len()
+                ));
             }
             Ok(out)
         },
@@ -450,26 +469,32 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
         },
     );
 
-    // memory_confirm: the user-promotion path. The agent can only call
-    // this when the user has explicitly vouched for a record (via an
-    // approval or a direct instruction); the tool elevates an Untrusted
+    // memory_confirm: the user-promotion path. Elevates an Untrusted
     // record to Memory tier. It cannot exceed Memory tier: System and
     // User are reserved for harness and human authors.
+    //
+    // Gated on Capability::MemoryConfirm, which the default policies
+    // mark as requiring approval — NOT on MemoryWrite. The old gate
+    // (MemoryWrite, Allow) plus the "call only after the user vouched"
+    // description was honor-system: a prompt-injected model could
+    // propose then confirm its own poisoned record into the trusted
+    // tier. Now the run loop parks the call for a human first.
     let confirm_opts = opts.clone();
     reg.register(
         ToolSchema {
             name: "memory_confirm".into(),
-            description: "Mark an existing memory record as user-confirmed. Call only after the user explicitly vouched for the record's content; unconfirmed records stay untrusted.".into(),
+            description: "Mark an existing memory record as user-confirmed. Requires human approval under the default policy: the run parks until a user vouches for the record's content. Unconfirmed records stay untrusted.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "key": {"type": "string"},
-                    "namespace": {"type": "string", "description": "Defaults to session namespace."}
+                    "layer": {"type": "string", "enum": ["global", "agent", "project", "task"], "description": "Layer of the record to confirm (default agent)."},
+                    "namespace": {"type": "string", "description": "Defaults to session namespace; naming another session's namespace is refused."}
                 },
                 "required": ["key"]
             }),
         },
-        Capability::MemoryWrite,
+        Capability::MemoryConfirm,
         move |args| {
             let v = parse_args(args)?;
             let key = v
@@ -477,14 +502,22 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
                 .and_then(|x| x.as_str())
                 .ok_or_else(|| merr("TOOL_BAD_ARGS", "missing 'key'".into()))?
                 .to_string();
-            let namespace = v
-                .get("namespace")
+            let layer = v
+                .get("layer")
                 .and_then(|x| x.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| confirm_opts.namespace.clone());
+                .and_then(layer_str_to_kind)
+                .unwrap_or(LayerKind::Agent);
+            // Namespace is resolved against the session's own, like every
+            // other memory tool: the model must not confirm another
+            // session's records by naming its namespace.
+            let namespace = resolve_namespace(
+                v.get("namespace").and_then(|x| x.as_str()),
+                &confirm_opts.namespace,
+            )?;
             match confirm_via(
                 confirm_opts.store.as_ref(),
                 &confirm_opts.policy,
+                layer,
                 &namespace,
                 &key,
             ) {
@@ -508,7 +541,6 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
         },
     );
 }
-
 #[cfg(test)]
 #[path = "memory_tools_tests.rs"]
 mod tests;

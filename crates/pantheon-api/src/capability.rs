@@ -18,6 +18,12 @@ pub enum Capability {
     MessageSend(String),
     MemoryRead,
     MemoryWrite,
+    /// Promoting a record's trust tier (memory_confirm). Split from
+    /// MemoryWrite because confirming is the user-vouch path: a model
+    /// that may propose records must not be able to confirm its own
+    /// into the trusted tier. Default policies mark this Approval so
+    /// the run loop parks for a human before the promotion runs.
+    MemoryConfirm,
     SecretsUse,
     AgentSpawn,
     Other(String),
@@ -50,6 +56,7 @@ impl Capability {
             Capability::MessageSend(_) => "message.send".to_string(),
             Capability::MemoryRead => "memory.read".to_string(),
             Capability::MemoryWrite => "memory.write".to_string(),
+            Capability::MemoryConfirm => "memory.confirm".to_string(),
             Capability::SecretsUse => "secrets.use".to_string(),
             Capability::AgentSpawn => "agent.spawn".to_string(),
             Capability::Other(name) => format!("other.{}", name.trim().replace(' ', ".")),
@@ -71,6 +78,7 @@ impl Capability {
             "browser" => Capability::Browser,
             "memory.read" => Capability::MemoryRead,
             "memory.write" => Capability::MemoryWrite,
+            "memory.confirm" => Capability::MemoryConfirm,
             "secrets.use" => Capability::SecretsUse,
             "agent.spawn" => Capability::AgentSpawn,
             other => Capability::Other(other.to_string()),
@@ -117,9 +125,14 @@ impl Policy {
             .allow(Capability::AgentSpawn)
     }
 
-    /// Coder preset plus the memory write capability.
+    /// Coder preset plus the memory write capability. Confirming
+    /// (promoting a record's trust tier) is a separate capability and
+    /// needs human approval: the model may propose, but only a user
+    /// vouches a record into the trusted tier.
     pub fn coder_with_memory() -> Self {
-        Self::coder().allow(Capability::MemoryWrite)
+        Self::coder()
+            .allow(Capability::MemoryWrite)
+            .approval(Capability::MemoryConfirm)
     }
 
     /// Read-only researcher preset.
@@ -145,5 +158,37 @@ impl Policy {
             .filter(|(_, d)| **d == Decision::Approval)
             .map(|(c, _)| c.clone())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_confirm_token_roundtrips() {
+        assert_eq!(Capability::MemoryConfirm.token(), "memory.confirm");
+        assert_eq!(
+            Capability::from_token("memory.confirm"),
+            Capability::MemoryConfirm
+        );
+        // Serialization carries the variant too (serde derive).
+        let json = serde_json::to_string(&Capability::MemoryConfirm).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Capability>(&json).unwrap(),
+            Capability::MemoryConfirm
+        );
+    }
+
+    #[test]
+    fn coder_with_memory_requires_approval_for_confirm() {
+        let p = Policy::coder_with_memory();
+        assert_eq!(p.check(&Capability::MemoryConfirm), Decision::Approval);
+        assert_eq!(p.check(&Capability::MemoryWrite), Decision::Allow);
+        // Default-deny still holds for policies that never mention it.
+        assert_eq!(
+            Policy::coder().check(&Capability::MemoryConfirm),
+            Decision::Deny
+        );
     }
 }

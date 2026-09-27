@@ -55,10 +55,16 @@ pub trait MemoryBackend: Send + Sync + std::fmt::Debug {
         max_bytes: usize,
     ) -> Result<MemoryRecord, PantheonError>;
     fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError>;
-    /// Fetch one record by (namespace, key). Default: unsupported —
-    /// external services are query-oriented, not key-get oriented.
-    fn get(&self, namespace: &str, key: &str) -> Result<Option<MemoryRecord>, PantheonError> {
-        let _ = (namespace, key);
+    /// Fetch one record by (layer, namespace, key) — the full row
+    /// identity. Default: unsupported — external services are
+    /// query-oriented, not key-get oriented.
+    fn get(
+        &self,
+        layer: LayerKind,
+        namespace: &str,
+        key: &str,
+    ) -> Result<Option<MemoryRecord>, PantheonError> {
+        let _ = (layer, namespace, key);
         Err(unsupported("get"))
     }
     /// Remove one record. Default: unsupported (external services manage
@@ -73,10 +79,11 @@ pub trait MemoryBackend: Send + Sync + std::fmt::Debug {
     fn confirm(
         &self,
         policy: &Policy,
+        layer: LayerKind,
         namespace: &str,
         key: &str,
     ) -> Result<MemoryRecord, PantheonError> {
-        let _ = (policy, namespace, key);
+        let _ = (policy, layer, namespace, key);
         Err(unsupported("confirm"))
     }
 }
@@ -114,8 +121,13 @@ impl MemoryBackend for MemoryStore {
         self.list_agent(namespace)
     }
 
-    fn get(&self, namespace: &str, key: &str) -> Result<Option<MemoryRecord>, PantheonError> {
-        MemoryStore::get(self, namespace, key)
+    fn get(
+        &self,
+        layer: LayerKind,
+        namespace: &str,
+        key: &str,
+    ) -> Result<Option<MemoryRecord>, PantheonError> {
+        MemoryStore::get(self, layer, namespace, key)
     }
 
     fn forget(&self, layer: LayerKind, namespace: &str, key: &str) -> Result<bool, PantheonError> {
@@ -125,10 +137,11 @@ impl MemoryBackend for MemoryStore {
     fn confirm(
         &self,
         policy: &Policy,
+        layer: LayerKind,
         namespace: &str,
         key: &str,
     ) -> Result<MemoryRecord, PantheonError> {
-        confirm_write(self, policy, namespace, key)
+        confirm_write(self, policy, layer, namespace, key)
     }
 }
 
@@ -253,20 +266,36 @@ pub fn propose_write(
 /// call this after a human says the record is sound. Returns the updated
 /// record. No-op (still succeeds) if the record is already Memory tier or
 /// better.
+///
+/// `layer` names which row to promote: the row identity is
+/// (layer, namespace, key), and promoting by (namespace, key) alone
+/// would be ambiguous when the same key exists in several layers.
+///
+/// The capability check accepts `Allow` or `Approval`. `Deny` fails
+/// closed. The run loop is the enforcement point that parks
+/// `Approval`-gated `memory_confirm` calls before the tool closure ever
+/// runs, so reaching this check with `Approval` means the loop already
+/// enforced the policy (or the human approved on resume — the closure
+/// captures the static policy, which still reads `Approval` after a
+/// grant). Direct callers (CLI, tests) are harness code, not the model.
 pub fn confirm_write(
     store: &MemoryStore,
     policy: &Policy,
+    layer: LayerKind,
     namespace: &str,
     key: &str,
 ) -> Result<MemoryRecord, PantheonError> {
-    if !matches!(policy.check(&Capability::MemoryWrite), Decision::Allow) {
+    if !matches!(
+        policy.check(&Capability::MemoryConfirm),
+        Decision::Allow | Decision::Approval
+    ) {
         return Err(merr(
             "MEM_NO_CAPABILITY",
-            "memory.write not granted for confirm".into(),
-            "grant memory.write in the agent policy",
+            "memory.confirm not granted for confirm".into(),
+            "grant memory.confirm in the agent policy",
         ));
     }
-    store.promote(namespace, key, pantheon_api::provenance::TrustTier::Memory)
+    store.promote(layer, namespace, key, pantheon_api::provenance::TrustTier::Memory)
 }
 
 /// Recall for one agent, across layers, narrowest first.
@@ -332,20 +361,29 @@ pub fn write_via(
 /// Gated confirm against ANY backend: policy check first, then the
 /// backend's promotion path (native implements it; external backends
 /// default to `MEM_BACKEND_UNSUPPORTED`).
+///
+/// Accepts `Allow` or `Approval` for `memory.confirm` — see
+/// [`confirm_write`]: the run loop parks `Approval`-gated calls before
+/// the tool closure runs, so this check only ever sees `Approval` after
+/// enforcement (or a human grant) already happened.
 pub fn confirm_via(
     backend: &dyn MemoryBackend,
     policy: &Policy,
+    layer: LayerKind,
     namespace: &str,
     key: &str,
 ) -> Result<MemoryRecord, PantheonError> {
-    if !matches!(policy.check(&Capability::MemoryWrite), Decision::Allow) {
+    if !matches!(
+        policy.check(&Capability::MemoryConfirm),
+        Decision::Allow | Decision::Approval
+    ) {
         return Err(merr(
             "MEM_NO_CAPABILITY",
-            "memory.write not granted for confirm".into(),
-            "grant memory.write in the agent policy",
+            "memory.confirm not granted for confirm".into(),
+            "grant memory.confirm in the agent policy",
         ));
     }
-    backend.confirm(policy, namespace, key)
+    backend.confirm(policy, layer, namespace, key)
 }
 
 /// Shared gate for the write path: capability, validation, trust clamp.
