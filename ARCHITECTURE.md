@@ -311,7 +311,9 @@ Runtime events → OTel instrumentation → logs / metrics / traces
               + durable execution ledger (offline `pantheon runs <id>`)
 ```
 
-**Implemented:** `pantheon-otel` — Event → span mapping, metrics fold over replay, offline explain(). Deltas excluded from spans. `pantheon runs <id>` remains the offline path. Span mapping exists but no live OTel exporter (no OTLP/gRPC/HTTP push target); instrumentation is fold-only today.
+**Implemented:** per-run counters folded from the ledger (`Ledger::metrics`, `pantheon runs <id> --metrics`). Deltas excluded. `pantheon runs <id>` remains the offline path.
+
+There is no OTLP exporter, and the `pantheon-otel` crate that used to hold the span mapping has been removed. It was a pure event→span transformation with no OpenTelemetry dependency, no collector target, and no caller — and its `SpanRecord` carried no start time, end time, or trace ID, so it could not have been exported even if an exporter were added. That is a redesign, not a wiring job. The metrics fold was the one piece with real value, so it moved to the ledger, where it is derived from the source of truth and reachable by a user. A real OTLP export should be designed when there is a collector to export to.
 
 ## 20. Recovery
 
@@ -376,7 +378,7 @@ detect → analyze → plan → dry-run → approval → backup → apply → va
 
 Imported items retain provenance: `source`, `source_version`, `imported_at`. Unmappable items are archived, never silently dropped.
 
-**Implemented:** `pantheon-migrate` — the full pipeline for **Hermes, OpenClaw, and OMP**, exposed as a CLI verb. `migrate detect|show|plan|apply|validate <source> [path]`, with `--kind K` filtering, `--json` for machine output, and `--yes` to skip the approval gate. `detect`/`show`/`plan`/`validate` are read-only; `apply` is the single writer, refuses to run without approval, and runs `backup → apply → validate` in that order.
+**Implemented:** `pantheon-migration` — the full pipeline for **Hermes, OpenClaw, and OMP**, exposed as a CLI verb. `migrate detect|show|plan|apply|validate <source> [path]`, with `--kind K` filtering, `--json` for machine output, and `--yes` to skip the approval gate. `detect`/`show`/`plan`/`validate` are read-only; `apply` is the single writer, refuses to run without approval, and runs `backup → apply → validate` in that order.
 
 Five item classes are **bridged** rather than copied, because their source representation cannot be dropped into the data dir: `mcp`, `credentials`, `session`, and the memory-plane `persona`/`memory`. A bridge parses the source and writes a Pantheon-shaped artefact; the file copier never sees these targets, so a source file is never laid over its own destination.
 
@@ -455,8 +457,7 @@ Item kinds: `skill`, `agent`, `rule`, `command`, `prompt`, `extension` (Tier 2),
 | `pantheon-memory` | 5-layer memory + write path + provenance |
 | `pantheon-api` | JSON-RPC 2.0 + Unix socket transport |
 | `pantheon-mcp` | MCP token → capability adapter |
-| `pantheon-otel` | Event → span/metric mapping |
-| `pantheon-migrate` | Hermes/OpenClaw/OMP: detect → analyze → plan → approval → backup → apply → validate |
+| `pantheon-migration` | Hermes/OpenClaw/OMP: detect → analyze → plan → approval → backup → apply → validate |
 
 Eval: `eval/run.py` + `eval/cases.json` — regression harness driving the real CLI in fresh sandboxes.
 
@@ -464,12 +465,9 @@ Eval: `eval/run.py` + `eval/cases.json` — regression harness driving the real 
 
 ## Open gaps
 
-- **Context window management is not in the production loop.** `pantheon-exec::context` implements `fit_to_window` / `compress_oldest`, and the `ContextTrimmed` / `ContextCompressed` / `CONTEXT_OVERFLOW` types exist, but `Session::drive` calls none of them: `session.rs` contains zero references to any of those symbols, and `drive` bounds turns, not tokens. A long session grows the transcript until the provider rejects it. Highest-value single fix in the repository; the module is already written and tested.
 - **Sub-agent delegation is not wired.** `AgentSpawner` exists but `session.rs:879` hard-codes `spawner: None` and the Tools arm returns `SWARM_SPAWN_DENIED` (`session.rs:1517`), so the spawn path is unreachable from a chat turn. `pantheon swarm` writes ledger rows and a manifest; it does not execute the agents.
 - `pre_gateway_dispatch` has no fire site: `pantheon-gateway` depends only on `pantheon-core` + `pantheon-storage` and cannot reach the extension manager. Wiring it needs a deliberate dependency edge (or a callback trait in core) — it is declared, reported unsupported by the compat adapter, and flagged by `doctor` rather than silently mapped
-- `pantheon-otel` has no consumer and no OpenTelemetry dependency. It is a pure event→span/metrics transformation, so the crate name oversells it; there is no OTLP exporter, no live trace, and no live metrics
 - **The sandbox cannot initialize on most EC2/container hosts.** `bwrap` is present but fails with `setting up uid map: Permission denied` where user namespaces are blocked, and the runner falls back to a direct spawn. `shell` now prefixes `[sandbox unavailable on this host: ran WITHOUT namespace isolation]` to the tool result whenever this happens, so the downgrade is visible in the tool output and the ledger. It does not fail the call: the capability gate already ran, so this is degraded isolation rather than a bypassed policy. A `fail_closed` profile option would let an operator refuse instead
-- Sub-agent delegation is not wired. `AgentSpawner` exists but `session.rs:879` hard-codes `spawner: None` and the Tools arm returns `SWARM_SPAWN_DENIED` (session.rs:1517), so the spawn path is unreachable from a chat turn. `pantheon swarm` writes ledger rows and a manifest; it does not execute the agents
 - MCP is projection only: `pantheon mcp` maps declared tokens to capabilities but launches no client, so no MCP tool can be discovered or called
 - Scheduler has no daemon and no missed-run catch-up after a long outage (jobs fire on the next `schedule run`, not retroactively). `DurableClaimLedger` and `runs_for_missed` are called only from their own tests
 - Durable agent identity configs (identity/config/memory-namespace/skills/capability/mode per persistent agent)
@@ -480,6 +478,4 @@ Eval: `eval/run.py` + `eval/cases.json` — regression harness driving the real 
 
 ## Audit trail
 
-Full per-crate audit (September 2026): docs/audit/group-A.md,
-group-B.md, group-C.md, comparative-nyx.md. Fix pass applied the high/
-medium findings; deliberate non-changes are documented there too.
+An architecture sweep and per-crate Nyx hand review were completed in September 2026. High- and medium-severity findings were fixed; deliberate non-changes are noted in the repo's decision records under `docs/decisions/`. Test and eval state after the fix pass: 311 workspace tests, 20 evals, zero warnings.
