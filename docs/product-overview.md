@@ -98,7 +98,7 @@ The finished system would add strong sandbox levels, durable agent identities, a
 
 ### Conversation and model execution
 
-The current runtime supports a terminal cockpit, a text session, and one-shot chat. Running bare `pantheon` in an interactive terminal opens the terminal cockpit. It falls back to the text REPL when the input or output is not a terminal. Session slash commands handle local actions such as help, cost, status, run history, and transcript clearing. Those commands do not reach the model.
+The runtime has one interactive surface: the terminal interface. Running bare `pantheon` opens it, and it needs a terminal on stdin and stdout. Without one it reports that and exits 1 rather than becoming a different program. Session slash commands handle local actions such as help, run history, renaming, and transcript clearing. Those commands do not reach the model.
 
 Chat supports OpenAI-compatible and Anthropic provider adapters, including normalized streaming events. The catalog is YAML-backed. Users can list providers and models, choose a model interactively, or pass command-line flags. Fallbacks are ordered and failure-only. There is no model routing layer, and agents cannot choose a replacement model.
 

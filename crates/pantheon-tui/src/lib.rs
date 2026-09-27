@@ -10,6 +10,7 @@
 //! ```text
 //! app        the event loop, screen stack, and focus
 //!   widget   Select / MultiSelect / TextInput / Confirm / SearchList
+//!   render   the same widgets, drawn. no terminal imports in widget.rs
 //!   commands one command registry, no per-surface dispatch tables
 //!   session  the conversation view
 //!   setup    the setup section graph and its screens
@@ -35,6 +36,7 @@
 pub mod app;
 pub mod commands;
 pub mod picker;
+pub mod render;
 pub mod session;
 pub mod setup;
 pub mod widget;

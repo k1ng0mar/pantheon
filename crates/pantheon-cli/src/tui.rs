@@ -616,7 +616,9 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
             state.tokens_max / 1000
         )
     } else {
-        format!("{:.1}k", live_tokens as f64 / 1000.0)
+        // No declared window is not a zero-sized window. Saying "unknown"
+        // tells the user the number they are reading is not a budget.
+        format!("{:.1}k/unknown", live_tokens as f64 / 1000.0)
     };
     let secs = state.elapsed.as_secs();
     let text = format!(
@@ -646,7 +648,7 @@ fn render_header(f: &mut Frame, area: Rect, state: &TuiState) {
             state.tokens_max / 1000
         )
     } else {
-        format!("{:.1}k", state.tokens_used as f64 / 1000.0)
+        format!("{:.1}k/unknown", state.tokens_used as f64 / 1000.0)
     };
     let session_label = match state.title.as_deref().filter(|t| !t.is_empty()) {
         Some(t) => format!(
@@ -817,24 +819,97 @@ enum TuiEvent {
     Canceled,
 }
 
-/// Entry point for the Pantheon agent cockpit TUI.
-pub fn run_tui_session() -> Result<(), Box<dyn std::error::Error>> {
+/// Run the session view on a real terminal.
+///
+/// The data dir and the resume id arrive from the caller rather than being
+/// read from the process environment here, so this function has one way to be
+/// called and a test can drive it with a temp dir.
+pub fn run_tui_session_with(
+    data_dir: std::path::PathBuf,
+    resume: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use crate::config_doc;
     use crate::config_doc::build_model_policy;
     use std::sync::mpsc;
 
-    let file_cfg = config_doc::Config::load_or_report(&crate::data_dir());
+    let file_cfg = config_doc::Config::load_or_report(&data_dir);
     let model_policy = build_model_policy(file_cfg.as_ref(), None, None);
+
+    // The header states the model this session is actually running. It used to
+    // be the literal "opus-4.1", so a session on a local llama displayed a
+    // frontier model it never called. Read here, before the policy is moved
+    // into the Session below.
+    let header_model = if model_policy.default.model.trim().is_empty() {
+        "no model configured".to_string()
+    } else {
+        format!(
+            "{}/{}",
+            model_policy.default.provider, model_policy.default.model
+        )
+    };
+    // An uncataloged model declares no window. Zero is not the same as
+    // unknown, and the status line says "unknown" rather than inventing one.
+    let tokens_max = pantheon_core::catalog::model_meta(
+        &model_policy.default.provider,
+        &model_policy.default.model,
+    )
+    .context_limit
+    .unwrap_or(0);
     let policy = crate::config_schema::policy_for_config(&file_cfg);
     let secrets = config_doc::chat_secrets(file_cfg.as_ref());
 
-    let mut session = match Session::new(crate::data_dir(), policy, model_policy, secrets) {
+    let mut session = match Session::new(data_dir.clone(), policy, model_policy, secrets) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("open session: {e}");
             std::process::exit(1);
         }
     };
+
+    // Attach the configured agent profile, if the config declares any. A
+    // config with no `[agents]` table is not an error: those runs stay
+    // anonymous, exactly as before profiles existed. A *named* agent that
+    // does not resolve is a hard error, because silently running as the
+    // default agent would attribute the conversation to the wrong identity.
+    match file_cfg
+        .as_ref()
+        .and_then(|c| c.resolve_profile(None).ok().flatten().map(|eff| (c, eff)))
+    {
+        Some((cfg, effective)) => {
+            match cfg
+                .profile_registry()
+                .map_err(pantheon_runtime::profile_err)
+                .and_then(|reg| {
+                    pantheon_runtime::AgentRuntime::new(
+                        session.supervisor.clone(),
+                        reg,
+                        effective,
+                        data_dir,
+                    )
+                }) {
+                Ok(agent) => {
+                    if let Err(e) = session.with_agent(agent) {
+                        eprintln!("attach agent: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("pantheon: agent profile: {}", e.cause);
+                    eprintln!("pantheon: fix: {}", e.remediation);
+                    std::process::exit(2);
+                }
+            }
+        }
+        None => {
+            if let Some(cfg) = file_cfg.as_ref() {
+                if let Some(named) = cfg.agent.as_deref() {
+                    eprintln!("pantheon: agent {named:?} is not declared in config");
+                    eprintln!("pantheon: fix: add [agents.{named}] to config.toml");
+                    std::process::exit(2);
+                }
+            }
+        }
+    }
 
     let (tx, rx) = mpsc::channel::<TuiEvent>();
     let running = Arc::new(AtomicBool::new(true));
@@ -869,14 +944,11 @@ pub fn run_tui_session() -> Result<(), Box<dyn std::error::Error>> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let mut terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
 
-    let mut state = TuiState::new(
-        pantheon_runtime::new_run_id(),
-        "opus-4.1".to_string(),
-        200_000,
-    );
-    state.tokens_max = 200_000;
+    let mut state = TuiState::new(pantheon_runtime::new_run_id(), header_model, tokens_max);
 
-    let run_id = pantheon_runtime::new_run_id();
+    // A resume id means the caller already validated the run exists, so the
+    // session opens onto it. Otherwise this is a new run.
+    let run_id = resume.unwrap_or_else(pantheon_runtime::new_run_id);
     let _ = session.supervisor.start_run(&run_id);
 
     let result = tui_loop(
@@ -1090,7 +1162,7 @@ fn tui_loop(
                             }
 
                             if msg.starts_with('/') {
-                                handle_slash(state, &session.supervisor, &msg);
+                                handle_slash(state, &session, &msg);
                                 continue;
                             }
 
@@ -1151,8 +1223,241 @@ fn tui_loop(
     Ok(())
 }
 
-fn handle_slash(state: &mut TuiState, supervisor: &pantheon_runtime::Supervisor, cmd: &str) {
+/// Switch the session to a named agent profile.
+///
+/// Reloads the config so `/agent` reflects an edit the user just made to
+/// `config.toml` without needing a restart, which is what makes profile
+/// setup feel like a live operation rather than a reinstall.
+fn switch_agent(state: &mut TuiState, session: &Arc<Session>, name: &str) {
+    let cfg = match crate::config_doc::Config::load_or_report(&crate::data_dir()) {
+        Some(c) => c,
+        None => {
+            state.add_status("/agent: no config; declare [agents.<name>] first".into());
+            return;
+        }
+    };
+    let registry = match cfg.profile_registry() {
+        Ok(r) => r,
+        Err(e) => {
+            state.add_status(format!("/agent: {e}"));
+            return;
+        }
+    };
+    let agent = match agent_for(session, &cfg, registry, name) {
+        Ok(a) => a,
+        Err(msg) => {
+            state.add_status(format!("/agent: {msg}"));
+            return;
+        }
+    };
+    match session.switch_agent(agent) {
+        Ok(()) => state.add_status(format!("now talking to {name}")),
+        Err(e) => state.add_status(format!("/agent: {}", e.cause)),
+    }
+}
+
+/// Build a runtime for `name` from a freshly loaded config.
+fn agent_for(
+    session: &Arc<Session>,
+    cfg: &crate::config_doc::Config,
+    registry: pantheon_core::agent_profile::ProfileRegistry,
+    name: &str,
+) -> Result<pantheon_runtime::AgentRuntime, String> {
+    let preset = cfg.policy.map(|p| p.as_str()).unwrap_or("coder");
+    let effective = registry.resolve(name, preset).map_err(|e| e.to_string())?;
+    pantheon_runtime::AgentRuntime::new(
+        session.supervisor.clone(),
+        registry,
+        effective,
+        crate::data_dir(),
+    )
+    .map_err(|e| e.cause)
+}
+
+/// Declared profiles, flagged with the current one.
+fn agent_profiles(session: &Arc<Session>) -> Vec<(String, bool)> {
+    let Some(cfg) = crate::config_doc::Config::load_or_report(&crate::data_dir()) else {
+        return Vec::new();
+    };
+    let Ok(registry) = cfg.profile_registry() else {
+        return Vec::new();
+    };
+    let current = session.agent().map(|a| a.profile().name.clone());
+    registry
+        .names()
+        .into_iter()
+        .map(|n| {
+            let cur = Some(n.clone()) == current;
+            (n, cur)
+        })
+        .collect()
+}
+
+/// Active collaborations with a one-line progress summary each.
+fn show_collaborations(state: &mut TuiState) {
+    let store = match collaboration_store() {
+        Ok(s) => s,
+        Err(msg) => {
+            state.add_status(format!("/collab: {msg}"));
+            return;
+        }
+    };
+    let active = match store.active_collaborations() {
+        Ok(c) => c,
+        Err(e) => {
+            state.add_status(format!("/collab: {}", e.cause));
+            return;
+        }
+    };
+    if active.is_empty() {
+        state.add_status("no active collaborations".into());
+        return;
+    }
+    for c in active {
+        let tasks = store
+            .tasks_in_collaboration(&c.collaboration_id)
+            .unwrap_or_default();
+        let done = tasks.iter().filter(|t| t.status.is_terminal()).count();
+        state.add_status(format!(
+            "{} \u{2022} {} \u{2022} {done}/{} tasks done",
+            c.collaboration_id,
+            c.objective,
+            tasks.len()
+        ));
+        for t in tasks {
+            state.add_status(format!(
+                "  {} {} \u{2192} {} [{}]",
+                t.task_id,
+                t.origin_agent,
+                t.assigned_agent.as_deref().unwrap_or("unassigned"),
+                t.status
+            ));
+        }
+    }
+}
+
+/// One agent's open tasks.
+fn show_tasks(state: &mut TuiState, agent: &str) {
+    let store = match collaboration_store() {
+        Ok(s) => s,
+        Err(msg) => {
+            state.add_status(format!("/tasks: {msg}"));
+            return;
+        }
+    };
+    let tasks = match store.tasks_for_agent(agent, None) {
+        Ok(t) => t,
+        Err(e) => {
+            state.add_status(format!("/tasks: {}", e.cause));
+            return;
+        }
+    };
+    if tasks.is_empty() {
+        state.add_status(format!("{agent} has no open tasks"));
+        return;
+    }
+    for t in tasks {
+        state.add_status(format!(
+            "{} [{}] {}",
+            t.task_id,
+            t.status,
+            t.objective.chars().take(70).collect::<String>()
+        ));
+    }
+}
+
+/// Unread messages addressed to the current agent.
+fn show_inbox(state: &mut TuiState, session: &Arc<Session>) {
+    let Some(agent) = session.agent() else {
+        state.add_status("/inbox: no agent profile attached".into());
+        return;
+    };
+    match agent.inbox() {
+        Ok(messages) if messages.is_empty() => {
+            state.add_status("inbox is empty".into());
+        }
+        Ok(messages) => {
+            for m in messages {
+                state.add_status(format!(
+                    "from {} [{}] {}",
+                    m.sender,
+                    m.kind.as_str(),
+                    m.content.chars().take(70).collect::<String>()
+                ));
+            }
+        }
+        Err(e) => state.add_status(format!("/inbox: {}", e.cause)),
+    }
+}
+
+/// The durable collaboration store the TUI reads.
+///
+/// Opens by path rather than going through the attached agent: `/collab`
+/// and `/tasks <other agent>` are inspection commands that must work when
+/// no agent is attached, and they are strictly read-only.
+fn collaboration_store() -> Result<pantheon_storage::CollaborationStore, String> {
+    pantheon_storage::CollaborationStore::open(&crate::data_dir().join("collaboration.db"))
+        .map_err(|e| e.cause)
+}
+
+fn handle_slash(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
+    let supervisor = &session.supervisor;
     // /help shows the real command surface.
+    // --- agent profiles and collaboration -------------------------------
+    // One command per question, answering in the transcript. No panels:
+    // collaboration state is occasional, and a permanent dashboard for it
+    // would be noise in every other conversation.
+    if cmd == "/agent" {
+        match session.agent() {
+            Some(a) => {
+                let p = a.profile();
+                state.add_status(format!(
+                    "agent {} ({}) \u{2022} memory {}",
+                    p.display_name.value, p.agent_id, p.memory_namespace.value
+                ));
+                if let Some(parent) = &p.parent {
+                    state.add_status(format!("inherits {parent}"));
+                }
+                state.add_status("switch with: /agent <profile>".into());
+            }
+            None => {
+                state.add_status("no agent profile attached (config has no [agents] table)".into())
+            }
+        }
+        return;
+    }
+    if let Some(name) = cmd.strip_prefix("/agent ") {
+        let name = name.trim();
+        switch_agent(state, session, name);
+        return;
+    }
+    if cmd == "/agents" {
+        // List the declared profiles and mark the current one. Names come
+        // from the registry, so an agent that exists at runtime is exactly
+        // an agent declared in config.
+        let profiles = agent_profiles(session);
+        if profiles.is_empty() {
+            state.add_status("no agent profiles declared (add [agents.<name>])".into());
+        } else {
+            state.add_status("agent profiles:".into());
+            for (n, current) in profiles {
+                state.add_status(format!("  {}{n}", if current { " (current)" } else { "" }));
+            }
+        }
+        return;
+    }
+    if cmd == "/collab" {
+        show_collaborations(state);
+        return;
+    }
+    if let Some(agent) = cmd.strip_prefix("/tasks ") {
+        show_tasks(state, agent.trim());
+        return;
+    }
+    if cmd == "/inbox" {
+        show_inbox(state, session);
+        return;
+    }
     if cmd == "/help" {
         state.add_status("commands:".into());
         state.add_status("  /help              this list".into());
@@ -1164,7 +1469,11 @@ fn handle_slash(state: &mut TuiState, supervisor: &pantheon_runtime::Supervisor,
         state
             .add_status("  /name [TITLE]      show this conversation's title, or rename it".into());
         state.add_status("  /status [run_id]   this run's status, or another by id".into());
-        state.add_status("  /cost              tokens and cost this session".into());
+        state.add_status("  /agent [name]     current agent profile, or switch to one".into());
+        state.add_status("  /agents           declared agent profiles".into());
+        state.add_status("  /collab           active collaborations and their tasks".into());
+        state.add_status("  /tasks <agent>    that agent's open tasks".into());
+        state.add_status("  /inbox            messages sent to this agent".into());
         state.add_status("  /clear             clear visible transcript".into());
         state.add_status("  /exit, /quit       leave pantheon".into());
         return;
@@ -1175,16 +1484,6 @@ fn handle_slash(state: &mut TuiState, supervisor: &pantheon_runtime::Supervisor,
     }
     if cmd == "/clear" {
         state.blocks.clear();
-        return;
-    }
-    if cmd == "/cost" {
-        state.add_status(format!(
-            "tokens {} \u{2022} cost ${:.2} \u{2022} ctx {:.1}k/{}k",
-            state.tokens_used + state.turn_estimate,
-            state.cost_cents as f64 / 100.0,
-            (state.tokens_used + state.turn_estimate) as f64 / 1000.0,
-            state.tokens_max / 1000
-        ));
         return;
     }
     if cmd == "/name" || cmd.starts_with("/name ") {

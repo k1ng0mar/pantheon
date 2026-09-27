@@ -172,6 +172,7 @@ fn dead_compressor() -> pantheon_providers::CompressionClient {
         key_header: "Authorization".into(),
         models: vec![],
         prominent: false,
+        dev: false,
         tag: "live-test".into(),
     });
     pantheon_providers::CompressionClient::new(

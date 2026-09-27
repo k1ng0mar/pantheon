@@ -532,6 +532,10 @@ providers:
     base_env: PANTHEON_BASE_ROUTER
     key_env: PANTHEON_KEY_ROUTER
     prominent: true
+    # Development infrastructure, not a product provider. Resolvable by id
+    # so the e2e suite can reach a model through it, and absent from every
+    # picker so no user's setup wizard offers a loopback process.
+    dev: true
     tag: Local
     models:
       - model: chat
