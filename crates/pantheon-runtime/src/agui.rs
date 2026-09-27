@@ -4,6 +4,7 @@
 use crate::rpc::{Dispatcher, MethodHandler, RpcError};
 use pantheon_gateway::{valid_task_id, GenUiSigner};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 /// Build a dispatcher with AG-UI commands bound to a data dir.
@@ -110,6 +111,28 @@ pub fn set_session_factory(f: crate::serve::SessionFactory) {
     let _ = SESSION_FACTORY.set(f);
 }
 
+/// One turn at a time per run: two concurrent `agui.send` calls for the
+/// same run_id must not interleave their `chat_turn`s. Entries are removed
+/// once no thread holds or waits on them, so the map does not grow
+/// unboundedly across runs.
+static TURN_LOCKS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+fn turn_lock_for(run_id: &str) -> Arc<std::sync::Mutex<()>> {
+    let mut map = TURN_LOCKS.lock().unwrap();
+    map.entry(run_id.to_string())
+        .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+        .clone()
+}
+
+fn release_turn_lock(run_id: &str, lock: &Arc<std::sync::Mutex<()>>) {
+    let mut map = TURN_LOCKS.lock().unwrap();
+    // map + this clone only: nobody is holding or waiting on the lock.
+    if Arc::strong_count(lock) <= 2 {
+        map.remove(run_id);
+    }
+}
+
 /// The installed factory, or the environment-only default used by library
 /// embedders and tests.
 fn session_factory_for(_dir: &PathBuf) -> Result<crate::serve::SessionFactory, RpcError> {
@@ -164,8 +187,16 @@ impl MethodHandler for SendMsg {
         let worker_run = run_id.clone();
         let worker_turn = turn_id.clone();
         let worker_text = text.to_string();
+        let worker_lock = turn_lock_for(&worker_run);
         std::thread::spawn(move || {
-            if let Err(error) = session.chat_turn(&worker_run, &worker_turn, &worker_text) {
+            // Serialize with any other in-flight turn for this run; the
+            // RPC already returned, so this only orders the workers.
+            let result = {
+                let _guard = worker_lock.lock().unwrap();
+                session.chat_turn(&worker_run, &worker_turn, &worker_text)
+            };
+            release_turn_lock(&worker_run, &worker_lock);
+            if let Err(error) = result {
                 eprintln!("agui turn {worker_turn} failed: {error}");
             }
         });

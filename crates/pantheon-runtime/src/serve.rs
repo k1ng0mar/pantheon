@@ -28,10 +28,10 @@ pub struct ServeConfig {
     pub host: String,
     pub port: u16,
     pub genui_base: String,
-    /// Bearer token for every /agui route except /agui/health. None =
-    /// no auth (localhost-only dev). The CLI reads
-    /// PANTHEON_SERVE_TOKEN; `pantheon serve` prints the bound URL with
-    /// the token appended for the web UI.
+    /// Bearer token for every /agui route except /agui/health. The CLI reads
+    /// PANTHEON_SERVE_TOKEN; when it is unset, `serve()` generates a random
+    /// one-time token and prints it once at startup, so the server never
+    /// runs with no auth. `pantheon serve` prints the bound URL for the web UI.
     pub auth_token: Option<String>,
 }
 
@@ -80,7 +80,7 @@ body{font:16px system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1
 <script>
 const $=s=>document.querySelector(s), log=s=>{$('#log').textContent+=s+'\n'};
 let rpcId=1, run='', thread='', cursor=0, es;
-const TOKEN='__PANTHEON_TOKEN__';
+const TOKEN=__PANTHEON_TOKEN__;
 async function rpc(method,params={}){let r=await fetch('/agui/rpc',{method:'POST',headers:{'content-type':'application/json','x-pantheon-token':TOKEN},body:JSON.stringify({jsonrpc:'2.0',id:rpcId++,method,params})});let j=await r.json();if(j.error)throw Error(j.error.message);return j.result}
 function showActions(f){if(f.name!=='requested')return;const actions=$('#actions');actions.innerHTML='';for(const [label,answer] of [['Grant','grant'],['Deny','deny']]){const b=document.createElement('button');b.textContent=label;b.onclick=async()=>{try{await rpc('agui.'+answer,{run_id:run,scope:f.text});actions.innerHTML=''}catch(e){log(e.message)}};actions.appendChild(b)}}
 function openStream(){if(es)es.close();es=new EventSource('/agui/stream?run='+encodeURIComponent(run)+'&thread='+encodeURIComponent(thread)+'&after='+cursor+(TOKEN?'&token='+encodeURIComponent(TOKEN):''));for(const kind of ['run','text','tool','state','genui'])es.addEventListener(kind,e=>{const f=JSON.parse(e.data);cursor=Math.max(cursor,f.id||0);log(kind+': '+f.text)});es.addEventListener('approval',e=>showActions(JSON.parse(e.data)))}
@@ -95,9 +95,110 @@ fn reason(code: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Content Too Large",
+        431 => "Request Header Fields Too Large",
         500 => "Internal Error",
         _ => "Error",
     }
+}
+
+/// Connection hardening: a flood of half-open connections must not exhaust
+/// threads/fds, a header block bigger than 32 KiB is rejected before parsing,
+/// and a connection that trickles bytes (slowloris) is dropped after 10 s
+/// without a complete request head.
+const MAX_CONNS: usize = 32;
+const MAX_HEADERS: usize = 32 * 1024;
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Decrements the in-flight connection count when a handler thread exits,
+/// including on panic.
+struct ConnGuard {
+    n: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.n
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Generate a random bearer token, std-only: 24 bytes from the OS CSPRNG
+/// (`/dev/urandom`), base64url-encoded to 32 chars. Falls back to a hashed
+/// mix of pid/thread/time on platforms without it; the token is only a
+/// loopback gate, and the fallback still varies per process start.
+fn generate_token() -> String {
+    let mut bytes = [0u8; 24];
+    let from_os = std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| {
+            use std::io::Read;
+            f.read_exact(&mut bytes).map(|_| ())
+        })
+        .is_ok();
+    if !from_os {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        std::process::id().hash(&mut h);
+        std::thread::current().id().hash(&mut h);
+        std::time::SystemTime::now().hash(&mut h);
+        (bytes.as_ptr() as usize).hash(&mut h);
+        bytes[..8].copy_from_slice(&h.finish().to_le_bytes());
+    }
+    const ALPH: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(32);
+    let mut acc: u32 = 0;
+    let mut bits = 0u32;
+    for b in bytes {
+        acc = (acc << 8) | b as u32;
+        bits += 8;
+        while bits >= 6 {
+            bits -= 6;
+            out.push(ALPH[((acc >> bits) & 63) as usize] as char);
+        }
+    }
+    if bits > 0 {
+        out.push(ALPH[((acc << (6 - bits)) & 63) as usize] as char);
+    }
+    out
+}
+
+/// Pure: is this Origin header value acceptable for a loopback server?
+/// Missing Origin (curl, scripts, non-browser clients) is allowed. A
+/// present Origin must name a loopback host; anything else is a cross-origin
+/// browser request and is rejected.
+fn origin_allowed(origin: Option<&str>) -> bool {
+    let origin = match origin {
+        None => return true,
+        Some(o) => o.trim(),
+    };
+    let after_scheme = match origin.split_once("://") {
+        Some((_, rest)) => rest,
+        None => return false, // "null", opaque origins, garbage
+    };
+    let host = if let Some(rest) = after_scheme.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((h, _)) => h,
+            None => return false,
+        }
+    } else {
+        after_scheme.split([':', '/']).next().unwrap_or("")
+    };
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "localhost" | "127.0.0.1" | "::1"
+    )
+}
+
+/// Pure: inject `token` into the served page as a JS string literal.
+/// serde_json produces the quoted literal (escaping quotes, backslashes,
+/// control chars); `<` is additionally escaped as `\u003c` so a token can
+/// never contain a literal `</script>` that would break out of the script
+/// block.
+fn inject_token(page: &str, token: Option<&str>) -> String {
+    let lit = serde_json::to_string(token.unwrap_or("")).unwrap_or_else(|_| "\"\"".into());
+    let lit = lit.replace('<', "\\u003c");
+    page.replace("__PANTHEON_TOKEN__", &lit)
 }
 fn respond(stream: &mut TcpStream, code: u16, ctype: &str, body: &[u8]) {
     let head = format!("HTTP/1.1 {code} {}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", reason(code), body.len());
@@ -129,7 +230,13 @@ fn thread_for(data_dir: &Path, run_id: &str, fallback: &str) -> String {
     }
     format!("cli:{run_id}")
 }
+/// Serializes the threads.json read-modify-write: two concurrent
+/// agui.send calls (different runs) must not lose each other's entries.
+static THREADS_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
 pub fn remember_thread(data_dir: &PathBuf, run_id: &str, thread_id: &str) {
+    let _guard = THREADS_LOCK.lock().unwrap();
     let p = data_dir.join("threads.json");
     let mut map: HashMap<String, String> = std::fs::read_to_string(&p)
         .ok()
@@ -283,6 +390,9 @@ const MAX_BODY: usize = 1024 * 1024;
 
 fn handle_one(stream: TcpStream, cfg: ServeConfig) {
     let mut s = stream;
+    // Slowloris: a connection that trickles bytes must not hold a thread
+    // forever waiting for the request head.
+    let _ = s.set_read_timeout(Some(READ_TIMEOUT));
     let (method, path, headers, body) = {
         let mut reader = match s.try_clone() {
             Ok(r) => BufReader::new(r),
@@ -297,9 +407,20 @@ fn handle_one(stream: TcpStream, cfg: ServeConfig) {
         let path = parts.next().unwrap_or("/").to_string();
         let mut headers = HashMap::new();
         let mut content_len = 0usize;
+        let mut header_bytes = 0usize;
         loop {
             let mut line = String::new();
             if reader.read_line(&mut line).is_err() {
+                return;
+            }
+            header_bytes += line.len();
+            if header_bytes > MAX_HEADERS {
+                respond(
+                    &mut s,
+                    431,
+                    "application/json",
+                    br#"{"error":"request headers too large"}"#,
+                );
                 return;
             }
             let line = line.trim_end().to_string();
@@ -335,6 +456,18 @@ fn handle_one(stream: TcpStream, cfg: ServeConfig) {
             String::from_utf8_lossy(&body).to_string(),
         )
     };
+    // Origin: a malicious webpage can POST to 127.0.0.1:<port> from any
+    // origin, so cross-origin browser requests are rejected up front.
+    // Non-browser clients (curl, scripts) omit Origin and are allowed.
+    if !origin_allowed(headers.get("origin").map(String::as_str)) {
+        respond(
+            &mut s,
+            403,
+            "application/json",
+            br#"{"error":"cross-origin request rejected"}"#,
+        );
+        return;
+    }
     // Auth: everything except /agui/health requires the token when one
     // is configured. Accept Authorization: Bearer <t> or X-Pantheon-Token.
     if let Some(token) = &cfg.auth_token {
@@ -362,10 +495,10 @@ fn handle_one(stream: TcpStream, cfg: ServeConfig) {
     }
     if method == "GET" && (path == "/" || path == "/agui" || path == "/agui/") {
         // Inject the token into the served UI so its fetch calls carry it.
-        let page = WEB_UI.replace(
-            "__PANTHEON_TOKEN__",
-            cfg.auth_token.as_deref().unwrap_or(""),
-        );
+        // The token is encoded as a JSON string literal: raw replacement
+        // would let a quote or </script> in the token break out of the
+        // script block.
+        let page = inject_token(WEB_UI, cfg.auth_token.as_deref());
         respond(&mut s, 200, "text/html; charset=utf-8", page.as_bytes());
     } else if method == "GET" && route_is(&path, "/agui/stream") {
         handle_stream(&mut s, &cfg, &path, &headers);
@@ -402,6 +535,15 @@ pub fn serve(mut cfg: ServeConfig) -> std::io::Result<()> {
             "non-loopback AG-UI serving requires PANTHEON_GENUI_SECRET",
         ));
     }
+    if cfg.auth_token.is_none() {
+        // No token configured: generate a random one-time token rather than
+        // serving the RPC unauthenticated. Printed once; set
+        // PANTHEON_SERVE_TOKEN for a stable token across restarts.
+        let token = generate_token();
+        eprintln!("pantheon serve: no PANTHEON_SERVE_TOKEN set; generated a one-time token:");
+        eprintln!("  {token}");
+        cfg.auth_token = Some(token);
+    }
     let addr = format!("{}:{}", cfg.host, cfg.port);
     // A bind failure is the one serve error users hit routinely, and the raw
     // io::Error says neither the port nor what to do about it. Name both.
@@ -437,9 +579,16 @@ pub fn serve(mut cfg: ServeConfig) -> std::io::Result<()> {
         cfg.host, cfg.port
     );
     let cfg = Arc::new(cfg);
+    let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
+                if in_flight.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= MAX_CONNS {
+                    in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    eprintln!("agui: connection cap ({MAX_CONNS}) reached; dropping");
+                    continue;
+                }
+                let flights = Arc::clone(&in_flight);
                 let c = ServeConfig {
                     data_dir: cfg.data_dir.clone(),
                     host: cfg.host.clone(),
@@ -447,7 +596,10 @@ pub fn serve(mut cfg: ServeConfig) -> std::io::Result<()> {
                     genui_base: cfg.genui_base.clone(),
                     auth_token: cfg.auth_token.clone(),
                 };
-                std::thread::spawn(move || handle_one(s, c));
+                std::thread::spawn(move || {
+                    let _guard = ConnGuard { n: flights };
+                    handle_one(s, c)
+                });
             }
             Err(e) => eprintln!("agui accept: {e}"),
         }
