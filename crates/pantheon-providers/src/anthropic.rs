@@ -7,7 +7,7 @@
 //! Anthropic's SSE event family (`message_start`, `content_block_delta`,
 //! `message_delta`, `message_stop`, `ping`, `error`).
 
-use crate::http::{perr, AdapterTurn, ChatTransport, WireRequest};
+use crate::http::{perr, AdapterTurn, ChatTransport, ToolChoice, TurnOptions, WireRequest};
 use crate::model_event::{ModelEvent, ModelEventSink, ModelUsage};
 use pantheon_agent::{ToolCall, TurnOutcome};
 use pantheon_api::capability::Capability;
@@ -19,7 +19,7 @@ pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 /// Build the wire request for one attempt.
-// Eight params for the same reason as the OpenAI builder: explicit wire
+// Ten params for the same reason as the OpenAI builder: explicit wire
 // arguments at every call site beat a bundled struct nobody else uses.
 #[allow(clippy::too_many_arguments)]
 pub fn request(
@@ -32,6 +32,7 @@ pub fn request(
     max_tokens: u32,
     reasoning: pantheon_api::model::ReasoningLevel,
     reasoning_budget: Option<u32>,
+    opts: &TurnOptions,
 ) -> WireRequest {
     let system: Vec<&str> = messages
         .iter()
@@ -144,6 +145,23 @@ pub fn request(
                 .collect(),
         );
     }
+    // Structured output: Anthropic's GA shape is `output_config.format`
+    // (the beta-era `output_format` is deprecated and needs no beta
+    // header since Feb 2026). Constrained decoding guarantees schema
+    // conformance; the JSON still arrives as normal text content blocks,
+    // so parsing is unchanged. Opt-in only: absent schema → no field.
+    if let Some(schema) = &opts.response_schema {
+        body["output_config"] = serde_json::json!({
+            "format": { "type": "json_schema", "schema": schema },
+        });
+    }
+    // Tool choice, same gating as the OpenAI adapter: provider default
+    // unless the turn says otherwise, and never without tools.
+    if !tools.is_empty() {
+        if let Some(choice) = tool_choice_value(&opts.tool_choice) {
+            body["tool_choice"] = choice;
+        }
+    }
     if stream {
         body["stream"] = serde_json::Value::Bool(true);
     }
@@ -183,9 +201,35 @@ fn map_stop(reason: &str) -> String {
     }
 }
 
+/// Anthropic `tool_choice` wire value. `None` = omit the field (provider
+/// default, `auto`). `Required` maps to `any` — the closest equivalent
+/// to OpenAI's `required`: the model must call some tool this turn.
+fn tool_choice_value(choice: &ToolChoice) -> Option<serde_json::Value> {
+    match choice {
+        ToolChoice::Auto => None,
+        ToolChoice::Required => Some(serde_json::json!({"type": "any"})),
+        ToolChoice::None => Some(serde_json::json!({"type": "none"})),
+        ToolChoice::Named(name) => {
+            Some(serde_json::json!({"type": "tool", "name": name}))
+        }
+    }
+}
+
 fn usage_of(v: &serde_json::Value) -> Option<ModelUsage> {
     let u = v.get("usage")?;
+    // Anthropic bills prompt-cache reads and cache writes separately from
+    // `input_tokens`: fold all three into the input total so a cached
+    // turn doesn't undercount context or cost.
     let input = u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+    let cache_read = u
+        .get("cache_read_input_tokens")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
+    let cache_write = u
+        .get("cache_creation_input_tokens")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
+    let input = input + cache_read + cache_write;
     let output = u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
     Some(ModelUsage {
         input_tokens: input,
@@ -300,9 +344,21 @@ impl AnthStream {
             .map_err(|e| perr("PROVIDER_PARSE", format!("stream chunk: {e}"), false))?;
         match v.get("type").and_then(|t| t.as_str()) {
             Some("message_start") => {
-                if let Some(u) = v.pointer("/message/usage/input_tokens") {
-                    self.usage_in = u.as_u64();
-                }
+                // Same cache accounting as `usage_of`: the stream's opening
+                // usage block carries the cached variants separately.
+                let input = v
+                    .pointer("/message/usage/input_tokens")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0);
+                let cache_read = v
+                    .pointer("/message/usage/cache_read_input_tokens")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0);
+                let cache_write = v
+                    .pointer("/message/usage/cache_creation_input_tokens")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0);
+                self.usage_in = Some(input + cache_read + cache_write);
             }
             Some("content_block_start") => {
                 let block = v.get("content_block");

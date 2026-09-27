@@ -19,7 +19,10 @@ use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, ModelPoli
 pub use crate::catalog::{ApiMode, ModelCost, ModelMeta, ProviderMeta};
 pub use crate::chain::ProviderChain;
 pub use crate::compress::CompressionClient;
-pub use crate::http::{http_timeout, ChatTransport, HttpTransport, ResolvedModel, WireRequest};
+pub use crate::http::{
+    auth_header_pair, http_agent, http_timeout, parse_retry_after, retry_after_secs, ChatTransport,
+    HttpTransport, ResolvedModel, ToolChoice, TurnOptions, WireRequest, MAX_RETRY_AFTER_SECS,
+};
 pub use crate::judge::{parse_answer, prompt_for, JudgeClient};
 pub use crate::title::{TitleGenClient, TITLEGEN_TIMEOUT_SECS};
 pub use crate::voice::{

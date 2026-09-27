@@ -8,7 +8,7 @@
 //! API key, wire mode, capability/cost facts — from the core catalog.
 
 use crate::catalog::{self, ApiMode};
-use crate::http::{AdapterTurn, ChatTransport, ResolvedModel};
+use crate::http::{AdapterTurn, ChatTransport, ResolvedModel, TurnOptions};
 use crate::model_event::{ModelEvent, ModelEventSink, NoopModelSink};
 use crate::{anthropic, openai};
 use pantheon_agent::TurnOutcome;
@@ -63,6 +63,7 @@ impl<T: ChatTransport> ProviderChain<T> {
         model: &DefaultModel,
         messages: &[Message],
         stream: bool,
+        opts: &TurnOptions,
         sink: &dyn ModelEventSink,
     ) -> Result<AdapterTurn, PantheonError> {
         let meta = catalog::model_meta(&model.provider, &model.model);
@@ -110,6 +111,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                         &self.tools,
                         stream,
                         self.policy.reasoning,
+                        opts,
                     );
                     if stream {
                         openai::stream(&self.transport, req, sink)
@@ -131,6 +133,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                         max_tokens,
                         self.policy.reasoning,
                         self.policy.reasoning_budget,
+                        opts,
                     );
                     if stream {
                         anthropic::stream(&self.transport, req, sink)
@@ -163,7 +166,11 @@ impl<T: ChatTransport> ProviderChain<T> {
                 }
                 Err(e) if !last_key && is_key_failure(e) => {
                     // This key is dead/over quota; the next stacked key gets
-                    // the turn. Marked retryable so `pantheon logs` shows rotation.
+                    // the turn. A 429 stamps the provider's asked-for wait:
+                    // honor it before rotating so we stop hammering a
+                    // rate-limited endpoint. Marked retryable so
+                    // `pantheon logs` shows rotation.
+                    backoff_for_rate_limit(e);
                     key_failures += 1;
                     sink.emit(ModelEvent::AttemptFailed {
                         provider: model.provider.clone(),
@@ -202,6 +209,7 @@ impl<T: ChatTransport> ProviderChain<T> {
         &self,
         messages: &[Message],
         stream: bool,
+        opts: &TurnOptions,
         sink: &dyn ModelEventSink,
     ) -> Result<TurnOutcome, PantheonError> {
         // (failed_idx, provider, model, code, cause-snippet) of last failure.
@@ -275,7 +283,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                     }
                 },
             };
-            match self.attempt(idx, model, messages, stream, sink) {
+            match self.attempt(idx, model, messages, stream, opts, sink) {
                 Ok(turn) => {
                     *self.last_resolved.borrow_mut() = Some(ResolvedModel {
                         provider: model.provider.clone(),
@@ -285,6 +293,13 @@ impl<T: ChatTransport> ProviderChain<T> {
                     return Ok(turn.outcome);
                 }
                 Err(e) if e.retryable => {
+                    // Same pacing before a fallback: the 429's Retry-After
+                    // applies to the provider, not the key, so wait before
+                    // trying the next chain entry. No next entry → no wait;
+                    // sleeping before exhaustion would just delay the error.
+                    if self.next_in_chain(idx).is_some() {
+                        backoff_for_rate_limit(&e);
+                    }
                     failed = Some((
                         idx,
                         model.provider.clone(),
@@ -305,7 +320,17 @@ impl<T: ChatTransport> ProviderChain<T> {
         messages: &[Message],
         sink: &dyn ModelEventSink,
     ) -> Result<TurnOutcome, PantheonError> {
-        self.run(messages, false, sink)
+        self.run(messages, false, &TurnOptions::default(), sink)
+    }
+
+    /// Same, with per-turn wire knobs (structured output, tool choice).
+    pub fn turn_with_options(
+        &self,
+        messages: &[Message],
+        opts: &TurnOptions,
+        sink: &dyn ModelEventSink,
+    ) -> Result<TurnOutcome, PantheonError> {
+        self.run(messages, false, opts, sink)
     }
 
     /// Streaming turn: deltas emit as chunks arrive (subject to catalog
@@ -315,13 +340,23 @@ impl<T: ChatTransport> ProviderChain<T> {
         messages: &[Message],
         sink: &dyn ModelEventSink,
     ) -> Result<TurnOutcome, PantheonError> {
-        self.run(messages, true, sink)
+        self.run(messages, true, &TurnOptions::default(), sink)
+    }
+
+    /// Streaming turn with per-turn wire knobs.
+    pub fn turn_stream_with_options(
+        &self,
+        messages: &[Message],
+        opts: &TurnOptions,
+        sink: &dyn ModelEventSink,
+    ) -> Result<TurnOutcome, PantheonError> {
+        self.run(messages, true, opts, sink)
     }
 
     /// Compat turn: no sink, single-shot.
     pub fn turn_messages(&self, messages: &[Message]) -> Result<TurnOutcome, PantheonError> {
         let noop = NoopModelSink;
-        self.run(messages, false, &noop)
+        self.run(messages, false, &TurnOptions::default(), &noop)
     }
 }
 
@@ -372,6 +407,19 @@ fn is_key_failure(e: &PantheonError) -> bool {
         && (e.cause.contains("HTTP 401")
             || e.cause.contains("HTTP 403")
             || e.cause.contains("HTTP 429"))
+}
+
+/// Honor a parsed `Retry-After` before the next retry step (key rotation
+/// or fallback). The transport stamps the capped wait on the error cause;
+/// no stamp → no sleep, exactly as before.
+fn backoff_for_rate_limit(e: &PantheonError) {
+    if let Some(secs) = crate::http::retry_after_secs(e).filter(|&s| s > 0) {
+        pantheon_api::logging::warn(
+            "provider",
+            format!("rate limited: honoring Retry-After, waiting {secs}s before retry"),
+        );
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
 }
 
 #[cfg(test)]

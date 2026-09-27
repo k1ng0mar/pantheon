@@ -506,7 +506,7 @@ impl HttpStt {
         })
     }
 
-    fn endpoint(&self) -> (String, String) {
+    fn endpoint(&self) -> (String, String, String) {
         let base = catalog::base_url_for(&self.provider);
         let configured = self
             .api_key
@@ -515,8 +515,10 @@ impl HttpStt {
             .unwrap_or("")
             .to_string();
         let key = catalog::key_for(&self.provider, &configured);
+        let key_header = catalog::key_header_for(&self.provider);
         (
             format!("{}/audio/transcriptions", base.trim_end_matches('/')),
+            key_header,
             key,
         )
     }
@@ -548,10 +550,16 @@ impl SttProvider for HttpStt {
             &filename,
             &audio,
         );
-        let (url, key) = self.endpoint();
-        let mut request = ureq::post(&url).set("content-type", &content_type);
+        let (url, key_header, key) = self.endpoint();
+        // Bounded like every other provider-plane call: the shared agent
+        // honors `http_timeout()`, so a hung endpoint fails the turn
+        // instead of wedging the session thread forever.
+        let mut request = crate::http::http_agent()
+            .post(&url)
+            .set("content-type", &content_type);
         if !key.is_empty() {
-            request = request.set("authorization", &format!("Bearer {key}"));
+            let (name, value) = crate::http::auth_header_pair(&key_header, &key);
+            request = request.set(&name, &value);
         }
         let resp = request.send_bytes(&body).map_err(|e| match e {
             ureq::Error::Status(code, _) => verr(
@@ -639,10 +647,15 @@ impl TtsProvider for HttpTts {
             .unwrap_or("")
             .to_string();
         let key = catalog::key_for(&self.provider, &configured);
+        let key_header = catalog::key_header_for(&self.provider);
         let url = format!("{}/audio/speech", base.trim_end_matches('/'));
-        let mut request = ureq::post(&url).set("content-type", "application/json");
+        // Same bound as STT: no provider-plane call runs without a deadline.
+        let mut request = crate::http::http_agent()
+            .post(&url)
+            .set("content-type", "application/json");
         if !key.is_empty() {
-            request = request.set("authorization", &format!("Bearer {key}"));
+            let (name, value) = crate::http::auth_header_pair(&key_header, &key);
+            request = request.set(&name, &value);
         }
         let resp = request
             .send_json(speech_payload(&req, &self.model))
