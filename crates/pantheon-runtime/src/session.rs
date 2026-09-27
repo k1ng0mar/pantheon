@@ -1019,6 +1019,9 @@ impl Session {
             &mut reg,
             BuiltinOptions {
                 safewrite_state_dir: Some(safewrite_dir.clone()),
+                // No session-level workspace concept exists; the tool layer
+                // captures the process cwd at registration time.
+                workspace_root: None,
             },
         );
         register_safewrite(&mut reg, safewrite_dir);
@@ -1127,6 +1130,10 @@ impl Session {
                 &plugin.manifest,
                 dd,
                 timeout,
+                // Only manifest-declared vars the operator allowlisted in
+                // `[secrets].plugin_env_allowlist` cross into the plugin
+                // child; everything else fails closed.
+                self.secrets.plugin_env_allowlist(),
             ) {
                 Ok(mut sup) => {
                     let label = format!("plugin:{}", plugin.manifest.name);
@@ -1135,14 +1142,25 @@ impl Session {
                         sup.stop();
                     } else {
                         let sup_arc = Arc::new(Mutex::new(sup));
-                        pantheon_tools::plugin_tools::register_plugin_tools(
+                        match pantheon_tools::plugin_tools::register_plugin_tools(
                             &mut reg,
                             &plugin.manifest,
                             sup_arc.clone(),
-                        );
-                        // Stash the supervisor so it gets stopped (group-kill) on
-                        // session end instead of leaking children.
-                        plugin_supers.push((label, sup_arc));
+                        ) {
+                            Ok(()) => {
+                                // Stash the supervisor so it gets stopped (group-kill) on
+                                // session end instead of leaking children.
+                                plugin_supers.push((label, sup_arc));
+                            }
+                            Err(e) => {
+                                // Name squat or malformed manifest: don't register
+                                // anything from this plugin, stop the spawned supervisor.
+                                eprintln!("plugin '{label}': tool registration rejected, skipping: {e}");
+                                if let Ok(mut guard) = sup_arc.lock() {
+                                    guard.stop();
+                                }
+                            }
+                        }
                     }
                 }
                 Err(e) => {

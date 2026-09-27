@@ -11,6 +11,7 @@
 
 pub mod acp;
 pub mod bundled_skills;
+pub mod confine;
 pub mod context;
 pub mod danger;
 pub mod plugins;

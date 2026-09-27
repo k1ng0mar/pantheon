@@ -9,8 +9,10 @@ use crate::tools::{parse_args, ToolRegistry};
 use pantheon_api::capability::Capability;
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::message::ToolSchema;
+use pantheon_exec::confine::confine;
 use pantheon_exec::safewrite::{json_out, preview_edit, serr, FileEdit, SafeWriter};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 fn jstr(v: &serde_json::Value, key: &str) -> Option<String> {
     v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
 }
@@ -62,22 +64,53 @@ fn state_dir_from(args: &serde_json::Value) -> Result<PathBuf, PantheonError> {
         "missing 'state_dir' (or set PANTHEON_DATA_DIR)".into(),
     ))
 }
+/// Options for `register_safewrite_with`.
+pub struct SafewriteOptions {
+    pub state_dir: PathBuf,
+    /// Workspace root for path confinement. The tool layer has no workspace
+    /// concept of its own, so when this is `None` the process working
+    /// directory is captured at registration time. Every target path is
+    /// confined (deny globs, then containment) before any read or write.
+    pub workspace_root: Option<PathBuf>,
+}
+
 /// Register the safe-write toolset on a registry. All mutating tools
 /// snapshot a checkpoint first; preview/checkpoints/rollback never mutate targets.
 /// Tools: preview_file, stage_files, apply_files, apply_staged,
 /// checkpoint_files, list_checkpoints, rollback_checkpoint, rollback_seq.
 pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
-    let dir: std::sync::Arc<PathBuf> = std::sync::Arc::new(default_state_dir);
+    register_safewrite_with(
+        reg,
+        SafewriteOptions {
+            state_dir: default_state_dir,
+            workspace_root: None,
+        },
+    );
+}
+
+/// Register with options. `workspace_root` is captured at registration time
+/// (process cwd when `None`) and passed to every `SafeWriter` the tools
+/// build, so staged/applied/checkpointed/rolled-back paths are confined.
+pub fn register_safewrite_with(reg: &mut ToolRegistry, opts: SafewriteOptions) {
+    let dir: Arc<PathBuf> = Arc::new(opts.state_dir);
+    let root: Arc<PathBuf> = Arc::new(opts.workspace_root.unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }));
+    // Build a SafeWriter whose target paths are confined to the workspace.
+    let writer = |sd: PathBuf, root: &Arc<PathBuf>| -> Result<SafeWriter, PantheonError> {
+        SafeWriter::new(sd).map(|w| w.with_workspace_root((**root).clone()))
+    };
     let mk = |name: &str, desc: &str, props: serde_json::Value, required: Vec<&str>| ToolSchema {
         name: name.into(),
         description: desc.into(),
         parameters: serde_json::json!({"type":"object","properties":props,"required":required}),
     };
     let d0 = dir.clone();
+    let r0 = root.clone();
     reg.register(
         mk(
             "preview_file",
-            "Preview a file write: hashes, line counts, 40-line excerpt. Read-only.",
+            "Preview a file write: hashes, line counts, 40-line excerpt. Read-only. Confined to the workspace.",
             serde_json::json!({"path":{"type":"string"},"content":{"type":"string"}}),
             vec!["path", "content"],
         ),
@@ -89,11 +122,13 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
             let content = jstr(&v, "content")
                 .ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing 'content'".into()))?;
             let _ = &d0;
-            let pv = preview_edit(Path::new(&path), content.as_bytes())?;
+            let cpath = confine(Path::new(&path), &r0)?;
+            let pv = preview_edit(&cpath, content.as_bytes())?;
             serde_json::to_string_pretty(&pv).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))
         },
     );
     let d1 = dir.clone();
+    let r1 = root.clone();
     reg.register(
         mk(
             "stage_files",
@@ -105,41 +140,44 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
         move |args| {
             let v = parse_args(args)?;
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d1).clone());
-            let w = SafeWriter::new(sd)?;
+            let w = writer(sd, &r1)?;
             let batch = w.stage_edits(parse_edit_list(&v)?)?;
             serde_json::to_string_pretty(&batch).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))
         },
     );
     let d2 = dir.clone();
+    let r2 = root.clone();
     reg.register(mk("apply_files", "Validate + checkpoint + atomically apply edits. Fails on stale expected_hash.",
         serde_json::json!({"edits":{"type":"array"},"ledger_seq":{"type":"integer"},"state_dir":{"type":"string"}}), vec!["edits"]),
         Capability::FilesystemWrite, move |args| {
             let v = parse_args(args)?;
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d2).clone());
-            let w = SafeWriter::new(sd)?;
+            let w = writer(sd, &r2)?;
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
             let r = w.apply_edits(parse_edit_list(&v)?, seq)?;
             json_out(&r)
         });
     let d3 = dir.clone();
+    let r3 = root.clone();
     reg.register(mk("apply_staged", "Atomically apply a staged batch by id.",
         serde_json::json!({"stage_id":{"type":"string"},"ledger_seq":{"type":"integer"},"state_dir":{"type":"string"}}), vec!["stage_id"]),
         Capability::FilesystemWrite, move |args| {
             let v = parse_args(args)?;
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d3).clone());
-            let w = SafeWriter::new(sd)?;
+            let w = writer(sd, &r3)?;
             let sid = jstr(&v, "stage_id").ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing 'stage_id'".into()))?;
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
             let r = w.apply_staged(&sid, seq)?;
             json_out(&r)
         });
     let d4 = dir.clone();
+    let r4 = root.clone();
     reg.register(mk("checkpoint_files", "Snapshot pre-images for paths, anchored to a ledger seq.",
         serde_json::json!({"paths":{"type":"array"},"ledger_seq":{"type":"integer"},"state_dir":{"type":"string"}}), vec!["paths"]),
         Capability::FilesystemWrite, move |args| {
             let v = parse_args(args)?;
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d4).clone());
-            let w = SafeWriter::new(sd)?;
+            let w = writer(sd, &r4)?;
             let paths: Vec<PathBuf> = v.get("paths").and_then(|x| x.as_array()).map(|a| a.iter()
                 .filter_map(|x| x.as_str()).map(PathBuf::from).collect()).unwrap_or_default();
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
@@ -147,6 +185,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
             json_out(&cp)
         });
     let d5 = dir.clone();
+    let r5 = root.clone();
     reg.register(
         mk(
             "list_checkpoints",
@@ -158,12 +197,13 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
         move |args| {
             let v = parse_args(args)?;
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d5).clone());
-            let w = SafeWriter::new(sd)?;
+            let w = writer(sd, &r5)?;
             let list = w.list_checkpoints()?;
             json_out(&list)
         },
     );
     let d6 = dir.clone();
+    let r6 = root.clone();
     reg.register(
         mk(
             "rollback_checkpoint",
@@ -175,7 +215,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
         move |args| {
             let v = parse_args(args)?;
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d6).clone());
-            let w = SafeWriter::new(sd)?;
+            let w = writer(sd, &r6)?;
             let id = jstr(&v, "checkpoint_id")
                 .ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing 'checkpoint_id'".into()))?;
             let restored = w.restore_checkpoint(&id)?;
@@ -186,6 +226,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
         },
     );
     let d7 = dir;
+    let r7 = root;
     reg.register(
         mk(
             "rollback_seq",
@@ -197,7 +238,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
         move |args| {
             let v = parse_args(args)?;
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d7).clone());
-            let w = SafeWriter::new(sd)?;
+            let w = writer(sd, &r7)?;
             let seq = v
                 .get("ledger_seq")
                 .and_then(|x| x.as_i64())
