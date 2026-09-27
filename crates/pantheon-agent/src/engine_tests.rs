@@ -268,6 +268,7 @@ fn budget_cap_stops_before_the_turn() {
         max_tool_calls: 32,
         max_tokens: None,
         max_cost_cents: None,
+        max_delegate_depth: 2,
     };
     let mut t = vec![];
     let err = l.run(&NeverAnswers, "go", &mut t).unwrap_err();
@@ -488,4 +489,164 @@ fn gate_escalates_allow_to_approval_but_never_lowers_deny() {
             ..
         }
     )));
+}
+
+/// Stub spawner that records every invocation's parent depth, so tests can
+/// prove the engine enforced the depth cap itself (spawner never called).
+struct RecordingSpawner {
+    calls: RefCell<Vec<u32>>,
+}
+impl AgentSpawner for RecordingSpawner {
+    fn spawn(
+        &self,
+        _agent: &str,
+        _model: &str,
+        _task: &str,
+        depth: u32,
+    ) -> Result<String, PantheonError> {
+        self.calls.borrow_mut().push(depth);
+        Ok("child-result".into())
+    }
+}
+
+fn delegate_model() -> Scripted {
+    Scripted {
+        steps: RefCell::new(vec![TurnOutcome::Delegate {
+            agent: "researcher".into(),
+            model: "m".into(),
+            task: "t".into(),
+        }]),
+    }
+}
+
+/// Depth cap refuses at max_depth+1: a loop already at depth 2 (the
+/// default max_delegate_depth) delegating again would spawn a depth-3
+/// child. The engine must refuse BEFORE invoking the spawner, with a
+/// clear error and no fabricated completion record.
+#[test]
+fn depth_cap_refuses_at_max_depth_plus_one() {
+    let sink = Collector(RefCell::new(vec![]));
+    let tools = NoTools;
+    let spawner = RecordingSpawner {
+        calls: RefCell::new(vec![]),
+    };
+    let model = delegate_model();
+    let mut t = vec![];
+    let loop_ = AgentLoop {
+        run_id: "run_depth3".into(),
+        policy: Policy::coder(),
+        budget: Budget::default(),
+        sink: &sink,
+        tools: &tools,
+        spawner: Some(&spawner),
+        judge: None,
+        cancel: None,
+        depth: 2,
+    };
+    let err = loop_.run(&model, "go", &mut t).unwrap_err();
+    assert_eq!(err.code, "SWARM_SPAWN_DENIED");
+    assert!(
+        err.cause.contains("exceeds max_delegate_depth"),
+        "clear depth error, got: {}",
+        err.cause
+    );
+    assert!(
+        spawner.calls.borrow().is_empty(),
+        "spawner must not be invoked past the cap"
+    );
+    assert!(
+        !t.iter().any(|l| l.starts_with("delegate[")),
+        "no fake completion may be recorded"
+    );
+}
+
+/// Boundary: a loop at depth 1 may still delegate (child runs at depth 2,
+/// exactly the cap). The spawner receives the parent's depth.
+#[test]
+fn depth_cap_allows_child_at_exactly_max() {
+    let sink = Collector(RefCell::new(vec![]));
+    let tools = NoTools;
+    let spawner = RecordingSpawner {
+        calls: RefCell::new(vec![]),
+    };
+    let model = delegate_model();
+    let mut t = vec![];
+    let loop_ = AgentLoop {
+        run_id: "run_depth2".into(),
+        policy: Policy::coder(),
+        budget: Budget::default(),
+        sink: &sink,
+        tools: &tools,
+        spawner: Some(&spawner),
+        judge: None,
+        cancel: None,
+        depth: 1,
+    };
+    let out = loop_.run(&model, "go", &mut t).unwrap();
+    assert_eq!(
+        out,
+        LoopOutcome::Delegated {
+            agent: "researcher".into()
+        }
+    );
+    assert_eq!(
+        *spawner.calls.borrow(),
+        vec![1u32],
+        "spawner sees the parent depth exactly once"
+    );
+    assert!(t
+        .iter()
+        .any(|l| l.contains("delegate[researcher]: child-result")));
+}
+
+/// A spawner failure must surface as a real error: the run errors with
+/// the child's code, nothing is appended to the transcript as if the
+/// delegation completed, and RunFailed is emitted.
+#[test]
+fn spawner_failure_surfaces_error_without_fake_completion() {
+    struct FailingSpawner;
+    impl AgentSpawner for FailingSpawner {
+        fn spawn(
+            &self,
+            _agent: &str,
+            _model: &str,
+            _task: &str,
+            _depth: u32,
+        ) -> Result<String, PantheonError> {
+            Err(PantheonError::new(
+                "CHILD_BOOM",
+                Layer::Agent,
+                false,
+                "child session failed: model transport down",
+                "retry the delegation",
+                "",
+            ))
+        }
+    }
+    let sink = Collector(RefCell::new(vec![]));
+    let tools = NoTools;
+    let spawner = FailingSpawner;
+    let model = delegate_model();
+    let mut t = vec![];
+    let loop_ = AgentLoop {
+        run_id: "run_fail".into(),
+        policy: Policy::coder(),
+        budget: Budget::default(),
+        sink: &sink,
+        tools: &tools,
+        spawner: Some(&spawner),
+        judge: None,
+        cancel: None,
+        depth: 0,
+    };
+    let err = loop_.run(&model, "go", &mut t).unwrap_err();
+    assert_eq!(err.code, "CHILD_BOOM");
+    assert!(
+        !t.iter().any(|l| l.starts_with("delegate[")),
+        "no fabricated completion record on failure"
+    );
+    assert!(
+        sink.0.borrow().iter().any(|s| s.contains("RunFailed")),
+        "the failure must be emitted, not swallowed"
+    );
 }
