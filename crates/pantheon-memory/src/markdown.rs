@@ -303,6 +303,14 @@ pub fn parse_md(content: &str) -> Vec<(String, String)> {
 /// Import Agent-layer records from a markdown file. Each parsed section
 /// becomes a Proposal that goes through the standard write path
 /// (propose -> policy -> provenance -> validation).
+///
+/// Trust handling: a v2 file carries each record's tier and a hand-edited
+/// or legacy file is human-authored, so both import at the file's tier
+/// (`memory.md` is a human-authored origin in the write gate). The tier is
+/// capped at the tier the store already has for the row — an import can
+/// keep or lower the file's claimed tier, never upgrade it. The store's
+/// own anti-clobber rule still applies on top: when the capped tier is
+/// below the stored tier the row is held entirely.
 pub fn import_agent(
     store: &MemoryStore,
     policy: &pantheon_api::capability::Policy,
@@ -318,6 +326,14 @@ pub fn import_agent(
         // file is human-authored, so it imports as User. An Untrusted
         // record stays Untrusted: the round-trip must not launder trust.
         let tier = trust.unwrap_or(pantheon_api::provenance::TrustTier::User);
+        // Never upgrade on import: cap the file's tier at the store's
+        // existing tier for this row. New rows keep the file's tier.
+        let tier = match store.get(LayerKind::Agent, namespace, &key)? {
+            Some(existing) if existing.provenance.trust.rank() < tier.rank() => {
+                existing.provenance.trust
+            }
+            _ => tier,
+        };
         let p = Proposal {
             layer: LayerKind::Agent,
             namespace: namespace.to_string(),

@@ -301,3 +301,100 @@ fn sync_no_conflict_when_only_store_changed() {
     let text = std::fs::read_to_string(&md).unwrap();
     assert!(text.contains("new"));
 }
+
+/// A v2 file's {trust=user} footer survives import on a fresh store: the
+/// old gate clamped every import to Untrusted and silently dropped the
+/// file's tiers.
+#[test]
+fn import_keeps_file_tier_for_new_rows() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = writer_policy();
+    let dir = fresh_md("keeptier");
+    let path = dir.join("MEMORY.md");
+    std::fs::write(
+        &path,
+        "<!-- pantheon:agent-memory v2 -->\n\n# Agent memory\n\n# city\n\n{trust=user}\nKano\n",
+    )
+    .unwrap();
+    let n = import_agent(&store, &policy, "nyx", &path).unwrap();
+    assert_eq!(n, 1);
+    let rec = store.get(LayerKind::Agent, "nyx", "city").unwrap().unwrap();
+    assert_eq!(
+        rec.provenance.trust,
+        pantheon_api::provenance::TrustTier::User,
+        "human-authored import must keep the file's tier"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An import never upgrades trust: the file claims `user` but the store
+/// already has the row at `memory`, so the row stays `memory` while the
+/// human's edited value still lands.
+#[test]
+fn import_caps_file_tier_at_existing_store_tier() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = writer_policy();
+    let seed = Proposal {
+        layer: LayerKind::Agent,
+        namespace: "nyx".to_string(),
+        key: "city".into(),
+        value: "Old".into(),
+        provenance: Provenance {
+            source: "test".into(),
+            origin: "cli".into(),
+            trust: pantheon_api::provenance::TrustTier::Memory,
+            recorded_at_ms: 1,
+        },
+    };
+    store.put(&seed).unwrap();
+    let dir = fresh_md("capup");
+    let path = dir.join("MEMORY.md");
+    std::fs::write(
+        &path,
+        "<!-- pantheon:agent-memory v2 -->\n\n# Agent memory\n\n# city\n\n{trust=user}\nKano\n",
+    )
+    .unwrap();
+    import_agent(&store, &policy, "nyx", &path).unwrap();
+    let rec = store.get(LayerKind::Agent, "nyx", "city").unwrap().unwrap();
+    assert_eq!(
+        rec.provenance.trust,
+        pantheon_api::provenance::TrustTier::Memory,
+        "import must not upgrade the stored tier"
+    );
+    assert_eq!(rec.value, "Kano", "the human's edited value still lands");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The reverse is also safe: a file claiming a lower tier cannot clobber
+/// a higher-trust row — the store's anti-clobber rule holds the value and
+/// the tier.
+#[test]
+fn import_does_not_downgrade_a_higher_trust_row() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = writer_policy();
+    let seed = Proposal {
+        layer: LayerKind::Agent,
+        namespace: "nyx".to_string(),
+        key: "city".into(),
+        value: "Confirmed".into(),
+        provenance: Provenance {
+            source: "test".into(),
+            origin: "cli".into(),
+            trust: pantheon_api::provenance::TrustTier::User,
+            recorded_at_ms: 1,
+        },
+    };
+    store.put(&seed).unwrap();
+    let dir = fresh_md("capdown");
+    let path = dir.join("MEMORY.md");
+    std::fs::write(
+        &path,
+        "<!-- pantheon:agent-memory v2 -->\n\n# Agent memory\n\n# city\n\n{trust=memory}\nEdited\n",
+    )
+    .unwrap();
+    import_agent(&store, &policy, "nyx", &path).unwrap();
+    let rec = store.get(LayerKind::Agent, "nyx", "city").unwrap().unwrap();
+    assert_eq!(rec.provenance.trust, pantheon_api::provenance::TrustTier::User);
+    assert_eq!(rec.value, "Confirmed");
+    let _ = std::fs::remove_dir_all(&dir);
+}
