@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind,
+        KeyModifiers,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -28,6 +29,12 @@ use ratatui::{
 use pantheon_api::events::Event as RuntimeErrorEvent;
 use pantheon_providers::model_event::ModelEvent;
 use pantheon_runtime::session::Session;
+
+/// TUI-B feature modules. Declared here (not in lib.rs) so a sibling
+/// worker editing lib.rs cannot conflict with this branch.
+mod statusbar;
+mod timeline;
+mod editor;
 
 /// A single block in the conversation transcript.
 #[derive(Debug, Clone)]
@@ -64,6 +71,20 @@ pub struct ModelRow {
     pub provider_label: String,
     pub model_id: String,
     pub ctx: Option<u32>,
+}
+
+/// A pending rewind confirmation: the last turn the operator could roll
+/// back to, captured while the session is idle. Confirming appends a
+/// rewind marker to the ledger (history is never rewritten) and truncates
+/// the live transcript view back to the pre-turn state.
+#[derive(Debug, Clone)]
+pub struct RewindOffer {
+    /// 1-based turn number being rewound.
+    pub turn_no: usize,
+    /// Block index of the turn's user message in `TuiState::blocks`.
+    pub block_index: usize,
+    /// First line of the discarded user message, for the confirm prompt.
+    pub preview: String,
 }
 
 /// Runtime state for the TUI session.
@@ -120,6 +141,37 @@ pub struct TuiState {
     /// run (not the selected session) so a mid-turn resume cannot retarget
     /// the interrupt at the wrong loop.
     pub active_run: Option<String>,
+    /// This turn's input tokens, from the latest Usage event. `None` until
+    /// the provider reports usage — feeds the live status bar.
+    pub turn_in: Option<u64>,
+    /// This turn's output tokens, from the latest Usage event.
+    pub turn_out: Option<u64>,
+    /// When the current turn started; drives tokens/sec. `None` while idle.
+    pub turn_started_at: Option<Instant>,
+    /// Completed turns. The status bar shows this + 1 while a turn runs.
+    pub turns_completed: u32,
+    /// Background-turn contract for the tab layer: set when a turn
+    /// finishes while this session's tab is not focused. The tab UI
+    /// renders it as a badge. Cleared by `attention_clear` when the tab
+    /// regains focus. Turn completion never touches `input`/`is_inputting`,
+    /// so a background finish cannot steal input focus.
+    pub attention: bool,
+    /// Human note for the badge, e.g. "turn 3 finished".
+    pub attention_note: Option<String>,
+    /// Open turn-timeline rail: `Some(nav)` while Ctrl+O/F2 is open.
+    pub timeline: Option<timeline::TimelineNav>,
+    /// Transcript block to pin to the viewport top on the next render
+    /// (set by timeline Enter). Consumed by `render_transcript`.
+    pub jump_to_block: Option<usize>,
+    /// Open fullscreen draft editor: `Some(ed)` while Ctrl+E is open.
+    pub editor: Option<editor::DraftEditor>,
+    /// Pending double-Esc rewind confirmation. `Some` while the operator
+    /// decides; `y` confirms, `n`/Esc dismisses.
+    pub rewind_offer: Option<RewindOffer>,
+    /// Session tabs (opencode-style top bar). Rebuilt from
+    /// `ledger_list_runs`; refreshed on /new, resume, tab switch and turn
+    /// completion so titles and busy badges stay current.
+    pub tabs: crate::tabs::TabList,
 }
 
 impl Default for TuiState {
@@ -153,6 +205,17 @@ impl Default for TuiState {
             title: None,
             queued_message: None,
             active_run: None,
+            turn_in: None,
+            turn_out: None,
+            turn_started_at: None,
+            turns_completed: 0,
+            attention: false,
+            attention_note: None,
+            timeline: None,
+            jump_to_block: None,
+            editor: None,
+            rewind_offer: None,
+            tabs: crate::tabs::TabList::default(),
         }
     }
 }
@@ -188,6 +251,17 @@ impl TuiState {
             title: None,
             queued_message: None,
             active_run: None,
+            turn_in: None,
+            turn_out: None,
+            turn_started_at: None,
+            turns_completed: 0,
+            attention: false,
+            attention_note: None,
+            timeline: None,
+            jump_to_block: None,
+            editor: None,
+            rewind_offer: None,
+            tabs: crate::tabs::TabList::default(),
         }
     }
 
@@ -343,6 +417,11 @@ impl TuiState {
                 // Snap: fold the live estimate into the authoritative count.
                 self.tokens_used = usage.total_tokens as u32;
                 self.turn_estimate = 0;
+                // Per-turn in/out for the live status bar. A provider that
+                // reports only totals leaves these at the total split it
+                // gave; a provider that reports nothing leaves them None.
+                self.turn_in = Some(usage.input_tokens);
+                self.turn_out = Some(usage.output_tokens);
                 if let Some(cost) = usage.cost_usd {
                     self.cost_cents = (cost * 100.0) as u32;
                 }
@@ -412,6 +491,12 @@ impl TuiState {
     /// Handle an Esc press. Returns true when the caller must cancel the
     /// run in flight, which happens only on a confirmed second Esc.
     ///
+    /// While a turn runs, the second Esc interrupts (existing behavior).
+    /// While idle, the first Esc arms and the second Esc inside the arm
+    /// window offers to rewind the last turn instead of just disarming:
+    /// the confirm prompt is explicit (`y`/`n`), so nothing destructive
+    /// happens on a stray keypress. An idle Esc never interrupts.
+    ///
     /// Extracted from the event loop so the arm/confirm/stale rules are
     /// testable against the shipped code rather than a copy of it.
     pub fn press_esc(&mut self) -> bool {
@@ -428,10 +513,28 @@ impl TuiState {
                     self.status_line = "press esc again to interrupt".into();
                 }
             }
-        } else if self.interrupt_armed_at.is_some() {
-            // Disarm if the run finished before the second Esc.
+        } else if let Some(t) = self.interrupt_armed_at {
+            // Second Esc while idle: inside the window, offer rewind when
+            // there is a turn to roll back to, otherwise disarm as before.
+            // A stale arm re-arms instead of firing.
             self.interrupt_armed_at = None;
-            self.status_line = "ready".into();
+            if t.elapsed() < Self::ARM_WINDOW {
+                match self.rewind_candidate() {
+                    Some(offer) => {
+                        self.rewind_offer = Some(offer);
+                        self.status_line = "rewind last turn? [y]es [n]o".into();
+                    }
+                    None => {
+                        self.status_line = "ready".into();
+                    }
+                }
+            } else {
+                self.interrupt_armed_at = Some(Instant::now());
+            }
+        } else if !self.interrupted {
+            // First Esc while idle: arm the rewind offer path. This never
+            // interrupts anything; begin_turn clears the arm.
+            self.interrupt_armed_at = Some(Instant::now());
         }
         false
     }
@@ -453,6 +556,11 @@ impl TuiState {
         self.status_line = "working".to_string();
         self.interrupt_armed_at = None;
         self.interrupted = false;
+        // Fresh per-turn telemetry: the last turn's in/out must not leak
+        // into this turn's status bar.
+        self.turn_in = None;
+        self.turn_out = None;
+        self.turn_started_at = Some(Instant::now());
         true
     }
 
@@ -465,6 +573,103 @@ impl TuiState {
     /// there is one, else the selected session. Pure, tested below.
     pub fn interrupt_target(&self) -> &str {
         self.active_run.as_deref().unwrap_or(&self.session_id)
+    }
+
+    /// Mark a turn finished. `focused` tells whether this session's tab is
+    /// the visible one: a background finish raises the tab badge instead
+    /// of touching anything the user is doing.
+    ///
+    /// This deliberately never touches `input` or `is_inputting`: a turn
+    /// completing in the background must not steal input focus. The queued
+    /// message still drains (via `drain_queued_message` in the loop) because
+    /// it belongs to this session's turn machinery, not to the tab.
+    pub fn on_turn_complete(&mut self, focused: bool) {
+        self.ready = true;
+        self.status_line = "ready".to_string();
+        self.interrupt_armed_at = None;
+        self.interrupted = false;
+        self.active_run = None;
+        self.turn_started_at = None;
+        self.turns_completed += 1;
+        if focused {
+            self.attention = false;
+            self.attention_note = None;
+        } else {
+            self.attention = true;
+            self.attention_note = Some(format!("turn {} finished", self.turns_completed));
+        }
+    }
+
+    /// Clear the background-completion badge: the tab is focused again.
+    pub fn attention_clear(&mut self) {
+        self.attention = false;
+        self.attention_note = None;
+    }
+
+    /// Toggle the turn-timeline rail. Opening selects the latest turn.
+    pub fn toggle_timeline(&mut self) {
+        match self.timeline.take() {
+            Some(_) => {}
+            None => {
+                let n = timeline::build_turns(&self.blocks).len();
+                self.timeline = Some(timeline::TimelineNav::open(n));
+            }
+        }
+    }
+
+    /// Open the fullscreen draft editor, carrying the current input draft.
+    pub fn open_editor(&mut self) {
+        let draft = std::mem::take(&mut self.input);
+        self.is_inputting = false;
+        self.editor = Some(editor::DraftEditor::from_text(&draft));
+    }
+
+    /// The turn a rewind would roll back to, or `None` when rewind is not
+    /// available: no turn has completed, a turn is running, an approval is
+    /// pending, or a confirm is already open.
+    pub fn rewind_candidate(&self) -> Option<RewindOffer> {
+        if !self.ready
+            || self.pending_approval.is_some()
+            || self.active_run.is_some()
+            || self.rewind_offer.is_some()
+        {
+            return None;
+        }
+        let mut last_user: Option<(usize, usize, String)> = None;
+        for (i, block) in self.blocks.iter().enumerate() {
+            if let BlockKind::UserMessage(text) = &block.kind {
+                let turn_no = last_user.map(|(_, n, _)| n + 1).unwrap_or(1);
+                let preview: String = text.lines().next().unwrap_or("").chars().take(60).collect();
+                last_user = Some((i, turn_no, preview));
+            }
+        }
+        last_user.map(|(block_index, turn_no, preview)| RewindOffer {
+            turn_no,
+            block_index,
+            preview,
+        })
+    }
+
+    /// This turn's throughput in tokens/sec. Prefers the authoritative
+    /// Usage numbers; falls back to the live streamed estimate while the
+    /// turn runs; `None` when there is nothing honest to divide.
+    pub fn turn_rate(&self) -> Option<f64> {
+        let elapsed = self.turn_started_at?.elapsed().as_secs_f64();
+        if elapsed < 0.5 {
+            return None;
+        }
+        match (self.turn_in, self.turn_out) {
+            (Some(i), Some(o)) => Some((i + o) as f64 / elapsed),
+            _ if self.turn_estimate > 0 => Some(self.turn_estimate as f64 / elapsed),
+            _ => None,
+        }
+    }
+
+    /// The turn number the status bar shows: completed turns + 1 while a
+    /// turn runs; `None` before the first turn so the bar shows `—`.
+    pub fn display_turn_no(&self) -> Option<u32> {
+        let n = self.turns_completed + if self.ready { 0 } else { 1 };
+        if n == 0 { None } else { Some(n) }
     }
 
     pub fn add_user_message(&mut self, text: String) {
@@ -522,17 +727,67 @@ mod color {
     pub const SUCCESS: Color = Color::Green;
     pub const WARNING: Color = Color::Yellow;
     pub const FAILURE: Color = Color::Red;
+    /// Reasoning text: dimmer than answers, never competing with them.
+    pub const DIM: Color = Color::DarkGray;
 }
 
 /// Render the full TUI frame: header, transcript, input, status bar.
-pub fn render(state: &TuiState, f: &mut Frame) {
+///
+/// Takes `&mut` because a timeline jump pins the viewport to a turn's
+/// first block during this render (consuming `jump_to_block`); nothing
+/// else about the transcript is mutated.
+/// Rebuild the session tab bar from the run ledger. Cheap local query;
+/// called on loop start, /new, resume, tab switch and turn completion so
+/// titles and busy badges stay current.
+fn refresh_tabs(state: &mut TuiState, session: &Arc<Session>) {
+    if let Ok(runs) = session.supervisor.ledger_list_runs(50) {
+        let active = state.session_id.clone();
+        state.tabs.refresh_from_runs(
+            &runs,
+            |id| session.supervisor.has_active_lease(id).unwrap_or(false),
+            &active,
+        );
+    }
+}
+
+/// Switch the visible session to run `id`: reopen the run and rebuild the
+/// transcript from the ledger. Shared by /history resume and tab keys.
+/// Never forces `ready`: a turn may still run for another session and the
+/// Enter guard must keep applying to it.
+fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str) {
+    if id == state.session_id {
+        state.attention_clear();
+        return;
+    }
+    let _ = session.supervisor.ledger_reopen_run(id);
+    if let Ok(entries) = session.supervisor.replay(id) {
+        state.blocks.clear();
+        state.session_id = id.to_string();
+        state.title = session.supervisor.ledger_title(id).ok().flatten();
+        for m in pantheon_runtime::session::rebuild_messages(entries) {
+            let kind = match m.role {
+                pantheon_api::message::Role::User => BlockKind::UserMessage(m.content.clone()),
+                _ => BlockKind::AssistantMessage(m.content.clone()),
+            };
+            state.blocks.push(TranscriptBlock { kind });
+        }
+        state.scroll_to_bottom();
+    }
+    state.attention_clear();
+    state.blocks.push(TranscriptBlock {
+        kind: BlockKind::Status(format!("resumed {}", id)),
+    });
+}
+
+pub fn render(state: &mut TuiState, f: &mut Frame) {
     let outer = Layout::vertical([
+        Constraint::Length(1), // session tabs
         Constraint::Length(3), // header
         Constraint::Min(1),    // transcript
         Constraint::Length(3), // input
         Constraint::Length(1), // status bar
     ]);
-    let [header_area, chat_area, input_area, status_area] = outer.areas(f.area());
+    let [tab_area, header_area, chat_area, input_area, status_area] = outer.areas(f.area());
 
     if state.history.is_some() {
         render_history(f, f.area(), state);
@@ -540,6 +795,10 @@ pub fn render(state: &TuiState, f: &mut Frame) {
     }
     if state.models.is_some() {
         render_models(f, f.area(), state);
+        return;
+    }
+    if state.editor.is_some() {
+        render_editor(f, f.area(), state);
         return;
     }
     if state.pending_approval.is_some() {
@@ -551,6 +810,10 @@ pub fn render(state: &TuiState, f: &mut Frame) {
     render_header(f, header_area, state);
     render_transcript(f, chat_area, state);
     render_status(f, status_area, state);
+    crate::tabs::render_tab_bar(f, tab_area, &state.tabs);
+    if state.timeline.is_some() {
+        render_timeline(f, f.area(), state);
+    }
 }
 
 /// Searchable scrollable history overlay: /history. Type-to-filter,
@@ -712,6 +975,125 @@ fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_widget(card, area);
 }
 
+/// Turn-timeline rail: a right-side panel listing one row per user turn
+/// (conversation order). Arrow keys move the selection, Enter jumps the
+/// transcript viewport to that turn, Esc/F2 closes. Strictly read-only:
+/// navigating never mutates the transcript.
+fn render_timeline(f: &mut Frame, area: Rect, state: &TuiState) {
+    let turns = timeline::build_turns(&state.blocks);
+    let sel = state.timeline.as_ref().map(|n| n.sel()).unwrap_or(0);
+    let w = 46.min(area.width.max(20));
+    let panel = Rect {
+        x: area.x + area.width.saturating_sub(w),
+        y: area.y,
+        width: w,
+        height: area.height,
+    };
+    f.render_widget(ratatui::widgets::Clear, panel);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "  turns  ↑/↓ move · Enter jump · Esc close",
+            Style::default().fg(color::PRIMARY),
+        )),
+        Line::from(""),
+    ];
+    if turns.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no turns yet)",
+            Style::default().fg(color::DIM),
+        )));
+    }
+    // Show the tail when there are more turns than rows: the latest turn
+    // is what the selection opens on.
+    let inner = w.saturating_sub(4) as usize;
+    let rows = panel.height.saturating_sub(5) as usize;
+    let start = turns.len().saturating_sub(rows.max(1));
+    for (i, turn) in turns.iter().enumerate().skip(start) {
+        let row = format!(
+            "  {:>3}  {}",
+            turn.turn_no,
+            turn.preview.chars().take(inner.saturating_sub(8)).collect::<String>(),
+        );
+        let style = if i == sel {
+            Style::default()
+                .fg(color::PRIMARY)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(row, style)));
+    }
+    let card = Paragraph::new(lines).block(
+        Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(color::PRIMARY))
+            .title(Span::styled(
+                " timeline ",
+                Style::default()
+                    .fg(color::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    );
+    f.render_widget(card, panel);
+}
+
+/// Fullscreen draft editor. Line numbers, current-line highlight, live
+/// line/char stats. `Ctrl+Enter`/`Ctrl+S` sends, `Esc` cancels and keeps
+/// the draft in the input box.
+fn render_editor(f: &mut Frame, area: Rect, state: &TuiState) {
+    let Some(ed) = state.editor.as_ref() else {
+        return;
+    };
+    f.render_widget(ratatui::widgets::Clear, area);
+    let (crow, ccol) = ed.cursor();
+    let mut lines: Vec<Line> = Vec::new();
+    let num_w = ed.line_count().to_string().len().max(2);
+    // Keep the cursor row visible: scroll the editor viewport to it.
+    let view_h = area.height.saturating_sub(5) as usize;
+    let top = crow.saturating_sub(view_h.saturating_sub(1));
+    for (i, line) in ed.lines().iter().enumerate().skip(top).take(view_h.max(1)) {
+        let mut spans = vec![Span::styled(
+            format!("{:>num_w$} │ ", i + 1),
+            Style::default().fg(color::DIM),
+        )];
+        if i == crow {
+            // Draw the block cursor inside the current line.
+            let chars: Vec<char> = line.chars().collect();
+            let c = ccol.min(chars.len());
+            let (head, tail) = (chars[..c].iter().collect::<String>(), chars[c..].iter().collect::<String>());
+            spans.push(Span::raw(head));
+            spans.push(Span::styled("▌", Style::default().fg(color::PRIMARY).add_modifier(Modifier::BOLD)));
+            spans.push(Span::raw(tail));
+            lines.push(Line::from(spans).style(Style::default().add_modifier(Modifier::REVERSED)));
+        } else {
+            spans.push(Span::raw(line.clone()));
+            lines.push(Line::from(spans));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  {} lines · {} chars    Ctrl+Enter send · Esc cancel (keeps draft)",
+            ed.line_count(),
+            ed.char_count(),
+        ),
+        Style::default().fg(color::PRIMARY),
+    )));
+    let card = Paragraph::new(lines).block(
+        Block::bordered()
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(color::PRIMARY))
+            .title(Span::styled(
+                " draft editor ",
+                Style::default()
+                    .fg(color::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    );
+    f.render_widget(card, area);
+}
+
 /// Local-relative age for the history overlay.
 fn fmt_age(ms: i64) -> String {
     let now = std::time::SystemTime::now()
@@ -794,50 +1176,88 @@ fn render_input(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_widget(input, area);
 }
 
-/// Draw the one-line status bar under the input.
+/// Draw the one-line live status bar under the input.
+///
+/// Telemetry is real or absent: context %, per-turn in/out, tok/s, model,
+/// turn count, and cost come from `ModelEvent::Usage` and turn timing;
+/// anything the runtime did not expose renders as `—` (see `statusbar`).
+/// A pending rewind confirmation takes over the bar so the question is
+/// impossible to miss.
 fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
+    if let Some(offer) = &state.rewind_offer {
+        let text = format!(
+            "↩ rewind turn {} ({}…)?  [y] yes   [n] no",
+            offer.turn_no,
+            offer.preview.chars().take(40).collect::<String>(),
+        );
+        let bar = Paragraph::new(Line::from(Span::styled(
+            text,
+            Style::default()
+                .fg(color::WARNING)
+                .add_modifier(Modifier::BOLD),
+        )));
+        f.render_widget(bar, area);
+        return;
+    }
     // Interrupt state takes over the status word: an armed interrupt is a
     // call to action, a settled one reports the truth.
-    let (status_icon, status_color, status_word) = if state.interrupted {
-        ("\u{25CB}".to_string(), color::WARNING, "interrupted")
+    let (icon, bar_color, status_word) = if state.interrupted {
+        (icon::WARNING, color::WARNING, "interrupted")
     } else if !state.ready && state.interrupt_armed_at.is_some() {
-        (
-            icon::WARNING.to_string(),
-            color::WARNING,
-            "esc to interrupt",
-        )
+        (icon::WARNING, color::WARNING, "esc to interrupt")
+    } else if state.ready
+        && state.interrupt_armed_at.is_some()
+        && state.rewind_candidate().is_some()
+    {
+        // Double-Esc is armed while idle: make the rewind discoverable.
+        (icon::WARNING, color::WARNING, "esc again: rewind?")
     } else if state.ready {
-        (icon::SUCCESS.to_string(), color::SUCCESS, "ready")
+        (icon::SUCCESS, color::SUCCESS, "ready")
     } else {
-        (icon::RUNNING.to_string(), color::RUNNING, "working")
+        (icon::RUNNING, color::RUNNING, "working")
     };
     let live_tokens = state.tokens_used + state.turn_estimate;
-    let ctx = if state.tokens_max > 0 {
-        format!(
-            "{:.1}k/{}k",
-            live_tokens as f64 / 1000.0,
-            state.tokens_max / 1000
+    let (context_frac, context_label) = if state.tokens_max > 0 {
+        (
+            Some(live_tokens as f64 / state.tokens_max as f64),
+            Some(format!(
+                "{:.1}k/{}k",
+                live_tokens as f64 / 1000.0,
+                state.tokens_max / 1000
+            )),
         )
     } else {
-        // No declared window is not a zero-sized window. Saying "unknown"
-        // tells the user the number they are reading is not a budget.
-        format!("{:.1}k/unknown", live_tokens as f64 / 1000.0)
+        // No declared window is not a zero-sized window: the fraction is
+        // unknown, and the label says so rather than inventing a budget.
+        (
+            None,
+            Some(format!("{:.1}k/unknown", live_tokens as f64 / 1000.0)),
+        )
     };
-    let secs = state.elapsed.as_secs();
-    let text = format!(
-        "{} {}  │  {}  │  {}  │  {:02}:{:02}:{:02}  │  session {}",
-        status_icon,
-        status_word,
-        state.model,
-        ctx,
-        secs / 3600,
-        (secs % 3600) / 60,
-        secs % 60,
-        &state.session_id[..state.session_id.len().min(4)],
-    );
+    let data = statusbar::StatusBarData {
+        status_word: status_word.to_string(),
+        icon: icon.to_string(),
+        model: state.model.clone(),
+        context_frac,
+        context_label,
+        turn_in: state.turn_in,
+        turn_out: state.turn_out,
+        tokens_per_sec: state.turn_rate(),
+        // The runtime's ModelUsage carries no cache counters; `None`
+        // renders as `—` rather than a fabricated hit rate.
+        cache_hit_rate: None,
+        turn_no: state.display_turn_no(),
+        session_prefix: state.session_id.chars().take(6).collect(),
+        cost_usd: if state.cost_cents > 0 {
+            Some(state.cost_cents as f64 / 100.0)
+        } else {
+            None
+        },
+    };
+    let text = statusbar::render(&data, area.width as usize);
     let bar = Paragraph::new(Line::from(Span::styled(
         text,
-        Style::default().fg(status_color),
+        Style::default().fg(bar_color),
     )));
     f.render_widget(bar, area);
 }
@@ -886,31 +1306,30 @@ fn render_header(f: &mut Frame, area: Rect, state: &TuiState) {
 }
 
 /// Draw the conversation transcript with visual blocks per event type.
-fn render_transcript(f: &mut Frame, area: Rect, state: &TuiState) {
+///
+/// Consumes `jump_to_block` (set by the timeline's Enter): the viewport
+/// pins so the target turn's first block sits at the top. Read-only
+/// otherwise — jumping never mutates the transcript.
+fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
     if state.blocks.is_empty() {
-        let welcome = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "◈ PANTHEON",
-                Style::default()
-                    .fg(color::PRIMARY)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from("Ask me anything. /help for commands."),
-        ])
-        .block(Block::bordered().title(" Transcript "));
+        let mut welcome = crate::terminal::splash_lines(area.width);
+        welcome.push(Line::from(""));
+        welcome.push(Line::from("Ask me anything. /help for commands."));
+        let welcome = Paragraph::new(welcome).block(Block::bordered().title(" Transcript "));
         f.render_widget(welcome, area);
         return;
     }
 
     let mut lines: Vec<Line> = Vec::new();
+    // Line index where each block starts: the timeline jump target.
+    let mut block_starts: Vec<usize> = Vec::new();
 
     // Every block, oldest first. The viewport pins to the bottom (the live
     // tail) minus how far the user scrolled up: an earlier version rendered
     // only the oldest block, so every turn after the first was invisible.
     let block_count = state.blocks.len();
     for (i, block) in state.blocks.iter().enumerate() {
+        block_starts.push(lines.len());
         let is_last = i + 1 == block_count;
         render_block(&mut lines, block, is_last, state.interrupted);
         lines.push(Line::from(""));
@@ -920,6 +1339,13 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &TuiState) {
     // history. ratatui clips the viewport, so this is exact, not an estimate.
     let visible = area.height as usize;
     let max_scroll = lines.len().saturating_sub(visible);
+    if let Some(target_block) = state.jump_to_block.take() {
+        // Pin the target block's first line to the viewport top: the
+        // paragraph scrolls `off` lines from the top, and
+        // off = max_scroll - scroll_offset.
+        let target_line = block_starts.get(target_block).copied().unwrap_or(0);
+        state.scroll_offset = max_scroll.saturating_sub(target_line);
+    }
     let off = max_scroll.saturating_sub(state.scroll_offset) as u16;
     let text = Text::from(lines);
     let para = Paragraph::new(text)
@@ -956,13 +1382,22 @@ fn render_block(lines: &mut Vec<Line>, block: &TranscriptBlock, is_last: bool, i
             }
         }
         BlockKind::Thinking(text) => {
+            // Reasoning renders distinctly from final text: dim italic,
+            // labeled as thought rather than answer. The live (streaming)
+            // block stays expanded; settled ones collapse to a summary so
+            // old reasoning never crowds out answers.
+            let dim = Style::default()
+                .fg(color::DIM)
+                .add_modifier(Modifier::ITALIC);
             if is_last {
                 lines.push(Line::from(Span::styled(
-                    format!("┌─ {} Thinking ──", icon::THINKING),
-                    Style::default().fg(color::WARNING),
+                    format!("┌─ {} reasoning ──", icon::THINKING),
+                    Style::default()
+                        .fg(color::DIM)
+                        .add_modifier(Modifier::BOLD | Modifier::ITALIC),
                 )));
                 for line in text.lines().take(40) {
-                    lines.push(Line::from(format!("│  {line}")));
+                    lines.push(Line::from(Span::styled(format!("│  {line}"), dim)));
                 }
             } else {
                 // Collapsed summary: first line of the thought + size hint.
@@ -976,7 +1411,7 @@ fn render_block(lines: &mut Vec<Line>, block: &TranscriptBlock, is_last: bool, i
                     .collect::<String>();
                 lines.push(Line::from(Span::styled(
                     format!("◇ Thought · {words} words · {summary}..."),
-                    Style::default().fg(color::WARNING),
+                    dim,
                 )));
             }
         }
@@ -1274,6 +1709,141 @@ fn drain_queued_message(
     }
 }
 
+/// Send raw text as a message: slash commands dispatch, anything else
+/// becomes a user turn. Shared by the Enter key and the fullscreen draft
+/// editor's submit, so both paths obey the same Enter guard.
+fn submit_text(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+    raw: &str,
+) {
+    let msg = raw.trim().to_string();
+    state.input.clear();
+    state.is_inputting = false;
+    if msg.is_empty() {
+        return;
+    }
+
+    if msg.starts_with('/') {
+        handle_slash(state, session, &msg, tx);
+        return;
+    }
+
+    state.add_user_message(msg.clone());
+
+    // No second loop on a running turn: begin_turn queues the message
+    // instead, and the queue drains when the turn ends. start_turn
+    // resolves the run id at send time, so a resume that happened
+    // mid-turn sends to the run that is selected now, not the one the
+    // turn used.
+    if !start_turn(state, session, tx, msg) {
+        state.add_status("already working — queued for after this turn".into());
+    }
+}
+
+/// Confirm the pending rewind: append the marker to the ledger, then
+/// truncate the live view back to the pre-turn state.
+///
+/// The ledger is append-only — history is hidden from the view, never
+/// rewritten — and the discarded user message returns as the input draft
+/// so the turn can be redone. The marker write gates the truncation: if
+/// it fails, the view keeps the turn and says why.
+fn do_rewind(state: &mut TuiState, session: &Arc<Session>) {
+    let Some(offer) = state.rewind_offer.take() else {
+        return;
+    };
+    let detail = format!(
+        "rewind: operator discarded turn {} from the live view; ledger history retained",
+        offer.turn_no
+    );
+    if let Err(e) = session.supervisor.emit(RuntimeErrorEvent::RunProgress {
+        run_id: state.session_id.clone(),
+        detail,
+    }) {
+        state.add_status(format!("rewind: ledger marker failed, turn kept: {e}"));
+        return;
+    }
+    let draft = match state.blocks.get(offer.block_index) {
+        Some(TranscriptBlock {
+            kind: BlockKind::UserMessage(text),
+        }) => text.clone(),
+        _ => String::new(),
+    };
+    state.blocks.truncate(offer.block_index);
+    state.input = draft;
+    state.is_inputting = false;
+    state.turn_in = None;
+    state.turn_out = None;
+    state.turn_estimate = 0;
+    state.turn_started_at = None;
+    state.turns_completed = state.turns_completed.saturating_sub(1);
+    state.timeline = None;
+    state.jump_to_block = None;
+    state.scroll_to_bottom();
+    state.status_line = "ready".into();
+    state.add_status(format!(
+        "↩ rewound turn {} — hidden from view; ledger keeps full history",
+        offer.turn_no
+    ));
+}
+
+/// Keys while the fullscreen draft editor is open. Submit sends through
+/// the same path as Enter; Esc cancels and keeps the draft in the input
+/// box.
+fn handle_editor_key(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+    key: crossterm::event::KeyEvent,
+) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Esc => {
+            // Cancel: the draft survives in the input box.
+            if let Some(ed) = state.editor.take() {
+                state.input = ed.text();
+            }
+            state.is_inputting = false;
+            state.status_line = "ready".into();
+        }
+        KeyCode::Enter if ctrl => {
+            if let Some(ed) = state.editor.take() {
+                let text = ed.text();
+                submit_text(state, session, tx, &text);
+            }
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') if ctrl => {
+            if let Some(ed) = state.editor.take() {
+                let text = ed.text();
+                submit_text(state, session, tx, &text);
+            }
+        }
+        _ => {
+            let Some(ed) = state.editor.as_mut() else {
+                return;
+            };
+            match key.code {
+                KeyCode::Char(c) if !ctrl => ed.insert_char(c),
+                KeyCode::Enter => ed.newline(),
+                KeyCode::Backspace => ed.backspace(),
+                KeyCode::Delete => ed.delete(),
+                KeyCode::Left => ed.move_left(),
+                KeyCode::Right => ed.move_right(),
+                KeyCode::Up => ed.move_up(),
+                KeyCode::Down => ed.move_down(),
+                KeyCode::Home => ed.home(),
+                KeyCode::End => ed.end(),
+                KeyCode::Tab => {
+                    ed.insert_char(' ');
+                    ed.insert_char(' ');
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 fn tui_loop(
     terminal: &mut DefaultTerminal,
     state: &mut TuiState,
@@ -1282,6 +1852,7 @@ fn tui_loop(
     rx: &std::sync::mpsc::Receiver<TuiEvent>,
     running: &Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    refresh_tabs(state, &session);
     loop {
         if !running.load(Ordering::SeqCst) || state.shutting_down {
             break;
@@ -1299,15 +1870,17 @@ fn tui_loop(
                     }
                 }
                 TuiEvent::TurnComplete => {
-                    state.ready = true;
-                    state.status_line = "ready".to_string();
-                    state.interrupt_armed_at = None;
-                    state.interrupted = false;
-                    state.active_run = None;
+                    // Focused: the single-session loop is always the
+                    // visible tab. The tab layer calls on_turn_complete
+                    // with `focused = false` for background sessions, which
+                    // raises the tab badge instead of touching input.
+                    state.on_turn_complete(true);
                     session.reset_cancel();
                     // A message typed while the turn ran goes out now, to
                     // the currently selected run.
                     drain_queued_message(state, &session, tx);
+                    // Titles/busy badges may have changed.
+                    refresh_tabs(state, &session);
                 }
                 TuiEvent::Error(msg) => {
                     state.blocks.push(TranscriptBlock {
@@ -1403,37 +1976,105 @@ fn tui_loop(
                                 // rebuild the transcript from the ledger.
                                 // Compare against the selected session, not
                                 // the run the loop opened on.
-                                if id != state.session_id {
-                                    let _ = session.supervisor.ledger_reopen_run(&id);
-                                    if let Ok(entries) = session.supervisor.replay(&id) {
-                                        state.blocks.clear();
-                                        state.session_id = id.clone();
-                                        state.title =
-                                            session.supervisor.ledger_title(&id).ok().flatten();
-                                        for m in
-                                            pantheon_runtime::session::rebuild_messages(entries)
-                                        {
-                                            let kind = match m.role {
-                                                pantheon_api::message::Role::User => {
-                                                    BlockKind::UserMessage(m.content.clone())
-                                                }
-                                                _ => BlockKind::AssistantMessage(m.content.clone()),
-                                            };
-                                            state.blocks.push(TranscriptBlock { kind });
-                                        }
-                                        state.scroll_to_bottom();
-                                    }
-                                    state.blocks.push(TranscriptBlock {
-                                        kind: BlockKind::Status(format!("resumed {}", id)),
-                                    });
-                                    // Do not force ready here: a turn may
-                                    // still be running for the previous run,
-                                    // and the Enter guard must keep applying
-                                    // to it.
-                                }
+                                switch_to_run(state, &session, &id);
+                                refresh_tabs(state, &session);
                             }
                         }
                         _ => {}
+                    }
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
+                if state.editor.is_some() {
+                    handle_editor_key(state, &session, tx, key);
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
+                if state.rewind_offer.is_some() {
+                    // Explicit confirm: y rewinds, n/Esc dismisses.
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => do_rewind(state, &session),
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            state.rewind_offer = None;
+                            state.status_line = "ready".into();
+                        }
+                        _ => {}
+                    }
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
+                if state.timeline.is_some() {
+                    let n = timeline::build_turns(&state.blocks).len();
+                    match key.code {
+                        KeyCode::Up => {
+                            if let Some(nav) = state.timeline.as_mut() {
+                                nav.move_sel(-1, n);
+                            }
+                        }
+                        KeyCode::Down => {
+                            if let Some(nav) = state.timeline.as_mut() {
+                                nav.move_sel(1, n);
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let target = state.timeline.as_ref().and_then(|nav| {
+                                timeline::build_turns(&state.blocks)
+                                    .get(nav.sel())
+                                    .map(|t| t.block_start)
+                            });
+                            state.timeline = None;
+                            // Read-only jump: the viewport moves, the
+                            // transcript does not.
+                            state.jump_to_block = target;
+                            state.status_line = "ready".into();
+                        }
+                        KeyCode::Esc | KeyCode::F(2) => {
+                            state.timeline = None;
+                        }
+                        _ => {}
+                    }
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    match key.code {
+                        KeyCode::Char('o') | KeyCode::Char('O') => state.toggle_timeline(),
+                        KeyCode::Char('e') | KeyCode::Char('E') => {
+                            if state.pending_approval.is_none() {
+                                state.open_editor();
+                            }
+                        }
+                        _ => {}
+                    }
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
+                // Session tabs: Ctrl+Tab cycle, Alt+1..9 jump. Checked before
+                // the Char handler (Alt+1 arrives as Char('1')+ALT).
+                if let Some(action) = crate::tabs::tab_key_action(key.code, key.modifiers) {
+                    let target: Option<String> = match action {
+                        crate::tabs::TabAction::Next => {
+                            state.tabs.cycle_next().map(str::to_string)
+                        }
+                        crate::tabs::TabAction::Prev => {
+                            state.tabs.cycle_prev().map(str::to_string)
+                        }
+                        crate::tabs::TabAction::Jump(n) => {
+                            if state.tabs.jump(n) {
+                                state.tabs.active_run_id().map(str::to_string)
+                            } else {
+                                None
+                            }
+                        }
+                    };
+                    if let Some(id) = target {
+                        switch_to_run(state, &session, &id);
+                        refresh_tabs(state, &session);
                     }
                     state.tick();
                     terminal.draw(|f| render(state, f))?;
@@ -1519,31 +2160,8 @@ fn tui_loop(
                     }
                     KeyCode::Enter => {
                         if state.is_inputting {
-                            let msg = state.input.trim().to_string();
-                            state.input.clear();
-                            state.is_inputting = false;
-                            if msg.is_empty() {
-                                continue;
-                            }
-
-                            if msg.starts_with('/') {
-                                handle_slash(state, &session, &msg, tx);
-                                continue;
-                            }
-
-                            state.add_user_message(msg.clone());
-
-                            // No second loop on a running turn: begin_turn
-                            // queues the message instead, and the queue
-                            // drains when the turn ends. start_turn resolves
-                            // the run id at send time, so a resume that
-                            // happened mid-turn sends to the run that is
-                            // selected now, not the one the turn used.
-                            if !start_turn(state, &session, tx, msg) {
-                                state.add_status(
-                                    "already working — queued for after this turn".into(),
-                                );
-                            }
+                            let raw = state.input.clone();
+                            submit_text(state, &session, tx, &raw);
                         } else {
                             state.is_inputting = true;
                         }
@@ -1566,6 +2184,7 @@ fn tui_loop(
                     KeyCode::PageDown if state.pending_approval.is_none() => {
                         state.scroll_down(10);
                     }
+                    KeyCode::F(2) => state.toggle_timeline(),
                     _ => {}
                 }
             }
@@ -1993,6 +2612,7 @@ fn handle_slash(
         state.add_status("  /doctor            diagnose this install".into());
         state.add_status("  /sessions          live sessions holding a lease".into());
         state.add_status("  /new               start a fresh conversation".into());
+        state.add_status("  /rewind            roll back the last turn (confirm; ledger kept)".into());
         state.add_status("  /compress         compress this conversation to the window now".into());
         state.add_status("  /export [md|json]  save this conversation to exports/".into());
         state.add_status("  /runs [N]          recent runs (default 10)".into());
@@ -2026,6 +2646,9 @@ fn handle_slash(
         state.add_status("  /env               secret names and status (never values)".into());
         state.add_status("  /clear             clear visible transcript".into());
         state.add_status("  PgUp/PgDn          scroll the transcript".into());
+        state.add_status("  Ctrl+O / F2        turn timeline: arrows move, Enter jumps".into());
+        state.add_status("  Ctrl+E             fullscreen draft editor (Ctrl+Enter sends)".into());
+        state.add_status("  Esc Esc (idle)     offer to rewind the last turn".into());
         state.add_status("  /exit, /quit       leave pantheon".into());
         return;
     }
@@ -2317,6 +2940,20 @@ fn handle_slash(
         // Do not force ready here: a turn may still be running for the
         // previous run, and the Enter guard must keep applying to it.
         state.add_status("new conversation (unsaved until the first turn)".into());
+        refresh_tabs(state, session);
+        return;
+    }
+    if cmd == "/rewind" {
+        // Same confirm flow as double-Esc on an idle session: the ledger
+        // is append-only, so rewind hides the last turn from the live view
+        // behind a rewind marker instead of rewriting history.
+        match state.rewind_candidate() {
+            Some(offer) => {
+                state.rewind_offer = Some(offer);
+                state.status_line = "rewind last turn? [y]es [n]o".into();
+            }
+            None => state.add_status("/rewind: no finished turn to rewind".into()),
+        }
         return;
     }
     if let Some(rest) = cmd.strip_prefix("/remember ") {

@@ -45,9 +45,15 @@ fn a_stale_arm_does_not_interrupt() {
 fn an_idle_session_cannot_be_interrupted() {
     let mut s = running();
     s.ready = true;
-    assert!(!s.press_esc());
-    assert!(s.interrupt_armed_at.is_none(), "no arm while idle");
+    assert!(!s.press_esc(), "first esc never interrupts while idle");
     assert!(!s.interrupted);
+    assert!(
+        s.interrupt_armed_at.is_some(),
+        "idle esc arms the rewind offer path, not an interrupt"
+    );
+    assert!(!s.press_esc(), "second esc never interrupts while idle");
+    assert!(!s.interrupted, "it offers rewind instead");
+    assert!(s.interrupt_armed_at.is_none(), "offering clears the arm");
 }
 
 #[test]
