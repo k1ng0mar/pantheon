@@ -1,30 +1,152 @@
 //! `pantheon gateway`: run the channel daemon against the live runtime.
 //!
 //! One thread per surface: Discord gateway websocket, Telegram long poll,
-//! both feeding a shared `EventSink` that starts/resumes runs and answers
-//! approvals through the Supervisor. Replies flow back over the same
-//! channels via `MemoryChannel` + `fanout`-compatible envelopes.
+//! each with its own outbound queue and feeding a shared `EventSink` that
+//! starts/resumes runs and answers approvals through the Supervisor.
+//! Replies flow back over the same surfaces via `TelegramChannel` and
+//! `DiscordChannel` (real REST transports) — never a memory buffer nobody
+//! reads.
 //!
 //! Tokens come from the environment only:
 //!   PANTHEON_DISCORD_TOKEN, PANTHEON_TELEGRAM_BOT_TOKEN
 //! Missing tokens disable that surface; at least one must be set.
 
 use pantheon_api::capability::Policy;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// A parked run that needs continuing after an approval grant.
+#[derive(Debug, Clone)]
+struct ResumeRequest {
+    gateway: String,
+    thread_id: String,
+    run_id: String,
+}
+
+/// Continue a parked run after a grant. `Send + Sync` so the daemon thread
+/// can invoke it; the default implementation runs on a background thread
+/// because the resume blocks on the model. Tests swap in a recorder.
+type ResumeHook = Arc<dyn Fn(ResumeRequest) + Send + Sync>;
+
+/// The production resume hook: continue the parked run on a background
+/// thread and deliver the outcome text back to the originating thread.
+/// Errors are logged, never fatal — a failed resume must not take the
+/// gateway daemon down with it (unlike the CLI path, which exits).
+fn default_resume_hook(
+    data_dir: PathBuf,
+    queues: &HashMap<String, Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>>,
+) -> ResumeHook {
+    let queues = queues.clone();
+    Arc::new(move |req: ResumeRequest| {
+        let queues = queues.clone();
+        let data_dir = data_dir.clone();
+        std::thread::spawn(move || match resume_parked_run(&data_dir, &req.run_id) {
+            Ok(answer) => {
+                if !answer.is_empty() {
+                    push_to_queue(&queues, &req.gateway, &req.thread_id, answer);
+                }
+            }
+            Err(e) => eprintln!("gateway: resume {} failed: {e}", req.run_id),
+        });
+    })
+}
+
+/// Continue a parked run after a grant, returning the outcome text for
+/// delivery. Same shape as `crate::agui::resume_after_grant`, but it
+/// returns errors instead of exiting the process: the CLI can afford to
+/// die on failure, a long-running gateway cannot.
+fn resume_parked_run(data_dir: &Path, run_id: &str) -> Result<String, String> {
+    use crate::config;
+    use crate::config::build_model_policy;
+    let file_cfg = config::Config::load_or_report(data_dir);
+    let model_policy = build_model_policy(file_cfg.as_ref(), None, None);
+    let allow_memory = file_cfg
+        .as_ref()
+        .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
+        .unwrap_or_else(|| {
+            std::env::var("PANTHEON_ALLOW_MEMORY")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false)
+        });
+    let policy = if allow_memory {
+        pantheon_api::capability::Policy::coder_with_memory()
+    } else {
+        pantheon_api::capability::Policy::coder()
+    };
+    let secrets = config::chat_secrets(file_cfg.as_ref());
+    let session =
+        pantheon_runtime::session::Session::new(data_dir.to_path_buf(), policy, model_policy, secrets)
+            .map_err(|e| e.to_string())?;
+    // An empty turn rebuilds the transcript from the ledger and settles
+    // the granted call; never resend the user message (duplicate turn).
+    session
+        .chat_turn(run_id, "", "")
+        .map(|outcome| crate::terminal::outcome_text(&outcome))
+        .map_err(|e| e.to_string())
+}
+
+/// Push one reply into a surface's outbound queue. A message for an
+/// unknown surface is dead-lettered with a log rather than misdelivered.
+fn push_to_queue(
+    queues: &HashMap<String, Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>>,
+    gateway: &str,
+    thread: &str,
+    text: String,
+) {
+    match queues.get(gateway) {
+        Some(q) => q
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(pantheon_gateway::OutboundMessage {
+                to_conversation: thread.to_string(),
+                text,
+                gateway: gateway.to_string(),
+                attempts: 0,
+            }),
+        None => eprintln!(
+            "gateway: no outbound queue for surface '{gateway}'; dropping reply to {thread}"
+        ),
+    }
+}
 
 /// The runtime-backed sink. Maps channel threads to run ids through a
 /// thread→run map so a conversation keeps its run across messages.
 struct RuntimeSink {
     data_dir: PathBuf,
     policy: Policy,
-    threads: Mutex<std::collections::HashMap<String, String>>,
-    outbound: Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>,
+    threads: Mutex<HashMap<String, String>>,
+    /// One outbound queue per surface ("telegram"/"discord"). Each
+    /// surface's daemon drains only its own queue, so a Telegram reply
+    /// can never be picked up by the Discord daemon and vice versa — the
+    /// old single shared queue let each daemon grab the other's replies.
+    queues: HashMap<String, Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>>,
     /// Allowed platform sender ids (Telegram user id, Discord user id).
     /// None = allowlist disabled (local testing); Some(empty) denies
     /// everyone. The gateway is a remote shell, so the default is Some:
     /// cmd_gateway requires an explicit allowlist before it starts.
-    allow: Option<std::collections::HashSet<String>>,
+    allow: Option<HashSet<String>>,
+    /// Runs after a grant is recorded so the parked run continues.
+    resume: ResumeHook,
+}
+
+impl RuntimeSink {
+    fn new(
+        data_dir: PathBuf,
+        policy: Policy,
+        queues: HashMap<String, Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>>,
+        allow: Option<HashSet<String>>,
+    ) -> Self {
+        let resume = default_resume_hook(data_dir.clone(), &queues);
+        Self {
+            data_dir,
+            policy,
+            threads: Mutex::new(HashMap::new()),
+            queues,
+            allow,
+            resume,
+        }
+    }
 }
 
 impl RuntimeSink {
@@ -63,21 +185,34 @@ fn open_session(
 }
 
 impl RuntimeSink {
-    fn push_outbound(&self, thread: &str, text: String) {
-        self.outbound
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(pantheon_gateway::OutboundMessage {
-                to_conversation: thread.to_string(),
-                text,
-            });
+    fn push_outbound(&self, gateway: &str, thread: &str, text: String) {
+        push_to_queue(&self.queues, gateway, thread, text);
     }
 }
 
-impl pantheon_gateway::EventSink for RuntimeSink {
+/// Tags every event with the surface it arrived on so the shared sink can
+/// route replies into the right per-surface queue. One of these wraps the
+/// `RuntimeSink` per daemon thread.
+struct SurfaceSink<'a> {
+    inner: &'a RuntimeSink,
+    gateway: &'static str,
+}
+
+impl pantheon_gateway::EventSink for SurfaceSink<'_> {
     fn on_message(&self, thread_id: &str, sender: Option<&str>, text: &str) {
+        self.inner.on_message(self.gateway, thread_id, sender, text);
+    }
+    fn on_approval(&self, thread_id: &str, sender: Option<&str>, scope: &str, grant: bool) {
+        self.inner
+            .on_approval(self.gateway, thread_id, sender, scope, grant);
+    }
+}
+
+impl RuntimeSink {
+    fn on_message(&self, gateway: &str, thread_id: &str, sender: Option<&str>, text: &str) {
         if !self.allowed(sender) {
             self.push_outbound(
+                gateway,
                 thread_id,
                 "not authorized: this bot only accepts messages from its allowlist".into(),
             );
@@ -113,17 +248,24 @@ impl pantheon_gateway::EventSink for RuntimeSink {
                     }
                     other => format!("ended: {other:?}"),
                 };
-                self.push_outbound(thread_id, text);
+                self.push_outbound(gateway, thread_id, text);
             }
             Err(e) => {
-                self.push_outbound(thread_id, format!("error: {e}"));
+                self.push_outbound(gateway, thread_id, format!("error: {e}"));
             }
         }
     }
 
-    fn on_approval(&self, thread_id: &str, sender: Option<&str>, scope: &str, grant: bool) {
+    fn on_approval(
+        &self,
+        gateway: &str,
+        thread_id: &str,
+        sender: Option<&str>,
+        scope: &str,
+        grant: bool,
+    ) {
         if !self.allowed(sender) {
-            self.push_outbound(thread_id, "not authorized".into());
+            self.push_outbound(gateway, thread_id, "not authorized".into());
             return;
         }
         let sup = match pantheon_runtime::Supervisor::open(self.data_dir.clone()) {
@@ -140,7 +282,11 @@ impl pantheon_gateway::EventSink for RuntimeSink {
             .get(thread_id)
             .cloned();
         let Some(run_id) = run_id else {
-            self.push_outbound(thread_id, "error: no run for this conversation".into());
+            self.push_outbound(
+                gateway,
+                thread_id,
+                "error: no run for this conversation".into(),
+            );
             return;
         };
         let result = if grant {
@@ -149,18 +295,45 @@ impl pantheon_gateway::EventSink for RuntimeSink {
             sup.deny(&run_id, scope)
         };
         match result {
-            Ok(()) => {
-                self.push_outbound(
-                    thread_id,
-                    if grant {
-                        format!("granted {scope}")
-                    } else {
-                        format!("denied {scope}")
-                    },
-                );
-            }
-            Err(e) => self.push_outbound(thread_id, format!("error: {e}")),
+            Ok(()) => self.after_approval(gateway, thread_id, &run_id, scope, grant),
+            Err(e) => self.push_outbound(gateway, thread_id, format!("error: {e}")),
         }
+    }
+
+    /// The decision is recorded: ack the user, and on grant hand the
+    /// parked run to the resume hook so it actually continues. (Granting
+    /// without resuming left runs parked forever — the ack lied.)
+    fn after_approval(
+        &self,
+        gateway: &str,
+        thread_id: &str,
+        run_id: &str,
+        scope: &str,
+        grant: bool,
+    ) {
+        self.push_outbound(
+            gateway,
+            thread_id,
+            if grant {
+                format!("granted {scope}")
+            } else {
+                format!("denied {scope}")
+            },
+        );
+        if grant {
+            self.resume_run(gateway, thread_id, run_id);
+        }
+    }
+
+    /// Hand a grant to the resume hook. The hook — not the daemon thread —
+    /// decides how the resume runs; the default spawns a background thread
+    /// so the poll loop never blocks on the model.
+    fn resume_run(&self, gateway: &str, thread_id: &str, run_id: &str) {
+        (self.resume)(ResumeRequest {
+            gateway: gateway.to_string(),
+            thread_id: thread_id.to_string(),
+            run_id: run_id.to_string(),
+        });
     }
 }
 
@@ -242,7 +415,18 @@ fn run_gateway_foreground() {
     let discord_token = discord_token.filter(|t| !t.trim().is_empty());
     let telegram_token = telegram_token.filter(|t| !t.trim().is_empty());
     let data_dir = crate::terminal::data_dir();
-    let outbound = Arc::new(Mutex::new(Vec::new()));
+    // One outbound queue per surface. The old single shared queue let the
+    // Telegram daemon grab Discord replies (send fails → infinite requeue)
+    // and the Discord daemon swallow Telegram ones; keyed queues make
+    // cross-surface pickup impossible.
+    let mut queues: HashMap<String, Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>> =
+        HashMap::new();
+    if telegram_token.is_some() {
+        queues.insert("telegram".to_string(), Arc::new(Mutex::new(Vec::new())));
+    }
+    if discord_token.is_some() {
+        queues.insert("discord".to_string(), Arc::new(Mutex::new(Vec::new())));
+    }
     // The gateway runs the same policy the config names. It used to read
     // PANTHEON_GATEWAY_POLICY only, so a user with a working `policy =
     // "reader"` config still got coder on Discord and Telegram.
@@ -252,46 +436,50 @@ fn run_gateway_foreground() {
         Ok("coder") => Policy::coder(),
         _ => crate::config_schema::policy_for_config(&gw_cfg),
     };
-    let sink = Arc::new(RuntimeSink {
-        data_dir: data_dir.clone(),
+    let sink = Arc::new(RuntimeSink::new(
+        data_dir.clone(),
         policy,
-        threads: Mutex::new(std::collections::HashMap::new()),
-        outbound: outbound.clone(),
-        allow: Some(allow),
-    });
+        queues.clone(),
+        Some(allow),
+    ));
     let state_dir = data_dir.join("gateway");
     let _ = std::fs::create_dir_all(&state_dir);
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
-    if let Some(token) = telegram_token {
+    if let (Some(token), Some(queue)) = (telegram_token, queues.get("telegram").cloned()) {
         let sink = sink.clone();
-        let outbound = outbound.clone();
         let stop = stop.clone();
         let state = state_dir.clone();
         handles.push(std::thread::spawn(move || {
             let channel = Arc::new(pantheon_gateway::TelegramChannel::rest(&token));
             let transport = Arc::new(pantheon_gateway::TelegramRestTransport::new(&token));
+            let surface = SurfaceSink {
+                inner: sink.as_ref(),
+                gateway: "telegram",
+            };
             let daemon = pantheon_gateway::ChannelDaemon::new(state.join("tg-cursor"));
             daemon.run(
                 vec![channel],
                 Some((&transport, "https://api.telegram.org", &token)),
-                sink.as_ref(),
-                &outbound,
+                &surface,
+                queue.as_ref(),
                 &|| stop.load(std::sync::atomic::Ordering::Acquire),
             );
         }));
     }
-    if let Some(token) = discord_token {
+    if let (Some(token), Some(queue)) = (discord_token, queues.get("discord").cloned()) {
         let sink = sink.clone();
-        let outbound = outbound.clone();
         let stop = stop.clone();
         handles.push(std::thread::spawn(move || {
+            // The Discord channel owns both directions: the gateway
+            // websocket feeds its inbox, the daemon drains it, and replies
+            // go out over Discord REST. (It used to be a MemoryChannel
+            // whose outbox nobody read — replies accumulated in RAM and
+            // the user got silence.)
+            let discord = Arc::new(pantheon_gateway::DiscordChannel::rest(&token));
             let gateway = pantheon_gateway::discord_gateway::DiscordGateway::new(&token);
-            let inbox = pantheon_gateway::MemoryChannel::new("discord");
-            let inbox = Arc::new(inbox);
-            // Gateway thread: dispatches into the inbox.
-            let gw_inbox = inbox.clone();
+            let gw_inbox = discord.clone();
             let gw_stop = stop.clone();
             let gw = std::thread::spawn(move || {
                 gateway.run(&gw_inbox, &|| {
@@ -299,8 +487,12 @@ fn run_gateway_foreground() {
                 })
             });
             // Drain thread: route inbox events through the daemon plumbing.
+            let surface = SurfaceSink {
+                inner: sink.as_ref(),
+                gateway: "discord",
+            };
             let daemon = pantheon_gateway::ChannelDaemon::new(state_dir.join("discord-cursor"));
-            daemon.run(vec![inbox], None, sink.as_ref(), &outbound, &|| {
+            daemon.run(vec![discord], None, &surface, queue.as_ref(), &|| {
                 stop.load(std::sync::atomic::Ordering::Acquire)
             });
             let _ = gw.join();
@@ -308,11 +500,11 @@ fn run_gateway_foreground() {
     }
 
     // Outbox drain thread: picks up replies queued by
-    // `pantheon run --deliver <channel>` from another process and pushes
-    // them into the shared outbound queue the channel daemons send from.
-    // Without this, `--deliver` writes a file nobody reads.
+    // `pantheon run --deliver <channel>` from another process and files
+    // them into that surface's outbound queue. Without this, `--deliver`
+    // writes a file nobody reads.
     {
-        let outbound = outbound.clone();
+        let queues = queues.clone();
         let stop = stop.clone();
         let dd = data_dir.clone();
         handles.push(std::thread::spawn(move || {
@@ -322,10 +514,16 @@ fn run_gateway_foreground() {
                     eprintln!("gateway outbox: {b}");
                 }
                 for m in msgs {
-                    outbound
-                        .lock()
-                        .map(|mut q| q.push(m))
-                        .unwrap_or_else(|_| eprintln!("gateway outbox: queue poisoned"));
+                    match queues.get(&m.gateway) {
+                        Some(q) => q
+                            .lock()
+                            .map(|mut qq| qq.push(m))
+                            .unwrap_or_else(|_| eprintln!("gateway outbox: queue poisoned")),
+                        None => eprintln!(
+                            "gateway outbox: unknown gateway '{}' for thread {}; dropping",
+                            m.gateway, m.to_conversation,
+                        ),
+                    }
                 }
                 // 2s is frequent enough that a queued reply feels immediate
                 // and rare enough to cost nothing when the queue is empty.
@@ -414,8 +612,15 @@ pub(crate) fn gateway_status() -> GatewayStatus {
     }
 }
 
-/// Append a reply for the gateway to deliver.
-pub fn enqueue_outbound(data_dir: &Path, to_conversation: &str, text: &str) -> Result<(), String> {
+/// Append a reply for the gateway to deliver. `gateway` names the owning
+/// surface ("telegram"/"discord") so the outbox drain files the reply
+/// into that surface's queue instead of a shared one.
+pub fn enqueue_outbound(
+    data_dir: &Path,
+    to_conversation: &str,
+    text: &str,
+    gateway: &str,
+) -> Result<(), String> {
     use std::io::Write;
     let path = outbox_path(data_dir);
     if let Some(dir) = path.parent() {
@@ -424,6 +629,7 @@ pub fn enqueue_outbound(data_dir: &Path, to_conversation: &str, text: &str) -> R
     let line = serde_json::json!({
         "to": to_conversation,
         "text": text,
+        "gateway": gateway,
         "queued_ms": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -443,7 +649,8 @@ pub fn enqueue_outbound(data_dir: &Path, to_conversation: &str, text: &str) -> R
 /// drain, so one bad write cannot wedge delivery.
 pub fn drain_outbound(data_dir: &Path) -> (Vec<pantheon_gateway::OutboundMessage>, Vec<String>) {
     let path = outbox_path(data_dir);
-    let (Ok(raw), false) = (std::fs::read_to_string(&path), path.exists()) else {
+    // No outbox file yet is the common case, not an error.
+    let Ok(raw) = std::fs::read_to_string(&path) else {
         return (Vec::new(), Vec::new());
     };
     let mut msgs = Vec::new();
@@ -456,6 +663,7 @@ pub fn drain_outbound(data_dir: &Path) -> (Vec<pantheon_gateway::OutboundMessage
             Ok(v) => {
                 let to = v.get("to").and_then(|x| x.as_str()).unwrap_or_default();
                 let text = v.get("text").and_then(|x| x.as_str()).unwrap_or_default();
+                let gateway = v.get("gateway").and_then(|x| x.as_str()).unwrap_or_default();
                 if to.is_empty() || text.is_empty() {
                     bad.push(format!("line {}: missing to/text", i + 1));
                     continue;
@@ -463,6 +671,8 @@ pub fn drain_outbound(data_dir: &Path) -> (Vec<pantheon_gateway::OutboundMessage
                 msgs.push(pantheon_gateway::OutboundMessage {
                     to_conversation: to.to_string(),
                     text: text.to_string(),
+                    gateway: gateway.to_string(),
+                    attempts: 0,
                 });
             }
             Err(e) => bad.push(format!("line {}: {e}", i + 1)),

@@ -27,7 +27,10 @@ pub use channel::{
     chunk_text, fanout, format_text, ApprovalButtons, Channel, ChannelEnvelope, ChannelError,
     ChannelEvent, MemoryChannel, ThreadRunMap,
 };
-pub use daemon::{poll_telegram_once, route_event, ChannelDaemon, EventSink, UpdateCursor};
+pub use daemon::{
+    poll_telegram_once, route_event, route_outbound, ChannelDaemon, EventSink, UpdateCursor,
+    MAX_SEND_ATTEMPTS,
+};
 pub use dedup::{dedup_key, DedupWindow};
 pub use delivery::{backoff_ms, plan_delivery, DeliveryOutcome, Outbox};
 pub use discord::{
@@ -71,6 +74,29 @@ pub struct InboundMessage {
 pub struct OutboundMessage {
     pub to_conversation: String,
     pub text: String,
+    /// Surface that owns this reply ("telegram"/"discord"). Each daemon
+    /// drains its own queue, so the tag — not a shared vec — decides who
+    /// sends what. Empty means unknown (older queue files).
+    #[serde(default)]
+    pub gateway: String,
+    /// Delivery attempts so far. The daemon bumps it on every failed send
+    /// and dead-letters the message at [`daemon::MAX_SEND_ATTEMPTS`]
+    /// instead of requeueing forever.
+    #[serde(default)]
+    pub attempts: u32,
+}
+
+impl OutboundMessage {
+    /// A fresh message for `to_conversation` on `gateway` ("telegram" /
+    /// "discord"); zero attempts, ready for the daemon.
+    pub fn new(to_conversation: &str, text: &str, gateway: &str) -> Self {
+        Self {
+            to_conversation: to_conversation.to_string(),
+            text: text.to_string(),
+            gateway: gateway.to_string(),
+            attempts: 0,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2,10 +2,7 @@
 use super::*;
 
 fn msg(text: &str) -> OutboundMessage {
-    OutboundMessage {
-        to_conversation: "c1".into(),
-        text: text.into(),
-    }
+    OutboundMessage::new("c1", text, "")
 }
 
 #[test]

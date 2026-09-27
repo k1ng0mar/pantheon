@@ -45,15 +45,29 @@ impl DiscordRestTransport {
         self.api_base = base.into().trim_end_matches('/').to_string();
         self
     }
+
+    /// Build the POST request for one message: `(url, authorization header
+    /// value, body)`. Pure: unit tests assert the wire shape
+    /// (`POST {api_base}/channels/{id}/messages`, `Authorization: Bot
+    /// <token>`, `{"content": ...}`) without touching the network.
+    pub fn build_send_request(
+        &self,
+        channel_id: &str,
+        payload: &Value,
+    ) -> (String, String, Value) {
+        let url = format!("{}/channels/{}/messages", self.api_base, channel_id);
+        let auth = format!("Bot {}", self.token);
+        (url, auth, payload.clone())
+    }
 }
 
 impl DiscordTransport for DiscordRestTransport {
     fn send_message(&self, channel_id: &str, payload: &Value) -> Result<(), ChannelError> {
-        let url = format!("{}/channels/{}/messages", self.api_base, channel_id);
+        let (url, auth, body) = self.build_send_request(channel_id, payload);
         self.agent
             .post(&url)
-            .set("Authorization", &format!("Bot {}", self.token))
-            .send_json(payload.clone())
+            .set("Authorization", &auth)
+            .send_json(body)
             .map_err(|e| ChannelError::from_ureq("DISCORD_HTTP", e))?;
         Ok(())
     }
