@@ -84,3 +84,6 @@ mod skills;
 mod swarm;
 pub mod terminal;
 mod update;
+
+// TUI-A: session tab bar model + rendering (startup splash lives in terminal).
+mod tabs;
