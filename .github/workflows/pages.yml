@@ -1,0 +1,45 @@
+name: pages
+
+# Builds the static site (docs/*.md -> web/*.html) and deploys web/ to
+# GitHub Pages. Branch-folder deploys only serve root/ or docs/, and the
+# site lives in web/, so this uses the Actions artifact path instead.
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "docs/**"
+      - "web/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build site
+        run: python3 web/build.py
+
+      - name: disable jekyll
+        run: touch web/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
