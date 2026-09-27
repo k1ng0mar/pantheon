@@ -48,6 +48,7 @@ fn live_provider(id: &str, base: &str) {
         key_header: "Authorization".to_string(),
         models: Vec::new(),
         prominent: false,
+        dev: false,
         tag: "live-test".to_string(),
     });
 }
@@ -393,6 +394,7 @@ fn live_non_retryable_config_failure_fails_fast_without_fallback() {
         key_header: "Authorization".to_string(),
         models: Vec::new(),
         prominent: false,
+        dev: false,
         tag: "live-test".to_string(),
     });
     std::env::remove_var("PANTHEON_KEY_LIVECHAIN_TPL");

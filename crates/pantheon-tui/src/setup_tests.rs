@@ -225,5 +225,5 @@ fn a_skipped_step_keeps_its_reason_for_doctor_to_report() {
     );
     let outcome = rec.get("browser").unwrap();
     assert!(matches!(outcome, StepOutcome::Skipped { .. }));
-    assert!(rec.get("memory").is_none(), "only real steps are recorded");
+    assert!(!rec.contains_key("memory"), "only real steps are recorded");
 }

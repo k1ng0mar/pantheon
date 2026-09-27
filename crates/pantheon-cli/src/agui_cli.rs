@@ -24,7 +24,7 @@ pub fn cmd_serve(args: &[String]) {
     use crate::config_doc::build_model_policy;
     use std::sync::Arc;
 
-    // Resolve the Session exactly as `pantheon chat` and the REPL do: the
+    // Resolve the Session exactly as the terminal interface does: the
     // config document, its key names, and its auxiliary models. The AG-UI
     // surface used to translate a subset of config.toml into environment
     // variables and let the runtime read those, which silently dropped

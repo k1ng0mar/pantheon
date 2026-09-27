@@ -97,7 +97,7 @@ Pipeline: read → plan → propose → approval? → write → verify → check
 | CONFLICT | `⚠ memory conflict` two entries side by side, resolution prompt |
 | SANDBOX | tool card footer `sandbox: docker/pantheon-4f21` |
 | ESCALATION | `⚠ agent requested access outside sandbox` → permission flow |
-| RESOURCES | /cost panel: model, tokens in/out, time, cost; local: device, VRAM, tok/s |
+| RESOURCES | /status panel: model, tokens in/out, context window; local: device, VRAM, tok/s |
 | ROUTER VIEW | /models browser: providers → models, search across both, ctx window per model |
 
 ## 07 CONTROL

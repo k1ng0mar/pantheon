@@ -69,6 +69,13 @@ pub struct ProviderMeta {
     /// Defaults to false (curated but hidden).
     #[serde(default)]
     pub prominent: bool,
+    /// A development-only endpoint, not a product provider. The local
+    /// llm-router is one: it is how the e2e suite reaches a model, and
+    /// offering it in a user's setup wizard would be offering a
+    /// `127.0.0.1` process that is usually not running. Hidden from every
+    /// picker; still resolvable by id, so the dev path keeps working.
+    #[serde(default)]
+    pub dev: bool,
     /// Short blurb for the picker UI ("Chinese lab", "fast inference", ...).
     #[serde(default)]
     pub tag: String,
@@ -183,6 +190,14 @@ pub fn all_providers() -> Vec<ProviderMeta> {
         out.extend(customs.iter().cloned());
     }
     out
+}
+
+/// Every provider a user can actually choose, which is every provider minus
+/// the development-only ones. A setup wizard that offers `127.0.0.1` is
+/// offering a process that is not running; the row can stay in the catalog
+/// and still be absent from every picker.
+pub fn selectable_providers() -> Vec<ProviderMeta> {
+    all_providers().into_iter().filter(|p| !p.dev).collect()
 }
 
 /// Iterate all model rows across all providers.

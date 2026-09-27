@@ -183,6 +183,11 @@ pub struct TuiApp {
     pub running: bool,
     /// The reason the app ended, for the exit path and the test assertions.
     pub exit: Option<Selection>,
+    /// The most recent submitted value. A screen's continuation is free to
+    /// push the next screen, so the value cannot live in the continuation's
+    /// return type; it is recorded here, where the stack that produced it is
+    /// still in scope.
+    last: Option<Selection>,
 }
 
 impl Default for TuiApp {
@@ -197,7 +202,16 @@ impl TuiApp {
             stack: Vec::new(),
             running: true,
             exit: None,
+            last: None,
         }
+    }
+
+    /// The value from the most recent submit, and clear it.
+    ///
+    /// Consuming rather than peeking matters for a sequence of pickers: two
+    /// `pick_one` calls in a row must not both read the first answer.
+    pub fn take_value(&mut self) -> Option<Selection> {
+        self.last.take()
     }
 
     pub fn push(&mut self, s: Screen) {
@@ -284,6 +298,10 @@ impl TuiApp {
                 self.running = false;
             }
             ScreenResult::Done(sel) => {
+                // Record before running the continuation, so a continuation
+                // that pushes the next screen cannot overwrite the answer that
+                // produced it.
+                self.last = Some(sel.clone());
                 // Take the continuation out of the screen before running it:
                 // the closure may push a new screen, and holding a borrow of
                 // the screen it came from while that happens is a borrow
@@ -305,15 +323,72 @@ impl TuiApp {
     }
 
     /// Draw the whole stack: the base screen, then any overlays on top.
+    ///
+    /// Each screen gets the full frame except where there is already a base
+    /// below it, which is the session-with-overlay case. Overlays covering the
+    /// base is what makes a picker read as a picker rather than as a second
+    /// screen the user has to scroll past.
     pub fn draw(&mut self, f: &mut ratatui::Frame) {
-        // Render base-first so an overlay covers it. With more than one
-        // overlay, the topmost wins, which matches how they were pushed.
+        let area = f.area();
+        // The base screen fills the frame. Anything above it is an overlay and
+        // draws over that, centered and narrower.
+        let mut first = true;
         for screen in self.stack.iter_mut() {
-            if let ScreenWidget::Raw(r) = &mut screen.widget {
-                r.handler.draw(f);
+            let target = if first {
+                first = false;
+                area
+            } else {
+                centered(area, 72, 80)
+            };
+            match &mut screen.widget {
+                ScreenWidget::Select(w) => crate::render::draw_select(f, target, w),
+                ScreenWidget::MultiSelect(w) => crate::render::draw_multi(f, target, w),
+                ScreenWidget::TextInput(w) => crate::render::draw_text(f, target, w),
+                ScreenWidget::Confirm(w) => crate::render::draw_confirm(f, target, w),
+                ScreenWidget::SearchList(w) => crate::render::draw_search(f, target, w),
+                ScreenWidget::Raw(r) => r.handler.draw(f),
             }
         }
     }
+
+    /// Run the loop on a real terminal until the stack empties or the app is
+    /// told to stop.
+    ///
+    /// This is the only blocking call in the crate. Everything above it is
+    /// synchronous and testable, which is the point: the event loop is the
+    /// only part that needs a tty, so it is the only part that cannot be
+    /// covered by a unit test, and it is small enough to read.
+    pub fn run(&mut self) -> io::Result<()> {
+        let mut term = TerminalSession::enter()?;
+        loop {
+            term.terminal().draw(|f| self.draw(f))?;
+            match next_key(std::time::Duration::from_millis(50))? {
+                Some(k) => {
+                    self.on_key(k);
+                }
+                None => {
+                    // A tick with no key. Redraw anyway so a resize that
+                    // produced a non-key event is repainted, and so a screen
+                    // that animates is not frozen.
+                }
+            }
+            if !self.running || self.stack.is_empty() {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A centered rectangle, for overlays. Width and height are percentages of
+/// the frame, clamped so a tiny terminal still gets a usable box rather than a
+/// negative dimension.
+fn centered(area: ratatui::layout::Rect, w_pct: u16, h_pct: u16) -> ratatui::layout::Rect {
+    let w = (area.width * w_pct / 100).max(24).min(area.width);
+    let h = (area.height * h_pct / 100).max(5).min(area.height);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    ratatui::layout::Rect::new(x, y, w, h)
 }
 
 /// Convert a widget result into a screen result. `Redraw` means "handled,

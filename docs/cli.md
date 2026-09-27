@@ -22,7 +22,7 @@ Every `pantheon` verb, its flags, and its exit codes. Shared rules first.
 ```
 pantheon              # opens the interactive session
 ```
-Interactive REPL: every input is a turn on the current conversation, one
+The terminal interface. Every input is a turn on the current conversation, one
 ledger run, so history and approvals persist across process exits.
 Auto-resumes the most recent run on open; `/new` starts fresh.
 
@@ -73,8 +73,9 @@ model call.
 Three different questions, three verbs. They used to be conflated.
 
 ```
-pantheon runs                 # every run, with status and title
-pantheon runs <run_id>        # one run's event trace, in words
+pantheon runs                      # every run, with status and title
+pantheon runs <run_id>             # one run's event trace, in words
+pantheon runs <run_id> --metrics   # one line of counters, folded from the ledger
 pantheon audit <run_id> [OUT.jsonl]
 pantheon logs [name] [filters]   # the runtime's log FILES
 ```
@@ -85,6 +86,15 @@ view. With a run id it replays that run's events. This verb was `explain`,
 which described nothing, and then briefly `logs`, which described something
 else. `audit` writes a sequence-validated JSONL trajectory (3 events minimum
 for a simple run).
+
+`--metrics` folds the run's event log into counters: runs started /
+completed / failed / canceled, tool calls, model turns, approvals requested /
+granted / denied, sub-agents spawned, and context trims / compressions. Failed
+and canceled are counted separately from completed, because the number you are
+looking for is usually the one that is *not* completed. The two context
+counters are there so a run that has been quietly dropping history is visible
+without scrolling a hundred events. This replaced the `pantheon-otel` crate's
+`metrics_from`, which no user could reach.
 
 Run state (`running`, `awaiting_approval`, `completed`, `failed`, `canceled`)
 is *not* part of the per-run trace. It is the listing, and inside a session
@@ -119,8 +129,8 @@ no run recorded at all.
 
 ## Approvals
 
-Approvals are answered in the session that raised them. The TUI shows a
-permission card (`y` allow, `n` deny); the REPL prompts inline.
+Approvals are answered in the session that raised them. The terminal interface
+shows a permission card (`y` allow, `n` deny).
 
 Out of band — a run parked from a script, a gateway message, or a second
 terminal:
@@ -526,12 +536,16 @@ they can register. No launcher yet.
 
 ## Session verbs
 
-`pantheon` (bare) opens the TUI on a TTY, the line REPL otherwise.
+`pantheon` (bare) opens the terminal interface. It needs a terminal on stdin
+and stdout; with neither, it says so and exits 1 rather than falling back to a
+second, line-based interface. For a non-interactive turn use `pantheon run
+--taskID <id> --say "text"`.
+
 `pantheon --resume [id]` enters the session on a specific run (unknown
-ids fail loudly); without an id it resumes the most recent run. The
-TUI surface is `/help /runs /history /resume /status /name /cost
-/clear /exit /quit`; the REPL adds `/new /memory /remember /policy
-/model /name` (see the REPL `/help`).
+ids fail loudly); without an id it resumes the most recent run.
+
+The command surface is `/help /runs /history /resume /name /clear /exit
+/quit`.
 
 ## Environment variables
 

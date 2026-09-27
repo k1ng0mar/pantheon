@@ -1,6 +1,6 @@
 //! `pantheon pipeline`: run the orchestration pipeline against the runtime.
 //!
-//! The StageExecutor drives `pantheon chat`-style sessions per stage; the
+//! The StageExecutor drives one session per stage; the
 //! evaluator is a second session asked to critique. Human gates park the
 //! pipeline; `pantheon pipeline <run_id> --approve <stage>` / `--deny
 //! <stage>` resolve them and resume.

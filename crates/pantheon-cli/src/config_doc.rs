@@ -1,6 +1,7 @@
 //! The complete `config.toml` document plus load/save/validate.
 
 use super::config_schema::{PolicyPreset, SecretRef};
+use pantheon_core::agent_profile::{EffectiveProfile, ProfileError, ProfileRegistry};
 use pantheon_core::error::{Layer, PantheonError};
 use pantheon_secrets::SecretVault;
 use serde::{Deserialize, Serialize};
@@ -173,80 +174,56 @@ pub struct ServerSection {
 /// them is next. Persona files are referenced by path (repo-relative or
 /// absolute), never inlined, so secrets that drift into a SOUL.md stay out
 /// of config snapshots.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct AgentIdentity {
-    /// Human display name ("nyx"). Defaults to the table name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    /// Persona file (SOUL.md equivalent). Optional: an agent with no persona
-    /// file is a blank slate, not an error.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub soul_file: Option<String>,
-    /// Long-term memory namespace. Isolated per agent by default so two
-    /// agents never share recall.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_namespace: Option<String>,
-    /// Capability policy preset name (mirrors `PolicyPreset::as_str`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy: Option<String>,
-}
+///
+/// This is a **re-export of the core type**, not a second definition. The
+/// declaration, inheritance, and namespace rules live in
+/// `pantheon_core::agent_profile` so the runtime can consume a profile
+/// without depending on the CLI. An earlier version of this file declared
+/// its own struct with four of the fields; it drifted as soon as
+/// `inherits` and `model` were added, which is exactly the duplication
+/// this re-export removes.
+pub use pantheon_core::agent_profile::AgentProfile as AgentIdentity;
 
-impl AgentIdentity {
-    /// Effective display name: explicit, else the table name.
-    /// (No production reader yet — prompt assembly is the planned
-    /// consumer; covered by `agent_identity_defaults_isolate_namespaces`.)
-    pub fn name<'a>(&'a self, table: &'a str) -> &'a str {
-        self.display_name.as_deref().unwrap_or(table)
+/// Why an `[agents.<name>]` table is not usable, in `doctor`'s wording.
+///
+/// This used to be `AgentIdentity::validate`, a hand-rolled check of slug
+/// shape, policy spelling, and namespace clashes. Every one of those rules
+/// now lives in `ProfileRegistry`, where `resolve` and `validate_all`
+/// enforce them, and where inheritance adds rules the old version could not
+/// express (a child may not claim a parent's namespace, a `profile` that
+/// names no declared agent is an error). Keeping a second copy here meant
+/// `doctor` could pass a config that the runtime then refused.
+fn agent_table_problems(all: &std::collections::HashMap<String, AgentIdentity>) -> Vec<String> {
+    let mut reg = ProfileRegistry::new();
+    let mut problems = Vec::new();
+    // A malformed table name is reported here rather than through
+    // `problems`, because it cannot be inserted and would otherwise
+    // hide every other problem in the file.
+    for (name, agent) in all {
+        if let Err(e) = reg.insert(name, agent.clone()) {
+            problems.push(e.to_string());
+        }
     }
-    /// Effective memory namespace: explicit, else `agent:<table>`.
-    pub fn namespace(&self, table: &str) -> String {
-        self.memory_namespace
-            .clone()
-            .unwrap_or_else(|| format!("agent:{table}"))
-    }
-    /// Validate at load: table names are slugs, namespaces must not be
-    /// empty or collide with another agent's after defaulting.
-    pub fn validate(
-        table: &str,
-        all: &std::collections::HashMap<String, AgentIdentity>,
-    ) -> Result<(), String> {
-        if table.trim().is_empty()
-            || !table
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
-            return Err(format!(
-                "agent table {table:?} must be a slug (letters, digits, - _)"
-            ));
-        }
-        let sec = all.get(table).expect("validated table exists");
-        if let Some(p) = &sec.policy {
-            if crate::config_schema::PolicyPreset::from_str(p).is_none() {
-                return Err(format!(
-                    "agent {table:?} policy {p:?} is unknown (reader|coder|coder_memory)"
-                ));
-            }
-        }
-        let ns = sec.namespace(table);
-        if ns.trim().is_empty() {
-            return Err(format!("agent {table:?} memory namespace cannot be blank"));
-        }
-        let clash = all
-            .iter()
-            .filter(|(t, _)| t.as_str() != table)
-            .any(|(t, o)| o.namespace(t) == ns);
-        if clash {
-            return Err(format!(
-                "agent {table:?} memory namespace {ns:?} collides with another agent"
-            ));
-        }
-        Ok(())
-    }
+    // `problems` covers the registry-wide rules: unknown policies, namespace
+    // clashes, inheritance cycles, parents that do not exist.
+    problems.extend(reg.problems("coder").into_iter().map(|e| e.to_string()));
+    problems
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Config {
+    /// Free-form install label (`profile = "dev"`). Informational only;
+    /// it does NOT select an agent. See [`Config::agent`].
     pub profile: Option<String>,
+    /// The agent profile this install runs as (`agent = "zeus"`). Must name
+    /// a declared `[agents.<name>]` table.
+    ///
+    /// Deliberately a different key from `profile`: that one predates agent
+    /// profiles, is written by `setup` as "default", and is read by nothing
+    /// that runs an agent. Overloading it would have made every existing
+    /// config select a profile that was never declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     pub model: Option<ModelSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge: Option<JudgeSection>,
@@ -337,6 +314,62 @@ impl Config {
             )
         })
     }
+    /// The agent profiles declared in this config, as a resolvable registry.
+    ///
+    /// This is the bridge from config text to the runtime's profile layer.
+    /// Building it here (rather than at each call site) means every entry
+    /// point — CLI, TUI, scheduler, AG-UI — sees the same declarations, and
+    /// an inheritance chain broken by a typo is reported identically
+    /// everywhere.
+    pub fn profile_registry(&self) -> Result<ProfileRegistry, ProfileError> {
+        let mut reg = ProfileRegistry::new();
+        for (name, agent) in &self.agents {
+            reg.insert(name, agent.clone()).map_err(|e| match e {
+                // `insert` reports the slug problem; `validate` is the
+                // existing doctor path for it, so don't double-report.
+                ProfileError::InvalidName { .. } => e,
+                other => other,
+            })?;
+        }
+        reg.validate_all(self.default_policy_preset())?;
+        Ok(reg)
+    }
+
+    /// The policy preset an agent gets when neither it nor any ancestor
+    /// names one. The global config wins, so a profile inherits the
+    /// install's baseline rather than a hardcoded runtime default.
+    fn default_policy_preset(&self) -> &'static str {
+        self.policy
+            .map(crate::config_schema::PolicyPreset::as_str)
+            .unwrap_or("coder")
+    }
+
+    /// Resolve the agent profile this config selects.
+    ///
+    /// Selection order: an explicit `--agent`, else `agent = "..."`, else
+    /// `default`. A name that is not declared is an error, never a silent
+    /// fallback — an operator who asked for `zeus` and silently got the
+    /// default agent's memory and persona would have no way to notice.
+    ///
+    /// A config with no `[agents]` table at all is not an error: that is
+    /// every install from before profiles, and those runs stay anonymous
+    /// until the user declares one. Only a *named* agent must exist.
+    pub fn resolve_profile(
+        &self,
+        override_name: Option<&str>,
+    ) -> Result<Option<EffectiveProfile>, ProfileError> {
+        let selected = override_name
+            .or(self.agent.as_deref())
+            .unwrap_or(pantheon_runtime::DEFAULT_PROFILE);
+        if self.agents.is_empty() && override_name.is_none() && self.agent.is_none() {
+            // Nothing declared and nothing asked for: anonymous, as before.
+            return Ok(None);
+        }
+        let reg = self.profile_registry()?;
+        reg.resolve(selected, self.default_policy_preset())
+            .map(Some)
+    }
+
     pub fn save(&self, data_dir: &Path) -> Result<(), PantheonError> {
         let path = Self::path(data_dir);
         if let Some(parent) = path.parent() {
@@ -446,9 +479,22 @@ impl Config {
         // Agent identity tables validate at load: slugs, known policies,
         // no namespace clashes. An invalid [agents.*] table fails doctor
         // loudly instead of silently running anonymous.
-        for table in self.agents.keys() {
-            if let Err(e) = AgentIdentity::validate(table, &self.agents) {
-                problems.push(e);
+        // One registry-wide check: the rules are per-registry (namespace
+        // clashes, inheritance chains), so validating table by table would
+        // report the same fault once per profile. Every problem is
+        // reported, not just the first.
+        problems.extend(agent_table_problems(&self.agents));
+        // A selected `agent` that names no declared profile is a config
+        // error. Note this is `agent`, not `profile`: `profile` is a
+        // free-form informational label that `setup` writes as "default"
+        // with no `[agents]` table at all, so treating it as a selector
+        // would fail every install created before agent profiles existed.
+        if let Some(selected) = &self.agent {
+            if !self.agents.contains_key(selected) {
+                problems.push(format!(
+                    "agent {selected:?} is not declared; add [agents.{selected}] or \
+                     remove the agent setting"
+                ));
             }
         }
         if let Some(server) = &self.server {
@@ -787,6 +833,7 @@ pub fn register_custom_providers(cfg: &Config) {
             key_header: "Authorization".into(),
             models,
             prominent: true,
+            dev: false,
             tag: "custom".into(),
         });
     }

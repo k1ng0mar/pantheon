@@ -145,9 +145,7 @@ fn usage() -> String {
     let mut s = String::new();
     s.push_str("pantheon - a durable agent runtime\n\n");
     s.push_str("USAGE\n");
-    s.push_str(
-        "  pantheon                      open a session (TUI on a terminal, REPL otherwise)\n",
-    );
+    s.push_str("  pantheon                      open a session (the terminal interface)\n");
     s.push_str("  pantheon --help | --version\n\n");
 
     s.push_str("TALK TO IT\n");
@@ -198,9 +196,9 @@ fn usage() -> String {
     s.push_str("  pipeline <sub>                durable 6-stage workflow with human gates\n\n");
 
     s.push_str("APPROVALS\n");
-    s.push_str("  Approvals are answered in the session that raised them - the TUI shows a\n");
-    s.push_str("  permission card (y/n), the REPL prompts inline. A run parked on approval\n");
-    s.push_str("  can also be answered out of band:\n");
+    s.push_str("  Approvals are answered in the session that raised them. The terminal\n");
+    s.push_str("  interface shows a permission card (y/n). A run parked on approval can\n");
+    s.push_str("  also be answered out of band:\n");
     s.push_str("    pantheon run --taskID <id> --grant <scope>   allow one exact call\n");
     s.push_str("    pantheon run --taskID <id> --deny  <scope>   refuse it\n");
     s
@@ -238,7 +236,7 @@ const KNOWN_VERBS: &[&str] = &[
 /// Classification of argv[1] before it can become a prompt or session input.
 #[derive(Debug, PartialEq, Eq)]
 enum FirstArg {
-    /// No argv[1] (bare `pantheon`): TUI/REPL path, behavior unchanged.
+    /// No argv[1] (bare `pantheon`): the terminal interface.
     NoArgs,
     /// A `-`/`--` flag (e.g. `--help`, `--resume`): never a verb.
     Flag,
@@ -350,12 +348,14 @@ mod provider_cli_tests;
 mod repair_cli;
 mod reset_cli;
 mod schedule_cli;
-mod session_cli;
 mod setup_cli;
 mod setup_entry;
 mod skills_cli;
 mod swarm_cli;
 mod tui;
+mod tui_entry;
+mod tui_picker;
+mod tui_setup;
 
 fn load_mgr() -> ExtensionManager {
     let mut m = ExtensionManager::new(RunnerConfig::default());
@@ -470,22 +470,24 @@ fn main() {
         .unwrap_or(pantheon_core::logging::Level::Info);
     pantheon_core::logging::init(&data_dir(), level);
     if args.len() < 2 {
-        // Bare `pantheon` opens the agent cockpit TUI when a TTY is available.
-        // Falls back to the text REPL if stdin is not a tty or TUI init fails.
-        if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
-            if let Err(e) = tui::run_tui_session() {
-                eprintln!("pantheon: TUI session failed: {e}");
-            }
-        } else {
-            session_cli::run_session();
+        // The TUI is the terminal interface. There is no second interactive
+        // surface and no line-based fallback: if this cannot open, it says so
+        // and exits, rather than silently becoming a different program.
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            eprintln!("pantheon: the terminal interface needs a terminal on stdin and stdout.");
+            eprintln!("pantheon: for a non-interactive turn use:");
+            eprintln!("pantheon:   pantheon run --taskID <id> --say \"text\"");
+            eprintln!("pantheon:   pantheon run --taskID <id> --say \"text\" --deliver telegram");
+            std::process::exit(1);
         }
+        tui_entry::run();
         return;
     }
-    // `pantheon --resume [id]` (or `pantheon --resume` with no id)
-    // jumps straight into the interactive session on a specific run.
+    // `pantheon --resume [id]` (or `pantheon --resume` with no id) jumps
+    // straight into a session on a specific run.
     if args.len() >= 2 && args[1] == "--resume" {
         let resume_id: Option<String> = args.get(2).cloned();
-        session_cli::run_session_with_resume(resume_id);
+        tui_entry::run_with_resume(resume_id);
         return;
     }
     match args[1].as_str() {
@@ -562,9 +564,23 @@ fn main() {
                         eprintln!("memory recall: backend: {e}");
                         std::process::exit(1);
                     });
+                    // This verb is an operator tool, so a cross-namespace
+                    // read is legitimate here — but it is now opt-in rather
+                    // than the accident of recall having no namespace
+                    // parameter. `*` reads every namespace; anything else
+                    // reads exactly the namespace named.
+                    let scope = args[2].as_str();
+                    let namespaces: Vec<&str> = if scope == "*" {
+                        // `*` is the store's explicit unrestricted sentinel.
+                        // An empty list is a refusal, not a wildcard.
+                        vec!["*"]
+                    } else {
+                        vec![scope]
+                    };
                     let hits = pantheon_memory::recall_via(
                         backend.as_ref(),
                         &Policy::coder(),
+                        &namespaces,
                         &[
                             LayerKind::TaskSession,
                             LayerKind::Project,
@@ -1184,6 +1200,20 @@ timeout_ms = 5000
                 eprintln!("open runtime: {e}");
                 std::process::exit(1);
             });
+            // `--metrics` answers "what actually happened in this run" in one
+            // line: counts folded from the ledger, so it cannot disagree with
+            // the trace above. Without it, spotting a run that has been
+            // quietly dropping context means scrolling a hundred events.
+            if args.iter().any(|a| a == "--metrics" || a == "-m") {
+                match sup.run_metrics(&args[2]) {
+                    Ok(m) => println!("{m}"),
+                    Err(e) => {
+                        eprintln!("runs: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                return;
+            }
             match sup.render_run_log(&args[2]) {
                 Ok(t) => println!("{t}"),
                 Err(e) => {
@@ -1313,10 +1343,13 @@ timeout_ms = 5000
             pipeline_cli::cmd_pipeline(&args);
         }
         "providers" => {
-            // List cataloged providers and their models, plus the
-            // custom-provider passthrough (any URL used with --provider URL).
+            // List the providers a user can choose, plus the custom-provider
+            // passthrough (any URL used with --provider URL). Development
+            // endpoints are filtered out: this is the list someone reads to
+            // decide what to configure, and a loopback address is not an
+            // answer to that.
             println!("cataloged providers:");
-            for p in pantheon_core::catalog::all_providers() {
+            for p in pantheon_core::catalog::selectable_providers() {
                 let models: Vec<&str> = p.models.iter().map(|m| m.model.as_str()).collect();
                 let mode = match p.api_mode {
                     pantheon_core::catalog::ApiMode::OpenAi => "OpenAI",
@@ -1336,9 +1369,14 @@ timeout_ms = 5000
             }
             println!();
             println!("custom: --provider <base-url> uses that URL directly (OpenAI shape)");
-            println!(
-                "example: pantheon chat --provider http://127.0.0.1:8015/v1 --model chat \"hi\""
-            );
+            if pantheon_core::catalog::all_providers().len()
+                != pantheon_core::catalog::selectable_providers().len()
+            {
+                println!(
+                    "note: development-only endpoints are hidden here and remain usable by id"
+                );
+            }
+            println!("example: pantheon run --taskID t1 --say \"hi\" --deliver session");
             println!("setup:   pantheon model  (picker → keys land in <data_dir>/.env)");
         }
         "skills" => {

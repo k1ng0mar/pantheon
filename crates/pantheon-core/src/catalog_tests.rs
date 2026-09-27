@@ -94,6 +94,7 @@ fn resolve_interpolates_or_names_every_missing_var() {
         key_header: default_auth_header(),
         models: Vec::new(),
         prominent: false,
+        dev: false,
         tag: String::new(),
     });
     assert_eq!(
