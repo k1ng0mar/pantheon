@@ -39,6 +39,7 @@ impl SandboxLevel {
             | Capability::Browser
             | Capability::SecretsUse
             | Capability::AgentSpawn
+            | Capability::MemoryConfirm
             | Capability::Other(_) => SandboxLevel::VeryHigh,
         }
     }
