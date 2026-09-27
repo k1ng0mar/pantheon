@@ -311,7 +311,7 @@ fn a_tool_origin_write_cannot_overwrite_a_user_record_via_propose_write() {
     )
     .unwrap();
 
-    let stored = store.get("nyx", "tz").unwrap().unwrap();
+    let stored = store.get(LayerKind::Agent, "nyx", "tz").unwrap().unwrap();
     assert_eq!(
         stored.value, "UTC",
         "an untrusted tool-origin write replaced a user record"
@@ -364,7 +364,7 @@ fn a_model_origin_write_cannot_overwrite_a_user_confirmed_record() {
         "tier was downgraded"
     );
     assert_eq!(after.provenance.origin, "user", "origin was overwritten");
-    let stored = store.get("nyx", "city").unwrap().unwrap();
+    let stored = store.get(LayerKind::Agent, "nyx", "city").unwrap().unwrap();
     assert_eq!(stored.value, "Kano");
 }
 
@@ -408,4 +408,70 @@ fn a_same_tier_write_still_updates_the_value() {
         .put(&proposal(LayerKind::Agent, "nyx", "k", "v2", "model"))
         .unwrap();
     assert_eq!(rec.value, "v2");
+}
+
+// ------------------------------------------------- layer-scoped promote/get
+//
+// The row identity is (layer, namespace, key). `promote`/`get` used to
+// match on (namespace, key) alone, so confirming a key that existed in
+// several layers promoted all of them at once and read back an
+// arbitrary row. These tests fail against the old queries.
+#[test]
+fn promote_and_get_are_layer_scoped() {
+    use pantheon_api::provenance::TrustTier;
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = Policy::coder()
+        .allow(Capability::MemoryWrite)
+        .allow(Capability::MemoryConfirm);
+    for layer in [LayerKind::Agent, LayerKind::Project] {
+        propose_write(
+            &store,
+            &policy,
+            proposal(layer, "nyx", "shared", "v", "model"),
+            4096,
+        )
+        .unwrap();
+    }
+    let rec = confirm_write(&store, &policy, LayerKind::Project, "nyx", "shared").unwrap();
+    assert_eq!(rec.layer, LayerKind::Project);
+    assert_eq!(rec.provenance.trust, TrustTier::Memory);
+    let agent = store
+        .get(LayerKind::Agent, "nyx", "shared")
+        .unwrap()
+        .expect("agent row");
+    assert_eq!(
+        agent.provenance.trust,
+        TrustTier::Untrusted,
+        "promoting the project row must not touch the agent row"
+    );
+    let project = store
+        .get(LayerKind::Project, "nyx", "shared")
+        .unwrap()
+        .expect("project row");
+    assert_eq!(project.provenance.trust, TrustTier::Memory);
+    // A layer that has no such row is a clean not-found, not a row
+    // from another layer.
+    assert!(store
+        .get(LayerKind::Global, "nyx", "shared")
+        .unwrap()
+        .is_none());
+}
+
+/// Confirming under a policy that denies `memory.confirm` fails closed
+/// with a structured error, even though `memory.write` is allowed.
+#[test]
+fn confirm_write_denies_without_memory_confirm() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = Policy::coder()
+        .allow(Capability::MemoryWrite)
+        .deny(Capability::MemoryConfirm);
+    propose_write(
+        &store,
+        &policy,
+        proposal(LayerKind::Agent, "nyx", "k", "v", "model"),
+        4096,
+    )
+    .unwrap();
+    let err = confirm_write(&store, &policy, LayerKind::Agent, "nyx", "k").unwrap_err();
+    assert_eq!(err.code, "MEM_NO_CAPABILITY");
 }

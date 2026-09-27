@@ -121,7 +121,7 @@ fn untrusted_record_survives_markdown_round_trip() {
     let store2 = MemoryStore::open_in_memory().unwrap();
     let n = import_agent(&store2, &policy, "nyx", &path).unwrap();
     assert_eq!(n, 1);
-    let rec = store2.get("nyx", "injected").unwrap().unwrap();
+    let rec = store2.get(LayerKind::Agent, "nyx", "injected").unwrap().unwrap();
     assert_eq!(
         rec.provenance.trust,
         pantheon_api::provenance::TrustTier::Untrusted,

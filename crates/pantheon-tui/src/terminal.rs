@@ -606,9 +606,14 @@ pub fn run() {
                         eprintln!("memory confirm: backend: {e}");
                         std::process::exit(1);
                     });
+                    // Confirm targets the Agent layer: that is where `memory
+                    // put` writes, so the roundtrip is symmetric. The
+                    // default policy marks memory.confirm as approval-gated,
+                    // and typing this command IS the user vouching.
                     let record = pantheon_memory::confirm_via(
                         backend.as_ref(),
                         &Policy::coder_with_memory(),
+                        pantheon_memory::LayerKind::Agent,
                         &namespace,
                         &key,
                     )

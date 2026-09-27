@@ -20,6 +20,8 @@
 //!
 //! The stdio protocol is one JSON request line in, one JSON response line
 //! out. Requests: `{"op":"recall"|"write"|"list_agent"|"get"|"forget"|"confirm", ...}`.
+//! `get` and `confirm` carry the record's `layer` (row identity is
+//! layer+namespace+key); `forget` already did.
 //! Responses: `{"ok":true, ...}` or `{"ok":false,"code":"...","cause":"..."}`.
 //! Process-per-call (same model as hook execution): simple, isolated, and
 //! a hanging plugin cannot poison the runtime — it is killed on timeout.
@@ -398,11 +400,13 @@ impl crate::MemoryBackend for StdioBackend {
 
     fn get(
         &self,
+        layer: LayerKind,
         namespace: &str,
         key: &str,
     ) -> Result<Option<crate::MemoryRecord>, PantheonError> {
         let resp = self.call(&serde_json::json!({
             "op": "get",
+            "layer": layer_tag(layer),
             "namespace": namespace,
             "key": key,
         }))?;
@@ -434,11 +438,13 @@ impl crate::MemoryBackend for StdioBackend {
     fn confirm(
         &self,
         _policy: &pantheon_api::capability::Policy,
+        layer: LayerKind,
         namespace: &str,
         key: &str,
     ) -> Result<crate::MemoryRecord, PantheonError> {
         let resp = self.call(&serde_json::json!({
             "op": "confirm",
+            "layer": layer_tag(layer),
             "namespace": namespace,
             "key": key,
         }))?;

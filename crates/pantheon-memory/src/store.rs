@@ -285,8 +285,14 @@ impl MemoryStore {
     /// Promote one record's trust tier. Only raises the tier (the
     /// `derived <= source` invariant runs in reverse only through
     /// explicit promotion); demotion goes through delete + rewrite.
+    ///
+    /// `layer` is part of the target: the row identity is
+    /// (layer, namespace, key), so promoting by (namespace, key) alone
+    /// could touch several layers' rows at once and return an arbitrary
+    /// one. The caller names the layer it means.
     pub fn promote(
         &self,
+        layer: LayerKind,
         namespace: &str,
         key: &str,
         tier: pantheon_api::provenance::TrustTier,
@@ -300,10 +306,10 @@ impl MemoryStore {
             // constrains what can change, so a record already at or above
             // the requested tier is untouched.
             conn.execute(
-                "UPDATE memories SET trust=?3
-                 WHERE namespace=?1 AND key=?2
+                "UPDATE memories SET trust=?4
+                 WHERE layer=?1 AND namespace=?2 AND key=?3
                    AND trust IN ('untrusted','memory')",
-                params![namespace, key, trust_str(tier)],
+                params![layer_str(layer), namespace, key, trust_str(tier)],
             )
             .map_err(|e| serr("MEM_PUT", e.to_string()))?
         };
@@ -311,7 +317,7 @@ impl MemoryStore {
             // Distinguish "no such record" from "already at or above the
             // requested tier" so confirm on a user record is a clear
             // no-op message, not a missing-row error.
-            return match self.get(namespace, key)? {
+            return match self.get(layer, namespace, key)? {
                 Some(rec) => Ok(rec),
                 None => Err(serr(
                     "MEM_NOT_FOUND",
@@ -319,12 +325,20 @@ impl MemoryStore {
                 )),
             };
         }
-        self.get(namespace, key)?
+        self.get(layer, namespace, key)?
             .ok_or_else(|| serr("MEM_NOT_FOUND", format!("no record {key} in {namespace}")))
     }
 
-    /// Fetch one record by namespace + key.
-    pub fn get(&self, namespace: &str, key: &str) -> Result<Option<MemoryRecord>, PantheonError> {
+    /// Fetch one record by layer + namespace + key: the full row
+    /// identity. Fetching by (namespace, key) alone was ambiguous —
+    /// the same key can exist in several layers — and returned an
+    /// arbitrary row.
+    pub fn get(
+        &self,
+        layer: LayerKind,
+        namespace: &str,
+        key: &str,
+    ) -> Result<Option<MemoryRecord>, PantheonError> {
         let conn = self
             .conn
             .lock()
@@ -332,11 +346,11 @@ impl MemoryStore {
         let mut stmt = conn
             .prepare(
                 "SELECT layer, namespace, key, value, source, origin, trust, recorded_at_ms
-                 FROM memories WHERE namespace=?1 AND key=?2",
+                 FROM memories WHERE layer=?1 AND namespace=?2 AND key=?3",
             )
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
         let mut rows = stmt
-            .query_map(params![namespace, key], record_from_row)
+            .query_map(params![layer_str(layer), namespace, key], record_from_row)
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
         match rows.next() {
             Some(row) => row.map(Some).map_err(|e| serr("MEM_QUERY", e.to_string())),
@@ -380,11 +394,11 @@ impl MemoryStore {
         let mut stmt = conn
             .prepare(
                 "SELECT layer, namespace, key, value, source, origin, trust, recorded_at_ms
-                 FROM memories WHERE namespace=?1 AND key=?2",
+                 FROM memories WHERE layer=?1 AND namespace=?2 AND key=?3",
             )
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
         let mut rows = stmt
-            .query_map(params![p.namespace, p.key], record_from_row)
+            .query_map(params![layer_str(p.layer), p.namespace, p.key], record_from_row)
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
         match rows.next() {
             Some(row) => row.map_err(|e| serr("MEM_QUERY", e.to_string())),
