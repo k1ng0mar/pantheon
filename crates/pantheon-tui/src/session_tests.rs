@@ -504,3 +504,67 @@ fn new_blocks_reset_the_scroll_to_the_tail() {
         "new output must be visible, not buried above the viewport"
     );
 }
+
+#[test]
+fn begin_turn_starts_when_ready_and_queues_when_busy() {
+    let mut s = TuiState::new("run_a".into(), "test/test".into(), 0);
+    assert!(s.ready, "fresh state is ready");
+    assert!(s.begin_turn("first".into()), "starts when ready");
+    assert!(!s.ready, "marked busy for the turn");
+    assert_eq!(s.status_line, "working");
+    assert!(s.interrupt_armed_at.is_none(), "stale arm cleared");
+    assert!(!s.interrupted, "stale interrupt cleared");
+    assert!(s.queued_message.is_none(), "nothing queued on a clean start");
+
+    // Second Enter while the turn runs: no second loop, message queues.
+    assert!(!s.begin_turn("second".into()), "busy turn does not start");
+    assert_eq!(s.queued_message.as_deref(), Some("second"), "message queued");
+    assert!(!s.ready, "still busy, not clobbered");
+
+    // A newer message replaces the older queued one: the single slot holds
+    // the latest intent.
+    assert!(!s.begin_turn("third".into()));
+    assert_eq!(s.queued_message.as_deref(), Some("third"));
+}
+
+#[test]
+fn queued_message_drains_once_and_clears_the_slot() {
+    let mut s = TuiState::new("run_a".into(), "test/test".into(), 0);
+    assert!(s.begin_turn("first".into()));
+    assert!(!s.begin_turn("queued".into()));
+    assert_eq!(s.take_queued().as_deref(), Some("queued"), "drains");
+    assert!(s.queued_message.is_none(), "slot cleared after drain");
+    assert!(s.take_queued().is_none(), "second drain is empty");
+}
+
+#[test]
+fn send_path_resolves_the_currently_selected_run() {
+    // Regression: the worker used to clone the immutable loop-open run id,
+    // so a turn after history-resume wrote to the wrong run's history. The
+    // send path now resolves state.session_id at send time; pin that the
+    // resolution point follows the selection.
+    let mut s = TuiState::new("run_old".into(), "test/test".into(), 0);
+    assert_eq!(resolve_send_run_id(&s), "run_old");
+    // history-resume, /resume and /new all write state.session_id:
+    s.session_id = "run_new".into();
+    assert_eq!(
+        resolve_send_run_id(&s),
+        "run_new",
+        "send follows the selection"
+    );
+}
+
+#[test]
+fn interrupt_targets_the_in_flight_run() {
+    // Regression: Esc used the same stale loop-open id as the send path.
+    let mut s = TuiState::new("selected".into(), "test/test".into(), 0);
+    assert_eq!(s.interrupt_target(), "selected", "falls back to selection");
+    s.active_run = Some("in_flight".into());
+    assert_eq!(
+        s.interrupt_target(),
+        "in_flight",
+        "prefers the running turn's run"
+    );
+    s.active_run = None;
+    assert_eq!(s.interrupt_target(), "selected", "back to selection");
+}
