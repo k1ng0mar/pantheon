@@ -73,20 +73,22 @@
   </nav>
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 class="text-3xl font-bold tracking-tight mb-2">Memory</h1><div class="glow-line my-6"></div>
+<h1 id="memory" class="text-3xl font-bold tracking-tight mb-2">Memory</h1><div class="glow-line my-6"></div>
 <p class="my-3 leading-relaxed">Durable memory scoped to an environment, an agent, a project, or a task — with provenance and trust on every record, so recalled content is never mistaken for instructions.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Layers</h2>
+<h2 id="layers" class="text-xl font-bold tracking-tight mt-10 mb-3">Layers</h2>
 <pre><code>
 GLOBAL → AGENT → PROJECT → TASK/SESSION → EPHEMERAL (this turn only)
 </code></pre>
 <p class="my-3 leading-relaxed">Recall searches all layers, narrowest first, each hit carrying where it came from and when it was written.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Writes go through the gate</h2>
+<h2 id="budgets" class="text-xl font-bold tracking-tight mt-10 mb-3">Budgets</h2>
+<p class="my-3 leading-relaxed">Every layer has a byte budget. A write that would exceed it evicts lowest-trust, oldest-first records until the write fits — recall stays fast and bounded no matter how much the agent remembers. A write that can&#x27;t fit even after eviction fails with <code>MEM_BUDGET_EXCEEDED</code> instead of growing the store.</p>
+<h2 id="writes-go-through-the-gate" class="text-xl font-bold tracking-tight mt-10 mb-3">Writes go through the gate</h2>
 <p class="my-3 leading-relaxed">One path for the model, the CLI, and imports alike:</p>
 <pre><code>
 propose → policy check → provenance attach → validation → store
 </code></pre>
 <p class="my-3 leading-relaxed">Writing needs the <code>MemoryWrite</code> capability (<code>coder_memory</code> policy or an explicit grant). Nothing the model wants remembered bypasses it — no silent prompt-injection writes, ever.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Trust</h2>
+<h2 id="trust" class="text-xl font-bold tracking-tight mt-10 mb-3">Trust</h2>
 <table class="my-6"><thead><tr><th>Tier</th><th>Meaning</th></tr></thead><tbody>
 <tr><td><code>system</code></td><td>Harness-authored, authoritative</td></tr>
 <tr><td><code>user</code></td><td>You wrote it (<code>put</code>, <code>/remember</code>, edited <code>MEMORY.md</code>)</td></tr>
@@ -94,7 +96,7 @@ propose → policy check → provenance attach → validation → store
 <tr><td><code>untrusted</code></td><td>Model-proposed or tool/web-derived</td></tr>
 </tbody></table>
 <p class="my-3 leading-relaxed">Trust never transfers by copying. A proposal lands <code>untrusted</code> no matter what it claims; only your explicit action promotes it. A document telling the agent to &quot;ignore previous instructions&quot; is data, not an order.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Commands</h2>
+<h2 id="commands" class="text-xl font-bold tracking-tight mt-10 mb-3">Commands</h2>
 <pre><code>
 pantheon memory put KEY VALUE
 pantheon memory recall QUERY [--ns NAME]   # search; another agent&#x27;s namespace on request
@@ -103,13 +105,13 @@ pantheon memory list
 pantheon memory import|export|sync [FILE]  # markdown round-trip; sync refuses on conflict
 pantheon memory backend list|select NAME
 </code></pre>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Learning into skills</h2>
+<h2 id="learning-into-skills" class="text-xl font-bold tracking-tight mt-10 mb-3">Learning into skills</h2>
 <p class="my-3 leading-relaxed">Recurring experience shouldn&#x27;t be re-solved every time. When an agent discovers a reliable procedure, it becomes an inspectable artifact — documented, versioned, reusable:</p>
 <pre><code>
 Work → discovery → documentation → reuse → refinement
 </code></pre>
 <p class="my-3 leading-relaxed">Skills are portable knowledge (instructions, workflows, examples). They explain how; they never authorize — the runtime still decides whether the agent may act. Manage them with <code>pantheon skills list|import|doctor</code>.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="agents.html">Agents</a> — memory scoping per identity</li>
 <li><a href="extensions.html">Extensions</a> — hooks and executable plugins</li>

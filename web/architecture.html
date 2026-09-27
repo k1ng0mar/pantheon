@@ -73,7 +73,7 @@
   </nav>
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 class="text-3xl font-bold tracking-tight mb-2">Architecture</h1><div class="glow-line my-6"></div>
+<h1 id="architecture" class="text-3xl font-bold tracking-tight mb-2">Architecture</h1><div class="glow-line my-6"></div>
 <blockquote>Small at the center, huge at the edges.</blockquote>
 <blockquote>The model is one replaceable component inside the runtime.</blockquote>
 <pre><code>
@@ -99,25 +99,25 @@
               Memory · Storage · Secrets · Scheduler
 </code></pre>
 <p class="my-3 leading-relaxed">The center owns state, policy, lifecycle, execution, capabilities, recovery, and events. Everything else plugs in.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Runtime</h2>
+<h2 id="runtime" class="text-xl font-bold tracking-tight mt-10 mb-3">Runtime</h2>
 <p class="my-3 leading-relaxed">The supervisor owns agent lifecycle, runs, approvals, scheduling, and recovery. Every meaningful transition emits a canonical <code>Event</code>; the SQLite ledger is the source of truth for replay, debugging, and crash recovery. Run ownership is lease-based with heartbeats, so at most one supervisor drives a run.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Agent engine</h2>
+<h2 id="agent-engine" class="text-xl font-bold tracking-tight mt-10 mb-3">Agent engine</h2>
 <p class="my-3 leading-relaxed"><code>receive → load state → build context → infer → interpret → execute → observe → update state → continue</code>, gated at every tool call (Allow / Deny / Approval). Denials and approvals are transcript outcomes, not crashes. Budgets bound turns and tool calls; swarms spawn under runtime caps.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Capabilities</h2>
+<h2 id="capabilities" class="text-xl font-bold tracking-tight mt-10 mb-3">Capabilities</h2>
 <p class="my-3 leading-relaxed">The security backbone: granular capabilities (<code>filesystem.read</code>, <code>shell.execute</code>, <code>git.push</code>, <code>memory.write</code>, <code>agent.spawn</code>, …) mapped through per-agent policies. Knowledge never implies authority — skills, memories, and tool descriptions inform; only policy permits.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Execution</h2>
-<p class="my-3 leading-relaxed">Tools run under policy-chosen sandbox boundaries (process isolation up through container/VM). File writes go through checkpointed, atomic apply with stale-check rejection and rollback.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Memory and storage</h2>
+<h2 id="execution" class="text-xl font-bold tracking-tight mt-10 mb-3">Execution</h2>
+<p class="my-3 leading-relaxed">Tools run under policy-chosen sandbox boundaries (process isolation up through container/VM). A boundary that can&#x27;t initialize fails closed — <code>SANDBOX_UNAVAILABLE</code> rather than running unconfined. File writes go through checkpointed, atomic apply with stale-check rejection and rollback.</p>
+<h2 id="memory-and-storage" class="text-xl font-bold tracking-tight mt-10 mb-3">Memory and storage</h2>
 <p class="my-3 leading-relaxed">Five memory layers (global → agent → project → task → ephemeral) behind one write path: propose → policy → provenance → validation → store. Storage is SQLite by default: event ledger, durable operation state machines, claim ledgers, and an FTS sidecar for session search. No database server, no external vector store.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Secrets</h2>
+<h2 id="secrets" class="text-xl font-bold tracking-tight mt-10 mb-3">Secrets</h2>
 <p class="my-3 leading-relaxed">Resolved at the execution boundary through a broker (OS keychain → encrypted file → env), never into prompts, logs, or the ledger. Config names variables; values stay outside it.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Providers</h2>
+<h2 id="providers" class="text-xl font-bold tracking-tight mt-10 mb-3">Providers</h2>
 <p class="my-3 leading-relaxed">Transport adapters only — OpenAI-compatible and Anthropic behind one <code>ModelTurn</code> interface, no SDKs above the provider crate. Default model, failure-only fallback chain, per-capability auxiliaries. No routing; agents never choose models.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Surfaces</h2>
+<h2 id="surfaces" class="text-xl font-bold tracking-tight mt-10 mb-3">Surfaces</h2>
 <p class="my-3 leading-relaxed">CLI, TUI, web (<code>serve</code>), and gateways (Discord, Telegram) all drive the same Session runtime off the same ledger. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default; foreign plugin formats load through a compat adapter that maps only real semantic matches.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Migration</h2>
-<p class="my-3 leading-relaxed"><code>pantheon migrate hermes|openclaw|omp</code>: detect → plan → approve → backup → apply → validate. Everything detected is imported or archived with a reason — nothing silently dropped, credentials never written outside <code>&lt;data_dir&gt;/.env</code>.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Locked decisions</h2>
+<h2 id="migration" class="text-xl font-bold tracking-tight mt-10 mb-3">Migration</h2>
+<p class="my-3 leading-relaxed"><code>pantheon migrate hermes|openclaw|omp</code>: detect → plan → approve → backup → apply → validate. The apply itself is transactional (stage → validate → commit): everything detected is imported or archived with a reason — nothing silently dropped, credentials never written outside <code>&lt;data_dir&gt;/.env</code>.</p>
+<h2 id="locked-decisions" class="text-xl font-bold tracking-tight mt-10 mb-3">Locked decisions</h2>
 <p>1. Runtime owns lifecycle, state, policy, execution, capabilities, recovery, events.</p>
 <p>2. Model policy is default + failure-only fallback + auxiliaries. No routing.</p>
 <p>3. Memory writes: propose → policy → provenance → validation.</p>
@@ -126,7 +126,7 @@
 <p>6. Durability is SQLite-backed state machines, not hope.</p>
 <p>7. Skills (knowledge) and extensions (code) stay two tiers.</p>
 <p>8. Migration retains provenance; unmappable content is archived, not dropped.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Crate map</h2>
+<h2 id="crate-map" class="text-xl font-bold tracking-tight mt-10 mb-3">Crate map</h2>
 <table class="my-6"><thead><tr><th>Crate</th><th>Role</th></tr></thead><tbody>
 <tr><td><code>pantheon-api</code></td><td>Events, errors, capabilities, model policy, identifiers (bottom leaf)</td></tr>
 <tr><td><code>pantheon-storage</code></td><td>Ledger, claims, leases, session search</td></tr>
@@ -147,7 +147,7 @@
 <tr><td><code>pantheon-migration</code></td><td>Source importers</td></tr>
 <tr><td><code>pantheon-tui</code></td><td>Terminal application: interactive session + non-interactive verbs</td></tr>
 </tbody></table>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="contributing.html">Contributing</a> — boundaries and change mechanics</li>
 <li><a href="https://github.com/k1ng0mar/pantheon/tree/master/docs/developer/decisions">Decisions</a> — records behind the locks above</li>

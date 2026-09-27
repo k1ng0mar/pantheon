@@ -73,9 +73,9 @@
   </nav>
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 class="text-3xl font-bold tracking-tight mb-2">Providers</h1><div class="glow-line my-6"></div>
+<h1 id="providers" class="text-3xl font-bold tracking-tight mb-2">Providers</h1><div class="glow-line my-6"></div>
 <p class="my-3 leading-relaxed">Agents don&#x27;t pick models. The runtime resolves a default, a failure-only fallback chain, and per-capability auxiliaries — swap anything without touching the agent.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Default model</h2>
+<h2 id="default-model" class="text-xl font-bold tracking-tight mt-10 mb-3">Default model</h2>
 <pre><code>
 [model]
 provider    = &quot;openai&quot;
@@ -84,21 +84,23 @@ api_key_env = &quot;OPENAI_API_KEY&quot;
 reasoning   = &quot;high&quot;   # optional: off|minimal|low|medium|high|xhigh|max (default off)
 </code></pre>
 <p class="my-3 leading-relaxed"><code>pantheon model</code> picks from 39+ builtins and writes keys to <code>&lt;data_dir&gt;/.env</code> (config holds names, never values). <code>pantheon providers</code> lists the catalog. Switch mid-conversation with <code>/model &lt;provider&gt; &lt;model&gt;</code> — identity and context carry over.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Fallbacks and helpers</h2>
+<h2 id="fallbacks-and-helpers" class="text-xl font-bold tracking-tight mt-10 mb-3">Fallbacks and helpers</h2>
 <pre><code>
 [[model.fallbacks]]
 provider = &quot;anthropic&quot;
 model    = &quot;claude-sonnet-4-5&quot;
 </code></pre>
 <p class="my-3 leading-relaxed">Fallbacks fire on failure only, in order, under runtime control. Helper slots (<code>[judge]</code>, <code>[compression]</code>, <code>[title_gen]</code>, <code>[embeddings]</code>, <code>[search_synthesis]</code>, <code>[vision]</code>, <code>[scheduled]</code>, <code>[mcp_synthesis]</code>) pin small models per job; unconfigured means <code>auto</code> — the run&#x27;s own model — except embeddings, which default to a local embedder.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Custom endpoints</h2>
+<h2 id="custom-endpoints" class="text-xl font-bold tracking-tight mt-10 mb-3">Custom endpoints</h2>
 <p class="my-3 leading-relaxed">Any OpenAI-compatible URL is a provider:</p>
 <pre><code>
 pantheon provider add --name my-llm --base-url http://127.0.0.1:8015/v1
 pantheon provider models my-llm
 </code></pre>
 <p class="my-3 leading-relaxed">Only model ids you name by hand are recorded in config. Live endpoint listings are fetched on demand, never baked in — a third party&#x27;s list goes stale, and config shouldn&#x27;t bless snapshots.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<h2 id="reliability" class="text-xl font-bold tracking-tight mt-10 mb-3">Reliability</h2>
+<p class="my-3 leading-relaxed">The provider HTTP layer honors <code>Retry-After</code> on 429s (parsed from delta-seconds or an HTTP date, capped at 60s) with backoff, and provider errors stay structured — code, layer, and retryability survive the trip. Structured output is opt-in: requests that carry a JSON Schema ask for a conforming response, on both the OpenAI and Anthropic wires.</p>
+<h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="agents.html">Agents</a> — per-agent provider settings</li>
 <li><a href="configuration.html">Configuration</a> — every provider field</li>

@@ -73,9 +73,9 @@
   </nav>
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 class="text-3xl font-bold tracking-tight mb-2">Configuration</h1><div class="glow-line my-6"></div>
+<h1 id="configuration" class="text-3xl font-bold tracking-tight mb-2">Configuration</h1><div class="glow-line my-6"></div>
 <p class="my-3 leading-relaxed"><code>config.toml</code> in the data dir is the single source of truth for persistent configuration. Setup writes it, the runtime reads it, every verb uses it. Secrets are never in it — config names env vars, the runtime resolves them at the execution boundary.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Model</h2>
+<h2 id="model" class="text-xl font-bold tracking-tight mt-10 mb-3">Model</h2>
 <pre><code>
 [model]
 provider    = &quot;openai&quot;
@@ -88,17 +88,17 @@ provider = &quot;anthropic&quot;
 model    = &quot;claude-sonnet-4-5&quot;
 </code></pre>
 <p class="my-3 leading-relaxed">Env overrides: <code>PANTHEON_PROVIDER</code>, <code>PANTHEON_MODEL</code>, <code>PANTHEON_REASONING</code>, <code>PANTHEON_REASONING_BUDGET</code>. Fallbacks are ordered, failure-only, runtime-controlled. Reasoning maps per wire mode (<code>reasoning_effort</code>, including <code>minimal</code> and <code>xhigh</code>, on OpenAI; thinking budget on Anthropic: 1k/4k/10k/20k/32k for minimal/low/medium/high/xhigh, <code>max</code> fills the window). An exact <code>reasoning_budget</code> overrides the mapping on budget wires (<code>0</code> disables); aux turns always run without it. Unknown spellings resolve to off and <code>doctor</code> flags them.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Auxiliaries</h2>
+<h2 id="auxiliaries" class="text-xl font-bold tracking-tight mt-10 mb-3">Auxiliaries</h2>
 <p class="my-3 leading-relaxed">One <code>[judge]</code>, <code>[compression]</code>, <code>[title_gen]</code>, <code>[embeddings]</code>, <code>[search_synthesis]</code>, <code>[vision]</code>, <code>[scheduled]</code>, <code>[mcp_synthesis]</code> section each, same shape (<code>provider</code>, <code>model</code>, optional <code>api_key_env</code>). Absent means <code>auto</code> — the run&#x27;s default model — except <code>[embeddings]</code>, which falls back to a local embedder. Env overrides: <code>PANTHEON_&lt;AUX&gt;_PROVIDER</code> / <code>PANTHEON_&lt;AUX&gt;_MODEL</code>.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Policy</h2>
+<h2 id="policy" class="text-xl font-bold tracking-tight mt-10 mb-3">Policy</h2>
 <p class="my-3 leading-relaxed"><code>policy = &quot;reader&quot; | &quot;coder&quot; | &quot;coder_memory&quot;</code>. Tools declare the capability they need; the policy decides allow/deny/approve per operation. <code>coder_memory</code> adds the <code>MemoryWrite</code> capability.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Memory</h2>
+<h2 id="memory" class="text-xl font-bold tracking-tight mt-10 mb-3">Memory</h2>
 <pre><code>
 [memory]
 backend = &quot;native&quot;
 </code></pre>
 <p class="my-3 leading-relaxed">Backend selection is mirrored in <code>memory-backend.toml</code>. See <a href="memory.html">Memory</a>.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Secrets</h2>
+<h2 id="secrets" class="text-xl font-bold tracking-tight mt-10 mb-3">Secrets</h2>
 <pre><code>
 [secrets]
 env_allowlist = [&quot;MY_API_KEY&quot;, &quot;PANTHEON_*&quot;]
@@ -109,7 +109,7 @@ plugin_env_allowlist = [&quot;MY_PLUGIN_TOKEN&quot;]
 <li><code>env_allowlist</code>: env vars readable through the <code>env:</code> secret-name form. Entries are exact names or <code>PREFIX_*</code> wildcards; <code>&quot;*&quot;</code> alone allows all (explicit opt-out). Without an entry, <code>env:</code> lookups resolve nothing — secrets must come from <code>PANTHEON_SECRET_*</code> or a durable vault, so a name like <code>env:AWS_SECRET_ACCESS_KEY</code> can never exfiltrate an arbitrary host variable.</li>
 <li><code>plugin_env_allowlist</code>: manifest-declared env vars the plugin supervisor may copy from the host into plugin subprocesses (same entry syntax). A project-controlled manifest can declare any name it likes, so a declared name alone never crosses the boundary — only an entry here lets a host var reach plugin code. Extension (Python/JS) hook subprocesses always run with a cleared environment (PATH only) regardless of this list.</li>
 </ul>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Agents</h2>
+<h2 id="agents" class="text-xl font-bold tracking-tight mt-10 mb-3">Agents</h2>
 <pre><code>
 profile = &quot;default&quot;   # informational label only; does NOT select an agent
 
@@ -125,7 +125,7 @@ display_name = &quot;Zeus&quot;
 soul_file    = &quot;agents/zeus/SOUL.md&quot;
 </code></pre>
 <p class="my-3 leading-relaxed"><code>agent = &quot;zeus&quot;</code> selects the profile this install runs as (must name a declared table). No <code>[agents]</code> table means anonymous runs. See <a href="agents.html">Agents</a>.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Custom providers</h2>
+<h2 id="custom-providers" class="text-xl font-bold tracking-tight mt-10 mb-3">Custom providers</h2>
 <pre><code>
 [custom_providers.my-llm]
 base_url = &quot;http://127.0.0.1:8015/v1&quot;
@@ -133,16 +133,16 @@ api_mode = &quot;openai&quot;          # or &quot;anthropic&quot;
 key_env  = &quot;PANTHEON_KEY_MY_LLM&quot;
 </code></pre>
 <p class="my-3 leading-relaxed">Written by <code>pantheon provider add</code> / <code>pantheon model</code>. <code>models</code> sub-rows hold only model ids you named by hand.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Server and speech</h2>
+<h2 id="server-and-speech" class="text-xl font-bold tracking-tight mt-10 mb-3">Server and speech</h2>
 <pre><code>
 [server]
 port = 18789
 host = &quot;127.0.0.1&quot;
 </code></pre>
 <p class="my-3 leading-relaxed"><code>[stt]</code> / <code>[tts]</code> select speech backends (<code>command</code> with <code>cmd</code>, or <code>openai</code> with <code>provider</code>).</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Gateway</h2>
+<h2 id="gateway" class="text-xl font-bold tracking-tight mt-10 mb-3">Gateway</h2>
 <p class="my-3 leading-relaxed">Tokens live in <code>&lt;data_dir&gt;/.env</code>, never in config: <code>PANTHEON_DISCORD_TOKEN</code>, <code>PANTHEON_TELEGRAM_BOT_TOKEN</code>, plus required <code>PANTHEON_GATEWAY_ALLOW</code>. See <a href="channels.html">Channels</a>.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Data directory</h2>
+<h2 id="data-directory" class="text-xl font-bold tracking-tight mt-10 mb-3">Data directory</h2>
 <p class="my-3 leading-relaxed"><code>$PANTHEON_DATA_DIR</code> or <code>~/.pantheon/</code>:</p>
 <table class="my-6"><thead><tr><th>Path</th><th>What it is</th></tr></thead><tbody>
 <tr><td><code>config.toml</code></td><td>This file (setup writes it, doctor validates it)</td></tr>

@@ -73,22 +73,22 @@
   </nav>
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 class="text-3xl font-bold tracking-tight mb-2">Terminal reference</h1><div class="glow-line my-6"></div>
+<h1 id="terminal-reference" class="text-3xl font-bold tracking-tight mb-2">Terminal reference</h1><div class="glow-line my-6"></div>
 <p class="my-3 leading-relaxed">Every <code>pantheon</code> verb, its flags, and exit codes. Anything not listed here does not exist — typos exit 2 with a suggestion.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Conventions</h2>
+<h2 id="conventions" class="text-xl font-bold tracking-tight mt-10 mb-3">Conventions</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li>Exit 0 = success. Exit 1 = operation failed (the message names a structured code like <code>SAFE_STALE</code>). Exit 2 = usage error.</li>
 <li>Flags are <code>--flag value</code> or <code>--flag=value</code>. Boolean flags (<code>--yes</code>) take no value.</li>
 <li><code>PANTHEON_DATA_DIR</code> overrides the data dir (default <code>~/.pantheon</code>) for every verb.</li>
 <li>JSON on stdout means the command is for scripts: <code>doctor</code>, <code>audit</code>, <code>mcp list --json</code>, <code>repair --json</code>. Every other verb prints human-oriented text.</li>
 </ul>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Start</h2>
+<h2 id="start" class="text-xl font-bold tracking-tight mt-10 mb-3">Start</h2>
 <pre><code>
 pantheon                      # open the interactive session (the terminal interface)
 pantheon --resume [id]        # enter the session on a run (unknown ids fail loudly)
 pantheon --help | --version
 </code></pre>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Talk to it</h2>
+<h2 id="talk-to-it" class="text-xl font-bold tracking-tight mt-10 mb-3">Talk to it</h2>
 <pre><code>
 pantheon run --taskID &lt;id&gt; --say &quot;text&quot; [--deliver session|telegram|discord]
 pantheon run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]
@@ -96,14 +96,14 @@ pantheon run --taskID &lt;id&gt; --grant &lt;scope&gt; [--no-resume]
 pantheon run --taskID &lt;id&gt; --deny  &lt;scope&gt; [--no-resume]
 </code></pre>
 <p class="my-3 leading-relaxed">With <code>--deliver</code> (default <code>session</code>): a real model turn, printed here or queued for the gateway. Without it: synthetic ledger events only (<code>--say</code> records a line, <code>--fail CODE</code> ends the run, <code>--tool</code> names a tool, <code>--ext</code> fires hooks) — for recovery/ledger testing, never a model call.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Inspect a run</h2>
+<h2 id="inspect-a-run" class="text-xl font-bold tracking-tight mt-10 mb-3">Inspect a run</h2>
 <pre><code>
 pantheon runs                          # every run, status and title
 pantheon runs &lt;run_id&gt; [--metrics]     # event trace, or one line of counters
 pantheon audit &lt;run_id&gt; [OUT.jsonl]    # sequence-validated JSONL trajectory
 pantheon logs [agent|errors|gateway] [-n N] [-f] [--level LVL] [--since DUR] [--grep RE]
 </code></pre>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Set up</h2>
+<h2 id="set-up" class="text-xl font-bold tracking-tight mt-10 mb-3">Set up</h2>
 <pre><code>
 pantheon setup [--yes] [--profile P] [--provider P] [--model M]
                [--api-key-env ENV] [--key SECRET]
@@ -120,7 +120,7 @@ pantheon repair [--dry-run] [--json]           # fix what can be fixed safely
 pantheon reset [--config|--state|--everything] [--yes]  # typed confirmation unless --yes
 </code></pre>
 <p class="my-3 leading-relaxed"><code>doctor</code> diagnoses and changes nothing; <code>repair</code> is the fixing half. <code>reset --state</code> refuses while a run lease is live.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Memory</h2>
+<h2 id="memory" class="text-xl font-bold tracking-tight mt-10 mb-3">Memory</h2>
 <pre><code>
 pantheon memory import [FILE] | export [FILE] | sync [FILE]   # default MEMORY.md
 pantheon memory list | recall QUERY | put KEY VALUE | confirm KEY
@@ -128,7 +128,7 @@ pantheon memory backend list | select NAME [k=v ...] | scaffold NAME [http|stdio
 pantheon memory vault search QUERY | read PATH | list [CATEGORY]
 </code></pre>
 <p class="my-3 leading-relaxed"><code>recall --ns NAME</code> (or <code>--ns &#x27;*&#x27;</code>) reads another agent&#x27;s namespace. <code>sync</code> refuses on conflict.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Extend</h2>
+<h2 id="extend" class="text-xl font-bold tracking-tight mt-10 mb-3">Extend</h2>
 <pre><code>
 pantheon skills list|import &lt;name&gt;|doctor
 pantheon plugins list|install &lt;name&gt;|enable &lt;name&gt;|disable &lt;name&gt;
@@ -139,19 +139,21 @@ pantheon migrate &lt;detect|show|plan|apply|validate&gt; &lt;hermes|openclaw|omp
                [--kind K] [--json] [--yes] [--merge-providers]
 </code></pre>
 <p class="my-3 leading-relaxed"><code>apply</code> is the only writer (<code>backup → apply → validate</code>, needs <code>--yes</code> or typed source name).</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Run unattended</h2>
+<h2 id="run-unattended" class="text-xl font-bold tracking-tight mt-10 mb-3">Run unattended</h2>
 <pre><code>
 pantheon schedule &lt;task&gt; [--every 30m | --cron &quot;*/5 * * * *&quot;] [--agent N] [--model M] [--provider P]
+               [--timeout 10m] [--overlap skip|replace|queue]
 pantheon schedule list|pause|resume|cancel|run &lt;id&gt;
-pantheon swarm status [&lt;id&gt;] | list   # recorded swarms only; spawn is unsupported
-# (sub-agent execution is not wired — spawn refuses rather than recording
-# runs that would never execute)
+pantheon schedule tick [--watch]      # advance the scheduler manually; --watch loops
+pantheon swarm status [&lt;id&gt;] | list   # recorded swarms only; the swarm verb doesn&#x27;t spawn
+# (sub-agent work happens through in-session delegation — the engine&#x27;s
+# Delegate arm — not through the swarm verb; spawn caps still apply)
 pantheon gateway start|restart|stop|status|run [discord|telegram]
 pantheon serve [--port N] [--host H]      # AG-UI server
 pantheon pipeline --spec &quot;task&quot; [RUN_ID]
 pantheon pipeline RUN_ID --approve plan|review | --deny plan|review
 </code></pre>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Environment variables</h2>
+<h2 id="environment-variables" class="text-xl font-bold tracking-tight mt-10 mb-3">Environment variables</h2>
 <table class="my-6"><thead><tr><th>Variable</th><th>Effect</th></tr></thead><tbody>
 <tr><td><code>PANTHEON_DATA_DIR</code></td><td>Data directory (default <code>~/.pantheon</code>)</td></tr>
 <tr><td><code>PANTHEON_REPO</code></td><td>Release repo for installer/<code>update</code></td></tr>
