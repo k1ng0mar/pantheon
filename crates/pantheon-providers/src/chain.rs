@@ -98,7 +98,7 @@ impl<T: ChatTransport> ProviderChain<T> {
         let mut key_failures = 0usize;
         for (ki, one_key) in keys.iter().enumerate() {
             let last_key = ki + 1 >= keys.len();
-            let result: Result<AdapterTurn, PantheonError> = match api_mode {
+            let mut result: Result<AdapterTurn, PantheonError> = match api_mode {
                 ApiMode::OpenAi => {
                     let key_header = catalog::key_header_for(&model.provider);
                     let req = openai::request(
@@ -140,11 +140,20 @@ impl<T: ChatTransport> ProviderChain<T> {
                 }
             };
 
-            match &result {
+            match &mut result {
                 Ok(turn) => {
                     if let Some(mut usage) = turn.usage {
                         usage.cost_usd =
                             meta.cost.estimate(usage.input_tokens, usage.output_tokens);
+                        // The adapter baked `cost_cents` at parse time from
+                        // `cost_usd: None` (always 0) — it never sees catalog
+                        // prices, so the chain owns the fix-up. The agent
+                        // loop's `max_cost_cents` budget reads
+                        // `outcome.cost_cents()`; without this it can never
+                        // trip.
+                        if let Some(usd) = usage.cost_usd {
+                            stamp_outcome_cost(&mut turn.outcome, (usd * 100.0) as u32);
+                        }
                         sink.emit(ModelEvent::Usage { usage });
                     }
                     sink.emit(ModelEvent::Completed {
@@ -341,6 +350,16 @@ impl<T: ChatTransport> pantheon_agent::ModelTurn for ProviderChain<T> {
             })
             .collect();
         self.turn_messages(&msgs)
+    }
+}
+
+/// Stamp an estimated cost onto a turn outcome. The `Delegate` variant
+/// carries no cost accounting, so it is left alone.
+fn stamp_outcome_cost(outcome: &mut TurnOutcome, cost_cents: u32) {
+    match outcome {
+        TurnOutcome::Text { cost_cents: c, .. } => *c = cost_cents,
+        TurnOutcome::Tools { cost_cents: c, .. } => *c = cost_cents,
+        TurnOutcome::Delegate { .. } => {}
     }
 }
 
