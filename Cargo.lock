@@ -1899,6 +1899,7 @@ version = "0.1.0"
 dependencies = [
  "pantheon-api",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
