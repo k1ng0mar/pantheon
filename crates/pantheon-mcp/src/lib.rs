@@ -1,7 +1,7 @@
 //! MCP adapter (spec section 15): external interop boundary, not internal
 //! architecture. Internal code speaks the native Capability API; MCP servers
 //! are projected into it, and every projected tool is capability-gated.
-use pantheon_core::capability::{Capability, Policy};
+use pantheon_api::capability::{Capability, Policy};
 use serde::{Deserialize, Serialize};
 
 /// One tool as an MCP server advertises it (subset of the wire shape).
@@ -39,7 +39,7 @@ pub fn project(server: &str, tools: &[McpTool], policy: &Policy) -> Vec<Projecte
             let capability = capability_from_token(&t.requires);
             let allowed = matches!(
                 policy.check(&capability),
-                pantheon_core::capability::Decision::Allow
+                pantheon_api::capability::Decision::Allow
             );
             ProjectedTool {
                 server: server.into(),

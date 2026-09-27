@@ -3,7 +3,7 @@
 //! Both foreign ecosystems ship the same *idea* — a `register(api)` entry
 //! point that attaches handlers to named lifecycle events — under different
 //! manifests, different spellings, and a much larger event vocabulary. This
-//! module is the seam named in `ARCHITECTURE.md` section 8.
+//! module is the seam named in `docs/developer/architecture.md` section 8.
 //!
 //! The contract it upholds is deliberately narrow:
 //!

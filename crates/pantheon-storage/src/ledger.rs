@@ -1,12 +1,54 @@
 //! Event-sourced execution ledger. Every run persists its events to SQLite;
 //! ``pantheon logs run_X`` replays them. History is append-only.
-use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::events::Event;
+use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::events::Event;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
+
+/// Per-run counters, folded from the ledger's event log.
+///
+/// `ContextTrimmed`/`ContextCompressed` are here because an operator watching
+/// those numbers is the one who needs to know a run has been quietly losing
+/// context, and the raw event stream is far too noisy to notice it in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunMetrics {
+    pub runs_started: u64,
+    pub runs_completed: u64,
+    pub runs_failed: u64,
+    pub runs_canceled: u64,
+    pub tool_calls: u64,
+    pub model_turns: u64,
+    pub approvals_requested: u64,
+    pub approvals_granted: u64,
+    pub approvals_denied: u64,
+    pub agents_spawned: u64,
+    pub context_trims: u64,
+    pub context_compressions: u64,
+}
+
+impl std::fmt::Display for RunMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} started / {} completed / {} failed / {} canceled; {} tool calls; {} model turns; {} approvals ({} granted, {} denied); {} sub-agents; {} context trims ({} compressed)",
+            self.runs_started,
+            self.runs_completed,
+            self.runs_failed,
+            self.runs_canceled,
+            self.tool_calls,
+            self.model_turns,
+            self.approvals_requested,
+            self.approvals_granted,
+            self.approvals_denied,
+            self.agents_spawned,
+            self.context_trims,
+            self.context_compressions,
+        )
+    }
+}
 
 /// One persisted row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +118,7 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::RunFailed { run_id, .. }
         | Event::RunCanceled { run_id, .. }
         | Event::RunRecovered { run_id }
+        | Event::AgentBound { run_id, .. }
         | Event::TurnStarted { run_id, .. }
         | Event::TurnParked { run_id, .. }
         | Event::TurnCompleted { run_id, .. }
@@ -109,7 +152,8 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY,
   created_ms INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'running',
-  title TEXT
+  title TEXT,
+  agent_id TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,6 +190,15 @@ pub type RunListing = (String, String, i64, Option<String>);
 /// ALTER fails harmlessly with "duplicate column name" and is ignored.
 fn migrate(conn: &Connection) -> Result<(), PantheonError> {
     let _ = conn.execute("ALTER TABLE runs ADD COLUMN title TEXT", []);
+    // Run -> agent binding. A run belongs to exactly one agent profile for
+    // its whole life, so this is written once when the run row is created
+    // and never updated. NULL means "pre-binding run" (created before
+    // profiles existed) and is read back as such rather than guessed.
+    let _ = conn.execute("ALTER TABLE runs ADD COLUMN agent_id TEXT", []);
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent_id, created_ms DESC)",
+        [],
+    );
     Ok(())
 }
 
@@ -225,6 +278,40 @@ impl Ledger {
                 "INSERT OR IGNORE INTO runs (run_id, created_ms, status) VALUES (?1, ?2, 'running')",
                 params![run_id, ts],
             ).map_err(|e| err("LEDGER_RUN", e.to_string()))?;
+        }
+        // Derived read model: the run's owning agent. Written once and
+        // only once — a run that is already bound to a different agent is
+        // a hard error, not an overwrite. Identity is immutable for the
+        // life of a run; that is what makes "resume Nyx's session" safe.
+        if let Event::AgentBound { agent_id, .. } = event {
+            let current: Option<String> = conn
+                .query_row(
+                    "SELECT agent_id FROM runs WHERE run_id = ?1",
+                    params![run_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| err("LEDGER_AGENT_BIND", e.to_string()))?
+                .flatten();
+            match current {
+                Some(existing) if existing != *agent_id => {
+                    return Err(err(
+                        "LEDGER_AGENT_REBOUND",
+                        format!(
+                            "run {run_id} is already bound to agent {existing:?}; \
+                             refusing to rebind to {agent_id:?}"
+                        ),
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    conn.execute(
+                        "UPDATE runs SET agent_id = ?2 WHERE run_id = ?1",
+                        params![run_id, agent_id],
+                    )
+                    .map_err(|e| err("LEDGER_AGENT_BIND", e.to_string()))?;
+                }
+            }
         }
         // Derived read model: the latest title event is the run's display
         // title. Overwrites unconditionally so a manual rename or a newer
@@ -520,6 +607,26 @@ impl Ledger {
         .map_err(|e| err("LEDGER_STATUS", e.to_string()))
     }
 
+    /// The agent profile bound to this run, if any.
+    ///
+    /// `None` means the run predates profiles (or was never bound); it is
+    /// never defaulted to a profile name, because guessing an owner would
+    /// make a run look like it belongs to an agent that never ran it.
+    pub fn run_agent(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.query_row(
+            "SELECT agent_id FROM runs WHERE run_id=?1",
+            params![run_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|o| o.flatten())
+        .map_err(|e| err("LEDGER_AGENT_BIND", e.to_string()))
+    }
+
     /// List recent runs, newest first. Powers the REPL `/runs` picker and
     /// auto-resume. `limit` bounds the row count. The fourth element is the
     /// run's current display title (`None` = never titled).
@@ -719,6 +826,39 @@ impl Ledger {
         .map(|_| ())
     }
 
+    /// Per-run counters folded from the event log.
+    ///
+    /// This is where a metrics fold belongs: the ledger is the source of
+    /// truth, so a counter that cannot disagree with it is one that does not
+    /// need a second source of truth. It used to live in `pantheon-otel`,
+    /// where nothing could call it.
+    ///
+    /// `RunFailed` counts separately from `RunCompleted` rather than being
+    /// folded into a single "finished" number: a run that failed is exactly
+    /// what an operator scanning these wants to see, and hiding it inside a
+    /// success count is how failure rates get misread.
+    pub fn metrics(&self, run_id: &str) -> Result<RunMetrics, PantheonError> {
+        let mut m = RunMetrics::default();
+        for e in self.replay(run_id)? {
+            match e.event {
+                Event::RunStarted { .. } => m.runs_started += 1,
+                Event::RunCompleted { .. } => m.runs_completed += 1,
+                Event::RunFailed { .. } => m.runs_failed += 1,
+                Event::RunCanceled { .. } => m.runs_canceled += 1,
+                Event::ToolStarted { .. } => m.tool_calls += 1,
+                Event::ModelCompleted { .. } => m.model_turns += 1,
+                Event::ApprovalRequested { .. } => m.approvals_requested += 1,
+                Event::ApprovalGranted { .. } => m.approvals_granted += 1,
+                Event::ApprovalDenied { .. } => m.approvals_denied += 1,
+                Event::AgentSpawned { .. } => m.agents_spawned += 1,
+                Event::ContextTrimmed { .. } => m.context_trims += 1,
+                Event::ContextCompressed { .. } => m.context_compressions += 1,
+                _ => {}
+            }
+        }
+        Ok(m)
+    }
+
     pub fn render_run_log(&self, run_id: &str) -> Result<String, PantheonError> {
         let entries = self.replay(run_id)?;
         if entries.is_empty() {
@@ -740,6 +880,11 @@ fn describe(ev: &Event) -> String {
         Event::RunFailed { code, .. } => format!("FAILED ({code})"),
         Event::RunCanceled { reason, .. } => format!("canceled ({reason})"),
         Event::RunRecovered { .. } => String::from("recovered after restart"),
+        Event::AgentBound {
+            agent_id, profile, ..
+        } => {
+            format!("bound to agent {agent_id} (profile {profile})")
+        }
         Event::TurnStarted { turn_id, .. } => format!("turn started: {turn_id}"),
         Event::TurnParked {
             turn_id, reason, ..

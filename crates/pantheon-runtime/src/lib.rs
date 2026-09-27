@@ -1,26 +1,44 @@
 //! Supervisor: run lifecycle, quotas, recovery, checkpointing (D decision).
 //! Runs persist every event; a killed run resumes as RunRecovered.
+//!
+//! Owns the **Runtime API** (ARCHITECTURE §18): the JSON-RPC command
+//! surface (`rpc`, `serve`, `transport`) and the AG-UI streaming path
+//! (`agui`) moved here from `pantheon-api`, which is now the bottom
+//! protocol-leaf crate (commands, events, types).
+pub mod agent_runtime;
+pub mod agui;
 pub mod operation;
 pub mod pipeline;
 pub mod pipeline_runner;
+pub mod rpc;
+pub mod serve;
 pub mod session;
+pub mod transport;
 pub mod watchdog;
 
+pub use agent_runtime::{profile_err, AgentRuntime, DEFAULT_PROFILE};
+pub use agui::{
+    dispatcher_for, dispatcher_for_with_hint, dispatcher_for_with_hint_and_base,
+    dispatcher_for_with_hint_and_host,
+};
 pub use operation::{
     run_tool_operation, DurableOperationRunner, JsonToolAdapter, ToolOperationAdapter,
 };
-use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::events::Event;
+use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::events::Event;
 pub use pantheon_storage::LostLeaseError;
 use pantheon_storage::{
     Ledger, Operation, OperationStatus, OperationStore, RunLease, RunLeaseStore,
 };
 pub use pipeline::{run_model_stage, StageEvaluator, StageExecutor};
 pub use pipeline_runner::{PipelineOutcome, PipelineRunner};
+pub use rpc::{Dispatcher, Id, MethodHandler, Request, Response, RpcError};
+pub use serve::{remember_thread, serve, snapshot_frames, ServeConfig};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+pub use transport::{ApiTransport, UnixSocketTransport};
 
 /// A subscriber to the run's event stream. Cheap to clone, shared across threads.
 pub type EventObserver = std::sync::Arc<dyn Fn(&Event) + Send + Sync>;
@@ -423,7 +441,7 @@ impl Supervisor {
     /// content-bearing events are indexed; bookkeeping events (started,
     /// completed, approvals) carry no searchable text.
     fn index_for_search(&self, ev: &Event) -> Result<(), PantheonError> {
-        use pantheon_core::events::Event as E;
+        use pantheon_api::events::Event as E;
         use pantheon_providers::embeddings::EmbedderClient;
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -845,6 +863,14 @@ impl Supervisor {
     pub fn ledger_title(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
         self.ledger().run_title(run_id)
     }
+    /// The agent profile bound to a run, if any.
+    ///
+    /// `None` is a real answer, not a fallback: a run created before agent
+    /// profiles existed has no owner, and reporting it as "default" would
+    /// attribute old history to an agent that never ran it.
+    pub fn ledger_run_agent(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
+        self.ledger().run_agent(run_id)
+    }
     pub fn ledger_reopen_run(&self, run_id: &str) -> Result<bool, PantheonError> {
         self.ledger().reopen_run(run_id)
     }
@@ -853,6 +879,10 @@ impl Supervisor {
         run_id: &str,
     ) -> Result<Vec<pantheon_storage::LedgerEntry>, PantheonError> {
         self.ledger().replay(run_id)
+    }
+    /// Per-run counters folded from the event log.
+    pub fn run_metrics(&self, run_id: &str) -> Result<pantheon_storage::RunMetrics, PantheonError> {
+        self.ledger().metrics(run_id)
     }
     pub fn max_seq(&self) -> Result<i64, PantheonError> {
         self.ledger().max_seq()

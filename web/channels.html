@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon — Rust Agent Runtime</title>
+  <title>Pantheon — Channels</title>
   <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
   <meta property="og:title" content="Pantheon — Rust Agent Runtime">
   <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
@@ -44,6 +44,8 @@
     th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
     th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
     tr:hover td { background: rgba(112,39,197,0.05); }
+    blockquote { border-left: 2px solid #7027c5; padding-left: 1rem; margin: 1rem 0; color: #e8e6e1; font-style: italic; }
+    p a, li a, td a { color: #e8e6e1; text-decoration: underline; text-decoration-color: #7027c5; text-underline-offset: 3px; }
     details { cursor: pointer; }
     details summary { list-style: none; }
     details summary::-webkit-details-marker { display: none; }
@@ -61,103 +63,40 @@
       </a>
       <div class="flex items-center gap-6 text-sm">
         <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
-        <a href="getting-started.html" class="text-muted hover:text-fg transition-colors">Docs</a>
-        <a href="configuration.html" class="text-muted hover:text-fg transition-colors">Configuration</a>
+        <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
+        <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
+        <a href="docs.html" class="text-muted hover:text-fg transition-colors">Docs</a>
         <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
-        <a href="channels.html" class="text-muted hover:text-fg transition-colors">Channels</a>
-        <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
       </div>
     </div>
   </nav>
 
-  <h1 class="text-3xl md:text-4xl font-bold text-fg mb-4 mt-8">Channels</h1>
-<p class="text-muted text-sm leading-relaxed mb-3">Three ways to talk to the runtime beyond the CLI: the local AG-UI web</p>
-<p class="text-muted text-sm leading-relaxed mb-3">server, Discord, and Telegram. All three consume the same runtime; the</p>
-<p class="text-muted text-sm leading-relaxed mb-3">agent never knows which surface sent a message.</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">AG-UI (local web)</h2>
-<pre><code>pantheon serve --host 127.0.0.1 --port 18789</code></pre>
-<table>
-<thead><tr><th>Route</th><th>What</th></tr></thead>
-<tbody>
-<thead><tr><th>`GET /`</th><th>Minimal dependency-free web client (send, follow stream, grant/deny buttons, cancel)</th></tr></thead>
-<tbody>
-<thead><tr><th>`GET /agui/stream?run=<id>&thread=<t>`</th><th>SSE frame stream</th></tr></thead>
-<tbody>
-<thead><tr><th>`POST /agui/rpc`</th><th>JSON-RPC 2.0: agui.send, agui.grant, agui.deny, agui.cancel, agui.frames, agui.sign, agui.artifact.put, agui.serve_hint, system.*</th></tr></thead>
-<tbody>
-<thead><tr><th>`GET /agui/blob/<task_id>?exp=&sig=`</th><th>Signed generative-UI artifacts (HMAC, strict task-id alphabet, TTL)</th></tr></thead>
-<tbody>
-<thead><tr><th>`GET /agui/health`</th><th>liveness</th></tr></thead>
-<tbody>
-</tbody></table>
-
-<p class="text-muted text-sm leading-relaxed mb-3"><code>agui.send</code> is asynchronous admission: it assigns a durable <code>turn_id</code>,</p>
-<p class="text-muted text-sm leading-relaxed mb-3">executes the canonical <code>Session</code> runtime in the background, and returns once</p>
-<p class="text-muted text-sm leading-relaxed mb-3">the turn-start event is replayable. Clients follow the resulting ledger events</p>
-<p class="text-muted text-sm leading-relaxed mb-3">over SSE. Frames are the UI projection of typed turn lifecycle, text deltas,</p>
-<p class="text-muted text-sm leading-relaxed mb-3">tool start/output, approval requests, and run completion. <code>agui.serve_hint</code></p>
-<p class="text-muted text-sm leading-relaxed mb-3">returns the actual bound addresses so clients never guess ports.</p>
-<p class="text-muted text-sm leading-relaxed mb-3">Request bodies are capped at 1 MiB (413 beyond). Artifact bodies are</p>
-<p class="text-muted text-sm leading-relaxed mb-3">capped at 8 MiB at the storage layer (<code>ARTIFACT_TOO_LARGE</code>).</p>
-<p class="text-muted text-sm leading-relaxed mb-3">Signing: <code>PANTHEON_GENUI_SECRET</code> (default is a dev-only constant; set a</p>
-<p class="text-muted text-sm leading-relaxed mb-3">real one before exposing the port). <code>pantheon sign <task_id></code> mints a URL</p>
-<p class="text-muted text-sm leading-relaxed mb-3">without the server running.</p>
-<p class="text-muted text-sm leading-relaxed mb-3">Auth: set <code>PANTHEON_SERVE_TOKEN</code> and every <code>/agui</code> route except</p>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>/agui/health</code> requires it (HTTP header <code>Authorization: Bearer <token></code></p>
-<p class="text-muted text-sm leading-relaxed mb-3">or <code>X-Pantheon-Token</code>; the SSE stream also accepts <code>?token=</code> for</p>
-<p class="text-muted text-sm leading-relaxed mb-3">EventSource). The served web client gets the token injected</p>
-<p class="text-muted text-sm leading-relaxed mb-3">automatically. Without the variable the server is open on localhost,</p>
-<p class="text-muted text-sm leading-relaxed mb-3">which is fine for single-user development and nothing else. Any</p>
-<p class="text-muted text-sm leading-relaxed mb-3">non-local bind, tunnel, or port-forward is rejected unless both a serve</p>
-<p class="text-muted text-sm leading-relaxed mb-3">token and <code>PANTHEON_GENUI_SECRET</code> are configured.</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Discord</h2>
-<p class="text-muted text-sm leading-relaxed mb-3">Two inbound paths, one normalizer:</p>
-<li class="mb-2 text-muted text-sm">**Gateway websocket** (<code>pantheon gateway</code>): bot token in</li>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>PANTHEON_DISCORD_TOKEN</code>. IDENTIFY/RESUME with session state,</p>
-<p class="text-muted text-sm leading-relaxed mb-3">heartbeats with missed-ACK reconnect, op 7/9 handling. Message Creates</p>
-<p class="text-muted text-sm leading-relaxed mb-3">and button Interactions arrive as the same <code>ChannelEvent</code> shape as the</p>
-<p class="text-muted text-sm leading-relaxed mb-3">webhook path.</p>
-<li class="mb-2 text-muted text-sm">**Webhook/bridge**: any external bridge can call</li>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>DiscordChannel::push_inbound</code> with a normalized payload.</p>
-<p class="text-muted text-sm leading-relaxed mb-3">Outbound: <code>DiscordRestTransport</code> posts channel messages; approval frames</p>
-<p class="text-muted text-sm leading-relaxed mb-3">carry Grant/Deny buttons whose <code>custom_id</code> is <code>grant:<scope></code> /</p>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>deny:<scope></code>; clicking one resolves the parked run's approval.</p>
-<p class="text-muted text-sm leading-relaxed mb-3">Content is chunked at Discord's 2000-char limit on Unicode character</p>
-<p class="text-muted text-sm leading-relaxed mb-3">boundaries.</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Telegram</h2>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>PANTHEON_TELEGRAM_BOT_TOKEN</code>. The daemon long-polls <code>getUpdates</code> with a</p>
-<p class="text-muted text-sm leading-relaxed mb-3">persisted offset cursor (survives restarts, never replays the window).</p>
-<p class="text-muted text-sm leading-relaxed mb-3">Approval frames use inline keyboards with <code>callback_data</code></p>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>grant:<scope></code> / <code>deny:<scope></code>. Chunked at 4096 chars.</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">The daemon</h2>
-<pre><code>PANTHEON_DISCORD_TOKEN=... PANTHEON_TELEGRAM_BOT_TOKEN=... \
-PANTHEON_GATEWAY_ALLOW=6123456789,223344556677889900 \
-pantheon gateway</code></pre>
-<p class="text-muted text-sm leading-relaxed mb-3">Access control: the gateway runs whatever a message says on this</p>
-<p class="text-muted text-sm leading-relaxed mb-3">machine, so it refuses to start without <code>PANTHEON_GATEWAY_ALLOW</code>, the</p>
-<p class="text-muted text-sm leading-relaxed mb-3">comma-separated list of platform user ids (Telegram user id, Discord</p>
-<p class="text-muted text-sm leading-relaxed mb-3">user id) allowed to talk to the bot. Everyone else gets a refusal and</p>
-<p class="text-muted text-sm leading-relaxed mb-3">nothing reaches the runtime. <code>PANTHEON_GATEWAY_POLICY</code> overrides the</p>
-<p class="text-muted text-sm leading-relaxed mb-3">session policy per deployment (<code>researcher</code> for read-only surfaces).</p>
-<p class="text-muted text-sm leading-relaxed mb-3">One thread per surface. Each tick:</p>
-<li class="mb-2 text-muted text-sm">Telegram long-poll (25s server-side wait) through the transport trait.</li>
-<li class="mb-2 text-muted text-sm">Drain webhook-fed inboxes (Discord bridge path).</li>
-<li class="mb-2 text-muted text-sm">Route events to the runtime sink: a plain message maps the</li>
-<p class="text-muted text-sm leading-relaxed mb-3">conversation thread to a run id (one run per conversation, remembered)</p>
-<p class="text-muted text-sm leading-relaxed mb-3">and starts/resumes chat; an approval click resolves the scope.</p>
-<li class="mb-2 text-muted text-sm">Deliver outbound replies to the channel.</li>
-<p class="text-muted text-sm leading-relaxed mb-3">Errors never kill the daemon: a failed poll backs off (1s doubling, 60s</p>
-<p class="text-muted text-sm leading-relaxed mb-3">cap) and retries. <code>Ctrl+C</code> stops cleanly.</p>
-<p class="text-muted text-sm leading-relaxed mb-3">Conversation -> run mapping is in-memory per process. Restarting the</p>
-<p class="text-muted text-sm leading-relaxed mb-3">daemon starts new run ids for the same chat threads; the old runs remain</p>
-<p class="text-muted text-sm leading-relaxed mb-3">in the ledger.</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Known limitations</h2>
-<li class="mb-2 text-muted text-sm">Rate limits (HTTP 429) surface as generic transport errors; the backoff</li>
-<p class="text-muted text-sm leading-relaxed mb-3">curve exists but is not yet driven by Retry-After.</p>
-<li class="mb-2 text-muted text-sm">One outbound channel is authoritative per daemon (the thread id IS the</li>
-<p class="text-muted text-sm leading-relaxed mb-3">channel address); routing one conversation across two surfaces needs</p>
-<p class="text-muted text-sm leading-relaxed mb-3">the ThreadRunMap plumbed through the CLI gateway command.</p>
-<li class="mb-2 text-muted text-sm">The web client is a smoke-test surface, not a product UI.</li>
+  <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
+<h1 class="text-3xl font-bold tracking-tight mb-2">Channels</h1><div class="glow-line my-6"></div>
+<p class="my-3 leading-relaxed">One agent, every surface. Identity, memory, and history follow you from the terminal to your phone to the browser — the interface presents, the runtime remembers.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Terminal</h2>
+<p class="my-3 leading-relaxed"><code>pantheon</code> opens the interactive interface; <code>pantheon run</code> serves scripts and automation. See <a href="sessions.html">Sessions</a>.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Web</h2>
+<pre><code>
+pantheon serve [--port N] [--host H]
+</code></pre>
+<p class="my-3 leading-relaxed">A local AG-UI server: web client at <code>/</code>, RPC at <code>/agui/rpc</code>, everything else gated by <code>PANTHEON_SERVE_TOKEN</code>. It runs the same Session runtime as the terminal and replays the ledger stream — a minimal reference surface, not a second product.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Messaging</h2>
+<p class="my-3 leading-relaxed">Discord and Telegram connect through the gateway:</p>
+<pre><code>
+pantheon gateway start    # supervised service (systemd/launchd), verified active
+pantheon gateway restart|stop|status|run
+</code></pre>
+<p class="my-3 leading-relaxed">Two requirements, both non-negotiable: channel tokens (<code>PANTHEON_DISCORD_TOKEN</code>, <code>PANTHEON_TELEGRAM_BOT_TOKEN</code> in <code>&lt;data_dir&gt;/.env</code>, never in config) and the pairing allowlist (<code>PANTHEON_GATEWAY_ALLOW</code>). Unknown senders are refused before anything reaches the runtime.</p>
+<p class="my-3 leading-relaxed">Replies route back with <code>pantheon run --say ... --deliver telegram|discord</code> — a durable outbox, so delivery survives gateway downtime.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><a href="sessions.html">Sessions</a> — the terminal interface</li>
+<li><a href="configuration.html#gateway">Configuration</a> — tokens and allowlist</li>
+<li><a href="troubleshooting.html">Troubleshooting</a> — connection issues</li>
+</ul>
+</main>
 
   <div class="glow-line max-w-5xl mx-auto"></div>
 
@@ -168,13 +107,13 @@ pantheon gateway</code></pre>
           <div class="logo-mark-sm"><img src="logo.png" alt="Pantheon" width="22" height="22"></div>
           <div>
             <span class="font-mono font-bold text-fg text-sm">pantheon</span>
-            <p class="text-muted text-xs mt-0.5">Rust agent runtime. MIT licensed. <span class="font-mono">pantheon-agent/pantheon</span> on GitHub.</p>
+            <p class="text-muted text-xs mt-0.5">Durable agent runtime. MIT licensed. <span class="font-mono">k1ng0mar/pantheon</span> on GitHub.</p>
           </div>
         </div>
         <div class="flex gap-8 text-sm">
-          <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
-          <a href="https://github.com/pantheon-agent/pantheon/blob/main/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
-          <a href="https://github.com/pantheon-agent/pantheon/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/developer/contributing.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
         </div>
       </div>
       <div class="glow-line my-8"></div>

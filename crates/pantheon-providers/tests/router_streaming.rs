@@ -12,9 +12,9 @@
 //! Auth: set `PANTHEON_KEY_ROUTER`; otherwise the test skips so `cargo
 //! test` stays green on machines without the local router.
 
-use pantheon_core::message::Message;
-use pantheon_core::model::{DefaultModel, FallbackChain, ModelPolicy};
-use pantheon_core::model_event::{ModelEvent, ModelEventSink, ModelUsage};
+use pantheon_api::message::Message;
+use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy};
+use pantheon_providers::model_event::{ModelEvent, ModelEventSink, ModelUsage};
 use pantheon_providers::{HttpTransport, ProviderChain};
 #[allow(unused_imports)]
 use pantheon_secrets::SecretValue;
@@ -32,6 +32,8 @@ impl ModelEventSink for Collect {
 fn router_chain() -> Option<ProviderChain<HttpTransport>> {
     let key = pantheon_secrets::SecretValue::new(std::env::var("PANTHEON_KEY_ROUTER").ok()?);
     let pol = ModelPolicy {
+        reasoning_budget: Default::default(),
+        reasoning: Default::default(),
         default: DefaultModel {
             provider: "router".into(),
             model: "chat".into(),
@@ -135,7 +137,7 @@ fn streaming_turn_emits_ordered_normalized_events() {
     }
 
     // Catalog context limit is represented for the pool model.
-    let meta = pantheon_core::catalog::model_meta("router", "chat");
+    let meta = pantheon_providers::catalog::model_meta("router", "chat");
     assert_eq!(meta.context_limit, Some(256_000));
     assert!(meta.streaming && meta.tools && !meta.vision);
 }

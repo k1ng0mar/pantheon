@@ -4,7 +4,7 @@
 //! budget, tool-call budget, model restrictions, and cost. Recursive
 //! spawning is allowed; accidental agent explosions are not. Every cap
 //! violation is a structured error, never a silent no-op.
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 
 fn serr(code: &str, cause: String, remediation: &str) -> PantheonError {
     PantheonError::new(code, Layer::Agent, false, cause, remediation, "")

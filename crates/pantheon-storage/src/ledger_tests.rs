@@ -61,7 +61,7 @@ fn round_trip_and_render_log() {
             call_id: "call_0_0".into(),
             tool: "shell".into(),
             args: String::new(),
-            provenance: pantheon_core::provenance::Provenance::system("test"),
+            provenance: pantheon_api::provenance::Provenance::system("test"),
         })
         .unwrap();
     ledger
@@ -245,7 +245,7 @@ fn an_unexpired_lease_with_a_dead_heartbeat_is_not_active() {
     // The run row is what makes it "stuck": a crash after RunStarted leaves
     // status 'running' with no terminal event ever to clear it.
     ledger
-        .append(&pantheon_core::events::Event::RunStarted { run_id: run.into() })
+        .append(&pantheon_api::events::Event::RunStarted { run_id: run.into() })
         .unwrap();
     assert_eq!(ledger.status(run).unwrap().as_deref(), Some("running"));
     let _held = leases
@@ -295,4 +295,129 @@ fn an_unexpired_lease_with_a_dead_heartbeat_is_not_active() {
     );
     // Which means the crashed run is repairable rather than invisible.
     assert_eq!(ledger.stuck_runs().unwrap().len(), 1);
+}
+
+/// The metrics fold is now the only user-visible replacement for
+/// `pantheon-otel`, so it has to be right about the cases that were folded
+/// into a single "finished" number before and quietly lost.
+#[test]
+fn run_metrics_count_each_outcome_separately() {
+    let led = Ledger::open_in_memory().unwrap();
+    let start = |run: &str| {
+        led.append(&Event::RunStarted { run_id: run.into() })
+            .unwrap()
+    };
+    let prov = pantheon_api::provenance::Provenance::system("test");
+
+    start("r_ok");
+    led.append(&Event::RunCompleted {
+        run_id: "r_ok".into(),
+    })
+    .unwrap();
+
+    start("r_bad");
+    led.append(&Event::RunFailed {
+        run_id: "r_bad".into(),
+        code: "BOOM".into(),
+    })
+    .unwrap();
+
+    start("r_give");
+    led.append(&Event::RunCanceled {
+        run_id: "r_give".into(),
+        reason: "user".into(),
+    })
+    .unwrap();
+
+    for run in ["r_ok", "r_bad", "r_give"] {
+        led.append(&Event::ToolStarted {
+            run_id: run.into(),
+            call_id: "c0".into(),
+            tool: "shell".into(),
+            args: String::new(),
+            provenance: prov.clone(),
+        })
+        .unwrap();
+        led.append(&Event::ApprovalRequested {
+            run_id: run.into(),
+            scope: "GitPush".into(),
+        })
+        .unwrap();
+    }
+    // Only r_ok got its approval, and only r_ok ran a model turn and trimmed.
+    led.append(&Event::ApprovalGranted {
+        run_id: "r_ok".into(),
+        scope: "GitPush".into(),
+    })
+    .unwrap();
+    led.append(&Event::ApprovalDenied {
+        run_id: "r_ok".into(),
+        scope: "Net".into(),
+    })
+    .unwrap();
+    led.append(&Event::ModelCompleted {
+        run_id: "r_ok".into(),
+    })
+    .unwrap();
+    led.append(&Event::ContextTrimmed {
+        run_id: "r_ok".into(),
+        estimated: 10,
+        window: 20,
+        dropped_rows: 3,
+        compacted_rows: 1,
+    })
+    .unwrap();
+    led.append(&Event::ContextCompressed {
+        run_id: "r_ok".into(),
+        model: "m".into(),
+        exchanges: 2,
+        rows: 4,
+        chars_before: 100,
+        chars_after: 20,
+    })
+    .unwrap();
+
+    let m = led.metrics("r_ok").unwrap();
+    assert_eq!(m.runs_started, 1);
+    assert_eq!(m.runs_completed, 1);
+    assert_eq!(m.runs_failed, 0, "a completed run must not count as failed");
+    assert_eq!(m.runs_canceled, 0);
+    assert_eq!(m.tool_calls, 1);
+    assert_eq!(m.model_turns, 1);
+    assert_eq!(
+        (
+            m.approvals_requested,
+            m.approvals_granted,
+            m.approvals_denied
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!((m.context_trims, m.context_compressions), (1, 1));
+
+    // The three outcomes stay distinguishable. This is the whole reason the
+    // fold exists rather than one "finished" counter.
+    assert_eq!(led.metrics("r_bad").unwrap().runs_failed, 1);
+    assert_eq!(led.metrics("r_bad").unwrap().runs_completed, 0);
+    assert_eq!(led.metrics("r_give").unwrap().runs_canceled, 1);
+    assert_eq!(led.metrics("r_give").unwrap().runs_completed, 0);
+    // Counters are per-run, not global.
+    assert_eq!(led.metrics("r_ok").unwrap().tool_calls, 1);
+    assert_eq!(led.metrics("nope").unwrap().runs_started, 0);
+}
+
+/// The rendered form has to name the number that matters when someone is
+/// scanning it. A missing `failed` count is how a bad run looks fine.
+#[test]
+fn run_metrics_render_names_failures_and_context_loss() {
+    let m = RunMetrics {
+        runs_started: 1,
+        runs_failed: 1,
+        context_trims: 4,
+        context_compressions: 2,
+        ..Default::default()
+    };
+    let s = m.to_string();
+    assert!(s.contains("1 failed"), "{s}");
+    assert!(s.contains("4 context trims"), "{s}");
+    assert!(s.contains("2 compressed"), "{s}");
 }

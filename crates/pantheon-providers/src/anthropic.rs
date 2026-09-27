@@ -8,17 +8,20 @@
 //! `message_delta`, `message_stop`, `ping`, `error`).
 
 use crate::http::{perr, AdapterTurn, ChatTransport, WireRequest};
+use crate::model_event::{ModelEvent, ModelEventSink, ModelUsage};
 use pantheon_agent::{ToolCall, TurnOutcome};
-use pantheon_core::capability::Capability;
-use pantheon_core::error::PantheonError;
-use pantheon_core::message::{Message, Role, ToolSchema};
-use pantheon_core::model_event::{ModelEvent, ModelEventSink, ModelUsage};
+use pantheon_api::capability::Capability;
+use pantheon_api::error::PantheonError;
+use pantheon_api::message::{Message, Role, ToolSchema};
 use std::collections::BTreeMap;
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 /// Build the wire request for one attempt.
+// Eight params for the same reason as the OpenAI builder: explicit wire
+// arguments at every call site beat a bundled struct nobody else uses.
+#[allow(clippy::too_many_arguments)]
 pub fn request(
     base_url: &str,
     api_key: &str,
@@ -27,6 +30,8 @@ pub fn request(
     tools: &[ToolSchema],
     stream: bool,
     max_tokens: u32,
+    reasoning: pantheon_api::model::ReasoningLevel,
+    reasoning_budget: Option<u32>,
 ) -> WireRequest {
     let system: Vec<&str> = messages
         .iter()
@@ -39,7 +44,7 @@ pub fn request(
         // with untrusted or memory-tier provenance carry a prefix so the
         // model can tell fetched data from instructions.
         let content = match &m.provenance {
-            Some(p) if p.trust.rank() <= pantheon_core::provenance::TrustTier::Memory.rank() => {
+            Some(p) if p.trust.rank() <= pantheon_api::provenance::TrustTier::Memory.rank() => {
                 format!("{} {}", p.envelope_prefix(), m.content)
             }
             _ => m.content.clone(),
@@ -88,6 +93,40 @@ pub fn request(
         "max_tokens": max_tokens,
         "messages": rows,
     });
+    // Reasoning effort maps to a thinking budget. An explicit budget
+    // wins over the level mapping; otherwise levels map to fixed budgets
+    // (`Minimal` shares the API-minimum floor rather than sending a value
+    // the API rejects). The API requires 1024 <= budget < max_tokens;
+    // when the window cannot satisfy that, the param is skipped rather
+    // than sending a body the API rejects. `Off` with no budget leaves
+    // the body exactly as before.
+    let level_budget = match reasoning {
+        pantheon_api::model::ReasoningLevel::Off => None,
+        pantheon_api::model::ReasoningLevel::Minimal => Some(1024),
+        pantheon_api::model::ReasoningLevel::Low => Some(4096),
+        pantheon_api::model::ReasoningLevel::Medium => Some(10_000),
+        pantheon_api::model::ReasoningLevel::High => Some(20_000),
+        pantheon_api::model::ReasoningLevel::Xhigh => Some(32_000),
+        // Dynamic: whatever the window allows. The guard below drops it
+        // when the window is too small to hold any legal budget.
+        pantheon_api::model::ReasoningLevel::Max => max_tokens.checked_sub(1),
+    };
+    // An explicit budget wins over the level mapping; an explicit zero
+    // disables (it reads as "no budget", not as a 0-token thinking block
+    // the API would reject, and not as "fall back to the level").
+    let want = match reasoning_budget {
+        Some(0) => None,
+        Some(b) => Some(b),
+        None => level_budget,
+    };
+    if let Some(want) = want {
+        if want >= 1024 && want < max_tokens {
+            body["thinking"] = serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": want,
+            });
+        }
+    }
     if !system.is_empty() {
         body["system"] = serde_json::json!(system.join("\n\n"));
     }

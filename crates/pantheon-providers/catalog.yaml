@@ -1,0 +1,558 @@
+# Pantheon provider + model catalog.
+#
+# Data-driven: edit this file to add providers without code changes.
+# Override at runtime: PANTHEON_CATALOG=/path/to/own.yaml
+#
+# Fields per provider:
+#   id          stable key (--provider ID)
+#   label       human name for UI
+#   base_url    full base URL (no trailing slash). May contain {placeholders}
+#               for account/region/resource/project scoping — resolved at
+#               request time from PANTHEON_<PROVIDER>_<VAR> (see docs/user-guide/providers.md).
+#   api_mode    openai | anthropic
+#   base_env    env var overriding base_url (e.g. PANTHEON_BASE_OPENAI)
+#   key_env     env var holding the API key (vendor-native names preferred)
+#   key_header  HTTP header carrying the key (default Authorization/Bearer;
+#               e.g. Xiaomi MiMo wants `api-key` with the raw key)
+#   models      curated model rows (see ModelMeta shape). Empty = undiscovered:
+#               `pantheon model` asks the endpoint (GET {base}/models) instead.
+#   prominent   show in the picker UI
+#   tag         short blurb ("Chinese lab", "fast inference", ...)
+#
+# Any provider id NOT in this list falls back to OpenAI-compatible
+# passthrough: the id itself is used as the base URL.
+
+providers:
+  - id: openai
+    label: OpenAI
+    base_url: https://api.openai.com/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_OPENAI
+    key_env: OPENAI_API_KEY
+    prominent: true
+    tag: Major frontier lab
+    models:
+      - model: gpt-4o
+        context_limit: 128000
+        max_output_tokens: 16384
+        tools: true
+        vision: true
+        reasoning: false
+        streaming: true
+        cost: { input_per_mtok_usd: 2.50, output_per_mtok_usd: 10.00 }
+      - model: gpt-4o-mini
+        context_limit: 128000
+        max_output_tokens: 16384
+        tools: true
+        vision: true
+        reasoning: false
+        streaming: true
+        cost: { input_per_mtok_usd: 0.15, output_per_mtok_usd: 0.60 }
+
+  - id: anthropic
+    label: Anthropic
+    base_url: https://api.anthropic.com/v1
+    api_mode: anthropic
+    base_env: PANTHEON_BASE_ANTHROPIC
+    key_env: ANTHROPIC_API_KEY
+    prominent: true
+    tag: Major frontier lab, native Messages API
+    models:
+      - model: claude-opus-4
+        context_limit: 200000
+        max_output_tokens: 32000
+        tools: true
+        vision: true
+        reasoning: true
+        streaming: true
+        cost: { input_per_mtok_usd: 15.00, output_per_mtok_usd: 75.00 }
+      - model: claude-sonnet-4
+        context_limit: 200000
+        max_output_tokens: 64000
+        tools: true
+        vision: true
+        reasoning: true
+        streaming: true
+        cost: { input_per_mtok_usd: 3.00, output_per_mtok_usd: 15.00 }
+
+  - id: google
+    label: Google AI Studio
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_mode: openai
+    base_env: PANTHEON_BASE_GOOGLE
+    key_env: GEMINI_API_KEY
+    prominent: true
+    tag: Multimodal, cheap/free tier, OpenAI compatibility layer
+    models:
+      - model: gemini-2.0-flash
+        context_limit: 1000000
+        max_output_tokens: 8192
+        tools: true
+        vision: true
+        reasoning: true
+        streaming: true
+        cost: { input_per_mtok_usd: 0.075, output_per_mtok_usd: 0.30 }
+      - model: gemini-2.5-pro
+        context_limit: 1000000
+        max_output_tokens: 20000
+        tools: true
+        vision: true
+        reasoning: true
+        streaming: true
+        cost: { input_per_mtok_usd: 1.25, output_per_mtok_usd: 5.00 }
+
+  - id: vertex
+    label: Google Vertex AI
+    base_url: https://aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/endpoints/openapi
+    api_mode: openai
+    base_env: PANTHEON_BASE_VERTEX
+    key_env: GOOGLE_ACCESS_TOKEN
+    prominent: true
+    tag: Project/location template — set PANTHEON_BASE_VERTEX to the concrete URL; short-lived GCP access token
+    models: []
+
+  - id: bedrock
+    label: AWS Bedrock
+    base_url: https://bedrock-runtime.{region}.amazonaws.com/openai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_BEDROCK
+    key_env: AWS_BEARER_TOKEN_BEDROCK
+    prominent: true
+    tag: Region template — set PANTHEON_BASE_BEDROCK; Bearer key works, SigV4 not yet
+    models: []
+
+  - id: azure
+    label: Azure AI Foundry
+    base_url: https://{resource}.openai.azure.com/openai/v1/
+    api_mode: openai
+    base_env: PANTHEON_BASE_AZURE
+    key_env: AZURE_OPENAI_API_KEY
+    prominent: true
+    tag: Resource template — set PANTHEON_BASE_AZURE; model id is the deployment name
+    models: []
+
+  - id: huggingface
+    label: Hugging Face Inference Providers
+    base_url: https://router.huggingface.co/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_HUGGINGFACE
+    key_env: HF_TOKEN
+    prominent: true
+    tag: Org/model routing, provider suffixes
+    models: []
+
+  - id: openrouter
+    label: OpenRouter
+    base_url: https://openrouter.ai/api/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_OPENROUTER
+    key_env: OPENROUTER_API_KEY
+    prominent: true
+    tag: Aggregator, 500+ models, fallback routing
+    models: []
+
+  - id: fireworks
+    label: Fireworks AI
+    base_url: https://api.fireworks.ai/inference/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_FIREWORKS
+    key_env: FIREWORKS_API_KEY
+    prominent: true
+    tag: Open models
+    models: []
+
+  - id: together
+    label: Together AI
+    base_url: https://api.together.xyz/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_TOGETHER
+    key_env: TOGETHER_API_KEY
+    prominent: true
+    tag: Open models
+    models: []
+
+  - id: groq
+    label: Groq
+    base_url: https://api.groq.com/openai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_GROQ
+    key_env: GROQ_API_KEY
+    prominent: true
+    tag: Fast inference
+    models:
+      - model: llama-3.3-70b-versatile
+        context_limit: 128000
+        max_output_tokens: 16384
+        tools: true
+        vision: false
+        reasoning: true
+        streaming: true
+
+  - id: deepseek
+    label: DeepSeek
+    base_url: https://api.deepseek.com/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_DEEPSEEK
+    key_env: DEEPSEEK_API_KEY
+    prominent: true
+    tag: Cheap reasoning, Chinese lab
+    models:
+      - model: deepseek-chat
+        context_limit: 128000
+        max_output_tokens: 8192
+        tools: true
+        vision: false
+        reasoning: true
+        streaming: true
+        cost: { input_per_mtok_usd: 0.27, output_per_mtok_usd: 1.10 }
+      - model: deepseek-reasoner
+        context_limit: 64000
+        max_output_tokens: 8192
+        tools: true
+        vision: false
+        reasoning: true
+        streaming: true
+        cost: { input_per_mtok_usd: 1.10, output_per_mtok_usd: 4.40 }
+
+  - id: mistral
+    label: Mistral AI
+    base_url: https://api.mistral.ai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_MISTRAL
+    key_env: MISTRAL_API_KEY
+    prominent: true
+    tag: European lab
+    models:
+      - model: mistral-medium-3
+        context_limit: 128000
+        max_output_tokens: 16384
+        tools: true
+        vision: true
+        reasoning: false
+        streaming: true
+
+  - id: xai
+    label: xAI
+    base_url: https://api.x.ai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_XAI
+    key_env: XAI_API_KEY
+    prominent: true
+    tag: Grok
+    models:
+      - model: grok-2
+        context_limit: 131072
+        max_output_tokens: 8192
+        tools: true
+        vision: true
+        reasoning: true
+        streaming: true
+
+  - id: qwen
+    label: Qwen / Alibaba Cloud
+    base_url: https://dashscope.aliyuncs.com/compatible/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_QWEN
+    key_env: DASHSCOPE_API_KEY
+    prominent: true
+    tag: Chinese lab
+    models:
+      - model: qwen3-235b-a22b
+        context_limit: 64000
+        max_output_tokens: 16384
+        tools: true
+        vision: true
+        reasoning: true
+        streaming: true
+        cost: { input_per_mtok_usd: 0.55, output_per_mtok_usd: 1.65 }
+
+  - id: zhipu
+    label: Zhipu AI / GLM
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_mode: openai
+    base_env: PANTHEON_BASE_ZHIPU
+    key_env: ZHIPUAI_API_KEY
+    prominent: true
+    tag: Chinese lab
+    models:
+      - model: glm-4-flash
+        context_limit: 128000
+        max_output_tokens: 8192
+        tools: true
+        vision: true
+        reasoning: false
+        streaming: true
+
+  - id: moonshot
+    label: Moonshot AI
+    base_url: https://api.moonshot.ai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_MOONSHOT
+    key_env: MOONSHOT_API_KEY
+    prominent: true
+    tag: Kimi, Chinese lab
+    models:
+      - model: moonshot-v1-128k
+        context_limit: 128000
+        max_output_tokens: 16384
+        tools: true
+        vision: true
+        reasoning: false
+        streaming: true
+
+  - id: minimax
+    label: MiniMax
+    base_url: https://api.minimax.io/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_MINIMAX
+    key_env: MINIMAX_API_KEY
+    prominent: true
+    tag: Chinese lab, agent models
+    models:
+      - model: minimax-01
+        context_limit: 240000
+        max_output_tokens: 16384
+        tools: true
+        vision: true
+        reasoning: true
+        streaming: true
+
+  - id: nvidia-nim
+    label: NVIDIA NIM
+    base_url: https://integrate.api.nvidia.com/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_NVIDIA_NIM
+    key_env: NVIDIA_API_KEY
+    prominent: true
+    tag: GPU-optimized inference
+    models: []
+
+  - id: cloudflare
+    label: Cloudflare Workers AI
+    base_url: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_CLOUDFLARE
+    key_env: CLOUDFLARE_API_TOKEN
+    prominent: true
+    tag: Account template — set PANTHEON_BASE_CLOUDFLARE with your account ID
+    models: []
+
+  - id: deepinfra
+    label: DeepInfra
+    base_url: https://api.deepinfra.com/v1/openai
+    api_mode: openai
+    base_env: PANTHEON_BASE_DEEPINFRA
+    key_env: DEEPINFRA_API_KEY
+    prominent: true
+    tag: Open models
+    models: []
+
+  - id: novita
+    label: Novita AI
+    base_url: https://api.novita.ai/openai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_NOVITA
+    key_env: NOVITA_API_KEY
+    prominent: true
+    tag: Provider/model routing
+    models: []
+
+  - id: cerebras
+    label: Cerebras
+    base_url: https://api.cerebras.ai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_CEREBRAS
+    key_env: CEREBRAS_API_KEY
+    prominent: true
+    tag: Fast inference
+    models:
+      - model: llama-3.3-70b
+        context_limit: 128000
+        max_output_tokens: 16384
+        tools: true
+        vision: false
+        reasoning: false
+        streaming: true
+
+  - id: sambanova
+    label: SambaNova
+    base_url: https://api.sambanova.ai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_SAMBANOVA
+    key_env: SAMBANOVA_API_KEY
+    prominent: true
+    tag: RDU inference
+    models: []
+
+  - id: nebius
+    label: Nebius Token Factory
+    base_url: https://api.tokenfactory.nebius.com/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_NEBIUS
+    key_env: NEBIUS_API_KEY
+    prominent: true
+    tag: AI Studio is api.studio.nebius.ai/v1 — override to switch
+    models: []
+
+  - id: upstage
+    label: Upstage
+    base_url: https://api.upstage.ai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_UPSTAGE
+    key_env: UPSTAGE_API_KEY
+    prominent: true
+    tag: Solar models
+    models: []
+
+  - id: cohere
+    label: Cohere
+    base_url: https://api.cohere.ai/compatibility/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_COHERE
+    key_env: COHERE_API_KEY
+    prominent: true
+    tag: Command models via compatibility layer
+    models: []
+
+  - id: perplexity
+    label: Perplexity
+    base_url: https://api.perplexity.ai
+    api_mode: openai
+    base_env: PANTHEON_BASE_PERPLEXITY
+    key_env: PERPLEXITY_API_KEY
+    prominent: true
+    tag: Search-grounded answers
+    models: []
+
+  - id: mimo
+    label: Xiaomi MiMo
+    base_url: https://api.xiaomimimo.com/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_MIMO
+    key_env: MIMO_API_KEY
+    key_header: api-key
+    prominent: true
+    tag: Key goes in the api-key header, not Bearer
+    models: []
+
+  - id: nous
+    label: Nous
+    base_url: https://inference-api.nousresearch.com/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_NOUS
+    key_env: PANTHEON_KEY_NOUS
+    prominent: true
+    tag: Open models
+    models: []
+
+  - id: tokenrouter
+    label: TokenRouter
+    base_url: https://api.tokenrouter.com/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_TOKENROUTER
+    key_env: PANTHEON_KEY_TOKENROUTER
+    prominent: true
+    tag: Aggregator
+    models: []
+
+  - id: gmi
+    label: GMI cloud
+    base_url: https://api.gmi-serving.com/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_GMI
+    key_env: PANTHEON_KEY_GMI
+    prominent: true
+    tag: Inference cloud
+    models: []
+
+  - id: bai
+    label: B.ai
+    base_url: https://api.b.ai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_BAI
+    key_env: PANTHEON_KEY_BAI
+    prominent: true
+    tag: Inference cloud
+    models: []
+
+  - id: experiential
+    label: Experiential Labs
+    base_url: https://api.experientiallabs.ai/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_EXPERIENTIAL
+    key_env: PANTHEON_KEY_EXPERIENTIAL
+    prominent: true
+    tag: Inference cloud
+    models: []
+
+  - id: agnes
+    label: Agnes
+    base_url: https://apihub.agnes-ai.com/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_AGNES
+    key_env: PANTHEON_KEY_AGNES
+    prominent: true
+    tag: Inference cloud
+    models: []
+
+  - id: xkiro
+    label: Xkiro
+    base_url: https://api.xkiro.com/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_XKIRO
+    key_env: PANTHEON_KEY_XKIRO
+    prominent: true
+    tag: Inference cloud
+    models: []
+
+  - id: local
+    label: Local (Ollama)
+    base_url: http://127.0.0.1:11434/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_LOCAL
+    key_env: PANTHEON_KEY_LOCAL
+    prominent: true
+    tag: Local
+    models: []
+
+  - id: lmstudio
+    label: LM Studio
+    base_url: http://127.0.0.1:1234/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_LMSTUDIO
+    key_env: ""
+    prominent: true
+    tag: Local, no key needed
+    models: []
+
+  - id: router
+    label: Local llm-router
+    base_url: http://127.0.0.1:8015/v1
+    api_mode: openai
+    base_env: PANTHEON_BASE_ROUTER
+    key_env: PANTHEON_KEY_ROUTER
+    prominent: true
+    # Development infrastructure, not a product provider. Resolvable by id
+    # so the e2e suite can reach a model through it, and absent from every
+    # picker so no user's setup wizard offers a loopback process.
+    dev: true
+    tag: Local
+    models:
+      - model: chat
+        context_limit: 256000
+        tools: true
+        vision: false
+        reasoning: true
+        streaming: true
+      - model: code
+        context_limit: 262144
+        tools: true
+        vision: false
+        reasoning: true
+        streaming: true
+      - model: media
+        context_limit: 128000
+        tools: false
+        vision: true
+        reasoning: false
+        streaming: true

@@ -4,13 +4,13 @@
 //! Every recalled row carries its provenance so the agent (and `pantheon logs`)
 //! can see where a belief came from, including its trust tier.
 //!
-//! The `trust` column is tiered per pantheon_core::provenance::TrustTier.
+//! The `trust` column is tiered per pantheon_api::provenance::TrustTier.
 //! Rows written before tiers existed backfill as `memory` tier on open:
 //! they were human/import authored in practice, and treating legacy data
 //! as mid-trust is safer than treating it as authoritative.
 use crate::{LayerKind, MemoryRecord, Proposal, Provenance};
-use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::provenance::TrustTier;
+use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::provenance::TrustTier;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -100,7 +100,7 @@ fn trust_from(s: &str) -> TrustTier {
 
 /// SQL rank of a stored trust tier. `col` is a column reference in the
 /// upsert (`memories.trust` = the row already stored, `excluded.trust` =
-/// the incoming one). Mirrors `TrustTier::rank` in pantheon-core.
+/// the incoming one). Mirrors `TrustTier::rank` in pantheon-api.
 fn sql_rank(col: &str) -> String {
     format!(
         "(CASE WHEN {col} = 'system' THEN 3          WHEN {col} = 'user' THEN 2          WHEN {col} = 'memory' THEN 1          ELSE 0 END)"
@@ -289,7 +289,7 @@ impl MemoryStore {
         &self,
         namespace: &str,
         key: &str,
-        tier: pantheon_core::provenance::TrustTier,
+        tier: pantheon_api::provenance::TrustTier,
     ) -> Result<MemoryRecord, PantheonError> {
         let updated = {
             let conn = self
@@ -397,8 +397,19 @@ impl MemoryStore {
 
     /// FTS recall across the given layers, narrowest-first ordering applied
     /// by the caller passing layers in priority order.
-    pub fn search(
+    /// FTS recall, scoped to one namespace and a set of layers.
+    ///
+    /// `namespaces` is enforced **in SQL**, not by post-filtering. An
+    /// earlier version had no predicate at all and used `layers` only to
+    /// sort the results it had already returned, which meant every recall
+    /// crossed agent boundaries: with per-agent namespaces, Zeus reading
+    /// his own memories also received Nyx's and Athena's. Post-filtering
+    /// would leak too, and would additionally cap `limit` before the
+    /// filter ran, so a busy foreign namespace could crowd out the
+    /// caller's own rows.
+    pub fn search_scoped(
         &self,
+        namespaces: &[&str],
         layers: &[LayerKind],
         query: &str,
         limit: usize,
@@ -410,16 +421,50 @@ impl MemoryStore {
             .conn
             .lock()
             .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
+        // `["*"]` is the explicit unrestricted form, reserved for operator
+        // tooling (`pantheon memory recall '*' ...`). An *empty* list stays
+        // a hard refusal: a caller that has not established who it reads as
+        // must get nothing rather than everything.
+        let unrestricted = namespaces == ["*"];
+        if namespaces.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Explicit `?N` indices throughout. Mixing numbered placeholders
+        // with bare `?` makes SQLite auto-number the bare ones from 1 and
+        // collide with the ones already used, so the bind count stops
+        // matching the parameter count.
+        let mut next_index = 2; // ?1 is the FTS match term
+        let ns_clause = if unrestricted {
+            String::new()
+        } else {
+            let idx: Vec<String> = (0..namespaces.len())
+                .map(|i| format!("?{}", next_index + i))
+                .collect();
+            next_index += namespaces.len();
+            format!(" AND m.namespace IN ({})", idx.join(","))
+        };
+        let layer_clause = if layers.is_empty() {
+            String::new()
+        } else {
+            let idx: Vec<String> = (0..layers.len())
+                .map(|i| format!("?{}", next_index + i))
+                .collect();
+            next_index += layers.len();
+            format!(" AND m.layer IN ({})", idx.join(","))
+        };
+        let sql = format!(
+            "SELECT m.layer, m.namespace, m.key, m.value, m.source, m.origin,
+                m.trust, m.recorded_at_ms, bm25(memories_fts) AS rank
+         FROM memories_fts f
+         JOIN memories m ON m.id = f.rowid
+         WHERE memories_fts MATCH ?1
+           {ns_clause}{layer_clause}
+         ORDER BY rank LIMIT ?{next_index}"
+        );
         let mut stmt = conn
-            .prepare(
-                "SELECT m.layer, m.namespace, m.key, m.value, m.source, m.origin,
-                    m.trust, m.recorded_at_ms, bm25(memories_fts) AS rank
-             FROM memories_fts f
-             JOIN memories m ON m.id = f.rowid
-             WHERE memories_fts MATCH ?1
-             ORDER BY rank LIMIT ?2",
-            )
+            .prepare(&sql)
             .map_err(|e| serr("MEM_SEARCH", e.to_string()))?;
+        let layer_names: Vec<&str> = layers.iter().copied().map(layer_str).collect();
         let fts_query = query
             .split_whitespace()
             .map(|token| {
@@ -435,8 +480,21 @@ impl MemoryStore {
         if fts_query.is_empty() {
             return Ok(Vec::new());
         }
+        // Bind in *index* order, which is not clause order: the match term
+        // is ?1 even though its clause comes after the IN lists.
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        binds.push(Box::new(fts_query.clone()));
+        if !unrestricted {
+            for n in namespaces {
+                binds.push(Box::new(*n));
+            }
+        }
+        for l in &layer_names {
+            binds.push(Box::new(*l));
+        }
+        binds.push(Box::new(limit as i64));
         let rows = stmt
-            .query_map(params![fts_query, limit as i64], |r| {
+            .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
                 Ok(Recalled {
                     record: MemoryRecord {
                         layer: layer_from(&r.get::<_, String>(0)?),

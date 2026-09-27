@@ -4,8 +4,10 @@ use serde_json::json;
 
 #[test]
 fn no_embeddings_auxiliary_means_local() {
-    let policy = pantheon_core::model::ModelPolicy {
-        default: pantheon_core::model::DefaultModel {
+    let policy = pantheon_api::model::ModelPolicy {
+        reasoning_budget: Default::default(),
+        reasoning: Default::default(),
+        default: pantheon_api::model::DefaultModel {
             provider: "x".into(),
             model: "y".into(),
         },
@@ -19,13 +21,15 @@ fn no_embeddings_auxiliary_means_local() {
 
 #[test]
 fn embeddings_auxiliary_selects_provider() {
-    let policy = pantheon_core::model::ModelPolicy {
-        default: pantheon_core::model::DefaultModel {
+    let policy = pantheon_api::model::ModelPolicy {
+        reasoning: Default::default(),
+        reasoning_budget: Default::default(),
+        default: pantheon_api::model::DefaultModel {
             provider: "x".into(),
             model: "y".into(),
         },
         fallbacks: Default::default(),
-        auxiliaries: vec![pantheon_core::model::AuxiliaryModel {
+        auxiliaries: vec![pantheon_api::model::AuxiliaryModel {
             kind: AuxiliaryKind::Embeddings,
             provider: "router".into(),
             model: "text-embed".into(),

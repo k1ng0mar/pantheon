@@ -29,7 +29,7 @@
 //! is invoked; plugins only store/return what they are handed.
 use crate::backend::BackendKind;
 use crate::{BackendInfo, BackendRegistry, BackendSelection, LayerKind};
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
@@ -343,17 +343,22 @@ impl StdioBackend {
 impl crate::MemoryBackend for StdioBackend {
     fn recall(
         &self,
-        _policy: &pantheon_core::capability::Policy,
+        _policy: &pantheon_api::capability::Policy,
+        namespaces: &[&str],
         layers: &[LayerKind],
         query: &str,
         limit: usize,
     ) -> Result<Vec<crate::Recalled>, PantheonError> {
+        if namespaces.is_empty() {
+            return Ok(Vec::new());
+        }
         let names: Vec<&str> = layers.iter().map(|l| layer_tag(*l)).collect();
         let resp = self.call(&serde_json::json!({
             "op": "recall",
             "query": query,
             "limit": limit,
             "layers": names,
+            "namespaces": namespaces,
         }))?;
         serde_json::from_value(resp.get("hits").cloned().unwrap_or(serde_json::json!([])))
             .map_err(|e| perr("MEM_PLUGIN_DECODE", format!("recall hits invalid: {e}")))
@@ -361,7 +366,7 @@ impl crate::MemoryBackend for StdioBackend {
 
     fn write(
         &self,
-        _policy: &pantheon_core::capability::Policy,
+        _policy: &pantheon_api::capability::Policy,
         proposal: crate::Proposal,
         max_bytes: usize,
     ) -> Result<crate::MemoryRecord, PantheonError> {
@@ -428,7 +433,7 @@ impl crate::MemoryBackend for StdioBackend {
 
     fn confirm(
         &self,
-        _policy: &pantheon_core::capability::Policy,
+        _policy: &pantheon_api::capability::Policy,
         namespace: &str,
         key: &str,
     ) -> Result<crate::MemoryRecord, PantheonError> {

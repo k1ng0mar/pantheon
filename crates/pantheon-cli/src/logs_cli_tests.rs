@@ -1,6 +1,6 @@
 //! Tests for the `logs` reader. Sibling file so `logs_cli.rs` stays test-free.
 use super::*;
-use pantheon_core::logging as core_log;
+use pantheon_api::logging as core_log;
 
 /// Write a log file the reader will see, and return its path.
 fn write_log(name: &str, body: &str) -> PathBuf {

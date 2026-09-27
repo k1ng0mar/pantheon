@@ -11,7 +11,7 @@
 //!
 //! Additive by design: nothing here changes run/event handling.
 
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;

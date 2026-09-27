@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-pantheon-core = { path = "../pantheon-core" }
+pantheon-api = { path = "../pantheon-api" }
 
 [lints]
 workspace = true

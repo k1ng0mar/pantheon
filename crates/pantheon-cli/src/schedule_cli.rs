@@ -466,9 +466,9 @@ fn run_job_now(job: &StoredJob, data_dir: &Path) {
         .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
         .unwrap_or(false);
     let policy = if allow_memory {
-        pantheon_core::capability::Policy::coder_with_memory()
+        pantheon_api::capability::Policy::coder_with_memory()
     } else {
-        pantheon_core::capability::Policy::coder()
+        pantheon_api::capability::Policy::coder()
     };
     let secrets = config_doc::chat_secrets(file_cfg.as_ref());
     let session = match Session::new(data_dir.to_path_buf(), policy, model_policy, secrets) {

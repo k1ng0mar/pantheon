@@ -1,128 +1,66 @@
 # Getting started
 
-## Prerequisites
+Install Pantheon, point it at a model, start working.
 
-- A prebuilt binary (the installer below), or a Rust toolchain
-  (rustup, edition 2021) if you are building from source.
-- For the installer: `curl` and `tar` only. No Node, npm, Git,
-  Python, Rust, or Cargo required.
+## Install
 
-## Install (recommended)
+Linux or macOS:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash
 ```
 
-Downloads the latest GitHub release, verifies it, links the binary
-into `~/.local/bin`, writes a default config to `~/.pantheon/`, and
-runs a verification pass. Re-running is idempotent and never
-overwrites an existing `config.toml`.
+Windows (PowerShell):
 
-Pin a version:
-
-```sh
-PANTHEON_VERSION=v0.1.0 bash install.sh
+```powershell
+iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb | iex
 ```
 
-Stages are explicit so a failure names its stage: `[1/4] Checking
-environment`, `[2/4] Installing Pantheon`, `[3/4] Initializing`,
-`[4/4] Verifying installation`. If the runtime probe times out you
-get exactly that (`⚠ Runtime probe timed out after 10s`) plus
-confirmation that the install itself succeeded — then run
-`pantheon doctor`.
+A prebuilt binary from GitHub Releases, linked into `~/.local/bin`. Needs only `curl` and `tar`. Re-running never overwrites your config. Pin a release with `PANTHEON_VERSION=v0.1.0`.
 
-## Build (from source)
+Prefer source? `git clone` + `cargo build --release` (Rust edition 2021). SQLite is bundled; nothing else to run.
 
-```sh
-git clone https://github.com/k1ng0mar/pantheon && cd pantheon
-cargo build --release          # or cargo build for a debug binary
-```
-
-The binary is `target/release/pantheon` (or `target/debug/pantheon`).
-
-## First setup
+## Set up
 
 ```sh
 pantheon setup
 ```
 
-Five questions: profile name, provider, model, API key env var name, and
-execution policy. Answer them and you get `~/.pantheon/config.toml`.
-
-Non-interactive (scripts, CI):
+Answer five questions — profile, provider, model, API key location, policy — and you get `~/.pantheon/config.toml`. Scripted setups pass flags instead of answering:
 
 ```sh
-pantheon setup --yes \
-  --profile dev \
-  --provider openai \
-  --model gpt-4o-mini \
-  --api-key-env OPENAI_API_KEY \
-  --policy coder \
-  --memory native \
-  --packs core
+pantheon setup --yes --provider openai --model gpt-4o-mini \
+  --api-key-env OPENAI_API_KEY --policy coder
 ```
 
-Every question has a flag. `--yes` accepts defaults for anything you did
-not flag. Secrets are never written to the config file: setup stores the
-env var NAME and resolves it at runtime.
+Only the key's *name* goes in the config; the value stays in your environment.
 
-## First chat
-
-Interactive session (the normal way):
+## Run it
 
 ```sh
 export OPENAI_API_KEY=sk-...
 pantheon
 ```
 
-Type a message at the `>` prompt. The conversation keeps its run id and
-full ledger history across exits; `/help` lists the session commands.
+Talk to it. Leave. Come back — the work remains, with its history. `/help` lists session commands.
 
-One-shot (scripts, CI):
-
-```sh
-pantheon run --say "what files are in this directory" --deliver session
-```
-
-The model can call tools (shell, file read/write, git) according to the
-policy. Shell commands pass a dangerous-pattern pre-gate (`rm -rf /`-class
-commands are refused with `DANGER_BLOCKED` before execution). Each run
-gets an id like `run_1690000000000_ab12`; everything it did is recorded
-in the ledger.
+No terminal? No session. For scripts and CI:
 
 ```sh
-pantheon runs run_1690000000000_ab12   # full event trace (in-session: /status)
-pantheon runs run_1690000000000_ab12  # full event replay in words
+pantheon run --taskID t1 --say "summarize these logs" --deliver session
 ```
 
-## Where data lives
-
-`$PANTHEON_DATA_DIR` or `~/.pantheon/`:
-
-| File | What it is |
-|---|---|
-| `config.toml` | Your configuration (setup writes it, doctor validates it) |
-| `ledger.db` | Event ledger + durable operations + run leases + artifacts |
-| `memory.db` | Five-layer memory store |
-| `memory-backend.toml` | Which memory backend is selected |
-| `extensions/` | Loaded plugins |
-| `safewrite/` | File-edit checkpoints and the write journal |
-| `gateway/` | Channel cursors (Telegram update offsets, Discord) |
-
-## Next steps
-
-- Point it at a real model: docs/configuration.md
-- Understand what the agent is allowed to do: docs/configuration.md
-  (policies) and docs/plugins.md (capability gating)
-- Long-running or resumable work: docs/runs-and-recovery.md
-- Multi-step tasks with human checkpoints: docs/pipelines.md
-- Talk to it from Discord/Telegram: docs/channels.md
-
-## Verify your install
+## Check health
 
 ```sh
 pantheon doctor
 ```
 
-Exit 0 means config, model key, ledger, memory store, and plugins are all
-healthy. Each failed check names its fix.
+Exit 0 means config, key, ledger, memory, and plugins are healthy. Anything else names its fix.
+
+## Next steps
+
+- [Sessions](user-guide/sessions.md) — the interface, approvals, inspecting runs
+- [Agents](user-guide/agents.md) — identities that persist
+- [Runs](user-guide/runs.md) — lifecycle, recovery, pipelines, scheduling
+- [Configuration](reference/configuration.md) — every `config.toml` field

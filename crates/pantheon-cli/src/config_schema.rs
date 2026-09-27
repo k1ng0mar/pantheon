@@ -94,11 +94,11 @@ impl PolicyPreset {
     /// two-way `allow_memory` boolean at four call sites, so `reader` and
     /// `coder` both produced `Policy::coder()` and a user who set
     /// `policy = "reader"` got shell and file writes.
-    pub fn to_policy(self) -> pantheon_core::capability::Policy {
+    pub fn to_policy(self) -> pantheon_api::capability::Policy {
         match self {
-            Self::Reader => pantheon_core::capability::Policy::researcher_readonly(),
-            Self::Coder => pantheon_core::capability::Policy::coder(),
-            Self::CoderMemory => pantheon_core::capability::Policy::coder_with_memory(),
+            Self::Reader => pantheon_api::capability::Policy::researcher_readonly(),
+            Self::Coder => pantheon_api::capability::Policy::coder(),
+            Self::CoderMemory => pantheon_api::capability::Policy::coder_with_memory(),
         }
     }
 }
@@ -109,7 +109,7 @@ impl PolicyPreset {
 /// the two coder policies, and `PANTHEON_POLICY` picks the preset outright.
 pub fn policy_for_config(
     file_cfg: &Option<crate::config_doc::Config>,
-) -> pantheon_core::capability::Policy {
+) -> pantheon_api::capability::Policy {
     if let Some(preset) = file_cfg.as_ref().and_then(|c| c.policy) {
         return preset.to_policy();
     }
@@ -122,9 +122,9 @@ pub fn policy_for_config(
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
     if allow_memory {
-        pantheon_core::capability::Policy::coder_with_memory()
+        pantheon_api::capability::Policy::coder_with_memory()
     } else {
-        pantheon_core::capability::Policy::coder()
+        pantheon_api::capability::Policy::coder()
     }
 }
 

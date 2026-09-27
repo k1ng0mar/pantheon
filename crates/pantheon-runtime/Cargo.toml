@@ -6,17 +6,28 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-pantheon-core = { path = "../pantheon-core" }
+pantheon-api = { path = "../pantheon-api" }
 pantheon-storage = { path = "../pantheon-storage" }
 pantheon-agent = { path = "../pantheon-agent" }
 pantheon-exec = { path = "../pantheon-exec" }
+# The session registers tools (builtins/memory/vault/search/skills/plugin)
+# through the tool-layer registry.
+pantheon-tools = { path = "../pantheon-tools" }
 pantheon-providers = { path = "../pantheon-providers" }
 pantheon-memory = { path = "../pantheon-memory" }
 pantheon-extensions = { path = "../pantheon-extensions" }
 pantheon-secrets = { path = "../pantheon-secrets" }
+pantheon-swarm = { path = "../pantheon-swarm" }
+# The Runtime API's AG-UI path encodes generative-UI frames, SSE and
+# signing through the gateway's shared encoders (dispatcher move: api →
+# runtime, decision D4 in docs/decisions/0001).
+pantheon-gateway = { path = "../pantheon-gateway" }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

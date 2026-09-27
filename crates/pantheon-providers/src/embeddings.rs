@@ -7,8 +7,8 @@
 //! compression. Absent entry = local embedder, never chat.
 
 use crate::http::{ChatTransport, HttpTransport, WireRequest};
-use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::model::{AuxiliaryKind, DefaultModel};
+use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::model::{AuxiliaryKind, DefaultModel};
 use pantheon_secrets::SecretValue;
 use std::time::Duration;
 
@@ -61,7 +61,7 @@ impl EmbedClient {
     /// Build from the policy: `AuxiliaryKind::Embeddings` entry present ->
     /// provider-backed; absent -> local hashing embedder.
     pub fn from_policy(
-        policy: &pantheon_core::model::ModelPolicy,
+        policy: &pantheon_api::model::ModelPolicy,
         api_key: Option<SecretValue>,
     ) -> Self {
         let target = policy
@@ -162,7 +162,7 @@ impl EmbedClient {
             )
         })?;
         let configured = self.api_key.as_ref().map(|k| k.expose()).unwrap_or("");
-        let key = pantheon_core::catalog::key_for(&model.provider, configured);
+        let key = crate::catalog::key_for(&model.provider, configured);
         let body = serde_json::json!({ "model": model.model, "input": texts });
         let req = WireRequest {
             url: format!("{}/embeddings", base.trim_end_matches('/')),

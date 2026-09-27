@@ -4,30 +4,31 @@
 //! start -> loop (model turns, gated tool calls, compacted output)
 //! -> terminal outcome, every step event-sourced in the ledger.
 
+use crate::agent_runtime::AgentRuntime;
 use crate::operation::{run_tool_operation, ToolOperationAdapter};
 use crate::watchdog::TurnWatchdog;
 use crate::{ObserverGuard, RunLeaseGuard, Supervisor};
 use pantheon_agent::{AgentLoop, Budget, LoopOutcome};
-use pantheon_core::capability::Policy;
-use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::events::Event;
-use pantheon_core::message::{Message, ToolCallRef};
-use pantheon_core::model::{ModelPolicy, TitleGenerator};
-use pantheon_core::model_event::{ModelEvent, ModelEventSink};
-use pantheon_core::provenance::Provenance;
-use pantheon_exec::builtins::{register_builtins_with, BuiltinOptions};
-use pantheon_exec::memory_tools::{
-    register_memory_tools, MemoryToolEvent, MemoryToolOptions, MemoryToolSink,
-};
-use pantheon_exec::safewrite::register_safewrite;
-use pantheon_exec::session_search_tools::{register_session_search, SessionSearchOptions};
+use pantheon_api::capability::Policy;
+use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::events::Event;
+use pantheon_api::message::{Message, ToolCallRef};
+use pantheon_api::model::{ModelPolicy, TitleGenerator};
+use pantheon_api::provenance::Provenance;
 use pantheon_exec::supervisor::PluginSupervisor;
-use pantheon_exec::tools::ToolRegistry;
 use pantheon_extensions::ExtensionManager;
 use pantheon_memory::{recall as mem_recall, LayerKind, MemoryStore};
 use pantheon_providers::http::HttpTransport;
+use pantheon_providers::model_event::{ModelEvent, ModelEventSink};
 use pantheon_providers::ProviderChain;
 use pantheon_secrets::{SecretValue, SecretsBroker};
+use pantheon_tools::builtins::{register_builtins_with, BuiltinOptions};
+use pantheon_tools::memory_tools::{
+    register_memory_tools, MemoryToolEvent, MemoryToolOptions, MemoryToolSink,
+};
+use pantheon_tools::safewrite_tools::register_safewrite;
+use pantheon_tools::session_search_tools::{register_session_search, SessionSearchOptions};
+use pantheon_tools::tools::ToolRegistry;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -361,7 +362,14 @@ fn approval_scope(call_id: &str, tool: &str, args: &str) -> String {
 pub struct Session {
     pub supervisor: Supervisor,
     pub policy: Policy,
-    pub model_policy: ModelPolicy,
+    /// The model routing for this session: default target, failure-only
+    /// fallbacks, auxiliaries.
+    ///
+    /// Behind a lock because the TUI holds the session in an `Arc` and
+    /// `/model` has to swap the default target on a live session. It is
+    /// read once per turn (snapshotted, never held across model or tool
+    /// work) and written only by an explicit switch.
+    pub model_policy: Mutex<ModelPolicy>,
     /// Secrets broker. Replaces the old raw `api_key: String` field so
     /// the API key is resolved through `SecretsBroker::inject` at the
     /// execution boundary and never lives in memory as a plain String.
@@ -376,7 +384,7 @@ pub struct Session {
     pub memory_namespace: String,
     /// Optional callback for model events (streaming display, etc).
     /// Called on every ModelEvent during turn_with_sink.
-    pub on_event: Option<Box<dyn Fn(pantheon_core::model_event::ModelEvent) + Send + Sync>>,
+    pub on_event: Option<Box<dyn Fn(pantheon_providers::model_event::ModelEvent) + Send + Sync>>,
     /// Cooperative cancellation for the run in flight. Set by the user
     /// (double-Esc / Ctrl-C). The agent loop checks it at every turn and
     /// tool boundary; it cannot abort an in-flight provider request.
@@ -395,6 +403,32 @@ pub struct Session {
     /// the guard at the end of the turn would miss `on_session_end` — the
     /// hook GalaxyMem-style consolidation depends on.
     pub hook_observer: ObserverGuard,
+    /// The agent profile this session runs as. Optional so a pre-profiles
+    /// caller (tests, the AG-UI server) still constructs a Session; when it
+    /// is `None` the session falls back to the legacy namespace and offers
+    /// no delegation.
+    ///
+    /// Behind a lock because the TUI holds the session in an `Arc` and
+    /// `/agent zeus` has to swap identity on a live session. It is read
+    /// once per turn and written only by an explicit switch, so the lock is
+    /// never held across model or tool work.
+    pub agent: Mutex<Option<AgentRuntime>>,
+    /// The run this session is currently driving. Set by the TUI at
+    /// startup and on resume, so `/agent` can ask the ledger who owns the
+    /// conversation without the caller passing an id in.
+    pub current_run: Mutex<String>,
+}
+
+/// What `Session::compress_now` found and did, for display.
+pub struct CompressReport {
+    /// Estimated tokens before the fit.
+    pub before: u32,
+    /// Estimated tokens after the fit.
+    pub after: u32,
+    /// True when the transcript changed (compression or trim ran).
+    pub changed: bool,
+    /// True when the model has no cataloged window, so no fit ran.
+    pub unknown_window: bool,
 }
 
 impl Session {
@@ -427,7 +461,7 @@ impl Session {
         Ok(Self {
             supervisor: sup,
             policy,
-            model_policy,
+            model_policy: Mutex::new(model_policy),
             secrets,
             budget: Budget::default(),
             system_prompt: String::new(),
@@ -437,18 +471,29 @@ impl Session {
             cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hooks,
             hook_observer,
+            agent: Mutex::new(None),
+            current_run: Mutex::new(String::new()),
         })
     }
 
     /// Build a Session from environment variables.
     /// Used by the AG-UI server and TUI where env-driven config is sufficient.
     pub fn from_env(data_dir: std::path::PathBuf) -> Result<Self, PantheonError> {
-        use pantheon_core::capability::Policy;
-        use pantheon_core::model::{DefaultModel, FallbackChain, ModelPolicy};
+        use pantheon_api::capability::Policy;
+        use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy};
 
         let provider = std::env::var("PANTHEON_PROVIDER").unwrap_or_else(|_| "local".into());
         let model = std::env::var("PANTHEON_MODEL").unwrap_or_else(|_| "default".into());
+        let reasoning = std::env::var("PANTHEON_REASONING")
+            .ok()
+            .and_then(|v| pantheon_api::model::ReasoningLevel::parse(&v))
+            .unwrap_or_default();
+        let reasoning_budget = std::env::var("PANTHEON_REASONING_BUDGET")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok());
         let model_policy = ModelPolicy {
+            reasoning_budget,
+            reasoning,
             default: DefaultModel { provider, model },
             fallbacks: FallbackChain {
                 fallbacks: Vec::new(),
@@ -462,6 +507,231 @@ impl Session {
         };
         let secrets = pantheon_secrets::SecretsBroker::from_system_env();
         Self::new(data_dir, policy, model_policy, secrets)
+    }
+
+    /// Attach an agent profile to this session.
+    ///
+    /// Takes effect from the next turn. The namespace switch is immediate
+    /// because `effective_namespace` reads the agent on every turn, so
+    /// there is no window where a turn runs with the previous agent's
+    /// memory.
+    pub fn with_agent(&self, agent: AgentRuntime) -> Result<&Self, PantheonError> {
+        *self.agent.lock().map_err(|_| {
+            PantheonError::new(
+                "SESSION_AGENT_LOCK",
+                Layer::Runtime,
+                false,
+                "agent identity lock is poisoned".to_string(),
+                "restart pantheon",
+                "",
+            )
+        })? = Some(agent);
+        Ok(self)
+    }
+
+    /// Read-only snapshot of the model policy.
+    ///
+    /// Recovers through a poisoned lock: poisoning means a previous holder
+    /// panicked, and the policy data itself is still intact for read-only
+    /// use. The write path (`switch_model`) refuses instead, mirroring
+    /// `with_agent`, because writing through a poisoned lock could compound
+    /// whatever went wrong.
+    fn policy_snapshot(&self) -> ModelPolicy {
+        self.model_policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Switch the default model of a live session.
+    ///
+    /// Only the default target changes; fallbacks and auxiliaries are
+    /// untouched, and the next turn resolves keys and endpoints for the new
+    /// target from scratch. Validation is deliberately shallow (non-empty):
+    /// unknown ids fail at request time with structured provider errors,
+    /// and a provider string may be a raw base URL rather than a catalog
+    /// id, so catalog membership is not a valid gate here.
+    pub fn switch_model(&self, provider: &str, model: &str) -> Result<(), PantheonError> {
+        let provider = provider.trim();
+        let model = model.trim();
+        if provider.is_empty() || model.is_empty() {
+            return Err(PantheonError::new(
+                "MODEL_SWITCH_USAGE",
+                Layer::Runtime,
+                false,
+                "switch_model needs a non-empty provider and model".to_string(),
+                "pass both, e.g. switch_model(\"openai\", \"gpt-4o-mini\")",
+                "",
+            ));
+        }
+        let mut policy = self.model_policy.lock().map_err(|_| {
+            PantheonError::new(
+                "SESSION_MODEL_LOCK",
+                Layer::Runtime,
+                false,
+                "model policy lock is poisoned".to_string(),
+                "restart pantheon",
+                "",
+            )
+        })?;
+        policy.default.provider = provider.to_string();
+        policy.default.model = model.to_string();
+        Ok(())
+    }
+    /// The live default target, for display and pre-marking pickers.
+    pub fn default_model(&self) -> (String, String) {
+        let d = self.policy_snapshot().default;
+        (d.provider, d.model)
+    }
+
+    /// Set the reasoning effort for chat turns on a live session.
+    ///
+    /// Takes effect on the next turn: the chain maps the level to the
+    /// wire param for the resolved wire mode (OpenAI `reasoning_effort`,
+    /// Anthropic thinking budget). `Off` sends nothing and restores the
+    /// pre-level behavior exactly. Aux turns always run `Off` regardless.
+    pub fn set_reasoning(
+        &self,
+        level: pantheon_api::model::ReasoningLevel,
+    ) -> Result<(), PantheonError> {
+        let mut policy = self.model_policy.lock().map_err(|_| {
+            PantheonError::new(
+                "SESSION_MODEL_LOCK",
+                Layer::Runtime,
+                false,
+                "model policy lock is poisoned".to_string(),
+                "restart pantheon",
+                "",
+            )
+        })?;
+        policy.reasoning = level;
+        Ok(())
+    }
+
+    /// The current reasoning level, for display.
+    pub fn reasoning(&self) -> pantheon_api::model::ReasoningLevel {
+        self.policy_snapshot().reasoning
+    }
+
+    /// Set an exact thinking budget override for budget wires. `None`
+    /// returns to the level mapping; `Some(0)` disables thinking
+    /// entirely, even with a level set. Takes effect on the next turn.
+    pub fn set_reasoning_budget(&self, budget: Option<u32>) -> Result<(), PantheonError> {
+        let mut policy = self.model_policy.lock().map_err(|_| {
+            PantheonError::new(
+                "SESSION_MODEL_LOCK",
+                Layer::Runtime,
+                false,
+                "model policy lock is poisoned".to_string(),
+                "restart pantheon",
+                "",
+            )
+        })?;
+        policy.reasoning_budget = budget;
+        Ok(())
+    }
+
+    /// The current budget override, for display (`None` = level mapping).
+    pub fn reasoning_budget(&self) -> Option<u32> {
+        self.policy_snapshot().reasoning_budget
+    }
+
+    /// Compact a run's context outside of a turn (`/compress`).
+    ///
+    /// Replays the run, rebuilds its messages, and runs the same fit a
+    /// turn would run: model-assisted compression first (only when the
+    /// transcript exceeds the window), then the deterministic fit. May
+    /// emit `ContextCompressed` and may spend one compression-model call,
+    /// exactly as a turn crossing the threshold would — the caller says
+    /// so before invoking. Returns before/after estimates plus whether
+    /// anything changed. An uncataloged model has no known window, so
+    /// there is nothing to fit against and this reports `unknown_window`.
+    pub fn compress_now(&self, run_id: &str) -> Result<CompressReport, PantheonError> {
+        let d = self.policy_snapshot().default;
+        let meta = pantheon_providers::catalog::model_meta(&d.provider, &d.model);
+        let Some(limit) = meta.context_limit else {
+            return Ok(CompressReport {
+                before: 0,
+                after: 0,
+                changed: false,
+                unknown_window: true,
+            });
+        };
+        let budget =
+            pantheon_exec::context::WindowBudget::new(limit, meta.max_output_tokens.unwrap_or(0));
+        let entries = self.supervisor.replay(run_id)?;
+        let mut messages = rebuild_messages(entries);
+        let before = pantheon_exec::context::estimate_messages(&messages);
+        let changed = self.fit_context(&mut messages, &budget, run_id);
+        let after = pantheon_exec::context::estimate_messages(&messages);
+        Ok(CompressReport {
+            before,
+            after,
+            changed: changed || after < before,
+            unknown_window: false,
+        })
+    }
+
+    /// Switch the agent profile of a live session.
+    ///
+    /// Refuses when the current conversation already belongs to another
+    /// agent. This is the enforcement point for "resuming Nyx's session must
+    /// not hand it to Zeus": `/agent zeus` mid-conversation would otherwise
+    /// replay one agent's transcript into another agent's memory, and the
+    /// two histories would be silently interleaved forever after.
+    pub fn switch_agent(&self, agent: AgentRuntime) -> Result<(), PantheonError> {
+        if let Ok(Some(bound)) = self.supervisor.ledger_run_agent(&self.current_run_id()) {
+            if bound != agent.profile().agent_id {
+                return Err(PantheonError::new(
+                    "AGENT_SWITCH_REFUSED",
+                    Layer::Runtime,
+                    false,
+                    format!(
+                        "this conversation belongs to {bound}; \
+                         switching to {} would mix two agents' histories",
+                        agent.identity()
+                    ),
+                    "start a new conversation to change agents",
+                    "",
+                ));
+            }
+        }
+        self.with_agent(agent)?;
+        Ok(())
+    }
+
+    /// The run the TUI is currently holding open.
+    fn current_run_id(&self) -> String {
+        self.current_run
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    /// Record which run this session is driving, so an identity check can
+    /// consult the ledger.
+    pub fn set_current_run(&self, run_id: &str) {
+        if let Ok(mut cur) = self.current_run.lock() {
+            *cur = run_id.to_string();
+        }
+    }
+
+    /// The memory namespace this turn runs in: the agent's, or the legacy
+    /// per-session string for a session with no profile attached.
+    ///
+    /// Precedence is agent-first, not "set the field when you attach the
+    /// agent", so a caller that mutates `memory_namespace` directly cannot
+    /// widen an agent's memory boundary.
+    pub fn effective_namespace(&self) -> String {
+        match self.agent() {
+            Some(agent) => agent.memory_namespace().to_string(),
+            None => self.memory_namespace.clone(),
+        }
+    }
+
+    /// The agent profile this session runs as, if one is attached.
+    pub fn agent(&self) -> Option<AgentRuntime> {
+        self.agent.lock().ok().and_then(|g| g.clone())
     }
 
     /// Per-call timeout for plugin tool calls. Overridable via env.
@@ -586,7 +856,7 @@ impl Session {
         // A turn that starts and produces no log line is a turn nobody can
         // debug. The ledger records the run, but not the model, the provider,
         // or which turn it was.
-        pantheon_core::logging::info(
+        pantheon_api::logging::info(
             "turn",
             format!(
                 "start run={run_id} turn={_turn_id} msg={} bytes",
@@ -618,7 +888,7 @@ impl Session {
                          scope; see `pantheon logs {run_id}`"
                     ),
                 };
-                pantheon_core::logging::info(
+                pantheon_api::logging::info(
                     "turn",
                     format!("run={run_id} is parked on approval; not starting a turn"),
                 );
@@ -637,6 +907,12 @@ impl Session {
                 }
             }
             _ => {}
+        }
+        // Identity first, before any model or tool work. A run that
+        // belongs to another agent must be refused here, not after the
+        // transcript has been replayed into the wrong profile.
+        if let Some(agent) = self.agent() {
+            agent.bind_run(run_id)?;
         }
         let (recovered, _lease) = self.supervisor.start_run_with_lease(run_id)?;
         let _lease_guard = RunLeaseGuard::try_new(self.supervisor.clone(), run_id)?;
@@ -680,17 +956,25 @@ impl Session {
             if let Some(mem) = &self.memory {
                 if matches!(
                     self.policy
-                        .check(&pantheon_core::capability::Capability::MemoryRead),
-                    pantheon_core::capability::Decision::Allow
+                        .check(&pantheon_api::capability::Capability::MemoryRead),
+                    pantheon_api::capability::Decision::Allow
                 ) {
                     let layers = [LayerKind::Project, LayerKind::Agent, LayerKind::Global];
-                    if let Ok(hits) = mem_recall(mem, &self.policy, &layers, user_message, 8) {
+                    // Session recall is scoped to the agent's own memory
+                    // namespace, the same one `memory_recall` uses. It
+                    // used to pass none, so every turn's recall block was
+                    // assembled from all agents' records.
+                    let own_ns = self.effective_namespace();
+                    let namespaces = [own_ns.as_str()];
+                    if let Ok(hits) =
+                        mem_recall(mem, &self.policy, &namespaces, &layers, user_message, 8)
+                    {
                         for h in hits {
                             // Trust framing: recalled records are context,
                             // never instructions. Untrusted-sourced records
                             // are flagged inline.
                             let trust_tag = match h.record.provenance.trust {
-                                pantheon_core::provenance::TrustTier::Untrusted => {
+                                pantheon_api::provenance::TrustTier::Untrusted => {
                                     format!(" [untrusted: {}]", h.record.provenance.source)
                                 }
                                 t => format!(" [trust:{}]", t.as_str()),
@@ -756,7 +1040,7 @@ impl Session {
             &std::env::current_dir().unwrap_or_else(|_| self.supervisor.data_dir().clone()),
             &extra_roots,
         );
-        pantheon_exec::skills::register_skill_tools(&mut reg, skill_list);
+        pantheon_tools::skill_tools::register_skill_tools(&mut reg, skill_list);
         // Session search: the model can look up prior/active conversations
         // by content. Same trust level as reading the ledger (FilesystemRead).
         register_session_search(
@@ -776,12 +1060,38 @@ impl Session {
                 MemoryToolOptions {
                     store: mem,
                     policy: Arc::new(self.policy.clone()),
-                    namespace: self.memory_namespace.clone(),
+                    // The namespace is the agent's, never a caller-supplied
+                    // string. `register_memory_tools` already refuses any
+                    // other namespace named in the tool arguments, so the
+                    // model cannot reach a peer's memory by asking for it.
+                    namespace: self.effective_namespace(),
                     max_bytes: 4096,
                     sink: Arc::new(mem_sink),
                     backend_label: "native".into(),
                 },
             );
+        }
+        // Agent collaboration. Registered only when this session has an
+        // agent profile AND that agent's own policy allows `AgentSpawn`.
+        // The gate below is the load-bearing part: a `reader` agent has no
+        // delegation tool at all, so it cannot delegate its way to a
+        // capability it does not hold.
+        if let Some(agent) = self.agent() {
+            if matches!(
+                self.policy
+                    .check(&pantheon_api::capability::Capability::AgentSpawn),
+                pantheon_api::capability::Decision::Allow
+            ) {
+                agent.register_delegate_tool(&mut reg);
+            } else {
+                pantheon_api::logging::info(
+                    "agent",
+                    format!(
+                        "{}: delegation unavailable (policy does not grant agent.spawn)",
+                        agent.identity()
+                    ),
+                );
+            }
         }
         // Plugin supervisors spawned for this run. They get group-killed at
         // the end of the call to avoid orphaned processes.
@@ -824,7 +1134,7 @@ impl Session {
                         sup.stop();
                     } else {
                         let sup_arc = Arc::new(Mutex::new(sup));
-                        pantheon_exec::supervisor::register_plugin_tools(
+                        pantheon_tools::plugin_tools::register_plugin_tools(
                             &mut reg,
                             &plugin.manifest,
                             sup_arc.clone(),
@@ -845,7 +1155,7 @@ impl Session {
         // Transport selection: always the real HTTP transport. There is
         // no fixture or offline mode — `--provider mock` is rejected
         // below like any other unknown provider id.
-        if self.model_policy.default.provider == "mock" {
+        if self.policy_snapshot().default.provider == "mock" {
             return Err(PantheonError::new(
                 "MOCK_PROVIDER_UNCONFIGURED",
                 Layer::Provider,
@@ -864,7 +1174,7 @@ impl Session {
                 .map_err(|e| {
                     PantheonError::new(
                         "SECRET_RESOLVE",
-                        pantheon_core::error::Layer::Agent,
+                        pantheon_api::error::Layer::Agent,
                         true,
                         format!("failed to resolve API key from secrets broker: {e}"),
                         "ensure PANTHEON_API_KEY is set in the environment",
@@ -872,7 +1182,7 @@ impl Session {
                     )
                 })?
                 .unwrap_or_default();
-            ProviderChain::new(self.model_policy.clone(), transport, reg.schemas(), api_key)
+            ProviderChain::new(self.policy_snapshot(), transport, reg.schemas(), api_key)
         };
 
         let sink = SupSink(&self.supervisor);
@@ -1069,13 +1379,13 @@ impl Session {
             return None;
         }
         let target = self
-            .model_policy
-            .auxiliary(&pantheon_core::model::AuxiliaryKind::TitleGen)
-            .map(|a| pantheon_core::model::DefaultModel {
+            .policy_snapshot()
+            .auxiliary(&pantheon_api::model::AuxiliaryKind::TitleGen)
+            .map(|a| pantheon_api::model::DefaultModel {
                 provider: a.provider.clone(),
                 model: a.model.clone(),
             })
-            .unwrap_or_else(|| self.model_policy.default.clone());
+            .unwrap_or_else(|| self.policy_snapshot().default.clone());
         let model_label = target.model.clone();
         // Title-specific key first; in `auto` mode the default model shares
         // the chat key. Both resolve through the broker at the boundary.
@@ -1089,10 +1399,10 @@ impl Session {
         let run_id = run_id.to_string();
         let prompt = prompt.to_string();
         Some(std::thread::spawn(move || {
-            let fallback = pantheon_core::model::fallback_title(&prompt);
+            let fallback = pantheon_api::model::fallback_title(&prompt);
             let client = pantheon_providers::TitleGenClient::new(target, key)
                 .with_transport(title_transport());
-            let req = pantheon_core::model::TitleRequest {
+            let req = pantheon_api::model::TitleRequest {
                 run_id: run_id.clone(),
                 prompt,
             };
@@ -1133,12 +1443,10 @@ impl Session {
             .as_ref()
             .map(|r| (r.provider.clone(), r.model.clone()))
             .unwrap_or_else(|| {
-                (
-                    self.model_policy.default.provider.clone(),
-                    self.model_policy.default.model.clone(),
-                )
+                let d = self.policy_snapshot().default;
+                (d.provider.clone(), d.model.clone())
             });
-        let meta = pantheon_core::catalog::model_meta(&provider, &model);
+        let meta = pantheon_providers::catalog::model_meta(&provider, &model);
         let limit = meta.context_limit?;
         // Reserve output room only when the catalog states it. Reserving zero
         // would let the input consume the entire window, and the provider
@@ -1172,8 +1480,8 @@ impl Session {
         // fit is the fallback, and `compress_oldest` is explicitly an
         // optimization.
         let aux = self
-            .model_policy
-            .auxiliary(&pantheon_core::model::AuxiliaryKind::Compression)
+            .policy_snapshot()
+            .auxiliary(&pantheon_api::model::AuxiliaryKind::Compression)
             .cloned();
         if let Some(aux) = aux {
             // Key order matches the title aux: the slot-specific key first,
@@ -1188,7 +1496,7 @@ impl Session {
                 .flatten()
                 .or_else(|| self.secrets.inject("PANTHEON_API_KEY").ok().flatten());
             let client = pantheon_providers::CompressionClient::new(
-                pantheon_core::model::DefaultModel {
+                pantheon_api::model::DefaultModel {
                     provider: aux.provider.clone(),
                     model: aux.model.clone(),
                 },
@@ -1205,7 +1513,7 @@ impl Session {
                         chars_before: report.chars_before,
                         chars_after: report.chars_after,
                     });
-                    pantheon_core::logging::warn(
+                    pantheon_api::logging::warn(
                         "agent",
                         format!(
                             "compressed {} exchanges ({} rows, {} -> {} chars) to fit the window",
@@ -1217,7 +1525,7 @@ impl Session {
                 Err(e) => {
                     // Compression is an optimization; the deterministic fit
                     // is the guarantee. Log and continue to it.
-                    pantheon_core::logging::warn(
+                    pantheon_api::logging::warn(
                         "agent",
                         format!(
                             "context compression failed ({}), falling back to deterministic trim",
@@ -1249,7 +1557,7 @@ impl Session {
                         dropped_rows: report.dropped_rows,
                         compacted_rows: report.compacted_rows,
                     });
-                    pantheon_core::logging::warn(
+                    pantheon_api::logging::warn(
                         "agent",
                         format!(
                             "trimmed context to ~{} tokens (window {}): dropped {} rows, compacted {} tool rows",
@@ -1264,7 +1572,7 @@ impl Session {
             }
             Err(e) => {
                 *messages = original;
-                pantheon_core::logging::error(
+                pantheon_api::logging::error(
                     "agent",
                     format!(
                         "context is still ~{} tokens after trimming, window allows {}: {}",
@@ -1310,7 +1618,7 @@ impl Session {
         if turn >= loop_.budget.max_turns {
             return Err(PantheonError::new(
                 "BUDGET_EXHAUSTED",
-                pantheon_core::error::Layer::Agent,
+                pantheon_api::error::Layer::Agent,
                 false,
                 "max_turns cap reached".to_string(),
                 "raise the budget or simplify the task",
@@ -1342,7 +1650,7 @@ impl Session {
             if action == crate::WatchdogAction::Kill {
                 return Err(PantheonError::new(
                     "WATCHDOG_KILL",
-                    pantheon_core::error::Layer::Agent,
+                    pantheon_api::error::Layer::Agent,
                     false,
                     "stall watchdog: liveness probe failed after budget".to_string(),
                     "check the provider transport; the run stays recoverable",
@@ -1359,7 +1667,7 @@ impl Session {
             for cid in &pending_set {
                 // If a ToolMessage row exists for this call id, it's done.
                 let done = messages.iter().any(|m| {
-                    m.role == pantheon_core::message::Role::Tool
+                    m.role == pantheon_api::message::Role::Tool
                         && m.tool_call_id.as_deref() == Some(cid.as_str())
                 });
                 if done {
@@ -1443,7 +1751,7 @@ impl Session {
                             Ok(pantheon_agent::GateOutcome::NeedsApproval { .. })
                         )
                     })
-                    .unwrap_or(pantheon_core::capability::Capability::Other("tool".into()));
+                    .unwrap_or(pantheon_api::capability::Capability::Other("tool".into()));
                 for tc in &ungranted {
                     self.supervisor.emit(Event::ApprovalRequested {
                         run_id: run_id.into(),
@@ -1490,7 +1798,7 @@ impl Session {
                             h.join().unwrap_or_else(|_| {
                                 Err(PantheonError::new(
                                     "TOOL_PANIC",
-                                    pantheon_core::error::Layer::Execution,
+                                    pantheon_api::error::Layer::Execution,
                                     false,
                                     "tool worker thread panicked".to_string(),
                                     "check the tool implementation",
@@ -1671,7 +1979,7 @@ impl Session {
                             h.join().unwrap_or_else(|_| {
                                 Err(PantheonError::new(
                                     "TOOL_PANIC",
-                                    pantheon_core::error::Layer::Execution,
+                                    pantheon_api::error::Layer::Execution,
                                     false,
                                     "tool worker thread panicked".to_string(),
                                     "check the tool implementation",
@@ -1721,19 +2029,49 @@ impl Session {
                     watchdog,
                 )
             }
-            pantheon_agent::TurnOutcome::Delegate { .. } => {
-                // Spawner not wired in v1; treat as structured denial.
-                Err(PantheonError::new(
-                    "SWARM_SPAWN_DENIED",
-                    pantheon_core::error::Layer::Agent,
-                    false,
-                    "delegation not configured in this session".to_string(),
-                    "configure a spawner or disable delegation",
-                    "",
-                ))
+            pantheon_agent::TurnOutcome::Delegate { agent, task, .. } => {
+                // The agent layer asked to delegate. Delegation here means
+                // "record a task for a peer profile", not "fork a process":
+                // the sub-agent runs later as its own session under its own
+                // identity, bound by the same rules as any other run.
+                //
+                // Without an attached profile there is nobody to attribute
+                // the work to, so this stays a structured denial.
+                let Some(me) = self.agent() else {
+                    return Err(PantheonError::new(
+                        "SWARM_SPAWN_DENIED",
+                        pantheon_api::error::Layer::Agent,
+                        false,
+                        "delegation requires a resolved agent profile".to_string(),
+                        "declare an agent profile and attach it to the session",
+                        "",
+                    ));
+                };
+                let task_id = next_task_id(&agent, run_id);
+                me.delegate("collab", &task, &agent, &task_id)?;
+                self.supervisor.emit(Event::AgentSpawned {
+                    run_id: run_id.to_string(),
+                    agent: agent.clone(),
+                })?;
+                Ok(LoopOutcome::Delegated { agent })
             }
         }
     }
+}
+
+/// A task id for a delegation turn.
+///
+/// Derived from the run and the target profile rather than a random uuid so
+/// a coordinator that re-issues the same delegation lands on the same id.
+/// `create_task` then reports the collision instead of creating a second
+/// task, which keeps one delegation equal to one row.
+fn next_task_id(agent: &str, run_id: &str) -> String {
+    let slug: String = run_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let slug = if slug.is_empty() { "run" } else { &slug };
+    format!("t-{agent}-{slug}")
 }
 
 fn aerr(code: &str, cause: String) -> PantheonError {

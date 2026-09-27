@@ -7,7 +7,7 @@ authors.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-pantheon-core = { path = "../pantheon-core" }
+pantheon-api = { path = "../pantheon-api" }
 pantheon-storage = { path = "../pantheon-storage" }
 
 [dev-dependencies]

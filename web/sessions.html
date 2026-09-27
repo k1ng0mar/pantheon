@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pantheon — Sessions</title>
+  <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="https://cdn.tailwindcss.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0d0d0d', fg: '#e8e6e1', muted: '#71717a', accent: '#7027c5',
+            card: '#1c1c1e', border: '#2e2e30',
+          },
+          fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Inter', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { background: #0d0d0d; color: #e8e6e1; font-family: 'Inter', sans-serif; }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7027c5, transparent); }
+    .radial-core { background: radial-gradient(ellipse at center, rgba(112,39,197,0.06) 0%, transparent 70%); }
+    .logo-mark { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark img { height: 32px; width: auto; }
+    .logo-mark-sm { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark-sm img { height: 22px; width: auto; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    pre { background: #1c1c1e; border: 1px solid #2e2e30; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+    pre code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #e8e6e1; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: #7027c5; background: rgba(112,39,197,0.1); padding: 0.15em 0.3em; border-radius: 3px; }
+    h1, h2, h3, h4 { font-family: 'JetBrains Mono', monospace; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
+    th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
+    tr:hover td { background: rgba(112,39,197,0.05); }
+    blockquote { border-left: 2px solid #7027c5; padding-left: 1rem; margin: 1rem 0; color: #e8e6e1; font-style: italic; }
+    p a, li a, td a { color: #e8e6e1; text-decoration: underline; text-decoration-color: #7027c5; text-underline-offset: 3px; }
+    details { cursor: pointer; }
+    details summary { list-style: none; }
+    details summary::-webkit-details-marker { display: none; }
+    details[open] summary .chevron { transform: rotate(90deg); }
+    .chevron { display: inline-block; transition: transform 0.15s; }
+  </style>
+</head>
+<body class="antialiased">
+
+  <nav class="fixed top-0 left-0 right-0 z-50 bg-bg/80 backdrop-blur border-b border-border">
+    <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="index.html" class="flex items-center gap-3">
+        <div class="logo-mark"><img src="logo.png" alt="Pantheon" width="32" height="32"></div>
+        <span class="font-mono font-bold text-fg text-lg tracking-tight">pantheon</span>
+      </a>
+      <div class="flex items-center gap-6 text-sm">
+        <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
+        <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
+        <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
+        <a href="docs.html" class="text-muted hover:text-fg transition-colors">Docs</a>
+        <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
+        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
+<h1 class="text-3xl font-bold tracking-tight mb-2">Sessions</h1><div class="glow-line my-6"></div>
+<p class="my-3 leading-relaxed">The terminal interface is how you work with Pantheon directly. Everything you do lands in the ledger, so conversations survive exits, crashes, and channel switches.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Open a session</h2>
+<pre><code>
+pantheon
+</code></pre>
+<p class="my-3 leading-relaxed">Bare <code>pantheon</code> opens the interface. It requires a terminal; without one it exits and points you at <code>pantheon run</code>. Your last run resumes automatically; <code>/help</code> lists every command.</p>
+<p class="my-3 leading-relaxed">Useful commands: <code>/models</code> (browse providers and models, Enter switches), <code>/model [provider id]</code> (show or switch the live model), <code>/reasoning [off|minimal|low|medium|high|xhigh|max]</code> (effort for chat turns), <code>/runs</code> (browse conversations), <code>/resume &lt;id&gt;</code> (jump to one), <code>/history</code>, <code>/status</code>, <code>/name &lt;title&gt;</code>, <code>/agent [name]</code>, <code>/agents</code>, <code>/remember KEY TEXT</code> (store agent memory), <code>/skills [filter]</code>, <code>/settings</code>, <code>/gateway</code>, <code>/doctor</code>, <code>/sessions</code> (live sessions), <code>/new</code>, <code>/compress</code>, <code>/export [markdown|json]</code>, <code>/clear</code>, <code>/exit</code>.</p>
+<p class="my-3 leading-relaxed">Start on a specific run from the shell: <code>pantheon --resume [id]</code>.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Approve work</h2>
+<p class="my-3 leading-relaxed">When a tool call needs a human, the run parks and shows a permission card: <code>y</code> allows it, <code>n</code> denies it. Approval covers that one operation — never a blank check for future calls.</p>
+<p class="my-3 leading-relaxed">Away from the terminal? Settle it out of band:</p>
+<pre><code>
+pantheon run --taskID &lt;id&gt; --grant &lt;scope&gt;   # allow, then continue the run
+pantheon run --taskID &lt;id&gt; --deny  &lt;scope&gt;   # refuse; recorded in the transcript
+</code></pre>
+<p class="my-3 leading-relaxed">A denial doesn&#x27;t kill the run — the model sees &quot;denied by operator&quot; and adapts.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Run without a terminal</h2>
+<pre><code>
+pantheon run --taskID &lt;id&gt; --say &quot;text&quot; --deliver session|telegram|discord
+</code></pre>
+<p class="my-3 leading-relaxed">A real model turn, delivered where you ask: printed here, or queued for the gateway to send. The queue is durable, so a delivered task survives gateway downtime.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Look back</h2>
+<pre><code>
+pantheon runs                 # all runs, with status and title
+pantheon runs &lt;id&gt;            # the full event trace, in words
+pantheon runs &lt;id&gt; --metrics  # counters: turns, tools, approvals
+pantheon audit &lt;id&gt; [out]     # sequence-checked JSONL for scripts
+pantheon logs [errors] [-f]   # process logs, including pre-run failures
+</code></pre>
+<p class="my-3 leading-relaxed"><code>runs</code> answers &quot;why did that turn end that way&quot; (approvals included). <code>logs</code> answers &quot;what has the process been doing&quot;. States: <code>running</code>, <code>awaiting_approval</code>, <code>completed</code>, <code>failed</code>, <code>canceled</code>.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><a href="runs.html">Runs</a> — lifecycle, recovery, pipelines, scheduling</li>
+<li><a href="channels.html">Channels</a> — messaging apps and the web client</li>
+<li><a href="cli.html">CLI reference</a> — every flag and exit code</li>
+</ul>
+</main>
+
+  <div class="glow-line max-w-5xl mx-auto"></div>
+
+  <footer class="py-16">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+        <div class="flex items-center gap-3">
+          <div class="logo-mark-sm"><img src="logo.png" alt="Pantheon" width="22" height="22"></div>
+          <div>
+            <span class="font-mono font-bold text-fg text-sm">pantheon</span>
+            <p class="text-muted text-xs mt-0.5">Durable agent runtime. MIT licensed. <span class="font-mono">k1ng0mar/pantheon</span> on GitHub.</p>
+          </div>
+        </div>
+        <div class="flex gap-8 text-sm">
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/developer/contributing.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+        </div>
+      </div>
+      <div class="glow-line my-8"></div>
+      <p class="text-muted text-xs text-center">No hosted tier. No subscription. Your data stays on your machine.</p>
+    </div>
+  </footer>
+
+</body>
+</html>

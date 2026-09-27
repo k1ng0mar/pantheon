@@ -15,18 +15,18 @@ use pantheon_runtime::Supervisor;
 use pantheon_storage::OperationStatus;
 use std::path::PathBuf;
 
-fn policy_for(cfg: Option<&Config>) -> pantheon_core::capability::Policy {
+fn policy_for(cfg: Option<&Config>) -> pantheon_api::capability::Policy {
     match cfg.and_then(|c| c.policy) {
-        Some(PolicyPreset::Reader) => pantheon_core::capability::Policy::researcher_readonly(),
-        Some(PolicyPreset::CoderMemory) => pantheon_core::capability::Policy::coder_with_memory(),
-        _ => pantheon_core::capability::Policy::coder(),
+        Some(PolicyPreset::Reader) => pantheon_api::capability::Policy::researcher_readonly(),
+        Some(PolicyPreset::CoderMemory) => pantheon_api::capability::Policy::coder_with_memory(),
+        _ => pantheon_api::capability::Policy::coder(),
     }
 }
 
 /// Real executor: one Session per stage call, prompt framed per stage.
 struct RuntimeExecutor {
     data_dir: PathBuf,
-    policy: pantheon_core::capability::Policy,
+    policy: pantheon_api::capability::Policy,
 }
 
 impl StageExecutor for RuntimeExecutor {
@@ -34,7 +34,7 @@ impl StageExecutor for RuntimeExecutor {
         &self,
         stage: &str,
         input: &str,
-    ) -> Result<String, pantheon_core::error::PantheonError> {
+    ) -> Result<String, pantheon_api::error::PantheonError> {
         let session = open_session(&self.data_dir, self.policy.clone())?;
         let run_id = format!("pipe-{stage}-{}", pantheon_runtime::new_run_id());
         let prompt = match stage {
@@ -57,7 +57,7 @@ impl StageExecutor for RuntimeExecutor {
 /// Real evaluator: a separate session asked to accept or reject.
 struct RuntimeEvaluator {
     data_dir: PathBuf,
-    policy: pantheon_core::capability::Policy,
+    policy: pantheon_api::capability::Policy,
 }
 
 impl StageEvaluator for RuntimeEvaluator {
@@ -65,7 +65,7 @@ impl StageEvaluator for RuntimeEvaluator {
         &self,
         stage: &str,
         output: &str,
-    ) -> Result<bool, pantheon_core::error::PantheonError> {
+    ) -> Result<bool, pantheon_api::error::PantheonError> {
         let session = open_session(&self.data_dir, self.policy.clone())?;
         let run_id = format!("pipe-eval-{}", pantheon_runtime::new_run_id());
         let prompt = format!(
@@ -82,8 +82,8 @@ Reply with exactly ACCEPT or REJECT followed by one reason line.\n\n{output}"
 
 fn open_session(
     data_dir: &Path,
-    policy: pantheon_core::capability::Policy,
-) -> Result<pantheon_runtime::session::Session, pantheon_core::error::PantheonError> {
+    policy: pantheon_api::capability::Policy,
+) -> Result<pantheon_runtime::session::Session, pantheon_api::error::PantheonError> {
     let cfg = Config::load_or_report(data_dir);
     let (provider, model) = cfg
         .as_ref()
@@ -95,15 +95,17 @@ fn open_session(
                 std::env::var("PANTHEON_MODEL").unwrap_or_else(|_| "llama3.2".into()),
             )
         });
-    let model_policy = pantheon_core::model::ModelPolicy {
-        default: pantheon_core::model::DefaultModel {
+    let model_policy = pantheon_api::model::ModelPolicy {
+        reasoning_budget: Default::default(),
+        reasoning: Default::default(),
+        default: pantheon_api::model::DefaultModel {
             provider: provider.clone(),
             model: model.clone(),
         },
-        fallbacks: pantheon_core::model::FallbackChain::default(),
+        fallbacks: pantheon_api::model::FallbackChain::default(),
         auxiliaries: crate::config_doc::auxiliaries(
             cfg.as_ref(),
-            &pantheon_core::model::DefaultModel { provider, model },
+            &pantheon_api::model::DefaultModel { provider, model },
         ),
     };
     let secrets = crate::config_doc::chat_secrets(cfg.as_ref());

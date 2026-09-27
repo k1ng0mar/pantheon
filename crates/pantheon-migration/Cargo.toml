@@ -1,0 +1,19 @@
+[package]
+name = "pantheon-migration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+pantheon-api = { path = "../pantheon-api" }
+pantheon-extensions = { path = "../pantheon-extensions" }
+pantheon-storage = { path = "../pantheon-storage" }
+# Custom-provider import reconciles against the provider catalog.
+pantheon-providers = { path = "../pantheon-providers" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+[lints]
+workspace = true

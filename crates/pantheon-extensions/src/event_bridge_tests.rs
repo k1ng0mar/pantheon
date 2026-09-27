@@ -2,7 +2,7 @@
 //! must be reachable from a real `Event`, and the never-fire cases must stay
 //! unreachable.
 use super::*;
-use pantheon_core::provenance::Provenance;
+use pantheon_api::provenance::Provenance;
 
 fn hook_of(ev: &Event) -> Option<Hook> {
     dispatch(ev).map(|f| f.hook)

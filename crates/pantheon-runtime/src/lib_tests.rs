@@ -10,14 +10,14 @@ fn session_search_indexes_and_finds() {
     sup.start_run("run_s1").unwrap();
     sup.emit(Event::AssistantMessage {
         run_id: "run_s1".into(),
-        message: pantheon_core::message::Message::user(
+        message: pantheon_api::message::Message::user(
             "debugging the Figma MCP server connection timeout",
         ),
     })
     .unwrap();
     sup.emit(Event::AssistantMessage {
         run_id: "run_s1".into(),
-        message: pantheon_core::message::Message::assistant(
+        message: pantheon_api::message::Message::assistant(
             "the TUI session creation block was the culprit",
         ),
     })
@@ -57,7 +57,7 @@ fn start_complete_render_log() {
         call_id: "t".into(),
         tool: "shell".into(),
         args: String::new(),
-        provenance: pantheon_core::provenance::Provenance::system("test"),
+        provenance: pantheon_api::provenance::Provenance::system("test"),
     })
     .unwrap();
     sup.complete(id).unwrap();
@@ -189,7 +189,7 @@ fn grant_flips_parked_run_back_to_running() {
 
 #[test]
 fn replay_rebuilds_transcript_and_unfinished_calls() {
-    use pantheon_core::message::Message;
+    use pantheon_api::message::Message;
     let dir = std::env::temp_dir().join(format!("pantheon-rt4-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let sup = Supervisor::open(dir).unwrap();
@@ -204,7 +204,7 @@ fn replay_rebuilds_transcript_and_unfinished_calls() {
         call_id: "call_0_0".into(),
         tool: "shell".into(),
         args: "{\"cmd\":\"ls\"}".into(),
-        provenance: pantheon_core::provenance::Provenance::system("test"),
+        provenance: pantheon_api::provenance::Provenance::system("test"),
     })
     .unwrap();
     let entries = sup.replay("run_replay").unwrap();
@@ -341,13 +341,15 @@ fn chat_on_parked_run_is_refused() {
     // Use an unreachable endpoint to prove the refusal happens pre-flight.
     let session = crate::session::Session::new(
         dir,
-        pantheon_core::capability::Policy::coder(),
-        pantheon_core::model::ModelPolicy {
-            default: pantheon_core::model::DefaultModel {
+        pantheon_api::capability::Policy::coder(),
+        pantheon_api::model::ModelPolicy {
+            reasoning_budget: Default::default(),
+            reasoning: Default::default(),
+            default: pantheon_api::model::DefaultModel {
                 provider: "unreachable.test".into(),
                 model: "x".into(),
             },
-            fallbacks: pantheon_core::model::FallbackChain::default(),
+            fallbacks: pantheon_api::model::FallbackChain::default(),
             auxiliaries: vec![],
         },
         pantheon_secrets::SecretsBroker::new(),

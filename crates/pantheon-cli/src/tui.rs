@@ -24,8 +24,8 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
-use pantheon_core::events::Event as RuntimeErrorEvent;
-use pantheon_core::model_event::ModelEvent;
+use pantheon_api::events::Event as RuntimeErrorEvent;
+use pantheon_providers::model_event::ModelEvent;
 use pantheon_runtime::session::Session;
 
 /// A single block in the conversation transcript.
@@ -51,6 +51,18 @@ pub enum BlockKind {
 #[derive(Debug, Clone)]
 pub struct TranscriptBlock {
     pub kind: BlockKind,
+}
+
+/// One selectable row in the /models browser: a provider/model pair plus
+/// the context window the catalog declares (`None` = unknown, shown as ?).
+/// A row with an empty `model_id` is a provider with no curated models;
+/// Enter on it explains how to switch with an explicit id instead.
+#[derive(Debug, Clone)]
+pub struct ModelRow {
+    pub provider_id: String,
+    pub provider_label: String,
+    pub model_id: String,
+    pub ctx: Option<u32>,
 }
 
 /// Runtime state for the TUI session.
@@ -91,6 +103,12 @@ pub struct TuiState {
     pub history_input: String,
     /// Selected index into the filtered history list.
     pub history_sel: usize,
+    /// Open model-browser overlay: Some(rows) while /models is open.
+    pub models: Option<Vec<ModelRow>>,
+    /// Live filter typed into the models overlay.
+    pub models_input: String,
+    /// Selected index into the filtered models list.
+    pub models_sel: usize,
     /// The conversation's current title: set by the title auxiliary
     /// (SessionTitled), by /name, and refreshed when resuming a run.
     pub title: Option<String>,
@@ -121,6 +139,9 @@ impl Default for TuiState {
             history: None,
             history_input: String::new(),
             history_sel: 0,
+            models: None,
+            models_input: String::new(),
+            models_sel: 0,
             title: None,
         }
     }
@@ -151,6 +172,9 @@ impl TuiState {
             history: None,
             history_input: String::new(),
             history_sel: 0,
+            models: None,
+            models_input: String::new(),
+            models_sel: 0,
             title: None,
         }
     }
@@ -196,6 +220,48 @@ impl TuiState {
         self.history = None;
         self.history_input.clear();
         self.history_sel = 0;
+    }
+
+    /// Rows matching the current filter, in catalog order. Matches
+    /// provider id, provider label, and model id, so `anth` finds the
+    /// provider and `mini` finds the model.
+    pub fn filtered_models(&self) -> Vec<ModelRow> {
+        match &self.models {
+            None => Vec::new(),
+            Some(rows) => {
+                let f = self.models_input.to_lowercase();
+                if f.is_empty() {
+                    rows.clone()
+                } else {
+                    rows.iter()
+                        .filter(|r| {
+                            r.provider_id.to_lowercase().contains(&f)
+                                || r.provider_label.to_lowercase().contains(&f)
+                                || r.model_id.to_lowercase().contains(&f)
+                        })
+                        .cloned()
+                        .collect()
+                }
+            }
+        }
+    }
+
+    /// Move the overlay selection by n, clamped to the filtered list.
+    pub fn models_move(&mut self, n: isize) {
+        let len = self.filtered_models().len();
+        if len == 0 {
+            self.models_sel = 0;
+            return;
+        }
+        let sel = self.models_sel as isize + n;
+        self.models_sel = sel.clamp(0, len as isize - 1) as usize;
+    }
+
+    /// Close the overlay and reset its state.
+    pub fn models_close(&mut self) {
+        self.models = None;
+        self.models_input.clear();
+        self.models_sel = 0;
     }
 
     /// Live token estimate: ~4 chars per token, updated on every streamed
@@ -418,6 +484,10 @@ pub fn render(state: &TuiState, f: &mut Frame) {
         render_history(f, f.area(), state);
         return;
     }
+    if state.models.is_some() {
+        render_models(f, f.area(), state);
+        return;
+    }
     if state.pending_approval.is_some() {
         // Steal the input row: permission card replaces it until resolved.
         render_permission(f, input_area, state);
@@ -495,6 +565,85 @@ fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
         lines.push(Line::from(format!("  filter: {}", state.history_input)));
     }
     let title = " conversations (/history) ";
+    let card = Paragraph::new(lines).block(
+        Block::bordered()
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(color::PRIMARY))
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(color::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    );
+    f.render_widget(card, area);
+}
+
+/// Searchable model browser overlay: /models. Type-to-filter across
+/// provider and model names, Up/Down to move, Enter to switch the live
+/// session's default model, Esc to close. Same overlay contract as
+/// /history, rendered as a centered list.
+fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
+    let w = area.width.clamp(48, 88);
+    let h = area.height.clamp(7, 22);
+    let x = area.x + (area.width - w) / 2;
+    let y = area.y + (area.height - h) / 2;
+    let area = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+
+    let rows = state.filtered_models();
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "  type to filter, Up/Down to move, Enter to switch, Esc to close",
+            Style::default().fg(color::PRIMARY),
+        )),
+        Line::from(""),
+    ];
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no matches)",
+            Style::default().fg(color::FAILURE),
+        )));
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let current = format!("{}/{}", row.provider_id, row.model_id) == state.model;
+        let glyph = if current { "\u{25cf}" } else { " " };
+        let model = if row.model_id.is_empty() {
+            "(no curated models — Enter for how to switch)".to_string()
+        } else {
+            row.model_id.clone()
+        };
+        let ctx = match row.ctx {
+            Some(c) if c >= 1000 => format!("{}k ctx", c / 1000),
+            Some(c) => format!("{c} ctx"),
+            None => "ctx ?".to_string(),
+        };
+        let style = if i == state.models_sel {
+            Style::default()
+                .fg(color::PRIMARY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {glyph} {:<18} {:<32} {}",
+                row.provider_label.chars().take(18).collect::<String>(),
+                model.chars().take(32).collect::<String>(),
+                ctx,
+            ),
+            style,
+        )));
+    }
+    if !state.models_input.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!("  filter: {}", state.models_input)));
+    }
+    let title = " models (/models) ";
     let card = Paragraph::new(lines).block(
         Block::bordered()
             .border_type(BorderType::Double)
@@ -809,8 +958,8 @@ fn render_block(lines: &mut Vec<Line>, block: &TranscriptBlock, is_last: bool, i
 
 /// Internal event types that flow from the worker thread to the TUI loop.
 enum TuiEvent {
-    Model(pantheon_core::model_event::ModelEvent),
-    Runtime(pantheon_core::events::Event),
+    Model(pantheon_providers::model_event::ModelEvent),
+    Runtime(pantheon_api::events::Event),
     TurnComplete,
     /// The assistant's final text for a turn, rendered into the transcript.
     Answered(String),
@@ -849,7 +998,7 @@ pub fn run_tui_session_with(
     };
     // An uncataloged model declares no window. Zero is not the same as
     // unknown, and the status line says "unknown" rather than inventing one.
-    let tokens_max = pantheon_core::catalog::model_meta(
+    let tokens_max = pantheon_providers::catalog::model_meta(
         &model_policy.default.provider,
         &model_policy.default.model,
     )
@@ -1030,6 +1179,41 @@ fn tui_loop(
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+                if state.models.is_some() {
+                    match key.code {
+                        KeyCode::Char(c) => state.models_input.push(c),
+                        KeyCode::Backspace => {
+                            state.models_input.pop();
+                        }
+                        KeyCode::Up => state.models_move(-1),
+                        KeyCode::Down => state.models_move(1),
+                        KeyCode::Esc => state.models_close(),
+                        KeyCode::Enter => {
+                            let sel = state.models_sel;
+                            let target = state.filtered_models().get(sel).cloned();
+                            state.models_close();
+                            if let Some(row) = target {
+                                if row.model_id.is_empty() {
+                                    state.add_status(format!(
+                                        "{} lists no curated models; switch with: /model {} <id>",
+                                        row.provider_id, row.provider_id
+                                    ));
+                                } else {
+                                    apply_model_switch(
+                                        state,
+                                        &session,
+                                        &row.provider_id,
+                                        &row.model_id,
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
                 if state.history.is_some() {
                     match key.code {
                         KeyCode::Char(c) => state.history_input.push(c),
@@ -1057,7 +1241,7 @@ fn tui_loop(
                                             pantheon_runtime::session::rebuild_messages(entries)
                                         {
                                             let kind = match m.role {
-                                                pantheon_core::message::Role::User => {
+                                                pantheon_api::message::Role::User => {
                                                     BlockKind::UserMessage(m.content.clone())
                                                 }
                                                 _ => BlockKind::AssistantMessage(m.content.clone()),
@@ -1260,7 +1444,7 @@ fn switch_agent(state: &mut TuiState, session: &Arc<Session>, name: &str) {
 fn agent_for(
     session: &Arc<Session>,
     cfg: &crate::config_doc::Config,
-    registry: pantheon_core::agent_profile::ProfileRegistry,
+    registry: pantheon_agent::agent_profile::ProfileRegistry,
     name: &str,
 ) -> Result<pantheon_runtime::AgentRuntime, String> {
     let preset = cfg.policy.map(|p| p.as_str()).unwrap_or("coder");
@@ -1400,6 +1584,165 @@ fn collaboration_store() -> Result<pantheon_storage::CollaborationStore, String>
         .map_err(|e| e.cause)
 }
 
+/// Every selectable row for the /models browser: one per curated model,
+/// plus one per provider with no curated models (empty `model_id`; Enter
+/// on those explains the explicit-id path instead of switching).
+fn build_model_rows() -> Vec<ModelRow> {
+    let mut rows = Vec::new();
+    for p in pantheon_providers::catalog::selectable_providers() {
+        if p.models.is_empty() {
+            rows.push(ModelRow {
+                provider_id: p.id.clone(),
+                provider_label: p.label.clone(),
+                model_id: String::new(),
+                ctx: None,
+            });
+        } else {
+            for m in &p.models {
+                rows.push(ModelRow {
+                    provider_id: p.id.clone(),
+                    provider_label: p.label.clone(),
+                    model_id: m.model.clone(),
+                    ctx: m.context_limit,
+                });
+            }
+        }
+    }
+    rows
+}
+
+/// Persist a model switch to `[model]` in config.toml. Only provider and
+/// model are touched: fallbacks, auxiliaries, keys, and agents survive.
+/// A missing `[model]` section is created rather than failing, so a
+/// switch works on a config that predates the section.
+fn persist_model_choice(dd: &std::path::Path, provider: &str, model: &str) -> Result<(), String> {
+    let mut cfg = crate::config_doc::Config::load(dd).unwrap_or_default();
+    match cfg.model.as_mut() {
+        Some(m) => {
+            m.provider = provider.to_string();
+            m.model = model.to_string();
+        }
+        None => {
+            cfg.model = Some(crate::config_doc::ModelSection {
+                reasoning_budget: None,
+                provider: provider.to_string(),
+                model: model.to_string(),
+                api_key_env: None,
+                fallbacks: Vec::new(),
+                reasoning: None,
+            });
+        }
+    }
+    cfg.save(dd).map_err(|e| e.cause.clone())
+}
+
+/// Switch the live session to a new default model and say exactly what
+/// happened: session-only vs saved, plus a key warning when the catalog
+/// names a key env var that is not set in this shell.
+fn apply_model_switch(state: &mut TuiState, session: &Arc<Session>, provider: &str, model: &str) {
+    if let Err(e) = session.switch_model(provider, model) {
+        state.add_status(format!("/model: {e}"));
+        return;
+    }
+    state.model = format!("{provider}/{model}");
+    state.tokens_max = pantheon_providers::catalog::model_meta(provider, model)
+        .context_limit
+        .unwrap_or(0);
+    match persist_model_choice(&crate::data_dir(), provider, model) {
+        Ok(()) => state.add_status(format!("model → {provider}/{model} (saved)")),
+        Err(e) => state.add_status(format!(
+            "model → {provider}/{model} for this session; save failed: {e}"
+        )),
+    }
+    match pantheon_providers::catalog::provider(provider) {
+        Some(p) if !p.key_env.trim().is_empty() => {
+            let missing = std::env::var(&p.key_env)
+                .ok()
+                .filter(|v| !v.is_empty())
+                .is_none();
+            if missing {
+                state.add_status(format!(
+                    "{} is not set; export it before chatting on {provider}/{model}",
+                    p.key_env
+                ));
+            }
+        }
+        None if !provider.starts_with("http") => {
+            state.add_status(format!(
+                "warning: '{provider}' is not a catalog provider; requests may fail"
+            ));
+        }
+        _ => {}
+    }
+}
+
+/// Render transcript blocks for /export. Markdown keeps readable
+/// structure; json is one object per line for scripts. Pure, so tests
+/// cover the mapping without touching the filesystem.
+fn export_transcript(blocks: &[TranscriptBlock], session_id: &str, format: &str) -> String {
+    fn row(b: &TranscriptBlock) -> (&'static str, String) {
+        match &b.kind {
+            BlockKind::UserMessage(t) => ("user", t.clone()),
+            BlockKind::AssistantMessage(t) => ("agent", t.clone()),
+            BlockKind::Thinking(t) => ("thinking", t.lines().next().unwrap_or("").to_string()),
+            BlockKind::ToolCall { name, args, ok } => {
+                let st = match ok {
+                    None => "running",
+                    Some(true) => "done",
+                    Some(false) => "failed",
+                };
+                ("tool", format!("{name} [{st}] {args}"))
+            }
+            BlockKind::Swarm { agents, task } => ("swarm", format!("×{agents} {task}")),
+            BlockKind::Status(t) => ("status", t.clone()),
+        }
+    }
+    if format == "json" {
+        return blocks
+            .iter()
+            .map(|b| {
+                let (kind, text) = row(b);
+                serde_json::json!({"session": session_id, "kind": kind, "text": text}).to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    let mut out = format!("# Pantheon session {session_id}\n");
+    for b in blocks {
+        out.push_str(&match row(b) {
+            ("user", t) => format!("\n## you\n\n{t}\n"),
+            ("agent", t) => format!("\n## agent\n\n{t}\n"),
+            ("thinking", t) => format!("\n> thinking: {t}\n"),
+            ("tool", t) => format!("\n`{t}`\n"),
+            ("swarm", t) => format!("\n## swarm\n\n{t}\n"),
+            (_, t) => format!("\n*{t}*\n"),
+        });
+    }
+    out
+}
+
+/// Persist reasoning state to `[model]`. `Off` removes the level key so
+/// the config stays clean; anything else writes the level name. The
+/// budget is written alongside (or removed when `None`) so setting a
+/// level never silently wipes a budget and vice versa.
+fn persist_reasoning(
+    dd: &std::path::Path,
+    level: pantheon_api::model::ReasoningLevel,
+    budget: Option<u32>,
+) -> Result<(), String> {
+    use pantheon_api::model::ReasoningLevel;
+    let mut cfg = crate::config_doc::Config::load(dd).unwrap_or_default();
+    let Some(model) = cfg.model.as_mut() else {
+        return Err("no [model] section yet; set a model first (/model P M)".into());
+    };
+    model.reasoning = match level {
+        ReasoningLevel::Off => None,
+        _ => Some(level.as_str().to_string()),
+    };
+    model.reasoning_budget = budget;
+    cfg.save(dd).map_err(|e| e.cause.clone())
+}
+
 fn handle_slash(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
     let supervisor = &session.supervisor;
     // /help shows the real command surface.
@@ -1461,6 +1804,22 @@ fn handle_slash(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
     if cmd == "/help" {
         state.add_status("commands:".into());
         state.add_status("  /help              this list".into());
+        state.add_status("  /models [FILTER]   browse providers and models, Enter switches".into());
+        state.add_status("  /model [P M]       show the current model, or switch to one".into());
+        state.add_status(
+            "  /reasoning [LVL]   reasoning effort: off|minimal|low|medium|high|xhigh|max".into(),
+        );
+        state.add_status("  /remember KEY TEXT remember this (agent memory, user trust)".into());
+        state.add_status("  /skills [FILTER]   installed skills".into());
+        state.add_status(
+            "  /settings          data dir, model, policy, memory, server, agents".into(),
+        );
+        state.add_status("  /gateway           service state and queued outbound".into());
+        state.add_status("  /doctor            diagnose this install".into());
+        state.add_status("  /sessions          live sessions holding a lease".into());
+        state.add_status("  /new               start a fresh conversation".into());
+        state.add_status("  /compress         compress this conversation to the window now".into());
+        state.add_status("  /export [md|json]  save this conversation to exports/".into());
         state.add_status("  /runs [N]          recent runs (default 10)".into());
         state.add_status(
             "  /history           interactive searchable history (pick + resume)".into(),
@@ -1497,7 +1856,7 @@ fn handle_slash(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
             return;
         }
         // Same normalization contract as the aux: one bounded line.
-        let title = pantheon_core::model::bound_title(rest, pantheon_core::model::TITLE_MAX_CHARS);
+        let title = pantheon_api::model::bound_title(rest, pantheon_api::model::TITLE_MAX_CHARS);
         if title.is_empty() {
             state.add_status("/name: nothing to title with".into());
             return;
@@ -1512,7 +1871,7 @@ fn handle_slash(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
         {
             let _ = supervisor.start_run(&state.session_id);
         }
-        let ev = pantheon_core::events::Event::SessionTitled {
+        let ev = pantheon_api::events::Event::SessionTitled {
             run_id: state.session_id.clone(),
             title: title.clone(),
             model: "user".into(),
@@ -1557,7 +1916,7 @@ fn handle_slash(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
                         state.blocks.clear();
                         for m in pantheon_runtime::session::rebuild_messages(entries) {
                             let kind = match m.role {
-                                pantheon_core::message::Role::User => {
+                                pantheon_api::message::Role::User => {
                                     BlockKind::UserMessage(m.content.clone())
                                 }
                                 _ => BlockKind::AssistantMessage(m.content.clone()),
@@ -1646,6 +2005,357 @@ fn handle_slash(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
         {
             Some(title) => state.add_status(format!("run {id} ({status}) — {title}")),
             None => state.add_status(format!("run {id} ({status})")),
+        }
+        return;
+    }
+    if cmd == "/models" || cmd.starts_with("/models ") {
+        // Optional filter: `/models anth` opens the browser already
+        // filtered, the same as opening it and typing.
+        let filter = cmd.strip_prefix("/models").unwrap_or("").trim().to_string();
+        let rows = build_model_rows();
+        if rows.is_empty() {
+            state.add_status("no models in the provider catalog".into());
+            return;
+        }
+        state.models = Some(rows);
+        state.models_input = filter;
+        state.models_sel = 0;
+        return;
+    }
+    if cmd == "/model" {
+        let (p, m) = session.default_model();
+        state.add_status(format!("model: {p}/{m}"));
+        state.add_status("switch with: /model <provider> <id>  (or /models to browse)".into());
+        return;
+    }
+    if let Some(rest) = cmd.strip_prefix("/model ") {
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        if parts.len() != 2 {
+            state.add_status("usage: /model <provider> <id>  (or /models to browse)".into());
+            return;
+        }
+        apply_model_switch(state, session, parts[0], parts[1]);
+        return;
+    }
+    if cmd == "/reasoning" {
+        let level = session.reasoning();
+        match session.reasoning_budget() {
+            Some(b) => state.add_status(format!(
+                "reasoning: {} + budget {b} (budget wins on budget wires)",
+                level.as_str()
+            )),
+            None => state.add_status(format!("reasoning: {}", level.as_str())),
+        }
+        state.add_status(
+            "set with: /reasoning off|minimal|low|medium|high|xhigh|max  (saved to [model])".into(),
+        );
+        state.add_status(
+            "exact budget with: /reasoning budget <tokens>|off  (Anthropic wire only)".into(),
+        );
+        state.add_status(
+            "maps to reasoning_effort (OpenAI wire) or a thinking budget (Anthropic wire); endpoints without support may ignore or reject it".into(),
+        );
+        return;
+    }
+    if let Some(rest) = cmd.strip_prefix("/reasoning budget") {
+        let arg = rest.trim();
+        let budget = if arg == "off" || arg == "clear" || arg == "none" {
+            None
+        } else if let Ok(n) = arg.parse::<u32>() {
+            if n == 0 {
+                None
+            } else {
+                Some(n)
+            }
+        } else {
+            state.add_status("usage: /reasoning budget <tokens>|off".into());
+            return;
+        };
+        if let Err(e) = session.set_reasoning_budget(budget) {
+            state.add_status(format!("/reasoning: {e}"));
+            return;
+        }
+        match persist_reasoning(&crate::data_dir(), session.reasoning(), budget) {
+            Ok(()) => state.add_status(match budget {
+                Some(b) => format!("reasoning budget → {b} (saved)"),
+                None => "reasoning budget cleared (saved)".into(),
+            }),
+            Err(e) => state.add_status(format!("budget set for this session; save failed: {e}")),
+        }
+        return;
+    }
+    if let Some(rest) = cmd.strip_prefix("/reasoning ") {
+        let arg = rest.trim();
+        match pantheon_api::model::ReasoningLevel::parse(arg) {
+            Some(level) => {
+                if let Err(e) = session.set_reasoning(level) {
+                    state.add_status(format!("/reasoning: {e}"));
+                    return;
+                }
+                // Carry the live budget through: setting a level must not
+                // silently wipe an override set earlier (and vice versa).
+                match persist_reasoning(&crate::data_dir(), level, session.reasoning_budget()) {
+                    Ok(()) => state.add_status(format!("reasoning → {} (saved)", level.as_str())),
+                    Err(e) => state.add_status(format!(
+                        "reasoning → {} for this session; save failed: {e}",
+                        level.as_str()
+                    )),
+                }
+            }
+            None => {
+                state.add_status("usage: /reasoning off|minimal|low|medium|high|xhigh|max".into());
+            }
+        }
+        return;
+    }
+    if cmd == "/new" {
+        // A fresh conversation is a fresh run id with an empty transcript.
+        // No ledger row is created until the first turn, so abandoned
+        // /news leave nothing behind.
+        state.session_id = pantheon_runtime::new_run_id();
+        state.blocks.clear();
+        state.title = None;
+        state.scroll_offset = 0;
+        state.ready = true;
+        state.add_status("new conversation (unsaved until the first turn)".into());
+        return;
+    }
+    if let Some(rest) = cmd.strip_prefix("/remember ") {
+        let rest = rest.trim();
+        let Some(sp) = rest.find(char::is_whitespace) else {
+            state.add_status("usage: /remember KEY TEXT...".into());
+            return;
+        };
+        let (key, value) = (rest[..sp].trim(), rest[sp..].trim());
+        if value.is_empty() {
+            state.add_status("usage: /remember KEY TEXT...".into());
+            return;
+        }
+        let Some(store) = session.memory.as_ref() else {
+            state.add_status("/remember: no memory store in this session".into());
+            return;
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let proposal = pantheon_memory::Proposal {
+            layer: pantheon_memory::LayerKind::Agent,
+            namespace: session.memory_namespace.clone(),
+            key: key.to_string(),
+            value: value.to_string(),
+            provenance: pantheon_memory::Provenance {
+                source: "tui".into(),
+                origin: "user".into(),
+                trust: pantheon_api::provenance::TrustTier::User,
+                recorded_at_ms: now_ms,
+            },
+        };
+        match pantheon_memory::write_via(store.as_ref(), &session.policy, proposal, 4096) {
+            Ok(rec) => state.add_status(format!("remembered {}", rec.key)),
+            Err(e) => state.add_status(format!("/remember: {e}")),
+        }
+        return;
+    }
+    if cmd == "/remember" {
+        state.add_status("usage: /remember KEY TEXT...".into());
+        return;
+    }
+    if cmd == "/skills" || cmd.starts_with("/skills ") {
+        let filter = cmd
+            .strip_prefix("/skills")
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
+        let dd = crate::data_dir();
+        let found = crate::skills_cli::extra_roots();
+        let skills = pantheon_exec::skills::discover_skills_ext(
+            &dd,
+            &crate::skills_cli::project_root(),
+            &found,
+        );
+        if skills.is_empty() {
+            state.add_status("no skills installed".into());
+            return;
+        }
+        let mut shown = 0;
+        for s in &skills {
+            if !filter.is_empty()
+                && !s.meta.name.to_lowercase().contains(&filter)
+                && !s.meta.description.to_lowercase().contains(&filter)
+            {
+                continue;
+            }
+            let desc: String = s.meta.description.chars().take(70).collect();
+            state.add_status(format!("{} [{}] {desc}", s.meta.name, s.meta.origin));
+            shown += 1;
+        }
+        if shown == 0 {
+            state.add_status(format!("no skills match '{filter}'"));
+        } else {
+            state.add_status(format!("{shown} skill(s)"));
+        }
+        return;
+    }
+    if cmd == "/settings" {
+        let dd = crate::data_dir();
+        match crate::config_doc::Config::load(&dd) {
+            Ok(cfg) => {
+                let (provider, model) = session.default_model();
+                state.add_status(format!("data dir: {}", dd.display()));
+                state.add_status(format!("model: {provider}/{model} (live)"));
+                state.add_status(format!(
+                    "policy: {}",
+                    cfg.policy.map(|p| p.as_str()).unwrap_or("coder")
+                ));
+                state.add_status(format!(
+                    "memory: {}",
+                    cfg.memory
+                        .as_ref()
+                        .map(|m| m.backend.as_str())
+                        .unwrap_or("native")
+                ));
+                state.add_status(format!(
+                    "server: {}",
+                    cfg.server
+                        .as_ref()
+                        .map(|s| format!("{}:{}", s.host, s.port))
+                        .unwrap_or_else(|| "unset".into())
+                ));
+                state.add_status(format!(
+                    "agents: {}",
+                    if cfg.agents.is_empty() {
+                        "none declared (anonymous runs)".into()
+                    } else {
+                        let mut names: Vec<&String> = cfg.agents.keys().collect();
+                        names.sort();
+                        names
+                            .iter()
+                            .map(|n| n.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                ));
+            }
+            Err(e) => state.add_status(format!("/settings: {}", e.cause)),
+        }
+        return;
+    }
+    if cmd == "/gateway" {
+        let st = crate::gateway_cli::gateway_status();
+        state.add_status(format!(
+            "gateway service: {}",
+            if st.active {
+                "active"
+            } else if st.installed {
+                "installed, not active (pantheon gateway start)"
+            } else {
+                "not installed (pantheon gateway start)"
+            }
+        ));
+        state.add_status(format!("outbox: {} queued", st.outbox_pending));
+        return;
+    }
+    if cmd == "/doctor" {
+        let rep = crate::doctor_cli::run_system_doctor(&crate::data_dir());
+        for c in &rep.checks {
+            let glyph = match c.status.as_str() {
+                "ok" => "\u{2713}",
+                "warn" => "\u{26a0}",
+                _ => "\u{17d}",
+            };
+            let mut line = format!("{glyph} {}: {}", c.section, c.detail);
+            if !c.fix.is_empty() && c.status != "ok" {
+                line.push_str(&format!(" (fix: {})", c.fix));
+            }
+            state.add_status(line);
+        }
+        state.add_status(if rep.ok {
+            "doctor: healthy".into()
+        } else {
+            "doctor: issues found (see fixes above)".into()
+        });
+        return;
+    }
+    if cmd == "/sessions" {
+        match supervisor.ledger_list_runs(50) {
+            Ok(runs) => {
+                let mut live = 0;
+                for (run_id, status, _ts, title) in &runs {
+                    let active = supervisor.has_active_lease(run_id).unwrap_or(false);
+                    if !active {
+                        continue;
+                    }
+                    live += 1;
+                    let label = title
+                        .as_deref()
+                        .filter(|t| !t.is_empty())
+                        .map(|t| t.chars().take(30).collect::<String>())
+                        .unwrap_or_else(|| run_id.chars().skip(4).take(8).collect());
+                    let here = if *run_id == state.session_id {
+                        " (this session)"
+                    } else {
+                        ""
+                    };
+                    state.add_status(format!("\u{25cf} {label}  {status}{here}"));
+                }
+                if live == 0 {
+                    state.add_status("no live sessions (this one holds no lease yet)".into());
+                }
+            }
+            Err(e) => state.add_status(format!("sessions: {e}")),
+        }
+        return;
+    }
+    if cmd == "/compress" {
+        if state.session_id.is_empty() {
+            state.add_status("/compress: no conversation yet".into());
+            return;
+        }
+        // Model-assisted compression may spend one compression-model call,
+        // exactly as a turn crossing the threshold would. The command is
+        // the consent; the report below says what ran.
+        state.add_status("compressing (may call the compression model)...".into());
+        match session.compress_now(&state.session_id) {
+            Ok(rep) if rep.unknown_window => {
+                state.add_status("/compress: model has no cataloged window; nothing to fit".into())
+            }
+            Ok(rep) if !rep.changed => state.add_status(format!(
+                "compress: already fits ({} est. tokens)",
+                rep.after
+            )),
+            Ok(rep) => state.add_status(format!(
+                "compress: {} → {} est. tokens",
+                rep.before, rep.after
+            )),
+            Err(e) => state.add_status(format!("/compress: {e}")),
+        }
+        return;
+    }
+    if cmd == "/export" || cmd.starts_with("/export ") {
+        let arg = cmd.strip_prefix("/export").unwrap_or("").trim();
+        let format = if arg.is_empty() {
+            "markdown"
+        } else if arg == "markdown" || arg == "json" {
+            arg
+        } else {
+            state.add_status("usage: /export [markdown|json]".into());
+            return;
+        };
+        if state.session_id.is_empty() {
+            state.add_status("/export: no conversation yet".into());
+            return;
+        }
+        let dir = crate::data_dir().join("exports");
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            state.add_status(format!("/export: cannot create {}: {e}", dir.display()));
+            return;
+        }
+        let path = dir.join(format!("{}.{format}", state.session_id));
+        let body = export_transcript(&state.blocks, &state.session_id, format);
+        match std::fs::write(&path, body) {
+            Ok(()) => state.add_status(format!("exported to {}", path.display())),
+            Err(e) => state.add_status(format!("/export: write failed: {e}")),
         }
         return;
     }

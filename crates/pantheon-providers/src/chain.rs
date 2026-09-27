@@ -7,15 +7,15 @@
 //! Exhausted / Usage / Completed), resolving provider metadata — base URL,
 //! API key, wire mode, capability/cost facts — from the core catalog.
 
+use crate::catalog::{self, ApiMode};
 use crate::http::{AdapterTurn, ChatTransport, ResolvedModel};
+use crate::model_event::{ModelEvent, ModelEventSink, NoopModelSink};
 use crate::{anthropic, openai};
 use pantheon_agent::TurnOutcome;
-use pantheon_core::catalog::{self, ApiMode};
-use pantheon_core::error::Layer;
-use pantheon_core::error::PantheonError;
-use pantheon_core::message::{Message, ToolSchema};
-use pantheon_core::model::{DefaultModel, ModelPolicy};
-use pantheon_core::model_event::{ModelEvent, ModelEventSink, NoopModelSink};
+use pantheon_api::error::Layer;
+use pantheon_api::error::PantheonError;
+use pantheon_api::message::{Message, ToolSchema};
+use pantheon_api::model::{DefaultModel, ModelPolicy};
 use pantheon_secrets::SecretValue;
 use std::cell::RefCell;
 
@@ -109,6 +109,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                         messages,
                         &self.tools,
                         stream,
+                        self.policy.reasoning,
                     );
                     if stream {
                         openai::stream(&self.transport, req, sink)
@@ -128,6 +129,8 @@ impl<T: ChatTransport> ProviderChain<T> {
                         &self.tools,
                         stream,
                         max_tokens,
+                        self.policy.reasoning,
+                        self.policy.reasoning_budget,
                     );
                     if stream {
                         anthropic::stream(&self.transport, req, sink)
@@ -204,7 +207,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                         // recorded leaves no trace at all. This is the one
                         // path that answers "why was it slow / why did it end
                         // up on that model", so it goes to the log too.
-                        pantheon_core::logging::warn(
+                        pantheon_api::logging::warn(
                             "provider",
                             format!(
                                 "fallback {f} ({fp}/{fm}, {fc}) → {ni} ({}/{})",
@@ -223,7 +226,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                         (ni, nm)
                     }
                     None => {
-                        pantheon_core::logging::error(
+                        pantheon_api::logging::error(
                             "provider",
                             match &failed {
                                 Some((_, fp, fm, fc)) => {

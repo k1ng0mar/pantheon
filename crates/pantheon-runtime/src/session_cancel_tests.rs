@@ -4,13 +4,15 @@ use super::*;
 fn test_session(tag: &str) -> (Session, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("pantheon-cancel-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let policy = pantheon_core::capability::Policy::coder();
-    let model_policy = pantheon_core::model::ModelPolicy {
-        default: pantheon_core::model::DefaultModel {
+    let policy = pantheon_api::capability::Policy::coder();
+    let model_policy = pantheon_api::model::ModelPolicy {
+        reasoning_budget: Default::default(),
+        reasoning: Default::default(),
+        default: pantheon_api::model::DefaultModel {
             provider: "test".into(),
             model: "test".into(),
         },
-        fallbacks: pantheon_core::model::FallbackChain {
+        fallbacks: pantheon_api::model::FallbackChain {
             fallbacks: Vec::new(),
         },
         auxiliaries: Vec::new(),

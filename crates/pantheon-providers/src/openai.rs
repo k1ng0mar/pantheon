@@ -9,11 +9,11 @@
 //! Policy events (Attempt/Usage/Completed/Fallback) belong to the chain.
 
 use crate::http::{perr, AdapterTurn, ChatTransport, WireRequest};
+use crate::model_event::{ModelEvent, ModelEventSink, ModelUsage};
 use pantheon_agent::{ToolCall, TurnOutcome};
-use pantheon_core::capability::Capability;
-use pantheon_core::error::PantheonError;
-use pantheon_core::message::{Message, Role, ToolSchema};
-use pantheon_core::model_event::{ModelEvent, ModelEventSink, ModelUsage};
+use pantheon_api::capability::Capability;
+use pantheon_api::error::PantheonError;
+use pantheon_api::message::{Message, Role, ToolSchema};
 use std::collections::BTreeMap;
 
 /// Assemble the request body value from canonical messages + tool schemas.
@@ -27,7 +27,7 @@ pub fn body_value(model: &str, messages: &[Message], tools: &[ToolSchema]) -> se
     let mut msgs = Vec::with_capacity(messages.len());
     for m in messages {
         let content = match &m.provenance {
-            Some(p) if p.trust.rank() <= pantheon_core::provenance::TrustTier::Memory.rank() => {
+            Some(p) if p.trust.rank() <= pantheon_api::provenance::TrustTier::Memory.rank() => {
                 format!("{} {}", p.envelope_prefix(), m.content)
             }
             _ => m.content.clone(),
@@ -76,6 +76,10 @@ fn role_str(r: Role) -> &'static str {
 /// `key_header` names the HTTP header carrying the key: `Authorization`
 /// sends `Bearer <key>`; any other name (e.g. Xiaomi MiMo's `api-key`)
 /// sends the raw key.
+// Eight params: the seven the body needs plus the reasoning level, which
+// stays a plain param (not a bundled struct) so every call site keeps
+// reading as explicit wire arguments.
+#[allow(clippy::too_many_arguments)]
 pub fn request(
     base_url: &str,
     api_key: &str,
@@ -84,8 +88,15 @@ pub fn request(
     messages: &[Message],
     tools: &[ToolSchema],
     stream: bool,
+    reasoning: pantheon_api::model::ReasoningLevel,
 ) -> WireRequest {
     let mut body = body_value(model, messages, tools);
+    // Reasoning effort is opt-in only: `Off` leaves the body exactly as
+    // before, so endpoints that reject unknown fields never see one.
+    // Mapped to OpenAI's `reasoning_effort` verbatim (low|medium|high).
+    if !matches!(reasoning, pantheon_api::model::ReasoningLevel::Off) {
+        body["reasoning_effort"] = serde_json::Value::String(reasoning.as_str().into());
+    }
     if stream {
         body["stream"] = serde_json::Value::Bool(true);
         // Ask for the trailing usage chunk (OpenAI standard); without it,

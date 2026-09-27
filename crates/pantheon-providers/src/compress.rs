@@ -14,10 +14,8 @@
 
 use crate::http::{aux_complete, aux_request, aux_transport, resolve_aux_wire, ChatTransport};
 use pantheon_agent::TurnOutcome;
-use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::model::{
-    CompressionRequest, CompressionResult, ContextCompressor, DefaultModel,
-};
+use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::model::{CompressionRequest, CompressionResult, ContextCompressor, DefaultModel};
 use pantheon_secrets::SecretValue;
 
 /// Compression sits inline in the turn when the window overflows: bounded,

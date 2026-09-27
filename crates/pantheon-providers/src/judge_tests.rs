@@ -1,6 +1,6 @@
 //! Tests for `pantheon_providers::judge::tests` — sibling file so sources stay test-free.
 use super::*;
-use pantheon_core::model::DecisionPoint;
+use pantheon_api::model::DecisionPoint;
 
 fn req(point: DecisionPoint, choices: &[&str]) -> DecisionRequest {
     DecisionRequest {

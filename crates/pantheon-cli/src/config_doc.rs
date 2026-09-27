@@ -1,8 +1,8 @@
 //! The complete `config.toml` document plus load/save/validate.
 
 use super::config_schema::{PolicyPreset, SecretRef};
-use pantheon_core::agent_profile::{EffectiveProfile, ProfileError, ProfileRegistry};
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_agent::agent_profile::{EffectiveProfile, ProfileError, ProfileRegistry};
+use pantheon_api::error::{Layer, PantheonError};
 use pantheon_secrets::SecretVault;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -17,6 +17,16 @@ pub struct ModelSection {
     /// Ordered fallback chain: [{provider, model}].
     #[serde(default)]
     pub fallbacks: Vec<FallbackEntry>,
+    /// Reasoning effort for chat turns: off|minimal|low|medium|high.
+    /// Absent (or `PANTHEON_REASONING` unset) means off — no effort param
+    /// is sent and every provider behaves exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Exact thinking budget in tokens for budget wires (Anthropic).
+    /// Overrides the level mapping; ignored on effort-string wires.
+    /// 0 disables thinking entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_budget: Option<u32>,
 }
 
 /// One aux-model slot: every `[judge]`, `[compression]`, `[title_gen]`,
@@ -177,12 +187,12 @@ pub struct ServerSection {
 ///
 /// This is a **re-export of the core type**, not a second definition. The
 /// declaration, inheritance, and namespace rules live in
-/// `pantheon_core::agent_profile` so the runtime can consume a profile
+/// `pantheon_agent::agent_profile` so the runtime can consume a profile
 /// without depending on the CLI. An earlier version of this file declared
 /// its own struct with four of the fields; it drifted as soon as
 /// `inherits` and `model` were added, which is exactly the duplication
 /// this re-export removes.
-pub use pantheon_core::agent_profile::AgentProfile as AgentIdentity;
+pub use pantheon_agent::agent_profile::AgentProfile as AgentIdentity;
 
 /// Why an `[agents.<name>]` table is not usable, in `doctor`'s wording.
 ///
@@ -423,6 +433,20 @@ impl Config {
                     problems.push(format!("model.fallbacks[{i}] has empty provider or model"));
                 }
             }
+            if let Some(r) = m.reasoning.as_deref().filter(|s| !s.trim().is_empty()) {
+                if pantheon_api::model::ReasoningLevel::parse(r).is_none() {
+                    problems.push(format!(
+                        "model.reasoning {r:?} is not off|minimal|low|medium|high|xhigh|max (resolves to off)"
+                    ));
+                }
+            }
+            if let Some(b) = m.reasoning_budget {
+                if b > 0 && b < 1024 {
+                    problems.push(format!(
+                        "model.reasoning_budget {b} is below the 1024-token budget-wire minimum (skipped at request time)"
+                    ));
+                }
+            }
         } else {
             problems.push("no [model] section: run `pantheon setup`".into());
         }
@@ -537,7 +561,7 @@ fn aux_target(
 /// drives target resolution, key seeding, validation, and the
 /// `auxiliaries()` fan-out — adding a capability means adding one row.
 struct AuxSlot {
-    kind: pantheon_core::model::AuxiliaryKind,
+    kind: pantheon_api::model::AuxiliaryKind,
     /// Config section name (for diagnostics).
     name: &'static str,
     /// `PANTHEON_<PREFIX>_PROVIDER` / `PANTHEON_<PREFIX>_MODEL`.
@@ -552,7 +576,7 @@ struct AuxSlot {
 
 const AUX_SLOTS: &[AuxSlot] = &[
     AuxSlot {
-        kind: pantheon_core::model::AuxiliaryKind::Judge,
+        kind: pantheon_api::model::AuxiliaryKind::Judge,
         name: "judge",
         env_prefix: "JUDGE",
         vault_name: "PANTHEON_JUDGE_API_KEY",
@@ -560,7 +584,7 @@ const AUX_SLOTS: &[AuxSlot] = &[
         section: |c| c.judge.as_ref(),
     },
     AuxSlot {
-        kind: pantheon_core::model::AuxiliaryKind::Compression,
+        kind: pantheon_api::model::AuxiliaryKind::Compression,
         name: "compression",
         env_prefix: "COMPRESSION",
         vault_name: "PANTHEON_COMPRESSION_API_KEY",
@@ -568,7 +592,7 @@ const AUX_SLOTS: &[AuxSlot] = &[
         section: |c| c.compression.as_ref(),
     },
     AuxSlot {
-        kind: pantheon_core::model::AuxiliaryKind::TitleGen,
+        kind: pantheon_api::model::AuxiliaryKind::TitleGen,
         name: "title_gen",
         env_prefix: "TITLEGEN",
         vault_name: "PANTHEON_TITLEGEN_API_KEY",
@@ -576,7 +600,7 @@ const AUX_SLOTS: &[AuxSlot] = &[
         section: |c| c.title_gen.as_ref(),
     },
     AuxSlot {
-        kind: pantheon_core::model::AuxiliaryKind::Embeddings,
+        kind: pantheon_api::model::AuxiliaryKind::Embeddings,
         name: "embeddings",
         env_prefix: "EMBEDDINGS",
         vault_name: "PANTHEON_EMBEDDINGS_API_KEY",
@@ -584,7 +608,7 @@ const AUX_SLOTS: &[AuxSlot] = &[
         section: |c| c.embeddings.as_ref(),
     },
     AuxSlot {
-        kind: pantheon_core::model::AuxiliaryKind::SearchSynthesis,
+        kind: pantheon_api::model::AuxiliaryKind::SearchSynthesis,
         name: "search_synthesis",
         env_prefix: "SEARCH_SYNTHESIS",
         vault_name: "PANTHEON_SEARCH_SYNTHESIS_API_KEY",
@@ -592,7 +616,7 @@ const AUX_SLOTS: &[AuxSlot] = &[
         section: |c| c.search_synthesis.as_ref(),
     },
     AuxSlot {
-        kind: pantheon_core::model::AuxiliaryKind::Vision,
+        kind: pantheon_api::model::AuxiliaryKind::Vision,
         name: "vision",
         env_prefix: "VISION",
         vault_name: "PANTHEON_VISION_API_KEY",
@@ -600,7 +624,7 @@ const AUX_SLOTS: &[AuxSlot] = &[
         section: |c| c.vision.as_ref(),
     },
     AuxSlot {
-        kind: pantheon_core::model::AuxiliaryKind::Scheduled,
+        kind: pantheon_api::model::AuxiliaryKind::Scheduled,
         name: "scheduled",
         env_prefix: "SCHEDULED",
         vault_name: "PANTHEON_SCHEDULED_API_KEY",
@@ -608,7 +632,7 @@ const AUX_SLOTS: &[AuxSlot] = &[
         section: |c| c.scheduled.as_ref(),
     },
     AuxSlot {
-        kind: pantheon_core::model::AuxiliaryKind::McpSynthesis,
+        kind: pantheon_api::model::AuxiliaryKind::McpSynthesis,
         name: "mcp_synthesis",
         env_prefix: "MCP_SYNTHESIS",
         vault_name: "PANTHEON_MCP_SYNTHESIS_API_KEY",
@@ -633,9 +657,9 @@ fn slot_target(slot: &AuxSlot, cfg: Option<&Config>) -> Option<(String, String)>
 }
 
 /// Resolve one slot's auxiliary entry (pinned target only, no `auto`).
-fn slot_aux(slot: &AuxSlot, cfg: Option<&Config>) -> Option<pantheon_core::model::AuxiliaryModel> {
+fn slot_aux(slot: &AuxSlot, cfg: Option<&Config>) -> Option<pantheon_api::model::AuxiliaryModel> {
     let (provider, model) = slot_target(slot, cfg)?;
-    Some(pantheon_core::model::AuxiliaryModel {
+    Some(pantheon_api::model::AuxiliaryModel {
         kind: slot.kind.clone(),
         provider,
         model,
@@ -685,10 +709,10 @@ pub fn model_key_env(cfg: Option<&Config>) -> Option<String> {
 }
 
 /// Env-var-safe version of a provider id: `my-llm` → `MY_LLM`.
-/// Delegates to [`pantheon_core::catalog::env_part`] — one cleaner for
+/// Delegates to [`pantheon_providers::catalog::env_part`] — one cleaner for
 /// every `PANTHEON_*` name.
 pub fn sanitize_env_suffix(id: &str) -> String {
-    pantheon_core::catalog::env_part(id)
+    pantheon_providers::catalog::env_part(id)
 }
 
 /// Effective key env var for a provider id: explicit `key_env` wins,
@@ -712,12 +736,12 @@ pub fn upsert_custom_row(
     data_dir: &std::path::Path,
     name: &str,
     base_url: &str,
-    api_mode: pantheon_core::catalog::ApiMode,
+    api_mode: pantheon_providers::catalog::ApiMode,
     key_env: &str,
 ) -> Result<bool, String> {
-    use pantheon_core::catalog::ApiMode as Mode;
+    use pantheon_providers::catalog::ApiMode as Mode;
     let mut cfg = Config::load(data_dir).unwrap_or_default();
-    let shadow = pantheon_core::catalog::providers()
+    let shadow = pantheon_providers::catalog::providers()
         .iter()
         .any(|p| p.id == name);
     cfg.custom_providers.insert(
@@ -801,19 +825,19 @@ pub fn register_custom_providers(cfg: &Config) {
             continue;
         }
         let api_mode = match sec.api_mode.trim().to_ascii_lowercase().as_str() {
-            "anthropic" => pantheon_core::catalog::ApiMode::Anthropic,
-            _ => pantheon_core::catalog::ApiMode::OpenAi,
+            "anthropic" => pantheon_providers::catalog::ApiMode::Anthropic,
+            _ => pantheon_providers::catalog::ApiMode::OpenAi,
         };
         // Register the endpoint's models so `pantheon providers` lists them and
         // the model picker can name one. `model_meta` supplies conservative
         // defaults (tools on, vision/reasoning off, streaming on) and any
         // declared limit overrides them.
-        let models: Vec<pantheon_core::catalog::ModelMeta> = sec
+        let models: Vec<pantheon_providers::catalog::ModelMeta> = sec
             .models
             .iter()
             .filter(|m| !m.id.trim().is_empty())
             .map(|m| {
-                let mut meta = pantheon_core::catalog::model_meta(name, m.id.trim());
+                let mut meta = pantheon_providers::catalog::model_meta(name, m.id.trim());
                 if let Some(c) = m.context_limit {
                     meta.context_limit = Some(c);
                 }
@@ -823,19 +847,21 @@ pub fn register_custom_providers(cfg: &Config) {
                 meta
             })
             .collect();
-        pantheon_core::catalog::register_custom_provider(pantheon_core::catalog::ProviderMeta {
-            id: name.clone(),
-            label: name.clone(),
-            base_url: sec.base_url.trim().trim_end_matches('/').to_string(),
-            api_mode,
-            base_env: String::new(),
-            key_env: provider_key_env(name, sec.key_env.as_deref()),
-            key_header: "Authorization".into(),
-            models,
-            prominent: true,
-            dev: false,
-            tag: "custom".into(),
-        });
+        pantheon_providers::catalog::register_custom_provider(
+            pantheon_providers::catalog::ProviderMeta {
+                id: name.clone(),
+                label: name.clone(),
+                base_url: sec.base_url.trim().trim_end_matches('/').to_string(),
+                api_mode,
+                base_env: String::new(),
+                key_env: provider_key_env(name, sec.key_env.as_deref()),
+                key_header: "Authorization".into(),
+                models,
+                prominent: true,
+                dev: false,
+                tag: "custom".into(),
+            },
+        );
     }
 }
 
@@ -871,11 +897,11 @@ pub fn build_model_policy(
     cfg: Option<&Config>,
     provider: Option<String>,
     model: Option<String>,
-) -> pantheon_core::model::ModelPolicy {
+) -> pantheon_api::model::ModelPolicy {
     let cfg_model = cfg
         .and_then(|c| c.model.clone())
         .map(|m| (m.provider, m.model));
-    let default = pantheon_core::model::DefaultModel {
+    let default = pantheon_api::model::DefaultModel {
         provider: provider
             .or_else(|| cfg_model.as_ref().map(|(p, _)| p.clone()))
             .or_else(|| std::env::var("PANTHEON_PROVIDER").ok())
@@ -885,23 +911,55 @@ pub fn build_model_policy(
             .or_else(|| std::env::var("PANTHEON_MODEL").ok())
             .unwrap_or_else(|| "llama3.2".into()),
     };
-    let mut chain = pantheon_core::model::FallbackChain::default();
+    let mut chain = pantheon_api::model::FallbackChain::default();
     if let Some(fallbacks) = cfg
         .and_then(|c| c.model.as_ref())
         .map(|m| m.fallbacks.clone())
     {
         for f in fallbacks {
-            chain.fallbacks.push(pantheon_core::model::DefaultModel {
+            chain.fallbacks.push(pantheon_api::model::DefaultModel {
                 provider: f.provider,
                 model: f.model,
             });
         }
     }
-    pantheon_core::model::ModelPolicy {
+    pantheon_api::model::ModelPolicy {
+        reasoning_budget: resolve_reasoning_budget(cfg),
+        reasoning: resolve_reasoning(cfg),
         default: default.clone(),
         fallbacks: chain,
         auxiliaries: auxiliaries(cfg, &default),
     }
+}
+
+/// Exact thinking budget: `PANTHEON_REASONING_BUDGET` wins, then
+/// `[model].reasoning_budget`. Zero disables (reads as "no budget").
+/// Applies to budget wires only; effort-string wires ignore it.
+fn resolve_reasoning_budget(cfg: Option<&Config>) -> Option<u32> {
+    if let Ok(v) = std::env::var("PANTHEON_REASONING_BUDGET") {
+        if let Ok(n) = v.trim().parse::<u32>() {
+            return Some(n);
+        }
+    }
+    cfg.and_then(|c| c.model.as_ref())
+        .and_then(|m| m.reasoning_budget)
+}
+
+/// Reasoning effort for chat turns: `PANTHEON_REASONING` wins, then
+/// `[model].reasoning`, then off. Unknown strings resolve to off — the
+/// safe direction is sending no param, and `doctor` flags the typo (see
+/// `Config::validate`) rather than failing the session.
+fn resolve_reasoning(cfg: Option<&Config>) -> pantheon_api::model::ReasoningLevel {
+    use pantheon_api::model::ReasoningLevel;
+    if let Ok(v) = std::env::var("PANTHEON_REASONING") {
+        if let Some(level) = ReasoningLevel::parse(&v) {
+            return level;
+        }
+    }
+    cfg.and_then(|c| c.model.as_ref())
+        .and_then(|m| m.reasoning.as_deref())
+        .and_then(ReasoningLevel::parse)
+        .unwrap_or_default()
 }
 
 /// Every auxiliary for this host with a resolved target: an explicit
@@ -916,9 +974,9 @@ pub fn build_model_policy(
 /// `[embeddings]` (or its env) actually pins a target.
 pub fn auxiliaries(
     cfg: Option<&Config>,
-    default: &pantheon_core::model::DefaultModel,
-) -> Vec<pantheon_core::model::AuxiliaryModel> {
-    use pantheon_core::model::{AuxiliaryKind, AuxiliaryModel};
+    default: &pantheon_api::model::DefaultModel,
+) -> Vec<pantheon_api::model::AuxiliaryModel> {
+    use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel};
     let auto = |kind: AuxiliaryKind| AuxiliaryModel {
         kind,
         provider: default.provider.clone(),

@@ -1,9 +1,9 @@
 //! Pickers built on the widgets, reading real runtime state.
 //!
-//! Placeholder for L0. Every picker here is a function that turns catalog or
+//! Every picker here is a function that turns catalog or
 //! ledger data into `Item` rows; the widget does the interaction.
 
-use pantheon_core::catalog;
+use pantheon_providers::catalog;
 
 use crate::widget::{Item, SearchList, Select};
 

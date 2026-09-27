@@ -1,6 +1,6 @@
 //! The setup section graph.
 //!
-//! Placeholder for L0 step 3. The graph resolves which sections apply given
+//! The graph resolves which sections apply given
 //! the answers so far, so the progress indicator can never claim "7 of 12"
 //! for a branch that has nine screens.
 

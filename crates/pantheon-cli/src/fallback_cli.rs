@@ -49,10 +49,12 @@ pub fn cmd_fallback(args: &[String]) {
     // so create the section rather than erroring on a config that has none.
     if cfg.model.is_none() {
         cfg.model = Some(crate::config_doc::ModelSection {
+            reasoning_budget: None,
             provider: String::new(),
             model: String::new(),
             api_key_env: None,
             fallbacks: Vec::new(),
+            reasoning: None,
         });
     }
     // Named `section` not `model`: the `add`/`insert` arms bind a `model`

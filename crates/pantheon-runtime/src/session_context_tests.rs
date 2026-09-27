@@ -22,7 +22,7 @@ fn test_session_named(policy: ModelPolicy, tag: &str) -> (Session, std::path::Pa
     let broker = pantheon_secrets::SecretsBroker::new();
     let s = Session::new(
         dir.clone(),
-        pantheon_core::capability::Policy::default(),
+        pantheon_api::capability::Policy::default(),
         policy,
         broker,
     )
@@ -43,7 +43,7 @@ fn test_session(policy: ModelPolicy) -> (Session, std::path::PathBuf) {
     let broker = pantheon_secrets::SecretsBroker::new();
     let s = Session::new(
         dir.clone(),
-        pantheon_core::capability::Policy::default(),
+        pantheon_api::capability::Policy::default(),
         policy,
         broker,
     )
@@ -72,7 +72,7 @@ fn empty_chain(s: &Session) -> ProviderChain<Box<dyn pantheon_providers::ChatTra
         }
     }
     ProviderChain::new(
-        s.model_policy.clone(),
+        s.policy_snapshot(),
         Box::new(Explode),
         vec![],
         pantheon_secrets::SecretValue::new(""),
@@ -81,7 +81,9 @@ fn empty_chain(s: &Session) -> ProviderChain<Box<dyn pantheon_providers::ChatTra
 
 fn openai_policy(model: &str) -> ModelPolicy {
     ModelPolicy {
-        default: pantheon_core::model::DefaultModel {
+        reasoning_budget: Default::default(),
+        reasoning: Default::default(),
+        default: pantheon_api::model::DefaultModel {
             provider: "openai".into(),
             model: model.into(),
         },
@@ -200,8 +202,8 @@ fn an_under_budget_transcript_is_left_byte_identical() {
 fn without_a_compression_aux_the_deterministic_fit_still_bounds_the_transcript() {
     let (s, _d) = test_session(openai_policy("gpt-4o"));
     assert!(
-        s.model_policy
-            .auxiliary(&pantheon_core::model::AuxiliaryKind::Compression)
+        s.policy_snapshot()
+            .auxiliary(&pantheon_api::model::AuxiliaryKind::Compression)
             .is_none(),
         "fixture must have no compression aux"
     );

@@ -31,7 +31,7 @@ fn policy_preset_parses_the_config_toml_spellings() {
 fn every_preset_maps_to_the_policy_it_names() {
     // `reader` used to resolve to Policy::coder(), so a user who set
     // policy = "reader" got shell and file writes.
-    use pantheon_core::capability::{Capability, Decision};
+    use pantheon_api::capability::{Capability, Decision};
 
     let reader = PolicyPreset::Reader.to_policy();
     for denied in [
@@ -77,7 +77,7 @@ fn config_policy_wins_over_the_environment() {
     };
     let policy = policy_for_config(&Some(cfg));
     assert_eq!(
-        policy.check(&pantheon_core::capability::Capability::ShellExecute),
-        pantheon_core::capability::Decision::Deny
+        policy.check(&pantheon_api::capability::Capability::ShellExecute),
+        pantheon_api::capability::Decision::Deny
     );
 }

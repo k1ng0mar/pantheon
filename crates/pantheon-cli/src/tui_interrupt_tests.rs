@@ -83,14 +83,14 @@ fn resume_rebuilds_transcript_from_ledger() {
     let _ = std::fs::remove_dir_all(&dir);
     let sup = pantheon_runtime::Supervisor::open(dir).unwrap();
     sup.start_run("run_tui").unwrap();
-    sup.emit(pantheon_core::events::Event::AssistantMessage {
+    sup.emit(pantheon_api::events::Event::AssistantMessage {
         run_id: "run_tui".into(),
-        message: pantheon_core::message::Message::user("do the thing"),
+        message: pantheon_api::message::Message::user("do the thing"),
     })
     .unwrap();
-    sup.emit(pantheon_core::events::Event::AssistantMessage {
+    sup.emit(pantheon_api::events::Event::AssistantMessage {
         run_id: "run_tui".into(),
-        message: pantheon_core::message::Message::assistant("done"),
+        message: pantheon_api::message::Message::assistant("done"),
     })
     .unwrap();
     let entries = sup.replay("run_tui").unwrap();

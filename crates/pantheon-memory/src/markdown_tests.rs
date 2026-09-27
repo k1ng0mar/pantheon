@@ -1,7 +1,7 @@
 //! Tests for `pantheon_memory::markdown::tests` — sibling file so sources stay test-free.
 use super::*;
 use crate::LayerKind;
-use pantheon_core::provenance::TrustTier;
+use pantheon_api::provenance::TrustTier;
 
 #[test]
 fn parse_round_trips_simple_records() {
@@ -89,8 +89,8 @@ fn key_named_agent_memory_round_trips_in_v1_file() {
 #[test]
 fn untrusted_record_survives_markdown_round_trip() {
     let store = MemoryStore::open_in_memory().unwrap();
-    let policy = pantheon_core::capability::Policy::coder()
-        .allow(pantheon_core::capability::Capability::MemoryWrite);
+    let policy = pantheon_api::capability::Policy::coder()
+        .allow(pantheon_api::capability::Capability::MemoryWrite);
     // Store one untrusted record (as the model would).
     let p = Proposal {
         layer: LayerKind::Agent,
@@ -100,7 +100,7 @@ fn untrusted_record_survives_markdown_round_trip() {
         provenance: Provenance {
             source: "native".into(),
             origin: "model".into(),
-            trust: pantheon_core::provenance::TrustTier::Untrusted,
+            trust: pantheon_api::provenance::TrustTier::Untrusted,
             recorded_at_ms: 1,
         },
     };
@@ -124,7 +124,7 @@ fn untrusted_record_survives_markdown_round_trip() {
     let rec = store2.get("nyx", "injected").unwrap().unwrap();
     assert_eq!(
         rec.provenance.trust,
-        pantheon_core::provenance::TrustTier::Untrusted,
+        pantheon_api::provenance::TrustTier::Untrusted,
         "markdown round-trip must not launder an untrusted record to user trust"
     );
     let _ = std::fs::remove_dir_all(&tmp);
@@ -134,8 +134,8 @@ fn untrusted_record_survives_markdown_round_trip() {
 fn import_proposals_go_through_policy_gate() {
     // Use a fresh in-memory store and a policy that grants MemoryWrite.
     let store = MemoryStore::open_in_memory().unwrap();
-    let policy = pantheon_core::capability::Policy::coder()
-        .allow(pantheon_core::capability::Capability::MemoryWrite);
+    let policy = pantheon_api::capability::Policy::coder()
+        .allow(pantheon_api::capability::Capability::MemoryWrite);
     let tmp = std::env::temp_dir().join(format!(
         "pantheon-mem-md-{}-{}",
         std::process::id(),
@@ -148,7 +148,7 @@ fn import_proposals_go_through_policy_gate() {
     let n = import_agent(&store, &policy, "nyx", &tmp).unwrap();
     assert_eq!(n, 2);
     let layers = [LayerKind::Agent];
-    let hits = crate::recall(&store, &policy, &layers, "city", 10).unwrap();
+    let hits = crate::recall(&store, &policy, &["nyx"], &layers, "city", 10).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].record.value, "Kano");
     let _ = std::fs::remove_file(&tmp);
@@ -158,7 +158,7 @@ fn import_proposals_go_through_policy_gate() {
 fn import_refuses_without_write_capability() {
     let store = MemoryStore::open_in_memory().unwrap();
     // Default `coder()` does NOT grant MemoryWrite.
-    let policy = pantheon_core::capability::Policy::coder();
+    let policy = pantheon_api::capability::Policy::coder();
     let tmp = std::env::temp_dir().join(format!(
         "pantheon-mem-md-{}-{}",
         std::process::id(),
@@ -173,9 +173,9 @@ fn import_refuses_without_write_capability() {
     let _ = std::fs::remove_file(&tmp);
 }
 
-fn writer_policy() -> pantheon_core::capability::Policy {
-    use pantheon_core::capability::Capability as C;
-    pantheon_core::capability::Policy::coder().allow(C::MemoryWrite)
+fn writer_policy() -> pantheon_api::capability::Policy {
+    use pantheon_api::capability::Capability as C;
+    pantheon_api::capability::Policy::coder().allow(C::MemoryWrite)
 }
 
 fn fresh_md(name: &str) -> std::path::PathBuf {
@@ -221,7 +221,7 @@ fn sync_imports_when_file_changes() {
     assert!(r2.imported);
     assert!(r2.exported);
     let layers = [LayerKind::Agent];
-    let hits = crate::recall(&store, &writer_policy(), &layers, "city", 10).unwrap();
+    let hits = crate::recall(&store, &writer_policy(), &["nyx"], &layers, "city", 10).unwrap();
     assert_eq!(hits.len(), 1);
 }
 
@@ -256,7 +256,7 @@ fn detect_conflict_when_both_sides_changed() {
             provenance: Provenance {
                 source: "test".into(),
                 origin: "test".into(),
-                trust: pantheon_core::provenance::TrustTier::User,
+                trust: pantheon_api::provenance::TrustTier::User,
                 recorded_at_ms: 0,
             },
         },
@@ -284,7 +284,7 @@ fn sync_no_conflict_when_only_store_changed() {
             provenance: Provenance {
                 source: "test".into(),
                 origin: "test".into(),
-                trust: pantheon_core::provenance::TrustTier::User,
+                trust: pantheon_api::provenance::TrustTier::User,
                 recorded_at_ms: 0,
             },
         },

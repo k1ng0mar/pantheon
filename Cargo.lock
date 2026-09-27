@@ -1806,31 +1806,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "pantheon"
+version = "0.1.0"
+dependencies = [
+ "pantheon-agent",
+ "pantheon-api",
+ "pantheon-capability",
+ "pantheon-exec",
+ "pantheon-extensions",
+ "pantheon-gateway",
+ "pantheon-mcp",
+ "pantheon-memory",
+ "pantheon-migration",
+ "pantheon-providers",
+ "pantheon-runtime",
+ "pantheon-sandbox",
+ "pantheon-scheduler",
+ "pantheon-secrets",
+ "pantheon-storage",
+ "pantheon-swarm",
+ "pantheon-tools",
+ "pantheon-tui",
+]
+
+[[package]]
 name = "pantheon-agent"
 version = "0.1.0"
 dependencies = [
+ "pantheon-api",
  "pantheon-capability",
- "pantheon-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "pantheon-api"
 version = "0.1.0"
 dependencies = [
- "pantheon-core",
- "pantheon-gateway",
- "pantheon-runtime",
- "pantheon-storage",
  "serde",
  "serde_json",
- "tempfile",
 ]
 
 [[package]]
 name = "pantheon-capability"
 version = "0.1.0"
 dependencies = [
- "pantheon-core",
+ "pantheon-api",
 ]
 
 [[package]]
@@ -1841,17 +1862,19 @@ dependencies = [
  "ctrlc",
  "pantheon-agent",
  "pantheon-api",
- "pantheon-core",
  "pantheon-exec",
  "pantheon-extensions",
  "pantheon-gateway",
  "pantheon-memory",
- "pantheon-migrate",
+ "pantheon-migration",
+ "pantheon-providers",
  "pantheon-runtime",
  "pantheon-scheduler",
  "pantheon-secrets",
  "pantheon-storage",
  "pantheon-swarm",
+ "pantheon-tools",
+ "pantheon-tui",
  "ratatui",
  "serde",
  "serde_json",
@@ -1860,23 +1883,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "pantheon-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "serde_yaml",
-]
-
-[[package]]
 name = "pantheon-exec"
 version = "0.1.0"
 dependencies = [
  "libc",
- "pantheon-core",
- "pantheon-memory",
+ "pantheon-api",
  "pantheon-providers",
- "pantheon-sandbox",
  "pantheon-storage",
  "serde",
  "serde_json",
@@ -1890,7 +1902,7 @@ dependencies = [
 name = "pantheon-extensions"
 version = "0.1.0"
 dependencies = [
- "pantheon-core",
+ "pantheon-api",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1900,7 +1912,7 @@ dependencies = [
 name = "pantheon-gateway"
 version = "0.1.0"
 dependencies = [
- "pantheon-core",
+ "pantheon-api",
  "pantheon-storage",
  "serde",
  "serde_json",
@@ -1912,7 +1924,7 @@ dependencies = [
 name = "pantheon-mcp"
 version = "0.1.0"
 dependencies = [
- "pantheon-core",
+ "pantheon-api",
  "serde",
 ]
 
@@ -1920,7 +1932,7 @@ dependencies = [
 name = "pantheon-memory"
 version = "0.1.0"
 dependencies = [
- "pantheon-core",
+ "pantheon-api",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1929,11 +1941,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "pantheon-migrate"
+name = "pantheon-migration"
 version = "0.1.0"
 dependencies = [
- "pantheon-core",
+ "pantheon-api",
  "pantheon-extensions",
+ "pantheon-providers",
  "pantheon-storage",
  "serde",
  "serde_json",
@@ -1945,10 +1958,11 @@ name = "pantheon-providers"
 version = "0.1.0"
 dependencies = [
  "pantheon-agent",
- "pantheon-core",
+ "pantheon-api",
  "pantheon-secrets",
  "serde",
  "serde_json",
+ "serde_yaml",
  "ureq",
 ]
 
@@ -1957,16 +1971,19 @@ name = "pantheon-runtime"
 version = "0.1.0"
 dependencies = [
  "pantheon-agent",
- "pantheon-core",
+ "pantheon-api",
  "pantheon-exec",
  "pantheon-extensions",
+ "pantheon-gateway",
  "pantheon-memory",
  "pantheon-providers",
  "pantheon-secrets",
  "pantheon-storage",
  "pantheon-swarm",
+ "pantheon-tools",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1974,7 +1991,7 @@ name = "pantheon-sandbox"
 version = "0.1.0"
 dependencies = [
  "libc",
- "pantheon-core",
+ "pantheon-api",
  "serde",
 ]
 
@@ -1982,7 +1999,7 @@ dependencies = [
 name = "pantheon-scheduler"
 version = "0.1.0"
 dependencies = [
- "pantheon-core",
+ "pantheon-api",
  "pantheon-storage",
  "serde",
  "serde_json",
@@ -2007,7 +2024,7 @@ dependencies = [
 name = "pantheon-storage"
 version = "0.1.0"
 dependencies = [
- "pantheon-core",
+ "pantheon-api",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2018,7 +2035,22 @@ dependencies = [
 name = "pantheon-swarm"
 version = "0.1.0"
 dependencies = [
- "pantheon-core",
+ "pantheon-api",
+]
+
+[[package]]
+name = "pantheon-tools"
+version = "0.1.0"
+dependencies = [
+ "pantheon-api",
+ "pantheon-exec",
+ "pantheon-memory",
+ "pantheon-providers",
+ "pantheon-sandbox",
+ "pantheon-storage",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2027,7 +2059,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "pantheon-agent",
- "pantheon-core",
+ "pantheon-providers",
  "pantheon-runtime",
  "pantheon-storage",
  "ratatui",

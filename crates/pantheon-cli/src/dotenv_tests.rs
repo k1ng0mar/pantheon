@@ -90,7 +90,7 @@ fn migrate_and_runtime_dotenv_parsers_agree_on_values() {
             ));
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join(".env"), format!("{case}\n")).unwrap();
-            let v = pantheon_migrate::read_dotenv(&dir.join(".env"));
+            let v = pantheon_migration::read_dotenv(&dir.join(".env"));
             let _ = std::fs::remove_dir_all(&dir);
             v
         };

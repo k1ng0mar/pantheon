@@ -17,7 +17,7 @@ fn request_maps_system_tools_and_alternation() {
     let msgs = vec![
         Message::system("be brief"),
         Message::user("hi"),
-        Message::assistant_tool_calls(vec![pantheon_core::message::ToolCallRef {
+        Message::assistant_tool_calls(vec![pantheon_api::message::ToolCallRef {
             id: "call_1".into(),
             name: "shell".into(),
             arguments: "{\"cmd\":\"ls\"}".into(),
@@ -38,6 +38,8 @@ fn request_maps_system_tools_and_alternation() {
         &tools,
         false,
         1024,
+        pantheon_api::model::ReasoningLevel::Off,
+        None,
     );
     assert!(req.url.ends_with("/messages"));
     assert!(req
@@ -212,4 +214,178 @@ fn stream_error_event_is_structured() {
         .unwrap_err();
     assert_eq!(err.code, "PROVIDER_STREAM");
     assert!(err.retryable, "overloaded must be fallback-eligible");
+}
+
+#[test]
+fn reasoning_high_adds_thinking_budget() {
+    use pantheon_api::model::ReasoningLevel;
+    let req = request(
+        "https://api.anthropic.com/v1",
+        "sk-test",
+        "claude-sonnet-4",
+        &[Message::user("hi")],
+        &[],
+        false,
+        200_000,
+        ReasoningLevel::High,
+        None,
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert_eq!(v["thinking"]["type"], "enabled");
+    assert_eq!(v["thinking"]["budget_tokens"], 20_000);
+}
+
+#[test]
+fn reasoning_off_sends_no_thinking_block() {
+    use pantheon_api::model::ReasoningLevel;
+    let req = request(
+        "https://api.anthropic.com/v1",
+        "sk-test",
+        "claude-sonnet-4",
+        &[Message::user("hi")],
+        &[],
+        false,
+        200_000,
+        ReasoningLevel::Off,
+        None,
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert!(
+        v.get("thinking").is_none(),
+        "off is byte-identical to before"
+    );
+}
+
+#[test]
+fn thinking_skipped_when_window_cannot_fit_budget() {
+    use pantheon_api::model::ReasoningLevel;
+    // max_tokens 1024 cannot satisfy 1024 <= budget < max_tokens, so the
+    // param is skipped rather than sending a body the API rejects.
+    let req = request(
+        "https://api.anthropic.com/v1",
+        "sk-test",
+        "claude-sonnet-4",
+        &[Message::user("hi")],
+        &[],
+        false,
+        1024,
+        ReasoningLevel::High,
+        None,
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert!(v.get("thinking").is_none());
+}
+
+#[test]
+fn explicit_budget_overrides_the_level_mapping() {
+    use pantheon_api::model::ReasoningLevel;
+    let req = request(
+        "https://api.anthropic.com/v1",
+        "sk-test",
+        "claude-sonnet-4",
+        &[Message::user("hi")],
+        &[],
+        false,
+        200_000,
+        ReasoningLevel::Low,
+        Some(16_000),
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert_eq!(v["thinking"]["budget_tokens"], 16_000);
+}
+
+#[test]
+fn explicit_zero_budget_disables_thinking() {
+    use pantheon_api::model::ReasoningLevel;
+    let req = request(
+        "https://api.anthropic.com/v1",
+        "sk-test",
+        "claude-sonnet-4",
+        &[Message::user("hi")],
+        &[],
+        false,
+        200_000,
+        ReasoningLevel::High,
+        Some(0),
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert!(
+        v.get("thinking").is_none(),
+        "0 reads as no budget, not a 0-token block"
+    );
+}
+
+#[test]
+fn minimal_shares_the_api_minimum_floor() {
+    use pantheon_api::model::ReasoningLevel;
+    let req = request(
+        "https://api.anthropic.com/v1",
+        "sk-test",
+        "claude-sonnet-4",
+        &[Message::user("hi")],
+        &[],
+        false,
+        200_000,
+        ReasoningLevel::Minimal,
+        None,
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert_eq!(v["thinking"]["budget_tokens"], 1024);
+}
+
+#[test]
+fn xhigh_takes_the_top_fixed_budget() {
+    use pantheon_api::model::ReasoningLevel;
+    let req = request(
+        "https://api.anthropic.com/v1",
+        "sk-test",
+        "claude-sonnet-4",
+        &[Message::user("hi")],
+        &[],
+        false,
+        200_000,
+        ReasoningLevel::Xhigh,
+        None,
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert_eq!(v["thinking"]["budget_tokens"], 32_000);
+}
+
+#[test]
+fn max_fills_whatever_the_window_allows() {
+    use pantheon_api::model::ReasoningLevel;
+    let req = request(
+        "https://api.anthropic.com/v1",
+        "sk-test",
+        "claude-sonnet-4",
+        &[Message::user("hi")],
+        &[],
+        false,
+        200_000,
+        ReasoningLevel::Max,
+        None,
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert_eq!(v["thinking"]["budget_tokens"], 199_999);
+}
+
+#[test]
+fn max_skipped_when_no_legal_budget_fits() {
+    use pantheon_api::model::ReasoningLevel;
+    let req = request(
+        "https://api.anthropic.com/v1",
+        "sk-test",
+        "claude-sonnet-4",
+        &[Message::user("hi")],
+        &[],
+        false,
+        1024,
+        ReasoningLevel::Max,
+        None,
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert!(
+        v.get("thinking").is_none(),
+        "1023 is below the minimum and not < max"
+    );
 }

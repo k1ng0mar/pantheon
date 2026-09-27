@@ -1,7 +1,7 @@
-//! Capability plane: Policy lives in pantheon-core; this crate enforces it
+//! Capability plane: Policy lives in pantheon-api; this crate enforces it
 //! at the execution boundary (check-then-act, default-deny).
-use pantheon_core::capability::{Capability, Decision, Policy};
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::capability::{Capability, Decision, Policy};
+use pantheon_api::error::{Layer, PantheonError};
 
 fn cerr(code: &str, cause: String, retryable: bool) -> PantheonError {
     PantheonError::new(

@@ -1,6 +1,6 @@
 //! pantheon CLI: thin surface over the runtime. No business logic here.
-use pantheon_core::capability::Policy;
-use pantheon_core::events::Event;
+use pantheon_api::capability::Policy;
+use pantheon_api::events::Event;
 use pantheon_extensions::{doctor, ExtensionManager, Hook, RunnerConfig};
 use pantheon_memory::{markdown, BackendSelection, LayerKind, MemoryStore, Proposal, Provenance};
 use pantheon_runtime::{new_run_id, Supervisor};
@@ -89,9 +89,9 @@ fn run_delivered_task(task_id: &Option<String>, say: &Option<String>, target: &s
         .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
         .unwrap_or(false);
     let policy = if allow_memory {
-        pantheon_core::capability::Policy::coder_with_memory()
+        pantheon_api::capability::Policy::coder_with_memory()
     } else {
-        pantheon_core::capability::Policy::coder()
+        pantheon_api::capability::Policy::coder()
     };
     let secrets = config_doc::chat_secrets(file_cfg.as_ref());
     let session =
@@ -161,6 +161,7 @@ fn usage() -> String {
 
     s.push_str("SET UP\n");
     s.push_str("  setup                         wizard: API key, default model, policy\n");
+    s.push_str("  update [--check] [--version TAG]  replace this binary with the latest release\n");
     s.push_str("  model [--list] [--auxiliary KIND]        provider picker, keys -> .env\n");
     s.push_str("  provider <add|list|remove>   custom-endpoint registry\n");
     s.push_str("  providers                    list cataloged providers and models\n");
@@ -231,6 +232,7 @@ const KNOWN_VERBS: &[&str] = &[
     "setup",
     "skills",
     "swarm",
+    "update",
 ];
 
 /// Classification of argv[1] before it can become a prompt or session input.
@@ -356,6 +358,7 @@ mod tui;
 mod tui_entry;
 mod tui_picker;
 mod tui_setup;
+mod update_cli;
 
 fn load_mgr() -> ExtensionManager {
     let mut m = ExtensionManager::new(RunnerConfig::default());
@@ -466,9 +469,9 @@ fn main() {
     // would fill the disk with records nobody reads.
     let level = std::env::var("PANTHEON_LOG_LEVEL")
         .ok()
-        .and_then(|v| pantheon_core::logging::Level::parse(&v))
-        .unwrap_or(pantheon_core::logging::Level::Info);
-    pantheon_core::logging::init(&data_dir(), level);
+        .and_then(|v| pantheon_api::logging::Level::parse(&v))
+        .unwrap_or(pantheon_api::logging::Level::Info);
+    pantheon_api::logging::init(&data_dir(), level);
     if args.len() < 2 {
         // The TUI is the terminal interface. There is no second interactive
         // surface and no line-based fallback: if this cannot open, it says so
@@ -526,7 +529,7 @@ fn main() {
                     let path = args.get(3).map(PathBuf::from).unwrap_or_else(memory_file);
                     let last_hash_path = path.with_extension("md.sync-hash");
                     let last_hash = std::fs::read_to_string(&last_hash_path).ok();
-                    let policy = pantheon_core::capability::Policy::coder_with_memory();
+                    let policy = pantheon_api::capability::Policy::coder_with_memory();
                     if markdown::detect_conflict(&store, &namespace, &path, last_hash.as_deref())
                         .unwrap_or(None)
                         .is_some()
@@ -564,19 +567,24 @@ fn main() {
                         eprintln!("memory recall: backend: {e}");
                         std::process::exit(1);
                     });
-                    // This verb is an operator tool, so a cross-namespace
-                    // read is legitimate here — but it is now opt-in rather
-                    // than the accident of recall having no namespace
-                    // parameter. `*` reads every namespace; anything else
-                    // reads exactly the namespace named.
-                    let scope = args[2].as_str();
-                    let namespaces: Vec<&str> = if scope == "*" {
-                        // `*` is the store's explicit unrestricted sentinel.
-                        // An empty list is a refusal, not a wildcard.
-                        vec!["*"]
-                    } else {
-                        vec![scope]
-                    };
+                    // Recalls the same namespace `put` writes to, so the
+                    // roundtrip is symmetric: `memory put k v` then
+                    // `memory recall k` finds it. An earlier version of
+                    // this verb read args[2] as the namespace, which broke
+                    // that contract -- the query is args[2].
+                    //
+                    // `--ns <name>` (or `--ns '*'`) is the explicit way to
+                    // read another agent's memory. Nothing defaults to it.
+                    let (namespaces, query): (Vec<&str>, String) =
+                        if args.get(2).map(String::as_str) == Some("--ns") {
+                            let ns = args.get(3).map(String::as_str).unwrap_or("*");
+                            (
+                                vec![ns],
+                                args.get(4..).map(|a| a.join(" ")).unwrap_or_default(),
+                            )
+                        } else {
+                            (vec![namespace.as_str()], args[2..].join(" "))
+                        };
                     let hits = pantheon_memory::recall_via(
                         backend.as_ref(),
                         &Policy::coder(),
@@ -587,7 +595,7 @@ fn main() {
                             LayerKind::Agent,
                             LayerKind::Global,
                         ],
-                        &args[3..].join(" "),
+                        &query,
                         20,
                     )
                     .unwrap_or_else(|e| {
@@ -668,7 +676,7 @@ fn main() {
                             provenance: Provenance {
                                 source: "cli".into(),
                                 origin: "user".into(),
-                                trust: pantheon_core::provenance::TrustTier::User,
+                                trust: pantheon_api::provenance::TrustTier::User,
                                 recorded_at_ms: 0,
                             },
                         },
@@ -688,10 +696,10 @@ fn main() {
                                 std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".into());
                             PathBuf::from(home).join("vault")
                         });
-                    let mut reg = pantheon_exec::tools::ToolRegistry::new();
-                    pantheon_exec::vault_tools::register_vault_tools(
+                    let mut reg = pantheon_tools::tools::ToolRegistry::new();
+                    pantheon_tools::vault_tools::register_vault_tools(
                         &mut reg,
-                        pantheon_exec::vault_tools::VaultToolOptions { vault_dir },
+                        pantheon_tools::vault_tools::VaultToolOptions { vault_dir },
                     );
                     // Same resolution order the agent loop uses, so
                     // `pantheon memory vault …` obeys the policy the user
@@ -1132,7 +1140,7 @@ timeout_ms = 5000
                 // Started and completed, so the run does not end with a
                 // dangling call id. An unfinished call makes the next resume
                 // treat the run as interrupted and re-drive it.
-                let prov = pantheon_core::provenance::Provenance::system("cli");
+                let prov = pantheon_api::provenance::Provenance::system("cli");
                 sup.emit(Event::ToolStarted {
                     run_id: run_id.clone(),
                     call_id: "cli".into(),
@@ -1330,6 +1338,9 @@ timeout_ms = 5000
         "setup" => {
             setup_entry::cmd_setup(&args);
         }
+        "update" => {
+            update_cli::cmd_update(&args);
+        }
         "model" => {
             model_cli::cmd_model(&args);
         }
@@ -1349,11 +1360,11 @@ timeout_ms = 5000
             // decide what to configure, and a loopback address is not an
             // answer to that.
             println!("cataloged providers:");
-            for p in pantheon_core::catalog::selectable_providers() {
+            for p in pantheon_providers::catalog::selectable_providers() {
                 let models: Vec<&str> = p.models.iter().map(|m| m.model.as_str()).collect();
                 let mode = match p.api_mode {
-                    pantheon_core::catalog::ApiMode::OpenAi => "OpenAI",
-                    pantheon_core::catalog::ApiMode::Anthropic => "Anthropic",
+                    pantheon_providers::catalog::ApiMode::OpenAi => "OpenAI",
+                    pantheon_providers::catalog::ApiMode::Anthropic => "Anthropic",
                 };
                 let tag = if p.prominent { "*" } else { " " };
                 let label = if p.models.is_empty() {
@@ -1369,8 +1380,8 @@ timeout_ms = 5000
             }
             println!();
             println!("custom: --provider <base-url> uses that URL directly (OpenAI shape)");
-            if pantheon_core::catalog::all_providers().len()
-                != pantheon_core::catalog::selectable_providers().len()
+            if pantheon_providers::catalog::all_providers().len()
+                != pantheon_providers::catalog::selectable_providers().len()
             {
                 println!(
                     "note: development-only endpoints are hidden here and remain usable by id"
@@ -1563,6 +1574,7 @@ mod verb_guard_tests {
             "model",
             "provider",
             "mcp",
+            "update",
         ] {
             assert!(
                 is_known_verb(v),

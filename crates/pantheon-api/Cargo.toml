@@ -5,15 +5,12 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+# Bottom protocol leaf (commands, events, types). Must never depend on
+# runtime, storage, gateway, tools, or anything above the leaf — every
+# other crate in the workspace may depend on this one.
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-pantheon-core = { path = "../pantheon-core" }
-pantheon-gateway = { path = "../pantheon-gateway" }
-pantheon-runtime = { path = "../pantheon-runtime" }
-pantheon-storage = { path = "../pantheon-storage" }
 
-[dev-dependencies]
-tempfile = "3"
 [lints]
 workspace = true

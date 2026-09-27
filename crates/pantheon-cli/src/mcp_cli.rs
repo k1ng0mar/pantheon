@@ -10,7 +10,7 @@
 //! implying the servers are live.
 
 use crate::data_dir;
-use pantheon_migrate::read_mcp_declarations;
+use pantheon_migration::read_mcp_declarations;
 
 /// One server's readiness, and why.
 struct Row {
