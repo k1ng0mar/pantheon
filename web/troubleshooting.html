@@ -73,9 +73,9 @@
   </nav>
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 class="text-3xl font-bold tracking-tight mb-2">Troubleshooting</h1><div class="glow-line my-6"></div>
+<h1 id="troubleshooting" class="text-3xl font-bold tracking-tight mb-2">Troubleshooting</h1><div class="glow-line my-6"></div>
 <p class="my-3 leading-relaxed">Every error is a structured <code>PantheonError</code>: code, layer, retryable flag, cause, remediation. The message names the code so you can search, script, and automate around it.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Error codes</h2>
+<h2 id="error-codes" class="text-xl font-bold tracking-tight mt-10 mb-3">Error codes</h2>
 <p class="my-3 leading-relaxed"><code>CATEGORY_DETAIL</code> pattern:</p>
 <table class="my-6"><thead><tr><th>Category</th><th>Meaning</th></tr></thead><tbody>
 <tr><td><code>LEDGER_*</code></td><td>Event ledger errors</td></tr>
@@ -88,18 +88,18 @@
 <tr><td><code>SCHEDULE_*</code></td><td>Scheduler errors</td></tr>
 <tr><td><code>AGENT_*</code></td><td>Agent identity and profile errors</td></tr>
 </tbody></table>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Common issues</h2>
-<h3 class="font-bold mt-6 mb-2">Runtime probe times out</h3>
+<h2 id="common-issues" class="text-xl font-bold tracking-tight mt-10 mb-3">Common issues</h2>
+<h3 id="runtime-probe-times-out" class="font-bold mt-6 mb-2">Runtime probe times out</h3>
 <p class="my-3 leading-relaxed">The installer prints <code>⚠ Runtime probe timed out after 10s</code>. The install itself succeeded — the check could not complete. Run <code>pantheon doctor</code> to diagnose.</p>
-<h3 class="font-bold mt-6 mb-2">Provider connection fails</h3>
+<h3 id="provider-connection-fails" class="font-bold mt-6 mb-2">Provider connection fails</h3>
 <p class="my-3 leading-relaxed">Verify the API key is set in the env var named by <code>config.toml</code> (e.g. <code>OPENAI_API_KEY</code>). <code>pantheon doctor</code> reports which var is missing.</p>
-<h3 class="font-bold mt-6 mb-2">Memory not persisting</h3>
+<h3 id="memory-not-persisting" class="font-bold mt-6 mb-2">Memory not persisting</h3>
 <p class="my-3 leading-relaxed">Writes need the <code>MemoryWrite</code> capability (<code>coder_memory</code> policy or an explicit grant). Anything the model proposes stays <code>untrusted</code> until you confirm it.</p>
-<h3 class="font-bold mt-6 mb-2">Plugin not loading</h3>
+<h3 id="plugin-not-loading" class="font-bold mt-6 mb-2">Plugin not loading</h3>
 <p class="my-3 leading-relaxed">Usually a manifest typo. <code>pantheon doctor &lt;dir&gt;</code> first, then <code>pantheon extensions</code> to see what actually loaded.</p>
-<h3 class="font-bold mt-6 mb-2">Gateway refuses connections</h3>
+<h3 id="gateway-refuses-connections" class="font-bold mt-6 mb-2">Gateway refuses connections</h3>
 <p class="my-3 leading-relaxed"><code>PANTHEON_GATEWAY_ALLOW</code> is required. Non-listed senders get a refusal and nothing reaches the runtime.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Diagnostics</h2>
+<h2 id="diagnostics" class="text-xl font-bold tracking-tight mt-10 mb-3">Diagnostics</h2>
 <pre><code>
 pantheon doctor              # system preflight: config, agents, model key,
                              # ledger, memory, skills, gateway, plugins
@@ -108,7 +108,7 @@ pantheon repair --dry-run    # what repair would change, touching nothing
 pantheon repair              # fix what can be fixed safely (backs up first)
 </code></pre>
 <p class="my-3 leading-relaxed"><code>doctor</code> diagnoses and changes nothing; <code>repair</code> fixes. A failed check names its fix — <code>pantheon setup</code> for config, <code>export VAR=...</code> for keys.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="getting-started.html">Getting started</a> — install and setup</li>
 <li><a href="configuration.html">Configuration</a> — config fields and data directory</li>

@@ -73,9 +73,9 @@
   </nav>
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 class="text-3xl font-bold tracking-tight mb-2">Getting started</h1><div class="glow-line my-6"></div>
+<h1 id="getting-started" class="text-3xl font-bold tracking-tight mb-2">Getting started</h1><div class="glow-line my-6"></div>
 <p class="my-3 leading-relaxed">Install Pantheon, point it at a model, start working.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Install</h2>
+<h2 id="install" class="text-xl font-bold tracking-tight mt-10 mb-3">Install</h2>
 <p class="my-3 leading-relaxed">Linux or macOS:</p>
 <pre><code>
 curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash
@@ -86,7 +86,7 @@ iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb
 </code></pre>
 <p class="my-3 leading-relaxed">A prebuilt binary from GitHub Releases, linked into <code>~/.local/bin</code>. Needs only <code>curl</code> and <code>tar</code>. Re-running never overwrites your config. Pin a release with <code>PANTHEON_VERSION=v0.1.0</code>.</p>
 <p class="my-3 leading-relaxed">Prefer source? <code>git clone</code> + <code>cargo build --release</code> (Rust edition 2021). SQLite is bundled; nothing else to run.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Set up</h2>
+<h2 id="set-up" class="text-xl font-bold tracking-tight mt-10 mb-3">Set up</h2>
 <pre><code>
 pantheon setup
 </code></pre>
@@ -96,7 +96,7 @@ pantheon setup --yes --provider openai --model gpt-4o-mini \
   --api-key-env OPENAI_API_KEY --policy coder
 </code></pre>
 <p class="my-3 leading-relaxed">Only the key&#x27;s *name* goes in the config; the value stays in your environment.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Run it</h2>
+<h2 id="run-it" class="text-xl font-bold tracking-tight mt-10 mb-3">Run it</h2>
 <pre><code>
 export OPENAI_API_KEY=sk-...
 pantheon
@@ -106,12 +106,12 @@ pantheon
 <pre><code>
 pantheon run --taskID t1 --say &quot;summarize these logs&quot; --deliver session
 </code></pre>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Check health</h2>
+<h2 id="check-health" class="text-xl font-bold tracking-tight mt-10 mb-3">Check health</h2>
 <pre><code>
 pantheon doctor
 </code></pre>
 <p class="my-3 leading-relaxed">Exit 0 means config, key, ledger, memory, and plugins are healthy. Anything else names its fix.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Next steps</h2>
+<h2 id="next-steps" class="text-xl font-bold tracking-tight mt-10 mb-3">Next steps</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="sessions.html">Sessions</a> — the interface, approvals, inspecting runs</li>
 <li><a href="agents.html">Agents</a> — identities that persist</li>

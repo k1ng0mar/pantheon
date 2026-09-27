@@ -41,6 +41,15 @@ GITHUB_DOCS = "https://github.com/k1ng0mar/pantheon/blob/master/docs/"
 GITHUB_TREE = "https://github.com/k1ng0mar/pantheon/tree/master/docs/"
 
 
+def slugify(raw: str) -> str:
+    """GitHub-style anchor slug for a heading's raw markdown text."""
+    s = re.sub(r"\*\*(.+?)\*\*", r"\1", raw)
+    s = s.replace("`", "").strip().lower()
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[^a-z0-9\-_]", "", s)
+    return s or "section"
+
+
 def md_link_to_html(match: re.Match, src: str) -> str:
     target, anchor = match.group(1), match.group(2) or ""
     src_dir = str(Path(src).parent)
@@ -93,6 +102,12 @@ def render(md: str, src: str) -> tuple[str, str]:
     in_list = False
     in_table = False
     title = "Docs"
+    seen_slugs: dict[str, int] = {}
+
+    def heading_id(raw: str) -> str:
+        sid = slugify(raw)
+        seen_slugs[sid] = seen_slugs.get(sid, 0) + 1
+        return sid if seen_slugs[sid] == 1 else f"{sid}-{seen_slugs[sid] - 1}"
 
     def close_list() -> None:
         nonlocal in_list
@@ -131,18 +146,19 @@ def render(md: str, src: str) -> tuple[str, str]:
             close_list()
             close_table()
             level, text = len(m.group(1)), inline(m.group(2).strip())
+            sid = heading_id(m.group(2).strip())
             if level == 1:
                 title = m.group(2).strip()
                 out.append(
-                    f'<h1 class="text-3xl font-bold tracking-tight mb-2">{text}</h1>'
+                    f'<h1 id="{sid}" class="text-3xl font-bold tracking-tight mb-2">{text}</h1>'
                     '<div class="glow-line my-6"></div>'
                 )
             elif level == 2:
                 out.append(
-                    f'<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">{text}</h2>'
+                    f'<h2 id="{sid}" class="text-xl font-bold tracking-tight mt-10 mb-3">{text}</h2>'
                 )
             else:
-                out.append(f'<h3 class="font-bold mt-6 mb-2">{text}</h3>')
+                out.append(f'<h3 id="{sid}" class="font-bold mt-6 mb-2">{text}</h3>')
             continue
         if line.startswith("> "):
             close_list()

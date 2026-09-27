@@ -73,25 +73,25 @@
   </nav>
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 class="text-3xl font-bold tracking-tight mb-2">Runs</h1><div class="glow-line my-6"></div>
+<h1 id="runs" class="text-3xl font-bold tracking-tight mb-2">Runs</h1><div class="glow-line my-6"></div>
 <p class="my-3 leading-relaxed">Every unit of agent work — a chat turn, a tool loop, a pipeline — is a run: persisted event by event in the ledger, resumable after anything short of disk loss.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Lifecycle</h2>
+<h2 id="lifecycle" class="text-xl font-bold tracking-tight mt-10 mb-3">Lifecycle</h2>
 <pre><code>
 RunStarted → ModelRequested → [ToolStarted → ToolOutput → ToolCompleted]*
           → ModelCompleted → RunCompleted | RunFailed | RunCanceled
 </code></pre>
 <p class="my-3 leading-relaxed">Status is derived, never stored: <code>running</code>, <code>awaiting_approval</code>, <code>completed</code>, <code>failed</code>, <code>canceled</code>. Terminal states are final — late events still append (the ledger is append-only), but a completed run stays completed.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Approvals</h2>
+<h2 id="approvals" class="text-xl font-bold tracking-tight mt-10 mb-3">Approvals</h2>
 <p class="my-3 leading-relaxed">Each tool declares the capability it needs; policy answers allow, deny, or approval. Approval parks the run — the process may exit — until granted or denied:</p>
 <pre><code>
 pantheon run --taskID &lt;id&gt; --grant &lt;scope&gt; [--no-resume]
 pantheon run --taskID &lt;id&gt; --deny  &lt;scope&gt; [--no-resume]
 </code></pre>
 <p class="my-3 leading-relaxed">A scope resolves exactly once. Granting resumes the turn with the real result; denying writes &quot;denied by operator&quot; into the transcript and the model adapts.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Recovery</h2>
+<h2 id="recovery" class="text-xl font-bold tracking-tight mt-10 mb-3">Recovery</h2>
 <p class="my-3 leading-relaxed">Kill the process mid-run and the ledger holds everything to the last event. Resume with the same run id: finished calls are skipped from their recorded results, interrupted calls re-execute or receive a recorded error so the transcript stays valid. Ownership is lease-based, so a second supervisor can&#x27;t double-execute the same work — it waits or takes over an expired lease. Cancel is two-phase (intent, then termination with grace), and budgets (<code>max_turns</code>, <code>max_tool_calls</code>) bound every run.</p>
 <p class="my-3 leading-relaxed">If something looks stuck, <code>pantheon repair</code> settles stranded runs and rebuilds indexes, backing up first. <code>doctor</code> only diagnoses.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Pipelines</h2>
+<h2 id="pipelines" class="text-xl font-bold tracking-tight mt-10 mb-3">Pipelines</h2>
 <p class="my-3 leading-relaxed">For work you want gated at the plan and the review:</p>
 <pre><code>
 intake → research → plan → [GATE] → implement → review → [GATE] → commit
@@ -101,13 +101,14 @@ intake → research → plan → [GATE] → implement → review → [GATE] → 
 pantheon pipeline --spec &quot;build a login page&quot; [run_id]
 pantheon pipeline &lt;run_id&gt; --approve plan|review | --deny plan|review
 </code></pre>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Scheduling</h2>
+<h2 id="scheduling" class="text-xl font-bold tracking-tight mt-10 mb-3">Scheduling</h2>
 <p class="my-3 leading-relaxed">Triggers live in the scheduler; the work runs as the agent — same identity, memory, policy, tools:</p>
 <pre><code>
 pantheon schedule &quot;nightly review&quot; --every 24h
 pantheon schedule list|pause|resume|cancel|run &lt;id&gt;
 </code></pre>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<p class="my-3 leading-relaxed">Due jobs fire on a tick: <code>pantheon schedule tick [--watch]</code> is the primitive a daemon, cron entry, or CI step calls (<code>--watch</code> keeps it running in the foreground). Cron expressions are validated at creation — an invalid or never-firing expression is rejected rather than stored as a job that would silently never run. Occurrences are claimed atomically in the ledger, so a restart never double-fires a run.</p>
+<h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="sessions.html">Sessions</a> — interacting with runs, approvals in the terminal</li>
 <li><a href="agents.html">Agents</a> — whose work this is</li>

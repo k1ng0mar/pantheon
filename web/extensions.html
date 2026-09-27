@@ -73,9 +73,9 @@
   </nav>
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 class="text-3xl font-bold tracking-tight mb-2">Extensions</h1><div class="glow-line my-6"></div>
+<h1 id="extensions" class="text-3xl font-bold tracking-tight mb-2">Extensions</h1><div class="glow-line my-6"></div>
 <p class="my-3 leading-relaxed">Two tiers: <strong>skills</strong> are portable knowledge (they explain how — see <a href="memory.html">Memory</a>); <strong>extensions</strong> are runtime code — hooks that inject context, tools that run in child processes. This page covers extensions.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Write one</h2>
+<h2 id="write-one" class="text-xl font-bold tracking-tight mt-10 mb-3">Write one</h2>
 <pre><code>
 my-plugin/
 ├── plugin.yaml      # manifest (required)
@@ -88,14 +88,14 @@ provides_hooks:
   - pre_llm_call
 </code></pre>
 <p class="my-3 leading-relaxed">One JSON line in on stdin, one JSON line out on stdout. Return <code>{&quot;context&quot;: &quot;...&quot;}</code> to inject a system block, <code>{}</code> to stay silent. Hook timeout is global (10s) — answer fast, work asynchronously.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Semantics</h2>
+<h2 id="semantics" class="text-xl font-bold tracking-tight mt-10 mb-3">Semantics</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><strong>Fail-open hooks</strong> (context injection, result transforms): a crash, timeout, or bad output skips the hook; the turn continues. A broken plugin never breaks a run.</li>
 <li><strong>The gate hook</strong> (<code>pre_tool_call</code>) fails <strong>closed</strong>: it may deny, so its failures deny.</li>
 <li>Three consecutive failures disable the plugin for the session, loudly. A new session retries.</li>
 <li>Nothing bypasses capability policy. A plugin that executes registers tools carrying capabilities like any built-in.</li>
 </ul>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Manage and debug</h2>
+<h2 id="manage-and-debug" class="text-xl font-bold tracking-tight mt-10 mb-3">Manage and debug</h2>
 <pre><code>
 pantheon plugins list|install &lt;name&gt;|enable|disable &lt;name&gt;
 pantheon extensions                 # what actually loaded
@@ -103,8 +103,8 @@ pantheon hook &lt;name&gt; [--session S]  # fire once, see the injection (or sil
 pantheon doctor &lt;plugin_dir&gt;        # static preflight: manifest, hooks, entry files
 </code></pre>
 <p class="my-3 leading-relaxed">Debug order: <code>doctor</code> (usually a manifest typo), <code>extensions</code> (did it load?), fire the hook by hand (<code>echo &#x27;{&quot;hook&quot;:&quot;pre_llm_call&quot;,...}&#x27; | python3 __init__.py</code>). Hermes plugins load natively; OpenClaw TypeScript entries are flagged — Python is the supported runtime.</p>
-<p class="my-3 leading-relaxed"><code>pantheon mcp list</code> (read-only) shows migration-declared MCP servers and whether each could register. No launcher yet.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<p class="my-3 leading-relaxed"><code>pantheon mcp list</code> (read-only) shows migration-declared MCP servers and whether each could register. A stdio JSON-RPC client exists in the <code>pantheon-mcp</code> crate (connect, list tools, call tools), but no CLI verb or tool surface wires it up yet — agents can&#x27;t reach MCP servers today. No launcher yet.</p>
+<h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="memory.html">Memory</a> — skills, the knowledge half</li>
 <li><a href="terminal.html#extend">Terminal reference</a> — plugin and hook verbs</li>

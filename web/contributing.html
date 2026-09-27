@@ -73,9 +73,9 @@
   </nav>
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 class="text-3xl font-bold tracking-tight mb-2">Contributing</h1><div class="glow-line my-6"></div>
+<h1 id="contributing" class="text-3xl font-bold tracking-tight mb-2">Contributing</h1><div class="glow-line my-6"></div>
 <p class="my-3 leading-relaxed">Crate boundaries, testing rules, and the three most common kinds of change. Read <a href="architecture.html">Architecture</a> first for the design positions; this page is the mechanical how.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Crate boundaries</h2>
+<h2 id="crate-boundaries" class="text-xl font-bold tracking-tight mt-10 mb-3">Crate boundaries</h2>
 <table class="my-6"><thead><tr><th>You are adding...</th><th>It belongs in...</th><th>Because</th></tr></thead><tbody>
 <tr><td>An event variant</td><td><code>pantheon-api/src/events.rs</code></td><td>The Event enum is the single source of truth</td></tr>
 <tr><td>A capability or policy preset</td><td><code>pantheon-api</code> capability/policy</td><td>Policies are code-defined on purpose</td></tr>
@@ -94,31 +94,31 @@
 <li><strong>Events over prints.</strong> A runtime transition that matters emits an Event; eprintln is for operator warnings only.</li>
 <li><strong>Durable before clever.</strong> New long-running work gets an operation state machine, not an in-memory variable.</li>
 </ul>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Testing</h2>
+<h2 id="testing" class="text-xl font-bold tracking-tight mt-10 mb-3">Testing</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><code>cargo test --workspace</code> — the workspace test gate</li>
 <li><code>python3 eval/run.py</code> — eval cases</li>
 <li>Nothing ships until both are green.</li>
 </ul>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Common changes</h2>
-<h3 class="font-bold mt-6 mb-2">Adding a terminal verb</h3>
+<h2 id="common-changes" class="text-xl font-bold tracking-tight mt-10 mb-3">Common changes</h2>
+<h3 id="adding-a-terminal-verb" class="font-bold mt-6 mb-2">Adding a terminal verb</h3>
 <p>1. Add dispatch in <code>pantheon-tui/src/terminal.rs</code> + register in <code>KNOWN_VERBS</code> and <code>usage()</code></p>
 <p>2. Implement logic in the owning crate</p>
 <p>3. Add tests (<code>*_tests.rs</code>)</p>
 <p>4. Document it in <code>docs/reference/terminal.md</code></p>
 <p>5. Green workspace tests + evals</p>
-<h3 class="font-bold mt-6 mb-2">Adding a tool</h3>
+<h3 id="adding-a-tool" class="font-bold mt-6 mb-2">Adding a tool</h3>
 <p>1. Define it in <code>pantheon-tools/src/builtins.rs</code></p>
 <p>2. Declare its capability in <code>pantheon-api</code></p>
 <p>3. Add behavior tests</p>
 <p>4. Document user-visible tools in the relevant user-guide page</p>
-<h3 class="font-bold mt-6 mb-2">Adding a provider</h3>
+<h3 id="adding-a-provider" class="font-bold mt-6 mb-2">Adding a provider</h3>
 <p>1. Add the adapter in <code>pantheon-providers/</code>, register in <code>catalog.yaml</code></p>
 <p>2. Add model definitions and adapter tests</p>
 <p>3. Keep the agent loop on ModelTurn/ModelEvent only</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Decisions</h2>
+<h2 id="decisions" class="text-xl font-bold tracking-tight mt-10 mb-3">Decisions</h2>
 <p class="my-3 leading-relaxed">Known deviations are recorded in <code>decisions/0001-workspace-restructure.md</code>. Review it before architectural changes.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="architecture.html">Architecture</a> — system design, crate map, locked decisions</li>
 <li><a href="terminal.html">Terminal reference</a> — the surface your verb joins</li>

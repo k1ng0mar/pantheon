@@ -73,9 +73,9 @@
   </nav>
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 class="text-3xl font-bold tracking-tight mb-2">Agents</h1><div class="glow-line my-6"></div>
+<h1 id="agents" class="text-3xl font-bold tracking-tight mb-2">Agents</h1><div class="glow-line my-6"></div>
 <p class="my-3 leading-relaxed">An agent is a persistent identity: its own instructions, memory, skills, tools, and model configuration, living in one shared runtime. Change the model, the interface, or the machine — the agent remains itself.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Declare one</h2>
+<h2 id="declare-one" class="text-xl font-bold tracking-tight mt-10 mb-3">Declare one</h2>
 <pre><code>
 [agents.default]
 display_name = &quot;Default&quot;
@@ -90,14 +90,15 @@ soul_file    = &quot;agents/zeus/SOUL.md&quot;
 </code></pre>
 <p class="my-3 leading-relaxed"><code>pantheon setup</code> creates the <code>default</code> agent. Add tables for specialists — a researcher, a coder, a planner — each inheriting shared defaults while keeping its own identity, memory namespace, and policy. Select the active profile with <code>agent = &quot;zeus&quot;</code>. No <code>[agents]</code> table at all means anonymous runs, as before.</p>
 <p class="my-3 leading-relaxed">Field details: <a href="configuration.html#agents">Configuration</a>.</p>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Work together</h2>
-<p class="my-3 leading-relaxed">Multiple agents in one installation collaborate natively: delegate, divide, review, combine. Ask for it in plain language:</p>
-<blockquote>&quot;Work with Zeus and Athena on this. Split the research, then combine the results.&quot;</blockquote>
-<p class="my-3 leading-relaxed">Each keeps its own perspective and memory while participating in the larger task. Spawns are runtime-capped (depth, concurrency, budgets); over-cap fails with <code>SWARM_SPAWN_DENIED</code> instead of exploding.</p>
+<h2 id="work-together" class="text-xl font-bold tracking-tight mt-10 mb-3">Work together</h2>
+<p class="my-3 leading-relaxed">One agent can hand a subtask to another mid-turn — delegate, divide, review, combine — by naming it in plain language:</p>
+<blockquote>&quot;Ask Zeus to research the error handling, then combine it with what you found.&quot;</blockquote>
+<p class="my-3 leading-relaxed">The child runs as the named agent — its own identity, memory, and policy — and returns a transcript fragment. The parent never fabricates its result: a child that stalls on approval, budget, or a further delegation reports a structured error (<code>SWARM_CHILD_APPROVAL</code>, <code>SWARM_CHILD_BUDGET</code>, <code>SWARM_CHILD_DELEGATED</code>) instead of silently dying.</p>
+<p class="my-3 leading-relaxed">Delegation is runtime-capped: delegation depth is bounded (<code>max_delegate_depth</code>, default 2) alongside concurrency and budgets, and over-cap fails with <code>SWARM_SPAWN_DENIED</code>.</p>
 <pre><code>
-pantheon swarm 5 &quot;research this topic&quot;
+pantheon swarm status [&lt;id&gt;] | list   # inspect recorded swarms; the verb doesn&#x27;t spawn
 </code></pre>
-<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="memory.html">Memory</a> — what each agent remembers, and how it learns</li>
 <li><a href="runs.html">Runs</a> — how agent work executes and recovers</li>
