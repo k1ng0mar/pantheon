@@ -76,7 +76,7 @@ pub struct SessionChunk {
 #[derive(Debug, Clone)]
 pub struct SearchHit {
     pub chunk: SessionChunk,
-    /// Hybrid score: 0.60 lexical + 0.30 recency (embeddings 0.30 until a
+    /// Hybrid score: 0.60 lexical + 0.10 recency (embeddings 0.30 until a
     /// vector backend is wired, then the weights rebalance).
     pub score: f64,
     /// Lexical rank within this result set (0 = best).
@@ -132,8 +132,10 @@ const MESSAGE_CHUNK_MAX: usize = 4096;
 
 /// SQLite-persisted session search index.
 ///
-/// Owns its own connection to the same ledger file, so indexing happens
-/// inside the ledger transaction path rather than in a second process.
+/// Owns a separate connection (and lock) to the same ledger file. Indexing
+/// writes are committed independently of any ledger write transaction —
+/// there is deliberately no cross-connection transaction coupling here, so
+/// an indexing failure can never roll back or block a run's event append.
 pub struct SessionSearch {
     conn: Mutex<Connection>,
 }
@@ -143,8 +145,7 @@ impl SessionSearch {
     /// file — the schema lives in the same DB so a hit joins the run.
     pub fn open(path: &Path) -> Result<Self, PantheonError> {
         let conn = Connection::open(path).map_err(|e| err("SEARCH_OPEN", e.to_string()))?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .map_err(|e| err("SEARCH_BUSY", e.to_string()))?;
+        crate::configure_durability(&conn, "SEARCH")?;
         // Tables first, then the forward-only migration (ledgers created
         // before the vector layer lack the embedding column), then the
         // indexes — the partial index requires the column to exist, so it
@@ -162,6 +163,7 @@ impl SessionSearch {
 
     pub fn open_in_memory() -> Result<Self, PantheonError> {
         let conn = Connection::open_in_memory().map_err(|e| err("SEARCH_OPEN", e.to_string()))?;
+        crate::configure_durability(&conn, "SEARCH")?;
         conn.execute_batch(SCHEMA_TABLES)
             .map_err(|e| err("SEARCH_SCHEMA", e.to_string()))?;
         conn.execute_batch(SCHEMA_INDEXES)
@@ -244,6 +246,32 @@ impl SessionSearch {
         conn.execute("DELETE FROM session_fts WHERE run_id = ?1", params![run_id])
             .map_err(|e| err("SEARCH_FTS_DELETE", e.to_string()))?;
         Ok(())
+    }
+
+    /// Drop chunks (and their FTS rows) older than `cutoff_ts_ms`
+    /// (retention policy). Pairs with `Ledger::prune_events_before`: the FTS
+    /// sidecar must not retain searchable text for history the ledger has
+    /// already pruned. Returns the number of chunks pruned.
+    pub fn prune_before(&self, cutoff_ts_ms: i64) -> Result<usize, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("SEARCH_LOCK", e.to_string()))?;
+        // FTS first: the subquery reads `session_chunks`, so the FTS rows
+        // must be resolved before the chunks themselves are deleted.
+        conn.execute(
+            "DELETE FROM session_fts WHERE chunk_id IN \
+             (SELECT chunk_id FROM session_chunks WHERE ts_ms < ?1)",
+            params![cutoff_ts_ms],
+        )
+        .map_err(|e| err("SEARCH_FTS_DELETE", e.to_string()))?;
+        let pruned = conn
+            .execute(
+                "DELETE FROM session_chunks WHERE ts_ms < ?1",
+                params![cutoff_ts_ms],
+            )
+            .map_err(|e| err("SEARCH_DELETE", e.to_string()))?;
+        Ok(pruned)
     }
 
     /// Lexical search over the FTS index, ranked by BM25, then re-scored
@@ -418,7 +446,7 @@ impl SessionSearch {
                 .or_insert((score, h.chunk.clone()));
         }
         let sem_max = semantic_hits.first().map(|(_, s)| *s).unwrap_or(1.0);
-        for (i, (chunk, sim)) in semantic_hits.iter().enumerate().take(limit) {
+        for (chunk, sim) in semantic_hits.iter().take(limit) {
             let semantic = (sim / sem_max) as f64;
             let age_ms = (now - chunk.ts_ms).max(0) as f64;
             let recency = 1.0 / (1.0 + age_ms / 3_600_000.0);
@@ -427,7 +455,6 @@ impl SessionSearch {
                 .entry(chunk.chunk_id.clone())
                 .and_modify(|(s, _)| *s += score)
                 .or_insert((score, chunk.clone()));
-            let _ = i;
         }
         let mut out: Vec<SearchHit> = by_id
             .into_iter()
@@ -503,7 +530,8 @@ pub fn recreate_search_index(db: &std::path::Path) -> Result<(), PantheonError> 
         .map_err(|e| err("SEARCH_FTS_DROP", e.to_string()))?;
     conn.execute_batch(
         "CREATE VIRTUAL TABLE session_fts USING fts5(
-            chunk_id UNINDEXED, text, kind UNINDEXED, run_id UNINDEXED
+            chunk_id UNINDEXED, text, kind UNINDEXED, run_id UNINDEXED,
+            tokenize = 'unicode61'
         );",
     )
     .map_err(|e| err("SEARCH_FTS_CREATE", e.to_string()))?;

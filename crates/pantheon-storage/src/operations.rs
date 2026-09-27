@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::Duration;
+
 
 /// The only states a durable operation may occupy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,8 +160,7 @@ impl OperationStore {
     }
 
     fn from_connection(conn: Connection) -> Result<Self, PantheonError> {
-        conn.busy_timeout(Duration::from_secs(5))
-            .map_err(|e| operation_err("OPERATION_BUSY_TIMEOUT", e.to_string()))?;
+        crate::configure_durability(&conn, "OPERATION")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS operations (
                id TEXT PRIMARY KEY,
