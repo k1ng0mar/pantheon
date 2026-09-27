@@ -7,8 +7,12 @@
 //! - `Vm`: falls back to `Container` (bwrap with --unshare-all) — VM is Phase B
 //!
 //! When the sandbox binary (bwrap/unshare) is unavailable or fails to
-//! initialize, the runner falls back to running the command directly.
-//! The capability gate is always the first check, so the fallback only
+//! initialize, the runner FAILS CLOSED: it returns a `SANDBOX_UNAVAILABLE`
+//! error rather than running the command without isolation. The old
+//! silent-degrade to a direct host spawn is only available via explicit
+//! opt-in — `SandboxProfile::allow_direct_fallback` or the
+//! `PANTHEON_SANDBOX_FALLBACK=allow` environment variable. The capability
+//! gate is always the first check, so the fallback (when opted in) only
 //! loses the OS-level isolation, never the policy enforcement.
 
 use std::process::{Command, Stdio};
@@ -18,6 +22,7 @@ use crate::SandboxProfile;
 use pantheon_api::error::{Layer, PantheonError};
 
 /// Result of a sandboxed command: stdout/stderr merged, exit code, timeout flag.
+#[derive(Debug)]
 pub struct SandboxResult {
     pub output: String,
     pub exit_code: i32,
@@ -170,14 +175,21 @@ pub fn build_sandboxed(
 
     // The profile's limits are rlimits on the child itself, set just
     // before exec — so they hold with or without a namespace wrapper and
-    // survive the fallback to a direct spawn.
+    // survive the (opt-in) fallback to a direct spawn.
     #[cfg(unix)]
-    attach_rlimits(&mut cmd, profile);
+    confine_child(&mut cmd, profile);
     cmd
 }
 
-/// Apply the profile's limits as rlimits on the child, issued in the
-/// forked child just before exec (via `pre_exec`).
+/// Child-side setup, issued in the forked child just before exec (via
+/// `pre_exec`):
+///
+/// 1. `setsid()`: the child becomes a session leader, so its pid is its
+///    process-group id. On timeout [`run_sandboxed`] kills the whole group
+///    (`killpg`), which also reaps grandchildren the direct child spawned.
+///    A forked child is never a process-group leader, so `setsid` cannot
+///    fail with EPERM here; any other failure aborts the spawn.
+/// 2. The profile's limits as rlimits:
 ///
 /// - `max_memory_mb` → `RLIMIT_AS`: the address space the child may map.
 /// - `max_pids` → `RLIMIT_NPROC`: extra processes it may spawn.
@@ -200,31 +212,32 @@ pub fn build_sandboxed(
 /// untouched. The wall-clock budget is enforced separately by
 /// [`run_sandboxed`], and the capability gate runs before any of this.
 #[cfg(unix)]
-fn attach_rlimits(cmd: &mut Command, profile: &SandboxProfile) {
+fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
     use std::os::unix::process::CommandExt;
 
     let as_bytes = profile
         .max_memory_mb
         .map(|mb| mb.saturating_mul(1024 * 1024));
     let want_pids = profile.max_pids.map(u64::from);
-    if as_bytes.is_none() && want_pids.is_none() {
-        return;
-    }
     // NPROC's hard ceiling, read now (parent, safe context): probes must
     // stay within it and the final cap may not exceed it.
-    let nproc_hard = {
+    let nproc_hard = want_pids.and_then(|_| {
         let mut lim = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
         (unsafe { libc::getrlimit(libc::RLIMIT_NPROC, &mut lim) } == 0).then_some(lim.rlim_max)
-    };
+    });
 
-    // SAFETY: between fork and exec the closure only issues setrlimit
-    // (plus fork/waitpid/_exit inside calibration) with plain integers —
-    // no allocation, no locks. All measuring happens above, in the parent.
+    // SAFETY: between fork and exec the closure only issues setsid and
+    // setrlimit (plus fork/waitpid/_exit inside calibration) with plain
+    // integers — no allocation, no locks. All measuring happens above,
+    // in the parent.
     unsafe {
         cmd.pre_exec(move || {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             if let Some(bytes) = as_bytes {
                 let lim = libc::rlimit {
                     rlim_cur: bytes as libc::rlim_t,
@@ -328,8 +341,9 @@ fn direct_command(program: &str, args: &[&str], cwd: &str) -> Command {
 /// Has this boundary's wrapper successfully initialized once in this
 /// process? Probed once and cached: a wrapper that cannot initialize
 /// here (missing privileges, blocked user namespaces) would fail *every*
-/// command before it runs, so the runner degrades to direct execution —
-/// the capability gate already ran, only the OS-level isolation is lost.
+/// command before it runs, so [`run_sandboxed`] fails closed (or takes
+/// the opt-in direct fallback) instead of running each command
+/// un-isolated.
 fn wrapper_initializes(profile: &SandboxProfile, cwd: &str) -> bool {
     static PROBE: [std::sync::OnceLock<bool>; 4] = [
         std::sync::OnceLock::new(),
@@ -362,10 +376,94 @@ fn wrapper_initializes(profile: &SandboxProfile, cwd: &str) -> bool {
     })
 }
 
+/// Whether the direct-spawn fallback is opted in: either the profile's
+/// `allow_direct_fallback` or `PANTHEON_SANDBOX_FALLBACK=allow` in the
+/// environment (a deployment-level override that needs no profile change).
+fn direct_fallback_allowed(profile: &SandboxProfile) -> bool {
+    if profile.allow_direct_fallback {
+        return true;
+    }
+    std::env::var("PANTHEON_SANDBOX_FALLBACK")
+        .map(|v| v.eq_ignore_ascii_case("allow"))
+        .unwrap_or(false)
+}
+
+/// Cap on captured child output (stdout + stderr combined), in bytes.
+const OUTPUT_CAP_BYTES: usize = 2 * 1024 * 1024;
+
+/// One drained pipe: the bytes kept (up to the shared cap) and the number
+/// of bytes dropped past it.
+struct DrainedPipe {
+    bytes: Vec<u8>,
+    dropped: usize,
+}
+
+/// Spawn a thread draining `pipe` into a bounded buffer. `budget` is the
+/// output cap shared with the sibling stream; each thread takes what it
+/// needs from the budget and counts the rest as dropped.
+fn spawn_drainer<R>(
+    pipe: R,
+    budget: std::sync::Arc<std::sync::Mutex<usize>>,
+) -> std::thread::JoinHandle<DrainedPipe>
+where
+    R: std::io::Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut pipe = pipe;
+        let mut kept = Vec::new();
+        let mut dropped = 0usize;
+        let mut chunk = [0u8; 8192];
+        loop {
+            let n = match std::io::Read::read(&mut pipe, &mut chunk) {
+                Ok(0) => break, // EOF
+                Ok(n) => n,
+                Err(_) => break,
+            };
+            let take = {
+                let mut b = budget.lock().unwrap();
+                let take = (*b).min(n);
+                *b -= take;
+                take
+            };
+            kept.extend_from_slice(&chunk[..take]);
+            dropped += n - take;
+        }
+        DrainedPipe {
+            bytes: kept,
+            dropped,
+        }
+    })
+}
+
+/// Kill the child and its whole process tree, then reap it. The child was
+/// placed in its own process group via `setsid()` in `pre_exec`, so a
+/// negative pid reaches grandchildren the direct child spawned too.
+#[cfg(unix)]
+fn kill_child_tree(child: &mut std::process::Child) {
+    let pgid = child.id() as libc::pid_t;
+    // Defensive: never signal init's group or our own group.
+    if pgid > 1 && pgid != std::process::id() as libc::pid_t {
+        unsafe {
+            libc::killpg(pgid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(not(unix))]
+fn kill_child_tree(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Run a sandboxed command with the profile's wall-clock timeout.
 ///
 /// Returns `SandboxResult` with merged stdout/stderr. If the deadline
-/// expires, the child is killed and a `SANDBOX_TIMEOUT` error is returned.
+/// expires, the whole process group is killed and a `SANDBOX_TIMEOUT`
+/// error is returned. If the boundary needs a wrapper that cannot
+/// initialize and the direct fallback is not opted in, a
+/// `SANDBOX_UNAVAILABLE` error is returned (fail closed).
 pub fn run_sandboxed(
     profile: &SandboxProfile,
     program: &str,
@@ -377,15 +475,27 @@ pub fn run_sandboxed(
 
     let mut builder = build_sandboxed(profile, program, args, cwd);
     let mut sandboxed = builder.get_program().to_string_lossy() != program;
-    // A wrapper that cannot initialize in this environment would fail
-    // every command before it runs. Probe once (cached per process) and
-    // fall back to a direct spawn: the capability gate has already run
-    // and the profile limits still attach — only the namespace-level
-    // isolation degrades, exactly as the module contract promises.
-    if sandboxed && !wrapper_initializes(profile, cwd) {
+    // Fail closed: a boundary that needs a wrapper but didn't get one
+    // (wrapper binary missing, or the probe showed it cannot initialize in
+    // this environment) refuses to run rather than silently dropping the
+    // isolation. The direct-spawn fallback needs explicit opt-in.
+    let needs_wrapper = !matches!(profile.boundary, crate::ExecutionBoundary::InProcess);
+    if needs_wrapper && (!sandboxed || !wrapper_initializes(profile, cwd)) {
+        if !direct_fallback_allowed(profile) {
+            return Err(berr(
+                "SANDBOX_UNAVAILABLE",
+                format!(
+                    "sandbox wrapper for {:?} boundary unavailable and direct fallback \
+                     not opted in (set PANTHEON_SANDBOX_FALLBACK=allow or \
+                     allow_direct_fallback); refusing to run unsandboxed",
+                    profile.boundary
+                ),
+                false,
+            ));
+        }
         builder = direct_command(program, args, cwd);
         #[cfg(unix)]
-        attach_rlimits(&mut builder, profile);
+        confine_child(&mut builder, profile);
         sandboxed = false;
     }
 
@@ -395,48 +505,82 @@ pub fn run_sandboxed(
         .spawn()
         .map_err(|e| berr("SANDBOX_SPAWN", format!("spawn {}: {}", program, e), false))?;
 
+    // Drain both pipes from spawn: a child filling the 64KiB pipe buffer
+    // while we only try_wait() would wedge until the wall-clock timeout.
+    // The drainers share one 2MiB budget across both streams.
+    let budget = std::sync::Arc::new(std::sync::Mutex::new(OUTPUT_CAP_BYTES));
+    let stdout_drainer = child
+        .stdout
+        .take()
+        .map(|p| spawn_drainer(p, std::sync::Arc::clone(&budget)));
+    let stderr_drainer = child
+        .stderr
+        .take()
+        .map(|p| spawn_drainer(p, std::sync::Arc::clone(&budget)));
+
+    let mut timed_out = false;
+    let mut wait_err: Option<std::io::Error> = None;
+    let mut status = None;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut out = String::new();
-                if let Some(mut s) = child.stdout.take() {
-                    use std::io::Read;
-                    s.read_to_string(&mut out).ok();
-                }
-                if let Some(mut s) = child.stderr.take() {
-                    use std::io::Read;
-                    let mut e = String::new();
-                    s.read_to_string(&mut e).ok();
-                    out.push_str(&e);
-                }
-                return Ok(SandboxResult {
-                    output: out,
-                    exit_code: status.code().unwrap_or(-1),
-                    timed_out: false,
-                    sandboxed,
-                });
+            Ok(Some(s)) => {
+                status = Some(s);
+                break;
             }
             Ok(None) => {
                 if std::time::Instant::now() > deadline {
-                    let _ = child.kill();
-                    return Err(berr(
-                        "SANDBOX_TIMEOUT",
-                        format!(
-                            "command exceeded {}s: {} {}",
-                            timeout_ms / 1000,
-                            program,
-                            args.join(" ")
-                        ),
-                        true,
-                    ));
+                    timed_out = true;
+                    kill_child_tree(&mut child);
+                    break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
-                return Err(berr("SANDBOX_WAIT", format!("wait: {}", e), false));
+                wait_err = Some(e);
+                kill_child_tree(&mut child);
+                break;
             }
         }
     }
+
+    // Reap the drainers (the pipes hit EOF once the tree is dead) and
+    // merge stdout then stderr, appending a truncation marker if the cap
+    // dropped anything. Joining before returning also keeps a timed-out
+    // run from leaking blocked reader threads.
+    let mut output = String::new();
+    let mut dropped_total = 0usize;
+    for handle in [stdout_drainer, stderr_drainer].into_iter().flatten() {
+        if let Ok(d) = handle.join() {
+            output.push_str(&String::from_utf8_lossy(&d.bytes));
+            dropped_total += d.dropped;
+        }
+    }
+    if dropped_total > 0 {
+        output.push_str(&format!("\n[...truncated {dropped_total} bytes...]"));
+    }
+
+    if timed_out {
+        return Err(berr(
+            "SANDBOX_TIMEOUT",
+            format!(
+                "command exceeded {}s: {} {}",
+                timeout_ms / 1000,
+                program,
+                args.join(" ")
+            ),
+            true,
+        ));
+    }
+    if let Some(e) = wait_err {
+        return Err(berr("SANDBOX_WAIT", format!("wait: {}", e), false));
+    }
+    let status = status.expect("wait loop only breaks with a status, a timeout, or a wait error");
+    Ok(SandboxResult {
+        output,
+        exit_code: status.code().unwrap_or(-1),
+        timed_out: false,
+        sandboxed,
+    })
 }
 
 fn berr(code: &str, cause: String, recoverable: bool) -> PantheonError {

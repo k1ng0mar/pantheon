@@ -61,6 +61,13 @@ pub struct SandboxProfile {
     pub max_pids: Option<u32>,
     /// Wall-clock budget for the execution, in milliseconds.
     pub wall_clock_ms: u64,
+    /// Opt-in to the direct-spawn fallback: when the boundary's wrapper
+    /// (bwrap/unshare) cannot initialize, run the command directly on the
+    /// host instead of failing. Default is `false` — the runner fails
+    /// closed. The `PANTHEON_SANDBOX_FALLBACK=allow` environment variable
+    /// enables the same fallback at run time without touching profiles.
+    #[serde(default)]
+    pub allow_direct_fallback: bool,
 }
 
 /// Execution limits for a level.
@@ -75,6 +82,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             max_memory_mb: None,
             max_pids: None,
             wall_clock_ms: 30_000,
+            allow_direct_fallback: false,
         },
         SandboxLevel::Medium => SandboxProfile {
             level,
@@ -85,6 +93,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             max_memory_mb: Some(2048),
             max_pids: Some(64),
             wall_clock_ms: 120_000,
+            allow_direct_fallback: false,
         },
         SandboxLevel::High => SandboxProfile {
             level,
@@ -95,6 +104,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             max_memory_mb: Some(4096),
             max_pids: Some(256),
             wall_clock_ms: 600_000,
+            allow_direct_fallback: false,
         },
         SandboxLevel::VeryHigh => SandboxProfile {
             level,
@@ -105,6 +115,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             max_memory_mb: Some(2048),
             max_pids: Some(64),
             wall_clock_ms: 300_000,
+            allow_direct_fallback: false,
         },
     }
 }
