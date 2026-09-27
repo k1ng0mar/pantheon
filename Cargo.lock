@@ -1922,6 +1922,7 @@ dependencies = [
  "pantheon-extensions",
  "pantheon-providers",
  "pantheon-storage",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1973,10 +1974,12 @@ dependencies = [
 name = "pantheon-scheduler"
 version = "0.1.0"
 dependencies = [
+ "hmac",
  "pantheon-api",
  "pantheon-storage",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
 ]
 

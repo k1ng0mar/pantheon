@@ -14,7 +14,10 @@ pub use cron::{civil_from_ms, CronError, CronSchedule};
 pub use durable::DurableClaimLedger;
 pub use idempotency::{occurrence_key, runs_for_missed, ClaimLedger};
 pub use tick::{RunOutcome, TickDecision, TickDriver};
-pub use webhook::{accept as accept_webhook, route as route_webhook, Fire};
+pub use webhook::{
+    accept as accept_webhook, route as route_webhook, sign as sign_webhook, verify_signature,
+    Fire, SignatureError, WebhookAuth, WebhookReject, SECRET_ENV_VAR, SIGNATURE_HEADER,
+};
 
 /// Default ceiling for one job run: 10 minutes. A run that outlives it is
 /// abandoned (the tick stops waiting; Rust cannot kill the thread, so the

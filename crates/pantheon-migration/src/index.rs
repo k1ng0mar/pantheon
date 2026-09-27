@@ -258,6 +258,42 @@ pub fn quarantine_dir(data_dir: &Path, source: &str) -> PathBuf {
     data_dir.join("imported-sessions").join(source)
 }
 
+/// Index the quarantined transcripts for `source` into the live session
+/// search store, treating index failure as import failure.
+///
+/// A bare [`index_quarantine`] returns `Err` on an index write failure, but
+/// nothing stops a caller from logging it and reporting success anyway —
+/// which is what `migrate apply` used to do (stderr line, exit 0). This
+/// function's contract is explicit: an `Err` here means the session import
+/// did not complete and must be reported as failed, never as success.
+/// Callers must propagate the error to their exit status.
+///
+/// A missing quarantine dir is not a failure: there is simply nothing to
+/// index, and an empty report is returned.
+pub fn ensure_sessions_indexed(
+    targets: &crate::Targets,
+    source: &str,
+    index: &SessionIndex,
+) -> Result<IndexReport, PantheonError> {
+    let q = quarantine_dir(&targets.data_dir, source);
+    if !q.is_dir() {
+        return Ok(IndexReport {
+            source: source.to_string(),
+            ..Default::default()
+        });
+    }
+    index_quarantine(&q, source, index).map_err(|e| {
+        PantheonError::new(
+            "MIGRATE_SESS_INDEX_FAILED",
+            Layer::Storage,
+            false,
+            format!("session indexing failed, import not complete: {e}"),
+            "the transcripts are quarantined on disk; fix the index and re-run indexing deliberately",
+            "see `pantheon migrate apply` output",
+        )
+    })
+}
+
 #[cfg(test)]
 #[path = "index_tests.rs"]
 mod tests;

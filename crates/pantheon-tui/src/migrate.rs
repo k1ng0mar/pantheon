@@ -16,9 +16,9 @@
 
 use crate::terminal::data_dir;
 use pantheon_migration::{
-    analyze, apply_with, backup, detect, index_quarantine, plan, quarantine_dir, reconcile_keys,
-    render, validate, ItemKind, KeyMatch, MigrationCategory, MigrationFilter, MigrationPlan,
-    SourceKind, Targets,
+    analyze, apply_with, backup, detect, ensure_sessions_indexed, plan, reconcile_keys, render,
+    validate, ItemKind, KeyMatch, MigrationCategory, MigrationFilter, MigrationPlan, SourceKind,
+    Targets,
 };
 use std::path::{Path, PathBuf};
 
@@ -355,11 +355,8 @@ pub fn cmd_migrate_apply(args: &[String]) {
             report.failures(),
             v.problems()
         );
-        eprintln!(
-            "  restore with: cp -a {}/. {}",
-            t.backup_root().join(&manifest.id).display(),
-            t.data_dir.display()
-        );
+        eprintln!("  nothing was half-written: the apply is transactional, so targets are untouched or were rolled back; the backup is at {}",
+            t.backup_root().join(&manifest.id).display());
         std::process::exit(1);
     }
     println!(
@@ -382,14 +379,10 @@ pub fn cmd_migrate_apply(args: &[String]) {
 /// real ledger event. Idempotent: `chunk_id` is derived from
 /// (source, file, line), so re-running converges instead of duplicating.
 ///
-/// Best-effort by design. A failure here means the transcripts are on disk but
-/// not yet findable, which is not a reason to fail an otherwise complete
-/// migration — so it is reported and the run still exits 0.
+/// Part of the migration contract: an import is not complete until the
+/// imported sessions are searchable. A failure here exits 1 — the
+/// transcripts are on disk but not findable, and the operator must see it.
 fn index_imported_sessions(t: &Targets, root: &Path, kind: SourceKind) {
-    let q = quarantine_dir(&t.data_dir, kind.name());
-    if !q.is_dir() {
-        return;
-    }
     let index_path = t.data_dir.join("ledger.db");
     let index = match pantheon_storage::search::SessionSearch::open(&index_path) {
         Ok(i) => i,
@@ -398,7 +391,7 @@ fn index_imported_sessions(t: &Targets, root: &Path, kind: SourceKind) {
             return;
         }
     };
-    match index_quarantine(&q, kind.name(), &index) {
+    match ensure_sessions_indexed(t, kind.name(), &index) {
         Ok(r) if r.chunks > 0 => {
             println!();
             println!(
@@ -415,7 +408,13 @@ fn index_imported_sessions(t: &Targets, root: &Path, kind: SourceKind) {
             }
         }
         Ok(_) => {}
-        Err(e) => eprintln!("migrate: session indexing failed: {e}"),
+        Err(e) => {
+            // Part of the migration contract now: the import is not
+            // complete until the imported sessions are searchable. This
+            // exits 1 so automation and the operator both see it.
+            eprintln!("migrate: session indexing failed: {e}");
+            std::process::exit(1);
+        }
     }
     let _ = root;
 }

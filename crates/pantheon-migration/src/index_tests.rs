@@ -227,3 +227,66 @@ fn the_quarantine_path_is_the_one_apply_writes() {
         PathBuf::from("/d/imported-sessions/hermes")
     );
 }
+
+// ---------------------------------------------------------------------------
+// ensure_sessions_indexed: index failure is import failure
+// ---------------------------------------------------------------------------
+
+fn quarantine_with_transcript(d: &Path) -> PathBuf {
+    let q = d.join("data").join("imported-sessions").join("hermes");
+    fs::create_dir_all(&q).unwrap();
+    fs::write(
+        q.join("s.jsonl"),
+        "{\"role\":\"user\",\"content\":\"how do I configure the router\"}\n",
+    )
+    .unwrap();
+    q
+}
+
+#[test]
+fn indexed_sessions_land_in_the_report() {
+    let d = tmp("idx-ok");
+    quarantine_with_transcript(&d);
+    let t = crate::Targets::new(d.join("data"), d.join("ext"));
+    let index = SessionIndex::open_in_memory().unwrap();
+    let r = ensure_sessions_indexed(&t, "hermes", &index).unwrap();
+    assert_eq!(r.files, 1);
+    assert_eq!(r.chunks, 1);
+}
+
+#[test]
+fn no_quarantine_dir_is_not_a_failure() {
+    let d = tmp("idx-empty");
+    let t = crate::Targets::new(d.join("data"), d.join("ext"));
+    let index = SessionIndex::open_in_memory().unwrap();
+    let r = ensure_sessions_indexed(&t, "hermes", &index).unwrap();
+    assert_eq!(r.files, 0);
+    assert_eq!(r.chunks, 0);
+}
+
+#[test]
+fn index_failure_is_reported_as_failure_never_success() {
+    // Sabotage the schema out from under the index with a second
+    // connection: the next chunk write must fail.
+    let d = tmp("idx-fail");
+    quarantine_with_transcript(&d);
+    let db = d.join("ledger.db");
+    let index = SessionIndex::open(&db).unwrap();
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("DROP TABLE session_chunks; DROP TABLE session_fts;")
+            .unwrap();
+    }
+    let t = crate::Targets::new(d.join("data"), d.join("ext"));
+    let err =
+        ensure_sessions_indexed(&t, "hermes", &index).expect_err("the index write must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("MIGRATE_SESS_INDEX_FAILED"),
+        "the failure must be unmistakable: {msg}"
+    );
+    assert!(
+        msg.contains("not complete"),
+        "it must never read as success: {msg}"
+    );
+}

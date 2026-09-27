@@ -857,17 +857,38 @@ struct Doc {
 /// can be indexed into `session_search` deliberately.
 ///
 /// Returns the number of files copied. Non-transcript files are ignored.
+///
+/// The copy is charged against the default [`StageBudgets`](crate::apply::StageBudgets);
+/// see [`write_session_import_with_budget`].
 pub fn write_session_import(
     targets_data_dir: &Path,
     source: &str,
     from: &Path,
+) -> Result<SessionImport, PantheonError> {
+    write_session_import_with_budget(
+        targets_data_dir,
+        source,
+        from,
+        &crate::apply::StageBudgets::default(),
+        &mut crate::apply::BudgetUsage::default(),
+    )
+}
+
+/// As [`write_session_import`], with explicit budgets. A budget breach aborts
+/// the quarantine copy with an error; the caller discards the partial tree.
+pub fn write_session_import_with_budget(
+    targets_data_dir: &Path,
+    source: &str,
+    from: &Path,
+    budgets: &crate::apply::StageBudgets,
+    usage: &mut crate::apply::BudgetUsage,
 ) -> Result<SessionImport, PantheonError> {
     let dir = targets_data_dir.join("imported-sessions").join(source);
     std::fs::create_dir_all(&dir).map_err(|e| werr("MIGRATE_SESS_MKDIR", e.to_string()))?;
 
     let mut files = Vec::new();
     let mut formats: Vec<String> = Vec::new();
-    collect_transcripts(from, &dir, "", &mut files, &mut formats, 0)?;
+    collect_transcripts(from, &dir, "", &mut files, &mut formats, 0, budgets, usage)?;
 
     let manifest = dir.join("manifest.json");
     let body = serde_json::to_string_pretty(&serde_json::json!({
@@ -898,6 +919,8 @@ fn collect_transcripts(
     files: &mut Vec<PathBuf>,
     formats: &mut Vec<String>,
     depth: usize,
+    budgets: &crate::apply::StageBudgets,
+    usage: &mut crate::apply::BudgetUsage,
 ) -> Result<(), PantheonError> {
     if depth > 4 {
         return Ok(());
@@ -919,7 +942,7 @@ fn collect_transcripts(
             } else {
                 format!("{rel_prefix}__{child}")
             };
-            collect_transcripts(&src, into, &next, files, formats, depth + 1)?;
+            collect_transcripts(&src, into, &next, files, formats, depth + 1, budgets, usage)?;
             continue;
         }
         if !ft.is_file() {
@@ -968,6 +991,8 @@ fn collect_transcripts(
             dest = into.join(format!("{safe}-{n}{ext}"));
             n += 1;
         }
+        let size = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+        budgets.charge(usage, size, &src.display().to_string())?;
         std::fs::copy(&src, &dest)
             .map_err(|e| werr("MIGRATE_SESS_COPY", format!("{}: {e}", src.display())))?;
         files.push(dest);

@@ -24,17 +24,21 @@ mod index;
 mod providers;
 
 pub use apply::{
-    apply, apply_with, backup, validate, ApplyReport, ApplyStatus, BackupManifest, ValidateReport,
+    apply, apply_with, apply_with_budgets, backup, backup_with_budgets, validate, ApplyReport,
+    ApplyStatus, BackupManifest, BudgetUsage, StageBudgets, Staged, StagedItem, ValidateReport,
     ValidateStatus,
 };
 pub use carry::{
     classify_credential, count_jsonl_records, credential_manifest, looks_secret, pantheon_env_path,
     parse_env_names, parse_env_values, parse_hermes_mcp, parse_mcp_json, read_dotenv,
     read_mcp_declarations, transcript_format, write_credential_manifest, write_mcp_declaration,
-    write_session_import, CredentialManifest, CredentialMapping, CredentialTarget, EnvEntry,
-    McpDeclaration, McpServer, SessionImport,
+    write_session_import, write_session_import_with_budget, CredentialManifest, CredentialMapping,
+    CredentialTarget, EnvEntry, McpDeclaration, McpServer, SessionImport,
 };
-pub use index::{index_quarantine, parse_transcript, quarantine_dir, ImportedChunk, IndexReport};
+pub use index::{
+    ensure_sessions_indexed, index_quarantine, parse_transcript, quarantine_dir, ImportedChunk,
+    IndexReport,
+};
 pub use providers::{
     catalog_key_envs, merge_into_config, merge_into_live_config, parse_hermes_providers,
     provider_sidecar_path, read_providers, reconcile_key, reconcile_keys, render_custom_providers,
