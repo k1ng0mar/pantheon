@@ -32,6 +32,7 @@
 use crate::backend::BackendKind;
 use crate::{BackendInfo, BackendRegistry, BackendSelection, LayerKind};
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::provenance::TrustTier;
 use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
@@ -238,6 +239,9 @@ pub struct StdioBackend {
     command: String,
     args: Vec<String>,
     timeout: Duration,
+    /// Max trust tier the plugin may report on a record. Default
+    /// Untrusted — same laundering guard as the HTTP adapter.
+    trust_ceiling: TrustTier,
 }
 
 impl StdioBackend {
@@ -246,7 +250,21 @@ impl StdioBackend {
             command,
             args,
             timeout: Duration::from_millis(timeout_ms.max(1)),
+            trust_ceiling: TrustTier::Untrusted,
         }
+    }
+
+    /// Raise or lower the trust ceiling for tiers the plugin reports.
+    /// Default is Untrusted; only raise this for a plugin the operator
+    /// fully controls.
+    pub fn with_trust_ceiling(mut self, ceiling: TrustTier) -> Self {
+        self.trust_ceiling = ceiling;
+        self
+    }
+
+    fn clamp_record(&self, mut record: crate::MemoryRecord) -> crate::MemoryRecord {
+        record.provenance.trust = crate::clamp_trust(record.provenance.trust, self.trust_ceiling);
+        record
     }
 
     /// One request/response exchange. Never panics; timeout kills the child.
@@ -327,16 +345,27 @@ impl StdioBackend {
         if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
             Ok(v)
         } else {
-            let code = v
+            // The `code` field is plugin-controlled: only allowlisted
+            // codes pass through, anything else becomes
+            // MEM_PLUGIN_REMOTE (the original, sanitized, is kept in the
+            // cause for debugging). The `cause` is free text: control
+            // characters stripped, length capped.
+            let raw_code = v
                 .get("code")
                 .and_then(|c| c.as_str())
-                .unwrap_or("MEM_PLUGIN_ERROR")
-                .to_string();
-            let cause = v
+                .unwrap_or("MEM_PLUGIN_ERROR");
+            let code = crate::sanitize_remote_code(raw_code, "MEM_PLUGIN_REMOTE");
+            let mut cause = v
                 .get("cause")
                 .and_then(|c| c.as_str())
-                .unwrap_or("plugin reported failure")
-                .to_string();
+                .map(crate::sanitize_remote_text)
+                .unwrap_or_else(|| "plugin reported failure".to_string());
+            if code == "MEM_PLUGIN_REMOTE" && raw_code != "MEM_PLUGIN_ERROR" {
+                cause = format!(
+                    "{cause} [remote code: {}]",
+                    crate::sanitize_remote_text(raw_code)
+                );
+            }
             Err(perr(&code, cause))
         }
     }
@@ -362,8 +391,18 @@ impl crate::MemoryBackend for StdioBackend {
             "layers": names,
             "namespaces": namespaces,
         }))?;
-        serde_json::from_value(resp.get("hits").cloned().unwrap_or(serde_json::json!([])))
-            .map_err(|e| perr("MEM_PLUGIN_DECODE", format!("recall hits invalid: {e}")))
+        let hits: Vec<crate::Recalled> =
+            serde_json::from_value(resp.get("hits").cloned().unwrap_or(serde_json::json!([])))
+                .map_err(|e| perr("MEM_PLUGIN_DECODE", format!("recall hits invalid: {e}")))?;
+        // Trust laundering guard: the plugin's claimed tiers are capped at
+        // the ceiling before anything downstream sees them.
+        Ok(hits
+            .into_iter()
+            .map(|mut h| {
+                h.record = self.clamp_record(h.record);
+                h
+            })
+            .collect())
     }
 
     fn write(
@@ -381,12 +420,13 @@ impl crate::MemoryBackend for StdioBackend {
             "provenance": proposal.provenance,
             "max_bytes": max_bytes,
         }))?;
-        serde_json::from_value(
+        let record: crate::MemoryRecord = serde_json::from_value(
             resp.get("record")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )
-        .map_err(|e| perr("MEM_PLUGIN_DECODE", format!("write record invalid: {e}")))
+        .map_err(|e| perr("MEM_PLUGIN_DECODE", format!("write record invalid: {e}")))?;
+        Ok(self.clamp_record(record))
     }
 
     fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError> {
@@ -413,13 +453,13 @@ impl crate::MemoryBackend for StdioBackend {
         if resp.get("found").and_then(|f| f.as_bool()) != Some(true) {
             return Ok(None);
         }
-        serde_json::from_value(
+        let record: crate::MemoryRecord = serde_json::from_value(
             resp.get("record")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )
-        .map(Some)
-        .map_err(|e| perr("MEM_PLUGIN_DECODE", format!("get record invalid: {e}")))
+        .map_err(|e| perr("MEM_PLUGIN_DECODE", format!("get record invalid: {e}")))?;
+        Ok(Some(self.clamp_record(record)))
     }
 
     fn forget(&self, layer: LayerKind, namespace: &str, key: &str) -> Result<bool, PantheonError> {
@@ -448,12 +488,13 @@ impl crate::MemoryBackend for StdioBackend {
             "namespace": namespace,
             "key": key,
         }))?;
-        serde_json::from_value(
+        let record: crate::MemoryRecord = serde_json::from_value(
             resp.get("record")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )
-        .map_err(|e| perr("MEM_PLUGIN_DECODE", format!("confirm record invalid: {e}")))
+        .map_err(|e| perr("MEM_PLUGIN_DECODE", format!("confirm record invalid: {e}")))?;
+        Ok(self.clamp_record(record))
     }
 }
 

@@ -475,3 +475,281 @@ fn confirm_write_denies_without_memory_confirm() {
     let err = confirm_write(&store, &policy, LayerKind::Agent, "nyx", "k").unwrap_err();
     assert_eq!(err.code, "MEM_NO_CAPABILITY");
 }
+
+// ------------------------------------------------------- secret scan
+//
+// The write path must refuse values that look like leaked credentials.
+// The error names the pattern class, never the secret itself.
+
+#[test]
+fn secret_looking_value_is_refused_on_write() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = writer_policy();
+    let err = propose_write(
+        &store,
+        &policy,
+        proposal(LayerKind::Agent, "nyx", "note", "my password = hunter2", "user"),
+        4096,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "MEM_SECRET");
+    assert!(err.cause.contains("labeled password"), "{}", err.cause);
+    assert!(
+        !err.cause.contains("hunter2"),
+        "the secret itself must not appear in the error: {}",
+        err.cause
+    );
+    assert!(
+        store.get(LayerKind::Agent, "nyx", "note").unwrap().is_none(),
+        "refused write must store nothing"
+    );
+}
+
+#[test]
+fn token_prefix_value_is_refused_on_write() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = writer_policy();
+    let err = propose_write(
+        &store,
+        &policy,
+        proposal(
+            LayerKind::Agent,
+            "nyx",
+            "deploy",
+            "key is sk-abcdefgh12345678 done",
+            "user",
+        ),
+        4096,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "MEM_SECRET");
+    assert!(err.cause.contains("api key prefix"), "{}", err.cause);
+}
+
+#[test]
+fn prose_about_secrets_is_not_refused() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = writer_policy();
+    let rec = propose_write(
+        &store,
+        &policy,
+        proposal(
+            LayerKind::Agent,
+            "nyx",
+            "policy",
+            "rotate your password regularly per the team policy",
+            "user",
+        ),
+        4096,
+    )
+    .unwrap();
+    assert_eq!(rec.value, "rotate your password regularly per the team policy");
+}
+
+// ------------------------------------------------------- memory.md origin
+//
+// The MEMORY.md importer is human-authored: its tier survives the write
+// gate (the old code clamped every import to Untrusted and silently
+// dropped the {trust=user} footers).
+
+#[test]
+fn memory_md_origin_keeps_its_tier() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = writer_policy();
+    let rec = propose_write(
+        &store,
+        &policy,
+        proposal(LayerKind::Agent, "nyx", "city", "Kano", "memory.md"),
+        4096,
+    )
+    .unwrap();
+    assert_eq!(
+        rec.provenance.trust,
+        pantheon_api::provenance::TrustTier::User,
+        "memory.md is human-authored and must not be clamped to Untrusted"
+    );
+}
+
+// ------------------------------------------------------- budgets & eviction
+
+fn tiny_budgets() -> MemoryConfig {
+    MemoryConfig {
+        max_value_bytes: 4096,
+        budgets: LayerBudgets {
+            global: 100,
+            agent: 100,
+            project: 100,
+            task_session: 100,
+        },
+        max_recall_per_layer: 20,
+    }
+}
+
+fn tiered_proposal(key: &str, trust: pantheon_api::provenance::TrustTier, at: i64) -> Proposal {
+    Proposal {
+        layer: LayerKind::Agent,
+        namespace: "nyx".into(),
+        key: key.into(),
+        // Distinct FTS token per key ("payload-k1") plus padding to ~30B.
+        value: format!("payload-{key} {}", "x".repeat(20)),
+        provenance: Provenance {
+            source: "test".into(),
+            origin: "cli".into(),
+            trust,
+            recorded_at_ms: at,
+        },
+    }
+}
+
+use pantheon_api::provenance::TrustTier;
+
+#[test]
+fn put_evicts_lowest_trust_oldest_first_when_over_budget() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    store.set_config(tiny_budgets()).unwrap();
+    // 30 bytes each against a 100-byte Agent budget.
+    store
+        .put(&tiered_proposal("k1", TrustTier::Untrusted, 1))
+        .unwrap();
+    store
+        .put(&tiered_proposal("k2", TrustTier::Memory, 2))
+        .unwrap();
+    store
+        .put(&tiered_proposal("k3", TrustTier::User, 3))
+        .unwrap();
+    // 120 > 100: evict k1 (lowest trust, oldest of its tier).
+    store
+        .put(&tiered_proposal("k4", TrustTier::Untrusted, 4))
+        .unwrap();
+    assert!(store.get(LayerKind::Agent, "nyx", "k1").unwrap().is_none());
+    assert!(store.get(LayerKind::Agent, "nyx", "k4").unwrap().is_some());
+    // Evicted rows stop being searchable: the FTS index entry goes with them.
+    let gone = store
+        .search_scoped(&["nyx"], &[LayerKind::Agent], "payload-k1", 10)
+        .unwrap();
+    assert!(gone.is_empty(), "evicted row still searchable: {gone:?}");
+    // Next over-budget write evicts k4 (untrusted, now the oldest of the
+    // lowest tier) — never the row just written.
+    store
+        .put(&tiered_proposal("k5", TrustTier::Memory, 5))
+        .unwrap();
+    assert!(store.get(LayerKind::Agent, "nyx", "k4").unwrap().is_none());
+    assert!(store.get(LayerKind::Agent, "nyx", "k5").unwrap().is_some());
+    assert!(store.get(LayerKind::Agent, "nyx", "k2").unwrap().is_some());
+    assert!(store.get(LayerKind::Agent, "nyx", "k3").unwrap().is_some());
+}
+
+#[test]
+fn put_refuses_a_value_larger_than_the_layer_budget() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    store.set_config(tiny_budgets()).unwrap();
+    let mut p = tiered_proposal("big", TrustTier::User, 1);
+    p.value = "x".repeat(101);
+    let err = store.put(&p).unwrap_err();
+    assert_eq!(err.code, "MEM_BUDGET_EXCEEDED");
+    assert!(
+        store.get(LayerKind::Agent, "nyx", "big").unwrap().is_none(),
+        "over-budget write must store nothing"
+    );
+}
+
+#[test]
+fn memory_config_defaults_are_sane() {
+    let cfg = MemoryConfig::default();
+    assert_eq!(cfg.max_value_bytes, 4096);
+    assert_eq!(cfg.budgets.global, 100 * 1024);
+    assert_eq!(cfg.budgets.agent, 200 * 1024);
+    assert_eq!(cfg.budgets.project, 200 * 1024);
+    assert_eq!(cfg.budgets.task_session, 50 * 1024);
+    assert!(cfg.max_recall_per_layer > 0);
+    assert_eq!(cfg.budget_for(LayerKind::Agent), Some(200 * 1024));
+    assert_eq!(cfg.budget_for(LayerKind::EphemeralTurn), None);
+}
+
+// ------------------------------------------------------- sqlite hygiene
+
+#[test]
+fn file_backed_store_enables_wal() {
+    let dir = std::env::temp_dir().join(format!(
+        "pantheon-wal-{}-{:x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("memory.db");
+    let store = MemoryStore::open(&db).unwrap();
+    drop(store);
+    // journal_mode is persistent: a fresh connection sees what open() set.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal", "memory.db must run in WAL mode");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ------------------------------------------------------- per-layer recall limits
+
+#[test]
+fn recall_enforces_per_layer_limits() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    store
+        .set_config(MemoryConfig {
+            max_recall_per_layer: 2,
+            ..MemoryConfig::default()
+        })
+        .unwrap();
+    let policy = writer_policy();
+    for i in 0..4 {
+        propose_write(
+            &store,
+            &policy,
+            proposal(
+                LayerKind::Agent,
+                "nyx",
+                &format!("a{i}"),
+                "common marker alpha",
+                "user",
+            ),
+            4096,
+        )
+        .unwrap();
+        propose_write(
+            &store,
+            &policy,
+            proposal(
+                LayerKind::Project,
+                "nyx",
+                &format!("p{i}"),
+                "common marker beta",
+                "user",
+            ),
+            4096,
+        )
+        .unwrap();
+    }
+    // limit 100 would return everything without the per-layer cap.
+    let hits = recall(
+        &store,
+        &policy,
+        &["nyx"],
+        &[LayerKind::Agent, LayerKind::Project],
+        "common",
+        100,
+    )
+    .unwrap();
+    let agent = hits
+        .iter()
+        .filter(|h| h.record.layer == LayerKind::Agent)
+        .count();
+    let project = hits
+        .iter()
+        .filter(|h| h.record.layer == LayerKind::Project)
+        .count();
+    assert_eq!(agent, 2, "agent layer exceeded its recall cap: {hits:?}");
+    assert_eq!(project, 2, "project layer exceeded its recall cap: {hits:?}");
+}

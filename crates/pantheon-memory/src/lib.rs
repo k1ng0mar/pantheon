@@ -15,13 +15,16 @@ pub mod backend;
 pub mod http_backend;
 pub mod markdown;
 pub mod plugins;
+mod secret_scan;
 pub mod store;
 pub use backend::{
     load_selection, open_selected, save_selection, selection_path, BackendInfo, BackendRegistry,
     BackendSelection,
 };
 pub use plugins::{load_dir as load_memory_plugins, MemoryPluginManifest, StdioBackend};
-pub use store::{damage_fts_for_test, fts_health, rebuild_fts, MemoryStore, Recalled};
+pub use store::{
+    damage_fts_for_test, fts_health, rebuild_fts, LayerBudgets, MemoryConfig, MemoryStore, Recalled,
+};
 
 /// Backend boundary for external memory providers such as GalaxyMem,
 /// Mnemosyne, Honcho, Hindsight, OpenViking. Providers implement recall
@@ -172,6 +175,10 @@ pub enum WriteRefusal {
     Empty,
     TooLarge { bytes: usize, max: usize },
     EphemeralNotPersisted,
+    /// The value trips the secret-pattern scan (`secret_scan`). `class`
+    /// names the matched pattern class ("labeled password", "github token
+    /// prefix") — never the secret itself.
+    SecretDetected { class: &'static str },
 }
 
 impl WriteRefusal {
@@ -182,6 +189,7 @@ impl WriteRefusal {
             WriteRefusal::Empty => "MEM_EMPTY",
             WriteRefusal::TooLarge { .. } => "MEM_TOO_LARGE",
             WriteRefusal::EphemeralNotPersisted => "MEM_EPHEMERAL",
+            WriteRefusal::SecretDetected { .. } => "MEM_SECRET",
         }
     }
 }
@@ -230,6 +238,12 @@ pub fn validate(p: &Proposal, max_bytes: usize) -> Result<(), WriteRefusal> {
     if p.key.trim().is_empty() || p.value.trim().is_empty() {
         return Err(WriteRefusal::Empty);
     }
+    // Secret tripwire: a page telling the agent "remember this password"
+    // must not reach the store, the export, or recall. Fail closed — the
+    // error names the pattern class, never the secret.
+    if let Some(class) = secret_scan::detect_secret(&p.value) {
+        return Err(WriteRefusal::SecretDetected { class });
+    }
     if p.value.len() > max_bytes {
         return Err(WriteRefusal::TooLarge {
             bytes: p.value.len(),
@@ -245,11 +259,11 @@ pub fn validate(p: &Proposal, max_bytes: usize) -> Result<(), WriteRefusal> {
 /// The full write path. Returns the record that was stored.
 ///
 /// Trust invariant: a proposal may not claim a tier above what its origin
-/// justifies. Model-sourced proposals (`origin` not `user`/`cli`/`import`)
-/// are clamped to Untrusted no matter what the caller asked for: the model
-/// cannot launder web content into trusted memory by passing a flattering
-/// origin tag. Explicit user actions (CLI put, file import) write User
-/// tier directly.
+/// justifies. Model-sourced proposals (`origin` not `user`/`cli`/`import`/
+/// `memory.md`) are clamped to Untrusted no matter what the caller asked
+/// for: the model cannot launder web content into trusted memory by
+/// passing a flattering origin tag. Explicit user actions (CLI put, file
+/// import) write User tier directly.
 pub fn propose_write(
     store: &MemoryStore,
     policy: &Policy,
@@ -386,6 +400,106 @@ pub fn confirm_via(
     backend.confirm(policy, layer, namespace, key)
 }
 
+/// Clamp a trust tier reported by a non-native backend to the ceiling the
+/// operator configured (default Untrusted). A compromised memory server
+/// must not be able to launder `user`-tier records with injected
+/// instructions into the recall stream: the tier the server *claims* is
+/// capped at what we are willing to believe from that source.
+pub fn clamp_trust(
+    tier: pantheon_api::provenance::TrustTier,
+    ceiling: pantheon_api::provenance::TrustTier,
+) -> pantheon_api::provenance::TrustTier {
+    if tier.rank() > ceiling.rank() {
+        ceiling
+    } else {
+        tier
+    }
+}
+
+/// Error codes a Pantheon-protocol memory server may legitimately return
+/// in the `error`/`code` field. The field is attacker-controlled and must
+/// never become a `PantheonError` code verbatim (code/log spoofing), so
+/// anything outside this allowlist maps to `fallback`.
+const KNOWN_REMOTE_CODES: &[&str] = &[
+    "MEM_BACKEND_CONFIG",
+    "MEM_BACKEND_UNKNOWN",
+    "MEM_BACKEND_UNSUPPORTED",
+    "MEM_BUDGET_EXCEEDED",
+    "MEM_COUNT",
+    "MEM_DELETE",
+    "MEM_EMPTY",
+    "MEM_EPHEMERAL",
+    "MEM_EXPORT",
+    "MEM_FTS_DELETE",
+    "MEM_FTS_DROP",
+    "MEM_FTS_OPEN",
+    "MEM_FTS_REBUILD",
+    "MEM_FTS_RECREATE",
+    "MEM_FTS_UNUSABLE",
+    "MEM_HTTP_BODY",
+    "MEM_HTTP_CONN",
+    "MEM_HTTP_DECODE",
+    "MEM_HTTP_ENCODE",
+    "MEM_HTTP_NO_URL",
+    "MEM_HTTP_REMOTE",
+    "MEM_IMPORT_READ",
+    "MEM_LOCK",
+    "MEM_MKDIR",
+    "MEM_NATIVE_OPEN",
+    "MEM_NOT_FOUND",
+    "MEM_NO_CAPABILITY",
+    "MEM_NO_PROVENANCE",
+    "MEM_NO_READ_CAPABILITY",
+    "MEM_OPEN",
+    "MEM_PLUGIN_DECODE",
+    "MEM_PLUGIN_EMPTY",
+    "MEM_PLUGIN_ERROR",
+    "MEM_PLUGIN_IO",
+    "MEM_PLUGIN_MANIFEST",
+    "MEM_PLUGIN_REMOTE",
+    "MEM_PLUGIN_SPAWN",
+    "MEM_PLUGIN_TIMEOUT",
+    "MEM_PRAGMA",
+    "MEM_PUT",
+    "MEM_QUERY",
+    "MEM_SCHEMA",
+    "MEM_SEARCH",
+    "MEM_SECRET",
+    "MEM_SELECTION_WRITE",
+    "MEM_SYNC_MKDIR",
+    "MEM_SYNC_READ",
+    "MEM_SYNC_RENAME",
+    "MEM_SYNC_WRITE",
+    "MEM_TOO_LARGE",
+];
+
+/// Sanitize a remote error code: allowlisted codes pass through, anything
+/// else (including empty) becomes `fallback` (`MEM_HTTP_REMOTE` /
+/// `MEM_PLUGIN_REMOTE`).
+pub fn sanitize_remote_code(code: &str, fallback: &'static str) -> String {
+    let c = code.trim();
+    if !c.is_empty() && KNOWN_REMOTE_CODES.contains(&c) {
+        c.to_string()
+    } else {
+        fallback.to_string()
+    }
+}
+
+/// Remote `cause` strings are free text; strip control characters and cap
+/// the length so a hostile server cannot smuggle log-forging newlines or
+/// megabyte dumps into error paths.
+pub fn sanitize_remote_text(s: &str) -> String {
+    const MAX: usize = 500;
+    let mut out = String::new();
+    for ch in s.chars() {
+        if out.len() >= MAX {
+            break;
+        }
+        out.push(if ch.is_control() { ' ' } else { ch });
+    }
+    out
+}
+
 /// Shared gate for the write path: capability, validation, trust clamp.
 /// Returns the gated proposal ready for any provider.
 fn gate_proposal(
@@ -405,18 +519,32 @@ fn gate_proposal(
             "grant memory.write in the agent policy",
         ));
     }
-    // 2. validation (provenance is checked here too).
+    // 2. validation (provenance is checked here too; the secret scan
+    // refuses values that look like leaked credentials).
     if let Err(r) = validate(&proposal, max_bytes) {
+        let remediation = match &r {
+            WriteRefusal::SecretDetected { .. } => {
+                "remove the secret material; store where to find it (vault name, env var) instead of the value itself"
+            }
+            _ => "fix the proposal; nothing was stored",
+        };
         return Err(merr(
             r.code(),
             format!("proposal failed validation: {r:?}"),
-            "fix the proposal; nothing was stored",
+            remediation,
         ));
     }
     // 3. trust clamp. Anything not authored by an explicit user action
-    // lands at Untrusted regardless of the requested tier.
+    // lands at Untrusted regardless of the requested tier. `memory.md`
+    // is the MEMORY.md file importer — human-authored (or a v2 file
+    // carrying each record's own tier), so it keeps its tier here; the
+    // importer separately caps the tier at the store's existing tier so
+    // an import can never upgrade trust.
     let mut p = proposal;
-    if !matches!(p.provenance.origin.as_str(), "user" | "cli" | "import") {
+    if !matches!(
+        p.provenance.origin.as_str(),
+        "user" | "cli" | "import" | "memory.md"
+    ) {
         p.provenance.trust = pantheon_api::provenance::TrustTier::Untrusted;
     }
     Ok(p)

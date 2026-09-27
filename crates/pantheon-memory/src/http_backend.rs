@@ -22,6 +22,7 @@
 use crate::{LayerKind, MemoryBackend, MemoryRecord, Proposal, Provenance, Recalled};
 use pantheon_api::capability::Policy;
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::provenance::TrustTier;
 use serde::{Deserialize, Serialize};
 
 fn merr(code: &str, cause: String) -> PantheonError {
@@ -42,6 +43,11 @@ pub struct HttpBackend {
     /// Path prefix the service mounts the protocol under. Default
     /// `/v1/memory`; custom plugins set their own (e.g. `/memory`).
     prefix: String,
+    /// Max trust tier the server may report on a record. Default
+    /// Untrusted: a compromised memory server must not launder `user`-tier
+    /// records (with injected instructions) into the recall stream. The
+    /// tier a server *claims* is capped at what we believe from that source.
+    trust_ceiling: TrustTier,
 }
 
 impl HttpBackend {
@@ -50,6 +56,7 @@ impl HttpBackend {
             base,
             api_key,
             prefix: "/v1/memory".into(),
+            trust_ceiling: TrustTier::Untrusted,
         }
     }
 
@@ -67,7 +74,26 @@ impl HttpBackend {
             base,
             api_key,
             prefix: p,
+            trust_ceiling: TrustTier::Untrusted,
         }
+    }
+
+    /// Raise or lower the trust ceiling for tiers the server reports.
+    /// Default is Untrusted; only raise this for a server the operator
+    /// fully controls.
+    pub fn with_trust_ceiling(mut self, ceiling: TrustTier) -> Self {
+        self.trust_ceiling = ceiling;
+        self
+    }
+
+    fn clamp_hit(&self, mut hit: Recalled) -> Recalled {
+        hit.record.provenance.trust = crate::clamp_trust(hit.record.provenance.trust, self.trust_ceiling);
+        hit
+    }
+
+    fn clamp_record(&self, mut record: MemoryRecord) -> MemoryRecord {
+        record.provenance.trust = crate::clamp_trust(record.provenance.trust, self.trust_ceiling);
+        record
     }
 
     /// `<base><prefix>/<suffix>` with the base trailing slash trimmed.
@@ -95,6 +121,25 @@ struct WriteRequest {
 struct ErrorResponse {
     error: Option<String>,
     cause: Option<String>,
+}
+
+/// Map a server error response to `PantheonError`. The `error` field is
+/// attacker-controlled: only allowlisted codes pass through, anything
+/// else becomes `MEM_HTTP_REMOTE`. The `cause` is free text: control
+/// characters are stripped and it is length-capped so a hostile server
+/// cannot smuggle log-forging content into error paths.
+fn remote_error(parsed: &ErrorResponse, status: u16, endpoint: &str) -> PantheonError {
+    let code = parsed
+        .error
+        .as_deref()
+        .map(|c| crate::sanitize_remote_code(c, "MEM_HTTP_REMOTE"))
+        .unwrap_or_else(|| format!("HTTP {status}"));
+    let cause = parsed
+        .cause
+        .as_deref()
+        .map(crate::sanitize_remote_text)
+        .unwrap_or_else(|| format!("HTTP {status} from {endpoint}"));
+    merr(&code, cause)
 }
 
 fn layer_str(layer: LayerKind) -> String {
@@ -145,7 +190,9 @@ impl MemoryBackend for HttpBackend {
                 format!("recall response was not valid JSON: {e}"),
             )
         })?;
-        Ok(hits)
+        // Trust laundering guard: the server's claimed tiers are capped at
+        // the ceiling before anything downstream sees them.
+        Ok(hits.into_iter().map(|h| self.clamp_hit(h)).collect())
     }
 
     fn write(
@@ -172,13 +219,7 @@ impl MemoryBackend for HttpBackend {
         let resp = http_post(&endpoint, &body, self.api_key.as_deref())?;
         if resp.status >= 400 {
             let parsed: ErrorResponse = serde_json::from_slice(&resp.body).unwrap_or_default();
-            let code = parsed
-                .error
-                .unwrap_or_else(|| format!("HTTP {}", resp.status));
-            let cause = parsed
-                .cause
-                .unwrap_or_else(|| format!("HTTP {} from {}", resp.status, endpoint));
-            return Err(merr(&code, cause));
+            return Err(remote_error(&parsed, resp.status, &endpoint));
         }
         let record: MemoryRecord = serde_json::from_slice(&resp.body).map_err(|e| {
             merr(
@@ -186,7 +227,7 @@ impl MemoryBackend for HttpBackend {
                 format!("write response was not valid JSON: {e}"),
             )
         })?;
-        Ok(record)
+        Ok(self.clamp_record(record))
     }
 
     fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError> {
@@ -265,11 +306,7 @@ fn http_conn_err(method: &str, url: &str, e: ureq::Error) -> PantheonError {
         ureq::Error::Status(code, resp) => {
             let body = resp.into_string().unwrap_or_default();
             let parsed: ErrorResponse = serde_json::from_str(&body).unwrap_or_default();
-            let code_str = parsed.error.unwrap_or_else(|| format!("HTTP {code}"));
-            let cause = parsed
-                .cause
-                .unwrap_or_else(|| format!("{method} {url}: HTTP {code}"));
-            merr(&code_str, cause)
+            remote_error(&parsed, code, &format!("{method} {url}"))
         }
         e => merr("MEM_HTTP_CONN", format!("{method} {url}: {e}")),
     }
@@ -287,11 +324,7 @@ fn read_response(
         .into_bytes();
     if status >= 400 {
         let parsed: ErrorResponse = serde_json::from_slice(&body).unwrap_or_default();
-        let code = parsed.error.unwrap_or_else(|| format!("HTTP {status}"));
-        let cause = parsed
-            .cause
-            .unwrap_or_else(|| format!("{method} {url}: HTTP {status}"));
-        return Err(merr(&code, cause));
+        return Err(remote_error(&parsed, status, &format!("{method} {url}")));
     }
     Ok(HttpResponse { status, body })
 }

@@ -11,7 +11,7 @@
 use crate::{LayerKind, MemoryRecord, Proposal, Provenance};
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::provenance::TrustTier;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
@@ -34,10 +34,75 @@ pub struct Recalled {
     pub rank: f64,
 }
 
+/// Per-layer byte budgets: the total stored *value* bytes allowed per
+/// (layer, namespace). Enforced in [`MemoryStore::put`] with trust-aware
+/// eviction (lowest trust first, oldest first within a tier).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerBudgets {
+    pub global: usize,
+    pub agent: usize,
+    pub project: usize,
+    pub task_session: usize,
+}
+
+impl Default for LayerBudgets {
+    fn default() -> Self {
+        Self {
+            // Budgets are generous on purpose: they bound growth, not
+            // normal use. A few hundred records of prose fit comfortably;
+            // a runaway loop pasting tool output does not.
+            global: 100 * 1024,
+            agent: 200 * 1024,
+            project: 200 * 1024,
+            task_session: 50 * 1024,
+        }
+    }
+}
+
+/// Store-wide memory limits. The native store carries one; callers that
+/// need tighter bounds (tests, constrained agents) use
+/// [`MemoryStore::open_with_config`] / [`MemoryStore::set_config`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    /// Max bytes for a single value — the pre-existing `max_bytes` gate,
+    /// now owned by the store config instead of floating at call sites.
+    pub max_value_bytes: usize,
+    pub budgets: LayerBudgets,
+    /// Max recall hits returned per layer by `search_scoped`: one layer's
+    /// matches can no longer crowd out narrower layers.
+    pub max_recall_per_layer: usize,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            max_value_bytes: 4096,
+            budgets: LayerBudgets::default(),
+            max_recall_per_layer: 20,
+        }
+    }
+}
+
+impl MemoryConfig {
+    /// Byte budget for `layer`, or `None` when the layer is not
+    /// budget-enforced (`EphemeralTurn` is never persisted; the gated
+    /// write path rejects it before `put`).
+    pub fn budget_for(&self, layer: LayerKind) -> Option<usize> {
+        match layer {
+            LayerKind::Global => Some(self.budgets.global),
+            LayerKind::Agent => Some(self.budgets.agent),
+            LayerKind::Project => Some(self.budgets.project),
+            LayerKind::TaskSession => Some(self.budgets.task_session),
+            LayerKind::EphemeralTurn => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct MemoryStore {
     conn: Mutex<Connection>,
     path: Option<std::path::PathBuf>,
+    config: Mutex<MemoryConfig>,
 }
 
 const SCHEMA: &str = "
@@ -170,32 +235,157 @@ fn layer_from(s: &str) -> LayerKind {
     }
 }
 
+/// SQLite hygiene for the shared `memory.db`: WAL mode so a reader never
+/// blocks a writer, and a 5s busy timeout so brief lock contention waits
+/// instead of failing. The daemon and the CLI open the same file;
+/// concurrent writes used to surface as SQLITE_BUSY flakes.
+fn tune_connection(conn: &Connection) -> Result<(), PantheonError> {
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+        .map_err(|e| serr("MEM_PRAGMA", e.to_string()))
+}
+
+/// Delete one row by id, removing its FTS index entry too. `DELETE` on
+/// the content table does not touch the external-content FTS index —
+/// without the explicit 'delete' command the row stays searchable
+/// forever (the old `forget` had exactly this leak).
+fn delete_row(
+    conn: &Connection,
+    id: i64,
+    key: &str,
+    value: &str,
+    namespace: &str,
+    layer: &str,
+    origin: &str,
+) -> Result<(), PantheonError> {
+    // Same delete-command shape as the `memories_au` trigger.
+    conn.execute(
+        "INSERT INTO memories_fts(memories_fts, rowid, key, value, namespace, layer, origin)
+         VALUES('delete', ?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, key, value, namespace, layer, origin],
+    )
+    .map_err(|e| serr("MEM_FTS_DELETE", e.to_string()))?;
+    conn.execute("DELETE FROM memories WHERE id=?1", params![id])
+        .map_err(|e| serr("MEM_DELETE", e.to_string()))?;
+    Ok(())
+}
+
+/// Trust-aware eviction for one (layer, namespace): while the total
+/// stored value bytes exceed `budget`, delete the lowest-trust row
+/// (oldest first within a tier), never `exclude_id` (the row just
+/// written). Byte size is `length(CAST(value AS BLOB))` — `length()` on
+/// TEXT counts characters, not bytes.
+fn evict_over_budget(
+    conn: &Connection,
+    layer: LayerKind,
+    namespace: &str,
+    budget: usize,
+    exclude_id: i64,
+) -> Result<(), PantheonError> {
+    let usage: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(length(CAST(value AS BLOB))),0) FROM memories
+             WHERE layer=?1 AND namespace=?2",
+            params![layer_str(layer), namespace],
+            |r| r.get(0),
+        )
+        .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+    if usage <= budget as i64 {
+        return Ok(());
+    }
+    let candidates: Vec<(i64, String, String, String, String, String, i64)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, key, value, namespace, layer, origin, length(CAST(value AS BLOB))
+                 FROM memories WHERE layer=?1 AND namespace=?2 AND id != ?3
+                 ORDER BY (CASE trust WHEN 'system' THEN 3 WHEN 'user' THEN 2
+                                       WHEN 'memory' THEN 1 ELSE 0 END) ASC,
+                          recorded_at_ms ASC, id ASC",
+            )
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        let rows = stmt
+            .query_map(
+                params![layer_str(layer), namespace, exclude_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        rows.collect::<Result<_, _>>()
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?
+    };
+    let mut usage = usage;
+    for (id, key, value, ns, lay, origin, bytes) in candidates {
+        if usage <= budget as i64 {
+            break;
+        }
+        delete_row(conn, id, &key, &value, &ns, &lay, &origin)?;
+        usage -= bytes;
+    }
+    Ok(())
+}
+
 impl MemoryStore {
     pub fn open(path: &Path) -> Result<Self, PantheonError> {
+        Self::open_with_config(path, MemoryConfig::default())
+    }
+
+    /// Open with explicit limits (budgets, recall caps, max value bytes).
+    pub fn open_with_config(path: &Path, config: MemoryConfig) -> Result<Self, PantheonError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).map_err(|e| serr("MEM_MKDIR", e.to_string()))?;
             }
         }
         let conn = Connection::open(path).map_err(|e| serr("MEM_OPEN", e.to_string()))?;
+        tune_connection(&conn)?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
         migrate_trust_column(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             path: Some(path.to_path_buf()),
+            config: Mutex::new(config),
         })
     }
 
     pub fn open_in_memory() -> Result<Self, PantheonError> {
         let conn = Connection::open_in_memory().map_err(|e| serr("MEM_OPEN", e.to_string()))?;
+        // WAL is a no-op on `:memory:` (SQLite reports `memory`); the
+        // busy timeout is still meaningful.
+        tune_connection(&conn)?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
         migrate_trust_column(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             path: None,
+            config: Mutex::new(MemoryConfig::default()),
         })
+    }
+
+    /// Replace the store's limits. Takes effect on the next `put`/`recall`.
+    pub fn set_config(&self, config: MemoryConfig) -> Result<(), PantheonError> {
+        *self
+            .config
+            .lock()
+            .map_err(|e| serr("MEM_LOCK", e.to_string()))? = config;
+        Ok(())
+    }
+
+    /// Snapshot of the store's current limits.
+    pub fn config(&self) -> Result<MemoryConfig, PantheonError> {
+        self.config
+            .lock()
+            .map(|c| c.clone())
+            .map_err(|e| serr("MEM_LOCK", e.to_string()))
     }
 
     /// Delete a record. Returns whether a row was removed.
@@ -209,13 +399,22 @@ impl MemoryStore {
             .conn
             .lock()
             .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
-        let n = conn
-            .execute(
-                "DELETE FROM memories WHERE layer=?1 AND namespace=?2 AND key=?3",
+        let row: Option<(i64, String, String, String, String, String)> = conn
+            .query_row(
+                "SELECT id, key, value, namespace, layer, origin FROM memories
+                 WHERE layer=?1 AND namespace=?2 AND key=?3",
                 params![layer_str(layer), namespace, key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
-            .map_err(|e| serr("MEM_DELETE", e.to_string()))?;
-        Ok(n > 0)
+            .optional()
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        match row {
+            None => Ok(false),
+            Some((id, key, value, namespace, layer, origin)) => {
+                delete_row(&conn, id, &key, &value, &namespace, &layer, &origin)?;
+                Ok(true)
+            }
+        }
     }
 
     /// List Agent-layer records for a namespace in stable write order,
@@ -359,6 +558,24 @@ impl MemoryStore {
     }
 
     pub fn put(&self, p: &Proposal) -> Result<MemoryRecord, PantheonError> {
+        let budget = self.config()?.budget_for(p.layer);
+        // A single value larger than the whole layer budget can never fit;
+        // refuse before the write rather than write-then-evict (which would
+        // either delete the row just written or leave the layer over
+        // budget). Non-budgeted layers (EphemeralTurn) skip this entirely.
+        if let Some(budget) = budget {
+            if p.value.len() > budget {
+                return Err(serr(
+                    "MEM_BUDGET_EXCEEDED",
+                    format!(
+                        "value is {} bytes but the {:?} layer budget is {} bytes",
+                        p.value.len(),
+                        p.layer,
+                        budget
+                    ),
+                ));
+            }
+        }
         let conn = self
             .conn
             .lock()
@@ -384,6 +601,19 @@ impl MemoryStore {
             ],
         )
         .map_err(|e| serr("MEM_PUT", e.to_string()))?;
+        let id: i64 = conn
+            .query_row(
+                "SELECT id FROM memories WHERE layer=?1 AND namespace=?2 AND key=?3",
+                params![layer_str(p.layer), p.namespace, p.key],
+                |r| r.get(0),
+            )
+            .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
+        // Bound growth: evict lowest-trust, oldest-first until the layer
+        // is back under budget. The row just written is never evicted —
+        // `put` must not delete what it just stored.
+        if let Some(budget) = budget {
+            evict_over_budget(&conn, p.layer, &p.namespace, budget, id)?;
+        }
         // Re-read rather than echo the proposal: when a higher-trust row
         // held, the stored value is the old one, and returning `p` would tell
         // the caller its write landed when it did not.
@@ -409,8 +639,6 @@ impl MemoryStore {
         }
     }
 
-    /// FTS recall across the given layers, narrowest-first ordering applied
-    /// by the caller passing layers in priority order.
     /// FTS recall, scoped to one namespace and a set of layers.
     ///
     /// `namespaces` is enforced **in SQL**, not by post-filtering. An
@@ -421,6 +649,11 @@ impl MemoryStore {
     /// would leak too, and would additionally cap `limit` before the
     /// filter ran, so a busy foreign namespace could crowd out the
     /// caller's own rows.
+    ///
+    /// Each layer is queried separately with a per-layer cap
+    /// (`MemoryConfig::max_recall_per_layer`, bounded by `limit`), so one
+    /// layer's matches can no longer crowd out narrower layers, and a
+    /// single huge layer cannot blow up the result set.
     pub fn search_scoped(
         &self,
         namespaces: &[&str],
@@ -431,114 +664,147 @@ impl MemoryStore {
         if query.trim().is_empty() {
             return Ok(Vec::new());
         }
+        if namespaces.is_empty() {
+            return Ok(Vec::new());
+        }
+        let fts_query = fts_query_for(query);
+        if fts_query.is_empty() {
+            return Ok(Vec::new());
+        }
         let conn = self
             .conn
             .lock()
             .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
-        // `["*"]` is the explicit unrestricted form, reserved for operator
-        // tooling (`pantheon memory recall '*' ...`). An *empty* list stays
-        // a hard refusal: a caller that has not established who it reads as
-        // must get nothing rather than everything.
-        let unrestricted = namespaces == ["*"];
-        if namespaces.is_empty() {
-            return Ok(Vec::new());
-        }
-        // Explicit `?N` indices throughout. Mixing numbered placeholders
-        // with bare `?` makes SQLite auto-number the bare ones from 1 and
-        // collide with the ones already used, so the bind count stops
-        // matching the parameter count.
-        let mut next_index = 2; // ?1 is the FTS match term
-        let ns_clause = if unrestricted {
-            String::new()
+        let per_layer = limit
+            .min(
+                self.config
+                    .lock()
+                    .map_err(|e| serr("MEM_LOCK", e.to_string()))?
+                    .max_recall_per_layer,
+            )
+            .max(1);
+        // An empty layer list means "all layers" (the old contract); a
+        // non-empty list is already narrowest-first priority order.
+        let effective_layers: Vec<LayerKind> = if layers.is_empty() {
+            vec![
+                LayerKind::Global,
+                LayerKind::Agent,
+                LayerKind::Project,
+                LayerKind::TaskSession,
+            ]
         } else {
-            let idx: Vec<String> = (0..namespaces.len())
-                .map(|i| format!("?{}", next_index + i))
-                .collect();
-            next_index += namespaces.len();
-            format!(" AND m.namespace IN ({})", idx.join(","))
+            layers.to_vec()
         };
-        let layer_clause = if layers.is_empty() {
-            String::new()
-        } else {
-            let idx: Vec<String> = (0..layers.len())
-                .map(|i| format!("?{}", next_index + i))
-                .collect();
-            next_index += layers.len();
-            format!(" AND m.layer IN ({})", idx.join(","))
-        };
-        let sql = format!(
-            "SELECT m.layer, m.namespace, m.key, m.value, m.source, m.origin,
-                m.trust, m.recorded_at_ms, bm25(memories_fts) AS rank
-         FROM memories_fts f
-         JOIN memories m ON m.id = f.rowid
-         WHERE memories_fts MATCH ?1
-           {ns_clause}{layer_clause}
-         ORDER BY rank LIMIT ?{next_index}"
-        );
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| serr("MEM_SEARCH", e.to_string()))?;
-        let layer_names: Vec<&str> = layers.iter().copied().map(layer_str).collect();
-        let fts_query = query
-            .split_whitespace()
-            .map(|token| {
-                token
-                    .chars()
-                    .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                    .collect::<String>()
-            })
-            .filter(|token| !token.is_empty())
-            .map(|token| format!("\"{token}\""))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        if fts_query.is_empty() {
-            return Ok(Vec::new());
-        }
-        // Bind in *index* order, which is not clause order: the match term
-        // is ?1 even though its clause comes after the IN lists.
-        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        binds.push(Box::new(fts_query.clone()));
-        if !unrestricted {
-            for n in namespaces {
-                binds.push(Box::new(*n));
-            }
-        }
-        for l in &layer_names {
-            binds.push(Box::new(*l));
-        }
-        binds.push(Box::new(limit as i64));
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
-                Ok(Recalled {
-                    record: MemoryRecord {
-                        layer: layer_from(&r.get::<_, String>(0)?),
-                        namespace: r.get(1)?,
-                        key: r.get(2)?,
-                        value: r.get(3)?,
-                        provenance: Provenance {
-                            source: r.get(4)?,
-                            origin: r.get(5)?,
-                            trust: trust_from(&r.get::<_, String>(6)?),
-                            recorded_at_ms: r.get(7)?,
-                        },
-                    },
-                    rank: r.get(8)?,
-                })
-            })
-            .map_err(|e| serr("MEM_SEARCH", e.to_string()))?;
         let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(|e| serr("MEM_SEARCH", e.to_string()))?);
+        for layer in &effective_layers {
+            let mut hits = search_one_layer(&conn, namespaces, &fts_query, *layer, per_layer)?;
+            out.append(&mut hits);
         }
         // Narrowest layers first: stable sort by layer priority.
         out.sort_by_key(|r| {
-            layers
+            effective_layers
                 .iter()
                 .position(|l| *l == r.record.layer)
                 .unwrap_or(usize::MAX)
         });
+        out.truncate(limit);
         Ok(out)
     }
+}
+
+/// Quote each token for FTS5, stripping query-syntax characters so the
+/// query text cannot inject FTS operators.
+fn fts_query_for(query: &str) -> String {
+    query
+        .split_whitespace()
+        .map(|token| {
+            token
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect::<String>()
+        })
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("\"{token}\""))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
+/// One layer's share of `search_scoped`. `["*"]` is the explicit
+/// unrestricted form, reserved for operator tooling
+/// (`pantheon memory recall '*' ...`). An *empty* namespace list stays a
+/// hard refusal: a caller that has not established who it reads as must
+/// get nothing rather than everything.
+fn search_one_layer(
+    conn: &Connection,
+    namespaces: &[&str],
+    fts_query: &str,
+    layer: LayerKind,
+    limit: usize,
+) -> Result<Vec<Recalled>, PantheonError> {
+    // Explicit `?N` indices throughout. Mixing numbered placeholders
+    // with bare `?` makes SQLite auto-number the bare ones from 1 and
+    // collide with the ones already used, so the bind count stops
+    // matching the parameter count.
+    let mut next_index = 2; // ?1 is the FTS match term
+    let unrestricted = namespaces == ["*"];
+    let ns_clause = if unrestricted {
+        String::new()
+    } else {
+        let idx: Vec<String> = (0..namespaces.len())
+            .map(|i| format!("?{}", next_index + i))
+            .collect();
+        next_index += namespaces.len();
+        format!(" AND m.namespace IN ({})", idx.join(","))
+    };
+    let layer_idx = next_index;
+    next_index += 1;
+    let sql = format!(
+        "SELECT m.layer, m.namespace, m.key, m.value, m.source, m.origin,
+            m.trust, m.recorded_at_ms, bm25(memories_fts) AS rank
+     FROM memories_fts f
+     JOIN memories m ON m.id = f.rowid
+     WHERE memories_fts MATCH ?1
+       {ns_clause} AND m.layer = ?{layer_idx}
+     ORDER BY rank LIMIT ?{next_index}"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| serr("MEM_SEARCH", e.to_string()))?;
+    // Bind in *index* order, which is not clause order: the match term
+    // is ?1 even though its clause comes after the IN lists.
+    let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    binds.push(Box::new(fts_query.to_string()));
+    if !unrestricted {
+        for n in namespaces {
+            binds.push(Box::new(*n));
+        }
+    }
+    binds.push(Box::new(layer_str(layer)));
+    binds.push(Box::new(limit as i64));
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
+            Ok(Recalled {
+                record: MemoryRecord {
+                    layer: layer_from(&r.get::<_, String>(0)?),
+                    namespace: r.get(1)?,
+                    key: r.get(2)?,
+                    value: r.get(3)?,
+                    provenance: Provenance {
+                        source: r.get(4)?,
+                        origin: r.get(5)?,
+                        trust: trust_from(&r.get::<_, String>(6)?),
+                        recorded_at_ms: r.get(7)?,
+                    },
+                },
+                rank: r.get(8)?,
+            })
+        })
+        .map_err(|e| serr("MEM_SEARCH", e.to_string()))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| serr("MEM_SEARCH", e.to_string()))?);
+    }
+    Ok(out)
 }
 
 /// Whether the memory FTS5 sidecar can answer a query.
