@@ -560,14 +560,15 @@ pub fn run_sandboxed(
     }
 
     if timed_out {
+        // The args may carry secrets (API keys, tokens), so they never go
+        // into the error text verbatim. Same treatment as the
+        // dangerous-pattern gate in pantheon-exec/src/danger.rs: a short
+        // stable digest plus the length — enough to correlate the timeout
+        // with the request that caused it, without leaking the command.
+        let digest = cmd_digest(&args.join(" "));
         return Err(berr(
             "SANDBOX_TIMEOUT",
-            format!(
-                "command exceeded {}s: {} {}",
-                timeout_ms / 1000,
-                program,
-                args.join(" ")
-            ),
+            format!("command exceeded {}s: {} ({digest})", timeout_ms / 1000, program),
             true,
         ));
     }
@@ -592,6 +593,25 @@ fn berr(code: &str, cause: String, recoverable: bool) -> PantheonError {
         "check sandbox profile and system dependencies (bwrap/unshare)",
         "",
     )
+}
+
+/// Stable, non-secret identifier for a command's argument string:
+/// `cmd:0123abcd len:42` (first 8 hex of an FNV-1a 64 hash, upper bits,
+/// plus the char length). Deterministic across runs so repeated timeouts
+/// of the same command correlate, but irreversible, so an error carrying
+/// it cannot leak the arguments — which may themselves contain secrets.
+///
+/// Mirrors `cmd_digest` in pantheon-exec/src/danger.rs; keep the two in
+/// sync so a digest from either crate identifies the same command.
+/// FNV-1a rather than a crypto hash because this is an identifier, not
+/// authentication; it needs to be std-only and fast on the hot path.
+fn cmd_digest(args: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_4842_2235;
+    for b in args.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("cmd:{:08x} len:{}", (h >> 32) as u32, args.len())
 }
 
 #[cfg(test)]
