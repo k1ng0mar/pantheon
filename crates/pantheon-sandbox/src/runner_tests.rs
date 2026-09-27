@@ -334,3 +334,48 @@ fn output_over_cap_is_truncated_with_marker() {
         r.output.len()
     );
 }
+
+#[test]
+fn timeout_error_redacts_secret_bearing_args() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let profile = SandboxProfile {
+        level: crate::SandboxLevel::Low,
+        boundary: crate::ExecutionBoundary::InProcess,
+        drop_capabilities: false,
+        no_new_privs: false,
+        network: false,
+        max_memory_mb: None,
+        max_pids: None,
+        wall_clock_ms: 100, // 100ms timeout
+        allow_direct_fallback: false,
+    };
+    // The canary rides in the args: a timeout error that echoes them
+    // verbatim leaks secrets into the ledger and the model transcript.
+    let result = run_sandboxed(
+        &profile,
+        "sh",
+        &["-c", "sleep 5 # CANARY_do_not_leak_9f8e7d"],
+        "/tmp",
+    );
+    let Err(e) = result else {
+        panic!("expected a SANDBOX_TIMEOUT, the command finished instead");
+    };
+    assert_eq!(e.code, "SANDBOX_TIMEOUT");
+    assert!(
+        !e.cause.contains("CANARY_do_not_leak_9f8e7d"),
+        "timeout error leaked raw arg text: {}",
+        e.cause
+    );
+    assert!(
+        !e.cause.contains("sleep 5"),
+        "timeout error leaked raw arg text: {}",
+        e.cause
+    );
+    // ...but it still carries the digest+length treatment, so the timeout
+    // can be correlated with the request that caused it.
+    assert!(
+        e.cause.contains("cmd:") && e.cause.contains("len:"),
+        "timeout error lost its digest: {}",
+        e.cause
+    );
+}

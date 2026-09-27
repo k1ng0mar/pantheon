@@ -439,6 +439,52 @@ fn policy_for_preset(preset: &str) -> Result<Policy, PantheonError> {
     }
 }
 
+/// Build the child session for one delegation request.
+///
+/// `parent_depth` is the depth of the delegating loop — the engine passes
+/// `AgentLoop::depth` as `AgentSpawner::spawn`'s `depth` argument, and the
+/// child loop runs one level deeper. This is what the engine's
+/// `Budget::max_delegate_depth` cap binds against: a child rebuilt at
+/// depth 0 would never hit the cap, so delegation could recurse without
+/// bound. The turn bound stays the default `Budget` (16 turns / 32 calls)
+/// at every level — depth limits nesting, never the work a level may do.
+fn build_delegate_session(
+    agent: &AgentRuntime,
+    model_policy: &ModelPolicy,
+    data_dir: &PathBuf,
+    parent_depth: u32,
+    profile: &str,
+) -> Result<Session, PantheonError> {
+    let child = agent.for_profile(profile)?;
+    // The child runs under its OWN profile's policy preset,
+    // never the parent's: a reader child of a coder parent
+    // must not inherit coder privileges. `for_profile`
+    // resolves the effective preset (inheritance included),
+    // and the preset names are validated at declaration, so
+    // an unknown name here fails closed.
+    let child_policy = policy_for_preset(child.policy_preset())?;
+    let child_run_id = crate::new_run_id();
+    child.bind_run(&child_run_id)?;
+    // The child rebuilds its own secrets broker from the
+    // system environment. This is correct: each session
+    // resolves secrets independently from the platform
+    // stores, and the child should not inherit a snapshot
+    // of the parent's resolution state.
+    let child_secrets = SecretsBroker::from_system_env();
+    let mut child_session = Session::new(
+        data_dir.clone(),
+        child_policy,
+        model_policy.clone(),
+        child_secrets,
+    )?;
+    child_session.with_agent(child)?;
+    // Depth threading: the engine's depth cap sees the child's loop
+    // depth, so the child must run at parent_depth + 1, not 0.
+    child_session.depth = parent_depth + 1;
+    child_session.set_current_run(&child_run_id);
+    Ok(child_session)
+}
+
 /// Everything one agent run needs.
 pub struct Session {
     pub supervisor: Supervisor,
@@ -456,6 +502,15 @@ pub struct Session {
     /// execution boundary and never lives in memory as a plain String.
     pub secrets: SecretsBroker,
     pub budget: Budget,
+    /// Delegation depth of this session's agent loop (0 = primary agent).
+    ///
+    /// Threaded through delegation: when this session's loop delegates,
+    /// the spawner builds the child session with `depth + 1`, which is
+    /// what the engine's `Budget::max_delegate_depth` cap binds against.
+    /// A child that re-zeroed this would never hit the cap and could
+    /// recurse without bound. Read when the loop is built in `chat_turn`;
+    /// `Session::new` leaves it at 0.
+    pub depth: u32,
     pub system_prompt: String,
     /// Native SQLite + FTS5 memory store. Optional so a session can run
     /// without it; when present, recall runs before each model turn and
@@ -545,6 +600,7 @@ impl Session {
             model_policy: Mutex::new(model_policy),
             secrets,
             budget: Budget::default(),
+            depth: 0,
             system_prompt: String::new(),
             memory,
             memory_namespace: "nyx".into(),
@@ -1355,33 +1411,19 @@ impl Session {
                     agent: &str,
                     _model: &str,
                     task: &str,
-                    _depth: u32,
+                    depth: u32,
                 ) -> Result<String, PantheonError> {
-                    let child = self.agent.for_profile(agent)?;
-                    // The child runs under its OWN profile's policy preset,
-                    // never the parent's: a reader child of a coder parent
-                    // must not inherit coder privileges. `for_profile`
-                    // resolves the effective preset (inheritance included),
-                    // and the preset names are validated at declaration, so
-                    // an unknown name here fails closed.
-                    let child_policy = policy_for_preset(child.policy_preset())?;
-                    let child_run_id = crate::new_run_id();
-                    child.bind_run(&child_run_id)?;
-                    // The child rebuilds its own secrets broker from the
-                    // system environment. This is correct: each session
-                    // resolves secrets independently from the platform
-                    // stores, and the child should not inherit a snapshot
-                    // of the parent's resolution state.
-                    let child_secrets = SecretsBroker::from_system_env();
-                    let child_session = Session::new(
-                        self.data_dir.clone(),
-                        child_policy,
-                        self.model_policy.clone(),
-                        child_secrets,
+                    // `depth` is the PARENT loop's depth (the engine passes
+                    // `AgentLoop::depth`); the child runs one level deeper.
+                    let child_session = build_delegate_session(
+                        &self.agent,
+                        &self.model_policy,
+                        &self.data_dir,
+                        depth,
+                        agent,
                     )?;
-                    child_session.with_agent(child)?;
-                    child_session.set_current_run(&child_run_id);
-                    let outcome = child_session.chat(&child_run_id, task)?;
+                    let outcome =
+                        child_session.chat(&child_session.current_run_id(), task)?;
                     match outcome {
                         pantheon_agent::LoopOutcome::Answered { text, .. } => Ok(text),
                         pantheon_agent::LoopOutcome::Denied { capability } => {
@@ -1452,7 +1494,11 @@ impl Session {
             spawner: spawner.as_deref(),
             judge: None,
             cancel: Some(&self.cancel),
-            depth: 0,
+            // The session's own delegation depth: 0 for a primary
+            // session, parent_depth + 1 for a spawned child (set by the
+            // spawner). This is what `Budget::max_delegate_depth` binds
+            // against; hardcoding 0 here would make the cap unreachable.
+            depth: self.depth,
         };
 
         // Crashed-mid-tool: rebuild pending calls from the ledger. The

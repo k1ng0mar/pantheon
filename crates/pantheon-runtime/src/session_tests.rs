@@ -1188,3 +1188,73 @@ fn batch_with_two_approval_calls_parks_and_settles_both() {
         .collect();
     assert_eq!(completed.len(), 2, "both calls settled: {completed:?}");
 }
+
+// ---------------------------------------------------------- delegation depth
+//
+// The engine enforces `Budget::max_delegate_depth` against the loop's
+// depth and passes the PARENT loop's depth to `AgentSpawner::spawn`.
+// The spawner must build the child session at parent_depth + 1: a child
+// rebuilt at depth 0 would never trip the cap, so delegation could
+// recurse without bound.
+
+fn delegate_test_runtime(dir: &std::path::Path) -> AgentRuntime {
+    use pantheon_agent::agent_profile::{AgentProfile, ProfileRegistry};
+    let mut reg = ProfileRegistry::new();
+    for name in ["parent", "child"] {
+        reg.insert(
+            name,
+            AgentProfile {
+                policy: Some("coder".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let eff = reg.resolve("parent", "coder").unwrap();
+    AgentRuntime::new(
+        Supervisor::open(dir.to_path_buf()).unwrap(),
+        reg,
+        eff,
+        dir.to_path_buf(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn new_session_starts_at_depth_zero() {
+    // The top-level loop must report depth 0: `chat_turn` builds the
+    // loop from `self.depth`, and a fresh session has no parent.
+    let s = drive_test_session("depth-zero");
+    assert_eq!(s.depth, 0);
+    let _ = std::fs::remove_dir_all(s.supervisor.data_dir());
+}
+
+#[test]
+fn delegate_child_session_runs_one_level_deeper() {
+    let dir = std::env::temp_dir().join(format!(
+        "pantheon-rt-delegate-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let agent = delegate_test_runtime(&dir);
+    let model_policy = drive_test_policy();
+    // `spawn` receives the PARENT loop's depth from the engine and hands
+    // it to `build_delegate_session`; the child's loop must then report
+    // parent_depth + 1, which is what the depth cap binds against.
+    for (parent_depth, expected) in [(0u32, 1u32), (1, 2), (2, 3)] {
+        let child =
+            build_delegate_session(&agent, &model_policy, &dir, parent_depth, "child").unwrap();
+        assert_eq!(
+            child.depth, expected,
+            "child of a depth-{parent_depth} loop must run at depth {expected}"
+        );
+        // Depth limits nesting, never the work a level may do: the turn
+        // bound stays the default budget at every depth.
+        assert_eq!(child.budget.max_turns, 16);
+        assert_eq!(child.budget.max_tool_calls, 32);
+        assert_eq!(child.budget.max_delegate_depth, 2);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
