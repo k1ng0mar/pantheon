@@ -11,7 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::Duration;
+
 
 /// A lease as observed by a worker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,8 +91,7 @@ impl RunLeaseStore {
     }
 
     fn from_connection(conn: Connection) -> Result<Self, PantheonError> {
-        conn.busy_timeout(Duration::from_secs(5))
-            .map_err(|e| err("LEASE_BUSY_TIMEOUT", e.to_string()))?;
+        crate::configure_durability(&conn, "LEASE")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS run_leases (
                run_id TEXT PRIMARY KEY,

@@ -119,3 +119,22 @@ fn cosine_and_blob_round_trip() {
     // A genuinely orthogonal vector: 0.1*0.2 + 0.2*(-0.1) + 0.3*0 == 0.
     assert!(cosine(&v, &[0.2, -0.1, 0.0]).abs() < 1e-5);
 }
+
+#[test]
+fn prune_before_drops_stale_chunks_and_their_fts_rows() {
+    let s = SessionSearch::open_in_memory().unwrap();
+    let mut old = chunk("c-old", "ancient wisdom about flurbleolds");
+    old.ts_ms = 1;
+    let mut new = chunk("c-new", "recent wisdom about flurblenews");
+    new.ts_ms = 9_999_999_999_999;
+    s.index(&old).unwrap();
+    s.index(&new).unwrap();
+    assert_eq!(s.prune_before(1_000).unwrap(), 1);
+    // The stale chunk's FTS row is gone too, not just the chunk table row.
+    assert!(s.search("flurbleolds", 10).unwrap().is_empty());
+    let hits = s.search("flurblenews", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].chunk.chunk_id, "c-new");
+    // Pruning again with a past cutoff is a no-op.
+    assert_eq!(s.prune_before(0).unwrap(), 0);
+}

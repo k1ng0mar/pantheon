@@ -38,7 +38,6 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::Duration;
 
 /// Schema for the collaboration projection. Forward-only: added to the
 /// ledger database alongside the event tables and the operation tables.
@@ -507,8 +506,7 @@ impl CollaborationStore {
             }
         }
         let conn = Connection::open(path).map_err(|e| cerr("COLLABORATION_OPEN", e.to_string()))?;
-        conn.busy_timeout(Duration::from_secs(5))
-            .map_err(|e| cerr("COLLABORATION_BUSY_TIMEOUT", e.to_string()))?;
+        crate::configure_durability(&conn, "COLLABORATION")?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| cerr("COLLABORATION_SCHEMA", e.to_string()))?;
         Ok(Self {

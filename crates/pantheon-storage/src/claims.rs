@@ -6,17 +6,24 @@
 //! replaying the same occurrence gets `false` and does not start a second
 //! run.
 //!
-//! Additive by design: this table and API sit next to the event ledger and
-//! change nothing about run/event handling.
+//! Claim unification: this store and [`Ledger::claim`] share ONE table — the
+//! ledger's `claims` table — when opened on the same database file. A key
+//! claimed through either API is visible to the other, so exactly-once
+//! semantics no longer depend on which call site claimed first. Older
+//! `ClaimStore` databases used a separate `occurrence_claims` table; its rows
+//! are migrated into `claims` on open and the legacy table is dropped.
 
 use pantheon_api::error::{Layer, PantheonError};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS occurrence_claims (
+/// The canonical idempotency-claims table. Column names match the ledger's
+/// `claims` table exactly so a `ClaimStore` and a `Ledger` opened on the same
+/// file read and write the same rows.
+const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS claims (
   key TEXT PRIMARY KEY,
-  claimed_ms INTEGER NOT NULL
+  ts_ms INTEGER NOT NULL
 );";
 
 /// SQLite-persisted occurrence claims.
@@ -47,6 +54,33 @@ fn err(code: &str, cause: String) -> PantheonError {
     )
 }
 
+/// One-time migration for databases created before claim unification, when
+/// `ClaimStore` kept its own `occurrence_claims` table. Rows move into the
+/// shared `claims` table (INSERT OR IGNORE keeps pre-existing canonical rows)
+/// and the legacy table is dropped. Databases without the legacy table take
+/// the early exit.
+fn migrate_occurrence_claims(conn: &Connection) -> Result<(), PantheonError> {
+    let legacy: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'occurrence_claims'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| err("CLAIM_MIGRATE", e.to_string()))?;
+    if legacy.is_none() {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO claims (key, ts_ms) SELECT key, claimed_ms FROM occurrence_claims",
+        [],
+    )
+    .map_err(|e| err("CLAIM_MIGRATE", e.to_string()))?;
+    conn.execute("DROP TABLE occurrence_claims", [])
+        .map_err(|e| err("CLAIM_MIGRATE", e.to_string()))?;
+    Ok(())
+}
+
 impl ClaimStore {
     pub fn open(path: &Path) -> Result<Self, PantheonError> {
         if let Some(parent) = path.parent() {
@@ -55,8 +89,10 @@ impl ClaimStore {
             }
         }
         let conn = Connection::open(path).map_err(|e| err("CLAIM_OPEN", e.to_string()))?;
+        crate::configure_durability(&conn, "CLAIM")?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| err("CLAIM_SCHEMA", e.to_string()))?;
+        migrate_occurrence_claims(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -64,8 +100,10 @@ impl ClaimStore {
 
     pub fn open_in_memory() -> Result<Self, PantheonError> {
         let conn = Connection::open_in_memory().map_err(|e| err("CLAIM_OPEN", e.to_string()))?;
+        crate::configure_durability(&conn, "CLAIM")?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| err("CLAIM_SCHEMA", e.to_string()))?;
+        migrate_occurrence_claims(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -74,6 +112,10 @@ impl ClaimStore {
     /// Claim an occurrence. `true` means this call won the claim and the run
     /// should start; `false` means the key was already claimed (a replay)
     /// and no second run may start.
+    ///
+    /// Shares the ledger's `claims` table: a key claimed here is also claimed
+    /// as far as `Ledger::claim` is concerned, and vice versa, whenever
+    /// both stores are opened on the same database file.
     pub fn claim(&self, key: &str) -> Result<bool, PantheonError> {
         let conn = self
             .conn
@@ -81,7 +123,7 @@ impl ClaimStore {
             .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
         let inserted = conn
             .execute(
-                "INSERT OR IGNORE INTO occurrence_claims (key, claimed_ms) VALUES (?1, ?2)",
+                "INSERT OR IGNORE INTO claims (key, ts_ms) VALUES (?1, ?2)",
                 params![key, now_ms()],
             )
             .map_err(|e| err("CLAIM_INSERT", e.to_string()))?;
@@ -96,7 +138,7 @@ impl ClaimStore {
             .lock()
             .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
         let removed = conn
-            .execute("DELETE FROM occurrence_claims WHERE key = ?1", params![key])
+            .execute("DELETE FROM claims WHERE key = ?1", params![key])
             .map_err(|e| err("CLAIM_DELETE", e.to_string()))?;
         Ok(removed == 1)
     }
@@ -107,7 +149,7 @@ impl ClaimStore {
             .lock()
             .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
         conn.query_row(
-            "SELECT 1 FROM occurrence_claims WHERE key = ?1",
+            "SELECT 1 FROM claims WHERE key = ?1",
             params![key],
             |_| Ok(()),
         )
@@ -121,7 +163,7 @@ impl ClaimStore {
             .conn
             .lock()
             .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
-        conn.query_row("SELECT COUNT(*) FROM occurrence_claims", [], |r| r.get(0))
+        conn.query_row("SELECT COUNT(*) FROM claims", [], |r| r.get(0))
             .map_err(|e| err("CLAIM_QUERY", e.to_string()))
     }
 
@@ -145,7 +187,7 @@ impl ClaimStore {
             .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
         let pruned = conn
             .execute(
-                "DELETE FROM occurrence_claims WHERE claimed_ms < ?1",
+                "DELETE FROM claims WHERE ts_ms < ?1",
                 params![cutoff_ms],
             )
             .map_err(|e| err("CLAIM_DELETE", e.to_string()))?;
@@ -160,7 +202,7 @@ impl ClaimStore {
             .lock()
             .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
         let mut stmt = conn
-            .prepare("SELECT key FROM occurrence_claims ORDER BY key")
+            .prepare("SELECT key FROM claims ORDER BY key")
             .map_err(|e| err("CLAIM_QUERY", e.to_string()))?;
         let rows = stmt
             .query_map([], |r| r.get::<_, String>(0))

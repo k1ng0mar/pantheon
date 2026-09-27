@@ -1,5 +1,6 @@
 //! Tests for `pantheon_storage::ledger::tests` — sibling file so sources stay test-free.
 use super::*;
+use tempfile::tempdir;
 #[test]
 fn artifacts_are_stored_in_the_ledger_database() {
     let ledger = Ledger::open_in_memory().unwrap();
@@ -420,4 +421,123 @@ fn run_metrics_render_names_failures_and_context_loss() {
     assert!(s.contains("1 failed"), "{s}");
     assert!(s.contains("4 context trims"), "{s}");
     assert!(s.contains("2 compressed"), "{s}");
+}
+
+#[test]
+fn durability_pragmas_set_busy_timeout_and_synchronous() {
+    let conn = Connection::open_in_memory().unwrap();
+    crate::configure_durability(&conn, "TEST").unwrap();
+    let timeout: i64 = conn
+        .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(timeout, 5_000, "second process must wait, not hit SQLITE_BUSY");
+    let sync: i64 = conn
+        .query_row("PRAGMA synchronous", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(sync, 1, "1 = NORMAL");
+}
+
+#[test]
+fn ledger_open_enables_wal_journal_mode() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ledger.sqlite");
+    let ledger = Ledger::open(&path).unwrap();
+    drop(ledger);
+    let conn = Connection::open(&path).unwrap();
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+}
+
+#[test]
+fn lease_is_live_propagates_storage_errors_instead_of_failing_open() {
+    // No run_leases table at all: the old `.ok()` swallow reported Ok(false)
+    // ("lease dead"), which let settle_stuck_run repair a possibly-live run.
+    let conn = Connection::open_in_memory().unwrap();
+    let err = lease_is_live(&conn, "run_x").unwrap_err();
+    assert_eq!(err.code, "LEDGER_LEASE_CHECK");
+}
+
+#[test]
+fn lease_is_live_reports_false_when_no_lease_row_exists() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE run_leases (
+           run_id TEXT PRIMARY KEY,
+           lease_id TEXT NOT NULL,
+           lease_until_ms INTEGER NOT NULL,
+           heartbeat_ms INTEGER NOT NULL
+         );",
+    )
+    .unwrap();
+    assert!(!lease_is_live(&conn, "run_x").unwrap());
+}
+
+#[test]
+fn prune_events_before_drops_old_and_keeps_new() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ledger.sqlite");
+    let ledger = Ledger::open(&path).unwrap();
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "r_old".into(),
+        })
+        .unwrap();
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "r_new".into(),
+        })
+        .unwrap();
+    // Age the first run's event through a second connection; the ledger API
+    // itself always stamps `now`, so a mixed-age history needs this.
+    {
+        let raw = Connection::open(&path).unwrap();
+        raw.execute("UPDATE events SET ts_ms = 1 WHERE run_id = 'r_old'", [])
+            .unwrap();
+    }
+    let pruned = ledger.prune_events_before(1_000).unwrap();
+    assert_eq!(pruned, 1);
+    assert!(
+        ledger.replay("r_old").unwrap().is_empty(),
+        "old event must be gone"
+    );
+    assert_eq!(
+        ledger.replay("r_new").unwrap().len(),
+        1,
+        "new event must survive"
+    );
+    // A cutoff in the past prunes nothing.
+    assert_eq!(ledger.prune_events_before(0).unwrap(), 0);
+}
+
+#[test]
+fn append_returns_the_stored_global_seq_not_the_rowid() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ledger.sqlite");
+    let ledger = Ledger::open(&path).unwrap();
+    let a = ledger
+        .append(&Event::RunStarted {
+            run_id: "r".into(),
+        })
+        .unwrap();
+    let b = ledger
+        .append(&Event::RunStarted {
+            run_id: "r".into(),
+        })
+        .unwrap();
+    assert_eq!((a.seq, b.seq), (1, 2));
+    // Delete the NEWEST row: stored seq becomes MAX(seq)+1 = 2 while the
+    // AUTOINCREMENT rowid moves on to 4. Returning `seq: id` would report 4.
+    {
+        let raw = Connection::open(&path).unwrap();
+        raw.execute("DELETE FROM events WHERE seq = 2", []).unwrap();
+    }
+    let c = ledger
+        .append(&Event::RunStarted {
+            run_id: "r".into(),
+        })
+        .unwrap();
+    assert_eq!(c.id, 3, "rowid keeps climbing");
+    assert_eq!(c.seq, 2, "stored seq is MAX(seq)+1 over remaining rows");
 }

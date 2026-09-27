@@ -6,7 +6,6 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::Duration;
 
 /// Per-run counters, folded from the ledger's event log.
 ///
@@ -242,8 +241,7 @@ impl Ledger {
             }
         }
         let conn = Connection::open(path).map_err(|e| err("LEDGER_OPEN", e.to_string()))?;
-        conn.busy_timeout(Duration::from_secs(5))
-            .map_err(|e| err("LEDGER_BUSY_TIMEOUT", e.to_string()))?;
+        crate::configure_durability(&conn, "LEDGER")?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| err("LEDGER_SCHEMA", e.to_string()))?;
         migrate(&conn)?;
@@ -253,8 +251,7 @@ impl Ledger {
     }
     pub fn open_in_memory() -> Result<Self, PantheonError> {
         let conn = Connection::open_in_memory().map_err(|e| err("LEDGER_OPEN", e.to_string()))?;
-        conn.busy_timeout(Duration::from_secs(5))
-            .map_err(|e| err("LEDGER_BUSY_TIMEOUT", e.to_string()))?;
+        crate::configure_durability(&conn, "LEDGER")?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| err("LEDGER_SCHEMA", e.to_string()))?;
         migrate(&conn)?;
@@ -378,12 +375,20 @@ impl Ledger {
         )
         .map_err(|e| err("LEDGER_APPEND", e.to_string()))?;
         let id: i64 = conn.last_insert_rowid();
+        // The rowid and the global `seq` coincide only while no event row is
+        // ever deleted; the stored seq is the authority, so read it back
+        // rather than assuming they match.
+        let seq: i64 = conn
+            .query_row("SELECT seq FROM events WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .map_err(|e| err("LEDGER_APPEND", e.to_string()))?;
         conn.commit()
             .map_err(|e| err("LEDGER_APPEND", e.to_string()))?;
         Ok(LedgerEntry {
             id,
             run_id,
-            seq: id,
+            seq,
             ts_ms: ts,
             event: event.clone(),
         })
@@ -427,6 +432,10 @@ impl Ledger {
 
     /// Idempotency claim for the scheduler (spec section 21): occurrence key,
     /// replay-safe. Returns true if this claimer was the first.
+    ///
+    /// Shares the `claims` table with `ClaimStore`: a key claimed here is
+    /// also claimed as far as `ClaimStore::claim` is concerned, and vice
+    /// versa, whenever both stores are opened on the same database file.
     pub fn claim(&self, key: &str) -> Result<bool, PantheonError> {
         let conn = self
             .conn
@@ -703,6 +712,33 @@ impl Ledger {
         conn.query_row("SELECT COALESCE(MAX(seq),0) FROM events", [], |r| r.get(0))
             .map_err(|e| err("LEDGER_STATUS", e.to_string()))
     }
+
+    /// Delete events with `ts_ms` older than `cutoff_ts_ms` (retention policy).
+    ///
+    /// The events table is append-only and otherwise grows forever; this is
+    /// the explicit retention hook a maintenance cadence (e.g. the scheduler
+    /// worker) calls. Nothing automatic runs on open — see
+    /// [`configure_durability`]'s checkpoint note. Returns the number of
+    /// event rows pruned.
+    ///
+    /// Derived `runs` rows are left alone: a pruned run keeps its status
+    /// row but loses its event history, which is exactly what "keep titles
+    /// and outcomes, drop transcripts" retention means. Pair with
+    /// `SessionSearch::prune_before` so the FTS sidecar does not retain text
+    /// for history the ledger has already pruned.
+    pub fn prune_events_before(&self, cutoff_ts_ms: i64) -> Result<usize, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let pruned = conn
+            .execute(
+                "DELETE FROM events WHERE ts_ms < ?1",
+                params![cutoff_ts_ms],
+            )
+            .map_err(|e| err("LEDGER_PRUNE", e.to_string()))?;
+        Ok(pruned)
+    }
     /// A run whose persisted status says it is still live.
     ///
     /// `running` and `awaiting_approval` are the two non-terminal states, and
@@ -973,13 +1009,17 @@ mod tests;
 /// deadlock on the same non-re-entrant `Mutex`.
 fn lease_is_live(conn: &rusqlite::Connection, run_id: &str) -> Result<bool, PantheonError> {
     let now = now_ms();
+    // Fail CLOSED on storage errors: a missing row is `Ok(false)` (no live
+    // lease), but a genuine DB error must propagate — treating it as
+    // "lease dead" would let `settle_stuck_run` repair a possibly-live run.
     let row: Option<(i64, i64)> = conn
         .query_row(
             "SELECT lease_until_ms, heartbeat_ms FROM run_leases WHERE run_id = ?1",
             params![run_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .ok();
+        .optional()
+        .map_err(|e| err("LEDGER_LEASE_CHECK", e.to_string()))?;
     let Some((until, beat)) = row else {
         return Ok(false);
     };
