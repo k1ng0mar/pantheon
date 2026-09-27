@@ -1,5 +1,6 @@
 //! Tests for `crate::config::tests` — sibling file so sources stay test-free.
 use super::*;
+use crate::dotenv::test_support::TEST_ENV_LOCK;
 
 #[test]
 fn round_trips_through_toml() {
@@ -256,6 +257,9 @@ fn auxiliaries_combine_judge_and_compression() {
 
 #[test]
 fn unconfigured_aux_default_to_auto_on_the_default_model() {
+    // Serialized with the other PANTHEON_TITLEGEN_* env-touching test:
+    // parallel tests racing on process-global env is a flake.
+    let _env = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Aux models default to `auto`: nothing configured still resolves
     // to a target (the run's default model), never "off".
     let bare: Config = toml::from_str("[model]\nprovider = \"p\"\nmodel = \"m\"\n").unwrap();
@@ -289,6 +293,9 @@ fn unconfigured_aux_default_to_auto_on_the_default_model() {
 
 #[test]
 fn title_gen_section_parses_from_toml_and_reaches_auxiliaries() {
+    // Same lock as the env-pinning test above: auxiliaries() reads
+    // PANTHEON_TITLEGEN_MODEL from the process environment.
+    let _env = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let cfg: Config = toml::from_str(
         "[model]\nprovider = \"local\"\nmodel = \"llama3.2\"\n\
              [title_gen]\nprovider = \"local\"\nmodel = \"namer\"\n",

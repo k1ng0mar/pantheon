@@ -148,6 +148,10 @@ pub enum SeedOutcome {
 /// Seed all bundled skills into `data_dir/skills` and return one outcome
 /// per skill, in `bundled_skills()` order. Called from session construction
 /// before discovery runs.
+#[cfg(test)]
+#[path = "bundled_skills_tests.rs"]
+mod tests;
+
 pub fn seed_bundled_skills(data_dir: &Path) -> Vec<(String, SeedOutcome)> {
     let skills_dir = data_dir.join("skills");
     bundled_skills()
@@ -167,6 +171,3 @@ pub fn seed_bundled_skills(data_dir: &Path) -> Vec<(String, SeedOutcome)> {
         .collect()
 }
 
-#[cfg(test)]
-#[path = "bundled_skills_tests.rs"]
-mod tests;

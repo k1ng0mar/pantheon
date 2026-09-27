@@ -248,7 +248,3 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, SecretsError> {
         })
         .collect()
 }
-
-#[cfg(test)]
-#[path = "filevault_tests.rs"]
-mod tests;

@@ -538,7 +538,3 @@ fn tool_text(result: &Value) -> String {
         out
     }
 }
-
-#[cfg(test)]
-#[path = "client_tests.rs"]
-mod tests;

@@ -2,67 +2,6 @@
 use super::*;
 use tempfile::tempdir;
 
-#[test]
-fn test_vault_archive_read_search_list() {
-    let tmp = tempdir().unwrap();
-    let vault_path = tmp.path().to_path_buf();
-    let opts = VaultToolOptions {
-        vault_dir: vault_path.clone(),
-    };
-
-    let mut reg = ToolRegistry::new();
-    register_vault_tools(&mut reg, opts);
-
-    // 1. Archive a note
-    let res = reg.execute(
-            "vault_archive",
-            r#"{"category": "notes", "title": "my-research", "content": "Autonomous agents need durable memory.", "tags": ["agent", "runtime"]}"#,
-        ).unwrap();
-    assert!(res.contains("my-research.md"));
-
-    // 2. Read the note back
-    let read_res = reg
-        .execute("vault_read", r#"{"path": "notes/my-research.md"}"#)
-        .unwrap();
-    assert!(read_res.contains("Autonomous agents need durable memory."));
-    assert!(read_res.contains("tags:"));
-
-    // 3. Search the vault
-    let search_res = reg
-        .execute("vault_search", r#"{"query": "durable memory"}"#)
-        .unwrap();
-    assert!(search_res.contains("notes/my-research.md"));
-
-    // 4. List files
-    let list_res = reg
-        .execute("vault_list", r#"{"category": "notes"}"#)
-        .unwrap();
-    assert!(list_res.contains("notes/my-research.md"));
-}
-
-#[test]
-fn test_vault_path_traversal_rejected() {
-    let tmp = tempdir().unwrap();
-    let opts = VaultToolOptions {
-        vault_dir: tmp.path().to_path_buf(),
-    };
-
-    let mut reg = ToolRegistry::new();
-    register_vault_tools(&mut reg, opts);
-
-    let err = reg
-        .execute(
-            "vault_archive",
-            r#"{"category": "../etc", "title": "bad", "content": "malicious"}"#,
-        )
-        .unwrap_err();
-    assert_eq!(err.code, "VAULT_PATH_TRAVERSAL");
-}
-
-/// A symlink planted inside the vault must not become a read primitive for
-/// the rest of the filesystem. The old check was `rel.contains("..")`, which
-/// a symlink never contains, so `vault/escape -> /etc/passwd` resolved and
-/// read cleanly.
 #[cfg(unix)]
 #[test]
 fn a_symlink_inside_the_vault_cannot_escape_it() {
@@ -83,6 +22,7 @@ fn a_symlink_inside_the_vault_cannot_escape_it() {
 
 /// The same protection for a link that targets a file rather than a
 /// directory, which is the shape actually used to read one known file.
+
 #[cfg(unix)]
 #[test]
 fn a_symlink_to_a_single_outside_file_is_refused() {
@@ -99,6 +39,7 @@ fn a_symlink_to_a_single_outside_file_is_refused() {
 
 /// Ordinary in-vault paths must still resolve, including a path that does
 /// not exist yet (writes create it) and a nested new directory.
+
 #[test]
 fn ordinary_vault_paths_still_resolve() {
     let tmp = tempdir().unwrap();
@@ -116,6 +57,7 @@ fn ordinary_vault_paths_still_resolve() {
 }
 
 /// Traversal is still refused, and so is the vault root itself.
+
 #[test]
 fn traversal_and_the_vault_root_are_refused() {
     let tmp = tempdir().unwrap();

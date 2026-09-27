@@ -1,0 +1,40 @@
+[package]
+name = "pantheon-eval"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Behavioral / integration / eval test suite for Pantheon.
+#
+# Policy: only small deterministic unit tests live beside the code
+# (`cargo test -p <crate>`). Everything behavioral — SQLite stores,
+# threads, sockets, subprocesses, timing, filesystem — lives here and
+# runs via `cargo test -p pantheon-eval`. Tautological, decorative,
+# host-dependent-skip, and dead-behavior tests are deleted, not moved.
+#
+# Each file is one integration target: eval/tests/<crate>_<area>.rs.
+
+[dev-dependencies]
+pantheon = { path = "../crates/pantheon" }
+pantheon-storage = { path = "../crates/pantheon-storage" }
+pantheon-runtime = { path = "../crates/pantheon-runtime" }
+pantheon-api = { path = "../crates/pantheon-api" }
+pantheon-agent = { path = "../crates/pantheon-agent" }
+pantheon-swarm = { path = "../crates/pantheon-swarm" }
+pantheon-exec = { path = "../crates/pantheon-exec" }
+pantheon-tools = { path = "../crates/pantheon-tools" }
+pantheon-capability = { path = "../crates/pantheon-capability" }
+pantheon-sandbox = { path = "../crates/pantheon-sandbox" }
+pantheon-memory = { path = "../crates/pantheon-memory" }
+pantheon-secrets = { path = "../crates/pantheon-secrets" }
+pantheon-providers = { path = "../crates/pantheon-providers" }
+pantheon-mcp = { path = "../crates/pantheon-mcp" }
+pantheon-extensions = { path = "../crates/pantheon-extensions" }
+pantheon-scheduler = { path = "../crates/pantheon-scheduler" }
+pantheon-gateway = { path = "../crates/pantheon-gateway" }
+pantheon-migration = { path = "../crates/pantheon-migration" }
+pantheon-tui = { path = "../crates/pantheon-tui" }
+serde_json = "1"
+tempfile = "3"
+serde_yaml = "0.9"
+rusqlite = { version = "0.32", features = ["bundled"] }

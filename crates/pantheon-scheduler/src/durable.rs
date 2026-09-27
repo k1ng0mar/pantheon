@@ -72,6 +72,3 @@ impl DurableClaimLedger {
     }
 }
 
-#[cfg(test)]
-#[path = "durable_tests.rs"]
-mod tests;

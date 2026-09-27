@@ -288,7 +288,3 @@ impl TickDriver {
         self.queued.lock().expect("tick state lock").remove(id);
     }
 }
-
-#[cfg(test)]
-#[path = "tick_tests.rs"]
-mod tests;

@@ -285,6 +285,3 @@ pub fn confine(path: &Path, workspace_root: &Path) -> Result<PathBuf, PantheonEr
     Ok(canon)
 }
 
-#[cfg(test)]
-#[path = "confine_tests.rs"]
-mod tests;

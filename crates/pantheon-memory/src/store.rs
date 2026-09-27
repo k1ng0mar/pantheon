@@ -303,20 +303,17 @@ fn evict_over_budget(
             )
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
         let rows = stmt
-            .query_map(
-                params![layer_str(layer), namespace, exclude_id],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                    ))
-                },
-            )
+            .query_map(params![layer_str(layer), namespace, exclude_id], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            })
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
         rows.collect::<Result<_, _>>()
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?
@@ -404,7 +401,16 @@ impl MemoryStore {
                 "SELECT id, key, value, namespace, layer, origin FROM memories
                  WHERE layer=?1 AND namespace=?2 AND key=?3",
                 params![layer_str(layer), namespace, key],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
             )
             .optional()
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
@@ -628,7 +634,10 @@ impl MemoryStore {
             )
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
         let mut rows = stmt
-            .query_map(params![layer_str(p.layer), p.namespace, p.key], record_from_row)
+            .query_map(
+                params![layer_str(p.layer), p.namespace, p.key],
+                record_from_row,
+            )
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
         match rows.next() {
             Some(row) => row.map_err(|e| serr("MEM_QUERY", e.to_string())),

@@ -371,7 +371,3 @@ pub fn fire_hook_verbose(
         )
     })
 }
-
-#[cfg(test)]
-#[path = "js_runner_tests.rs"]
-mod tests;

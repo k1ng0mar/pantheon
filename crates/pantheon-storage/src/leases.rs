@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 
-
 /// A lease as observed by a worker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunLease {
@@ -307,7 +306,3 @@ impl RunLeaseStore {
         Ok(out)
     }
 }
-
-#[cfg(test)]
-#[path = "leases_tests.rs"]
-mod tests;

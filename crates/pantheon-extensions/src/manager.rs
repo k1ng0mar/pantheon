@@ -383,7 +383,3 @@ impl ExtensionManager {
             .map(|p| p.dir.clone())
     }
 }
-
-#[cfg(test)]
-#[path = "manager_tests.rs"]
-mod tests;

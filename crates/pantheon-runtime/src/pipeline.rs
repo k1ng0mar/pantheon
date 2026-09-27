@@ -117,6 +117,3 @@ impl super::operation::ToolOperationAdapter for StageAdapter<'_> {
     }
 }
 
-#[cfg(test)]
-#[path = "pipeline_tests.rs"]
-mod tests;

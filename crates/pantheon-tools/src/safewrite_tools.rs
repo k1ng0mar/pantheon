@@ -93,9 +93,10 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
 /// build, so staged/applied/checkpointed/rolled-back paths are confined.
 pub fn register_safewrite_with(reg: &mut ToolRegistry, opts: SafewriteOptions) {
     let dir: Arc<PathBuf> = Arc::new(opts.state_dir);
-    let root: Arc<PathBuf> = Arc::new(opts.workspace_root.unwrap_or_else(|| {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-    }));
+    let root: Arc<PathBuf> = Arc::new(
+        opts.workspace_root
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+    );
     // Build a SafeWriter whose target paths are confined to the workspace.
     let writer = |sd: PathBuf, root: &Arc<PathBuf>| -> Result<SafeWriter, PantheonError> {
         SafeWriter::new(sd).map(|w| w.with_workspace_root((**root).clone()))
