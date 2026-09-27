@@ -86,10 +86,12 @@ pantheon migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp> [path]
 
 ```sh
 pantheon schedule <task> [--every 30m | --cron "*/5 * * * *"] [--agent N] [--model M] [--provider P]
+               [--timeout 10m] [--overlap skip|replace|queue]
 pantheon schedule list|pause|resume|cancel|run <id>
-pantheon swarm status [<id>] | list   # recorded swarms only; spawn is unsupported
-# (sub-agent execution is not wired — spawn refuses rather than recording
-# runs that would never execute)
+pantheon schedule tick [--watch]      # advance the scheduler manually; --watch loops
+pantheon swarm status [<id>] | list   # recorded swarms only; the swarm verb doesn't spawn
+# (sub-agent work happens through in-session delegation — the engine's
+# Delegate arm — not through the swarm verb; spawn caps still apply)
 pantheon gateway start|restart|stop|status|run [discord|telegram]
 pantheon serve [--port N] [--host H]      # AG-UI server
 pantheon pipeline --spec "task" [RUN_ID]
