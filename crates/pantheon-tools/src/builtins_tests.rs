@@ -28,7 +28,8 @@ fn write_file_routes_through_safewrite_when_state_dir_given() {
         &mut reg,
         BuiltinOptions {
             safewrite_state_dir: Some(state.clone()),
-        },
+            workspace_root: Some(work.clone()),
+        }
     );
     let out = reg
         .execute(
@@ -57,7 +58,8 @@ fn write_file_stale_check_rejects_mismatch() {
         &mut reg,
         BuiltinOptions {
             safewrite_state_dir: Some(state.clone()),
-        },
+            workspace_root: Some(work.clone()),
+        }
     );
     // Pretend the file is still at "v0"; the safe path must reject.
     let err = reg
@@ -85,7 +87,13 @@ fn write_file_unsafe_fallback_when_no_state_dir() {
     let work = fresh("work-unsafe");
     let p = work.join("f.txt");
     let mut reg = ToolRegistry::new();
-    register_builtins(&mut reg);
+    register_builtins_with(
+        &mut reg,
+        BuiltinOptions {
+            safewrite_state_dir: None,
+            workspace_root: Some(work.clone()),
+        },
+    );
     let out = reg
         .execute(
             "write_file",
@@ -126,13 +134,15 @@ fn shell_push_arg_escalates_to_git_push_capability() {
 
 #[test]
 fn shell_result_states_whether_the_sandbox_actually_ran() {
-    // `run_shell` used to discard `SandboxOutcome::sandboxed`, so on a host
-    // where user namespaces are unavailable — most EC2 and container
-    // instances, where `bwrap` fails with "setting up uid map: Permission
-    // denied" — a command the tool documents as HIGH isolation ran
-    // un-isolated with nothing in the tool result, the ledger, or `pantheon logs` to
-    // record the downgrade. The invariant is that the result is never silent
-    // about degraded isolation.
+    // Fail-closed contract: on a host where user namespaces are unavailable
+    // (most EC2/container instances — `bwrap` fails with "setting up uid
+    // map: Permission denied"), `run_sandboxed` returns SANDBOX_UNAVAILABLE
+    // instead of silently running un-isolated. The shell tool surfaces that
+    // error; only an explicit opt-in (`PANTHEON_SANDBOX_FALLBACK=allow`)
+    // restores the old degraded run, and then the result says so loudly.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = ENV_LOCK.lock().unwrap();
+
     let mut reg = ToolRegistry::default();
     crate::builtins::register_builtins(&mut reg);
     let args = serde_json::json!({ "command": "echo pantheon-sandbox-probe" }).to_string();
@@ -145,18 +155,148 @@ fn shell_result_states_whether_the_sandbox_actually_ran() {
     );
     let sandbox_works = probe.map(|r| r.sandboxed).unwrap_or(false);
 
-    let out = reg.execute("shell", &args).expect(
-        "shell must still run when isolation is unavailable; the capability \
-                 gate already ran, so degraded isolation is a notice, not a failure",
+    // Make sure the opt-in is off for the fail-closed assertion.
+    let saved = std::env::var("PANTHEON_SANDBOX_FALLBACK").ok();
+    std::env::remove_var("PANTHEON_SANDBOX_FALLBACK");
+
+    if sandbox_works {
+        let out = reg.execute("shell", &args).expect("shell must run");
+        assert!(
+            out.contains("pantheon-sandbox-probe"),
+            "the command must actually have run, got {out:?}"
+        );
+        assert!(
+            !out.contains("WITHOUT namespace isolation"),
+            "no degraded-isolation notice expected when the sandbox ran, got {out:?}"
+        );
+    } else {
+        let err = reg
+            .execute("shell", &args)
+            .expect_err("shell must fail closed when the sandbox is unavailable");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("SANDBOX_UNAVAILABLE"),
+            "expected SANDBOX_UNAVAILABLE, got {msg}"
+        );
+
+        // Explicit opt-in restores the degraded run, loudly.
+        std::env::set_var("PANTHEON_SANDBOX_FALLBACK", "allow");
+        let out = reg.execute("shell", &args).expect(
+            "shell must run degraded once the direct fallback is explicitly opted in",
+        );
+        assert!(
+            out.contains("pantheon-sandbox-probe"),
+            "the command must actually have run, got {out:?}"
+        );
+        assert!(
+            out.contains("WITHOUT namespace isolation"),
+            "the degraded-isolation notice must appear on the opted-in fallback, got {out:?}"
+        );
+    }
+
+    match saved {
+        Some(v) => std::env::set_var("PANTHEON_SANDBOX_FALLBACK", v),
+        None => std::env::remove_var("PANTHEON_SANDBOX_FALLBACK"),
+    }
+}
+
+fn reg_in(work: &std::path::Path) -> ToolRegistry {
+    let mut reg = ToolRegistry::new();
+    register_builtins_with(
+        &mut reg,
+        BuiltinOptions {
+            safewrite_state_dir: None,
+            workspace_root: Some(work.to_path_buf()),
+        },
     );
-    assert!(
-        out.contains("pantheon-sandbox-probe"),
-        "the command must actually have run, got {out:?}"
+    reg
+}
+
+#[test]
+fn read_file_rejects_escape() {
+    let work = fresh("confine-read");
+    let reg = reg_in(&work);
+    std::fs::write(work.join("ok.txt"), "fine\n").unwrap();
+    // In-workspace read (absolute and relative) works.
+    let out = reg
+        .execute("read_file", &format!(r#"{{"path":"{}"}}"#, work.join("ok.txt").display()))
+        .unwrap();
+    assert!(out.contains("fine"), "got: {out}");
+    let out = reg.execute("read_file", r#"{"path":"ok.txt"}"#).unwrap();
+    assert!(out.contains("fine"), "got: {out}");
+    // `..` escape is rejected.
+    let err = reg
+        .execute(
+            "read_file",
+            &format!(r#"{{"path":"{}"}}"#, work.join("../outside.txt").display()),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "CONFINE_ESCAPE", "{err}");
+    // list_dir is confined too.
+    let err = reg
+        .execute("list_dir", &format!(r#"{{"path":"{}"}}"#, work.join("..").display()))
+        .unwrap_err();
+    assert_eq!(err.code, "CONFINE_ESCAPE", "{err}");
+    let out = reg
+        .execute("list_dir", &format!(r#"{{"path":"{}"}}"#, work.display()))
+        .unwrap();
+    assert!(out.contains("ok.txt"), "got: {out}");
+}
+
+#[test]
+fn write_file_rejects_deny_globs_and_escapes() {
+    let work = fresh("confine-write");
+    let state = fresh("confine-write-state");
+    let mut reg = ToolRegistry::new();
+    register_builtins_with(
+        &mut reg,
+        BuiltinOptions {
+            safewrite_state_dir: Some(state),
+            workspace_root: Some(work.clone()),
+        },
     );
-    assert_eq!(
-        out.contains("ran WITHOUT namespace isolation"),
-        !sandbox_works,
-        "the degraded-isolation notice must appear exactly when the sandbox did not \
-         initialize (sandbox_works={sandbox_works}), got {out:?}"
-    );
+    // /etc/** is denied by glob even though the capability is granted.
+    let err = reg
+        .execute(
+            "write_file",
+            r#"{"path":"/etc/pantheon-confine-probe","content":"x"}"#,
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "CONFINE_DENIED", "{err}");
+    // `..` escape is rejected.
+    let err = reg
+        .execute(
+            "write_file",
+            &format!(
+                r#"{{"path":"{}","content":"x"}}"#,
+                work.join("../evil.txt").display()
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "CONFINE_ESCAPE", "{err}");
+    assert!(!work.join("../evil.txt").exists());
+    // In-workspace write still works.
+    let args = serde_json::json!({"path": work.join("w.txt"), "content": "v\n"}).to_string();
+    let out = reg.execute("write_file", &args).unwrap();
+    assert!(out.contains("checkpoint="), "got: {out}");
+    assert_eq!(std::fs::read_to_string(work.join("w.txt")).unwrap(), "v\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn read_file_rejects_symlink_escape() {
+    let base = fresh("confine-link");
+    let work = base.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let secret = base.join("secret.txt");
+    std::fs::write(&secret, "topsecret\n").unwrap();
+    std::os::unix::fs::symlink(&secret, work.join("link")).unwrap();
+    let reg = reg_in(&work);
+    let err = reg
+        .execute(
+            "read_file",
+            &format!(r#"{{"path":"{}"}}"#, work.join("link").display()),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "CONFINE_ESCAPE", "{err}");
 }

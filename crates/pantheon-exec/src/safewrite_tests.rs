@@ -168,3 +168,93 @@ fn recover_restores_uncommitted_begin() {
     );
     assert_eq!(read(&p), "stable\n");
 }
+
+#[test]
+fn safewriter_confines_target_paths() {
+    let base = fresh_state("confine");
+    let work = base.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let state = base.join("state");
+    let w = SafeWriter::new(state).unwrap().with_workspace_root(work.clone());
+
+    // apply_edits outside the workspace is rejected before any write.
+    let outside = base.join("evil.txt");
+    let err = w
+        .apply_edits(
+            vec![FileEdit {
+                path: outside.clone(),
+                new_content: b"x".to_vec(),
+                expected_hash: None,
+            }],
+            0,
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "CONFINE_ESCAPE", "{err}");
+    assert!(!outside.exists(), "rejected write must not touch disk");
+
+    // stage_edits is confined too.
+    let err = w
+        .stage_edits(vec![FileEdit {
+            path: base.join("evil2.txt"),
+            new_content: b"x".to_vec(),
+            expected_hash: None,
+        }])
+        .unwrap_err();
+    assert_eq!(err.code, "CONFINE_ESCAPE", "{err}");
+
+    // checkpoint() reads pre-images: confined as well.
+    let err = w.checkpoint(&[base.join("evil3.txt")], 0).unwrap_err();
+    assert_eq!(err.code, "CONFINE_ESCAPE", "{err}");
+
+    // In-workspace writes still work through the confined writer.
+    let p = work.join("ok.txt");
+    let r = w
+        .apply_edits(
+            vec![FileEdit {
+                path: p.clone(),
+                new_content: b"v\n".to_vec(),
+                expected_hash: None,
+            }],
+            0,
+        )
+        .unwrap();
+    assert_eq!(r.files.len(), 1);
+    assert_eq!(read(&p), "v\n");
+}
+
+#[test]
+fn stage_and_checkpoint_ids_reject_traversal() {
+    let dir = fresh_state("ids");
+    let w = SafeWriter::new(dir).unwrap();
+    let err = w.restore_checkpoint("../../nope").unwrap_err();
+    assert_eq!(err.code, "SAFE_BAD_ID", "{err}");
+    let err = w.apply_staged("../nope", 0).unwrap_err();
+    assert_eq!(err.code, "SAFE_BAD_ID", "{err}");
+    let err = w.restore_checkpoint("has space").unwrap_err();
+    assert_eq!(err.code, "SAFE_BAD_ID", "{err}");
+}
+
+#[test]
+#[cfg(unix)]
+fn tmp_create_does_not_follow_symlinks() {
+    // A planted symlink at the tmp name must fail the open, not redirect
+    // the write to the link target.
+    let dir = fresh_state("nofollow");
+    let target = dir.join("real.txt");
+    std::fs::write(&target, "original\n").unwrap();
+    let link = dir.join("planted.tmp");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let err = open_tmp_nofollow(&link).unwrap_err();
+    assert!(
+        err.raw_os_error() == Some(libc::EEXIST) || err.kind() == std::io::ErrorKind::AlreadyExists,
+        "symlink at tmp name must fail, got {err:?}"
+    );
+    assert_eq!(read(&target), "original\n", "target must be untouched");
+    // A genuinely fresh name still opens.
+    let fresh = dir.join("genuine.tmp");
+    let mut f = open_tmp_nofollow(&fresh).unwrap();
+    use std::io::Write;
+    f.write_all(b"ok").unwrap();
+    drop(f);
+    assert_eq!(read(&fresh), "ok");
+}

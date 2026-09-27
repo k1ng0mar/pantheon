@@ -10,6 +10,7 @@ use pantheon_api::capability::Capability;
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::message::ToolSchema;
 use pantheon_exec::compact_output;
+use pantheon_exec::confine::confine;
 use pantheon_exec::safewrite::{atomic_write, FileEdit, SafeWriter};
 use pantheon_sandbox::{SandboxLevel, SandboxProfile};
 use std::path::{Path, PathBuf};
@@ -20,6 +21,14 @@ use std::path::{Path, PathBuf};
 #[derive(Default)]
 pub struct BuiltinOptions {
     pub safewrite_state_dir: Option<std::path::PathBuf>,
+    /// Workspace root for path confinement of the fs tools. The tool layer
+    /// has no workspace concept of its own, so when this is `None` the
+    /// process working directory is captured here, at registration time.
+    /// Every `read_file`/`write_file`/`list_dir` path is confined with
+    /// `pantheon_exec::confine` (deny globs, then containment) before any
+    /// read or write — a granted `FilesystemRead`/`FilesystemWrite`
+    /// capability never widens it.
+    pub workspace_root: Option<std::path::PathBuf>,
 }
 
 fn berr(code: &str, cause: String, retryable: bool) -> PantheonError {
@@ -57,6 +66,16 @@ pub fn register_builtins(reg: &mut ToolRegistry) {
 /// atomic write — kept for callers that explicitly want the unsafe path.
 pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
     let sd = opts.safewrite_state_dir.clone();
+    // Workspace root for confinement, captured once at registration: no
+    // workspace concept exists in the tool layer, so this is the process
+    // cwd unless the caller overrides it. Confine errors propagate with
+    // their CONFINE_* codes (deny globs are evaluated before containment,
+    // and independently of the capability gate).
+    let root: std::sync::Arc<PathBuf> = std::sync::Arc::new(
+        opts.workspace_root
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+    );
     reg.register_with(
         ToolSchema {
             name: "shell".into(),
@@ -97,10 +116,11 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             }
         })),
     );
+    let r0 = root.clone();
     reg.register(
         ToolSchema {
             name: "read_file".into(),
-            description: "Read a text file (compacted if very large).".into(),
+            description: "Read a text file (compacted if very large). Confined to the workspace.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": { "path": { "type": "string" } },
@@ -108,18 +128,20 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             }),
         },
         Capability::FilesystemRead,
-        |args| {
+        move |args| {
             let v = parse_args(args)?;
             let path = arg_str(&v, "path")?;
-            let raw = std::fs::read_to_string(&path)
-                .map_err(|e| berr("TOOL_FS", format!("read {path}: {e}"), false))?;
+            let cpath = confine(Path::new(&path), &r0)?;
+            let raw = std::fs::read_to_string(&cpath)
+                .map_err(|e| berr("TOOL_FS", format!("read {}: {e}", cpath.display()), false))?;
             Ok(compact_output(&raw, &Default::default()).text)
         },
     );
+    let r1 = root.clone();
     reg.register(
         ToolSchema {
             name: "write_file".into(),
-            description: "Write a file safely: preview, checkpoint, atomic publish. Fails on stale expected_hash.".into(),
+            description: "Write a file safely: preview, checkpoint, atomic publish. Fails on stale expected_hash. Confined to the workspace.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -134,6 +156,8 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
         move |args| {
             let v = parse_args(args)?;
             let path = arg_str(&v, "path")?;
+            // Confine before either write path (safe or unsafe fallback).
+            let cpath = confine(Path::new(&path), &r1)?;
             let content = arg_str(&v, "content")?;
             let expected = v
                 .get("expected_hash")
@@ -141,43 +165,55 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
                 .map(|s| s.to_string());
             if let Some(ref dir) = sd {
                 // Safe path: checkpoint + atomic publish + journal.
-                let w = SafeWriter::new(dir.clone()).map_err(|e| {
-                    berr("TOOL_FS", format!("open safewrite state {dir:?}: {e}"), false)
-                })?;
+                let w = SafeWriter::new(dir.clone())
+                    .map_err(|e| {
+                        berr("TOOL_FS", format!("open safewrite state {dir:?}: {e}"), false)
+                    })?
+                    .with_workspace_root((*r1).clone());
                 // Capture the current fingerprint so stale edits get
                 // rejected by apply_edits when no explicit hash is given.
                 let expected = expected.or_else(|| {
-                    pantheon_exec::safewrite::fingerprint_of(Path::new(&path))
+                    pantheon_exec::safewrite::fingerprint_of(&cpath)
                         .ok()
                         .map(|fp| fp.hash)
                 });
                 let receipt = w
                     .apply_edits(
                         vec![FileEdit {
-                            path: PathBuf::from(&path),
+                            path: cpath.clone(),
                             new_content: content.as_bytes().to_vec(),
                             expected_hash: expected,
                         }],
                         -1,
                     )
-                    .map_err(|e| berr("TOOL_FS", format!("safewrite apply {path}: {e}"), false))?;
+                    .map_err(|e| {
+                        berr(
+                            "TOOL_FS",
+                            format!("safewrite apply {}: {e}", cpath.display()),
+                            false,
+                        )
+                    })?;
                 Ok(format!(
-                    "wrote {} bytes to {path}; checkpoint={}",
+                    "wrote {} bytes to {}; checkpoint={}",
                     content.len(),
+                    cpath.display(),
                     receipt.checkpoint_id
                 ))
             } else {
                 // Unsafe fallback: caller opted out of the safe path.
-                atomic_write(Path::new(&path), content.as_bytes())
-                    .map_err(|e| berr("TOOL_FS", format!("write {path}: {e}"), false))?;
-                Ok(format!("wrote {} bytes to {path}", content.len()))
+                atomic_write(&cpath, content.as_bytes())
+                    .map_err(|e| {
+                        berr("TOOL_FS", format!("write {}: {e}", cpath.display()), false)
+                    })?;
+                Ok(format!("wrote {} bytes to {}", content.len(), cpath.display()))
             }
         },
     );
+    let r2 = root.clone();
     reg.register(
         ToolSchema {
             name: "list_dir".into(),
-            description: "List a directory's entries, one per line.".into(),
+            description: "List a directory's entries, one per line. Confined to the workspace.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": { "path": { "type": "string" } },
@@ -185,11 +221,12 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             }),
         },
         Capability::FilesystemRead,
-        |args| {
+        move |args| {
             let v = parse_args(args)?;
             let path = arg_str(&v, "path")?;
-            let mut names: Vec<String> = std::fs::read_dir(&path)
-                .map_err(|e| berr("TOOL_FS", format!("list {path}: {e}"), false))?
+            let cpath = confine(Path::new(&path), &r2)?;
+            let mut names: Vec<String> = std::fs::read_dir(&cpath)
+                .map_err(|e| berr("TOOL_FS", format!("list {}: {e}", cpath.display()), false))?
                 .filter_map(|e| e.ok())
                 .map(|e| e.file_name().to_string_lossy().into_owned())
                 .collect();
@@ -217,14 +254,14 @@ fn run_shell(args: &str) -> Result<String, PantheonError> {
     } else {
         format!("{}\n(exit {code})", result.output)
     };
-    // The runner reports whether isolation actually happened, because a host
-    // without working user namespaces silently falls back to a direct spawn
-    // (a common case: most EC2/container instances block `bwrap`'s uid map).
-    // Discarding the flag let a command the tool documents as HIGH isolation
-    // run un-isolated with nothing in the tool result, the ledger, or
-    // `pantheon logs` to record the downgrade. Say so in every result rather than
-    // failing the call — the capability gate still ran, so this is degraded
-    // isolation, not a bypassed policy.
+    // The runner reports whether isolation actually happened. By default
+    // it fails closed: on a host without a working wrapper (a common
+    // case — most EC2/container instances block `bwrap`'s uid map) the
+    // call above already returned a SANDBOX_UNAVAILABLE error. A
+    // `sandboxed == false` result is only possible with the direct
+    // fallback explicitly opted in (PANTHEON_SANDBOX_FALLBACK=allow or
+    // allow_direct_fallback); say so in the result rather than silently
+    // presenting degraded isolation as HIGH.
     let notice = if result.sandboxed {
         String::new()
     } else {

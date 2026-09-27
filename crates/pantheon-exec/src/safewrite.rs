@@ -7,6 +7,8 @@
 use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+use crate::confine::confine;
 /// Serialize a tool result to pretty JSON, mapping failure to a
 /// PantheonError. A report that cannot serialize is still a failure worth
 /// reporting, not a reason to panic over whatever it was describing.
@@ -117,6 +119,12 @@ pub fn preview_edit(path: &Path, new_content: &[u8]) -> Result<Preview, Pantheon
     })
 }
 /// Write bytes atomically: tmp file in target dir + fsync + rename.
+///
+/// The tmp file is created with `O_NOFOLLOW|O_CREAT|O_EXCL` (unix): a
+/// pre-planted symlink at the tmp name fails the open instead of redirecting
+/// the write elsewhere. Rename-over replaces a destination symlink rather
+/// than following it, so a swapped final component cannot redirect the
+/// publish either. Callers confine `path` first (see [`SafeWriter`]).
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), PantheonError> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -130,11 +138,14 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), PantheonError> {
         .unwrap_or_else(|| "file".into());
     tmp_name.push_str(&format!(".tmp.{}.{}", std::process::id(), uniq()));
     let tmp = path.with_file_name(tmp_name);
-    std::fs::write(&tmp, bytes)
-        .map_err(|e| serr("SAFE_WRITE", format!("tmp write {}: {e}", tmp.display())))?;
-    if let Ok(f) = std::fs::File::open(&tmp) {
-        let _ = f.sync_all();
+    let mut f = open_tmp_nofollow(&tmp)
+        .map_err(|e| serr("SAFE_WRITE", format!("tmp create {}: {e}", tmp.display())))?;
+    {
+        use std::io::Write;
+        f.write_all(bytes)
+            .map_err(|e| serr("SAFE_WRITE", format!("tmp write {}: {e}", tmp.display())))?;
     }
+    let _ = f.sync_all();
     std::fs::rename(&tmp, path)
         .map_err(|e| serr("SAFE_RENAME", format!("publish {}: {e}", path.display())))?;
     if let Some(parent) = path.parent() {
@@ -145,6 +156,27 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), PantheonError> {
         }
     }
     Ok(())
+}
+
+/// Open a fresh file for writing without following a final-component
+/// symlink. With `O_CREAT|O_EXCL|O_NOFOLLOW` a symlink at `path` fails with
+/// `EEXIST` instead of being traversed (Linux); the non-unix fallback keeps
+/// `O_EXCL` so a planted name still fails rather than being clobbered.
+#[cfg(unix)]
+fn open_tmp_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+#[cfg(not(unix))]
+fn open_tmp_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 /// One file captured inside a checkpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,12 +238,18 @@ struct JournalEntry {
 }
 /// Workspace-scoped safe writer. Layout under state_dir:
 /// checkpoints/<id>/manifest.json + blobs/, staging/<id>/, safewrite.jsonl.
+///
+/// When a workspace root is set (via [`SafeWriter::with_workspace_root`]),
+/// every target path is confined with `crate::confine` before any read or
+/// write — deny globs first, then containment. The tool layer always sets
+/// it; direct engine users should too.
 #[derive(Debug, Clone)]
 pub struct SafeWriter {
     state_dir: PathBuf,
     checkpoints_dir: PathBuf,
     staging_dir: PathBuf,
     journal: PathBuf,
+    workspace_root: Option<PathBuf>,
 }
 impl SafeWriter {
     pub fn new(state_dir: PathBuf) -> Result<Self, PantheonError> {
@@ -220,6 +258,7 @@ impl SafeWriter {
             staging_dir: state_dir.join("staging"),
             journal: state_dir.join("safewrite.jsonl"),
             state_dir,
+            workspace_root: None,
         };
         std::fs::create_dir_all(&w.checkpoints_dir)
             .map_err(|e| serr("SAFE_MKDIR", format!("checkpoints dir: {e}")))?;
@@ -231,10 +270,39 @@ impl SafeWriter {
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
     }
+    /// Confine every target path through `crate::confine`. Returns the
+    /// canonical paths, which the caller must use for IO instead of the
+    /// originals so the check and the use agree.
+    pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
+        self.workspace_root = Some(root);
+        self
+    }
+    fn confine_all(&self, paths: &[PathBuf]) -> Result<Vec<PathBuf>, PantheonError> {
+        match &self.workspace_root {
+            Some(root) => paths.iter().map(|p| confine(p, root)).collect(),
+            None => Ok(paths.to_vec()),
+        }
+    }
+    /// Stage/checkpoint ids are generated (`ckpt_`/`stage_` + digits); ids
+    /// arriving from tool args must match the same charset so `..` cannot
+    /// escape the checkpoints/staging dirs via path joins.
+    fn valid_id(id: &str) -> Result<(), PantheonError> {
+        let ok = !id.is_empty()
+            && id.len() <= 128
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        if ok {
+            Ok(())
+        } else {
+            Err(serr("SAFE_BAD_ID", format!("invalid stage/checkpoint id {id:?}")))
+        }
+    }
     fn checkpoint_path(&self, id: &str) -> PathBuf {
         self.checkpoints_dir.join(id).join("manifest.json")
     }
     fn read_manifest(&self, id: &str) -> Result<Checkpoint, PantheonError> {
+        Self::valid_id(id)?;
         let raw = std::fs::read_to_string(self.checkpoint_path(id))
             .map_err(|e| serr("SAFE_NO_CHECKPOINT", format!("checkpoint {id}: {e}")))?;
         serde_json::from_str(&raw)
@@ -332,6 +400,7 @@ impl SafeWriter {
         paths: &[PathBuf],
         ledger_seq: i64,
     ) -> Result<Checkpoint, PantheonError> {
+        let paths = self.confine_all(paths)?;
         let id = format!("ckpt_{}", uniq());
         let dir = self.checkpoints_dir.join(&id);
         std::fs::create_dir_all(dir.join("blobs"))
@@ -381,6 +450,12 @@ impl SafeWriter {
         if edits.is_empty() {
             return Err(serr("SAFE_EMPTY", "no edits to stage".into()));
         }
+        let mut edits = edits;
+        let confined =
+            self.confine_all(&edits.iter().map(|e| e.path.clone()).collect::<Vec<_>>())?;
+        for (e, p) in edits.iter_mut().zip(confined) {
+            e.path = p;
+        }
         let id = format!("stage_{}", uniq());
         let dir = self.staging_dir.join(&id);
         std::fs::create_dir_all(&dir)
@@ -410,6 +485,7 @@ impl SafeWriter {
         Ok(batch)
     }
     fn read_staged(&self, id: &str) -> Result<(StagedBatch, PathBuf), PantheonError> {
+        Self::valid_id(id)?;
         let dir = self.staging_dir.join(id);
         let raw = std::fs::read_to_string(dir.join("manifest.json"))
             .map_err(|e| serr("SAFE_NO_STAGE", format!("stage {id}: {e}")))?;
@@ -425,7 +501,13 @@ impl SafeWriter {
         stage_id: &str,
         ledger_seq: i64,
     ) -> Result<ApplyReceipt, PantheonError> {
-        let (batch, dir) = self.read_staged(stage_id)?;
+        let (mut batch, dir) = self.read_staged(stage_id)?;
+        // Staged paths come back off disk; re-confine defensively.
+        let confined =
+            self.confine_all(&batch.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>())?;
+        for (f, p) in batch.files.iter_mut().zip(confined) {
+            f.path = p;
+        }
         let paths: Vec<PathBuf> = batch.files.iter().map(|f| f.path.clone()).collect();
         for f in &batch.files {
             if let Some(exp) = &f.expected_hash {
@@ -487,6 +569,12 @@ impl SafeWriter {
         if edits.is_empty() {
             return Err(serr("SAFE_EMPTY", "no edits to apply".into()));
         }
+        let mut edits = edits;
+        let confined =
+            self.confine_all(&edits.iter().map(|e| e.path.clone()).collect::<Vec<_>>())?;
+        for (e, p) in edits.iter_mut().zip(confined) {
+            e.path = p;
+        }
         for e in &edits {
             if let Some(exp) = &e.expected_hash {
                 let cur = fingerprint_of(&e.path)?;
@@ -542,16 +630,18 @@ impl SafeWriter {
         let cp = self.read_manifest(id)?;
         let dir = self.checkpoints_dir.join(id);
         let mut restored = vec![];
-        for f in &cp.files {
+        let confined =
+            self.confine_all(&cp.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>())?;
+        for (f, target) in cp.files.iter().zip(confined) {
             let blob = std::fs::read(dir.join("blobs").join(&f.blob))
                 .map_err(|e| serr("SAFE_READ", format!("checkpoint blob {}: {e}", f.blob)))?;
             if f.existed {
-                atomic_write(&f.path, &blob)?;
-            } else if f.path.exists() {
-                std::fs::remove_file(&f.path)
-                    .map_err(|e| serr("SAFE_WRITE", format!("remove {}: {e}", f.path.display())))?;
+                atomic_write(&target, &blob)?;
+            } else if target.exists() {
+                std::fs::remove_file(&target)
+                    .map_err(|e| serr("SAFE_WRITE", format!("remove {}: {e}", target.display())))?;
             }
-            restored.push(f.path.clone());
+            restored.push(target);
         }
         self.journal_append(
             "rollback",
