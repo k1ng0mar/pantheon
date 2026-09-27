@@ -145,3 +145,89 @@ fn init_is_idempotent_and_never_retargets() {
         );
     }
 }
+
+/// Regression: `redact()` used to be dead code — `append`/`emit` wrote the
+/// message verbatim, so an API key or bearer token in a request dump landed
+/// in the log file despite the fail-closed claims. Redaction now happens in
+/// `append`, the single choke point every log line passes through.
+#[test]
+fn append_redacts_api_keys_and_bearer_tokens() {
+    let dir = std::env::temp_dir().join(format!("pantheon-log-redact-{}", std::process::id()));
+    let file = dir.join("logs").join(AGENT_LOG);
+    append(
+        &file,
+        Level::Error,
+        "provider",
+        "request failed: key=sk-or-v1-SECRETKEY123 auth=Bearer BEARERTOKEN456 retry",
+    );
+    let body = read(&dir, AGENT_LOG);
+    assert!(!body.contains("SECRETKEY123"), "openrouter key leaked: {body}");
+    assert!(!body.contains("BEARERTOKEN456"), "bearer token leaked: {body}");
+    assert!(body.contains("[REDACTED]"), "redaction marker missing: {body}");
+    // The mirrored errors.log line gets the same treatment, since warn+
+    // mirrors the already-redacted line.
+    let errors = read(&dir, ERRORS_LOG);
+    assert!(!errors.contains("SECRETKEY123") && !errors.contains("BEARERTOKEN456"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Regression: a benign message must survive redaction untouched, so the
+/// pipeline cannot be silently eating log content.
+#[test]
+fn append_leaves_clean_messages_intact() {
+    let dir = std::env::temp_dir().join(format!("pantheon-log-clean-{}", std::process::id()));
+    let file = dir.join("logs").join(AGENT_LOG);
+    append(&file, Level::Info, "turn", "turn 7 completed in 1.2s");
+    let body = read(&dir, AGENT_LOG);
+    assert!(body.contains("turn 7 completed in 1.2s"), "clean line mangled: {body}");
+    assert!(!body.contains("[REDACTED]"), "false redaction: {body}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Rotation renames generations in the right order: `agent.log` -> `.1`,
+/// `.1` -> `.2`, ..., and the oldest generation is dropped so the file set
+/// stays bounded. Uses small sizes/generations; the production constants are
+/// exercised by `rotation_defaults_are_sane`.
+#[test]
+fn rotation_renames_generations_in_order_and_drops_the_oldest() {
+    let dir = std::env::temp_dir().join(format!("pantheon-log-rot-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("agent.log");
+    std::fs::write(&path, "v0").unwrap();
+    std::fs::write(dir.join("agent.log.1"), "v1").unwrap();
+    std::fs::write(dir.join("agent.log.2"), "v2").unwrap();
+    std::fs::write(dir.join("agent.log.3"), "v3").unwrap(); // oldest, must be dropped
+
+    rotate_log(&path, 3);
+
+    assert_eq!(std::fs::read_to_string(dir.join("agent.log.1")).unwrap(), "v0");
+    assert_eq!(std::fs::read_to_string(dir.join("agent.log.2")).unwrap(), "v1");
+    assert_eq!(std::fs::read_to_string(dir.join("agent.log.3")).unwrap(), "v2");
+    assert!(!dir.join("agent.log").exists(), "current file must move to .1");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Rotation is a no-op below the size cap, and `rotate_log` on a missing
+/// file must not panic — both keep the write path total.
+#[test]
+fn rotation_is_a_noop_below_the_cap_and_on_missing_files() {
+    let dir = std::env::temp_dir().join(format!("pantheon-log-rot2-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("agent.log");
+    std::fs::write(&path, "small").unwrap();
+
+    rotate_sized(&path, 10 * 1024 * 1024, 5);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "small");
+    assert!(!dir.join("agent.log.1").exists());
+
+    rotate_log(&dir.join("nope.log"), 5); // must not panic
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Pin the production rotation policy so it cannot silently regress to
+/// "never rotate" (cap 0) or "keep one generation".
+#[test]
+fn rotation_defaults_are_sane() {
+    assert_eq!(LOG_ROTATE_BYTES, 10 * 1024 * 1024);
+    assert_eq!(LOG_ROTATE_GENERATIONS, 5);
+}
