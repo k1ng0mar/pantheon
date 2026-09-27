@@ -9,6 +9,7 @@
 //!   leaves; the run stays resumable next time because the ledger keeps
 //!   everything.
 //! - Slash commands are session-local, never sent to the model.
+use crate::config_doc::build_model_policy;
 use crate::{config_doc, config_schema};
 use pantheon_runtime::session::Session;
 use std::io::{BufRead, Write};
@@ -440,50 +441,6 @@ fn default_layers() -> [pantheon_memory::LayerKind; 3] {
 #[path = "session_cli_tests.rs"]
 mod tests;
 
-/// Model policy for the REPL: flags/env/config precedence, same as chat.
-pub fn build_model_policy(
-    file_cfg: &Option<config_doc::Config>,
-    provider: Option<String>,
-    model: Option<String>,
-) -> pantheon_core::model::ModelPolicy {
-    let cfg_model = file_cfg
-        .as_ref()
-        .and_then(|c| c.model.clone())
-        .map(|m| (Some(m.provider), Some(m.model)));
-    let default = pantheon_core::model::DefaultModel {
-        provider: provider
-            .or(cfg_model
-                .as_ref()
-                .and_then(|(p, _)| p.clone())
-                .or_else(|| std::env::var("PANTHEON_PROVIDER").ok()))
-            .unwrap_or_else(|| "local".into()),
-        model: model
-            .or(cfg_model
-                .as_ref()
-                .and_then(|(_, m)| m.clone())
-                .or_else(|| std::env::var("PANTHEON_MODEL").ok()))
-            .unwrap_or_else(|| "llama3.2".into()),
-    };
-    let mut chain = pantheon_core::model::FallbackChain::default();
-    if let Some(fallbacks) = file_cfg
-        .as_ref()
-        .and_then(|c| c.model.as_ref())
-        .map(|m| m.fallbacks.clone())
-    {
-        for f in fallbacks {
-            chain.fallbacks.push(pantheon_core::model::DefaultModel {
-                provider: f.provider,
-                model: f.model,
-            });
-        }
-    }
-    pantheon_core::model::ModelPolicy {
-        default: default.clone(),
-        fallbacks: chain,
-        auxiliaries: config_doc::auxiliaries(file_cfg.as_ref(), &default),
-    }
-}
-
 /// Entry for `pantheon --resume [id]`: same as `run_session`, but the
 /// run id is pinned to the given (or most recent) run instead of a fresh
 /// auto-resume. A missing id exits with the same "no run" wording /resume
@@ -541,7 +498,7 @@ pub fn run_session() {
 /// `pinned`: Some(id) from `--resume` — skip auto-resume and use the id.
 pub fn run_session_inner(pinned_id: Option<String>) {
     let file_cfg = config_doc::Config::load_or_report(&crate::data_dir());
-    let model_policy = build_model_policy(&file_cfg, None, None);
+    let model_policy = build_model_policy(file_cfg.as_ref(), None, None);
     let policy = config_schema::policy_for_config(&file_cfg);
     let secrets = config_doc::chat_secrets(file_cfg.as_ref());
     let mut session = match Session::new(crate::data_dir(), policy, model_policy, secrets) {
@@ -654,7 +611,7 @@ pub fn run_session_inner(pinned_id: Option<String>) {
         // override takes effect by restarting the session object.
         if let Some((p, m)) = repl.model.clone() {
             let file_cfg = config_doc::Config::load_or_report(&crate::data_dir());
-            let mp = build_model_policy(&file_cfg, Some(p), Some(m));
+            let mp = build_model_policy(file_cfg.as_ref(), Some(p), Some(m));
             let pol = repl.session.policy.clone();
             let secrets = config_doc::chat_secrets(file_cfg.as_ref());
             if let Ok(s) = Session::new(crate::data_dir(), pol, mp, secrets) {

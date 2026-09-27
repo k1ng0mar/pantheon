@@ -1112,6 +1112,172 @@ impl Session {
         }))
     }
 
+    /// The window the current turn must fit, or `None` when the model has no
+    /// known context limit.
+    ///
+    /// `None` is the interesting case. `catalog::model_meta` returns
+    /// `context_limit: None` for any model it does not know, and an unknown
+    /// limit must mean "do not touch the transcript" — not "assume 4k" and
+    /// silently truncate a conversation on a 1M-window model, and not
+    /// "assume infinite" and eat a provider 400. So an uncataloged model gets
+    /// no fit at all, exactly as it did before this was wired.
+    fn window_budget<T: pantheon_providers::ChatTransport>(
+        &self,
+        chain: &ProviderChain<T>,
+    ) -> Option<pantheon_exec::context::WindowBudget> {
+        // The model that will actually serve this turn: the last one resolved
+        // (a fallback may have taken over), else the configured default.
+        let (provider, model) = chain
+            .last_resolved
+            .borrow()
+            .as_ref()
+            .map(|r| (r.provider.clone(), r.model.clone()))
+            .unwrap_or_else(|| {
+                (
+                    self.model_policy.default.provider.clone(),
+                    self.model_policy.default.model.clone(),
+                )
+            });
+        let meta = pantheon_core::catalog::model_meta(&provider, &model);
+        let limit = meta.context_limit?;
+        // Reserve output room only when the catalog states it. Reserving zero
+        // would let the input consume the entire window, and the provider
+        // would reject the request for a different reason entirely.
+        let reserve = meta.max_output_tokens.unwrap_or(0);
+        Some(pantheon_exec::context::WindowBudget::new(limit, reserve))
+    }
+
+    /// Fit the transcript to the window: compress, then deterministically
+    /// trim. Never fails the turn — a fit error is logged and the transcript
+    /// is left as it was, because the provider's own error is more
+    /// informative than anything this could say, and a run that dies on a
+    /// *fixable* overflow is worse than one that reaches the provider.
+    ///
+    /// Returns whether the transcript changed.
+    fn fit_context(
+        &self,
+        messages: &mut Vec<Message>,
+        budget: &pantheon_exec::context::WindowBudget,
+        run_id: &str,
+    ) -> bool {
+        use pantheon_exec::context::{compress_oldest, estimate_messages, fit_to_window};
+        let before = estimate_messages(messages);
+        if before <= budget.usable() {
+            return false;
+        }
+
+        // Step 1: model-assisted compression, when an aux model is
+        // configured. Absent config -> no compressor -> the deterministic
+        // fit below handles it. A compressor error is not fatal either: the
+        // fit is the fallback, and `compress_oldest` is explicitly an
+        // optimization.
+        let aux = self
+            .model_policy
+            .auxiliary(&pantheon_core::model::AuxiliaryKind::Compression)
+            .cloned();
+        if let Some(aux) = aux {
+            // Key order matches the title aux: the slot-specific key first,
+            // then the chat key, so `auto` mode (compression shares the default
+            // model) works with no extra config. `CompressionClient` still
+            // prefers the provider's own catalog key env, so an operator who
+            // set `PANTHEON_KEY_OPENAI` is unaffected by this ordering.
+            let key = self
+                .secrets
+                .inject("PANTHEON_COMPRESSION_API_KEY")
+                .ok()
+                .flatten()
+                .or_else(|| self.secrets.inject("PANTHEON_API_KEY").ok().flatten());
+            let client = pantheon_providers::CompressionClient::new(
+                pantheon_core::model::DefaultModel {
+                    provider: aux.provider.clone(),
+                    model: aux.model.clone(),
+                },
+                key,
+            );
+            match compress_oldest(messages, &client, budget, run_id) {
+                Ok(Some((fitted, report))) => {
+                    *messages = fitted;
+                    let _ = self.supervisor.emit(Event::ContextCompressed {
+                        run_id: run_id.into(),
+                        model: aux.model.clone(),
+                        exchanges: report.exchanges,
+                        rows: report.rows,
+                        chars_before: report.chars_before,
+                        chars_after: report.chars_after,
+                    });
+                    pantheon_core::logging::warn(
+                        "agent",
+                        format!(
+                            "compressed {} exchanges ({} rows, {} -> {} chars) to fit the window",
+                            report.exchanges, report.rows, report.chars_before, report.chars_after
+                        ),
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    // Compression is an optimization; the deterministic fit
+                    // is the guarantee. Log and continue to it.
+                    pantheon_core::logging::warn(
+                        "agent",
+                        format!(
+                            "context compression failed ({}), falling back to deterministic trim",
+                            e.code
+                        ),
+                    );
+                }
+            }
+        }
+
+        // Step 2: deterministic fit. Always runs — it is what bounds the
+        // request when there is no compressor, when compression was not
+        // enough, or when compression errored.
+        // `fit_to_window` takes ownership, so the transcript leaves `messages`
+        // for the duration of the call. It returns `Err` without giving it
+        // back, so the Err arm has to restore it — otherwise a CONTEXT_OVERFLOW
+        // silently empties the transcript and the next turn starts from
+        // nothing, which looks exactly like memory loss rather than an
+        // oversized prompt.
+        let original = std::mem::take(messages);
+        match fit_to_window(original.clone(), budget) {
+            Ok((fitted, report)) => {
+                *messages = fitted;
+                if report.changed() {
+                    let _ = self.supervisor.emit(Event::ContextTrimmed {
+                        run_id: run_id.into(),
+                        estimated: report.estimated,
+                        window: report.window,
+                        dropped_rows: report.dropped_rows,
+                        compacted_rows: report.compacted_rows,
+                    });
+                    pantheon_core::logging::warn(
+                        "agent",
+                        format!(
+                            "trimmed context to ~{} tokens (window {}): dropped {} rows, compacted {} tool rows",
+                            report.estimated,
+                            report.window,
+                            report.dropped_rows,
+                            report.compacted_rows
+                        ),
+                    );
+                }
+                estimate_messages(messages) < before
+            }
+            Err(e) => {
+                *messages = original;
+                pantheon_core::logging::error(
+                    "agent",
+                    format!(
+                        "context is still ~{} tokens after trimming, window allows {}: {}",
+                        before,
+                        budget.usable(),
+                        e.code
+                    ),
+                );
+                false
+            }
+        }
+    }
+
     /// Canonical-message driver: replaces the legacy string-transcript loop.
     /// `pending` holds tool calls that crashed mid-execution; `grants`
     /// records scopes the user has already approved. `tool_calls_used`
@@ -1364,6 +1530,21 @@ impl Session {
                     })?;
                 }
             }
+        }
+        // Context-window fit. Runs BEFORE the provider call, every turn.
+        //
+        // This is the only thing standing between a long run and a provider
+        // 400: `fit_to_window` and `compress_oldest` were both written, both
+        // tested, and both never called, so the transcript grew without bound
+        // until the provider rejected it.
+        //
+        // Order matters and is the whole design: model-assisted compression
+        // first (it preserves meaning), then the deterministic fit (it always
+        // works, and covers the remainder compression did not). Running the
+        // deterministic fit first would drop the oldest exchanges outright and
+        // leave compression nothing to summarize.
+        if let Some(budget) = self.window_budget(chain) {
+            let _ = self.fit_context(messages, &budget, run_id);
         }
         // Chain events (Attempt/Usage/Completed/Fallback/…) project into the
         // ledger through one sink — no manual model lifecycle emissions here.
@@ -1717,6 +1898,10 @@ fn done_call_ids(entries: &[pantheon_storage::LedgerEntry]) -> std::collections:
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "session_context_tests.rs"]
+mod context_tests;
 
 #[cfg(test)]
 #[path = "session_cancel_tests.rs"]

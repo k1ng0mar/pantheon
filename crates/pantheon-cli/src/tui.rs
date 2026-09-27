@@ -820,11 +820,11 @@ enum TuiEvent {
 /// Entry point for the Pantheon agent cockpit TUI.
 pub fn run_tui_session() -> Result<(), Box<dyn std::error::Error>> {
     use crate::config_doc;
-    use crate::session_cli::build_model_policy;
+    use crate::config_doc::build_model_policy;
     use std::sync::mpsc;
 
     let file_cfg = config_doc::Config::load_or_report(&crate::data_dir());
-    let model_policy = build_model_policy(&file_cfg, None, None);
+    let model_policy = build_model_policy(file_cfg.as_ref(), None, None);
     let policy = crate::config_schema::policy_for_config(&file_cfg);
     let secrets = config_doc::chat_secrets(file_cfg.as_ref());
 

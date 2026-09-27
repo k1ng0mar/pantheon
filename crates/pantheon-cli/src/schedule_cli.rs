@@ -455,11 +455,12 @@ fn format_last(last: Option<i64>) -> String {
 /// that fails loudly.
 fn run_job_now(job: &StoredJob, data_dir: &Path) {
     use crate::config_doc;
-    use crate::session_cli::build_model_policy;
+    use crate::config_doc::build_model_policy;
     use pantheon_runtime::session::Session;
 
     let file_cfg = config_doc::Config::load_or_report(data_dir);
-    let model_policy = build_model_policy(&file_cfg, job.provider.clone(), job.model.clone());
+    let model_policy =
+        build_model_policy(file_cfg.as_ref(), job.provider.clone(), job.model.clone());
     let allow_memory = file_cfg
         .as_ref()
         .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))

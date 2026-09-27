@@ -21,7 +21,7 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 }
 pub fn cmd_serve(args: &[String]) {
     use crate::config_doc;
-    use crate::session_cli::build_model_policy;
+    use crate::config_doc::build_model_policy;
     use std::sync::Arc;
 
     // Resolve the Session exactly as `pantheon chat` and the REPL do: the
@@ -39,7 +39,7 @@ pub fn cmd_serve(args: &[String]) {
         let cfg = config_doc::Config::load(dir)
             .ok()
             .or_else(|| file_cfg.clone());
-        let model_policy = build_model_policy(&cfg, None, None);
+        let model_policy = build_model_policy(cfg.as_ref(), None, None);
         let policy = crate::config_schema::policy_for_config(&cfg);
         let secrets = config_doc::chat_secrets(cfg.as_ref());
         pantheon_runtime::session::Session::new(dir.clone(), policy, model_policy, secrets)
@@ -79,9 +79,9 @@ pub fn cmd_serve(args: &[String]) {
 /// the original user message, which would append a duplicate turn.
 pub fn resume_after_grant(run_id: &str) {
     use crate::config_doc;
-    use crate::session_cli::build_model_policy;
+    use crate::config_doc::build_model_policy;
     let file_cfg = config_doc::Config::load_or_report(&data_dir());
-    let model_policy = build_model_policy(&file_cfg, None, None);
+    let model_policy = build_model_policy(file_cfg.as_ref(), None, None);
     let allow_memory = file_cfg
         .as_ref()
         .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))

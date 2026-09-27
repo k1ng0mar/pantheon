@@ -4,7 +4,6 @@ use pantheon_core::events::Event;
 use pantheon_extensions::{doctor, ExtensionManager, Hook, RunnerConfig};
 use pantheon_memory::{markdown, BackendSelection, LayerKind, MemoryStore, Proposal, Provenance};
 use pantheon_runtime::{new_run_id, Supervisor};
-use pantheon_secrets::SecretVault;
 use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -82,9 +81,9 @@ fn run_delivered_task(task_id: &Option<String>, say: &Option<String>, target: &s
     let run_id = task_id.clone().unwrap_or_else(pantheon_runtime::new_run_id);
 
     use crate::config_doc;
-    use crate::session_cli::build_model_policy;
+    use crate::config_doc::build_model_policy;
     let file_cfg = config_doc::Config::load_or_report(&data_dir());
-    let model_policy = build_model_policy(&file_cfg, None, None);
+    let model_policy = build_model_policy(file_cfg.as_ref(), None, None);
     let allow_memory = file_cfg
         .as_ref()
         .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
@@ -149,11 +148,9 @@ fn usage() -> String {
     s.push_str(
         "  pantheon                      open a session (TUI on a terminal, REPL otherwise)\n",
     );
-    s.push_str("  pantheon chat \"message\"      one-shot turn; --id to resume, --choose to pick a model\n");
     s.push_str("  pantheon --help | --version\n\n");
 
     s.push_str("TALK TO IT\n");
-    s.push_str("  chat [--id ID] [--model M] [--provider P] [--key K] \"message\"\n");
     s.push_str("  run  --taskID <id> [--say TEXT] [--fail CODE] [--ext]\n");
     s.push_str("        [--deliver session|telegram|discord]\n");
     s.push_str("        run a task by id; delivery defaults to an in-session turn\n\n");
@@ -213,7 +210,6 @@ fn usage() -> String {
 /// kept in sync with the `match args[1]` arms in `main`.
 const KNOWN_VERBS: &[&str] = &[
     "audit",
-    "chat",
     "doctor",
     "extensions",
     "fallback",
@@ -423,85 +419,6 @@ fn cli_fire(hook: Hook, session: &str, platform: &str) -> Option<String> {
     out
 }
 
-/// Interactive model picker. Lists all cataloged provider/model pairs,
-/// lets the user filter by typing, then selects by number. Returns
-/// (provider_id, model_name) or None if cancelled.
-fn pick_model() -> Option<(String, String)> {
-    use std::io::{self, BufRead, Write};
-    let stdin = io::stdin();
-    let mut filter = String::new();
-
-    loop {
-        // Build the filtered list each iteration.
-        let all: Vec<(String, String, String)> = pantheon_core::catalog::all_providers()
-            .iter()
-            .flat_map(|p| {
-                p.models
-                    .iter()
-                    .map(move |m| {
-                        (
-                            p.id.clone(),
-                            m.model.clone(),
-                            format!("{} / {}", p.label, m.model),
-                        )
-                    })
-                    .chain(std::iter::once((
-                        p.id.clone(),
-                        String::new(),
-                        format!("{} / (any)", p.label),
-                    )))
-            })
-            .filter(|(_, _, label)| {
-                filter.is_empty() || label.to_lowercase().contains(&filter.to_lowercase())
-            })
-            .collect();
-
-        // Terminal display: list + prompt.
-        print!("\x1b[2J\x1b[H"); // clear screen
-        println!("Pantheon model picker — type to filter, <Enter> on a number to select, /clear to reset, /q to cancel\n");
-        if !filter.is_empty() {
-            println!("filter: {}\n", filter);
-        }
-        if all.is_empty() {
-            println!("(no matches)");
-        }
-        for (i, (_, _, label)) in all.iter().enumerate() {
-            println!("  {:>3}  {}", i, label);
-        }
-        print!("\n> ");
-        io::stdout().flush().ok()?;
-
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line).ok() == Some(0) {
-            return None; // EOF
-        }
-        let line = line.trim();
-
-        if line.is_empty() {
-            continue;
-        }
-        if line == "/q" || line == "q" {
-            return None;
-        }
-        if line == "/clear" || line == "c" {
-            filter.clear();
-            continue;
-        }
-
-        // Try to parse as a number (selection).
-        if let Ok(n) = line.parse::<usize>() {
-            if n < all.len() {
-                let (pid, model, _) = &all[n];
-                return Some((pid.clone(), model.clone()));
-            }
-            eprintln!("out of range");
-            continue;
-        }
-
-        // Otherwise treat as a search filter.
-        filter = line.to_string();
-    }
-}
 fn memory_file() -> PathBuf {
     std::env::var_os("PANTHEON_MEMORY_FILE")
         .map(PathBuf::from)
@@ -572,174 +489,6 @@ fn main() {
         return;
     }
     match args[1].as_str() {
-        "chat" => {
-            let mut id: Option<String> = None;
-            let mut model: Option<String> = None;
-            let mut provider: Option<String> = None;
-            let mut key: Option<String> = None;
-            let mut choose = false;
-            let mut message = String::new();
-            let mut i = 2;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--id" => {
-                        i += 1;
-                        if i < args.len() {
-                            id = Some(args[i].clone());
-                        }
-                    }
-                    "--model" => {
-                        i += 1;
-                        if i < args.len() {
-                            model = Some(args[i].clone());
-                        }
-                    }
-                    "--provider" => {
-                        i += 1;
-                        if i < args.len() {
-                            provider = Some(args[i].clone());
-                        }
-                    }
-                    "--key" => {
-                        i += 1;
-                        if i < args.len() {
-                            key = Some(args[i].clone());
-                        }
-                    }
-                    "--choose" => {
-                        choose = true;
-                    }
-                    // A leading "-" is a flag, not the prompt. Swallowing it
-                    // as the message sends the user's typo to the model as if
-                    // they had typed it, which is worse than an error.
-                    a if a.starts_with('-') => {
-                        eprintln!("pantheon chat: unknown option {a}");
-                        eprintln!("usage: pantheon chat [--id ID] [--model M] [--provider P] [--key K] [--choose] \"message\"");
-                        eprintln!(
-                            "  --id: continue an existing run instead of starting a new session"
-                        );
-                        std::process::exit(2);
-                    }
-                    _ if message.is_empty() => message = args[i].clone(),
-                    _ => {}
-                }
-                i += 1;
-            }
-            // Interactive model picker: search/filter the catalog, then
-            // select by number. Falls back to message arg if stdin not a tty.
-            if choose {
-                match pick_model() {
-                    Some((p, m)) => {
-                        provider = Some(p);
-                        model = Some(m);
-                        // If no message on the command line, read from --say or prompt.
-                    }
-                    None => std::process::exit(0),
-                }
-            }
-            if message.is_empty() && choose {
-                // After picking, read message from stdin if available.
-                use std::io::Read;
-                let mut buf = String::new();
-                if std::io::stdin().read_to_string(&mut buf).is_ok() {
-                    message = buf.trim().to_string();
-                }
-            }
-            if message.is_empty() {
-                eprintln!("usage: pantheon chat [--id ID] [--model M] [--provider P] [--choose] \"message\"");
-                eprintln!("  --choose: interactive catalog picker (searchable)");
-                std::process::exit(2);
-            }
-            // Config file (from setup) provides defaults; flags and env win.
-            let file_cfg = config_doc::Config::load_or_report(&data_dir());
-            let cfg_model = file_cfg
-                .as_ref()
-                .and_then(|c| c.model.clone())
-                .map(|m| (Some(m.provider), Some(m.model)));
-            // Model policy: default from flags > env > config > fallback.
-            let default = pantheon_core::model::DefaultModel {
-                provider: provider
-                    .or(cfg_model
-                        .as_ref()
-                        .and_then(|(p, _)| p.clone())
-                        .or_else(|| std::env::var("PANTHEON_PROVIDER").ok()))
-                    .unwrap_or_else(|| "local".into()),
-                model: model
-                    .or(cfg_model
-                        .as_ref()
-                        .and_then(|(_, m)| m.clone())
-                        .or_else(|| std::env::var("PANTHEON_MODEL").ok()))
-                    .unwrap_or_else(|| "llama3.2".into()),
-            };
-            let mut chain = pantheon_core::model::FallbackChain::default();
-            if let Some(fallbacks) = file_cfg
-                .as_ref()
-                .and_then(|c| c.model.as_ref())
-                .map(|m| m.fallbacks.clone())
-            {
-                for f in fallbacks {
-                    chain.fallbacks.push(pantheon_core::model::DefaultModel {
-                        provider: f.provider,
-                        model: f.model,
-                    });
-                }
-            }
-            let model_policy = pantheon_core::model::ModelPolicy {
-                default: default.clone(),
-                fallbacks: chain,
-                auxiliaries: config_doc::auxiliaries(file_cfg.as_ref(), &default),
-            };
-            // Resolve API key through the secrets broker: the config-named
-            // env var, then PANTHEON_API_KEY, then --key. Keys travel as
-            // SecretValue in vaults, never as plain Strings in session
-            // state. --key uses with_vault_front so an explicit flag beats
-            // the config- and env-seeded vaults.
-            let mut secrets = config_doc::chat_secrets(file_cfg.as_ref());
-            if let Some(k) = &key {
-                let mem = pantheon_secrets::MemoryVault::new();
-                let _ = mem.set(
-                    "PANTHEON_API_KEY",
-                    pantheon_secrets::SecretValue::new(k.clone()),
-                );
-                secrets = secrets.with_vault_front(Box::new(mem));
-            }
-            let policy = config_schema::policy_for_config(&file_cfg);
-            let session = match pantheon_runtime::session::Session::new(
-                data_dir(),
-                policy,
-                model_policy,
-                secrets,
-            ) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("open session: {e}");
-                    std::process::exit(1);
-                }
-            };
-            let run_id = id.unwrap_or_else(pantheon_runtime::new_run_id);
-            // `Session::chat` returns the outcome and prints nothing. The
-            // answer used to surface as a side effect of a println! buried in
-            // the runtime, which meant every other caller (the TUI, the AG-UI
-            // worker, `run --deliver`) had to work around a library writing
-            // to their stdout. Printing the returned text here is the fix.
-            match session.chat(&run_id, &message) {
-                Ok(outcome) => {
-                    let answer = outcome_text(&outcome);
-                    if !answer.is_empty() {
-                        println!("{answer}");
-                    } else {
-                        eprintln!(
-                            "run {run_id} produced no answer text; see `pantheon runs {run_id}`"
-                        );
-                    }
-                    eprintln!("[run {run_id}]");
-                }
-                Err(e) => {
-                    eprintln!("run failed: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
         "memory" => {
             if args.len() < 3 {
                 memory_help();
@@ -1327,7 +1076,7 @@ timeout_ms = 5000
                 eprintln!();
                 eprintln!("run writes synthetic ledger events only: it never calls a model and");
                 eprintln!(
-                    "never executes the tool named by --tool. Use `pantheon chat` for a real"
+                    "never executes the tool named by --tool. Use `pantheon run --say TEXT` for a real"
                 );
                 eprintln!("turn, or `pantheon run --say TEXT` to seed a run for recovery testing.");
                 std::process::exit(2);
@@ -1752,7 +1501,6 @@ mod verb_guard_tests {
         // whole truth and the test fails if a new arm is added without
         // registering it here and in KNOWN_VERBS.)
         for v in [
-            "chat",
             "run",
             "runs",
             "logs",

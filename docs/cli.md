@@ -39,20 +39,6 @@ first prompt by the title auxiliary (config `[title_gen]`, default
 `/history`, and `/status` show it; the title is a `SessionTitled` ledger
 event, so `pantheon runs <run>` shows how it was produced.
 
-### chat
-```
-pantheon chat [--id ID] [--model M] [--provider P] [--key K] [--choose] "message"
-```
-One-shot turn: runs one conversation turn with the full tool loop, then
-exits. `--id` continues a named run (terminal runs are reopened); `--choose`
-opens an interactive model picker from the catalog.
-Model/provider flags override config.toml, which overrides
-`PANTHEON_MODEL`/`PANTHEON_PROVIDER`.
-
-There is no offline or fixture provider. Every chat turn hits the
-configured endpoint over HTTP; unknown provider ids (including `mock`)
-fail with `MOCK_PROVIDER_UNCONFIGURED`.
-
 ### run
 ```
 pantheon run --taskID <id> --say "text" [--deliver session|telegram|discord]
