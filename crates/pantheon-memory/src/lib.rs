@@ -173,12 +173,17 @@ pub enum WriteRefusal {
     MissingCapability,
     NoProvenance,
     Empty,
-    TooLarge { bytes: usize, max: usize },
+    TooLarge {
+        bytes: usize,
+        max: usize,
+    },
     EphemeralNotPersisted,
     /// The value trips the secret-pattern scan (`secret_scan`). `class`
     /// names the matched pattern class ("labeled password", "github token
     /// prefix") — never the secret itself.
-    SecretDetected { class: &'static str },
+    SecretDetected {
+        class: &'static str,
+    },
 }
 
 impl WriteRefusal {
@@ -309,7 +314,12 @@ pub fn confirm_write(
             "grant memory.confirm in the agent policy",
         ));
     }
-    store.promote(layer, namespace, key, pantheon_api::provenance::TrustTier::Memory)
+    store.promote(
+        layer,
+        namespace,
+        key,
+        pantheon_api::provenance::TrustTier::Memory,
+    )
 }
 
 /// Recall for one agent, across layers, narrowest first.
@@ -549,7 +559,3 @@ fn gate_proposal(
     }
     Ok(p)
 }
-
-#[cfg(test)]
-#[path = "lib_tests.rs"]
-mod tests;

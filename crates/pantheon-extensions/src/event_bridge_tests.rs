@@ -62,20 +62,6 @@ fn model_events_map_to_api_and_stream_hooks() {
 }
 
 #[test]
-fn stream_delta_is_opt_in() {
-    let d = Event::ModelDelta {
-        run_id: "r1".into(),
-        delta: "tok".into(),
-    };
-    // Off by default: one subprocess per token would stall the loop.
-    assert_eq!(hook_of(&d), None);
-    std::env::set_var("PANTHEON_HOOK_STREAM_DELTA", "1");
-    assert_eq!(hook_of(&d), Some(Hook::OnStreamDelta));
-    std::env::remove_var("PANTHEON_HOOK_STREAM_DELTA");
-    assert_eq!(hook_of(&d), None);
-}
-
-#[test]
 fn subagent_events_map_to_swarm_hooks() {
     let s = Event::AgentSpawned {
         run_id: "r1".into(),
@@ -182,6 +168,7 @@ fn every_mapped_hook_is_an_observer() {
         }
     }
 }
+
 #[test]
 fn compaction_events_map_to_on_compaction() {
     // OMP's start/end pair collapses onto one post-facto observer; both

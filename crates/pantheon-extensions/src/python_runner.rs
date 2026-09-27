@@ -236,7 +236,3 @@ pub fn fire_hook_full(
         }
     }
 }
-
-#[cfg(test)]
-#[path = "python_runner_tests.rs"]
-mod tests;

@@ -120,7 +120,8 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
     reg.register(
         ToolSchema {
             name: "read_file".into(),
-            description: "Read a text file (compacted if very large). Confined to the workspace.".into(),
+            description: "Read a text file (compacted if very large). Confined to the workspace."
+                .into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": { "path": { "type": "string" } },
@@ -213,7 +214,8 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
     reg.register(
         ToolSchema {
             name: "list_dir".into(),
-            description: "List a directory's entries, one per line. Confined to the workspace.".into(),
+            description: "List a directory's entries, one per line. Confined to the workspace."
+                .into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": { "path": { "type": "string" } },

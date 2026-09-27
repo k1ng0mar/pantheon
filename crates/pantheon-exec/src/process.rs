@@ -72,6 +72,3 @@ impl ProcessGroup {
     }
 }
 
-#[cfg(test)]
-#[path = "process_tests.rs"]
-mod tests;

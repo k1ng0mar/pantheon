@@ -12,7 +12,6 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::Mutex;
 
-
 /// The only states a durable operation may occupy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -402,7 +401,3 @@ fn decode_row(row: (String, String, i64, String, String)) -> Result<Operation, P
         state,
     })
 }
-
-#[cfg(test)]
-#[path = "operations_tests.rs"]
-mod tests;

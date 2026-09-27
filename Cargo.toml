@@ -26,6 +26,9 @@ members = [
   # pantheon-tui is the one terminal application: the `pantheon` binary
   # (interactive session + non-interactive verbs) lives here.
   "crates/pantheon-tui",
+  # Behavioral/integration/eval test suite. Not shipped; runs with
+  # `cargo test -p pantheon-eval`.
+  "eval",
 ]
 
 [workspace.package]

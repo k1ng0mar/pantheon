@@ -218,6 +218,3 @@ pub struct PipelineOutcome {
     pub outputs: std::collections::BTreeMap<String, String>,
 }
 
-#[cfg(test)]
-#[path = "pipeline_runner_tests.rs"]
-mod tests;

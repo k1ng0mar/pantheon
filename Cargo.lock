@@ -1855,6 +1855,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "pantheon-eval"
+version = "0.1.0"
+dependencies = [
+ "pantheon",
+ "pantheon-agent",
+ "pantheon-api",
+ "pantheon-capability",
+ "pantheon-exec",
+ "pantheon-extensions",
+ "pantheon-gateway",
+ "pantheon-mcp",
+ "pantheon-memory",
+ "pantheon-migration",
+ "pantheon-providers",
+ "pantheon-runtime",
+ "pantheon-sandbox",
+ "pantheon-scheduler",
+ "pantheon-secrets",
+ "pantheon-storage",
+ "pantheon-swarm",
+ "pantheon-tools",
+ "pantheon-tui",
+ "rusqlite",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+]
+
+[[package]]
 name = "pantheon-exec"
 version = "0.1.0"
 dependencies = [

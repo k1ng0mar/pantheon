@@ -196,9 +196,6 @@ pub fn run_tool_operation(
     }
 }
 
-#[cfg(test)]
-#[path = "operation_tests.rs"]
-mod tests;
 
 /// Convenience adapter for the common case where translation is identity and
 /// the result is a JSON-safe copy.  This is useful for builtins and tests;

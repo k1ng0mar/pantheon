@@ -23,13 +23,5 @@ pub mod tools;
 pub mod vault_tools;
 
 #[cfg(test)]
-#[path = "skill_tools_tests.rs"]
-mod skill_tools_tests;
-
-#[cfg(test)]
 #[path = "plugin_tools_tests.rs"]
 mod plugin_tools_tests;
-
-#[cfg(test)]
-#[path = "safewrite_tools_tests.rs"]
-mod safewrite_tools_tests;

@@ -44,9 +44,14 @@ fn fnv1a_hex(data: &[u8]) -> String {
     format!("{h:016x}")
 }
 fn uniq() -> String {
+    // Millisecond timestamps alone collide under rapid successive calls
+    // (two checkpoints created in the same ms would share an ID and
+    // overwrite each other's manifests), so mix in a process-wide counter.
+    static CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let ms = now_ms() as u64;
+    let n = CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!(
-        "{ms}_{:04}",
+        "{ms}_{:04}_{n}",
         (ms.wrapping_add(std::process::id() as u64) >> 7) % 10000
     )
 }

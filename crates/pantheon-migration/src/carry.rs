@@ -1003,7 +1003,3 @@ fn collect_transcripts(
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "carry_tests.rs"]
-mod tests;

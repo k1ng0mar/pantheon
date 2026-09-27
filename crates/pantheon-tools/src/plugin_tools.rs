@@ -145,11 +145,7 @@ pub fn register_plugin_tools(
         // registered (a builtin, or another plugin's tool), even if it is
         // not in BUILTIN_TOOL_NAMES.
         let lower = cap.name.to_lowercase();
-        if let Some(existing) = reg
-            .names()
-            .into_iter()
-            .find(|n| n.to_lowercase() == lower)
-        {
+        if let Some(existing) = reg.names().into_iter().find(|n| n.to_lowercase() == lower) {
             return Err(name_err(
                 "PLUGIN_TOOL_NAME_CONFLICT",
                 format!(

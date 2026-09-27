@@ -87,7 +87,8 @@ impl HttpBackend {
     }
 
     fn clamp_hit(&self, mut hit: Recalled) -> Recalled {
-        hit.record.provenance.trust = crate::clamp_trust(hit.record.provenance.trust, self.trust_ceiling);
+        hit.record.provenance.trust =
+            crate::clamp_trust(hit.record.provenance.trust, self.trust_ceiling);
         hit
     }
 

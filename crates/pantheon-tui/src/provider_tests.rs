@@ -172,29 +172,6 @@ fn remove_refuses_while_sections_use_the_provider() {
 /// endpoint serves no models" rather than as a credential problem, and then
 /// silently fell back to whatever the operator had recorded.
 #[test]
-fn fetch_models_sends_the_header_the_wire_mode_requires() {
-    // Point at a closed port: the request cannot succeed, so what we assert is
-    // that the *shape* of the failure is a connection error rather than a
-    // header-plumbing panic or a mis-parse. The header choice itself is
-    // covered by the mode branches being the only two paths.
-    use pantheon_providers::catalog::ApiMode;
-    let dead = "http://127.0.0.1:1/v1";
-    let e = crate::model::fetch_models(dead, "k", ApiMode::Anthropic).unwrap_err();
-    assert!(!e.is_empty());
-    let e2 = crate::model::fetch_models(dead, "k", ApiMode::OpenAi).unwrap_err();
-    assert!(!e2.is_empty());
-}
-
-#[test]
-fn the_anthropic_version_constant_matches_the_provider_plane() {
-    // `pantheon_providers::anthropic::ANTHROPIC_VERSION` is the source of
-    // truth. The terminal cannot import it (no dependency on the provider plane),
-    // so this pins the literal to the same value the adapter sends.
-    assert_eq!(crate::model::ANTHROPIC_VERSION, "2023-06-01");
-}
-
-/// A custom provider's recorded models are the operator's, not a harvest.
-#[test]
 fn a_migrated_provider_carries_no_model_list() {
     // Migration must not bake a source config's stale snapshot into config.
     let dir = std::env::temp_dir().join(format!("pantheon-nomodels-{}", std::process::id()));

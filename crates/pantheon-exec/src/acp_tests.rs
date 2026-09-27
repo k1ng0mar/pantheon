@@ -92,38 +92,3 @@ fn framed_and_bare_messages_both_decode() {
     assert!(decode_one(&mut cur5, Duration::from_secs(2)).is_err());
 }
 
-#[test]
-fn handshake_with_fake_server_succeeds() {
-    let py = fake_server_py();
-    let mut b = AcpBackend::spawn("python3", &[py.to_str().unwrap()]).unwrap();
-    b.initialize(Duration::from_secs(10)).unwrap();
-    assert_eq!(b.server_version, Some(ACP_PROTOCOL_VERSION));
-    assert_eq!(b.server_capabilities, vec!["prompt".to_string()]);
-    assert_eq!(b.status()["session_prompt"], "unbuilt");
-}
-
-#[test]
-fn spawn_failure_names_the_missing_harness() {
-    let e: String = match AcpBackend::spawn("pantheon-no-such-harness-xyz", &[]) {
-        Ok(_) => panic!("a missing harness must not spawn"),
-        Err(e) => e,
-    };
-    assert!(e.contains("spawn"), "{e}");
-}
-
-#[test]
-fn version_mismatch_is_an_error_not_a_guess() {
-    // A server answering version 999 must not be treated as compatible.
-    let msg = RpcMessage::Response {
-        id: serde_json::json!(1),
-        result: Some(serde_json::json!({"protocolVersion": 999})),
-        error: None,
-    };
-    match msg {
-        RpcMessage::Response { result, .. } => {
-            let v = result.unwrap()["protocolVersion"].as_u64().unwrap();
-            assert_ne!(v as u32, ACP_PROTOCOL_VERSION);
-        }
-        _ => unreachable!(),
-    }
-}

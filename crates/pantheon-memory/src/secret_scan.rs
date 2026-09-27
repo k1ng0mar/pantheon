@@ -60,8 +60,7 @@ fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() {
         return None;
     }
-    hay.windows(needle.len())
-        .position(|w| w == needle)
+    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// `label` at `j` (end of label) is followed by `=`/`:` and a non-empty
@@ -155,10 +154,7 @@ mod tests {
             detect_secret("my api_key = \"AK-123\""),
             Some("labeled api key")
         );
-        assert_eq!(
-            detect_secret("{\"token\": \"abc\"}"),
-            Some("labeled token")
-        );
+        assert_eq!(detect_secret("{\"token\": \"abc\"}"), Some("labeled token"));
         assert_eq!(detect_secret("bearer: xyz"), Some("bearer token"));
     }
 
