@@ -133,3 +133,100 @@ fn tool_allowed_filters_by_capability() {
     let coder = pantheon_api::capability::Policy::coder();
     assert!(tool_allowed(plugin, "safe_read", &coder));
 }
+
+// ---- manifest runner path traversal regression tests ----
+
+fn plugin_with_runner(root: &Path, runner: &str) -> DiscoveredPlugin {
+    DiscoveredPlugin {
+        manifest: PluginManifest {
+            name: "t".into(),
+            description: String::new(),
+            version: "0.1.0".into(),
+            sha: None,
+            maintainer: String::new(),
+            capabilities: vec![],
+            env_vars: vec![],
+            runner: runner.into(),
+            enabled: false,
+        },
+        location: PluginLocation::User,
+        root: root.to_path_buf(),
+    }
+}
+
+#[test]
+fn verify_rejects_dotdot_runner() {
+    let d = tempdir().unwrap();
+    for bad in ["../evil.sh", "sub/../../evil.sh"] {
+        let err = verify_plugin(&plugin_with_runner(d.path(), bad)).unwrap_err();
+        assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER", "{bad:?}");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn verify_rejects_dotdot_runner_windows_separator() {
+    // On Windows `\` is a path separator, so `..\evil.sh` is a traversal.
+    let d = tempdir().unwrap();
+    let err = verify_plugin(&plugin_with_runner(d.path(), "..\\evil.sh")).unwrap_err();
+    assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER");
+}
+
+#[test]
+fn verify_rejects_absolute_runner() {
+    let d = tempdir().unwrap();
+    let err = verify_plugin(&plugin_with_runner(d.path(), "/bin/sh")).unwrap_err();
+    assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER");
+}
+
+#[test]
+fn verify_rejects_empty_runner() {
+    let d = tempdir().unwrap();
+    for bad in ["", "   "] {
+        let err = verify_plugin(&plugin_with_runner(d.path(), bad)).unwrap_err();
+        assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER", "{bad:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn verify_rejects_symlinked_runner_escape() {
+    // The runner is a relative symlink pointing outside the plugin dir:
+    // the lexical check passes, the canonical containment check must not.
+    let d = tempdir().unwrap();
+    std::os::unix::fs::symlink("/bin/true", d.path().join("link.sh")).unwrap();
+    let err = verify_plugin(&plugin_with_runner(d.path(), "link.sh")).unwrap_err();
+    assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER");
+}
+
+#[test]
+fn verify_accepts_nested_relative_runner() {
+    let d = tempdir().unwrap();
+    let root = d.path();
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::write(root.join("bin").join("run.sh"), "#!/bin/sh\necho hi\n").unwrap();
+    let out = verify_plugin(&plugin_with_runner(root, "bin/run.sh")).unwrap();
+    assert_eq!(out, root.join("bin").join("run.sh"));
+}
+
+#[test]
+fn plugin_install_dir_rejects_bad_name() {
+    let d = tempdir().unwrap();
+    let long = "x".repeat(65);
+    for bad in ["../evil", "..", "/abs", "a/b", "", long.as_str()] {
+        let err = plugin_install_dir(d.path(), bad).unwrap_err();
+        assert_eq!(err.code, "PLUGIN_BAD_NAME", "{bad:?}");
+    }
+    assert!(!d.path().join("evil").exists(), "rejection must precede any write");
+}
+
+#[test]
+fn plugin_install_dir_stays_under_plugins_root() {
+    let d = tempdir().unwrap();
+    let dest = plugin_install_dir(d.path(), "good-name_2").unwrap();
+    assert!(
+        dest.ends_with("plugins/good-name_2"),
+        "unexpected dest: {}",
+        dest.display()
+    );
+}

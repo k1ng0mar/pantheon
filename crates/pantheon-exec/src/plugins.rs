@@ -186,17 +186,60 @@ pub fn set_enabled(plugin: &DiscoveredPlugin, enabled: bool) -> Result<(), Panth
 /// Install boundary. Verifies the manifest, resolves the runner path, and
 /// confirms the plugin directory is self-contained before enabling.
 ///
+/// The manifest `runner` must be a relative path with no `..` components
+/// (absolute paths and escapes are rejected), and after symlink
+/// resolution it must still sit inside the plugin dir.
+///
 /// Returns the path to the executable that the plugin supervisor should
 /// spawn. Does NOT execute anything — that happens in the supervisor.
 pub fn verify_plugin(plugin: &DiscoveredPlugin) -> Result<PathBuf, PantheonError> {
-    let runner = &plugin.manifest.runner;
-    let runner_path = plugin.root.join(runner);
+    let runner = plugin.manifest.runner.trim();
+    if runner.is_empty() {
+        return Err(merr(
+            "PLUGIN_UNSAFE_RUNNER",
+            "manifest has an empty runner".into(),
+        ));
+    }
+    let rel = Path::new(runner);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(merr(
+            "PLUGIN_UNSAFE_RUNNER",
+            format!("runner {runner:?} must be a relative path without '..'"),
+        ));
+    }
+    let runner_path = plugin.root.join(rel);
 
     // The runner must be a real file.
     if !runner_path.is_file() {
         return Err(merr(
             "PLUGIN_NO_RUNNER",
             format!("runner '{}' not found in {}", runner, plugin.root.display()),
+        ));
+    }
+
+    // Containment: resolve symlinks and prove the runner is inside the
+    // plugin dir. A manifest pointing at a symlink to /bin/sh would
+    // otherwise pass the relative-path check above.
+    let canon_root = plugin.root.canonicalize().map_err(|e| {
+        merr(
+            "PLUGIN_UNSAFE_RUNNER",
+            format!("canonicalize {}: {e}", plugin.root.display()),
+        )
+    })?;
+    let canon_runner = runner_path.canonicalize().map_err(|e| {
+        merr(
+            "PLUGIN_UNSAFE_RUNNER",
+            format!("canonicalize {}: {e}", runner_path.display()),
+        )
+    })?;
+    if !canon_runner.starts_with(&canon_root) {
+        return Err(merr(
+            "PLUGIN_UNSAFE_RUNNER",
+            format!("runner {runner:?} escapes the plugin dir"),
         ));
     }
 
@@ -344,6 +387,27 @@ pub fn catalog_names() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Install destination for a catalog plugin under `<data_dir>/plugins/`.
+/// The catalog is a remote document, so the entry name is slug-validated
+/// before it touches the filesystem, and the plugins root is canonicalized
+/// so a symlinked root cannot redirect the install. Extracted for testing.
+fn plugin_install_dir(data_dir: &Path, name: &str) -> Result<PathBuf, PantheonError> {
+    if !crate::skills::valid_slug(name) {
+        return Err(merr(
+            "PLUGIN_BAD_NAME",
+            format!("plugin name {name:?}: names must match [a-zA-Z0-9_-]{{1,64}}"),
+        ));
+    }
+    let root = data_dir.join("plugins");
+    std::fs::create_dir_all(&root).map_err(|e| merr("PLUGIN_INSTALL_DIR", format!("{e}")))?;
+    let canon_root = root
+        .canonicalize()
+        .map_err(|e| merr("PLUGIN_INSTALL_DIR", format!("{e}")))?;
+    // `name` is a validated single safe segment, so joining it onto the
+    // canonical root cannot escape.
+    Ok(canon_root.join(name))
+}
+
 /// Install a catalog plugin: clone the repo at the pinned SHA, write a
 /// manifest from the catalog entry, mark it enabled. Does NOT execute
 /// anything — verification happens later via `verify_plugin`.
@@ -364,7 +428,9 @@ pub fn install_catalog(
         .iter()
         .find(|e| e.name == name)
         .ok_or_else(|| merr("PLUGIN_NOT_FOUND", format!("'{name}' not in catalog")))?;
-    let dest = data_dir.join("plugins").join(&entry.name);
+    // The name comes from a remote catalog: slug-validate before it
+    // touches the filesystem, and resolve under the canonical plugins root.
+    let dest = plugin_install_dir(data_dir, &entry.name)?;
     if dest.exists() {
         return Err(merr(
             "PLUGIN_ALREADY_INSTALLED",
@@ -379,7 +445,7 @@ pub fn install_catalog(
     let repo = repo.trim_end_matches('/');
     // Clone into a temp dir first, so a failed checkout doesn't leave a
     // half-baked plugin dir.
-    let tmp_dest = data_dir.join("plugins").join(format!(".{}", entry.name));
+    let tmp_dest = dest.with_file_name(format!(".{}", entry.name));
     std::fs::create_dir_all(&tmp_dest).map_err(|e| merr("PLUGIN_INSTALL_DIR", format!("{e}")))?;
     let clone_result = std::process::Command::new("git")
         .arg("clone")

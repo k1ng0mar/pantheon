@@ -166,33 +166,55 @@ fn extract_with_tar(
     found.ok_or_else(|| "install failed: archive did not contain a pantheon binary".into())
 }
 
-/// Verify `asset_bytes` against the published `.sha256` file when one
-/// exists. Returns true when verified, false when no checksum was
-/// published (caller warns). Errors only on mismatch.
-fn verify_checksum(asset_url: &str, asset_bytes: &[u8]) -> Result<bool, String> {
-    let sha_url = format!("{asset_url}.sha256");
-    let resp = match ureq::get(&sha_url)
-        .set("User-Agent", "pantheon-update")
-        .timeout(REQUEST_TIMEOUT)
-        .call()
-    {
-        Ok(r) => r,
-        Err(ureq::Error::Status(404, _)) => return Ok(false),
-        Err(_) => return Ok(false),
-    };
-    let text = resp
-        .into_string()
-        .map_err(|_| "verify failed: could not read the checksum file".to_string())?;
-    let expected = text.split_whitespace().next().unwrap_or("").to_lowercase();
+/// Pure checksum comparison, extracted for testing: find the first
+/// 64-hex token in the published `.sha256` text (plain `<hex>` lines,
+/// `<hex>  <file>` sha256sum lines, and `SHA256 (file) = <hex>` BSD
+/// lines all work) and compare it against `actual_hex`.
+///
+/// Returns Ok(true) on match, Ok(false) when the text carries no usable
+/// digest, Err on mismatch.
+fn checksum_line_matches(text: &str, actual_hex: &str) -> Result<bool, String> {
+    let expected = text
+        .split_whitespace()
+        .map(|t| {
+            t.trim_matches(|c: char| c == '(' || c == ')' || c == '=' || c == '*')
+                .to_lowercase()
+        })
+        .find(|t| t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or_default();
     if expected.is_empty() {
         return Ok(false);
     }
-    // Hash via the system: sha256sum, shasum, or certutil on Windows.
-    let actual = hash_via_system(asset_bytes)?;
-    if actual.to_lowercase() != expected {
+    if actual_hex.to_lowercase() != expected {
         return Err("verify failed: checksum mismatch (download may be corrupt)".into());
     }
     Ok(true)
+}
+
+/// Verify `asset_bytes` against the published `.sha256` file.
+///
+/// Fail-closed: a missing checksum file (404), any network error, or an
+/// unreadable checksum file is an error, not a silent skip. Returns
+/// Ok(true) only when the digest matches; Ok(false) only when the
+/// checksum file exists but carries no usable digest.
+fn verify_checksum(asset_url: &str, asset_bytes: &[u8]) -> Result<bool, String> {
+    let sha_url = format!("{asset_url}.sha256");
+    let resp = ureq::get(&sha_url)
+        .set("User-Agent", "pantheon-update")
+        .timeout(REQUEST_TIMEOUT)
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(code, _) => {
+                format!("verify failed: checksum file returned HTTP {code} ({sha_url})")
+            }
+            _ => format!("verify failed: could not fetch the checksum file ({e})"),
+        })?;
+    let text = resp
+        .into_string()
+        .map_err(|_| "verify failed: could not read the checksum file".to_string())?;
+    // Hash via the system: sha256sum, shasum, or certutil on Windows.
+    let actual = hash_via_system(asset_bytes)?;
+    checksum_line_matches(&text, &actual)
 }
 
 fn hash_via_system(bytes: &[u8]) -> Result<String, String> {
@@ -240,7 +262,7 @@ fn hash_via_system(bytes: &[u8]) -> Result<String, String> {
 }
 
 pub fn usage() -> &'static str {
-    "usage: pantheon update [--check] [--version TAG] [--repo OWNER/REPO]\n  \n  Fetches the latest GitHub release and replaces this binary.\n  --check reports without changing anything."
+    "usage: pantheon update [--check] [--version TAG] [--repo OWNER/REPO] [--allow-unverified]\n  \n  Fetches the latest GitHub release and replaces this binary.\n  --check reports without changing anything.\n  Verification is fail-closed: a missing, unreadable, or mismatched\n  checksum aborts the update. Pass --allow-unverified to install anyway."
 }
 
 pub fn cmd_update(args: &[String]) {
@@ -261,6 +283,7 @@ pub fn cmd_update(args: &[String]) {
         None
     };
     let check_only = args.iter().any(|a| a == "--check");
+    let allow_unverified = args.iter().any(|a| a == "--allow-unverified");
     let repo = flag_val("--repo").unwrap_or_else(repo);
     let os = match os_id() {
         Some(o) => o,
@@ -316,12 +339,29 @@ pub fn cmd_update(args: &[String]) {
     });
 
     println!("· Verifying release");
+    // Fail-closed: any verification problem aborts the update unless the
+    // user explicitly passed --allow-unverified.
     match verify_checksum(&url, &bytes) {
         Ok(true) => println!("✓ Checksum verified"),
-        Ok(false) => eprintln!("⚠ no checksum published for {asset}; skipping verification"),
+        Ok(false) => {
+            if allow_unverified {
+                eprintln!(
+                    "⚠ no usable checksum published for {asset}; installing unverified (--allow-unverified)"
+                );
+            } else {
+                eprintln!(
+                    "update: verify failed: no usable checksum published for {asset}; refusing to install (re-run with --allow-unverified to override)"
+                );
+                std::process::exit(1);
+            }
+        }
         Err(e) => {
-            eprintln!("update: {e}");
-            std::process::exit(1);
+            if allow_unverified {
+                eprintln!("⚠ {e}; installing unverified (--allow-unverified)");
+            } else {
+                eprintln!("update: {e}");
+                std::process::exit(1);
+            }
         }
     }
 
@@ -415,5 +455,42 @@ mod tests {
             download_url("k1ng0mar/pantheon", "v0.1.0", "pantheon-v0.1.0-linux-x86_64.tar.gz"),
             "https://github.com/k1ng0mar/pantheon/releases/download/v0.1.0/pantheon-v0.1.0-linux-x86_64.tar.gz"
         );
+    }
+
+    #[test]
+    fn checksum_line_matches_accepts_common_formats() {
+        let hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        // Plain hex line.
+        assert_eq!(checksum_line_matches(hex, hex), Ok(true));
+        // sha256sum two-column output.
+        assert_eq!(
+            checksum_line_matches(&format!("{hex}  pantheon-v0.1.0.tar.gz"), hex),
+            Ok(true)
+        );
+        // BSD `cksum -a sha256` style.
+        assert_eq!(
+            checksum_line_matches(&format!("SHA256 (pantheon.tar.gz) = {hex}"), hex),
+            Ok(true)
+        );
+        // Case-insensitive.
+        assert_eq!(
+            checksum_line_matches(&hex.to_uppercase(), hex),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn checksum_line_mismatch_is_an_error() {
+        let hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        let other = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let err = checksum_line_matches(other, hex).unwrap_err();
+        assert!(err.contains("mismatch"), "{err}");
+    }
+
+    #[test]
+    fn checksum_line_without_digest_is_not_verified() {
+        let hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        assert_eq!(checksum_line_matches("", hex), Ok(false));
+        assert_eq!(checksum_line_matches("not a checksum file\n", hex), Ok(false));
     }
 }
