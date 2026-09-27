@@ -468,3 +468,67 @@ impl MemoryStore {
         Ok(out)
     }
 }
+
+/// Whether the memory FTS5 sidecar can answer a query.
+///
+/// Same reasoning as the ledger's `search_index_health`: a freshly created
+/// index has no rows and is healthy, while a damaged one raises on `MATCH`.
+/// Probing for a working query is the only way to tell them apart.
+pub fn fts_health(db: &std::path::Path) -> Result<bool, PantheonError> {
+    let conn = Connection::open(db).map_err(|e| serr("MEM_FTS_OPEN", e.to_string()))?;
+    let probe: Result<i64, _> = conn.query_row(
+        "SELECT count(*) FROM memories_fts WHERE memories_fts MATCH 'the' OR memories_fts MATCH 'project'",
+        [],
+        |r| r.get(0),
+    );
+    match probe {
+        Ok(_) => Ok(true),
+        // No table yet is normal for a fresh or pre-search store.
+        Err(e) if e.to_string().contains("no such table") => Ok(false),
+        Err(e) => Err(serr("MEM_FTS_UNUSABLE", e.to_string())),
+    }
+}
+
+/// Rebuild the memory FTS5 index from the `memories` table.
+///
+/// This one *is* a full rebuild, unlike the ledger's sidecar. `memories_fts` is
+/// an external-content table (`content='memories'`) kept in sync by the
+/// `memories_ai` / `memories_au` triggers, so the canonical rows are already
+/// in `memories` and re-deriving is a matter of repopulating the index:
+/// drop it, let `SCHEMA` recreate it with its triggers, then `rebuild`.
+///
+/// Hand-writing the CREATE would be the trap here: an external-content table
+/// with the wrong columns still opens and still answers MATCH, so a subtly
+/// wrong rebuild passes every "does it work" check while ranking results
+/// against a different column set. Re-running `SCHEMA` cannot drift from the
+/// writer.
+pub fn rebuild_fts(db: &std::path::Path) -> Result<u64, PantheonError> {
+    let conn = Connection::open(db).map_err(|e| serr("MEM_FTS_OPEN", e.to_string()))?;
+    conn.execute_batch("DROP TABLE IF EXISTS memories_fts;")
+        .map_err(|e| serr("MEM_FTS_DROP", e.to_string()))?;
+    // SCHEMA is `CREATE ... IF NOT EXISTS` throughout, so re-running it
+    // recreates the table *and* the triggers that maintain it.
+    conn.execute_batch(SCHEMA)
+        .map_err(|e| serr("MEM_FTS_RECREATE", e.to_string()))?;
+    // The FTS5 builtin rebuild command repopulates an external-content index
+    // from its content table. This is the part a hand-rolled INSERT list would
+    // get wrong.
+    conn.execute_batch("INSERT INTO memories_fts(memories_fts) VALUES('rebuild');")
+        .map_err(|e| serr("MEM_FTS_REBUILD", e.to_string()))?;
+    let n: i64 = conn
+        .query_row("SELECT count(*) FROM memories", [], |r| r.get(0))
+        .map_err(|e| serr("MEM_COUNT", e.to_string()))?;
+    Ok(n as u64)
+}
+
+/// Drop the FTS sidecar while leaving the triggers in place — the state a
+/// partial write or an interrupted migration leaves behind.
+///
+/// Takes a path rather than exposing a `Connection`, so a consumer can damage
+/// a store to test recovery without the public API growing a raw handle.
+/// Idempotent.
+pub fn damage_fts_for_test(db: &std::path::Path) {
+    let conn = Connection::open(db).expect("open memory db");
+    conn.execute_batch("DROP TABLE IF EXISTS memories_fts;")
+        .expect("drop fts");
+}

@@ -21,7 +21,7 @@ pub use backend::{
     BackendSelection,
 };
 pub use plugins::{load_dir as load_memory_plugins, MemoryPluginManifest, StdioBackend};
-pub use store::{MemoryStore, Recalled};
+pub use store::{damage_fts_for_test, fts_health, rebuild_fts, MemoryStore, Recalled};
 
 /// Backend boundary for external memory providers such as GalaxyMem,
 /// Mnemosyne, Honcho, Hindsight, OpenViking. Providers implement recall
