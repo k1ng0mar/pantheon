@@ -118,6 +118,142 @@ fn day_fields_are_or_ed_when_both_are_restricted() {
 }
 
 #[test]
+fn day_of_week_wildcard_does_not_force_daily_firing() {
+    // Regression: the `*` day-of-week field used to lose its wildcard flag
+    // when 7-is-Sunday was folded onto 0, so `0 0 1 * *` fell into the
+    // dom/dow OR-arm and fired every day. It must fire on the 1st only.
+    let first_of_month = CronSchedule::parse("0 0 1 * *").unwrap();
+    // 2026-09-01 was a Tuesday; 2026-09-20 a Sunday; 2026-10-01 a Thursday.
+    let tue_first = CivilTime {
+        year: 2026,
+        month: 9,
+        day: 1,
+        hour: 0,
+        minute: 0,
+        weekday: 2,
+    };
+    let wed_second = CivilTime {
+        day: 2,
+        weekday: 3,
+        ..tue_first
+    };
+    let sun_twentieth = CivilTime {
+        day: 20,
+        weekday: 0,
+        ..tue_first
+    };
+    let thu_oct_first = CivilTime {
+        month: 10,
+        day: 1,
+        weekday: 4,
+        ..tue_first
+    };
+    assert!(first_of_month.matches(tue_first));
+    assert!(first_of_month.matches(thu_oct_first));
+    assert!(
+        !first_of_month.matches(wed_second),
+        "the 2nd is not the 1st"
+    );
+    assert!(
+        !first_of_month.matches(sun_twentieth),
+        "a Sunday that is not the 1st must not fire"
+    );
+}
+
+#[test]
+fn day_of_month_wildcard_with_restricted_dow_fires_weekly() {
+    // Mirror image: `0 0 * * 1` fires Mondays, not every day.
+    let mondays = CronSchedule::parse("0 0 * * 1").unwrap();
+    let monday = CivilTime {
+        year: 2026,
+        month: 9,
+        day: 21,
+        hour: 0,
+        minute: 0,
+        weekday: 1,
+    };
+    let tuesday = CivilTime {
+        day: 22,
+        weekday: 2,
+        ..monday
+    };
+    assert!(mondays.matches(monday));
+    assert!(!mondays.matches(tuesday));
+}
+
+#[test]
+fn both_day_fields_wildcard_matches_any_day() {
+    let daily = CronSchedule::parse("0 0 * * *").unwrap();
+    for (day, weekday) in [(1, 2), (2, 3), (20, 0), (30, 3)] {
+        assert!(
+            daily.matches(CivilTime {
+                year: 2026,
+                month: 9,
+                day,
+                hour: 0,
+                minute: 0,
+                weekday,
+            }),
+            "day {day} should match"
+        );
+    }
+}
+
+#[test]
+fn weekday_range_fires_weekdays_only() {
+    // Standard Vixie semantics: restricted dow alone selects those days.
+    let weekdays = CronSchedule::parse("0 9 * * 1-5").unwrap();
+    let friday_9am = CivilTime {
+        year: 2026,
+        month: 9,
+        day: 25,
+        hour: 9,
+        minute: 0,
+        weekday: 5,
+    };
+    let saturday_9am = CivilTime {
+        day: 26,
+        weekday: 6,
+        ..friday_9am
+    };
+    assert!(weekdays.matches(friday_9am));
+    assert!(!weekdays.matches(saturday_9am));
+}
+
+#[test]
+fn sunday_alias_seven_still_wildcard_star() {
+    // `*` in dow must stay a wildcard even though the raw parse includes 7.
+    let daily = CronSchedule::parse("0 0 * * *").unwrap();
+    assert!(daily.day_of_week.is_wildcard());
+    let sunday_only = CronSchedule::parse("0 0 * * 7").unwrap();
+    assert!(!sunday_only.day_of_week.is_wildcard());
+    let sunday = CivilTime {
+        year: 2026,
+        month: 9,
+        day: 20,
+        hour: 0,
+        minute: 0,
+        weekday: 0,
+    };
+    let monday = CivilTime {
+        day: 21,
+        weekday: 1,
+        ..sunday
+    };
+    assert!(sunday_only.matches(sunday));
+    assert!(!sunday_only.matches(monday));
+}
+
+#[test]
+fn validate_accepts_good_rejects_bad() {
+    assert!(CronSchedule::validate("0 0 1 * *").is_ok());
+    assert!(CronSchedule::validate("* * * * *").is_ok());
+    let err = CronSchedule::validate("61 * * * *").unwrap_err();
+    assert_eq!(err.field, "minute");
+    assert!(CronSchedule::validate("not a cron").is_err());
+}
+
+#[test]
 fn bad_expressions_are_rejected_with_a_field_name() {
     assert_eq!(
         CronSchedule::parse("* * * *").unwrap_err().field,

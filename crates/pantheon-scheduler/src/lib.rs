@@ -7,12 +7,58 @@ use serde::{Deserialize, Serialize};
 pub mod cron;
 pub mod durable;
 pub mod idempotency;
+pub mod tick;
 pub mod webhook;
 
 pub use cron::{civil_from_ms, CronError, CronSchedule};
 pub use durable::DurableClaimLedger;
 pub use idempotency::{occurrence_key, runs_for_missed, ClaimLedger};
+pub use tick::{RunOutcome, TickDecision, TickDriver};
 pub use webhook::{accept as accept_webhook, route as route_webhook, Fire};
+
+/// Default ceiling for one job run: 10 minutes. A run that outlives it is
+/// abandoned (the tick stops waiting; Rust cannot kill the thread, so the
+/// run finishes detached). Override per job with [`Job::timeout_secs`].
+pub const DEFAULT_JOB_TIMEOUT_SECS: u64 = 600;
+
+/// What a tick does when it finds the job still running from an earlier
+/// fire. `Skip` (the default) drops the fire and logs it; `Replace`
+/// abandons the in-flight run and starts a fresh one; `Queue` runs once
+/// more after the in-flight run finishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverlapPolicy {
+    #[default]
+    Skip,
+    Replace,
+    Queue,
+}
+
+impl std::str::FromStr for OverlapPolicy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "skip" => Ok(Self::Skip),
+            "replace" => Ok(Self::Replace),
+            "queue" => Ok(Self::Queue),
+            other => Err(format!(
+                "unknown overlap policy '{other}' (use skip, replace, or queue)"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for OverlapPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Skip => "skip",
+            Self::Replace => "replace",
+            Self::Queue => "queue",
+        };
+        write!(f, "{s}")
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScheduleKind {
@@ -48,6 +94,14 @@ pub struct Job {
     pub model: Option<String>,
     #[serde(default)]
     pub provider: Option<String>,
+    /// Per-job run ceiling in seconds. `None` (the default) means
+    /// [`DEFAULT_JOB_TIMEOUT_SECS`]. A non-positive value is treated as
+    /// unset rather than as "abandon immediately".
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// What a tick does when the job is still running. Default: skip.
+    #[serde(default)]
+    pub overlap: OverlapPolicy,
 }
 
 impl Job {
@@ -61,6 +115,8 @@ impl Job {
             missed: MissedPolicy::RunOnce,
             model: None,
             provider: None,
+            timeout_secs: None,
+            overlap: OverlapPolicy::default(),
         }
     }
 
@@ -121,8 +177,46 @@ impl Job {
     /// error at registration, never a silent no-show at fire time.
     pub fn validate(&self) -> Result<(), cron::CronError> {
         match &self.kind {
-            ScheduleKind::Cron { expr } => cron::CronSchedule::parse(expr).map(|_| ()),
+            ScheduleKind::Cron { expr } => cron::CronSchedule::validate(expr),
             _ => Ok(()),
+        }
+    }
+
+    /// Effective run ceiling in seconds: the per-job setting, or the
+    /// default when unset (or set to 0, which would otherwise abandon
+    /// every run the instant it started).
+    pub fn effective_timeout_secs(&self) -> u64 {
+        self.timeout_secs
+            .filter(|s| *s > 0)
+            .unwrap_or(DEFAULT_JOB_TIMEOUT_SECS)
+    }
+
+    /// Stamp identifying this fire's occurrence for the claim ledger.
+    ///
+    /// Two ticks racing the same due fire must compute the same stamp so
+    /// their claims collapse onto one key and exactly one of them runs:
+    /// - cron: the minute bucket (a cron job fires at most once a minute);
+    /// - interval: the scheduled fire instant (`last + every`), or the
+    ///   quantum containing now for a first fire, so racing ticks agree;
+    /// - one-shot: its fixed fire time.
+    /// Returns `None` for kinds the tick loop never fires.
+    pub fn occurrence_stamp(&self, now_ms: i64, last_fire_ms: Option<i64>) -> Option<i64> {
+        match &self.kind {
+            ScheduleKind::Cron { .. } => Some(now_ms.div_euclid(60_000)),
+            ScheduleKind::OneShot { at_ms } => Some(*at_ms),
+            ScheduleKind::Interval { every_ms } => {
+                let every = *every_ms as i64;
+                if every <= 0 {
+                    return None;
+                }
+                Some(match last_fire_ms {
+                    None => now_ms.div_euclid(every) * every,
+                    Some(last) => last.saturating_add(every),
+                })
+            }
+            ScheduleKind::Manual | ScheduleKind::Webhook { .. } | ScheduleKind::Conditional { .. } => {
+                None
+            }
         }
     }
 }

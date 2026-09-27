@@ -4,9 +4,10 @@
 //! (§21) is handled by the scheduler's DurableClaimLedger over the
 //! ClaimStore.
 
-use pantheon_scheduler::{Job, MissedPolicy, ScheduleKind};
+use pantheon_scheduler::{DurableClaimLedger, Job, MissedPolicy, OverlapPolicy, ScheduleKind, TickDecision, TickDriver};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// A stored scheduled job with its run state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +27,13 @@ pub struct StoredJob {
     pub model: Option<String>,
     #[serde(default)]
     pub provider: Option<String>,
+    /// Per-job run ceiling in seconds. None = the scheduler default
+    /// (10 minutes); a run past it is abandoned.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// What a tick does when the job is still running. Default: skip.
+    #[serde(default)]
+    pub overlap: OverlapPolicy,
 }
 
 impl From<StoredJob> for Job {
@@ -39,6 +47,8 @@ impl From<StoredJob> for Job {
             target_agent: s.agent.unwrap_or_else(|| "nyx".into()),
             model: s.model,
             provider: s.provider,
+            timeout_secs: s.timeout_secs,
+            overlap: s.overlap,
         }
     }
 }
@@ -114,8 +124,8 @@ fn load_or_exit(data_dir: &Path) -> Vec<StoredJob> {
 /// Schedule a task to run repeatedly.
 pub fn cmd_schedule(args: &[String], data_dir: &Path) {
     if args.len() < 3 {
-        eprintln!("usage: pantheon schedule <task> --30m [--agent nyx]");
-        eprintln!("       pantheon schedule list|pause|resume|cancel|run <id>");
+        eprintln!("usage: pantheon schedule <task> (--every 30m | --cron '0 9 * * *') [--agent nyx] [--timeout 10m] [--overlap skip|replace|queue]");
+        eprintln!("       pantheon schedule list|pause|resume|cancel|run|tick <id>");
         std::process::exit(2);
     }
 
@@ -128,6 +138,42 @@ pub fn cmd_schedule(args: &[String], data_dir: &Path) {
         return;
     }
 
+    // Create: pantheon schedule <task> [--every|N<unit>] [--agent NAME] [--cron EXPR]
+    //          [--model M] [--provider P] [--timeout 10m] [--overlap skip|replace|queue]
+    match build_scheduled_job(&args[2..]) {
+        Err(e) => {
+            eprintln!("error: {e}");
+            eprintln!("not scheduled: fix the arguments and retry");
+            std::process::exit(2);
+        }
+        Ok(stored) => {
+            let job_id = stored.id.clone();
+            let kind = stored.kind.clone();
+            let mut jobs = load_or_exit(data_dir);
+            jobs.push(stored);
+            if let Err(e) = save_jobs(data_dir, &jobs) {
+                eprintln!("save failed: {e}");
+                std::process::exit(1);
+            }
+
+            println!(
+                "scheduled {} [{}] — runs | cancel: pantheon schedule cancel {}",
+                job_id,
+                format_kind(&kind),
+                job_id
+            );
+        }
+    }
+}
+
+/// Build the stored job from `schedule create` arguments, validating
+/// everything before anything is persisted.
+///
+/// A bad cron expression used to be stored without a murmur and then
+/// silently never fire. Now it is rejected here, with the field and the
+/// reason, so a broken schedule is a loud error at registration instead
+/// of a quiet no-show at 3am.
+fn build_scheduled_job(args: &[String]) -> Result<StoredJob, String> {
     // Create: pantheon schedule <task> [--every|N<unit>] [--agent NAME] [--cron EXPR] [--model M] [--provider P]
     let CreateArgs {
         task,
@@ -136,59 +182,67 @@ pub fn cmd_schedule(args: &[String], data_dir: &Path) {
         cron,
         model,
         provider,
-    } = parse_create_args(&args[2..]);
+        timeout,
+        overlap,
+    } = parse_create_args(args);
+    if task.is_empty() {
+        return Err("need a task: pantheon schedule <task> --every 30m|--cron '0 9 * * *'".into());
+    }
 
     let kind = if let Some(expr) = &cron {
         ScheduleKind::Cron { expr: expr.clone() }
     } else if let Some(dur) = &every {
         match parse_duration(dur) {
             Ok(ms) => ScheduleKind::Interval { every_ms: ms },
-            Err(e) => {
-                eprintln!("bad duration: {e}");
-                std::process::exit(2);
-            }
+            Err(e) => return Err(format!("bad duration: {e}")),
         }
     } else {
-        eprintln!("error: need --every <duration> or --cron <expr>");
-        std::process::exit(2);
+        return Err("need --every <duration> or --cron <expr>".into());
     };
 
     let job_id = format!("job_{}", pantheon_runtime::new_run_id());
     let mut probe = Job::new(&job_id, kind.clone(), "nyx");
+    // Registration-time validation: reject the broken expression now.
+    probe
+        .validate()
+        .map_err(|e| format!("invalid --cron expression: {e}"))?;
     if let Some(m) = model.as_deref() {
-        if let Err(e) = probe.pin_model(m, provider.as_deref()) {
-            eprintln!("bad pin: {e}");
-            std::process::exit(2);
-        }
+        probe
+            .pin_model(m, provider.as_deref())
+            .map_err(|e| format!("bad pin: {e}"))?;
     } else if provider.is_some() {
-        eprintln!("note: --provider without --model pins nothing; add --model to pin");
-        std::process::exit(2);
+        return Err("--provider without --model pins nothing; add --model to pin".into());
     }
-    let stored = StoredJob {
-        id: job_id.clone(),
+    let timeout_secs = match timeout.as_deref() {
+        None => None,
+        Some(d) => {
+            let ms = parse_duration(d).map_err(|e| format!("bad --timeout: {e}"))?;
+            let secs = ms / 1000;
+            if secs == 0 {
+                return Err("bad --timeout: must be at least 1s".into());
+            }
+            Some(secs)
+        }
+    };
+    let overlap = match overlap.as_deref() {
+        None => OverlapPolicy::default(),
+        Some(o) => o
+            .parse::<OverlapPolicy>()
+            .map_err(|e| format!("bad --overlap: {e}"))?,
+    };
+    Ok(StoredJob {
+        id: job_id,
         task,
-        kind: kind.clone(),
+        kind,
         agent,
         missed: MissedPolicy::RunOnce,
         paused: false,
         last_run: None,
         model: probe.model,
         provider: probe.provider,
-    };
-
-    let mut jobs = load_or_exit(data_dir);
-    jobs.push(stored);
-    if let Err(e) = save_jobs(data_dir, &jobs) {
-        eprintln!("save failed: {e}");
-        std::process::exit(1);
-    }
-
-    println!(
-        "scheduled {} [{}] — runs | cancel: pantheon schedule cancel {}",
-        job_id,
-        format_kind(&kind),
-        job_id
-    );
+        timeout_secs,
+        overlap,
+    })
 }
 
 fn handle_subcommand(parts: &[String], data_dir: &Path) {
@@ -260,7 +314,12 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
             let jobs = load_or_exit(data_dir);
             match jobs.iter().find(|j| j.id == *id) {
                 Some(j) => {
-                    run_job_now(j, data_dir);
+                    // A manual `run` keeps the old hard-fail behavior: the
+                    // tick loop instead logs and continues with other jobs.
+                    if let Err(e) = run_job_now(j, data_dir) {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
                     // Record the fire time, otherwise `schedule list` keeps
                     // reporting "last: never" after a successful run and the
                     // user cannot tell a working job from a dead one.
@@ -289,7 +348,23 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
             // job could ever fire on its own. `tick` is the primitive a
             // daemon, cron entry, or CI step calls; `--watch` keeps it
             // running in the foreground.
+            //
+            // Every fire goes through the durable claim ledger first: the
+            // claim is an atomic first-wins INSERT, so two ticks racing the
+            // same due job — two threads, two processes, or a restart
+            // replaying a minute — agree on exactly one winner instead of
+            // double-executing. A claim that cannot be persisted fails
+            // closed: the run does not start.
             let watch = parts.iter().any(|a| a == "--watch");
+            let ledger = match DurableClaimLedger::open(&data_dir.join("claims.db")) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("tick: cannot open claim ledger: {e}");
+                    eprintln!("tick: refusing to fire without durable claims");
+                    std::process::exit(1);
+                }
+            };
+            let driver = Arc::new(TickDriver::new(ledger));
             loop {
                 let jobs = load_or_exit(data_dir);
                 let now = std::time::SystemTime::now()
@@ -298,24 +373,51 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                     .unwrap_or(0);
                 let mut fired = Vec::new();
                 for j in jobs.iter().filter(|j| !j.paused) {
-                    let scheduled = pantheon_scheduler::Job::new(
-                        &j.id,
-                        j.kind.clone(),
-                        j.agent.as_deref().unwrap_or("nyx"),
-                    );
-                    if scheduled.due(now, j.last_run) {
-                        run_job_now(j, data_dir);
-                        fired.push(j.id.clone());
+                    let scheduled = Job::from(j.clone());
+                    let stored = j.clone();
+                    let dd = data_dir.to_path_buf();
+                    let execute = Arc::new(move || {
+                        if let Err(e) = run_job_now(&stored, &dd) {
+                            eprintln!("{e}");
+                        }
+                    });
+                    match driver.tick_job(&scheduled, now, j.last_run, execute) {
+                        TickDecision::Fired { .. } => {
+                            println!("tick {now}: fired {}", j.id);
+                            fired.push(j.id.clone());
+                        }
+                        TickDecision::Queued => {
+                            println!(
+                                "tick {now}: {} still running, queued (overlap=queue)",
+                                j.id
+                            );
+                            fired.push(j.id.clone());
+                        }
+                        TickDecision::NotDue => {}
+                        TickDecision::SkippedClaimLost => {
+                            println!(
+                                "tick {now}: {} already claimed, skipping (replay)",
+                                j.id
+                            );
+                        }
+                        TickDecision::SkippedOverlap => {
+                            println!(
+                                "tick {now}: {} still running, skipping (overlap=skip)",
+                                j.id
+                            );
+                        }
+                        TickDecision::ClaimFailed(e) => {
+                            eprintln!("tick {now}: claim failed for {}: {e} (not run)", j.id);
+                        }
                     }
                 }
                 if fired.is_empty() {
                     println!("tick {now}: nothing due");
                 } else {
-                    for id in &fired {
-                        println!("tick {now}: fired {id}");
-                    }
                     // Persist fire times so an interval job does not
-                    // immediately come due again on the next tick.
+                    // immediately come due again on the next tick. The
+                    // durable claim already won is what makes this
+                    // crash-safe; last_run just drives the due check.
                     let mut jobs = jobs;
                     for j in jobs.iter_mut() {
                         if fired.contains(&j.id) {
@@ -352,6 +454,8 @@ struct CreateArgs {
     cron: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    timeout: Option<String>,
+    overlap: Option<String>,
 }
 
 fn parse_create_args(args: &[String]) -> CreateArgs {
@@ -361,6 +465,8 @@ fn parse_create_args(args: &[String]) -> CreateArgs {
     let mut cron = None;
     let mut model = None;
     let mut provider = None;
+    let mut timeout = None;
+    let mut overlap = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -394,6 +500,18 @@ fn parse_create_args(args: &[String]) -> CreateArgs {
                     provider = Some(args[i].clone());
                 }
             }
+            "--timeout" => {
+                i += 1;
+                if i < args.len() {
+                    timeout = Some(args[i].clone());
+                }
+            }
+            "--overlap" => {
+                i += 1;
+                if i < args.len() {
+                    overlap = Some(args[i].clone());
+                }
+            }
             s if s.starts_with("--") => {
                 // Support --30m style shorthand
                 let dur = s.trim_start_matches("--");
@@ -414,6 +532,8 @@ fn parse_create_args(args: &[String]) -> CreateArgs {
         cron,
         model,
         provider,
+        timeout,
+        overlap,
     }
 }
 
@@ -459,7 +579,12 @@ fn format_last(last: Option<i64>) -> String {
 /// without ever calling a model. The user saw "ran <task>" and an idle
 /// ledger. A scheduled task that never executes the task is worse than one
 /// that fails loudly.
-fn run_job_now(job: &StoredJob, data_dir: &Path) {
+///
+/// Returns `Err` instead of exiting: the tick loop runs jobs on worker
+/// threads, and a failing job must not take the whole daemon down with it.
+/// Callers that want the old hard-fail behavior (`schedule run`) exit on
+/// the error themselves.
+fn run_job_now(job: &StoredJob, data_dir: &Path) -> Result<(), String> {
     use crate::config;
     use crate::config::build_model_policy;
     use pantheon_runtime::session::Session;
@@ -479,15 +604,15 @@ fn run_job_now(job: &StoredJob, data_dir: &Path) {
     let secrets = config::chat_secrets(file_cfg.as_ref());
     let session = match Session::new(data_dir.to_path_buf(), policy, model_policy, secrets) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("open session: {e}");
-            std::process::exit(1);
-        }
+        Err(e) => return Err(format!("open session: {e}")),
     };
 
     let run_id = pantheon_runtime::new_run_id();
     match session.chat(&run_id, &job.task) {
-        Ok(_) => println!("ran {} — run {run_id}", job.task),
+        Ok(_) => {
+            println!("ran {} — run {run_id}", job.task);
+            Ok(())
+        }
         Err(e) => {
             // A parked run is a real outcome, not a failure: it needs a
             // grant before it can finish.
@@ -497,10 +622,14 @@ fn run_job_now(job: &StoredJob, data_dir: &Path) {
                 // useless: it looked actionable and was not.
                 println!("parked {}", job.task);
                 println!("{e}");
+                Ok(())
             } else {
-                eprintln!("scheduled task failed: {e}");
-                std::process::exit(1);
+                Err(format!("scheduled task failed: {e}"))
             }
         }
     }
 }
+
+#[cfg(test)]
+#[path = "schedule_tests.rs"]
+mod tests;
