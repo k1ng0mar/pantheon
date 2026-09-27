@@ -6,6 +6,7 @@
 //! `AuxiliaryKind::Embeddings` — same scoping rule as title-gen and
 //! compression. Absent entry = local embedder, never chat.
 
+use crate::catalog::{self, ApiMode};
 use crate::http::{ChatTransport, HttpTransport, WireRequest};
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::model::{AuxiliaryKind, DefaultModel};
@@ -147,11 +148,26 @@ impl EmbedClient {
     }
 
     /// POST /embeddings (OpenAI shape) and parse `data[i].embedding`.
+    /// OpenAI-compatible wire only: other [`ApiMode`]s have no
+    /// `/embeddings` endpoint, so a non-OpenAI provider fails fast here
+    /// instead of sending an OpenAI-shaped body at the wrong URL.
     fn embed_remote(
         &self,
         model: &DefaultModel,
         texts: &[String],
     ) -> Result<Vec<Embedding>, PantheonError> {
+        let api_mode = catalog::provider(&model.provider)
+            .map(|p| p.api_mode)
+            .unwrap_or(ApiMode::OpenAi);
+        if api_mode != ApiMode::OpenAi {
+            return Err(eerr(
+                "EMBED_MODE",
+                format!(
+                    "provider {:?} speaks {api_mode:?}, not OpenAI-compatible: no /embeddings endpoint",
+                    model.provider,
+                ),
+            ));
+        }
         let base = crate::http::resolve_base(&model.provider).map_err(|e| {
             eerr(
                 "PROVIDER_CONFIG",
@@ -162,13 +178,17 @@ impl EmbedClient {
             )
         })?;
         let configured = self.api_key.as_ref().map(|k| k.expose()).unwrap_or("");
-        let key = crate::catalog::key_for(&model.provider, configured);
+        let key = catalog::key_for(&model.provider, configured);
+        // Catalog auth shape, not a hardcoded Bearer: vendors with a
+        // custom key header (e.g. `api-key`) get the raw key there.
+        let key_header = catalog::key_header_for(&model.provider);
+        let (header_name, auth_value) = crate::http::auth_header_pair(&key_header, &key);
         let body = serde_json::json!({ "model": model.model, "input": texts });
         let req = WireRequest {
             url: format!("{}/embeddings", base.trim_end_matches('/')),
             headers: vec![
                 ("Content-Type".into(), "application/json".into()),
-                ("Authorization".into(), format!("Bearer {key}")),
+                (header_name, auth_value),
             ],
             body: serde_json::to_string(&body).map_err(|e| eerr("EMBED_SER", e.to_string()))?,
         };

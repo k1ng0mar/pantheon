@@ -40,6 +40,7 @@ fn request_maps_system_tools_and_alternation() {
         1024,
         pantheon_api::model::ReasoningLevel::Off,
         None,
+        &TurnOptions::default(),
     );
     assert!(req.url.ends_with("/messages"));
     assert!(req
@@ -229,6 +230,7 @@ fn reasoning_high_adds_thinking_budget() {
         200_000,
         ReasoningLevel::High,
         None,
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert_eq!(v["thinking"]["type"], "enabled");
@@ -248,6 +250,7 @@ fn reasoning_off_sends_no_thinking_block() {
         200_000,
         ReasoningLevel::Off,
         None,
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert!(
@@ -271,6 +274,7 @@ fn thinking_skipped_when_window_cannot_fit_budget() {
         1024,
         ReasoningLevel::High,
         None,
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert!(v.get("thinking").is_none());
@@ -289,6 +293,7 @@ fn explicit_budget_overrides_the_level_mapping() {
         200_000,
         ReasoningLevel::Low,
         Some(16_000),
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert_eq!(v["thinking"]["budget_tokens"], 16_000);
@@ -307,6 +312,7 @@ fn explicit_zero_budget_disables_thinking() {
         200_000,
         ReasoningLevel::High,
         Some(0),
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert!(
@@ -328,6 +334,7 @@ fn minimal_shares_the_api_minimum_floor() {
         200_000,
         ReasoningLevel::Minimal,
         None,
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert_eq!(v["thinking"]["budget_tokens"], 1024);
@@ -346,6 +353,7 @@ fn xhigh_takes_the_top_fixed_budget() {
         200_000,
         ReasoningLevel::Xhigh,
         None,
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert_eq!(v["thinking"]["budget_tokens"], 32_000);
@@ -364,6 +372,7 @@ fn max_fills_whatever_the_window_allows() {
         200_000,
         ReasoningLevel::Max,
         None,
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert_eq!(v["thinking"]["budget_tokens"], 199_999);
@@ -382,10 +391,124 @@ fn max_skipped_when_no_legal_budget_fits() {
         1024,
         ReasoningLevel::Max,
         None,
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert!(
         v.get("thinking").is_none(),
         "1023 is below the minimum and not < max"
     );
+}
+
+fn anth_tools() -> Vec<ToolSchema> {
+    vec![ToolSchema {
+        name: "shell".into(),
+        description: "run".into(),
+        parameters: serde_json::json!({"type":"object"}),
+    }]
+}
+
+fn anth_req(choice: ToolChoice, schema: Option<serde_json::Value>) -> serde_json::Value {
+    let req = request(
+        "https://api.anthropic.com/v1",
+        "sk-test",
+        "claude-sonnet-4",
+        &[Message::user("hi")],
+        &anth_tools(),
+        false,
+        1024,
+        pantheon_api::model::ReasoningLevel::Off,
+        None,
+        &TurnOptions {
+            response_schema: schema,
+            tool_choice: choice,
+        },
+    );
+    serde_json::from_str(&req.body).unwrap()
+}
+
+#[test]
+fn response_schema_uses_output_config_format() {
+    // Anthropic's GA structured-output shape (no beta header needed):
+    // `output_config.format`, not OpenAI's `response_format`.
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+    });
+    let v = anth_req(ToolChoice::Auto, Some(schema.clone()));
+    assert_eq!(v["output_config"]["format"]["type"], "json_schema");
+    assert_eq!(v["output_config"]["format"]["schema"], schema);
+    assert!(v.get("response_format").is_none());
+}
+
+#[test]
+fn no_schema_sends_no_output_config() {
+    let v = anth_req(ToolChoice::Auto, None);
+    assert!(v.get("output_config").is_none());
+}
+
+#[test]
+fn tool_choice_maps_to_anthropic_shapes() {
+    // `none` disables, `any` is the closest to OpenAI's `required`,
+    // a named tool uses the `tool` variant.
+    assert_eq!(anth_req(ToolChoice::None, None)["tool_choice"]["type"], "none");
+    assert_eq!(
+        anth_req(ToolChoice::Required, None)["tool_choice"]["type"],
+        "any"
+    );
+    let named = anth_req(ToolChoice::Named("shell".into()), None)["tool_choice"].clone();
+    assert_eq!(named["type"], "tool");
+    assert_eq!(named["name"], "shell");
+    // Auto omits the field entirely.
+    assert!(anth_req(ToolChoice::Auto, None).get("tool_choice").is_none());
+}
+
+#[test]
+fn usage_sums_cache_read_and_creation_tokens() {
+    // Anthropic bills cache reads/writes separately from input_tokens:
+    // all three fold into the input total.
+    let body = serde_json::json!({
+        "content": [{"type": "text", "text": "hello"}],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 100,
+            "cache_read_input_tokens": 800,
+            "cache_creation_input_tokens": 50,
+            "output_tokens": 4,
+        },
+    })
+    .to_string();
+    let c = collector();
+    let turn = parse_response(&body, &c).unwrap();
+    let usage = turn.usage.unwrap();
+    assert_eq!(usage.input_tokens, 950, "input + cache_read + cache_write");
+    assert_eq!(usage.output_tokens, 4);
+    assert_eq!(usage.total_tokens, 954);
+}
+
+#[test]
+fn stream_usage_sums_cache_tokens_from_message_start() {
+    let c = collector();
+    let mut s = AnthStream::default();
+    s.push(
+        r#"{"type":"message_start","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":800,"cache_creation_input_tokens":50}}}"#,
+        &c,
+    )
+    .unwrap();
+    s.push(
+        r#"{"type":"content_block_delta","content_block_index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+        &c,
+    )
+    .unwrap();
+    s.push(
+        r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#,
+        &c,
+    )
+    .unwrap();
+    s.push(r#"{"type":"message_stop"}"#, &c).unwrap();
+    let turn = s.finish(&c).unwrap();
+    let usage = turn.usage.unwrap();
+    assert_eq!(usage.input_tokens, 950);
+    assert_eq!(usage.total_tokens, 954);
 }

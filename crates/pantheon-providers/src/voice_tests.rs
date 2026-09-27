@@ -159,3 +159,51 @@ fn unknown_option_paths_default_safely() {
         Duration::from_secs(DEFAULT_COMMAND_TIMEOUT_SECS)
     );
 }
+
+#[test]
+fn http_voice_backends_honor_http_timeout() {
+    // Hanging server: accepts connections and never responds. Before the
+    // fix, HttpStt/HttpTts used bare `ureq::post` with no timeout and
+    // blocked until the handler below dropped the socket (60s per call);
+    // with the fix, `http_timeout()` (300ms here) fires first.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(2).flatten() {
+            let _ = stream; // hold the connection open, never respond
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    });
+    // `http_timeout()` reads this env var; save/restore so parallel tests
+    // (which never set it) are unaffected.
+    let prev = std::env::var("PANTHEON_HTTP_TIMEOUT_MS").ok();
+    std::env::set_var("PANTHEON_HTTP_TIMEOUT_MS", "300");
+    let out = (|| {
+        let base = format!("http://127.0.0.1:{port}");
+        let dir = std::env::temp_dir().join(format!("pantheon-voice-to-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio = dir.join("clip.wav");
+        std::fs::write(&audio, b"RIFF....").unwrap();
+        let started = std::time::Instant::now();
+        let stt = HttpStt::from_options(&opts(&[("provider", base.as_str())]), None).unwrap();
+        let stt_err = stt.transcribe(&SttRequest::new(&audio)).unwrap_err();
+        let tts = HttpTts::from_options(&opts(&[("provider", base.as_str())]), None).unwrap();
+        let tts_err = tts.synthesize(&TtsRequest::new("hello")).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        (started.elapsed(), stt_err, tts_err)
+    })();
+    match prev {
+        Some(v) => std::env::set_var("PANTHEON_HTTP_TIMEOUT_MS", v),
+        None => std::env::remove_var("PANTHEON_HTTP_TIMEOUT_MS"),
+    }
+    let (elapsed, stt_err, tts_err) = out;
+    assert_eq!(stt_err.code, "STT_HTTP");
+    assert!(stt_err.retryable, "a hung endpoint is a transient failure");
+    assert_eq!(tts_err.code, "TTS_HTTP");
+    assert!(tts_err.retryable);
+    // Two 300ms timeouts: far under the 60s-per-call hang without the fix.
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "voice HTTP calls must be deadline-bound, took {elapsed:?}"
+    );
+}

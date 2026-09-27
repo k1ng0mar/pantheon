@@ -8,7 +8,7 @@
 //! Both paths (single-shot and SSE) emit the same normalized `ModelEvent`s.
 //! Policy events (Attempt/Usage/Completed/Fallback) belong to the chain.
 
-use crate::http::{perr, AdapterTurn, ChatTransport, WireRequest};
+use crate::http::{perr, AdapterTurn, ChatTransport, ToolChoice, TurnOptions, WireRequest};
 use crate::model_event::{ModelEvent, ModelEventSink, ModelUsage};
 use pantheon_agent::{ToolCall, TurnOutcome};
 use pantheon_api::capability::Capability;
@@ -76,9 +76,9 @@ fn role_str(r: Role) -> &'static str {
 /// `key_header` names the HTTP header carrying the key: `Authorization`
 /// sends `Bearer <key>`; any other name (e.g. Xiaomi MiMo's `api-key`)
 /// sends the raw key.
-// Eight params: the seven the body needs plus the reasoning level, which
-// stays a plain param (not a bundled struct) so every call site keeps
-// reading as explicit wire arguments.
+// Nine params: the eight the body needs plus per-turn options
+// (structured output, tool choice), which stay explicit wire arguments
+// at every call site so each reads as what goes on the wire.
 #[allow(clippy::too_many_arguments)]
 pub fn request(
     base_url: &str,
@@ -89,6 +89,7 @@ pub fn request(
     tools: &[ToolSchema],
     stream: bool,
     reasoning: pantheon_api::model::ReasoningLevel,
+    opts: &TurnOptions,
 ) -> WireRequest {
     let mut body = body_value(model, messages, tools);
     // Reasoning effort is opt-in only: `Off` leaves the body exactly as
@@ -103,16 +104,23 @@ pub fn request(
         // usage in streams is provider-dependent.
         body["stream_options"] = serde_json::json!({ "include_usage": true });
     }
-    let auth_value = if key_header.trim().eq_ignore_ascii_case("authorization") {
-        format!("Bearer {api_key}")
-    } else {
-        api_key.to_string()
-    };
-    let header_name = if key_header.trim().is_empty() {
-        "Authorization".to_string()
-    } else {
-        key_header.trim().to_string()
-    };
+    // Structured output is opt-in: no schema → the field is absent and the
+    // body is byte-identical to before.
+    if let Some(schema) = &opts.response_schema {
+        body["response_format"] = serde_json::json!({
+            "type": "json_schema",
+            "json_schema": { "name": "pantheon_structured", "schema": schema },
+        });
+    }
+    // Tool choice is provider-default (`auto`) unless the turn says
+    // otherwise; with no tools there is nothing to choose between, so the
+    // field stays absent either way.
+    if !tools.is_empty() {
+        if let Some(choice) = tool_choice_value(&opts.tool_choice) {
+            body["tool_choice"] = choice;
+        }
+    }
+    let (header_name, auth_value) = crate::http::auth_header_pair(key_header, api_key);
     WireRequest {
         url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
         headers: vec![
@@ -123,11 +131,39 @@ pub fn request(
     }
 }
 
+/// OpenAI `tool_choice` wire value. `None` = omit the field (provider
+/// default, `auto`).
+fn tool_choice_value(choice: &ToolChoice) -> Option<serde_json::Value> {
+    match choice {
+        ToolChoice::Auto => None,
+        ToolChoice::Required => Some(serde_json::json!({"type": "required"})),
+        ToolChoice::None => Some(serde_json::json!("none")),
+        ToolChoice::Named(name) => {
+            Some(serde_json::json!({"type": "function", "function": {"name": name}}))
+        }
+    }
+}
+
 fn usage_of(v: &serde_json::Value) -> Option<ModelUsage> {
     let u = v.get("usage")?;
     if !u.is_null() {
+        // Cached prompt tokens count toward context and are billed: fold
+        // them into the input total so cost accounting never understates
+        // a cached turn. Conservative for the cost ceiling — OpenAI
+        // documents `prompt_tokens` as already inclusive of cached
+        // tokens, so for first-party OpenAI this slightly overcounts;
+        // the ceiling is an upper bound, and overcounting is its safe
+        // direction.
+        let cached = u
+            .pointer("/prompt_tokens_details/cached_tokens")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let prompt = u
+            .get("prompt_tokens")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
         return Some(ModelUsage {
-            input_tokens: u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+            input_tokens: prompt + cached,
             output_tokens: u
                 .get("completion_tokens")
                 .and_then(|x| x.as_u64())

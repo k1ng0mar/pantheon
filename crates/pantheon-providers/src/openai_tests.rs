@@ -29,6 +29,7 @@ fn stream_flag_flips_body() {
         &[],
         true,
         pantheon_api::model::ReasoningLevel::Off,
+        &TurnOptions::default(),
     );
     assert!(req.url.ends_with("/chat/completions"));
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
@@ -49,6 +50,7 @@ fn non_authorization_header_sends_the_raw_key() {
         &[],
         false,
         pantheon_api::model::ReasoningLevel::Off,
+        &TurnOptions::default(),
     );
     assert!(req.headers.iter().any(|(k, v)| k == "api-key" && v == "k"));
     assert!(!req.headers.iter().any(|(k, _)| k == "Authorization"));
@@ -193,6 +195,7 @@ fn reasoning_high_adds_effort_param() {
         &[],
         false,
         ReasoningLevel::High,
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert_eq!(v["reasoning_effort"], "high");
@@ -210,6 +213,7 @@ fn reasoning_off_sends_no_effort_param() {
         &[],
         false,
         ReasoningLevel::Off,
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert!(
@@ -230,7 +234,180 @@ fn reasoning_minimal_sends_gpt5_effort_string() {
         &[],
         false,
         ReasoningLevel::Minimal,
+        &TurnOptions::default(),
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert_eq!(v["reasoning_effort"], "minimal");
+}
+
+fn opts_with(schema: serde_json::Value, choice: ToolChoice) -> TurnOptions {
+    TurnOptions {
+        response_schema: Some(schema),
+        tool_choice: choice,
+    }
+}
+
+fn some_tools() -> Vec<ToolSchema> {
+    vec![ToolSchema {
+        name: "shell".into(),
+        description: "run".into(),
+        parameters: serde_json::json!({"type":"object","properties":{}}),
+    }]
+}
+
+#[test]
+fn response_schema_adds_json_schema_format() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+    });
+    let req = request(
+        "http://x/v1",
+        "k",
+        "Authorization",
+        "m",
+        &[Message::user("hi")],
+        &[],
+        false,
+        pantheon_api::model::ReasoningLevel::Off,
+        &opts_with(schema.clone(), ToolChoice::Auto),
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert_eq!(v["response_format"]["type"], "json_schema");
+    assert_eq!(v["response_format"]["json_schema"]["name"], "pantheon_structured");
+    assert_eq!(v["response_format"]["json_schema"]["schema"], schema);
+}
+
+#[test]
+fn no_schema_sends_no_response_format() {
+    // Default options: byte-identical to before structured output existed.
+    let req = request(
+        "http://x/v1",
+        "k",
+        "Authorization",
+        "m",
+        &[Message::user("hi")],
+        &[],
+        false,
+        pantheon_api::model::ReasoningLevel::Off,
+        &TurnOptions::default(),
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert!(v.get("response_format").is_none());
+}
+
+#[test]
+fn tool_choice_none_disables_tool_calls() {
+    let req = request(
+        "http://x/v1",
+        "k",
+        "Authorization",
+        "m",
+        &[Message::user("hi")],
+        &some_tools(),
+        false,
+        pantheon_api::model::ReasoningLevel::Off,
+        &TurnOptions {
+            tool_choice: ToolChoice::None,
+            ..Default::default()
+        },
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert_eq!(v["tool_choice"], "none");
+}
+
+#[test]
+fn tool_choice_required_and_named_map_to_openai_shapes() {
+    let mk = |choice: ToolChoice| {
+        let req = request(
+            "http://x/v1",
+            "k",
+            "Authorization",
+            "m",
+            &[Message::user("hi")],
+            &some_tools(),
+            false,
+            pantheon_api::model::ReasoningLevel::Off,
+            &TurnOptions {
+                tool_choice: choice,
+                ..Default::default()
+            },
+        );
+        serde_json::from_str::<serde_json::Value>(&req.body).unwrap()["tool_choice"].clone()
+    };
+    assert_eq!(mk(ToolChoice::Required)["type"], "required");
+    let named = mk(ToolChoice::Named("shell".into()));
+    assert_eq!(named["type"], "function");
+    assert_eq!(named["function"]["name"], "shell");
+}
+
+#[test]
+fn tool_choice_auto_omits_the_field() {
+    let req = request(
+        "http://x/v1",
+        "k",
+        "Authorization",
+        "m",
+        &[Message::user("hi")],
+        &some_tools(),
+        false,
+        pantheon_api::model::ReasoningLevel::Off,
+        &TurnOptions::default(),
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert!(v.get("tool_choice").is_none());
+}
+
+#[test]
+fn tool_choice_omitted_when_there_are_no_tools() {
+    // `required` with nothing to require must not reach the wire: the
+    // provider would 400 on a dangling tool_choice.
+    let req = request(
+        "http://x/v1",
+        "k",
+        "Authorization",
+        "m",
+        &[Message::user("hi")],
+        &[],
+        false,
+        pantheon_api::model::ReasoningLevel::Off,
+        &TurnOptions {
+            tool_choice: ToolChoice::Required,
+            ..Default::default()
+        },
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert!(v.get("tool_choice").is_none());
+}
+
+#[test]
+fn usage_folds_cached_prompt_tokens_into_input() {
+    let body = serde_json::json!({
+        "choices": [{ "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop" }],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110,
+            "prompt_tokens_details": {"cached_tokens": 40, "audio_tokens": 0},
+        },
+    })
+    .to_string();
+    let c = collector();
+    let turn = parse_response(&body, &c).unwrap();
+    let usage = turn.usage.unwrap();
+    assert_eq!(usage.input_tokens, 140, "prompt + cached");
+    assert_eq!(usage.output_tokens, 10);
+}
+
+#[test]
+fn usage_without_cache_details_is_unchanged() {
+    let body = serde_json::json!({
+        "choices": [{ "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop" }],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+    })
+    .to_string();
+    let c = collector();
+    let turn = parse_response(&body, &c).unwrap();
+    assert_eq!(turn.usage.unwrap().input_tokens, 100);
 }

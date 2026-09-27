@@ -50,6 +50,32 @@ pub struct WireRequest {
     pub body: String,
 }
 
+/// Tool-call policy for one turn.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ToolChoice {
+    /// Provider default: the model may or may not call tools.
+    #[default]
+    Auto,
+    /// The model must call at least one tool this turn.
+    Required,
+    /// The model must not call tools this turn.
+    None,
+    /// The model must call this specific tool.
+    Named(String),
+}
+
+/// Per-turn wire knobs, threaded from the chain into both adapters.
+/// Everything defaults to "as before", so turns built without options
+/// are byte-identical on the wire to turns built before this existed.
+#[derive(Debug, Clone, Default)]
+pub struct TurnOptions {
+    /// Opt-in structured output: JSON Schema the response must conform
+    /// to. `None` sends no schema constraint.
+    pub response_schema: Option<serde_json::Value>,
+    /// Tool-call policy for this turn.
+    pub tool_choice: ToolChoice,
+}
+
 /// Transport seam. Test doubles implement this in tests; `HttpTransport` in prod.
 pub trait ChatTransport: Send + Sync {
     /// POST the request and return the full response body.
@@ -91,6 +117,115 @@ pub fn http_timeout() -> Duration {
         .unwrap_or(Duration::from_secs(120))
 }
 
+/// Shared request agent honoring [`http_timeout`]. Every provider-plane
+/// HTTP call (chat, aux, voice, embeddings) goes through this so none
+/// runs without a deadline.
+pub fn http_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new().timeout(http_timeout()).build()
+}
+
+/// `(name, value)` for the key header: `Authorization` sends
+/// `Bearer <key>`; any other configured name (e.g. Xiaomi MiMo's
+/// `api-key`) sends the raw key. One place so chat, embeddings, and
+/// voice can't drift on auth shape.
+pub fn auth_header_pair(key_header: &str, api_key: &str) -> (String, String) {
+    let name = if key_header.trim().is_empty() {
+        "Authorization".to_string()
+    } else {
+        key_header.trim().to_string()
+    };
+    let value = if name.eq_ignore_ascii_case("authorization") {
+        format!("Bearer {api_key}")
+    } else {
+        api_key.to_string()
+    };
+    (name, value)
+}
+
+/// Cap for honoring `Retry-After` on 429s: a provider may ask for a long
+/// wait, but one slow endpoint must not wedge the turn past this.
+pub const MAX_RETRY_AFTER_SECS: u64 = 60;
+
+/// Parse a `Retry-After` header value into a capped wait in seconds.
+/// Accepts delta-seconds (`120`) and an HTTP-date
+/// (`Sun, 06 Nov 1994 08:49:37 GMT`); anything else is `None` — no wait
+/// rather than a wrong wait. Pure, so the backoff math is unit-testable
+/// without touching the network.
+pub fn parse_retry_after(value: &str) -> Option<u64> {
+    let v = value.trim();
+    if let Ok(secs) = v.parse::<u64>() {
+        return Some(secs.min(MAX_RETRY_AFTER_SECS));
+    }
+    let at = http_date_to_epoch(v)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some(at.saturating_sub(now).min(MAX_RETRY_AFTER_SECS))
+}
+
+/// IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) → unix seconds.
+/// Hand-rolled: the provider plane has no date crate, and only this one
+/// format is worth accepting (RFC 850 / asctime dates are vanishingly
+/// rare on `Retry-After`).
+fn http_date_to_epoch(value: &str) -> Option<u64> {
+    let mut parts = value.split_whitespace();
+    let weekday = parts.next()?;
+    if !weekday.ends_with(',') {
+        return None;
+    }
+    let day: i64 = parts.next()?.parse().ok()?;
+    if !(1..=31).contains(&day) {
+        return None;
+    }
+    let month: i64 = match parts.next()? {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    };
+    let year: i64 = parts.next()?.parse().ok()?;
+    let time = parts.next()?;
+    if parts.next()? != "GMT" || parts.next().is_some() {
+        return None;
+    }
+    let mut t = time.split(':');
+    let h: i64 = t.next()?.parse().ok()?;
+    let m: i64 = t.next()?.parse().ok()?;
+    let s: i64 = t.next()?.parse().ok()?;
+    if t.next().is_some() || h > 23 || m > 59 || s > 60 {
+        return None;
+    }
+    // Howard Hinnant's days-from-civil.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400; // [0, 399]
+    let mp = (month + 9) % 12; // [0, 11]
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    u64::try_from(days * 86400 + h * 3600 + m * 60 + s).ok()
+}
+
+/// Re-read the capped `Retry-After` wait a 429 asked for, from the marker
+/// `send()` stamped on the error cause. `None` = no wait requested.
+pub fn retry_after_secs(err: &PantheonError) -> Option<u64> {
+    let marker = "(retry-after: ";
+    let start = err.cause.rfind(marker)? + marker.len();
+    let rest = err.cause.get(start..)?;
+    let end = rest.find('s')?;
+    rest[..end].parse::<u64>().ok()
+}
+
 fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, PantheonError> {
     let mut r = agent.post(&req.url);
     for (k, v) in &req.headers {
@@ -98,16 +233,28 @@ fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, Panthe
     }
     r.send_string(&req.body).map_err(|e| match e {
         ureq::Error::Status(code, resp) => {
+            // A 429 carries the provider's asked-for wait: parse
+            // `Retry-After` (delta-seconds or HTTP-date, capped) and stamp
+            // it on the cause so the chain can sleep before rotating keys
+            // or falling back instead of hammering a rate-limited endpoint.
+            let retry_after = if code == 429 {
+                resp.header("retry-after")
+                    .and_then(|v| parse_retry_after(v))
+            } else {
+                None
+            };
             let body = resp.into_string().unwrap_or_default();
             let snippet: String = body.chars().take(300).collect();
             // 5xx / 408-class server trouble and transport errors are
-            // retryable (fallback-eligible); 4xx is a client/config problem.
-            let retryable = !(400..500).contains(&code);
-            perr(
-                "PROVIDER_HTTP",
-                format!("{}: HTTP {code} {snippet}", req.url),
-                retryable,
-            )
+            // retryable (fallback-eligible); 4xx is a client/config problem
+            // — except 429, which is transient: another key or provider may
+            // still have quota, and the stamped Retry-After paces the retry.
+            let retryable = !(400..500).contains(&code) || code == 429;
+            let mut cause = format!("{}: HTTP {code} {snippet}", req.url);
+            if let Some(secs) = retry_after {
+                cause.push_str(&format!(" (retry-after: {secs}s)"));
+            }
+            perr("PROVIDER_HTTP", cause, retryable)
         }
         e => perr("PROVIDER_HTTP", format!("{}: {e}", req.url), true),
     })
@@ -177,6 +324,7 @@ pub fn aux_request(wire: &AuxWire, model: &str, prompt: String) -> WireRequest {
             false,
             // Aux turns stay fast and cheap: no reasoning effort, ever.
             pantheon_api::model::ReasoningLevel::Off,
+            &TurnOptions::default(),
         ),
         ApiMode::Anthropic => anthropic::request(
             &wire.base,
@@ -188,6 +336,7 @@ pub fn aux_request(wire: &AuxWire, model: &str, prompt: String) -> WireRequest {
             wire.max_tokens,
             pantheon_api::model::ReasoningLevel::Off,
             None,
+            &TurnOptions::default(),
         ),
     }
 }
@@ -267,3 +416,7 @@ impl ChatTransport for HttpTransport {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "http_tests.rs"]
+mod tests;
