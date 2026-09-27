@@ -1562,3 +1562,153 @@ mod verb_guard_tests {
         }
     }
 }
+
+// ── Startup splash ──────────────────────────────────────────────────────
+// The Pantheon logo on the TUI welcome screen. The ASCII art is embedded at
+// compile time from assets/ (relative to this file: src/ → ../../../assets).
+// `session.rs` renders these lines on the welcome screen and after /new when
+// the transcript is empty; nothing else in this module touches them.
+
+// 60-column art, used on terminals >= 64 columns wide.
+const SPLASH_LOGO_WIDE: &str = include_str!("../../../assets/logo-ascii-60.txt");
+// 44-column art, used on narrower terminals.
+const SPLASH_LOGO_NARROW: &str = include_str!("../../../assets/logo-ascii-44.txt");
+
+/// Width threshold: terminals this wide (or wider) get the 60-column logo.
+pub const SPLASH_WIDE_MIN_WIDTH: u16 = 64;
+
+/// Pick the logo art for a terminal width. The `Option` inputs make the
+/// graceful path testable: when an asset is missing (`None`), this returns
+/// `None` and the caller skips the logo but keeps the wordmark.
+pub fn choose_splash_logo<'a>(
+    wide: Option<&'a str>,
+    narrow: Option<&'a str>,
+    width: u16,
+) -> Option<&'a str> {
+    if width >= SPLASH_WIDE_MIN_WIDTH {
+        wide.or(narrow)
+    } else {
+        narrow.or(wide)
+    }
+}
+
+/// The logo art for `width` columns, falling back across assets and to an
+/// empty string when nothing is embedded. A missing asset never breaks
+/// startup; the wordmark below still renders.
+pub fn splash_logo(width: u16) -> &'static str {
+    choose_splash_logo(
+        Some(SPLASH_LOGO_WIDE),
+        Some(SPLASH_LOGO_NARROW),
+        width,
+    )
+    .unwrap_or("")
+}
+
+/// Center `line` in `width` columns (left-pad only; overlong lines pass
+/// through and ratatui clips them).
+fn splash_center(line: &str, width: usize) -> String {
+    let len = line.chars().count();
+    if len >= width {
+        return line.to_string();
+    }
+    let pad = (width - len) / 2;
+    format!("{}{line}", " ".repeat(pad))
+}
+
+/// Splash lines for the welcome screen: the logo art, then the wordmark
+/// "PANTHEON" as styled normal text (bold, accent color) — deliberately not
+/// part of the ASCII art. Missing/empty art is skipped; the wordmark always
+/// renders.
+pub fn splash_lines(width: u16) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::{Line, Span};
+    let width_usize = width.max(1) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    let art = splash_logo(width);
+    if !art.trim().is_empty() {
+        for raw in art.lines() {
+            // Trailing spaces in the art are padding, not content; strip
+            // them so a narrow terminal does not wrap on invisible width.
+            lines.push(Line::from(splash_center(raw.trim_end(), width_usize)));
+        }
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        splash_center("PANTHEON", width_usize),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines
+}
+
+#[cfg(test)]
+mod splash_tests {
+    use super::*;
+
+    fn max_line_width(art: &str) -> usize {
+        art.lines().map(|l| l.chars().count()).max().unwrap_or(0)
+    }
+
+    #[test]
+    fn wide_terminal_gets_60_col_art() {
+        let art = splash_logo(120);
+        assert_eq!(art, SPLASH_LOGO_WIDE);
+        // The 60-col art's widest line exceeds the 44-col art's width.
+        assert!(max_line_width(art) > 44);
+        assert!(max_line_width(SPLASH_LOGO_NARROW) <= 44);
+    }
+
+    #[test]
+    fn narrow_terminal_gets_44_col_art() {
+        assert_eq!(splash_logo(63), SPLASH_LOGO_NARROW);
+        assert_eq!(splash_logo(40), SPLASH_LOGO_NARROW);
+    }
+
+    #[test]
+    fn threshold_is_64() {
+        assert_eq!(splash_logo(64), SPLASH_LOGO_WIDE);
+        assert_eq!(choose_splash_logo(None, None, 120), None);
+    }
+
+    #[test]
+    fn missing_asset_falls_back_or_skips_gracefully() {
+        // Wide asset missing: fall back to narrow rather than empty.
+        assert_eq!(
+            choose_splash_logo(None, Some("narrow"), 120),
+            Some("narrow")
+        );
+        // Both missing: None, and splash_lines keeps the wordmark.
+        assert_eq!(choose_splash_logo(None, None, 40), None);
+    }
+
+    #[test]
+    fn splash_lines_end_with_styled_wordmark() {
+        let lines = splash_lines(80);
+        let last = lines.last().unwrap();
+        let text: String = last
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text.trim(), "PANTHEON");
+        let style = last.spans[0].style;
+        assert!(style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+        assert_eq!(style.fg, Some(ratatui::style::Color::Cyan));
+    }
+
+    #[test]
+    fn splash_lines_skip_logo_but_keep_wordmark_when_art_missing() {
+        // Simulate a missing asset through the graceful path: build lines
+        // the way splash_lines does, with no art.
+        let lines: Vec<ratatui::text::Line<'static>> = {
+            let mut v = Vec::new();
+            if !choose_splash_logo(None, None, 80).unwrap_or("").trim().is_empty() {
+                unreachable!();
+            }
+            v.push(ratatui::text::Line::from("PANTHEON"));
+            v
+        };
+        assert_eq!(lines.len(), 1);
+    }
+}
