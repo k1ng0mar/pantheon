@@ -1,22 +1,31 @@
-//! Pantheon's terminal product.
+//! Pantheon's terminal product: the one terminal application.
 //!
-//! The TUI is the terminal interface. There is no second interactive surface
-//! and no line-based fallback: `pantheon` with no arguments opens this, and
-//! if there is no terminal it says so and exits rather than degrading into a
-//! different product.
+//! Bare `pantheon` opens the interactive session. With a verb (`setup`,
+//! `doctor`, `run --say ...`) it runs one non-interactive command instead.
+//! Both live here now: there is no second terminal crate and no line-based
+//! fallback. If there is no terminal, `pantheon` says so and exits rather
+//! than degrading into a different product.
 //!
 //! # Layering
 //!
 //! ```text
-//! app        the event loop, screen stack, and focus
+//! terminal   argv dispatch + non-interactive command modules (agui, doctor,
+//!            setup, model, memory via terminal, ...). thin: parses args,
+//!            calls into crates, never owns business logic.
+//! entry      interactive entrypoint: configured? → session : setup wizard
+//! session    the conversation view: transcript state, overlays, slash
+//!            commands, streaming event handling, permission card
+//! app        the screen-stack event loop (setup wizard, pickers)
 //!   widget   Select / MultiSelect / TextInput / Confirm / SearchList
 //!   render   the same widgets, drawn. no terminal imports in widget.rs
-//!   commands one command registry, no per-surface dispatch tables
-//!   session  the conversation view
-//!   setup    the setup section graph and its screens
+//!   commands the slash-command registry (metadata; handlers live in session)
+//!   setup_graph the setup section graph
+//!   setup_wizard the interactive setup screens over app/widget
+//!   setup    flag parsing + config writer (`pantheon setup [--yes]`)
+//!   prompt   run one widget on the real terminal, return the answer
 //!       |
 //!       v
-//!   pantheon-runtime / core / exec / memory
+//!   pantheon-runtime / exec / memory / providers / storage / ...
 //! ```
 //!
 //! The dependency arrow only points one way. A widget never touches a
@@ -28,20 +37,50 @@
 //!
 //! An earlier shape had a TUI, a REPL, a model picker, a session picker, and
 //! a text setup wizard, with two of them able to answer the same command
-//! differently. Consolidating means the old surfaces are deleted and their
-//! behavior relocated, not wrapped in a shared helper so all five keep
-//! existing. What survives a migration is a screen inside this crate; what
-//! does not earn a screen is deleted.
+//! differently — and for a while a whole second terminal crate
+//! (`pantheon-cli`) holding a duplicate session implementation. That crate
+//! is gone: its dispatch and command modules moved here unchanged in
+//! behavior, and its session implementation became `session.rs`. What
+//! survives a migration is a module inside this crate; what does not earn
+//! one is deleted.
 
 pub mod app;
 pub mod commands;
-pub mod picker;
 pub mod render;
 pub mod session;
 pub mod setup;
+pub mod setup_graph;
 pub mod widget;
 
 pub use app::TuiApp;
 pub use widget::{
     Confirm, Item, Key, KeyResult, MultiSelect, SearchList, Select, Selection, TextInput,
 };
+
+// Terminal command modules: argv dispatch and the non-interactive verbs.
+// Private: the binary calls `terminal::run()`; nothing outside this crate
+// reaches past it.
+mod agui;
+mod args;
+mod config;
+mod config_schema;
+mod doctor;
+mod dotenv;
+mod entry;
+mod fallback;
+mod gateway;
+mod logs;
+mod mcp;
+mod migrate;
+mod model;
+mod pipeline;
+mod prompt;
+mod provider;
+mod repair;
+mod reset;
+mod schedule;
+mod setup_wizard;
+mod skills;
+mod swarm;
+pub mod terminal;
+mod update;

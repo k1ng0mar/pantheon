@@ -24,7 +24,7 @@ Pantheon is a durable agent runtime. The model reasons and generates language; P
 
 | Page | Contents |
 |---|---|
-| [CLI](reference/cli.md) | Every verb, flag, exit code, environment variable |
+| [Terminal](reference/terminal.md) | Every verb, flag, exit code, environment variable |
 | [Configuration](reference/configuration.md) | `config.toml` fields, secrets, data directory |
 | [Troubleshooting](reference/troubleshooting.md) | Error codes, common issues, diagnostics |
 

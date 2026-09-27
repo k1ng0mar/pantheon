@@ -12,7 +12,7 @@ never inherits state from a previous run.
 ## Usage
 
 ```bash
-cargo build -p pantheon-cli    # or point PANTHEON_BIN at an existing binary
+cargo build -p pantheon-tui    # or point PANTHEON_BIN at an existing binary
 python3 eval/run.py                # run all active cases
 python3 eval/run.py --list         # show cases + why they would skip
 python3 eval/run.py --only <id>    # run a single case

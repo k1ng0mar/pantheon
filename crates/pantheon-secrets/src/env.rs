@@ -26,6 +26,15 @@ pub struct EnvVault {
     system: bool,
 }
 
+impl Clone for EnvVault {
+    fn clone(&self) -> Self {
+        Self {
+            vars: Mutex::new(self.vars.lock().expect("EnvVault mutex poisoned").clone()),
+            system: self.system,
+        }
+    }
+}
+
 impl EnvVault {
     /// Snapshot the real process environment, keeping only
     /// `PANTHEON_SECRET_*` variables.

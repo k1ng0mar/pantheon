@@ -51,4 +51,4 @@ pantheon logs [errors] [-f]   # process logs, including pre-run failures
 
 - [Runs](runs.md) — lifecycle, recovery, pipelines, scheduling
 - [Channels](channels.md) — messaging apps and the web client
-- [CLI reference](../reference/cli.md) — every flag and exit code
+- [Terminal reference](../reference/terminal.md) — every flag and exit code

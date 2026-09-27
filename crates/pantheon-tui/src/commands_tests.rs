@@ -36,7 +36,7 @@ fn every_command_has_a_description_and_a_category() {
 #[test]
 fn the_registry_covers_the_dispatched_commands() {
     let r = registry();
-    // Every arm in handle_slash (pantheon-cli/src/tui.rs) resolves here.
+    // Every arm in handle_slash (session.rs) resolves here.
     // Absent on purpose: cost, memory, tools, debug, provenance, events
     // (see the registry doc comment for why).
     for want in [

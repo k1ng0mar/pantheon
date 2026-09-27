@@ -13,12 +13,12 @@ Crate boundaries, testing rules, and the three most common kinds of change. Read
 | A plugin manifest feature | `pantheon-extensions` | Manifest, hooks, manager live together |
 | A storage table or migration | `pantheon-storage` | SQLite owns all durable state |
 | A memory layer change | `pantheon-memory` | Write path stays propose → policy → provenance |
-| A CLI verb | `pantheon-cli` dispatch + its own module | Thin surface; logic goes in the owning crate |
+| A terminal verb | `pantheon-tui` dispatch + its own module | Thin surface; logic goes in the owning crate |
 | A channel surface | `pantheon-gateway` or `pantheon-api` | The channel seam normalizes; adapters format |
 
 Rules that keep the architecture honest:
 
-- **No business logic in pantheon-cli.** It parses arguments and calls into crates.
+- **No business logic in pantheon-tui.** It parses arguments and calls into crates.
 - **No model SDKs above pantheon-providers.** The agent loop speaks ModelTurn/ModelEvent, never HTTP.
 - **Events over prints.** A runtime transition that matters emits an Event; eprintln is for operator warnings only.
 - **Durable before clever.** New long-running work gets an operation state machine, not an in-memory variable.
@@ -31,12 +31,12 @@ Rules that keep the architecture honest:
 
 ## Common changes
 
-### Adding a CLI verb
+### Adding a terminal verb
 
-1. Add dispatch in `pantheon-cli/src/main.rs` + register in `KNOWN_VERBS` and `usage()`
+1. Add dispatch in `pantheon-tui/src/terminal.rs` + register in `KNOWN_VERBS` and `usage()`
 2. Implement logic in the owning crate
 3. Add tests (`*_tests.rs`)
-4. Document it in `docs/reference/cli.md`
+4. Document it in `docs/reference/terminal.md`
 5. Green workspace tests + evals
 
 ### Adding a tool
@@ -59,4 +59,4 @@ Known deviations are recorded in `decisions/0001-workspace-restructure.md`. Revi
 ## See also
 
 - [Architecture](architecture.md) — system design, crate map, locked decisions
-- [CLI reference](../reference/cli.md) — the surface your verb joins
+- [Terminal reference](../reference/terminal.md) — the surface your verb joins

@@ -37,7 +37,7 @@ pub struct ServeConfig {
 
 /// Opens a Session for one turn. Installed by `pantheon serve` through
 /// `agui::set_session_factory` rather than threaded through every
-/// constructor, so this crate does not depend on pantheon-cli, which owns
+/// constructor, so this crate does not depend on pantheon-tui, which owns
 /// config.toml and the key-name conventions.
 pub type SessionFactory = std::sync::Arc<
     dyn Fn(&PathBuf) -> Result<crate::session::Session, pantheon_api::error::PantheonError>

@@ -451,7 +451,7 @@ pub struct EnvEntry {
 }
 
 /// The value part of a dotenv line, with the rules
-/// `pantheon-cli::dotenv::parse_dotenv` uses: trim, strip an inline ` #`
+/// `pantheon-tui::dotenv::parse_dotenv` uses: trim, strip an inline ` #`
 /// comment when the value is unquoted, then strip one layer of matching quotes.
 ///
 /// One implementation, used by both parsers in this crate, and pinned against
@@ -666,7 +666,7 @@ pub fn pantheon_env_path(data_dir: &Path) -> PathBuf {
 }
 
 /// Read `KEY=value` pairs out of a dotenv file, last-wins per key. Mirrors
-/// `pantheon-cli`'s `parse_dotenv` so a key set twice behaves the same here.
+/// `pantheon-tui`'s `parse_dotenv` so a key set twice behaves the same here.
 pub fn read_dotenv(path: &Path) -> Vec<(String, String)> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -707,7 +707,7 @@ fn dotenv_line_key(line: &str) -> Option<String> {
 
 /// Insert or replace one `KEY=value`, preserving every other line and its
 /// order. A hand-edited file with duplicate keys collapses to one, matching
-/// `pantheon-cli::dotenv::upsert_dotenv`, which this mirrors.
+/// `pantheon-tui::dotenv::upsert_dotenv`, which this mirrors.
 fn upsert_dotenv(path: &Path, key: &str, value: &str) -> std::io::Result<()> {
     let rendered = format!("{key}={value}");
     let existing = std::fs::read_to_string(path).unwrap_or_default();
@@ -735,7 +735,7 @@ fn upsert_dotenv(path: &Path, key: &str, value: &str) -> std::io::Result<()> {
     std::fs::write(path, text)
 }
 
-/// Owner-only, matching `restrict_permissions` in `pantheon-cli::dotenv`.
+/// Owner-only, matching `restrict_permissions` in `pantheon-tui::dotenv`.
 #[cfg(unix)]
 fn restrict_permissions(path: &Path) {
     use std::os::unix::fs::PermissionsExt;

@@ -28,7 +28,7 @@ PAGES = {
     "user-guide/channels.md": "channels.html",
     "user-guide/providers.md": "providers.html",
     "user-guide/extensions.md": "extensions.html",
-    "reference/cli.md": "cli.html",
+    "reference/terminal.md": "terminal.html",
     "reference/configuration.md": "configuration.html",
     "reference/troubleshooting.md": "troubleshooting.html",
     "developer/architecture.md": "architecture.html",

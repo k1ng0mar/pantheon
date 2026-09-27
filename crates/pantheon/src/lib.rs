@@ -25,8 +25,9 @@
 //! | `pantheon::secrets` | `pantheon-secrets` | vaults + broker |
 //! | `pantheon::tui` | `pantheon-tui` | interactive terminal surface |
 //!
-//! The CLI (`pantheon-cli`, the `pantheon` binary) is deliberately not
-//! re-exported: it is the composition root, not library surface.
+//! The terminal application (`pantheon-tui`, the `pantheon` binary) is
+//! deliberately not re-exported: it is the composition root, not library
+//! surface.
 
 pub use pantheon_agent as agent;
 pub use pantheon_api as api;
