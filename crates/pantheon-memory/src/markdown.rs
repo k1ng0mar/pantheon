@@ -12,7 +12,7 @@
 //! - Drift-free: store is source of truth, file is a projection
 
 use crate::{LayerKind, MemoryStore, Proposal, Provenance};
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use std::path::Path;
 
 fn merr(code: &str, cause: String) -> PantheonError {
@@ -86,7 +86,7 @@ fn store_hash(store: &MemoryStore, namespace: &str) -> Result<String, PantheonEr
 /// can store it for the next pass.
 pub fn sync(
     store: &MemoryStore,
-    policy: &pantheon_core::capability::Policy,
+    policy: &pantheon_api::capability::Policy,
     namespace: &str,
     path: &Path,
     last_known_hash: Option<&str>,
@@ -178,11 +178,7 @@ pub fn detect_conflict(
 /// `# something` survives a render/parse round-trip as one record.
 /// Render one record. `trust` becomes a provenance footer that parse_md
 /// reads back; legacy 2-tuple callers get `user` (human-edited file).
-pub fn render_record(
-    key: &str,
-    value: &str,
-    trust: pantheon_core::provenance::TrustTier,
-) -> String {
+pub fn render_record(key: &str, value: &str, trust: pantheon_api::provenance::TrustTier) -> String {
     let escaped = value
         .lines()
         .map(|l| {
@@ -197,7 +193,7 @@ pub fn render_record(
     format!("# {key}\n\n{{trust={}}}\n{}\n\n", trust.as_str(), escaped)
 }
 
-pub fn render_agent(records: &[(String, String, pantheon_core::provenance::TrustTier)]) -> String {
+pub fn render_agent(records: &[(String, String, pantheon_api::provenance::TrustTier)]) -> String {
     let mut out = String::new();
     // Sentinel header: unambiguous, and a key named "Agent memory" still
     // round-trips because the header is not a `# ` heading.
@@ -224,7 +220,7 @@ pub fn export_agent(
 pub fn list_agent_records(
     store: &MemoryStore,
     namespace: &str,
-) -> Result<Vec<(String, String, pantheon_core::provenance::TrustTier)>, PantheonError> {
+) -> Result<Vec<(String, String, pantheon_api::provenance::TrustTier)>, PantheonError> {
     store.list_agent_meta(namespace)
 }
 
@@ -240,7 +236,7 @@ pub fn list_agent_records(
 /// files (v1 or header-less) yield `None` and the importer decides.
 pub fn parse_md_meta(
     content: &str,
-) -> Vec<(String, String, Option<pantheon_core::provenance::TrustTier>)> {
+) -> Vec<(String, String, Option<pantheon_api::provenance::TrustTier>)> {
     let mut out = Vec::new();
     let mut current: Option<(String, String, Option<String>)> = None;
     let mut seen_header = false;
@@ -280,7 +276,7 @@ pub fn parse_md_meta(
                 continue;
             }
             if let Some((key, body, trust)) = current.take() {
-                let tier = trust.and_then(|t| pantheon_core::provenance::TrustTier::parse(&t));
+                let tier = trust.and_then(|t| pantheon_api::provenance::TrustTier::parse(&t));
                 out.push((key, body.trim().to_string(), tier));
             }
             current = Some((key, String::new(), None));
@@ -290,7 +286,7 @@ pub fn parse_md_meta(
         }
     }
     if let Some((key, body, trust)) = current {
-        let tier = trust.and_then(|t| pantheon_core::provenance::TrustTier::parse(&t));
+        let tier = trust.and_then(|t| pantheon_api::provenance::TrustTier::parse(&t));
         out.push((key, body.trim().to_string(), tier));
     }
     out
@@ -309,7 +305,7 @@ pub fn parse_md(content: &str) -> Vec<(String, String)> {
 /// (propose -> policy -> provenance -> validation).
 pub fn import_agent(
     store: &MemoryStore,
-    policy: &pantheon_core::capability::Policy,
+    policy: &pantheon_api::capability::Policy,
     namespace: &str,
     path: &Path,
 ) -> Result<usize, PantheonError> {
@@ -321,7 +317,7 @@ pub fn import_agent(
         // A v2 file carries each record's tier; a hand-edited or legacy
         // file is human-authored, so it imports as User. An Untrusted
         // record stays Untrusted: the round-trip must not launder trust.
-        let tier = trust.unwrap_or(pantheon_core::provenance::TrustTier::User);
+        let tier = trust.unwrap_or(pantheon_api::provenance::TrustTier::User);
         let p = Proposal {
             layer: LayerKind::Agent,
             namespace: namespace.to_string(),

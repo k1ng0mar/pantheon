@@ -21,7 +21,7 @@ use crate::model_cli::{
     normalize_base_url, parse_api_mode, parse_set_pairs, pick, print_template_status, prompt_line,
     valid_provider_id, wire_mode_items, PickItem,
 };
-use pantheon_core::catalog::{self, ApiMode};
+use pantheon_providers::catalog::{self, ApiMode};
 use std::io::IsTerminal;
 
 fn data_dir() -> std::path::PathBuf {

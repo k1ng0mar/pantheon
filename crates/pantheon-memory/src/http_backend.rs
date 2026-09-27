@@ -20,8 +20,8 @@
 //! Error responses: 4xx/5xx with JSON {"error":"CODE","cause":"..."} or
 //! plain text. The adapter maps those back to PantheonError.
 use crate::{LayerKind, MemoryBackend, MemoryRecord, Proposal, Provenance, Recalled};
-use pantheon_core::capability::Policy;
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::capability::Policy;
+use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 
 fn merr(code: &str, cause: String) -> PantheonError {
@@ -112,22 +112,31 @@ impl MemoryBackend for HttpBackend {
     fn recall(
         &self,
         _policy: &Policy,
+        namespaces: &[&str],
         layers: &[LayerKind],
         query: &str,
         limit: usize,
     ) -> Result<Vec<Recalled>, PantheonError> {
+        if namespaces.is_empty() {
+            return Ok(Vec::new());
+        }
         let layers_str = layers
             .iter()
             .copied()
             .map(layer_str)
             .collect::<Vec<_>>()
             .join(",");
+        // Namespace goes on the wire, not just the signature. The remote
+        // filters; if it ignores this, that is the operator's server, but
+        // we must at least stop *not asking*.
+        let ns_str = namespaces.join(",");
         let url = format!(
-            "{}?query={}&limit={}&layers={}",
+            "{}?query={}&limit={}&layers={}&namespaces={}",
             self.endpoint("recall"),
             pct(query),
             limit,
-            pct(&layers_str)
+            pct(&layers_str),
+            pct(&ns_str)
         );
         let resp = http_get(&url, self.api_key.as_deref())?;
         let hits: Vec<Recalled> = serde_json::from_slice(&resp.body).map_err(|e| {

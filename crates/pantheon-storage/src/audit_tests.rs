@@ -1,7 +1,7 @@
 //! Tests for `pantheon_storage::audit::tests` — sibling file so sources stay test-free.
 use super::*;
-use pantheon_core::events::Event;
-use pantheon_core::provenance::Provenance;
+use pantheon_api::events::Event;
+use pantheon_api::provenance::Provenance;
 
 fn entry(id: i64, event: Event) -> LedgerEntry {
     LedgerEntry {

@@ -14,7 +14,7 @@
 //! user has not touched.
 
 use crate::skills::parse_skill;
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use std::fs;
 use std::path::Path;
 

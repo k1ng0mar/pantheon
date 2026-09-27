@@ -3,7 +3,7 @@
 use crate::config_doc::{Config, CustomProviderSection};
 use crate::dotenv::test_support::TEST_ENV_LOCK;
 use crate::provider_cli::*;
-use pantheon_core::catalog;
+use pantheon_providers::catalog;
 
 fn provider_args(extra: &[&str]) -> Vec<String> {
     let mut a = vec!["pantheon".to_string(), "provider".to_string()];
@@ -75,10 +75,12 @@ fn remove_drops_row_and_optionally_the_key() {
     // Custom provider referenced by NOTHING (default rides catalog router).
     let mut cfg = Config {
         model: Some(ModelSection {
+            reasoning_budget: None,
             provider: "router".into(),
             model: "chat".into(),
             api_key_env: None,
             fallbacks: vec![],
+            reasoning: None,
         }),
         ..Default::default()
     };
@@ -175,7 +177,7 @@ fn fetch_models_sends_the_header_the_wire_mode_requires() {
     // that the *shape* of the failure is a connection error rather than a
     // header-plumbing panic or a mis-parse. The header choice itself is
     // covered by the mode branches being the only two paths.
-    use pantheon_core::catalog::ApiMode;
+    use pantheon_providers::catalog::ApiMode;
     let dead = "http://127.0.0.1:1/v1";
     let e = crate::model_cli::fetch_models(dead, "k", ApiMode::Anthropic).unwrap_err();
     assert!(!e.is_empty());

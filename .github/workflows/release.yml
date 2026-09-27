@@ -1,0 +1,126 @@
+name: release
+
+# Publishes prebuilt Pantheon binaries. The installer downloads these
+# assets, so the names below are a contract: `install.sh`, `install.ps1`,
+# and `pantheon update` all construct
+#   pantheon-<tag>-<os>-<arch>.tar.gz  (linux, darwin)
+#   pantheon-<tag>-<os>-<arch>.zip     (windows)
+# Rename an asset here and the installer breaks on every machine.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }} on ${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: linux
+            arch: x86_64
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: linux
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: darwin
+            arch: x86_64
+            runner: macos-13
+          - target: aarch64-apple-darwin
+            os: darwin
+            arch: aarch64
+            runner: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows
+            arch: x86_64
+            runner: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: build
+        run: cargo build --release --locked --bin pantheon --target ${{ matrix.target }}
+
+      - name: package (unix)
+        if: matrix.os != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          staged="$RUNNER_TEMP/stage"
+          mkdir -p "$staged"
+          cp "target/${{ matrix.target }}/release/pantheon" "$staged/pantheon"
+          chmod +x "$staged/pantheon"
+          asset="pantheon-${{ github.ref_name }}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+          tar -czf "$RUNNER_TEMP/$asset" -C "$staged" pantheon
+          (cd "$RUNNER_TEMP" && sha256sum "$asset" > "$asset.sha256")
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: package (windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $staged = Join-Path $env:RUNNER_TEMP "stage"
+          New-Item -ItemType Directory -Force -Path $staged | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/pantheon.exe" (Join-Path $staged "pantheon.exe")
+          $asset = "pantheon-${{ github.ref_name }}-${{ matrix.os }}-${{ matrix.arch }}.zip"
+          Compress-Archive -Path (Join-Path $staged "pantheon.exe") -DestinationPath (Join-Path $env:RUNNER_TEMP $asset)
+          $hash = (Get-FileHash (Join-Path $env:RUNNER_TEMP $asset) -Algorithm SHA256).Hash.ToLower()
+          "$hash  $asset" | Out-File -FilePath (Join-Path $env:RUNNER_TEMP "$asset.sha256") -Encoding ascii
+          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: smoke test the packaged binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$RUNNER_TEMP/smoke"
+          mkdir -p "$tmp"
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            unzip -o "$RUNNER_TEMP/$ASSET" -d "$tmp"
+            "$tmp/pantheon.exe" --version
+            "$tmp/pantheon.exe" --help > /dev/null
+          else
+            tar -xzf "$RUNNER_TEMP/$ASSET" -C "$tmp"
+            "$tmp/pantheon" --version
+            "$tmp/pantheon" --help > /dev/null
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/pantheon-*.tar.gz
+            ${{ runner.temp }}/pantheon-*.zip
+            ${{ runner.temp }}/pantheon-*.sha256
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: list assets
+        run: ls -la dist/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -6,7 +6,7 @@
 //! and back up before mutating.
 use super::*;
 use crate::dotenv::test_support::TEST_ENV_LOCK;
-use pantheon_core::events::Event;
+use pantheon_api::events::Event;
 
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("pantheon-repair-{tag}-{}", std::process::id()));
@@ -29,10 +29,12 @@ fn a_healthy_install_reports_clean_and_repairs_nothing() {
     // `validate()` rejects, so the default would not make this check pass.
     let cfg = crate::config_doc::Config {
         model: Some(crate::config_doc::ModelSection {
+            reasoning_budget: None,
             provider: "local".into(),
             model: "llama3.2".into(),
             api_key_env: None,
             fallbacks: Vec::new(),
+            reasoning: None,
         }),
         ..Default::default()
     };
@@ -387,7 +389,7 @@ fn the_memory_index_rebuild_restores_its_records() {
             provenance: pantheon_memory::Provenance {
                 source: "test".into(),
                 origin: "user".into(),
-                trust: pantheon_core::provenance::TrustTier::User,
+                trust: pantheon_api::provenance::TrustTier::User,
                 recorded_at_ms: 0,
             },
         })
@@ -422,8 +424,15 @@ fn the_memory_index_rebuild_restores_its_records() {
     // The record must be findable again. An empty recreate would pass the
     // health probe above and fail here.
     let store = pantheon_memory::MemoryStore::open(&mem).unwrap();
+    // Scoped search: the namespace is now an argument, not an implicit
+    // "everything" default. The record above was written under "ns".
     let hits = store
-        .search(&[pantheon_memory::LayerKind::Project], "lazy dog", 10)
+        .search_scoped(
+            &["ns"],
+            &[pantheon_memory::LayerKind::Project],
+            "lazy dog",
+            10,
+        )
         .unwrap();
     assert!(
         hits.iter().any(|h| h.record.value.contains("lazy dog")),

@@ -11,7 +11,7 @@
 //! Structured output (`DangerAssessment`) leaves room for an AST-aware
 //! shell analyzer later without changing call sites.
 
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 
 /// How dangerous a command is judged to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

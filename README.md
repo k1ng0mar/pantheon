@@ -1,41 +1,6 @@
 # Pantheon
 
-A Rust agent runtime. Small at the center, huge at the edges.
-
-The model is not the runtime. The model is one replaceable component inside
-it. The runtime owns lifecycle, state, policy, execution, capabilities,
-recovery, and events. Agents never pick models.
-
-## Documentation map
-
-| Document | What it covers |
-|---|---|
-| [docs/product-overview.md](./docs/product-overview.md) | Product definition, user value, current experience, and planned system |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | System design, crate map, locked decisions, status of every subsystem |
-| [docs/getting-started.md](./docs/getting-started.md) | Install, setup, first chat, config reference |
-| [docs/cli.md](./docs/cli.md) | Every verb, every flag, exit codes, environment variables |
-| [docs/configuration.md](./docs/configuration.md) | config.toml fields, secret handling, backend selection |
-| [docs/runs-and-recovery.md](./docs/runs-and-recovery.md) | Run lifecycle, approvals, leases, recovery, cancellation |
-| [docs/pipelines.md](./docs/pipelines.md) | The orchestration pipeline, gates, evaluator loop |
-| [docs/channels.md](./docs/channels.md) | Discord, Telegram, the AG-UI web surface, gateways |
-| [docs/plugins.md](./docs/plugins.md) | Extension format, hooks, capability gating, doctor |
-| [docs/memory.md](./docs/memory.md) | Memory layers, the write path, MEMORY.md sync |
-| [docs/troubleshooting.md](./docs/troubleshooting.md) | Error codes and what to do about them |
-| [docs/contributing.md](./docs/contributing.md) | Crate boundaries, testing rules, how to add a verb/tool/event |
-
-## Status
-
-Working today: chat with tool loops against any OpenAI-compatible or
-Anthropic provider, crash recovery, durable operations, human approval
-gates, plugin loading and hooks, memory with provenance, Discord and
-Telegram surfaces, the AG-UI local web client, a setup wizard, a system
-doctor, and the six-stage orchestration pipeline.
-
-Wired to the CLI: scheduler (`pantheon schedule`, including real
-model-backed runs), migration import (`pantheon migrate`), swarm caps
-(`pantheon swarm`). Still unwired: MCP server launcher (`pantheon mcp
-list` is read-only), OS-keychain backends, container/VM enforcement. See
-ARCHITECTURE.md sections 3, 10, 13, 15, 21, 23 for the exact state.
+A durable agent runtime. The model reasons; Pantheon owns lifecycle, state, policy, execution, recovery, and events — so agents survive model changes, restarts, and interruptions.
 
 ## Install
 
@@ -51,11 +16,37 @@ Windows (PowerShell):
 iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb | iex
 ```
 
-The script installs Rust (if missing), builds from source, and links
-into `~/.local/bin`. Requires `sh` and `git` at minimum on Unix;
-Git and curl on Windows.
+Prebuilt binary from GitHub Releases, needs only `curl` and `tar`. No toolchain required.
 
-Or build from source:
+## Quickstart
+
+```sh
+pantheon setup --yes --provider openai --model gpt-4o-mini --api-key-env OPENAI_API_KEY
+export OPENAI_API_KEY=sk-...
+pantheon              # interactive session (the terminal interface)
+pantheon runs <run_id>  # why everything happened
+pantheon doctor         # is everything healthy
+```
+
+## Docs
+
+- [Getting started](docs/getting-started.md) — install, setup, first session
+- [Docs index](docs/index.md) — agents, memory, runs, channels, providers
+- [CLI reference](docs/reference/cli.md) — every verb, flag, exit code
+- [Configuration](docs/reference/configuration.md) — `config.toml` fields
+- [Architecture](docs/developer/architecture.md) — system design, crate map
+- [Contributing](docs/developer/contributing.md) — boundaries, tests, how to add a verb/tool
+
+## Commands
+
+```sh
+pantheon          # start Pantheon
+pantheon doctor   # diagnose your installation
+pantheon update   # update Pantheon
+pantheon --help   # show available commands
+```
+
+## Build from source
 
 ```sh
 git clone https://github.com/k1ng0mar/pantheon.git
@@ -63,28 +54,8 @@ cd pantheon
 cargo build --release
 ```
 
-Requires a Rust toolchain (edition 2021). No database server: SQLite is
-bundled. No async runtime: everything is std threads.
+Requires a Rust toolchain (edition 2021). No database server: SQLite is bundled.
 
-## A ten-minute tour
+## License
 
-```sh
-pantheon setup --yes --provider openai --model gpt-4o-mini --api-key-env OPENAI_API_KEY
-export OPENAI_API_KEY=sk-...
-pantheon                           # interactive session (or: pantheon chat "...")
-pantheon runs <run_id>          # why everything happened
-pantheon doctor                    # is everything healthy
-```
-
-The default policy lets the model run shell commands in your working
-directory, behind a dangerous-pattern pre-gate. Read
-docs/configuration.md before pointing it at anything you care about.
-
-## Design position (short version)
-
-Event-sourced everything: every run is a sequence of events in SQLite, which
-is why `pantheon runs <id>`, crash recovery, and audit export all read the same rows.
-Capability-gated everything: tools declare the capability they need, the
-policy decides allow/deny/approve. Human approval parks a run durably; a
-denial becomes a transcript result, not a crashed run. Durability is
-versioned CAS state machines, not hope.
+MIT. See [LICENSE](LICENSE).

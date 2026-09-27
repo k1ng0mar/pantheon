@@ -5,7 +5,7 @@ fn prov(origin: &str) -> Provenance {
     Provenance {
         source: "import".into(),
         origin: origin.into(),
-        trust: pantheon_core::provenance::TrustTier::User,
+        trust: pantheon_api::provenance::TrustTier::User,
         recorded_at_ms: 1,
     }
 }
@@ -25,6 +25,169 @@ fn proposal(layer: LayerKind, ns: &str, k: &str, v: &str, origin: &str) -> Propo
         value: v.into(),
         provenance: prov(origin),
     }
+}
+
+// ------------------------------------------------------- namespace isolation
+//
+// `MemoryStore::search` had no namespace predicate and used `layers` only
+// to sort rows it had already fetched, so every recall returned every
+// agent's records from the shared store. The write path was already
+// namespace-scoped, which made recall the leak. These tests fail against
+// the old query.
+
+#[test]
+fn recall_does_not_cross_agent_namespaces() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    // `coder()` grants memory.read but not memory.write, so the fixture
+    // needs the writer policy; the point under test is the read scope.
+    let policy = writer_policy();
+    for (ns, city) in [("agent:nyx", "Kano"), ("agent:zeus", "Lagos")] {
+        propose_write(
+            &store,
+            &policy,
+            proposal(LayerKind::Agent, ns, "city", city, "user"),
+            4096,
+        )
+        .unwrap();
+    }
+    // The word matches both records; the namespace must still separate them.
+    let nyx = recall(
+        &store,
+        &policy,
+        &["agent:nyx"],
+        &[LayerKind::Agent],
+        "city",
+        10,
+    )
+    .unwrap();
+    assert_eq!(nyx.len(), 1, "nyx must not see zeus' record");
+    assert_eq!(nyx[0].record.namespace, "agent:nyx");
+    assert!(nyx[0].record.value.contains("Kano"));
+
+    let zeus = recall(
+        &store,
+        &policy,
+        &["agent:zeus"],
+        &[LayerKind::Agent],
+        "city",
+        10,
+    )
+    .unwrap();
+    assert_eq!(zeus.len(), 1, "zeus must not see nyx' record");
+    assert!(zeus[0].record.value.contains("Lagos"));
+}
+
+#[test]
+fn recall_without_a_namespace_returns_nothing() {
+    // The dangerous default: forgetting to scope must yield no data, never
+    // every agent's data.
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = writer_policy();
+    propose_write(
+        &store,
+        &policy,
+        proposal(LayerKind::Agent, "agent:nyx", "city", "Kano", "user"),
+        4096,
+    )
+    .unwrap();
+    let hits = recall(&store, &policy, &[], &[LayerKind::Agent], "city", 10).unwrap();
+    assert!(
+        hits.is_empty(),
+        "an unscoped recall returned {} rows; it must return none",
+        hits.len()
+    );
+}
+
+#[test]
+fn an_explicit_wildcard_still_reads_every_namespace() {
+    // Operator tooling needs this, and it must stay reachable -- otherwise
+    // the fix above would just delete the capability.
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = writer_policy();
+    for ns in ["agent:nyx", "agent:zeus"] {
+        propose_write(
+            &store,
+            &policy,
+            proposal(LayerKind::Agent, ns, "city", "Somewhere", "user"),
+            4096,
+        )
+        .unwrap();
+    }
+    let hits = recall(&store, &policy, &["*"], &[LayerKind::Agent], "city", 10).unwrap();
+    assert_eq!(hits.len(), 2, "the explicit wildcard must read both");
+}
+
+#[test]
+fn cross_agent_recall_is_possible_but_never_implicit() {
+    // Two namespaces named together is a deliberate act, and it works --
+    // shared context for collaboration goes through an explicit scope.
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = writer_policy();
+    for (ns, city) in [("agent:nyx", "Kano"), ("agent:zeus", "Lagos")] {
+        propose_write(
+            &store,
+            &policy,
+            proposal(LayerKind::Agent, ns, "city", city, "user"),
+            4096,
+        )
+        .unwrap();
+    }
+    let hits = recall(
+        &store,
+        &policy,
+        &["agent:nyx", "agent:zeus"],
+        &[LayerKind::Agent],
+        "city",
+        10,
+    )
+    .unwrap();
+    assert_eq!(hits.len(), 2);
+}
+
+#[test]
+fn recall_also_honours_the_layer_filter() {
+    // The layer list was previously sort-only, so out-of-layer rows were
+    // returned (just ranked last). Now it is a real predicate.
+    let store = MemoryStore::open_in_memory().unwrap();
+    let policy = writer_policy();
+    propose_write(
+        &store,
+        &policy,
+        proposal(
+            LayerKind::Agent,
+            "agent:nyx",
+            "topic",
+            "swordsmithing",
+            "user",
+        ),
+        4096,
+    )
+    .unwrap();
+    propose_write(
+        &store,
+        &policy,
+        proposal(
+            LayerKind::Global,
+            "agent:nyx",
+            "topic",
+            "agriculture",
+            "user",
+        ),
+        4096,
+    )
+    .unwrap();
+    let hits = recall(
+        &store,
+        &policy,
+        &["agent:nyx"],
+        &[LayerKind::Agent],
+        "topic",
+        10,
+    )
+    .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].record.layer, LayerKind::Agent);
+    assert!(hits[0].record.value.contains("swordsmithing"));
 }
 
 #[test]
@@ -84,7 +247,11 @@ fn recall_returns_provenance_and_narrowest_first() {
         LayerKind::Project,
         LayerKind::Global,
     ];
-    let hits = recall(&store, &policy, &layers, "rust", 10).unwrap();
+    // The fixtures live in two different namespaces ("g" and "s1"), so the
+    // caller must name both. Before recall was namespace-aware this test
+    // passed with no namespace at all -- it was quietly reading across
+    // every namespace in the store, which is exactly the leak.
+    let hits = recall(&store, &policy, &["g", "s1"], &layers, "rust", 10).unwrap();
     assert_eq!(hits.len(), 2);
     assert_eq!(hits[0].record.layer, LayerKind::TaskSession);
     assert_eq!(hits[1].record.layer, LayerKind::Global);
@@ -116,7 +283,7 @@ fn upsert_replaces_value_and_keeps_provenance_fresh() {
     .unwrap();
     assert_eq!(rec.value, "Africa/Lagos");
     assert_eq!(rec.provenance.origin, "user");
-    let hits = recall(&store, &policy, &[LayerKind::Agent], "tz", 10).unwrap();
+    let hits = recall(&store, &policy, &["nyx"], &[LayerKind::Agent], "tz", 10).unwrap();
     assert_eq!(hits.len(), 1);
 }
 
@@ -151,7 +318,7 @@ fn a_tool_origin_write_cannot_overwrite_a_user_record_via_propose_write() {
     );
     assert_eq!(
         stored.provenance.trust,
-        pantheon_core::provenance::TrustTier::User
+        pantheon_api::provenance::TrustTier::User
     );
 }
 
@@ -168,7 +335,7 @@ fn a_model_origin_write_cannot_overwrite_a_user_confirmed_record() {
     assert_eq!(rec.value, "Kano");
     assert_eq!(
         rec.provenance.trust,
-        pantheon_core::provenance::TrustTier::User
+        pantheon_api::provenance::TrustTier::User
     );
 
     // Same key, model-origin, untrusted tier.
@@ -180,7 +347,7 @@ fn a_model_origin_write_cannot_overwrite_a_user_confirmed_record() {
         provenance: Provenance {
             source: "tool_output".into(),
             origin: "model".into(),
-            trust: pantheon_core::provenance::TrustTier::Untrusted,
+            trust: pantheon_api::provenance::TrustTier::Untrusted,
             recorded_at_ms: 2,
         },
     };
@@ -193,7 +360,7 @@ fn a_model_origin_write_cannot_overwrite_a_user_confirmed_record() {
     );
     assert_eq!(
         after.provenance.trust,
-        pantheon_core::provenance::TrustTier::User,
+        pantheon_api::provenance::TrustTier::User,
         "tier was downgraded"
     );
     assert_eq!(after.provenance.origin, "user", "origin was overwritten");
@@ -217,7 +384,7 @@ fn a_user_write_still_overwrites_a_lower_tier_record() {
         provenance: Provenance {
             source: "user".into(),
             origin: "user".into(),
-            trust: pantheon_core::provenance::TrustTier::User,
+            trust: pantheon_api::provenance::TrustTier::User,
             recorded_at_ms: 9,
         },
     };
@@ -225,7 +392,7 @@ fn a_user_write_still_overwrites_a_lower_tier_record() {
     assert_eq!(rec.value, "Kaduna");
     assert_eq!(
         rec.provenance.trust,
-        pantheon_core::provenance::TrustTier::User
+        pantheon_api::provenance::TrustTier::User
     );
 }
 

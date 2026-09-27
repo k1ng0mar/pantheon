@@ -16,7 +16,7 @@ use pantheon_exec::skills::{discover_skills_ext, import_skill, scan_skills_ext, 
 use std::path::{Path, PathBuf};
 
 /// Extra discovery roots beyond the built-in cross-tool scopes.
-fn extra_roots() -> Vec<PathBuf> {
+pub(crate) fn extra_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Ok(d) = std::env::var("PANTHEON_SKILLS_DIR") {
         for entry in d.split(':').filter(|s| !s.is_empty()) {
@@ -26,7 +26,7 @@ fn extra_roots() -> Vec<PathBuf> {
     roots
 }
 
-fn project_root() -> PathBuf {
+pub(crate) fn project_root() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| data_dir())
 }
 
@@ -248,7 +248,7 @@ pub fn rejected_at(data_dir: &Path) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-pub fn scan_summary() -> Result<SkillScanSummary, pantheon_core::error::PantheonError> {
+pub fn scan_summary() -> Result<SkillScanSummary, pantheon_api::error::PantheonError> {
     let dd = data_dir();
     let scan = scan_skills_ext(&dd, &project_root(), &extra_roots());
     Ok(SkillScanSummary {

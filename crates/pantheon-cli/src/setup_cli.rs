@@ -166,7 +166,9 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
 
     let cfg = Config {
         profile: Some(profile),
+        agent: None,
         model: Some(ModelSection {
+            reasoning_budget: None,
             provider,
             model,
             api_key_env: if api_key_env.is_empty() {
@@ -175,6 +177,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
                 Some(api_key_env)
             },
             fallbacks,
+            reasoning: None,
         }),
         judge: None,
         embeddings: None,

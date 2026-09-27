@@ -128,8 +128,8 @@ fn tool_allowed_filters_by_capability() {
     let found = discover_plugins(&data, d.path());
     let plugin = &found[0];
     // default policy denies everything.
-    let policy = pantheon_core::capability::Policy::default();
+    let policy = pantheon_api::capability::Policy::default();
     assert!(!tool_allowed(plugin, "safe_read", &policy));
-    let coder = pantheon_core::capability::Policy::coder();
+    let coder = pantheon_api::capability::Policy::coder();
     assert!(tool_allowed(plugin, "safe_read", &coder));
 }

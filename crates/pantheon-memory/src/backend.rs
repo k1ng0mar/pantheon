@@ -13,7 +13,7 @@
 //! (`BackendSelection { name, options }`); `open_selected` reads it and
 //! instantiates the chosen backend.
 use crate::{MemoryBackend, MemoryStore};
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -467,11 +467,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let backend = open_selected(&dir).unwrap();
         // Persistent file exists after first write.
-        let policy = pantheon_core::capability::Policy::coder_with_memory();
+        let policy = pantheon_api::capability::Policy::coder_with_memory();
         let prov = crate::Provenance {
             source: "test".into(),
             origin: "user".into(),
-            trust: pantheon_core::provenance::TrustTier::User,
+            trust: pantheon_api::provenance::TrustTier::User,
             recorded_at_ms: 0,
         };
         crate::write_via(

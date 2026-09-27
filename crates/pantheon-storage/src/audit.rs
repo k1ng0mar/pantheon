@@ -9,7 +9,7 @@
 //! a file with duplicate or decreasing seq values (a corrupted ledger
 //! should fail loudly here, not downstream).
 use crate::ledger::LedgerEntry;
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use std::io::Write;
 use std::path::Path;
 
@@ -26,7 +26,7 @@ pub fn audit_line(entry: &LedgerEntry) -> String {
         "event": event_name(&entry.event),
     });
     match &entry.event {
-        pantheon_core::events::Event::ToolStarted {
+        pantheon_api::events::Event::ToolStarted {
             call_id,
             tool,
             args,
@@ -36,7 +36,7 @@ pub fn audit_line(entry: &LedgerEntry) -> String {
             obj["tool"] = serde_json::json!(tool);
             obj["args"] = serde_json::json!(args);
         }
-        pantheon_core::events::Event::ToolOutput {
+        pantheon_api::events::Event::ToolOutput {
             call_id,
             tool,
             truncated,
@@ -46,24 +46,24 @@ pub fn audit_line(entry: &LedgerEntry) -> String {
             obj["tool"] = serde_json::json!(tool);
             obj["truncated"] = serde_json::json!(truncated);
         }
-        pantheon_core::events::Event::ToolCompleted { call_id, tool, .. } => {
+        pantheon_api::events::Event::ToolCompleted { call_id, tool, .. } => {
             obj["call_id"] = serde_json::json!(call_id);
             obj["tool"] = serde_json::json!(tool);
         }
-        pantheon_core::events::Event::ModelDelta { delta, .. } => {
+        pantheon_api::events::Event::ModelDelta { delta, .. } => {
             obj["delta"] = serde_json::json!(delta);
         }
-        pantheon_core::events::Event::RunFailed { code, .. } => {
+        pantheon_api::events::Event::RunFailed { code, .. } => {
             obj["code"] = serde_json::json!(code);
         }
-        pantheon_core::events::Event::RunCanceled { reason, .. } => {
+        pantheon_api::events::Event::RunCanceled { reason, .. } => {
             obj["reason"] = serde_json::json!(reason);
         }
-        pantheon_core::events::Event::ApprovalRequested { scope, .. } => {
+        pantheon_api::events::Event::ApprovalRequested { scope, .. } => {
             obj["scope"] = serde_json::json!(scope);
         }
-        pantheon_core::events::Event::ApprovalGranted { scope, .. }
-        | pantheon_core::events::Event::ApprovalDenied { scope, .. } => {
+        pantheon_api::events::Event::ApprovalGranted { scope, .. }
+        | pantheon_api::events::Event::ApprovalDenied { scope, .. } => {
             obj["scope"] = serde_json::json!(scope);
         }
         _ => {}
@@ -72,8 +72,8 @@ pub fn audit_line(entry: &LedgerEntry) -> String {
 }
 
 /// Stable snake_case names for event kinds.
-fn event_name(e: &pantheon_core::events::Event) -> &'static str {
-    use pantheon_core::events::Event::*;
+fn event_name(e: &pantheon_api::events::Event) -> &'static str {
+    use pantheon_api::events::Event::*;
     match e {
         RunStarted { .. } => "RunStarted",
         RunProgress { .. } => "RunProgress",

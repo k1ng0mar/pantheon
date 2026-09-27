@@ -23,8 +23,8 @@
 
 use crate::http::{aux_complete, aux_request, aux_transport, resolve_aux_wire, ChatTransport};
 use pantheon_agent::TurnOutcome;
-use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::model::{
+use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::model::{
     DecisionAnswer, DecisionPoint, DecisionRequest, DefaultModel, GateVerdict, Judge,
 };
 use pantheon_secrets::SecretValue;

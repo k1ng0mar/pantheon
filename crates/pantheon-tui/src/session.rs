@@ -1,6 +1,6 @@
 //! The conversation view: the base screen every overlay stacks above.
 //!
-//! Placeholder for L0. The block model, the streaming event handling, and the
+//! The block model, the streaming event handling, and the
 //! permission card move here from `tui.rs` unchanged in behavior.
 
 use crate::app::{RawHandler, ScreenResult};

@@ -34,13 +34,46 @@ fn every_command_has_a_description_and_a_category() {
 }
 
 #[test]
-fn the_registry_covers_the_spec_command_list() {
+fn the_registry_covers_the_dispatched_commands() {
     let r = registry();
+    // Every arm in handle_slash (pantheon-cli/src/tui.rs) resolves here.
+    // Absent on purpose: cost, memory, tools, debug, provenance, events
+    // (see the registry doc comment for why).
     for want in [
-        "models", "sessions", "resume", "memory", "tools", "skills", "settings", "doctor",
-        "status", "help",
+        "models",
+        "model",
+        "reasoning",
+        "sessions",
+        "resume",
+        "new",
+        "compress",
+        "export",
+        "runs",
+        "remember",
+        "skills",
+        "agent",
+        "agents",
+        "collab",
+        "tasks",
+        "inbox",
+        "history",
+        "name",
+        "settings",
+        "gateway",
+        "doctor",
+        "status",
+        "help",
+        "clear",
+        "quit",
+        "exit",
     ] {
         assert!(r.contains_key(want), "/{want} is missing from the registry");
+    }
+    for gone in ["cost", "memory", "tools", "debug", "provenance", "events"] {
+        assert!(
+            !r.contains_key(gone),
+            "/{gone} was removed from the surface"
+        );
     }
 }
 

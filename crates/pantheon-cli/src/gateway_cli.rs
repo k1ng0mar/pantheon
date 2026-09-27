@@ -9,7 +9,7 @@
 //!   PANTHEON_DISCORD_TOKEN, PANTHEON_TELEGRAM_BOT_TOKEN
 //! Missing tokens disable that surface; at least one must be set.
 
-use pantheon_core::capability::Policy;
+use pantheon_api::capability::Policy;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -45,15 +45,17 @@ impl RuntimeSink {
 fn open_session(
     data_dir: &Path,
     policy: Policy,
-) -> Result<pantheon_runtime::session::Session, pantheon_core::error::PantheonError> {
+) -> Result<pantheon_runtime::session::Session, pantheon_api::error::PantheonError> {
     let cfg = crate::config_doc::Config::load_or_report(data_dir);
-    let default = pantheon_core::model::DefaultModel {
+    let default = pantheon_api::model::DefaultModel {
         provider: std::env::var("PANTHEON_PROVIDER").unwrap_or_else(|_| "local".into()),
         model: std::env::var("PANTHEON_MODEL").unwrap_or_else(|_| "llama3.2".into()),
     };
-    let model_policy = pantheon_core::model::ModelPolicy {
+    let model_policy = pantheon_api::model::ModelPolicy {
+        reasoning_budget: Default::default(),
+        reasoning: Default::default(),
         default: default.clone(),
-        fallbacks: pantheon_core::model::FallbackChain::default(),
+        fallbacks: pantheon_api::model::FallbackChain::default(),
         auxiliaries: crate::config_doc::auxiliaries(cfg.as_ref(), &default),
     };
     let secrets = crate::config_doc::chat_secrets(cfg.as_ref());
@@ -357,6 +359,59 @@ mod tests;
 /// partially written tail is discarded rather than corrupting the queue.
 pub fn outbox_path(data_dir: &Path) -> PathBuf {
     data_dir.join("gateway").join("outbox.jsonl")
+}
+
+/// Gateway service state for in-process callers (the TUI `/gateway`
+/// command). Read-only: unlike `service_ctl`, asking never installs,
+/// starts, or prints anything.
+pub(crate) struct GatewayStatus {
+    /// A service unit exists (systemd unit on Linux, plist on macOS).
+    pub installed: bool,
+    /// The manager reports the service active.
+    pub active: bool,
+    /// Queued outbound messages awaiting delivery.
+    pub outbox_pending: usize,
+}
+
+pub(crate) fn gateway_status() -> GatewayStatus {
+    let data_dir = crate::data_dir();
+    #[cfg(target_os = "linux")]
+    let installed = unit_path().exists();
+    #[cfg(target_os = "macos")]
+    let installed = plist_path().exists();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let installed = false;
+    #[cfg(target_os = "linux")]
+    let active = which("systemctl")
+        .and_then(|_| {
+            std::process::Command::new("systemctl")
+                .args(["--user", "is-active", UNIT_NAME])
+                .output()
+                .ok()
+        })
+        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "active");
+    #[cfg(target_os = "macos")]
+    let active = {
+        let domain = format!("gui/{}", current_uid());
+        which("launchctl")
+            .and_then(|_| {
+                std::process::Command::new("launchctl")
+                    .args(["print", &format!("{domain}/{PLIST_LABEL}")])
+                    .output()
+                    .ok()
+            })
+            .is_some_and(|o| o.status.success())
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let active = false;
+    let outbox_pending = std::fs::read_to_string(outbox_path(&data_dir))
+        .map(|t| t.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0);
+    GatewayStatus {
+        installed,
+        active,
+        outbox_pending,
+    }
 }
 
 /// Append a reply for the gateway to deliver.

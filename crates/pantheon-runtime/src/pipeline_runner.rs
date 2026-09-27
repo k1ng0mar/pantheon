@@ -3,7 +3,7 @@
 use super::pipeline::{
     run_model_stage, stage_kind, StageEvaluator, StageExecutor, StageKind, STAGES,
 };
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use pantheon_storage::{Operation, OperationStatus, OperationStore};
 use serde_json::{json, Value};
 

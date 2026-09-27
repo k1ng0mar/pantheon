@@ -3,7 +3,7 @@
 //! Fail-open: any crash/timeout/bad output => Ok(None), never a broken turn.
 use crate::hooks::Hook;
 use crate::manifest::PluginManifest;
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

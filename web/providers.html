@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon — Rust Agent Runtime</title>
+  <title>Pantheon — Providers</title>
   <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
   <meta property="og:title" content="Pantheon — Rust Agent Runtime">
   <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
@@ -44,6 +44,8 @@
     th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
     th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
     tr:hover td { background: rgba(112,39,197,0.05); }
+    blockquote { border-left: 2px solid #7027c5; padding-left: 1rem; margin: 1rem 0; color: #e8e6e1; font-style: italic; }
+    p a, li a, td a { color: #e8e6e1; text-decoration: underline; text-decoration-color: #7027c5; text-underline-offset: 3px; }
     details { cursor: pointer; }
     details summary { list-style: none; }
     details summary::-webkit-details-marker { display: none; }
@@ -61,137 +63,47 @@
       </a>
       <div class="flex items-center gap-6 text-sm">
         <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
-        <a href="getting-started.html" class="text-muted hover:text-fg transition-colors">Docs</a>
-        <a href="configuration.html" class="text-muted hover:text-fg transition-colors">Configuration</a>
+        <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
+        <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
+        <a href="docs.html" class="text-muted hover:text-fg transition-colors">Docs</a>
         <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
-        <a href="channels.html" class="text-muted hover:text-fg transition-colors">Channels</a>
-        <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
       </div>
     </div>
   </nav>
 
-  <h1 class="text-3xl md:text-4xl font-bold text-fg mb-4 mt-8">Provider registry</h1>
-<p class="text-muted text-sm leading-relaxed mb-3">39 builtins in <code>crates/pantheon-core/catalog.yaml</code> plus user customs</p>
-<p class="text-muted text-sm leading-relaxed mb-3">(<code>[custom_providers.*]</code>, managed by <code>pantheon provider</code>). Every row</p>
-<p class="text-muted text-sm leading-relaxed mb-3">resolves the same way: base URL (+<code>{var}</code> templates) → wire mode →</p>
-<p class="text-muted text-sm leading-relaxed mb-3">key env → key header. <code>pantheon model</code> discovers models live</p>
-<p class="text-muted text-sm leading-relaxed mb-3">(<code>GET {base}/models</code>) and falls back to curated rows, then manual entry.</p>
-<p class="text-muted text-sm leading-relaxed mb-3">Legend — <strong>discovery</strong>: yes = standard OpenAI-shape <code>/models</code> confirmed;</p>
-<p class="text-muted text-sm leading-relaxed mb-3">manual = no listing endpoint (or non-standard); type the id.</p>
-<p class="text-muted text-sm leading-relaxed mb-3"><strong>auth</strong>: Bearer unless noted.</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Majors + clouds</h2>
-<table>
-<thead><tr><th>Provider</th><th>Base URL</th><th>Auth / key env</th><th>Discovery</th><th>Notes</th></tr></thead>
-<tbody>
-<thead><tr><th>openai</th><th>`https://api.openai.com/v1`</th><th>Bearer · `OPENAI_API_KEY`</th><th>yes</th><th>Baseline</th></tr></thead>
-<tbody>
-<thead><tr><th>anthropic</th><th>`https://api.anthropic.com/v1`</th><th>`ANTHROPIC_API_KEY`</th><th>manual</th><th>Native Messages API; no `/models` — type the id</th></tr></thead>
-<tbody>
-<thead><tr><th>google</th><th>`https://generativelanguage.googleapis.com/v1beta/openai`</th><th>Bearer · `GEMINI_API_KEY`</th><th>yes</th><th>OpenAI compatibility layer</th></tr></thead>
-<tbody>
-<thead><tr><th>vertex</th><th>`https://aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/endpoints/openapi`</th><th>Bearer access token · `GOOGLE_ACCESS_TOKEN`</th><th>manual</th><th>Template: `project`, `location`; short-lived token</th></tr></thead>
-<tbody>
-<thead><tr><th>bedrock</th><th>`https://bedrock-runtime.{region}.amazonaws.com/openai/v1`</th><th>Bearer Bedrock key · `AWS_BEARER_TOKEN_BEDROCK`</th><th>manual</th><th>Template: `region`; SigV4 not yet — Bearer key works; model ids like `anthropic.claude-...:0`</th></tr></thead>
-<tbody>
-<thead><tr><th>azure</th><th>`https://{resource}.openai.azure.com/openai/v1/`</th><th>Bearer/key · `AZURE_OPENAI_API_KEY`</th><th>manual</th><th>Template: `resource`; **model id = deployment name**</th></tr></thead>
-<tbody>
-<thead><tr><th>huggingface</th><th>`https://router.huggingface.co/v1`</th><th>Bearer · `HF_TOKEN`</th><th>yes</th><th>`org/model:provider` routing</th></tr></thead>
-<tbody>
-<thead><tr><th>openrouter</th><th>`https://openrouter.ai/api/v1`</th><th>Bearer · `OPENROUTER_API_KEY`</th><th>yes</th><th>500+ models, fallback routing</th></tr></thead>
-<tbody>
-</tbody></table>
-
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Aggregators / inference clouds</h2>
-<table>
-<thead><tr><th>Provider</th><th>Base URL</th><th>Auth / key env</th><th>Discovery</th><th>Notes</th></tr></thead>
-<tbody>
-<thead><tr><th>fireworks</th><th>`https://api.fireworks.ai/inference/v1`</th><th>Bearer · `FIREWORKS_API_KEY`</th><th>yes</th><th>Open models</th></tr></thead>
-<tbody>
-<thead><tr><th>together</th><th>`https://api.together.xyz/v1`</th><th>Bearer · `TOGETHER_API_KEY`</th><th>yes</th><th>Open models</th></tr></thead>
-<tbody>
-<thead><tr><th>groq</th><th>`https://api.groq.com/openai/v1`</th><th>Bearer · `GROQ_API_KEY`</th><th>yes</th><th>Fast inference</th></tr></thead>
-<tbody>
-<thead><tr><th>deepinfra</th><th>`https://api.deepinfra.com/v1/openai`</th><th>Bearer · `DEEPINFRA_API_KEY`</th><th>likely, unverified</th><th>Note the `/v1/openai` path — completions join correctly</th></tr></thead>
-<tbody>
-<thead><tr><th>novita</th><th>`https://api.novita.ai/openai/v1`</th><th>Bearer · `NOVITA_API_KEY`</th><th>likely, unverified</th><th>`provider/model` routing</th></tr></thead>
-<tbody>
-<thead><tr><th>nebius</th><th>`https://api.tokenfactory.nebius.com/v1`</th><th>Bearer · `NEBIUS_API_KEY`</th><th>yes</th><th>Token Factory; AI Studio (`api.studio.nebius.ai/v1`) via override</th></tr></thead>
-<tbody>
-<thead><tr><th>cerebras</th><th>`https://api.cerebras.ai/v1`</th><th>Bearer · `CEREBRAS_API_KEY`</th><th>yes</th><th>Fast inference</th></tr></thead>
-<tbody>
-<thead><tr><th>sambanova</th><th>`https://api.sambanova.ai/v1`</th><th>Bearer · `SAMBANOVA_API_KEY`</th><th>manual</th><th>**No listing endpoint** (confirmed) — type the id</th></tr></thead>
-<tbody>
-<thead><tr><th>nvidia-nim</th><th>`https://integrate.api.nvidia.com/v1`</th><th>Bearer · `NVIDIA_API_KEY`</th><th>yes</th><th>GPU-optimized inference</th></tr></thead>
-<tbody>
-<thead><tr><th>cloudflare</th><th>`https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1`</th><th>Bearer token · `CLOUDFLARE_API_TOKEN`</th><th>manual</th><th>Template: `account_id`</th></tr></thead>
-<tbody>
-</tbody></table>
-
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Labs</h2>
-<table>
-<thead><tr><th>Provider</th><th>Base URL</th><th>Auth / key env</th><th>Discovery</th><th>Notes</th></tr></thead>
-<tbody>
-<thead><tr><th>deepseek</th><th>`https://api.deepseek.com/v1`</th><th>Bearer · `DEEPSEEK_API_KEY`</th><th>yes</th><th>Cheap reasoning</th></tr></thead>
-<tbody>
-<thead><tr><th>mistral</th><th>`https://api.mistral.ai/v1`</th><th>Bearer · `MISTRAL_API_KEY`</th><th>yes</th><th>European lab</th></tr></thead>
-<tbody>
-<thead><tr><th>xai</th><th>`https://api.x.ai/v1`</th><th>Bearer · `XAI_API_KEY`</th><th>yes</th><th>Grok</th></tr></thead>
-<tbody>
-<thead><tr><th>qwen</th><th>`https://dashscope.aliyuncs.com/compatible/v1`</th><th>Bearer · `DASHSCOPE_API_KEY`</th><th>manual</th><th>Compat endpoints expose **no** `/models` (confirmed) — type the id; intl alt: `dashscope-intl.aliyuncs.com/compatible-mode/v1`</th></tr></thead>
-<tbody>
-<thead><tr><th>zhipu</th><th>`https://open.bigmodel.cn/api/paas/v4`</th><th>Bearer · `ZHIPUAI_API_KEY`</th><th>likely, unverified</th><th>GLM</th></tr></thead>
-<tbody>
-<thead><tr><th>moonshot</th><th>`https://api.moonshot.ai/v1`</th><th>Bearer · `MOONSHOT_API_KEY`</th><th>likely, unverified</th><th>Kimi</th></tr></thead>
-<tbody>
-<thead><tr><th>minimax</th><th>`https://api.minimax.io/v1`</th><th>Bearer · `MINIMAX_API_KEY`</th><th>yes</th><th>Agent models</th></tr></thead>
-<tbody>
-<thead><tr><th>upstage</th><th>`https://api.upstage.ai/v1`</th><th>Bearer · `UPSTAGE_API_KEY`</th><th>likely, unverified</th><th>Solar</th></tr></thead>
-<tbody>
-<thead><tr><th>cohere</th><th>`https://api.cohere.ai/compatibility/v1`</th><th>Bearer · `COHERE_API_KEY`</th><th>likely, unverified</th><th>Command via compatibility layer</th></tr></thead>
-<tbody>
-<thead><tr><th>perplexity</th><th>`https://api.perplexity.ai`</th><th>Bearer · `PERPLEXITY_API_KEY`</th><th>likely, unverified</th><th>Search-grounded; has a Models API (shape unconfirmed — fallback covers)</th></tr></thead>
-<tbody>
-<thead><tr><th>mimo</th><th>`https://api.xiaomimimo.com/v1`</th><th>**`api-key` header, raw key** · `MIMO_API_KEY`</th><th>likely, unverified</th><th>Non-Bearer auth — the per-provider `key_header` path exists for this</th></tr></thead>
-<tbody>
-</tbody></table>
-
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Local</h2>
-<table>
-<thead><tr><th>Provider</th><th>Base URL</th><th>Auth / key env</th><th>Discovery</th><th>Notes</th></tr></thead>
-<tbody>
-<thead><tr><th>local (Ollama)</th><th>`http://127.0.0.1:11434/v1`</th><th>none needed</th><th>yes</th><th>`/v1/models` lists pulled models</th></tr></thead>
-<tbody>
-<thead><tr><th>lmstudio</th><th>`http://127.0.0.1:1234/v1`</th><th>none needed</th><th>yes</th><th>`/v1/models` lists loaded models</th></tr></thead>
-<tbody>
-<thead><tr><th>router</th><th>`http://127.0.0.1:8015/v1`</th><th>Bearer · `PANTHEON_KEY_ROUTER`</th><th>yes</th><th>Local llm-router pools: `chat` / `code` / `media`</th></tr></thead>
-<tbody>
-</tbody></table>
-
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Inference clouds</h2>
-<table>
-<thead><tr><th>Provider</th><th>Base URL</th><th>Auth / key env</th><th>Discovery</th><th>Notes</th></tr></thead>
-<tbody>
-<thead><tr><th>nous</th><th>`https://inference-api.nousresearch.com/v1`</th><th>Bearer · `PANTHEON_KEY_NOUS`</th><th>likely, unverified</th><th>Open models</th></tr></thead>
-<tbody>
-<thead><tr><th>tokenrouter</th><th>`https://api.tokenrouter.com/v1`</th><th>Bearer · `PANTHEON_KEY_TOKENROUTER`</th><th>likely, unverified</th><th>Aggregator</th></tr></thead>
-<tbody>
-<thead><tr><th>gmi</th><th>`https://api.gmi-serving.com/v1`</th><th>Bearer · `PANTHEON_KEY_GMI`</th><th>likely, unverified</th><th>Inference cloud</th></tr></thead>
-<tbody>
-<thead><tr><th>bai (B.ai)</th><th>`https://api.b.ai/v1`</th><th>Bearer · `PANTHEON_KEY_BAI`</th><th>likely, unverified</th><th>Inference cloud</th></tr></thead>
-<tbody>
-<thead><tr><th>experiential</th><th>`https://api.experientiallabs.ai/v1`</th><th>Bearer · `PANTHEON_KEY_EXPERIENTIAL`</th><th>likely, unverified</th><th>Inference cloud</th></tr></thead>
-<tbody>
-<thead><tr><th>agnes</th><th>`https://apihub.agnes-ai.com/v1`</th><th>Bearer · `PANTHEON_KEY_AGNES`</th><th>likely, unverified</th><th>Inference cloud</th></tr></thead>
-<tbody>
-<thead><tr><th>xkiro</th><th>`https://api.xkiro.com/v1`</th><th>Bearer · `PANTHEON_KEY_XKIRO`</th><th>likely, unverified</th><th>Inference cloud</th></tr></thead>
-<tbody>
-</tbody></table>
-
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Custom endpoints</h2>
-<p class="text-muted text-sm leading-relaxed mb-3">Anything else: <code>pantheon provider add</code> (interactive or flagged), then</p>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>pantheon model</code> to select it. <code>:port</code> expands to</p>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>http://127.0.0.1:port/v1</code>; <code>{var}</code> templates resolve from</p>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>PANTHEON_<PROVIDER>_<VAR></code> like builtins.</p>
+  <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
+<h1 class="text-3xl font-bold tracking-tight mb-2">Providers</h1><div class="glow-line my-6"></div>
+<p class="my-3 leading-relaxed">Agents don&#x27;t pick models. The runtime resolves a default, a failure-only fallback chain, and per-capability auxiliaries — swap anything without touching the agent.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Default model</h2>
+<pre><code>
+[model]
+provider    = &quot;openai&quot;
+model       = &quot;gpt-4o-mini&quot;
+api_key_env = &quot;OPENAI_API_KEY&quot;
+reasoning   = &quot;high&quot;   # optional: off|minimal|low|medium|high|xhigh|max (default off)
+</code></pre>
+<p class="my-3 leading-relaxed"><code>pantheon model</code> picks from 39+ builtins and writes keys to <code>&lt;data_dir&gt;/.env</code> (config holds names, never values). <code>pantheon providers</code> lists the catalog. Switch mid-conversation with <code>/model &lt;provider&gt; &lt;model&gt;</code> — identity and context carry over.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Fallbacks and helpers</h2>
+<pre><code>
+[[model.fallbacks]]
+provider = &quot;anthropic&quot;
+model    = &quot;claude-sonnet-4-5&quot;
+</code></pre>
+<p class="my-3 leading-relaxed">Fallbacks fire on failure only, in order, under runtime control. Helper slots (<code>[judge]</code>, <code>[compression]</code>, <code>[title_gen]</code>, <code>[embeddings]</code>, <code>[search_synthesis]</code>, <code>[vision]</code>, <code>[scheduled]</code>, <code>[mcp_synthesis]</code>) pin small models per job; unconfigured means <code>auto</code> — the run&#x27;s own model — except embeddings, which default to a local embedder.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Custom endpoints</h2>
+<p class="my-3 leading-relaxed">Any OpenAI-compatible URL is a provider:</p>
+<pre><code>
+pantheon provider add --name my-llm --base-url http://127.0.0.1:8015/v1
+pantheon provider models my-llm
+</code></pre>
+<p class="my-3 leading-relaxed">Only model ids you name by hand are recorded in config. Live endpoint listings are fetched on demand, never baked in — a third party&#x27;s list goes stale, and config shouldn&#x27;t bless snapshots.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><a href="agents.html">Agents</a> — per-agent provider settings</li>
+<li><a href="configuration.html">Configuration</a> — every provider field</li>
+</ul>
+</main>
 
   <div class="glow-line max-w-5xl mx-auto"></div>
 
@@ -202,13 +114,13 @@
           <div class="logo-mark-sm"><img src="logo.png" alt="Pantheon" width="22" height="22"></div>
           <div>
             <span class="font-mono font-bold text-fg text-sm">pantheon</span>
-            <p class="text-muted text-xs mt-0.5">Rust agent runtime. MIT licensed. <span class="font-mono">pantheon-agent/pantheon</span> on GitHub.</p>
+            <p class="text-muted text-xs mt-0.5">Durable agent runtime. MIT licensed. <span class="font-mono">k1ng0mar/pantheon</span> on GitHub.</p>
           </div>
         </div>
         <div class="flex gap-8 text-sm">
-          <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
-          <a href="https://github.com/pantheon-agent/pantheon/blob/main/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
-          <a href="https://github.com/pantheon-agent/pantheon/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/developer/contributing.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
         </div>
       </div>
       <div class="glow-line my-8"></div>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pantheon — Pantheon docs</title>
+  <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="https://cdn.tailwindcss.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0d0d0d', fg: '#e8e6e1', muted: '#71717a', accent: '#7027c5',
+            card: '#1c1c1e', border: '#2e2e30',
+          },
+          fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Inter', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { background: #0d0d0d; color: #e8e6e1; font-family: 'Inter', sans-serif; }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7027c5, transparent); }
+    .radial-core { background: radial-gradient(ellipse at center, rgba(112,39,197,0.06) 0%, transparent 70%); }
+    .logo-mark { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark img { height: 32px; width: auto; }
+    .logo-mark-sm { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark-sm img { height: 22px; width: auto; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    pre { background: #1c1c1e; border: 1px solid #2e2e30; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+    pre code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #e8e6e1; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: #7027c5; background: rgba(112,39,197,0.1); padding: 0.15em 0.3em; border-radius: 3px; }
+    h1, h2, h3, h4 { font-family: 'JetBrains Mono', monospace; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
+    th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
+    tr:hover td { background: rgba(112,39,197,0.05); }
+    blockquote { border-left: 2px solid #7027c5; padding-left: 1rem; margin: 1rem 0; color: #e8e6e1; font-style: italic; }
+    p a, li a, td a { color: #e8e6e1; text-decoration: underline; text-decoration-color: #7027c5; text-underline-offset: 3px; }
+    details { cursor: pointer; }
+    details summary { list-style: none; }
+    details summary::-webkit-details-marker { display: none; }
+    details[open] summary .chevron { transform: rotate(90deg); }
+    .chevron { display: inline-block; transition: transform 0.15s; }
+  </style>
+</head>
+<body class="antialiased">
+
+  <nav class="fixed top-0 left-0 right-0 z-50 bg-bg/80 backdrop-blur border-b border-border">
+    <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="index.html" class="flex items-center gap-3">
+        <div class="logo-mark"><img src="logo.png" alt="Pantheon" width="32" height="32"></div>
+        <span class="font-mono font-bold text-fg text-lg tracking-tight">pantheon</span>
+      </a>
+      <div class="flex items-center gap-6 text-sm">
+        <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
+        <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
+        <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
+        <a href="docs.html" class="text-muted hover:text-fg transition-colors">Docs</a>
+        <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
+        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
+<h1 class="text-3xl font-bold tracking-tight mb-2">Pantheon docs</h1><div class="glow-line my-6"></div>
+<blockquote>The model is replaceable. The agent should not be.</blockquote>
+<p class="my-3 leading-relaxed">Pantheon is a durable agent runtime. The model reasons and generates language; Pantheon provides everything around it — lifecycle, state, policy, execution, memory, recovery, events — so an agent persists across model changes, restarts, and interruptions.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Start here</h2>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><a href="getting-started.html">Getting started</a> — install, set up, run your first session.</li>
+</ul>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">User guide</h2>
+<table class="my-6"><thead><tr><th>Page</th><th>Contents</th></tr></thead><tbody>
+<tr><td><a href="sessions.html">Sessions</a></td><td>Terminal interface, one-shot runs, reading back what happened</td></tr>
+<tr><td><a href="agents.html">Agents</a></td><td>Identities, profiles, collaboration</td></tr>
+<tr><td><a href="memory.html">Memory</a></td><td>Layers, trust, learning into skills</td></tr>
+<tr><td><a href="runs.html">Runs</a></td><td>Lifecycle, approvals, recovery, pipelines, scheduling</td></tr>
+<tr><td><a href="channels.html">Channels</a></td><td>Terminal, web, Discord, Telegram</td></tr>
+<tr><td><a href="providers.html">Providers</a></td><td>Models, fallbacks, custom endpoints</td></tr>
+<tr><td><a href="extensions.html">Extensions</a></td><td>Plugins, hooks, capability gating</td></tr>
+</tbody></table>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Reference</h2>
+<table class="my-6"><thead><tr><th>Page</th><th>Contents</th></tr></thead><tbody>
+<tr><td><a href="cli.html">CLI</a></td><td>Every verb, flag, exit code, environment variable</td></tr>
+<tr><td><a href="configuration.html">Configuration</a></td><td><code>config.toml</code> fields, secrets, data directory</td></tr>
+<tr><td><a href="troubleshooting.html">Troubleshooting</a></td><td>Error codes, common issues, diagnostics</td></tr>
+</tbody></table>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Developer</h2>
+<table class="my-6"><thead><tr><th>Page</th><th>Contents</th></tr></thead><tbody>
+<tr><td><a href="architecture.html">Architecture</a></td><td>System design, crate map, locked decisions</td></tr>
+<tr><td><a href="contributing.html">Contributing</a></td><td>Boundaries, tests, adding a verb or tool</td></tr>
+<tr><td><a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/developer/tui.md">TUI states</a></td><td>Interface state matrix (internal spec)</td></tr>
+<tr><td><a href="https://github.com/k1ng0mar/pantheon/tree/master/docs/developer/decisions">Decisions</a></td><td>Architecture decision records (internal)</td></tr>
+</tbody></table>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Principles</h2>
+<p class="my-3 leading-relaxed">Persistent agents. Runtime authority over model authority. Experience becomes knowledge. Knowledge is not authority. Everything important is recoverable. One environment, many agents. Interfaces are replaceable.</p>
+</main>
+
+  <div class="glow-line max-w-5xl mx-auto"></div>
+
+  <footer class="py-16">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+        <div class="flex items-center gap-3">
+          <div class="logo-mark-sm"><img src="logo.png" alt="Pantheon" width="22" height="22"></div>
+          <div>
+            <span class="font-mono font-bold text-fg text-sm">pantheon</span>
+            <p class="text-muted text-xs mt-0.5">Durable agent runtime. MIT licensed. <span class="font-mono">k1ng0mar/pantheon</span> on GitHub.</p>
+          </div>
+        </div>
+        <div class="flex gap-8 text-sm">
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/developer/contributing.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+        </div>
+      </div>
+      <div class="glow-line my-8"></div>
+      <p class="text-muted text-xs text-center">No hosted tier. No subscription. Your data stays on your machine.</p>
+    </div>
+  </footer>
+
+</body>
+</html>

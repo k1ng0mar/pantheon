@@ -14,7 +14,7 @@
 //! (the seam that maps a stage request to chat turns), so tests use a
 //! scripted test executor and the CLI wires the real runtime session.
 
-use pantheon_core::error::PantheonError;
+use pantheon_api::error::PantheonError;
 use pantheon_storage::{Operation, OperationStore};
 use serde_json::{json, Value};
 

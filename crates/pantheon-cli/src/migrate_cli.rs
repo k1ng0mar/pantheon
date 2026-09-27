@@ -15,7 +15,7 @@
 //! an exfil path, so it does not.
 
 use crate::data_dir;
-use pantheon_migrate::{
+use pantheon_migration::{
     analyze, apply_with, backup, detect, index_quarantine, plan, quarantine_dir, reconcile_keys,
     render, validate, ItemKind, KeyMatch, MigrationPlan, SourceKind, Targets,
 };
@@ -153,7 +153,7 @@ pub fn cmd_migrate_detect(args: &[String]) {
         }
         any = true;
         for k in kinds {
-            let version = pantheon_migrate::source_version(root, k);
+            let version = pantheon_migration::source_version(root, k);
             rows.push(serde_json::json!({
                 "source": k.name(),
                 "root": root.to_string_lossy(),
@@ -296,10 +296,10 @@ pub fn cmd_migrate_apply(args: &[String]) {
     } else {
         for o in &report.outcomes {
             let mark = match o.status {
-                pantheon_migrate::ApplyStatus::Created => "+",
-                pantheon_migrate::ApplyStatus::Replaced => "~",
-                pantheon_migrate::ApplyStatus::Unchanged => "=",
-                pantheon_migrate::ApplyStatus::MemoryPlane => ">",
+                pantheon_migration::ApplyStatus::Created => "+",
+                pantheon_migration::ApplyStatus::Replaced => "~",
+                pantheon_migration::ApplyStatus::Unchanged => "=",
+                pantheon_migration::ApplyStatus::MemoryPlane => ">",
                 _ => "!",
             };
             println!("  {} {:<10} {}", mark, o.kind, o.target);
@@ -392,10 +392,11 @@ fn index_imported_sessions(t: &Targets, root: &Path, kind: SourceKind) {
 /// nothing verified it — so a key that matches no catalog entry used to look
 /// identical to one that does. This is that check.
 fn print_key_reconciliation(t: &Targets) {
-    let Ok(text) = std::fs::read_to_string(pantheon_migrate::pantheon_env_path(&t.data_dir)) else {
+    let Ok(text) = std::fs::read_to_string(pantheon_migration::pantheon_env_path(&t.data_dir))
+    else {
         return;
     };
-    let names: Vec<String> = pantheon_migrate::parse_env_names(&text)
+    let names: Vec<String> = pantheon_migration::parse_env_names(&text)
         .into_iter()
         .map(|e| e.name)
         .collect();
@@ -403,11 +404,11 @@ fn print_key_reconciliation(t: &Targets) {
         return;
     }
     let reports = reconcile_keys(&names);
-    let catalogued: Vec<&pantheon_migrate::KeyReport> = reports
+    let catalogued: Vec<&pantheon_migration::KeyReport> = reports
         .iter()
         .filter(|r| r.match_kind == KeyMatch::Catalogued)
         .collect();
-    let rename: Vec<&pantheon_migrate::KeyReport> = reports
+    let rename: Vec<&pantheon_migration::KeyReport> = reports
         .iter()
         .filter(|r| matches!(r.match_kind, KeyMatch::NeedsRename { .. }))
         .collect();

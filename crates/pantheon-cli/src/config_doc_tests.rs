@@ -8,7 +8,9 @@ fn round_trips_through_toml() {
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = Config {
         profile: Some("dev".into()),
+        agent: None,
         model: Some(ModelSection {
+            reasoning_budget: None,
             provider: "hp-llm-router".into(),
             model: "longcat".into(),
             api_key_env: Some("PANTHEON_API_KEY".into()),
@@ -16,6 +18,7 @@ fn round_trips_through_toml() {
                 provider: "local".into(),
                 model: "llama3.2".into(),
             }],
+            reasoning: None,
         }),
         judge: Some(JudgeSection {
             provider: "local".into(),
@@ -72,6 +75,8 @@ fn validate_reports_missing_model_and_unset_env() {
             model: "m".into(),
             api_key_env: Some("PANTHEON_DEFINITELY_UNSET_VAR_42".into()),
             fallbacks: vec![],
+            reasoning: None,
+            reasoning_budget: None,
         }),
         ..Default::default()
     };
@@ -192,7 +197,7 @@ fn aux_slots_cover_all_capabilities() {
     };
     let kinds: Vec<String> = auxiliaries(
         Some(&cfg),
-        &pantheon_core::model::DefaultModel {
+        &pantheon_api::model::DefaultModel {
             provider: "d".into(),
             model: "dm".into(),
         },
@@ -211,7 +216,7 @@ fn auxiliaries_combine_judge_and_compression() {
              [compression]\nprovider = \"local\"\nmodel = \"summarizer\"\n",
     )
     .unwrap();
-    let default = pantheon_core::model::DefaultModel {
+    let default = pantheon_api::model::DefaultModel {
         provider: "local".into(),
         model: "llama3.2".into(),
     };
@@ -222,25 +227,25 @@ fn auxiliaries_combine_judge_and_compression() {
     assert_eq!(aux.len(), 7, "seven auto aux kinds; embeddings unpinned");
     assert!(
         !aux.iter()
-            .any(|a| matches!(a.kind, pantheon_core::model::AuxiliaryKind::Embeddings)),
+            .any(|a| matches!(a.kind, pantheon_api::model::AuxiliaryKind::Embeddings)),
         "unpinned embeddings must not resolve to the chat model"
     );
     assert!(aux
         .iter()
-        .any(|a| matches!(a.kind, pantheon_core::model::AuxiliaryKind::Judge)));
+        .any(|a| matches!(a.kind, pantheon_api::model::AuxiliaryKind::Judge)));
     assert!(aux
         .iter()
-        .any(|a| matches!(a.kind, pantheon_core::model::AuxiliaryKind::Compression)));
+        .any(|a| matches!(a.kind, pantheon_api::model::AuxiliaryKind::Compression)));
     // Pinned sections keep their own target …
     let dec = aux
         .iter()
-        .find(|a| matches!(a.kind, pantheon_core::model::AuxiliaryKind::Judge))
+        .find(|a| matches!(a.kind, pantheon_api::model::AuxiliaryKind::Judge))
         .unwrap();
     assert_eq!(dec.model, "qwen2.5:1.5b");
     // … while the unconfigured aux (title) is `auto` = default model.
     let title = aux
         .iter()
-        .find(|a| matches!(a.kind, pantheon_core::model::AuxiliaryKind::TitleGen))
+        .find(|a| matches!(a.kind, pantheon_api::model::AuxiliaryKind::TitleGen))
         .unwrap();
     assert_eq!(
         (title.provider.as_str(), title.model.as_str()),
@@ -253,7 +258,7 @@ fn unconfigured_aux_default_to_auto_on_the_default_model() {
     // Aux models default to `auto`: nothing configured still resolves
     // to a target (the run's default model), never "off".
     let bare: Config = toml::from_str("[model]\nprovider = \"p\"\nmodel = \"m\"\n").unwrap();
-    let default = pantheon_core::model::DefaultModel {
+    let default = pantheon_api::model::DefaultModel {
         provider: "openai".into(),
         model: "gpt-4o-mini".into(),
     };
@@ -274,7 +279,7 @@ fn unconfigured_aux_default_to_auto_on_the_default_model() {
     let aux = auxiliaries(None, &default);
     let title = aux
         .iter()
-        .find(|a| matches!(a.kind, pantheon_core::model::AuxiliaryKind::TitleGen))
+        .find(|a| matches!(a.kind, pantheon_api::model::AuxiliaryKind::TitleGen))
         .unwrap();
     assert_eq!(title.model, "namer-env");
     std::env::remove_var("PANTHEON_TITLEGEN_MODEL");
@@ -291,14 +296,14 @@ fn title_gen_section_parses_from_toml_and_reaches_auxiliaries() {
     let t = cfg.title_gen.as_ref().expect("title_gen section parsed");
     assert_eq!(t.model, "namer");
     assert_eq!(cfg.validate(), Vec::<String>::new());
-    let default = pantheon_core::model::DefaultModel {
+    let default = pantheon_api::model::DefaultModel {
         provider: "local".into(),
         model: "llama3.2".into(),
     };
     let aux = auxiliaries(Some(&cfg), &default);
     let title = aux
         .iter()
-        .find(|a| matches!(a.kind, pantheon_core::model::AuxiliaryKind::TitleGen))
+        .find(|a| matches!(a.kind, pantheon_api::model::AuxiliaryKind::TitleGen))
         .expect("title entry present");
     assert_eq!(title.model, "namer", "pinned [title_gen] beats auto");
     // Absent section parses (back-compat) and adds no pin — the aux
@@ -309,7 +314,7 @@ fn title_gen_section_parses_from_toml_and_reaches_auxiliaries() {
     // (asserted below), never "off".
     let auto = auxiliaries(Some(&old), &default)
         .iter()
-        .find(|a| matches!(a.kind, pantheon_core::model::AuxiliaryKind::TitleGen))
+        .find(|a| matches!(a.kind, pantheon_api::model::AuxiliaryKind::TitleGen))
         .unwrap()
         .clone();
     assert_eq!(auto.model, "llama3.2");
@@ -465,7 +470,7 @@ models = [
     assert_eq!(sec.models[0].context_limit, None);
 
     register_custom_providers(&cfg);
-    let all = pantheon_core::catalog::all_providers();
+    let all = pantheon_providers::catalog::all_providers();
     let p = all
         .iter()
         .find(|p| p.id == "hp-llm-router")
@@ -503,7 +508,7 @@ fn a_custom_provider_without_models_still_registers() {
     let cfg = Config::load(&dir).expect("an old config must still load");
     assert!(cfg.custom_providers["legacy"].models.is_empty());
     register_custom_providers(&cfg);
-    let all = pantheon_core::catalog::all_providers();
+    let all = pantheon_providers::catalog::all_providers();
     let p = all
         .iter()
         .find(|p| p.id == "legacy")
@@ -579,7 +584,7 @@ fn re_adding_a_provider_keeps_the_models_you_named() {
         &dir,
         "p",
         "https://new.example/v1",
-        pantheon_core::catalog::ApiMode::OpenAi,
+        pantheon_providers::catalog::ApiMode::OpenAi,
         "PANTHEON_KEY_P",
     )
     .unwrap();
@@ -606,36 +611,56 @@ fn agent_identity_defaults_isolate_namespaces() {
 }
 
 #[test]
-fn agent_identity_validation_rejects_slugs_policies_clashes() {
+fn agent_registry_rejects_bad_names_policies_and_namespace_clashes() {
     use super::*;
-    let mut all: std::collections::HashMap<String, AgentIdentity> =
-        std::collections::HashMap::default();
-    all.insert("nyx".into(), AgentIdentity::default());
-    assert!(AgentIdentity::validate("nyx", &all).is_ok());
-    // Bad slug.
-    all.insert("not a slug!".into(), AgentIdentity::default());
-    assert!(AgentIdentity::validate("not a slug!", &all).is_err());
-    all.remove("not a slug!");
-    // Unknown policy.
-    all.insert(
-        "ero".into(),
-        AgentIdentity {
-            policy: Some("yolo".into()),
-            ..Default::default()
-        },
-    );
-    assert!(AgentIdentity::validate("ero", &all).is_err());
-    // Namespace clash via explicit override.
-    all.insert(
-        "ero".into(),
-        AgentIdentity {
-            memory_namespace: Some("agent:nyx".into()),
-            ..Default::default()
-        },
-    );
-    assert!(AgentIdentity::validate("ero", &all).is_err());
-}
+    let default_policy = "coder";
+    let mut reg = ProfileRegistry::new();
+    reg.insert("nyx", AgentIdentity::default())
+        .expect("nyx is valid");
+    assert!(reg.validate_all(default_policy).is_ok());
 
+    // A name that is not a slug is refused at insert time, so an invalid
+    // config can never be written and then used.
+    assert!(reg.insert("not a slug!", AgentIdentity::default()).is_err());
+
+    // An unknown policy is refused when the profile is declared, and the
+    // error names both the profile and the value it got, so a doctor message
+    // can tell the user which line of which table to fix.
+    let mut bad_policy = ProfileRegistry::new();
+    let err = bad_policy
+        .insert(
+            "ero",
+            AgentIdentity {
+                policy: Some("yolo".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ero") && msg.contains("yolo"),
+        "the message must name the profile and the bad value: {msg}"
+    );
+    assert!(bad_policy.validate_all(default_policy).is_err());
+
+    // Two profiles may not share a memory namespace: that is one agent's
+    // memories leaking into another's. Each insert is valid on its own, so
+    // this is caught by validating the set, not by inserting.
+    let mut clash = ProfileRegistry::new();
+    clash
+        .insert("nyx", AgentIdentity::default())
+        .expect("valid");
+    clash
+        .insert(
+            "ero",
+            AgentIdentity {
+                memory_namespace: Some("agent:nyx".into()),
+                ..Default::default()
+            },
+        )
+        .expect("the name and policy are fine; the clash is the problem");
+    assert!(clash.validate_all(default_policy).is_err());
+}
 #[test]
 fn agents_table_round_trips_and_old_configs_stay_empty() {
     use super::*;
@@ -649,7 +674,13 @@ fn agents_table_round_trips_and_old_configs_stay_empty() {
     .unwrap();
     let cfg = Config::load(&dir).unwrap();
     assert_eq!(cfg.agents["nyx"].name("nyx"), "Nyx");
-    assert!(AgentIdentity::validate("nyx", &cfg.agents).is_ok());
+    // Every declared profile in this config must validate.
+    for (name, profile) in &cfg.agents {
+        let mut reg = ProfileRegistry::new();
+        reg.insert(name, profile.clone())
+            .expect("a written config is valid");
+        assert!(reg.validate_all("coder").is_ok());
+    }
     // No [agents] table at all: anonymous, as before.
     std::fs::write(dir.join("config.toml"), "[core]\n").unwrap();
     let old = Config::load(&dir).unwrap();
@@ -690,7 +721,9 @@ fn config_validate_surfaces_bad_agent_tables() {
     );
     let problems = cfg.validate();
     assert!(
-        problems.iter().any(|p| p.contains("collides")),
+        problems
+            .iter()
+            .any(|p| p.contains("share memory namespace")),
         "namespace clash surfaces: {problems:?}"
     );
 }
@@ -724,4 +757,24 @@ plugins = ["my-plugin"]
     let model = cfg.model.expect("model section should still parse");
     assert_eq!(model.model, "llama3.2");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn validate_flags_unknown_reasoning_but_keeps_parsing() {
+    let cfg = Config {
+        model: Some(ModelSection {
+            provider: "p".into(),
+            model: "m".into(),
+            api_key_env: None,
+            fallbacks: vec![],
+            reasoning: Some("ultra".into()),
+            reasoning_budget: None,
+        }),
+        ..Default::default()
+    };
+    let problems = cfg.validate();
+    assert!(
+        problems.iter().any(|p| p.contains("model.reasoning")),
+        "unknown level flagged: {problems:?}"
+    );
 }

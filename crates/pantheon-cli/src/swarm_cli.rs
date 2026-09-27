@@ -244,13 +244,13 @@ fn spawn_swarm(
 
         let agent_label = format!("{swarm_id}:{role}:{i}");
 
-        sup.emit(pantheon_core::events::Event::AgentSpawned {
+        sup.emit(pantheon_api::events::Event::AgentSpawned {
             run_id: run_id.clone(),
             agent: agent_label.clone(),
         })
         .ok();
 
-        sup.emit(pantheon_core::events::Event::RunProgress {
+        sup.emit(pantheon_api::events::Event::RunProgress {
             run_id: run_id.clone(),
             detail: format!("[swarm {swarm_id}] agent {i} ({role}) assigned: {task}"),
         })
@@ -366,7 +366,7 @@ fn reconstruct_from_ledger(sup: &Supervisor, id: &str) -> Option<SwarmRecord> {
         let entries = sup.replay(&r.0).ok()?;
         for e in &entries {
             match &e.event {
-                pantheon_core::events::Event::AgentSpawned { agent, run_id }
+                pantheon_api::events::Event::AgentSpawned { agent, run_id }
                     if agent.starts_with(id) =>
                 {
                     let role = agent.split(':').nth(1).unwrap_or("agent").to_string();
@@ -378,7 +378,7 @@ fn reconstruct_from_ledger(sup: &Supervisor, id: &str) -> Option<SwarmRecord> {
                         });
                     }
                 }
-                pantheon_core::events::Event::RunProgress { detail, .. }
+                pantheon_api::events::Event::RunProgress { detail, .. }
                     if task.is_empty() && detail.contains(id) =>
                 {
                     // Detail looks like "[swarm <id>] agent i (role) assigned: <task>".

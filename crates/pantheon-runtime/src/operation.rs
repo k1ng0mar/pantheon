@@ -10,7 +10,7 @@
 //! is already in SQLite.
 
 use crate::Supervisor;
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use pantheon_storage::{Operation, OperationStatus, OperationStore};
 use serde_json::Value;
 use std::sync::Arc;

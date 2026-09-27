@@ -11,10 +11,10 @@
 //! from the environment. Custom `livechain*` ids (key envs never
 //! exported) keep ambient env out of the assertions.
 use super::*;
+use crate::catalog;
 use crate::http::HttpTransport;
-use pantheon_core::catalog;
-use pantheon_core::model::{DefaultModel, FallbackChain, ModelPolicy};
-use pantheon_core::model_event::{ModelEvent, ModelEventSink};
+use crate::model_event::{ModelEvent, ModelEventSink};
+use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy};
 use pantheon_secrets::SecretValue;
 use std::cell::RefCell;
 
@@ -64,6 +64,8 @@ fn live_policy(default_key: &str, fallback: Option<DefaultModel>) -> (ModelPolic
     live_provider("livechain0", "http://127.0.0.1:8015/v1");
     live_provider("livechain1", "http://127.0.0.1:8015/v1");
     let policy = ModelPolicy {
+        reasoning_budget: Default::default(),
+        reasoning: Default::default(),
         default: DefaultModel {
             provider: "livechain0".into(),
             model: "chat".into(),
@@ -147,6 +149,8 @@ fn live_fallback_from_dead_default_to_env_key() {
     // PANTHEON_KEY_ROUTER (fallbacks never see the configured secret).
     live_provider("livechain-dead", "http://127.0.0.1:9/v1");
     let policy = ModelPolicy {
+        reasoning_budget: Default::default(),
+        reasoning: Default::default(),
         default: DefaultModel {
             provider: "livechain-dead".into(),
             model: "chat".into(),
@@ -189,6 +193,8 @@ fn live_fallback_emits_ordered_chain_events() {
     };
     live_provider("livechain-dead", "http://127.0.0.1:9/v1");
     let policy = ModelPolicy {
+        reasoning: Default::default(),
+        reasoning_budget: Default::default(),
         default: DefaultModel {
             provider: "livechain-dead".into(),
             model: "chat".into(),
@@ -262,6 +268,8 @@ fn live_exhaustion_is_structured_and_emits_exhausted() {
     live_provider("livechain-dead", "http://127.0.0.1:9/v1");
     live_provider("livechain-dead2", "http://127.0.0.1:9/v1");
     let policy = ModelPolicy {
+        reasoning: Default::default(),
+        reasoning_budget: Default::default(),
         default: DefaultModel {
             provider: "livechain-dead".into(),
             model: "chat".into(),
@@ -371,6 +379,8 @@ fn live_non_retryable_config_failure_fails_fast_without_fallback() {
     // No HTTP at all: an unresolved `{var}` template is a config error —
     // non-retryable, no fallback, nothing resolved.
     let policy = ModelPolicy {
+        reasoning: Default::default(),
+        reasoning_budget: Default::default(),
         default: DefaultModel {
             provider: "livechain-tpl".into(),
             model: "chat".into(),

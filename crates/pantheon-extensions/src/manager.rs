@@ -10,7 +10,7 @@ use crate::hooks::{Hook, HookClass};
 use crate::python_runner::{
     fire_hook, fire_hook_full, HookDirective, HookInput, PythonPlugin, RunnerConfig,
 };
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

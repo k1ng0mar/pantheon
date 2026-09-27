@@ -1,27 +1,32 @@
-//! JSON-RPC command surface (spec section 18).
+//! pantheon-api: commands, events, types — the bottom protocol leaf.
 //!
-//! The runtime answers commands — `agent.run/pause/resume/stop`,
-//! `task.create/cancel`, `memory.search/propose`, `tool.list/execute`,
-//! `model.list/select`, `schedule.create` — over a transport-agnostic
-//! [`ApiTransport`]. The wire format is JSON-RPC 2.0: one request id maps to
-//! one response id, notifications (id `null`) are executed but never
-//! answered, and every protocol failure becomes a structured error response,
-//! never a crash.
+//! This crate is what every layer may depend on and what depends on
+//! nothing internal:
 //!
-//! Handlers attach to a [`Dispatcher`]; a transport serves a dispatcher.
-//! The Unix-socket transport is first; WebSocket comes later behind the same
-//! trait. Events stream out as `pantheon_core::events::Event` — there is no
-//! second event type.
+//! - **events** — the canonical [`events::Event`](events::Event) enum.
+//!   There is exactly one event type; storage appends it, gateways and
+//!   extensions observe it, the runtime emits it.
+//! - **types** — `message` (transcript/wire shapes), `provenance`
+//!   (source/trust of anything persisted), `capability` (the
+//!   `Capability`/`Policy`/`Decision` *types*; role maps and resolution
+//!   live in `pantheon-capability`), `model` (model *policy* types —
+//!   default/fallback/auxiliaries; the provider catalog lives in
+//!   `pantheon-providers`), `ident` (shared identifier rules).
+//! - **errors** — `PantheonError`, the structured value every `Result`
+//!   in the workspace carries.
+//!
+//! The JSON-RPC *server* (`rpc`, `serve`, `transport`, `agui`) is not
+//! here: it moved to `pantheon-runtime`, which owns the Runtime API
+//! (decision D4 in docs/developer/decisions/0001-workspace-restructure.md). Being
+//! the leaf is the point: `pantheon-storage`, `pantheon-gateway`, the
+//! scheduler and the extensions depend *on* this crate, never the other
+//! way — that is what keeps the dependency graph acyclic.
 
-pub mod agui;
-pub mod rpc;
-pub mod serve;
-pub mod transport;
-
-pub use agui::{
-    dispatcher_for, dispatcher_for_with_hint, dispatcher_for_with_hint_and_base,
-    dispatcher_for_with_hint_and_host,
-};
-pub use rpc::{Dispatcher, Id, MethodHandler, Request, Response, RpcError};
-pub use serve::{remember_thread, serve, snapshot_frames, ServeConfig};
-pub use transport::{ApiTransport, UnixSocketTransport};
+pub mod capability;
+pub mod error;
+pub mod events;
+pub mod ident;
+pub mod logging;
+pub mod message;
+pub mod model;
+pub mod provenance;

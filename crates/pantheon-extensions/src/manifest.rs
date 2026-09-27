@@ -2,7 +2,7 @@
 //! `provides_hooks: [...]` (anti-ai-writing) and `hooks: [...]`
 //! (time-gap), plus manifest_version/api_version variance.
 use crate::hooks::Hook;
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

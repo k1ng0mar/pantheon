@@ -54,24 +54,6 @@ fn body_strips_frontmatter() {
 }
 
 #[test]
-fn registry_tools_list_and_read() {
-    let dir = std::env::temp_dir().join(format!("sk-{}-{}", std::process::id(), 4));
-    std::fs::create_dir_all(&dir).unwrap();
-    skill_dir(&dir, "delta", "the delta skill");
-    let s = load_skill(&dir.join("delta").join("SKILL.md")).unwrap();
-    let mut reg = crate::tools::ToolRegistry::new();
-    register_skill_tools(&mut reg, vec![s]);
-    let listed = reg.execute("skills_list", "{}").unwrap();
-    assert!(listed.contains("delta"), "{listed}");
-    assert!(listed.contains("the delta skill"), "{listed}");
-    let body = reg.execute("skill_read", r#"{"name":"delta"}"#).unwrap();
-    assert!(body.starts_with("# delta"), "{body}");
-    let err = reg.execute("skill_read", r#"{"name":"nope"}"#).unwrap_err();
-    assert_eq!(err.code, "SKILL_UNKNOWN");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn ext_discovers_codex_omp_and_claude_user_roots() {
     let dir = std::env::temp_dir().join(format!("sk-{}-{}", std::process::id(), 10));
     let data = dir.join("data");

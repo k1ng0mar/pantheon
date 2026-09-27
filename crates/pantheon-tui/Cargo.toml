@@ -6,10 +6,11 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-pantheon-core = { path = "../pantheon-core" }
 pantheon-runtime = { path = "../pantheon-runtime" }
 pantheon-storage = { path = "../pantheon-storage" }
 pantheon-agent = { path = "../pantheon-agent" }
+# Model/provider metadata rendered in pickers comes from the catalog.
+pantheon-providers = { path = "../pantheon-providers" }
 serde_json = "1"
 ratatui = "0.30"
 crossterm = "0.29"

@@ -6,7 +6,7 @@
 //! This makes recovery safe even when a process is paused, partitioned, or
 //! has lost its network connection.
 
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;

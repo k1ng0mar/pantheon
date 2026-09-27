@@ -8,7 +8,7 @@
 //!
 //! Skills are data, not code: the model sees name + description, and
 //! reads the body via a gated tool. Nothing executes at discovery time.
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -98,87 +98,6 @@ pub fn skill_body(skill: &Skill) -> Result<String, PantheonError> {
         Some(end) => Ok(rest[end + 4..].trim_start().to_string()),
         None => Ok(raw),
     }
-}
-
-/// Register `skills_list` and `skill_read` on a registry.
-///
-/// `skills_list` is read-only (FilesystemRead): names + descriptions.
-/// `skill_read` loads one skill's body, gated on FilesystemRead too —
-/// skills are data, not executable capability. A skill that wanted to
-/// grant powers would be a plugin, not a skill.
-pub fn register_skill_tools(reg: &mut crate::tools::ToolRegistry, skills: Vec<Skill>) {
-    if skills.is_empty() {
-        return;
-    }
-    let list = skills.clone();
-    reg.register(
-        pantheon_core::message::ToolSchema {
-            name: "skills_list".into(),
-            description: "List available skills (name, description, origin).".into(),
-            parameters: serde_json::json!({"type": "object", "properties": {}}),
-        },
-        pantheon_core::capability::Capability::FilesystemRead,
-        move |_args| {
-            let mut out = String::new();
-            for s in &list {
-                out.push_str(&format!(
-                    "- {}: {} ({})\n",
-                    s.meta.name, s.meta.description, s.meta.origin
-                ));
-            }
-            Ok(out)
-        },
-    );
-
-    let read = skills;
-    reg.register(
-        pantheon_core::message::ToolSchema {
-            name: "skill_read".into(),
-            description: "Read one skill's full markdown body by name.".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {"name": {"type": "string"}},
-                "required": ["name"]
-            }),
-        },
-        pantheon_core::capability::Capability::FilesystemRead,
-        move |args| {
-            let v: serde_json::Value =
-                serde_json::from_str(if args.trim().is_empty() { "{}" } else { args }).map_err(
-                    |e| {
-                        PantheonError::new(
-                            "TOOL_BAD_ARGS",
-                            Layer::Execution,
-                            false,
-                            format!("invalid JSON args: {e}"),
-                            "check tool name and arguments",
-                            "",
-                        )
-                    },
-                )?;
-            let name = v.get("name").and_then(|x| x.as_str()).ok_or_else(|| {
-                PantheonError::new(
-                    "TOOL_BAD_ARGS",
-                    Layer::Execution,
-                    false,
-                    "missing 'name'".to_string(),
-                    "check tool name and arguments",
-                    "",
-                )
-            })?;
-            let skill = read.iter().find(|s| s.meta.name == name).ok_or_else(|| {
-                PantheonError::new(
-                    "SKILL_UNKNOWN",
-                    Layer::Execution,
-                    false,
-                    format!("no skill named '{name}'"),
-                    "call skills_list first",
-                    "",
-                )
-            })?;
-            skill_body(skill)
-        },
-    );
 }
 
 #[cfg(test)]

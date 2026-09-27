@@ -1,7 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/pantheon-core",
+  # Façade: re-exports every library crate; nothing depends on it.
+  "crates/pantheon",
   "crates/pantheon-storage",
   "crates/pantheon-runtime",
   "crates/pantheon-api",
@@ -9,6 +10,10 @@ members = [
   "crates/pantheon-agent",
   "crates/pantheon-swarm",
   "crates/pantheon-exec",
+  # Capability ≠ tool: the callable-operation layer (registry, builtins,
+  # memory/vault/session-search tools) is its own crate, distinct from
+  # pantheon-capability. Depends on pantheon-exec (Tools → Exec).
+  "crates/pantheon-tools",
   "crates/pantheon-capability",
   "crates/pantheon-sandbox",
   "crates/pantheon-memory",
@@ -18,7 +23,7 @@ members = [
   "crates/pantheon-extensions",
   "crates/pantheon-scheduler",
   "crates/pantheon-gateway",
-  "crates/pantheon-migrate",
+  "crates/pantheon-migration",
   # The TUI lives here, as a library crate, not in pantheon-cli. It is the
   # terminal product: one interface, and pantheon-cli keeps only the
   # non-interactive automation verbs. Its `src/lib.rs` now exists.

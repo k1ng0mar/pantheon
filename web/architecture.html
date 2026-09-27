@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pantheon — Architecture</title>
+  <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="https://cdn.tailwindcss.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0d0d0d', fg: '#e8e6e1', muted: '#71717a', accent: '#7027c5',
+            card: '#1c1c1e', border: '#2e2e30',
+          },
+          fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Inter', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { background: #0d0d0d; color: #e8e6e1; font-family: 'Inter', sans-serif; }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7027c5, transparent); }
+    .radial-core { background: radial-gradient(ellipse at center, rgba(112,39,197,0.06) 0%, transparent 70%); }
+    .logo-mark { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark img { height: 32px; width: auto; }
+    .logo-mark-sm { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; }
+    .logo-mark-sm img { height: 22px; width: auto; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    pre { background: #1c1c1e; border: 1px solid #2e2e30; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+    pre code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #e8e6e1; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: #7027c5; background: rgba(112,39,197,0.1); padding: 0.15em 0.3em; border-radius: 3px; }
+    h1, h2, h3, h4 { font-family: 'JetBrains Mono', monospace; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
+    th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
+    tr:hover td { background: rgba(112,39,197,0.05); }
+    blockquote { border-left: 2px solid #7027c5; padding-left: 1rem; margin: 1rem 0; color: #e8e6e1; font-style: italic; }
+    p a, li a, td a { color: #e8e6e1; text-decoration: underline; text-decoration-color: #7027c5; text-underline-offset: 3px; }
+    details { cursor: pointer; }
+    details summary { list-style: none; }
+    details summary::-webkit-details-marker { display: none; }
+    details[open] summary .chevron { transform: rotate(90deg); }
+    .chevron { display: inline-block; transition: transform 0.15s; }
+  </style>
+</head>
+<body class="antialiased">
+
+  <nav class="fixed top-0 left-0 right-0 z-50 bg-bg/80 backdrop-blur border-b border-border">
+    <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="index.html" class="flex items-center gap-3">
+        <div class="logo-mark"><img src="logo.png" alt="Pantheon" width="32" height="32"></div>
+        <span class="font-mono font-bold text-fg text-lg tracking-tight">pantheon</span>
+      </a>
+      <div class="flex items-center gap-6 text-sm">
+        <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
+        <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
+        <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
+        <a href="docs.html" class="text-muted hover:text-fg transition-colors">Docs</a>
+        <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
+        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
+<h1 class="text-3xl font-bold tracking-tight mb-2">Architecture</h1><div class="glow-line my-6"></div>
+<blockquote>Small at the center, huge at the edges.</blockquote>
+<blockquote>The model is one replaceable component inside the runtime.</blockquote>
+<pre><code>
+                 CLI / TUI / Web / API / Gateways
+                                   │
+                    RUNTIME API (JSON-RPC + events)
+                                   │
+                               SUPERVISOR
+              runs · policies · approvals · recovery
+              quotas · scheduling · lifecycle
+                   ┌───────────────┴────────────────┐
+              AGENT ENGINE                  EXECUTION ENGINE
+         parents · specialists           tools · processes
+         swarms · delegation             sandboxes · fs/git
+                                             browser/MCP
+                   └───────────────┬────────────────┘
+                           CAPABILITY PLANE
+                  tools · skills · extensions · MCP
+                                       │
+                           PROVIDER ABSTRACTION
+                   models · search · voice · embeddings
+                                       │
+              Memory · Storage · Secrets · Scheduler
+</code></pre>
+<p class="my-3 leading-relaxed">The center owns state, policy, lifecycle, execution, capabilities, recovery, and events. Everything else plugs in.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Runtime</h2>
+<p class="my-3 leading-relaxed">The supervisor owns agent lifecycle, runs, approvals, scheduling, and recovery. Every meaningful transition emits a canonical <code>Event</code>; the SQLite ledger is the source of truth for replay, debugging, and crash recovery. Run ownership is lease-based with heartbeats, so at most one supervisor drives a run.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Agent engine</h2>
+<p class="my-3 leading-relaxed"><code>receive → load state → build context → infer → interpret → execute → observe → update state → continue</code>, gated at every tool call (Allow / Deny / Approval). Denials and approvals are transcript outcomes, not crashes. Budgets bound turns and tool calls; swarms spawn under runtime caps.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Capabilities</h2>
+<p class="my-3 leading-relaxed">The security backbone: granular capabilities (<code>filesystem.read</code>, <code>shell.execute</code>, <code>git.push</code>, <code>memory.write</code>, <code>agent.spawn</code>, …) mapped through per-agent policies. Knowledge never implies authority — skills, memories, and tool descriptions inform; only policy permits.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Execution</h2>
+<p class="my-3 leading-relaxed">Tools run under policy-chosen sandbox boundaries (process isolation up through container/VM). File writes go through checkpointed, atomic apply with stale-check rejection and rollback.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Memory and storage</h2>
+<p class="my-3 leading-relaxed">Five memory layers (global → agent → project → task → ephemeral) behind one write path: propose → policy → provenance → validation → store. Storage is SQLite by default: event ledger, durable operation state machines, claim ledgers, and an FTS sidecar for session search. No database server, no external vector store.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Secrets</h2>
+<p class="my-3 leading-relaxed">Resolved at the execution boundary through a broker (OS keychain → encrypted file → env), never into prompts, logs, or the ledger. Config names variables; values stay outside it.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Providers</h2>
+<p class="my-3 leading-relaxed">Transport adapters only — OpenAI-compatible and Anthropic behind one <code>ModelTurn</code> interface, no SDKs above the provider crate. Default model, failure-only fallback chain, per-capability auxiliaries. No routing; agents never choose models.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Surfaces</h2>
+<p class="my-3 leading-relaxed">CLI, TUI, web (<code>serve</code>), and gateways (Discord, Telegram) all drive the same Session runtime off the same ledger. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default; foreign plugin formats load through a compat adapter that maps only real semantic matches.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Migration</h2>
+<p class="my-3 leading-relaxed"><code>pantheon migrate hermes|openclaw|omp</code>: detect → plan → approve → backup → apply → validate. Everything detected is imported or archived with a reason — nothing silently dropped, credentials never written outside <code>&lt;data_dir&gt;/.env</code>.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Locked decisions</h2>
+<p>1. Runtime owns lifecycle, state, policy, execution, capabilities, recovery, events.</p>
+<p>2. Model policy is default + failure-only fallback + auxiliaries. No routing.</p>
+<p>3. Memory writes: propose → policy → provenance → validation.</p>
+<p>4. Secrets resolve at the execution boundary; values never in context or logs.</p>
+<p>5. MCP is external interop only; internal is the native Capability API.</p>
+<p>6. Durability is SQLite-backed state machines, not hope.</p>
+<p>7. Skills (knowledge) and extensions (code) stay two tiers.</p>
+<p>8. Migration retains provenance; unmappable content is archived, not dropped.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Crate map</h2>
+<table class="my-6"><thead><tr><th>Crate</th><th>Role</th></tr></thead><tbody>
+<tr><td><code>pantheon-api</code></td><td>Events, errors, capabilities, model policy, identifiers (bottom leaf)</td></tr>
+<tr><td><code>pantheon-storage</code></td><td>Ledger, claims, leases, session search</td></tr>
+<tr><td><code>pantheon-runtime</code></td><td>Supervisor, lifecycle, recovery, sessions, Runtime API (<code>serve</code>/<code>rpc</code>)</td></tr>
+<tr><td><code>pantheon-agent</code></td><td>Agent loop, tool gate, budgets</td></tr>
+<tr><td><code>pantheon-exec</code></td><td>Process/fs execution engine, skills, plugins, supervision</td></tr>
+<tr><td><code>pantheon-tools</code></td><td>Callable tools + registry (builtins, memory/vault/session-search/skill tools)</td></tr>
+<tr><td><code>pantheon-capability</code></td><td>Policy/role maps</td></tr>
+<tr><td><code>pantheon-sandbox</code></td><td>Levels, profiles, enforcement</td></tr>
+<tr><td><code>pantheon-memory</code></td><td>Layers, write path, backends</td></tr>
+<tr><td><code>pantheon-secrets</code></td><td>Vaults, broker</td></tr>
+<tr><td><code>pantheon-providers</code></td><td>Adapters, catalog, fallback chain</td></tr>
+<tr><td><code>pantheon-extensions</code></td><td>Hooks, manifests, runners, compat</td></tr>
+<tr><td><code>pantheon-scheduler</code></td><td>Triggers, durable claims</td></tr>
+<tr><td><code>pantheon-gateway</code></td><td>Channels, allowlist, delivery</td></tr>
+<tr><td><code>pantheon-swarm</code></td><td>Spawn caps</td></tr>
+<tr><td><code>pantheon-mcp</code></td><td>Token → capability projection</td></tr>
+<tr><td><code>pantheon-migration</code></td><td>Source importers</td></tr>
+<tr><td><code>pantheon-cli</code></td><td>Thin dispatch surface</td></tr>
+<tr><td><code>pantheon-tui</code></td><td>Terminal interface</td></tr>
+</tbody></table>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><a href="contributing.html">Contributing</a> — boundaries and change mechanics</li>
+<li><a href="https://github.com/k1ng0mar/pantheon/tree/master/docs/developer/decisions">Decisions</a> — records behind the locks above</li>
+<li><a href="cli.html">CLI reference</a> — the surface this architecture serves</li>
+</ul>
+</main>
+
+  <div class="glow-line max-w-5xl mx-auto"></div>
+
+  <footer class="py-16">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+        <div class="flex items-center gap-3">
+          <div class="logo-mark-sm"><img src="logo.png" alt="Pantheon" width="22" height="22"></div>
+          <div>
+            <span class="font-mono font-bold text-fg text-sm">pantheon</span>
+            <p class="text-muted text-xs mt-0.5">Durable agent runtime. MIT licensed. <span class="font-mono">k1ng0mar/pantheon</span> on GitHub.</p>
+          </div>
+        </div>
+        <div class="flex gap-8 text-sm">
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/developer/contributing.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+        </div>
+      </div>
+      <div class="glow-line my-8"></div>
+      <p class="text-muted text-xs text-center">No hosted tier. No subscription. Your data stays on your machine.</p>
+    </div>
+  </footer>
+
+</body>
+</html>

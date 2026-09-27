@@ -276,21 +276,21 @@ fn budget_cap_stops_before_the_turn() {
 }
 
 struct FixedRouter {
-    answer: pantheon_core::model::DecisionAnswer,
+    answer: pantheon_api::model::DecisionAnswer,
 }
-impl pantheon_core::model::Judge for FixedRouter {
+impl pantheon_api::model::Judge for FixedRouter {
     fn decide(
         &self,
-        _req: &pantheon_core::model::DecisionRequest,
-    ) -> Result<pantheon_core::model::DecisionAnswer, PantheonError> {
+        _req: &pantheon_api::model::DecisionRequest,
+    ) -> Result<pantheon_api::model::DecisionAnswer, PantheonError> {
         Ok(self.answer.clone())
     }
 }
 
 #[test]
 fn route_outside_allowed_set_is_overridden() {
-    use pantheon_core::events::{DecisionActionSummary, Event};
-    use pantheon_core::model::{DecisionAnswer, DecisionPoint};
+    use pantheon_api::events::{DecisionActionSummary, Event};
+    use pantheon_api::model::{DecisionAnswer, DecisionPoint};
     struct CapSink(RefCell<Vec<Event>>);
     impl EventSink for CapSink {
         fn emit(&self, event: Event) {
@@ -397,8 +397,8 @@ fn cancel_token_stops_loop_before_first_turn() {
 
 #[test]
 fn gate_escalates_allow_to_approval_but_never_lowers_deny() {
-    use pantheon_core::events::Event;
-    use pantheon_core::model::{DecisionAnswer, DecisionPoint, GateVerdict};
+    use pantheon_api::events::Event;
+    use pantheon_api::model::{DecisionAnswer, DecisionPoint, GateVerdict};
     struct CapSink(RefCell<Vec<Event>>);
     impl EventSink for CapSink {
         fn emit(&self, event: Event) {

@@ -4,7 +4,7 @@
 //! interpret response -> tool / delegation / response -> execute ->
 //! observe result -> update state -> continue.
 //!
-//! Every transition emits a pantheon_core::events::Event through an
+//! Every transition emits a pantheon_api::events::Event through an
 //! `EventSink`, so replay, debugging, and crash recovery come for free.
 //! The model is behind `ModelTurn` — swapping providers never touches
 //! this loop. Tools are behind `ToolRunner` and gated by
@@ -25,6 +25,7 @@
 //! with `judge: None`, so a configured `[judge]` section is validated by
 //! `doctor` and then never asked anything. Collapsing the two loops is the
 //! fix; until then, do not configure `[judge]` expecting routing to change.
+pub mod agent_profile;
 pub mod engine;
 pub mod tool;
 

@@ -8,11 +8,11 @@
 //! agent loop and the provider plane.
 //!
 //! Keeping it here (not in the runtime) also keeps the dependency direction
-//! clean: `pantheon-extensions` already depends on `pantheon-core`, and the
+//! clean: `pantheon-extensions` already depends on `pantheon-api`, and the
 //! runtime depends on extensions — never the reverse.
 
 use crate::hooks::Hook;
-use pantheon_core::events::Event;
+use pantheon_api::events::Event;
 use std::collections::HashMap;
 use std::sync::Arc;
 

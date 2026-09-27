@@ -24,8 +24,8 @@
 //! - Plugins never get access to the Pantheon config or API keys.
 //! - Each tool carries its capability requirement; the loop denies calls that
 //!   exceed the session's policy.
-use pantheon_core::capability::{Capability, Decision};
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::capability::{Capability, Decision};
+use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -238,7 +238,7 @@ pub fn verify_plugin(plugin: &DiscoveredPlugin) -> Result<PathBuf, PantheonError
 pub fn tool_allowed(
     plugin: &DiscoveredPlugin,
     tool_name: &str,
-    policy: &pantheon_core::capability::Policy,
+    policy: &pantheon_api::capability::Policy,
 ) -> bool {
     let tc = match plugin
         .manifest

@@ -111,9 +111,9 @@ fn ok_script(dir: &Path, json: &str) -> StdioBackend {
 fn stdio_backend_recall_round_trips() {
     let dir = tmp_dir("recall");
     let backend = ok_script(&dir, r#"{"ok":true,"hits":[]}"#);
-    let policy = pantheon_core::capability::Policy::coder_with_memory();
+    let policy = pantheon_api::capability::Policy::coder_with_memory();
     let hits = backend
-        .recall(&policy, &[LayerKind::Agent], "anything", 5)
+        .recall(&policy, &["agent:nyx"], &[LayerKind::Agent], "anything", 5)
         .unwrap();
     assert!(hits.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
@@ -127,9 +127,9 @@ fn stdio_backend_error_response_maps_to_code() {
         &dir,
         r#"{"ok":false,"code":"MYBRAIN_DOWN","cause":"index missing"}"#,
     );
-    let policy = pantheon_core::capability::Policy::coder_with_memory();
+    let policy = pantheon_api::capability::Policy::coder_with_memory();
     let err = backend
-        .recall(&policy, &[LayerKind::Agent], "q", 5)
+        .recall(&policy, &["nyx"], &[LayerKind::Agent], "q", 5)
         .unwrap_err();
     assert_eq!(err.code, "MYBRAIN_DOWN");
     assert!(err.cause.contains("index missing"));
@@ -140,9 +140,9 @@ fn stdio_backend_error_response_maps_to_code() {
 #[test]
 fn stdio_backend_timeout_kills_the_child() {
     let backend = StdioBackend::new("sleep".into(), vec!["5".into()], 200);
-    let policy = pantheon_core::capability::Policy::coder_with_memory();
+    let policy = pantheon_api::capability::Policy::coder_with_memory();
     let err = backend
-        .recall(&policy, &[LayerKind::Agent], "q", 5)
+        .recall(&policy, &["nyx"], &[LayerKind::Agent], "q", 5)
         .unwrap_err();
     assert_eq!(err.code, "MEM_PLUGIN_TIMEOUT");
 }

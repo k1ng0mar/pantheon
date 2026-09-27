@@ -1,6 +1,6 @@
 //! The one command registry.
 //!
-//! Placeholder for L0 step 4. Every slash command in the product resolves
+//! Every slash command in the product resolves
 //! through this table; there is no per-surface dispatch list.
 
 use crate::widget::Key;
@@ -23,11 +23,13 @@ impl CommandMeta {
 
 /// Commands that take an argument and can complete it.
 pub fn arg_completes(name: &str) -> bool {
-    matches!(name, "model" | "resume" | "name" | "memory" | "search")
+    matches!(name, "model" | "resume" | "name")
 }
 
-/// Every command, grouped. `/cost` is deliberately absent: the header shows
-/// tokens and elapsed, and a cost figure is not worth a command.
+/// Every command the session actually dispatches, grouped. Absent on
+/// purpose: /cost (the header carries tokens and elapsed), /memory and
+/// /tools (removed: /remember and /skills cover them), /debug,
+/// /provenance and /events (removed: runs/audit/logs cover them).
 pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
     let mut m = BTreeMap::new();
     for c in [
@@ -48,7 +50,7 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
         },
         CommandMeta {
             name: "sessions",
-            desc: "browse conversations",
+            desc: "live sessions elsewhere",
             category: "session",
         },
         CommandMeta {
@@ -62,14 +64,19 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "session",
         },
         CommandMeta {
-            name: "runs",
-            desc: "recent runs and their status",
+            name: "compress",
+            desc: "compress this conversation's context now",
             category: "session",
         },
         CommandMeta {
-            name: "memory",
-            desc: "search agent memory",
-            category: "agent",
+            name: "export",
+            desc: "save this conversation to a file",
+            category: "session",
+        },
+        CommandMeta {
+            name: "runs",
+            desc: "recent runs and their status",
+            category: "session",
         },
         CommandMeta {
             name: "remember",
@@ -77,14 +84,44 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "agent",
         },
         CommandMeta {
-            name: "tools",
-            desc: "manage available tools",
-            category: "agent",
-        },
-        CommandMeta {
             name: "skills",
             desc: "browse skills",
             category: "agent",
+        },
+        CommandMeta {
+            name: "agent",
+            desc: "current agent profile, or switch",
+            category: "agent",
+        },
+        CommandMeta {
+            name: "agents",
+            desc: "declared agent profiles",
+            category: "agent",
+        },
+        CommandMeta {
+            name: "collab",
+            desc: "active collaborations and their tasks",
+            category: "agent",
+        },
+        CommandMeta {
+            name: "tasks",
+            desc: "that agent's open tasks",
+            category: "agent",
+        },
+        CommandMeta {
+            name: "inbox",
+            desc: "messages sent to this agent",
+            category: "agent",
+        },
+        CommandMeta {
+            name: "history",
+            desc: "searchable run history",
+            category: "session",
+        },
+        CommandMeta {
+            name: "name",
+            desc: "show or rename this conversation",
+            category: "session",
         },
         CommandMeta {
             name: "settings",
@@ -114,6 +151,11 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
         CommandMeta {
             name: "clear",
             desc: "clear the visible transcript",
+            category: "system",
+        },
+        CommandMeta {
+            name: "quit",
+            desc: "leave pantheon",
             category: "system",
         },
         CommandMeta {

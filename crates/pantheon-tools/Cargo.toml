@@ -1,0 +1,25 @@
+[package]
+name = "pantheon-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Tools (registry + concrete callable operations), distinct from
+# pantheon-capability (what a policy allows). Depends downward on
+# pantheon-exec per the target dependency direction: Tools → Exec.
+[dependencies]
+pantheon-api = { path = "../pantheon-api" }
+pantheon-exec = { path = "../pantheon-exec" }
+pantheon-memory = { path = "../pantheon-memory" }
+pantheon-providers = { path = "../pantheon-providers" }
+pantheon-sandbox = { path = "../pantheon-sandbox" }
+pantheon-storage = { path = "../pantheon-storage" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

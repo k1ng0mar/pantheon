@@ -3,7 +3,7 @@
 use crate::config_doc::Config;
 use crate::dotenv::test_support::TEST_ENV_LOCK;
 use crate::model_cli::*;
-use pantheon_core::catalog;
+use pantheon_providers::catalog;
 
 #[test]
 fn mask_hides_all_but_hint() {

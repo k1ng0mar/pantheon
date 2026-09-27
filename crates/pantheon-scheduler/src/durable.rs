@@ -8,7 +8,7 @@
 //! and a recovered process needs no separate rebuild step — it just asks the
 //! store whether the occurrence was already claimed.
 
-use pantheon_core::error::PantheonError;
+use pantheon_api::error::PantheonError;
 use pantheon_storage::ClaimStore;
 
 /// A claim ledger whose claims survive restarts.

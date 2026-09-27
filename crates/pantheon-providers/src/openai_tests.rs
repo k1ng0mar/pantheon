@@ -28,6 +28,7 @@ fn stream_flag_flips_body() {
         &[Message::user("hi")],
         &[],
         true,
+        pantheon_api::model::ReasoningLevel::Off,
     );
     assert!(req.url.ends_with("/chat/completions"));
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
@@ -47,6 +48,7 @@ fn non_authorization_header_sends_the_raw_key() {
         &[Message::user("hi")],
         &[],
         false,
+        pantheon_api::model::ReasoningLevel::Off,
     );
     assert!(req.headers.iter().any(|(k, v)| k == "api-key" && v == "k"));
     assert!(!req.headers.iter().any(|(k, _)| k == "Authorization"));
@@ -177,4 +179,58 @@ fn empty_content_is_empty_text() {
     let turn = parse_response(&body, &c).unwrap();
     assert!(matches!(turn.outcome, TurnOutcome::Text { ref text, .. } if text.is_empty()));
     assert!(c.0.borrow().is_empty());
+}
+
+#[test]
+fn reasoning_high_adds_effort_param() {
+    use pantheon_api::model::ReasoningLevel;
+    let req = request(
+        "http://x/v1",
+        "k",
+        "Authorization",
+        "m",
+        &[Message::user("hi")],
+        &[],
+        false,
+        ReasoningLevel::High,
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert_eq!(v["reasoning_effort"], "high");
+}
+
+#[test]
+fn reasoning_off_sends_no_effort_param() {
+    use pantheon_api::model::ReasoningLevel;
+    let req = request(
+        "http://x/v1",
+        "k",
+        "Authorization",
+        "m",
+        &[Message::user("hi")],
+        &[],
+        false,
+        ReasoningLevel::Off,
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert!(
+        v.get("reasoning_effort").is_none(),
+        "off is byte-identical to before"
+    );
+}
+
+#[test]
+fn reasoning_minimal_sends_gpt5_effort_string() {
+    use pantheon_api::model::ReasoningLevel;
+    let req = request(
+        "http://x/v1",
+        "k",
+        "Authorization",
+        "m",
+        &[Message::user("hi")],
+        &[],
+        false,
+        ReasoningLevel::Minimal,
+    );
+    let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+    assert_eq!(v["reasoning_effort"], "minimal");
 }

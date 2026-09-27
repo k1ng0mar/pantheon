@@ -18,8 +18,8 @@
 //! seam); backends only move bytes. Nothing here ever enters model
 //! context except the transcription text the caller passes on.
 
-use pantheon_core::catalog;
-use pantheon_core::error::{Layer, PantheonError};
+use crate::catalog;
+use pantheon_api::error::{Layer, PantheonError};
 use pantheon_secrets::SecretValue;
 use std::collections::HashMap;
 use std::io::{Read, Write};

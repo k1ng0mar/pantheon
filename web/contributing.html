@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon — Rust Agent Runtime</title>
+  <title>Pantheon — Contributing</title>
   <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
   <meta property="og:title" content="Pantheon — Rust Agent Runtime">
   <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
@@ -44,6 +44,8 @@
     th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
     th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
     tr:hover td { background: rgba(112,39,197,0.05); }
+    blockquote { border-left: 2px solid #7027c5; padding-left: 1rem; margin: 1rem 0; color: #e8e6e1; font-style: italic; }
+    p a, li a, td a { color: #e8e6e1; text-decoration: underline; text-decoration-color: #7027c5; text-underline-offset: 3px; }
     details { cursor: pointer; }
     details summary { list-style: none; }
     details summary::-webkit-details-marker { display: none; }
@@ -61,102 +63,67 @@
       </a>
       <div class="flex items-center gap-6 text-sm">
         <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
-        <a href="getting-started.html" class="text-muted hover:text-fg transition-colors">Docs</a>
-        <a href="configuration.html" class="text-muted hover:text-fg transition-colors">Configuration</a>
+        <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
+        <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
+        <a href="docs.html" class="text-muted hover:text-fg transition-colors">Docs</a>
         <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
-        <a href="channels.html" class="text-muted hover:text-fg transition-colors">Channels</a>
-        <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
       </div>
     </div>
   </nav>
 
-  <h1 class="text-3xl md:text-4xl font-bold text-fg mb-4 mt-8">Contributing</h1>
-<p class="text-muted text-sm leading-relaxed mb-3">Crate boundaries, testing rules, and the three most common kinds of</p>
-<p class="text-muted text-sm leading-relaxed mb-3">change. Read ARCHITECTURE.md first for the design positions; this page is</p>
-<p class="text-muted text-sm leading-relaxed mb-3">the mechanical how.</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Crate boundaries (what goes where)</h2>
-<table>
-<thead><tr><th>You are adding...</th><th>It belongs in...</th><th>Because</th></tr></thead>
-<tbody>
-<thead><tr><th>An event variant</th><th>`pantheon-core/src/events.rs`</th><th>The Event enum is the single source of truth; every other crate consumes it</th></tr></thead>
-<tbody>
-<thead><tr><th>A capability or policy preset</th><th>`pantheon-core/src/capability.rs`</th><th>Policies are code-defined on purpose</th></tr></thead>
-<tbody>
-<thead><tr><th>A model provider adapter</th><th>`pantheon-providers`</th><th>Transport + normalization only; no business logic</th></tr></thead>
-<tbody>
-<thead><tr><th>A built-in tool</th><th>`pantheon-exec/src/builtins.rs`</th><th>Tools declare capabilities; the gate applies them</th></tr></thead>
-<tbody>
-<thead><tr><th>A plugin manifest feature</th><th>`pantheon-extensions`</th><th>Manifest, hooks, manager live together</th></tr></thead>
-<tbody>
-<thead><tr><th>A storage table or migration</th><th>`pantheon-storage`</th><th>SQLite owns all durable state</th></tr></thead>
-<tbody>
-<thead><tr><th>A memory layer change</th><th>`pantheon-memory`</th><th>Write path stays propose->policy->provenance</th></tr></thead>
-<tbody>
-<thead><tr><th>A CLI verb</th><th>`pantheon-cli/src/main.rs` dispatch + its own module</th><th>Thin surface; business logic goes in the crate that owns it</th></tr></thead>
-<tbody>
-<thead><tr><th>An agent surface (Discord/Telegram/web)</th><th>`pantheon-gateway` or `pantheon-api`</th><th>The channel seam normalizes; adapters format</th></tr></thead>
-<tbody>
+  <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
+<h1 class="text-3xl font-bold tracking-tight mb-2">Contributing</h1><div class="glow-line my-6"></div>
+<p class="my-3 leading-relaxed">Crate boundaries, testing rules, and the three most common kinds of change. Read <a href="architecture.html">Architecture</a> first for the design positions; this page is the mechanical how.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Crate boundaries</h2>
+<table class="my-6"><thead><tr><th>You are adding...</th><th>It belongs in...</th><th>Because</th></tr></thead><tbody>
+<tr><td>An event variant</td><td><code>pantheon-api/src/events.rs</code></td><td>The Event enum is the single source of truth</td></tr>
+<tr><td>A capability or policy preset</td><td><code>pantheon-api</code> capability/policy</td><td>Policies are code-defined on purpose</td></tr>
+<tr><td>A model provider adapter</td><td><code>pantheon-providers</code></td><td>Transport + normalization only; no business logic</td></tr>
+<tr><td>A built-in tool</td><td><code>pantheon-tools/src/builtins.rs</code></td><td>Tools declare capabilities; the gate applies them</td></tr>
+<tr><td>A plugin manifest feature</td><td><code>pantheon-extensions</code></td><td>Manifest, hooks, manager live together</td></tr>
+<tr><td>A storage table or migration</td><td><code>pantheon-storage</code></td><td>SQLite owns all durable state</td></tr>
+<tr><td>A memory layer change</td><td><code>pantheon-memory</code></td><td>Write path stays propose → policy → provenance</td></tr>
+<tr><td>A CLI verb</td><td><code>pantheon-cli</code> dispatch + its own module</td><td>Thin surface; logic goes in the owning crate</td></tr>
+<tr><td>A channel surface</td><td><code>pantheon-gateway</code> or <code>pantheon-api</code></td><td>The channel seam normalizes; adapters format</td></tr>
 </tbody></table>
-
-<p class="text-muted text-sm leading-relaxed mb-3">Rules that keep the architecture honest:</p>
-<li class="mb-2 text-muted text-sm">**No business logic in pantheon-cli.** It parses arguments and calls</li>
-<p class="text-muted text-sm leading-relaxed mb-3">into crates. If your verb needs logic, the logic goes downstream.</p>
-<li class="mb-2 text-muted text-sm">**No model SDKs above pantheon-providers.** The agent loop speaks</li>
-<p class="text-muted text-sm leading-relaxed mb-3">ModelTurn/ModelEvent, never HTTP.</p>
-<li class="mb-2 text-muted text-sm">**Events over prints.** If a runtime transition matters, emit an Event.</li>
-<p class="text-muted text-sm leading-relaxed mb-3">eprintln is for operator warnings only.</p>
-<li class="mb-2 text-muted text-sm">**Durable before clever.** New long-running work gets an operation</li>
-<p class="text-muted text-sm leading-relaxed mb-3">state machine (pantheon-storage/src/operations.rs), not an in-memory</p>
-<p class="text-muted text-sm leading-relaxed mb-3">flag.</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Testing rules</h2>
-<li class="mb-2 text-muted text-sm">Every behavior change ships with a test. Unit test next to the code;</li>
-<p class="text-muted text-sm leading-relaxed mb-3">behavior that spans crates goes in the eval harness.</p>
-<li class="mb-2 text-muted text-sm"><code>cargo test --workspace</code> must pass with **zero warnings**. Warnings</li>
-<p class="text-muted text-sm leading-relaxed mb-3">are gate failures here, not noise.</p>
-<li class="mb-2 text-muted text-sm"><code>python3 eval/run.py</code> drives the real binary in fresh sandboxes. New</li>
-<p class="text-muted text-sm leading-relaxed mb-3">CLI verbs get an eval case. Look at eval/cases.json for the shape;</p>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>_</code>-prefixed commands are probes (see eval/run.py).</p>
-<li class="mb-2 text-muted text-sm">Determinism: unit tests never touch the network. Use scripted</li>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>ChatTransport</code> test doubles local to the test file. Anything needing a</p>
-<p class="text-muted text-sm leading-relaxed mb-3">live model is behind an env check (see router_streaming test).</p>
-<li class="mb-2 text-muted text-sm">Concurrency code gets a race test (see leases.rs</li>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>cross_connection_acquire_has_one_winner</code> for the pattern: two</p>
-<p class="text-muted text-sm leading-relaxed mb-3">connections, a Barrier, assert one winner).</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Adding a CLI verb</h2>
-<li class="mb-2 text-muted text-sm">Create <code>crates/pantheon-cli/src/<verb>_cli.rs</code> with</li>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>pub fn cmd_<verb>(args: &[String])</code>.</p>
-<li class="mb-2 text-muted text-sm">Parse with <code>crate::cli_args::Args</code> (both <code>--f v</code> and <code>--f=v</code> work).</li>
-<li class="mb-2 text-muted text-sm">Call into the owning crate. Print structured codes on failure, exit 1</li>
-<p class="text-muted text-sm leading-relaxed mb-3">for operation errors, exit 2 for usage.</p>
-<li class="mb-2 text-muted text-sm">Register the module and the dispatch arm in main.rs.</li>
-<li class="mb-2 text-muted text-sm">Add the verb to the help() list and to docs/cli.md.</li>
-<li class="mb-2 text-muted text-sm">Add an eval case.</li>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Adding an event</h2>
-<li class="mb-2 text-muted text-sm">Add the variant in pantheon-core/src/events.rs with doc comments</li>
-<p class="text-muted text-sm leading-relaxed mb-3">saying when it fires and what is persisted.</p>
-<li class="mb-2 text-muted text-sm">Match it in: stream.rs (frame projection), audit.rs (export),</li>
-<p class="text-muted text-sm leading-relaxed mb-3">otel span_for (mapping), ledger.rs status projection if it affects</p>
-<p class="text-muted text-sm leading-relaxed mb-3">run state.</p>
-<li class="mb-2 text-muted text-sm">Emit it from exactly one place. If two places can emit the same</li>
-<p class="text-muted text-sm leading-relaxed mb-3">event, one of them is wrong.</p>
-<li class="mb-2 text-muted text-sm">Tests: replay round-trip (append -> replay -> assert).</li>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Adding a tool</h2>
-<li class="mb-2 text-muted text-sm">Define the schema (name, description, JSON parameters).</li>
-<li class="mb-2 text-muted text-sm">Pick the capability honestly. If it writes files, it is</li>
-<p class="text-muted text-sm leading-relaxed mb-3">FilesystemWrite. Do not route new powers through an existing weaker</p>
-<p class="text-muted text-sm leading-relaxed mb-3">capability.</p>
-<li class="mb-2 text-muted text-sm">Register in the registry; the gate and budgets apply automatically.</li>
-<li class="mb-2 text-muted text-sm">Keep tool output bounded: large output goes through compaction</li>
-<p class="text-muted text-sm leading-relaxed mb-3">(<code>compact_output</code>), never raw into the transcript.</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Style</h2>
-<li class="mb-2 text-muted text-sm">rustfmt via <code>cargo fmt</code> before every commit.</li>
-<li class="mb-2 text-muted text-sm">Module doc comments explain WHY (contracts, invariants), not WHAT</li>
-<p class="text-muted text-sm leading-relaxed mb-3">(the code says what).</p>
-<li class="mb-2 text-muted text-sm">Error helper per module (<code>fn xerr(code, cause)</code>) so codes stay</li>
-<p class="text-muted text-sm leading-relaxed mb-3">consistent; error codes are uppercase snake and are part of the</p>
-<p class="text-muted text-sm leading-relaxed mb-3">public interface (docs/troubleshooting.md lists them).</p>
-<li class="mb-2 text-muted text-sm">No new async. The codebase is std threads by decision; if you need</li>
-<p class="text-muted text-sm leading-relaxed mb-3">async for a dependency, isolate it behind a blocking trait.</p>
+<p class="my-3 leading-relaxed">Rules that keep the architecture honest:</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><strong>No business logic in pantheon-cli.</strong> It parses arguments and calls into crates.</li>
+<li><strong>No model SDKs above pantheon-providers.</strong> The agent loop speaks ModelTurn/ModelEvent, never HTTP.</li>
+<li><strong>Events over prints.</strong> A runtime transition that matters emits an Event; eprintln is for operator warnings only.</li>
+<li><strong>Durable before clever.</strong> New long-running work gets an operation state machine, not an in-memory variable.</li>
+</ul>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Testing</h2>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><code>cargo test --workspace</code> — the workspace test gate</li>
+<li><code>python3 eval/run.py</code> — eval cases</li>
+<li>Nothing ships until both are green.</li>
+</ul>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Common changes</h2>
+<h3 class="font-bold mt-6 mb-2">Adding a CLI verb</h3>
+<p>1. Add dispatch in <code>pantheon-cli/src/main.rs</code> + register in <code>KNOWN_VERBS</code> and <code>usage()</code></p>
+<p>2. Implement logic in the owning crate</p>
+<p>3. Add tests (<code>*_tests.rs</code>)</p>
+<p>4. Document it in <code>docs/reference/cli.md</code></p>
+<p>5. Green workspace tests + evals</p>
+<h3 class="font-bold mt-6 mb-2">Adding a tool</h3>
+<p>1. Define it in <code>pantheon-tools/src/builtins.rs</code></p>
+<p>2. Declare its capability in <code>pantheon-api</code></p>
+<p>3. Add behavior tests</p>
+<p>4. Document user-visible tools in the relevant user-guide page</p>
+<h3 class="font-bold mt-6 mb-2">Adding a provider</h3>
+<p>1. Add the adapter in <code>pantheon-providers/</code>, register in <code>catalog.yaml</code></p>
+<p>2. Add model definitions and adapter tests</p>
+<p>3. Keep the agent loop on ModelTurn/ModelEvent only</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Decisions</h2>
+<p class="my-3 leading-relaxed">Known deviations are recorded in <code>decisions/0001-workspace-restructure.md</code>. Review it before architectural changes.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><a href="architecture.html">Architecture</a> — system design, crate map, locked decisions</li>
+<li><a href="cli.html">CLI reference</a> — the surface your verb joins</li>
+</ul>
+</main>
 
   <div class="glow-line max-w-5xl mx-auto"></div>
 
@@ -167,13 +134,13 @@
           <div class="logo-mark-sm"><img src="logo.png" alt="Pantheon" width="22" height="22"></div>
           <div>
             <span class="font-mono font-bold text-fg text-sm">pantheon</span>
-            <p class="text-muted text-xs mt-0.5">Rust agent runtime. MIT licensed. <span class="font-mono">pantheon-agent/pantheon</span> on GitHub.</p>
+            <p class="text-muted text-xs mt-0.5">Durable agent runtime. MIT licensed. <span class="font-mono">k1ng0mar/pantheon</span> on GitHub.</p>
           </div>
         </div>
         <div class="flex gap-8 text-sm">
-          <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
-          <a href="https://github.com/pantheon-agent/pantheon/blob/main/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
-          <a href="https://github.com/pantheon-agent/pantheon/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/developer/contributing.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
         </div>
       </div>
       <div class="glow-line my-8"></div>

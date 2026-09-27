@@ -33,7 +33,7 @@ pub fn cmd_serve(args: &[String]) {
     let factory_dir = data_dir();
     let file_cfg = config_doc::Config::load_or_report(&factory_dir);
     let startup_cfg = file_cfg.clone();
-    pantheon_api::agui::set_session_factory(Arc::new(move |dir: &std::path::PathBuf| {
+    pantheon_runtime::agui::set_session_factory(Arc::new(move |dir: &std::path::PathBuf| {
         // Reload per turn so a config edited while the server runs is
         // picked up without a restart.
         let cfg = config_doc::Config::load(dir)
@@ -60,7 +60,7 @@ pub fn cmd_serve(args: &[String]) {
         .unwrap_or_else(|| "127.0.0.1".into());
     let base = std::env::var("PANTHEON_GENUI_BASE")
         .unwrap_or_else(|_| format!("http://{host}:{port}/agui/blob"));
-    let cfg = pantheon_api::ServeConfig {
+    let cfg = pantheon_runtime::ServeConfig {
         data_dir: data_dir(),
         host,
         port,
@@ -69,7 +69,7 @@ pub fn cmd_serve(args: &[String]) {
             .ok()
             .filter(|t| !t.is_empty()),
     };
-    if let Err(e) = pantheon_api::serve(cfg) {
+    if let Err(e) = pantheon_runtime::serve(cfg) {
         eprintln!("serve: {e}");
         std::process::exit(1);
     }
@@ -91,9 +91,9 @@ pub fn resume_after_grant(run_id: &str) {
                 .unwrap_or(false)
         });
     let policy = if allow_memory {
-        pantheon_core::capability::Policy::coder_with_memory()
+        pantheon_api::capability::Policy::coder_with_memory()
     } else {
-        pantheon_core::capability::Policy::coder()
+        pantheon_api::capability::Policy::coder()
     };
     let secrets = config_doc::chat_secrets(file_cfg.as_ref());
     let session =

@@ -1,8 +1,10 @@
 //! Tests for `pantheon_providers::tests` — sibling file so sources stay test-free.
 use super::*;
-use pantheon_core::model::FallbackChain;
+use pantheon_api::model::FallbackChain;
 fn pol() -> ModelPolicy {
     ModelPolicy {
+        reasoning_budget: Default::default(),
+        reasoning: Default::default(),
         default: DefaultModel {
             provider: "anthropic".into(),
             model: "sonnet".into(),

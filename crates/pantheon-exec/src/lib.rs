@@ -1,24 +1,23 @@
-//! Execution engine: tool/process/fs/git surface + deterministic output
+//! Execution engine: process/fs/git surface + deterministic output
 //! compaction (noisegate lesson as a core primitive, not a plugin).
 //!
 //! Rule: noisy tool output is compacted deterministically BEFORE it reaches
 //! model context. No model summarization, no vibe-truncation. Keep exact
 //! head/tail, hash the dropped middle, record what was dropped in the ledger.
+//!
+//! The callable-tool layer (registry, builtins, memory/vault/session-search
+//! tools and their register helpers) lives in `pantheon-tools` — capability ≠
+//! tool, and `pantheon-tools` depends *on* this crate (Tools → Exec).
 
 pub mod acp;
-pub mod builtins;
 pub mod bundled_skills;
 pub mod context;
 pub mod danger;
-pub mod memory_tools;
 pub mod plugins;
 pub mod process;
 pub mod safewrite;
-pub mod session_search_tools;
 pub mod skills;
 pub mod supervisor;
-pub mod tools;
-pub mod vault_tools;
 
 use serde::{Deserialize, Serialize};
 

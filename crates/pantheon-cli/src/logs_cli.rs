@@ -1,6 +1,6 @@
 //! `pantheon logs` — read the runtime's log files.
 //!
-//! The runtime had no logs at all until `pantheon_core::logging` landed, so
+//! The runtime had no logs at all until `pantheon_api::logging` landed, so
 //! this verb was briefly a run trace wearing the name of a log reader. It is
 //! now what its name says: it reads `<data_dir>/logs/*.log`, and the run trace
 //! is back to being a run trace.
@@ -9,7 +9,7 @@
 //! `--since`, `logs list` — because that reader is the thing being matched. Two
 //! deliberate differences:
 //!
-//! - The file list is a closed set (`pantheon_core::logging::KNOWN_LOGS`) and
+//! - The file list is a closed set (`pantheon_api::logging::KNOWN_LOGS`) and
 //!   not a `*.log` glob. A data dir also holds `ledger.db.<stamp>.bak` copies
 //!   from `repair` and any editor swap file, all of which a glob would present
 //!   as logs.
@@ -17,7 +17,7 @@
 //!   files pre-split by level, so `--level errors` and `--level warning` on the
 //!   same file are one code path.
 
-use pantheon_core::logging::{self, Level, KNOWN_LOGS};
+use pantheon_api::logging::{self, Level, KNOWN_LOGS};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

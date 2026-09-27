@@ -5,12 +5,12 @@
 //! Fallback policy does NOT live here — see `chain.rs`. Adapters are
 //! single-attempt; the chain decides what happens on failure.
 
+use crate::catalog::{self, ApiMode};
+use crate::model_event::{ModelUsage, NoopModelSink};
 use crate::{anthropic, openai};
 use pantheon_agent::TurnOutcome;
-use pantheon_core::catalog::{self, ApiMode};
-use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::message::Message;
-use pantheon_core::model_event::{ModelUsage, NoopModelSink};
+use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::message::Message;
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
@@ -175,6 +175,8 @@ pub fn aux_request(wire: &AuxWire, model: &str, prompt: String) -> WireRequest {
             &messages,
             &[],
             false,
+            // Aux turns stay fast and cheap: no reasoning effort, ever.
+            pantheon_api::model::ReasoningLevel::Off,
         ),
         ApiMode::Anthropic => anthropic::request(
             &wire.base,
@@ -184,6 +186,8 @@ pub fn aux_request(wire: &AuxWire, model: &str, prompt: String) -> WireRequest {
             &[],
             false,
             wire.max_tokens,
+            pantheon_api::model::ReasoningLevel::Off,
+            None,
         ),
     }
 }

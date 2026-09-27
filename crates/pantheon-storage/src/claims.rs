@@ -9,7 +9,7 @@
 //! Additive by design: this table and API sit next to the event ledger and
 //! change nothing about run/event handling.
 
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;

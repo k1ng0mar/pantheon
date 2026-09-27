@@ -1,7 +1,7 @@
 //! Ledger event -> AG-UI frame mapping (interactive path).
 //! One frame per UI-meaningful transition, keyed by run_id + thread_id.
 //! Approval frames park the run: client answers grant/deny.
-use pantheon_core::events::Event;
+use pantheon_api::events::Event;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

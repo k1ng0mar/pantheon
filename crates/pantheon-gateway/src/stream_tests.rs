@@ -1,7 +1,7 @@
 //! Tests for `pantheon_gateway::stream::tests` — sibling file so sources stay test-free.
 use super::*;
-use pantheon_core::events::Event;
-use pantheon_core::provenance::Provenance;
+use pantheon_api::events::Event;
+use pantheon_api::provenance::Provenance;
 #[test]
 fn approval_request_parks_with_interrupt_flag() {
     let f = frame_for_event(

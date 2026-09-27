@@ -25,7 +25,7 @@ use super::config_doc::{
     self, CompressionSection, Config, EmbeddingsSection, JudgeSection, McpSynthesisSection,
     ScheduledSection, SearchSynthesisSection, TitleGenSection, VisionSection,
 };
-use pantheon_core::catalog::{self, ApiMode};
+use pantheon_providers::catalog::{self, ApiMode};
 use std::io::IsTerminal;
 use std::io::Write;
 use std::path::PathBuf;
@@ -340,7 +340,7 @@ pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub fn fetch_models(
     base_url: &str,
     key: &str,
-    mode: pantheon_core::catalog::ApiMode,
+    mode: pantheon_providers::catalog::ApiMode,
 ) -> Result<Vec<String>, String> {
     let base = trim_slash(base_url.trim());
     let url = format!("{base}/models");
@@ -351,12 +351,12 @@ pub fn fetch_models(
     let mut req = agent.get(&url);
     if !first.is_empty() {
         match mode {
-            pantheon_core::catalog::ApiMode::Anthropic => {
+            pantheon_providers::catalog::ApiMode::Anthropic => {
                 req = req
                     .set("x-api-key", first)
                     .set("anthropic-version", ANTHROPIC_VERSION);
             }
-            pantheon_core::catalog::ApiMode::OpenAi => {
+            pantheon_providers::catalog::ApiMode::OpenAi => {
                 req = req.set("Authorization", &format!("Bearer {first}"));
             }
         }
@@ -513,10 +513,14 @@ pub fn save_choice(data_dir: &std::path::Path, choice: &ModelChoice) -> Result<(
                 .map(|m| m.fallbacks.clone())
                 .unwrap_or_default();
             cfg.model = Some(config_doc::ModelSection {
+                reasoning_budget: None,
                 provider: choice.provider.clone(),
                 model: choice.model.clone(),
                 api_key_env: Some(choice.key_env.clone()),
                 fallbacks,
+                // A model pick does not touch reasoning: changing providers
+                // must not silently reset an effort level the user chose.
+                reasoning: cfg.model.as_ref().and_then(|m| m.reasoning.clone()),
             });
         }
         Target::Auxiliary(kind) => match kind.as_str() {
@@ -776,7 +780,7 @@ fn interactive(target: Target) -> Option<ModelChoice> {
     // Returns the catalog entry and whether the id already has a custom
     // row. URL edits that diverge from a builtin are upgraded to an
     // explicit override row in step 2, so they stay visible + removable.
-    let (known, was_custom): (Option<pantheon_core::catalog::ProviderMeta>, bool) = {
+    let (known, was_custom): (Option<pantheon_providers::catalog::ProviderMeta>, bool) = {
         let all = catalog::all_providers();
         let customs: Vec<String> = Config::load(&data_dir())
             .map(|c| {

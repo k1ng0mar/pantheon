@@ -21,7 +21,7 @@
 //! deliverable: leaving it behind means `reset --state` still sends it, to a
 //! conversation whose ledger has just been deleted.
 
-use pantheon_core::error::PantheonError;
+use pantheon_api::error::PantheonError;
 use pantheon_storage::RunLeaseStore;
 use std::path::{Path, PathBuf};
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon — Rust Agent Runtime</title>
+  <title>Pantheon — Getting started</title>
   <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
   <meta property="og:title" content="Pantheon — Rust Agent Runtime">
   <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
@@ -44,6 +44,8 @@
     th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
     th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
     tr:hover td { background: rgba(112,39,197,0.05); }
+    blockquote { border-left: 2px solid #7027c5; padding-left: 1rem; margin: 1rem 0; color: #e8e6e1; font-style: italic; }
+    p a, li a, td a { color: #e8e6e1; text-decoration: underline; text-decoration-color: #7027c5; text-underline-offset: 3px; }
     details { cursor: pointer; }
     details summary { list-style: none; }
     details summary::-webkit-details-marker { display: none; }
@@ -61,90 +63,62 @@
       </a>
       <div class="flex items-center gap-6 text-sm">
         <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
-        <a href="getting-started.html" class="text-muted hover:text-fg transition-colors">Docs</a>
-        <a href="configuration.html" class="text-muted hover:text-fg transition-colors">Configuration</a>
+        <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
+        <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
+        <a href="docs.html" class="text-muted hover:text-fg transition-colors">Docs</a>
         <a href="cli.html" class="text-muted hover:text-fg transition-colors">CLI</a>
-        <a href="channels.html" class="text-muted hover:text-fg transition-colors">Channels</a>
-        <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
       </div>
     </div>
   </nav>
 
-  <h1 class="text-3xl md:text-4xl font-bold text-fg mb-4 mt-8">Getting started</h1>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Prerequisites</h2>
-<li class="mb-2 text-muted text-sm">A Rust toolchain (rustup, edition 2021). Any recent stable works.</li>
-<li class="mb-2 text-muted text-sm">System deps: <code>sh</code> and <code>git</code> (bundled SQLite needs neither).</li>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Install (recommended)</h2>
-<pre><code>curl -fsSL https://pantheon.run/install.sh | bash</code></pre>
-<p class="text-muted text-sm leading-relaxed mb-3">Installs Rust if missing, builds from source, links the binary into</p>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>~/.local/bin</code>. Re-running is idempotent.</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Build (from source)</h2>
-<pre><code>git clone <repo> pantheon && cd pantheon
-cargo build --release          # or cargo build for a debug binary</code></pre>
-<p class="text-muted text-sm leading-relaxed mb-3">The binary is <code>target/release/pantheon</code> (or <code>target/debug/pantheon</code>).</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">First setup</h2>
-<pre><code>pantheon setup</code></pre>
-<p class="text-muted text-sm leading-relaxed mb-3">Five questions: profile name, provider, model, API key env var name, and</p>
-<p class="text-muted text-sm leading-relaxed mb-3">execution policy. Answer them and you get <code>~/.pantheon/config.toml</code>.</p>
-<p class="text-muted text-sm leading-relaxed mb-3">Non-interactive (scripts, CI):</p>
-<pre><code>pantheon setup --yes \
-  --profile dev \
-  --provider openai \
-  --model gpt-4o-mini \
-  --api-key-env OPENAI_API_KEY \
-  --policy coder \
-  --memory native \
-  --packs core</code></pre>
-<p class="text-muted text-sm leading-relaxed mb-3">Every question has a flag. <code>--yes</code> accepts defaults for anything you did</p>
-<p class="text-muted text-sm leading-relaxed mb-3">not flag. Secrets are never written to the config file: setup stores the</p>
-<p class="text-muted text-sm leading-relaxed mb-3">env var NAME and resolves it at runtime.</p>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">First chat</h2>
-<p class="text-muted text-sm leading-relaxed mb-3">Interactive session (the normal way):</p>
-<pre><code>export OPENAI_API_KEY=sk-...
-pantheon</code></pre>
-<p class="text-muted text-sm leading-relaxed mb-3">Type a message at the <code>></code> prompt. The conversation keeps its run id and</p>
-<p class="text-muted text-sm leading-relaxed mb-3">full ledger history across exits; <code>/help</code> lists the session commands.</p>
-<p class="text-muted text-sm leading-relaxed mb-3">One-shot (scripts, CI):</p>
-<pre><code>pantheon chat "what files are in this directory"</code></pre>
-<p class="text-muted text-sm leading-relaxed mb-3">The model can call tools (shell, file read/write, git) according to the</p>
-<p class="text-muted text-sm leading-relaxed mb-3">policy. Shell commands pass a dangerous-pattern pre-gate (<code>rm -rf /</code>-class</p>
-<p class="text-muted text-sm leading-relaxed mb-3">commands are refused with <code>DANGER_BLOCKED</code> before execution). Each run</p>
-<p class="text-muted text-sm leading-relaxed mb-3">gets an id like <code>run_1690000000000_ab12</code>; everything it did is recorded</p>
-<p class="text-muted text-sm leading-relaxed mb-3">in the ledger.</p>
-<pre><code>pantheon status run_1690000000000_ab12   # current state
-pantheon explain run_1690000000000_ab12  # full event replay in words</code></pre>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Where data lives</h2>
-<p class="text-muted text-sm leading-relaxed mb-3"><code>$PANTHEON_DATA_DIR</code> or <code>~/.pantheon/</code>:</p>
-<table>
-<thead><tr><th>File</th><th>What it is</th></tr></thead>
-<tbody>
-<thead><tr><th>`config.toml`</th><th>Your configuration (setup writes it, doctor validates it)</th></tr></thead>
-<tbody>
-<thead><tr><th>`ledger.db`</th><th>Event ledger + durable operations + run leases + artifacts</th></tr></thead>
-<tbody>
-<thead><tr><th>`memory.db`</th><th>Five-layer memory store</th></tr></thead>
-<tbody>
-<thead><tr><th>`memory-backend.toml`</th><th>Which memory backend is selected</th></tr></thead>
-<tbody>
-<thead><tr><th>`extensions/`</th><th>Loaded plugins</th></tr></thead>
-<tbody>
-<thead><tr><th>`safewrite/`</th><th>File-edit checkpoints and the write journal</th></tr></thead>
-<tbody>
-<thead><tr><th>`gateway/`</th><th>Channel cursors (Telegram update offsets, Discord)</th></tr></thead>
-<tbody>
-</tbody></table>
-
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Next steps</h2>
-<li class="mb-2 text-muted text-sm">Point it at a real model: docs/configuration.md</li>
-<li class="mb-2 text-muted text-sm">Understand what the agent is allowed to do: docs/configuration.md</li>
-<p class="text-muted text-sm leading-relaxed mb-3">(policies) and docs/plugins.md (capability gating)</p>
-<li class="mb-2 text-muted text-sm">Long-running or resumable work: docs/runs-and-recovery.md</li>
-<li class="mb-2 text-muted text-sm">Multi-step tasks with human checkpoints: docs/pipelines.md</li>
-<li class="mb-2 text-muted text-sm">Talk to it from Discord/Telegram: docs/channels.md</li>
-<h2 class="text-2xl font-bold text-fg mb-4 mt-10 border-b border-border pb-2">Verify your install</h2>
-<pre><code>pantheon doctor</code></pre>
-<p class="text-muted text-sm leading-relaxed mb-3">Exit 0 means config, model key, ledger, memory store, and plugins are all</p>
-<p class="text-muted text-sm leading-relaxed mb-3">healthy. Each failed check names its fix.</p>
+  <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
+<h1 class="text-3xl font-bold tracking-tight mb-2">Getting started</h1><div class="glow-line my-6"></div>
+<p class="my-3 leading-relaxed">Install Pantheon, point it at a model, start working.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Install</h2>
+<p class="my-3 leading-relaxed">Linux or macOS:</p>
+<pre><code>
+curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash
+</code></pre>
+<p class="my-3 leading-relaxed">Windows (PowerShell):</p>
+<pre><code>
+iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb | iex
+</code></pre>
+<p class="my-3 leading-relaxed">A prebuilt binary from GitHub Releases, linked into <code>~/.local/bin</code>. Needs only <code>curl</code> and <code>tar</code>. Re-running never overwrites your config. Pin a release with <code>PANTHEON_VERSION=v0.1.0</code>.</p>
+<p class="my-3 leading-relaxed">Prefer source? <code>git clone</code> + <code>cargo build --release</code> (Rust edition 2021). SQLite is bundled; nothing else to run.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Set up</h2>
+<pre><code>
+pantheon setup
+</code></pre>
+<p class="my-3 leading-relaxed">Answer five questions — profile, provider, model, API key location, policy — and you get <code>~/.pantheon/config.toml</code>. Scripted setups pass flags instead of answering:</p>
+<pre><code>
+pantheon setup --yes --provider openai --model gpt-4o-mini \
+  --api-key-env OPENAI_API_KEY --policy coder
+</code></pre>
+<p class="my-3 leading-relaxed">Only the key&#x27;s *name* goes in the config; the value stays in your environment.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Run it</h2>
+<pre><code>
+export OPENAI_API_KEY=sk-...
+pantheon
+</code></pre>
+<p class="my-3 leading-relaxed">Talk to it. Leave. Come back — the work remains, with its history. <code>/help</code> lists session commands.</p>
+<p class="my-3 leading-relaxed">No terminal? No session. For scripts and CI:</p>
+<pre><code>
+pantheon run --taskID t1 --say &quot;summarize these logs&quot; --deliver session
+</code></pre>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Check health</h2>
+<pre><code>
+pantheon doctor
+</code></pre>
+<p class="my-3 leading-relaxed">Exit 0 means config, key, ledger, memory, and plugins are healthy. Anything else names its fix.</p>
+<h2 class="text-xl font-bold tracking-tight mt-10 mb-3">Next steps</h2>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><a href="sessions.html">Sessions</a> — the interface, approvals, inspecting runs</li>
+<li><a href="agents.html">Agents</a> — identities that persist</li>
+<li><a href="runs.html">Runs</a> — lifecycle, recovery, pipelines, scheduling</li>
+<li><a href="configuration.html">Configuration</a> — every <code>config.toml</code> field</li>
+</ul>
+</main>
 
   <div class="glow-line max-w-5xl mx-auto"></div>
 
@@ -155,13 +129,13 @@ pantheon explain run_1690000000000_ab12  # full event replay in words</code></pr
           <div class="logo-mark-sm"><img src="logo.png" alt="Pantheon" width="22" height="22"></div>
           <div>
             <span class="font-mono font-bold text-fg text-sm">pantheon</span>
-            <p class="text-muted text-xs mt-0.5">Rust agent runtime. MIT licensed. <span class="font-mono">pantheon-agent/pantheon</span> on GitHub.</p>
+            <p class="text-muted text-xs mt-0.5">Durable agent runtime. MIT licensed. <span class="font-mono">k1ng0mar/pantheon</span> on GitHub.</p>
           </div>
         </div>
         <div class="flex gap-8 text-sm">
-          <a href="https://github.com/pantheon-agent/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
-          <a href="https://github.com/pantheon-agent/pantheon/blob/main/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
-          <a href="https://github.com/pantheon-agent/pantheon/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/developer/contributing.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
         </div>
       </div>
       <div class="glow-line my-8"></div>

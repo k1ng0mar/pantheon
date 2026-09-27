@@ -7,7 +7,7 @@
 //! Pantheon wires 14 (below) and declares 1 unwired. Every wired hook has a
 //! real fire site: either in `session.rs` (the tool-execution gate/transform
 //! and the context-injection point) or via `event_bridge`, which maps
-//! canonical `pantheon_core::Event`s onto hooks on the supervisor's
+//! canonical `pantheon_api::events::Event`s onto hooks on the supervisor's
 //! post-durable-write observer fan-out.
 //!
 //! The rule this file enforces: **no hook may be declared without a fire
@@ -147,7 +147,7 @@ impl Hook {
     ///
     /// `pre_gateway_dispatch` is declared but **unwired**: inbound messages
     /// are handled in `pantheon-gateway`, which deliberately depends only on
-    /// `pantheon-core` + `pantheon-storage` and so cannot reach the extension
+    /// `pantheon-api` + `pantheon-storage` and so cannot reach the extension
     /// manager without a new dependency edge. Until that exists the hook is
     /// reported as unsupported rather than falsely mapped.
     pub fn is_wired(&self) -> bool {

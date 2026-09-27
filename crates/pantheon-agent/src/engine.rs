@@ -5,10 +5,10 @@
 //! provider chain). This loop takes a `Vec<String>` transcript so unit
 //! tests can drive it with scripted models and no network.
 use crate::tool::{gate, EventSink, GateOutcome, ToolRunner};
-use pantheon_core::capability::{Capability, Policy};
-use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::events::Event;
-use pantheon_core::provenance::Provenance;
+use pantheon_api::capability::{Capability, Policy};
+use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::events::Event;
+use pantheon_api::provenance::Provenance;
 
 /// One tool the model asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,7 +176,7 @@ pub struct AgentLoop<'a> {
     /// Optional spawner for sub-agents. If None, Delegate turns are denied.
     pub spawner: Option<&'a dyn AgentSpawner>,
     /// Optional judge model. Consulted at route selection and tool gate.
-    pub judge: Option<&'a dyn pantheon_core::model::Judge>,
+    pub judge: Option<&'a dyn pantheon_api::model::Judge>,
     /// Cooperative cancellation token. Set by the user (Ctrl-C / double-Esc);
     /// the loop checks it at every turn and tool boundary and stops cleanly.
     /// It cannot abort an in-flight provider request — that returns on its own
@@ -303,12 +303,12 @@ impl<'a> AgentLoop<'a> {
                             (Err(e), _) => {
                                 self.sink.emit(Event::DecisionRecorded {
                                     run_id: self.run_id.clone(),
-                                    point: pantheon_core::model::DecisionPoint::ToolGate,
+                                    point: pantheon_api::model::DecisionPoint::ToolGate,
                                     model: self
                                         .judge
                                         .map(|d| d.model_name().to_string())
                                         .unwrap_or_else(|| "host-policy".to_string()),
-                                    action: pantheon_core::events::DecisionActionSummary::Denied {
+                                    action: pantheon_api::events::DecisionActionSummary::Denied {
                                         reason: format!(
                                             "host policy blocked {:?}",
                                             call.capability
@@ -324,21 +324,21 @@ impl<'a> AgentLoop<'a> {
                             // Host allows: honor classifier only if it escalates.
                             (Ok(_), Some(v))
                                 if v.escalation_level()
-                                    > pantheon_core::model::GateVerdict::Allow
+                                    > pantheon_api::model::GateVerdict::Allow
                                         .escalation_level() =>
                             {
                                 match v {
-                                    pantheon_core::model::GateVerdict::Deny { reason } => {
+                                    pantheon_api::model::GateVerdict::Deny { reason } => {
                                         self.sink.emit(Event::DecisionRecorded {
                                             run_id: self.run_id.clone(),
-                                            point: pantheon_core::model::DecisionPoint::ToolGate,
+                                            point: pantheon_api::model::DecisionPoint::ToolGate,
                                             model: self
                                                 .judge
                                                 .map(|d| d.model_name().to_string())
                                                 .unwrap_or_else(|| {
                                                     "host-policy".to_string()
                                                 }),
-                                            action: pantheon_core::events::DecisionActionSummary::Denied {
+                                            action: pantheon_api::events::DecisionActionSummary::Denied {
                                                 reason: reason.clone(),
                                             },
                                         });
@@ -354,12 +354,12 @@ impl<'a> AgentLoop<'a> {
                                             "",
                                         ));
                                     }
-                                    pantheon_core::model::GateVerdict::NeedsApproval { .. } => {
+                                    pantheon_api::model::GateVerdict::NeedsApproval { .. } => {
                                         GateOutcome::NeedsApproval {
                                             capability: call.capability.clone(),
                                         }
                                     }
-                                    pantheon_core::model::GateVerdict::Allow => GateOutcome::Allow,
+                                    pantheon_api::model::GateVerdict::Allow => GateOutcome::Allow,
                                 }
                             }
                             (Ok(_), _) => GateOutcome::Allow,
@@ -368,15 +368,15 @@ impl<'a> AgentLoop<'a> {
                         if self.judge.is_some() {
                             let action = match &effective {
                                 GateOutcome::Allow => {
-                                    pantheon_core::events::DecisionActionSummary::Accepted
+                                    pantheon_api::events::DecisionActionSummary::Accepted
                                 }
                                 GateOutcome::NeedsApproval { .. } => {
-                                    pantheon_core::events::DecisionActionSummary::Accepted
+                                    pantheon_api::events::DecisionActionSummary::Accepted
                                 }
                             };
                             self.sink.emit(Event::DecisionRecorded {
                                 run_id: self.run_id.clone(),
-                                point: pantheon_core::model::DecisionPoint::ToolGate,
+                                point: pantheon_api::model::DecisionPoint::ToolGate,
                                 model: self
                                     .judge
                                     .map(|d| d.model_name().to_string())
@@ -479,11 +479,11 @@ impl<'a> AgentLoop<'a> {
     /// influence routing. See the note in lib.rs.
     pub fn consult_route_advisory(
         &self,
-        judge: &dyn pantheon_core::model::Judge,
+        judge: &dyn pantheon_api::model::Judge,
         allowed: &[String],
         context: Option<&str>,
     ) -> Option<String> {
-        use pantheon_core::model::DecisionPoint;
+        use pantheon_api::model::DecisionPoint;
         let point = DecisionPoint::RouteSelect;
         let model_name = judge.model_name();
         self.sink.emit(Event::DecisionRequested {
@@ -492,7 +492,7 @@ impl<'a> AgentLoop<'a> {
             model: model_name.to_string(),
         });
 
-        let req = pantheon_core::model::DecisionRequest {
+        let req = pantheon_api::model::DecisionRequest {
             run_id: self.run_id.clone(),
             point: point.clone(),
             query: "select route for this turn".to_string(),
@@ -503,30 +503,30 @@ impl<'a> AgentLoop<'a> {
         match judge.decide(&req) {
             Ok(answer) => {
                 let summary = match &answer {
-                    pantheon_core::model::DecisionAnswer::Route { choice, confidence } => {
-                        pantheon_core::events::DecisionAnswerSummary::Route {
+                    pantheon_api::model::DecisionAnswer::Route { choice, confidence } => {
+                        pantheon_api::events::DecisionAnswerSummary::Route {
                             choice: choice.clone(),
                             confidence: *confidence,
                         }
                     }
-                    pantheon_core::model::DecisionAnswer::Gate {
+                    pantheon_api::model::DecisionAnswer::Gate {
                         verdict,
                         confidence,
                         score,
-                    } => pantheon_core::events::DecisionAnswerSummary::Gate {
+                    } => pantheon_api::events::DecisionAnswerSummary::Gate {
                         verdict: format!("{:?}", verdict),
                         score: *score,
                         confidence: *confidence,
                     },
-                    pantheon_core::model::DecisionAnswer::Binary {
+                    pantheon_api::model::DecisionAnswer::Binary {
                         accepted,
                         confidence,
-                    } => pantheon_core::events::DecisionAnswerSummary::Binary {
+                    } => pantheon_api::events::DecisionAnswerSummary::Binary {
                         accepted: *accepted,
                         confidence: *confidence,
                     },
-                    pantheon_core::model::DecisionAnswer::Threshold { passed, value } => {
-                        pantheon_core::events::DecisionAnswerSummary::Threshold {
+                    pantheon_api::model::DecisionAnswer::Threshold { passed, value } => {
+                        pantheon_api::events::DecisionAnswerSummary::Threshold {
                             passed: *passed,
                             value: *value,
                         }
@@ -546,9 +546,9 @@ impl<'a> AgentLoop<'a> {
                     point: req.point.clone(),
                     model: model_name.to_string(),
                     action: if accepted {
-                        pantheon_core::events::DecisionActionSummary::Accepted
+                        pantheon_api::events::DecisionActionSummary::Accepted
                     } else {
-                        pantheon_core::events::DecisionActionSummary::Overridden {
+                        pantheon_api::events::DecisionActionSummary::Overridden {
                             fallback_used: "default".to_string(),
                         }
                     },
@@ -565,7 +565,7 @@ impl<'a> AgentLoop<'a> {
                     run_id: self.run_id.clone(),
                     point,
                     model: model_name.to_string(),
-                    action: pantheon_core::events::DecisionActionSummary::Overridden {
+                    action: pantheon_api::events::DecisionActionSummary::Overridden {
                         fallback_used: "default".to_string(),
                     },
                 });
@@ -579,11 +579,11 @@ impl<'a> AgentLoop<'a> {
     /// or wrong answer kind. See `consult_route_advisory` on visibility.
     pub fn consult_gate_advisory(
         &self,
-        judge: &dyn pantheon_core::model::Judge,
+        judge: &dyn pantheon_api::model::Judge,
         choices: &[String],
         context: Option<&str>,
-    ) -> Option<pantheon_core::model::GateVerdict> {
-        use pantheon_core::model::DecisionPoint;
+    ) -> Option<pantheon_api::model::GateVerdict> {
+        use pantheon_api::model::DecisionPoint;
         let point = DecisionPoint::ToolGate;
         let model_name = judge.model_name();
         self.sink.emit(Event::DecisionRequested {
@@ -591,7 +591,7 @@ impl<'a> AgentLoop<'a> {
             point: point.clone(),
             model: model_name.to_string(),
         });
-        let req = pantheon_core::model::DecisionRequest {
+        let req = pantheon_api::model::DecisionRequest {
             run_id: self.run_id.clone(),
             point: point.clone(),
             query: "score risk of tool call".to_string(),
@@ -601,30 +601,30 @@ impl<'a> AgentLoop<'a> {
         match judge.decide(&req) {
             Ok(answer) => {
                 let summary = match &answer {
-                    pantheon_core::model::DecisionAnswer::Route { choice, confidence } => {
-                        pantheon_core::events::DecisionAnswerSummary::Route {
+                    pantheon_api::model::DecisionAnswer::Route { choice, confidence } => {
+                        pantheon_api::events::DecisionAnswerSummary::Route {
                             choice: choice.clone(),
                             confidence: *confidence,
                         }
                     }
-                    pantheon_core::model::DecisionAnswer::Gate {
+                    pantheon_api::model::DecisionAnswer::Gate {
                         verdict,
                         confidence,
                         score,
-                    } => pantheon_core::events::DecisionAnswerSummary::Gate {
+                    } => pantheon_api::events::DecisionAnswerSummary::Gate {
                         verdict: format!("{verdict:?}"),
                         score: *score,
                         confidence: *confidence,
                     },
-                    pantheon_core::model::DecisionAnswer::Binary {
+                    pantheon_api::model::DecisionAnswer::Binary {
                         accepted,
                         confidence,
-                    } => pantheon_core::events::DecisionAnswerSummary::Binary {
+                    } => pantheon_api::events::DecisionAnswerSummary::Binary {
                         accepted: *accepted,
                         confidence: *confidence,
                     },
-                    pantheon_core::model::DecisionAnswer::Threshold { passed, value } => {
-                        pantheon_core::events::DecisionAnswerSummary::Threshold {
+                    pantheon_api::model::DecisionAnswer::Threshold { passed, value } => {
+                        pantheon_api::events::DecisionAnswerSummary::Threshold {
                             passed: *passed,
                             value: *value,
                         }
@@ -637,13 +637,13 @@ impl<'a> AgentLoop<'a> {
                     answer: summary,
                 });
                 match answer {
-                    pantheon_core::model::DecisionAnswer::Gate { verdict, .. } => Some(verdict),
+                    pantheon_api::model::DecisionAnswer::Gate { verdict, .. } => Some(verdict),
                     _ => {
                         self.sink.emit(Event::DecisionRecorded {
                             run_id: self.run_id.clone(),
                             point,
                             model: model_name.to_string(),
-                            action: pantheon_core::events::DecisionActionSummary::Overridden {
+                            action: pantheon_api::events::DecisionActionSummary::Overridden {
                                 fallback_used: "host-policy".to_string(),
                             },
                         });
@@ -657,7 +657,7 @@ impl<'a> AgentLoop<'a> {
                     run_id: self.run_id.clone(),
                     point,
                     model: model_name.to_string(),
-                    action: pantheon_core::events::DecisionActionSummary::Overridden {
+                    action: pantheon_api::events::DecisionActionSummary::Overridden {
                         fallback_used: "host-policy".to_string(),
                     },
                 });

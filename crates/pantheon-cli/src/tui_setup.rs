@@ -15,7 +15,7 @@
 use std::path::Path;
 
 use pantheon_tui::setup::{sections, Answers, Mode, Section};
-use pantheon_tui::widget::{Confirm, Item, MultiSelect, SearchList, Select, TextInput};
+use pantheon_tui::widget::Item;
 
 use crate::config_schema::PolicyPreset;
 use crate::setup_cli::SetupAnswers;
@@ -185,7 +185,7 @@ fn pick_profile() -> String {
 /// widget, because "development endpoints are not offered" is a product
 /// decision and belongs where a reader can see why.
 fn pick_provider() -> Option<String> {
-    let mut items: Vec<Item> = pantheon_core::catalog::selectable_providers()
+    let mut items: Vec<Item> = pantheon_providers::catalog::selectable_providers()
         .into_iter()
         .map(|p| {
             let mut item = Item::new(p.label.clone(), p.id.clone());
@@ -214,26 +214,28 @@ fn pick_provider() -> Option<String> {
         // Registered through the same path `pantheon provider add` uses, so a
         // custom endpoint set up in the wizard is a real catalog entry and
         // not a string only this wizard remembers.
-        pantheon_core::catalog::register_custom_provider(pantheon_core::catalog::ProviderMeta {
-            id: "custom".into(),
-            label: "Custom endpoint".into(),
-            base_url: url,
-            api_mode: pantheon_core::catalog::ApiMode::OpenAi,
-            base_env: String::new(),
-            key_env: "PANTHEON_KEY_CUSTOM".into(),
-            key_header: String::new(),
-            models: Vec::new(),
-            prominent: true,
-            dev: false,
-            tag: "custom".into(),
-        });
+        pantheon_providers::catalog::register_custom_provider(
+            pantheon_providers::catalog::ProviderMeta {
+                id: "custom".into(),
+                label: "Custom endpoint".into(),
+                base_url: url,
+                api_mode: pantheon_providers::catalog::ApiMode::OpenAi,
+                base_env: String::new(),
+                key_env: "PANTHEON_KEY_CUSTOM".into(),
+                key_header: String::new(),
+                models: Vec::new(),
+                prominent: true,
+                dev: false,
+                tag: "custom".into(),
+            },
+        );
         return Some("custom".into());
     }
     Some(chosen)
 }
 
 fn pick_model(provider: &str) -> Option<String> {
-    let meta = pantheon_core::catalog::provider(provider);
+    let meta = pantheon_providers::catalog::provider(provider);
     let label = meta
         .as_ref()
         .map(|m| m.label.clone())
@@ -310,13 +312,3 @@ fn pick_memory_backend() -> Option<String> {
         Some(chosen)
     }
 }
-
-// Keep the widget types referenced so the import list documents what this
-// module is built from. The pickers are reached through `tui_picker`, and the
-// unused-import lint is the wrong signal to remove the only record of which
-// components setup depends on.
-#[allow(unused_imports)]
-use {
-    Confirm as _Confirm, MultiSelect as _MultiSelect, SearchList as _SearchList, Select as _Select,
-    TextInput as _TextInput,
-};

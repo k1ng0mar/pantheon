@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-fn xerr(code: &str, cause: String, retryable: bool) -> pantheon_core::error::PantheonError {
-    use pantheon_core::error::Layer;
-    pantheon_core::error::PantheonError::new(
+fn xerr(code: &str, cause: String, retryable: bool) -> pantheon_api::error::PantheonError {
+    use pantheon_api::error::Layer;
+    pantheon_api::error::PantheonError::new(
         code,
         Layer::Extension,
         retryable,
@@ -119,7 +119,7 @@ impl Default for JsRunnerConfig {
 impl JsRunnerConfig {
     /// Pick `bun` when it is on PATH, else `node`. Returns the resolved
     /// runtime name, or an error naming both when neither exists.
-    pub fn detect() -> Result<Self, pantheon_core::error::PantheonError> {
+    pub fn detect() -> Result<Self, pantheon_api::error::PantheonError> {
         for candidate in ["bun", "node"] {
             if Command::new(candidate)
                 .arg("--version")
@@ -266,7 +266,7 @@ pub fn fire_hook(
     hook: Hook,
     input: &HookInput,
     cfg: &JsRunnerConfig,
-) -> Result<Option<String>, pantheon_core::error::PantheonError> {
+) -> Result<Option<String>, pantheon_api::error::PantheonError> {
     Ok(fire_js_hook_full(plugin, hook, input, cfg)
         .ok()
         .and_then(|o| o.context)
@@ -284,7 +284,7 @@ pub fn fire_js_hook_full(
     hook: Hook,
     input: &HookInput,
     cfg: &JsRunnerConfig,
-) -> Result<HookOutput, pantheon_core::error::PantheonError> {
+) -> Result<HookOutput, pantheon_api::error::PantheonError> {
     let payload =
         serde_json::to_string(input).map_err(|e| xerr("EXT_INPUT_ENCODE", e.to_string(), false))?;
     let mut child = Command::new(&cfg.runtime)
@@ -340,7 +340,7 @@ pub fn fire_hook_verbose(
     hook: Hook,
     input: &HookInput,
     cfg: &JsRunnerConfig,
-) -> Result<HookOutput, pantheon_core::error::PantheonError> {
+) -> Result<HookOutput, pantheon_api::error::PantheonError> {
     let payload =
         serde_json::to_string(input).map_err(|e| xerr("EXT_INPUT_ENCODE", e.to_string(), false))?;
     let out = Command::new(&cfg.runtime)

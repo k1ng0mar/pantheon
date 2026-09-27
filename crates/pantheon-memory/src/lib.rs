@@ -7,8 +7,8 @@
 //!   propose -> policy -> provenance -> validation -> provider
 //! A webpage telling the agent "remember this password" cannot reach the
 //! store without passing the same five steps as anything else.
-use pantheon_core::capability::{Capability, Decision, Policy};
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::capability::{Capability, Decision, Policy};
+use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 
 pub mod backend;
@@ -35,9 +35,15 @@ pub use store::{damage_fts_for_test, fts_health, rebuild_fts, MemoryStore, Recal
 /// The trait methods themselves take the policy for native-style backends
 /// that want to re-check; external adapters may ignore it.
 pub trait MemoryBackend: Send + Sync + std::fmt::Debug {
+    /// Recall scoped to `namespaces`.
+    ///
+    /// The namespace list is part of the contract, not a convenience:
+    /// a backend that cannot filter by namespace must refuse rather than
+    /// return every agent's memories.
     fn recall(
         &self,
         policy: &Policy,
+        namespaces: &[&str],
         layers: &[LayerKind],
         query: &str,
         limit: usize,
@@ -87,11 +93,12 @@ impl MemoryBackend for MemoryStore {
     fn recall(
         &self,
         policy: &Policy,
+        namespaces: &[&str],
         layers: &[LayerKind],
         query: &str,
         limit: usize,
     ) -> Result<Vec<Recalled>, PantheonError> {
-        recall(self, policy, layers, query, limit)
+        recall(self, policy, namespaces, layers, query, limit)
     }
 
     fn write(
@@ -167,7 +174,7 @@ impl WriteRefusal {
 }
 
 /// Who is asking, and on whose behalf. `trust` carries the tier from
-/// pantheon-core; the invariant `trust <= source tier` is enforced in
+/// pantheon-api; the invariant `trust <= source tier` is enforced in
 /// `propose_write`: memory can never raise the trust of its material.
 /// Only an explicit user action (CLI `memory put`, `memory_confirm` on
 /// an existing record) may store or promote a higher tier.
@@ -176,7 +183,7 @@ pub struct Provenance {
     pub source: String,
     /// Where the value came from: `user`, `tool:web_fetch`, `plugin:time-gap`...
     pub origin: String,
-    pub trust: pantheon_core::provenance::TrustTier,
+    pub trust: pantheon_api::provenance::TrustTier,
     pub recorded_at_ms: i64,
 }
 
@@ -259,13 +266,19 @@ pub fn confirm_write(
             "grant memory.write in the agent policy",
         ));
     }
-    store.promote(namespace, key, pantheon_core::provenance::TrustTier::Memory)
+    store.promote(namespace, key, pantheon_api::provenance::TrustTier::Memory)
 }
 
-/// Recall across layers, narrowest first, with provenance attached.
+/// Recall for one agent, across layers, narrowest first.
+///
+/// `namespace` is the caller's own namespace. Passing an empty slice
+/// recalls nothing: a caller that has not established who it is reading as
+/// must not get a global view. Cross-agent recall is a deliberate act
+/// (pass several namespaces), never a side effect of forgetting to scope.
 pub fn recall(
     store: &MemoryStore,
     policy: &Policy,
+    namespaces: &[&str],
     layers: &[LayerKind],
     query: &str,
     limit: usize,
@@ -277,7 +290,7 @@ pub fn recall(
             "grant memory.read in the agent policy",
         ));
     }
-    store.search(layers, query, limit)
+    store.search_scoped(namespaces, layers, query, limit)
 }
 
 /// Gated recall against ANY backend. Checks `memory.read` here, before the
@@ -286,6 +299,7 @@ pub fn recall(
 pub fn recall_via(
     backend: &dyn MemoryBackend,
     policy: &Policy,
+    namespaces: &[&str],
     layers: &[LayerKind],
     query: &str,
     limit: usize,
@@ -297,7 +311,7 @@ pub fn recall_via(
             "grant memory.read in the agent policy",
         ));
     }
-    backend.recall(policy, layers, query, limit)
+    backend.recall(policy, namespaces, layers, query, limit)
 }
 
 /// Full write path against ANY backend: policy -> validation -> trust
@@ -365,7 +379,7 @@ fn gate_proposal(
     // lands at Untrusted regardless of the requested tier.
     let mut p = proposal;
     if !matches!(p.provenance.origin.as_str(), "user" | "cli" | "import") {
-        p.provenance.trust = pantheon_core::provenance::TrustTier::Untrusted;
+        p.provenance.trust = pantheon_api::provenance::TrustTier::Untrusted;
     }
     Ok(p)
 }

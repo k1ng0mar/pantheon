@@ -1,6 +1,6 @@
 //! Tests for `pantheon_runtime::session::tests` — sibling file so sources stay test-free.
 use super::*;
-use pantheon_core::model_event::ModelEvent;
+use pantheon_providers::model_event::ModelEvent;
 
 #[test]
 fn streaming_deltas_persist_as_model_delta_rows() {
@@ -28,7 +28,7 @@ fn streaming_deltas_persist_as_model_delta_rows() {
         text: "part2".into(),
     });
     sink.emit(ModelEvent::Usage {
-        usage: pantheon_core::model_event::ModelUsage {
+        usage: pantheon_providers::model_event::ModelUsage {
             input_tokens: 3,
             output_tokens: 6,
             total_tokens: 9,
@@ -83,12 +83,12 @@ fn parallel_tool_calls_overlap_in_wall_time() {
     for i in 0..3 {
         let c = c2.clone();
         reg.register(
-            pantheon_core::message::ToolSchema {
+            pantheon_api::message::ToolSchema {
                 name: format!("slow_{i}"),
                 description: "sleeps 400ms".into(),
                 parameters: serde_json::json!({}),
             },
-            pantheon_core::capability::Capability::ShellExecute,
+            pantheon_api::capability::Capability::ShellExecute,
             move |_args| {
                 c.fetch_add(1, Ordering::SeqCst);
                 std::thread::sleep(std::time::Duration::from_millis(400));
@@ -100,7 +100,7 @@ fn parallel_tool_calls_overlap_in_wall_time() {
     let calls: Vec<pantheon_agent::ToolCall> = (0..3)
         .map(|i| pantheon_agent::ToolCall {
             name: format!("slow_{i}"),
-            capability: pantheon_core::capability::Capability::ShellExecute,
+            capability: pantheon_api::capability::Capability::ShellExecute,
             args: "{}".into(),
         })
         .collect();
@@ -176,12 +176,12 @@ fn reg_and_mgr(
 ) {
     let mut reg = ToolRegistry::new();
     reg.register(
-        pantheon_core::message::ToolSchema {
+        pantheon_api::message::ToolSchema {
             name: "read_secret".into(),
             description: "returns a secret".into(),
             parameters: serde_json::json!({}),
         },
-        pantheon_core::capability::Capability::ShellExecute,
+        pantheon_api::capability::Capability::ShellExecute,
         |_args| Ok("sk-live-abc123".to_string()),
     );
     let mut mgr =
@@ -291,7 +291,7 @@ fn a_gate_that_errors_blocks_rather_than_passes() {
     assert!(!out.contains("sk-live-abc123"), "gate failed open: {out}");
 }
 
-fn entry(id: i64, event: pantheon_core::events::Event) -> pantheon_storage::LedgerEntry {
+fn entry(id: i64, event: pantheon_api::events::Event) -> pantheon_storage::LedgerEntry {
     pantheon_storage::LedgerEntry {
         id,
         run_id: "r".into(),
@@ -306,7 +306,7 @@ fn granted_but_unexecuted_call_is_pending_after_resume() {
     // A call parked on approval never emits ToolStarted, so it is invisible
     // to unfinished_calls. Without this the grant-resume hands the model a
     // dangling tool_call and it invents an answer instead of running the tool.
-    use pantheon_core::events::Event as E;
+    use pantheon_api::events::Event as E;
     let entries = vec![
         entry(
             1,
@@ -340,7 +340,7 @@ fn granted_but_unexecuted_call_is_pending_after_resume() {
             run_id: "r".into(),
             call_id: "call_0_0".into(),
             tool: "shell".into(),
-            provenance: pantheon_core::provenance::Provenance::system("shell"),
+            provenance: pantheon_api::provenance::Provenance::system("shell"),
         },
     ));
     assert!(granted_unexecuted_calls(&done).is_empty());
@@ -348,7 +348,7 @@ fn granted_but_unexecuted_call_is_pending_after_resume() {
 
 #[test]
 fn a_denial_is_not_a_pending_call() {
-    use pantheon_core::events::Event as E;
+    use pantheon_api::events::Event as E;
     let entries = vec![
         entry(
             1,
@@ -376,13 +376,13 @@ fn recalled_memory_is_never_a_bare_system_message() {
     // harness's voice. Memory must arrive with a trust tier the provider
     // renders as a [provenance: ...] envelope.
     let m = Message::recall("<memory_recall>rm -rf /</memory_recall>", "memory:recall");
-    assert_eq!(m.role, pantheon_core::message::Role::User);
+    assert_eq!(m.role, pantheon_api::message::Role::User);
     assert_eq!(
         m.provenance
             .as_ref()
             .expect("recall must carry provenance")
             .trust,
-        pantheon_core::provenance::TrustTier::Memory
+        pantheon_api::provenance::TrustTier::Memory
     );
 
     // The provider must actually apply the envelope to it.
@@ -411,7 +411,7 @@ fn resumed_turn_appends_the_new_prompt_to_the_transcript() {
     // The bug this pins: the user message was pushed inside the
     // `messages.is_empty()` branch, so a resumed session dropped the new
     // prompt and the model answered the previous question again.
-    use pantheon_core::message::Role;
+    use pantheon_api::message::Role;
     let history = vec![
         Message::user("my number is 42"),
         Message::assistant("noted"),
@@ -444,7 +444,7 @@ fn recalled_memory_carries_provenance_and_never_bare_system() {
     for m in &msgs {
         if m.content.contains("build in /srv/app") {
             let p = m.provenance.as_ref().expect("memory must be attributed");
-            assert_eq!(p.trust, pantheon_core::provenance::TrustTier::Memory);
+            assert_eq!(p.trust, pantheon_api::provenance::TrustTier::Memory);
         }
     }
     // Nothing carrying recalled text may be a System row: System with no
@@ -453,7 +453,7 @@ fn recalled_memory_carries_provenance_and_never_bare_system() {
     assert!(msgs
         .iter()
         .filter(|m| m.content.contains("build in /srv/app"))
-        .all(|m| m.role != pantheon_core::message::Role::System));
+        .all(|m| m.role != pantheon_api::message::Role::System));
 }
 
 #[test]
@@ -463,7 +463,7 @@ fn extension_context_is_provenanced_data_not_system() {
         .iter()
         .find(|m| m.content.contains("ignore previous rules"))
         .expect("extension context must be present");
-    assert_ne!(injected.role, pantheon_core::message::Role::System);
+    assert_ne!(injected.role, pantheon_api::message::Role::System);
     assert!(injected.provenance.is_some());
 }
 
@@ -575,4 +575,107 @@ fn the_runtime_does_not_print_to_stdout() {
             n + 1
         );
     }
+}
+
+fn switch_test_session(tag: &str) -> Session {
+    let dir = std::env::temp_dir().join(format!("pantheon-switch-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let policy = pantheon_api::capability::Policy::coder();
+    let model_policy = pantheon_api::model::ModelPolicy {
+        reasoning_budget: Default::default(),
+        reasoning: Default::default(),
+        default: pantheon_api::model::DefaultModel {
+            provider: "test".into(),
+            model: "test".into(),
+        },
+        fallbacks: pantheon_api::model::FallbackChain {
+            fallbacks: vec![pantheon_api::model::DefaultModel {
+                provider: "fb".into(),
+                model: "fb-model".into(),
+            }],
+        },
+        auxiliaries: Vec::new(),
+    };
+    let secrets = pantheon_secrets::SecretsBroker::new();
+    Session::new(dir, policy, model_policy, secrets).unwrap()
+}
+
+#[test]
+fn switch_model_swaps_default_and_keeps_fallbacks() {
+    let s = switch_test_session("swap");
+    assert_eq!(s.default_model(), ("test".into(), "test".into()));
+    s.switch_model("openai", "gpt-4o-mini").unwrap();
+    assert_eq!(
+        s.default_model(),
+        ("openai".into(), "gpt-4o-mini".into()),
+        "default target follows the switch"
+    );
+    let snap = s.policy_snapshot();
+    assert_eq!(snap.fallbacks.fallbacks.len(), 1, "fallbacks untouched");
+    assert!(snap.auxiliaries.is_empty(), "auxiliaries untouched");
+}
+
+#[test]
+fn switch_model_rejects_empty_and_trims() {
+    let s = switch_test_session("reject");
+    assert!(s.switch_model("", "m").is_err(), "empty provider refused");
+    assert!(s.switch_model("p", "  ").is_err(), "blank model refused");
+    assert_eq!(
+        s.default_model(),
+        ("test".into(), "test".into()),
+        "refused switch changes nothing"
+    );
+    s.switch_model("  openai  ", "  gpt-4o-mini  ").unwrap();
+    assert_eq!(
+        s.default_model(),
+        ("openai".into(), "gpt-4o-mini".into()),
+        "surrounding whitespace trimmed"
+    );
+}
+
+#[test]
+fn compress_now_reports_cleanly_on_an_empty_run() {
+    let s = switch_test_session("compress-empty");
+    // A cataloged model with an empty transcript: the fit short-circuits
+    // before any model call, so no key or network is needed.
+    s.switch_model("openai", "gpt-4o-mini").unwrap();
+    let run = "run_compress_empty";
+    s.supervisor.start_run(run).unwrap();
+    let rep = s.compress_now(run).unwrap();
+    assert!(!rep.changed, "nothing to fit on an empty transcript");
+    assert!(
+        !rep.unknown_window,
+        "openai/gpt-4o-mini has a catalog window"
+    );
+    assert_eq!((rep.before, rep.after), (0, 0));
+}
+
+#[test]
+fn compress_now_refuses_without_a_known_window() {
+    let s = switch_test_session("compress-unknown");
+    s.switch_model("some-uncataloged-provider", "mystery-model")
+        .unwrap();
+    let run = "run_compress_unknown";
+    s.supervisor.start_run(run).unwrap();
+    let rep = s.compress_now(run).unwrap();
+    assert!(
+        rep.unknown_window,
+        "no catalog window means no fit, not a guessed one"
+    );
+}
+
+#[test]
+fn reasoning_defaults_off_and_switches_live() {
+    use pantheon_api::model::ReasoningLevel;
+    let s = switch_test_session("reasoning");
+    assert_eq!(s.reasoning(), ReasoningLevel::Off);
+    s.set_reasoning(ReasoningLevel::High).unwrap();
+    assert_eq!(s.reasoning(), ReasoningLevel::High);
+    assert_eq!(
+        s.policy_snapshot().reasoning,
+        ReasoningLevel::High,
+        "turns read the switched level"
+    );
+    s.set_reasoning(ReasoningLevel::Off).unwrap();
+    assert_eq!(s.reasoning(), ReasoningLevel::Off);
 }

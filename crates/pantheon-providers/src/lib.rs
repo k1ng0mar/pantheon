@@ -3,17 +3,20 @@
 //! capabilities. NO routing — locked decision.
 
 pub mod anthropic;
+pub mod catalog;
 pub mod chain;
 pub mod compress;
 pub mod embeddings;
 pub mod http;
 pub mod judge;
+pub mod model_event;
 pub mod openai;
 pub mod title;
 pub mod voice;
 
-use pantheon_core::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, ModelPolicy};
+use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, ModelPolicy};
 
+pub use crate::catalog::{ApiMode, ModelCost, ModelMeta, ProviderMeta};
 pub use crate::chain::ProviderChain;
 pub use crate::compress::CompressionClient;
 pub use crate::http::{http_timeout, ChatTransport, HttpTransport, ResolvedModel, WireRequest};
@@ -23,7 +26,6 @@ pub use crate::voice::{
     open_stt, open_tts, stt_backends, tts_backends, SttProvider, SttRequest, SttResult,
     TtsProvider, TtsRequest, TtsResult,
 };
-pub use pantheon_core::catalog::{ApiMode, ModelCost, ModelMeta, ProviderMeta};
 
 /// After a retryable default failure at `failed_index`, the next fallback.
 /// `None` failed_index starts the chain; `None` return exhausts it.
@@ -40,7 +42,7 @@ pub fn auxiliary<'a>(policy: &'a ModelPolicy, kind: &AuxiliaryKind) -> Option<&'
     policy.auxiliary(kind)
 }
 
-pub use pantheon_core::model::ModelPolicy as Policy;
+pub use pantheon_api::model::ModelPolicy as Policy;
 
 #[cfg(test)]
 #[path = "lib_tests.rs"]

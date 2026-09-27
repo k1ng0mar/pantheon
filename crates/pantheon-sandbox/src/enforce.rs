@@ -7,7 +7,7 @@
 
 use crate::level::{profile_for, SandboxProfile};
 use crate::SandboxLevel;
-use pantheon_core::capability::{Capability, Decision, Policy};
+use pantheon_api::capability::{Capability, Decision, Policy};
 use serde::{Deserialize, Serialize};
 
 /// What the runtime may do with one capability request.

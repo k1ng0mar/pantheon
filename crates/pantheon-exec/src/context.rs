@@ -19,9 +19,9 @@
 //! before the provider rejects the request.
 
 use crate::{compact_output, CompactionPolicy};
-use pantheon_core::error::{Layer, PantheonError};
-use pantheon_core::message::{Message, Role};
-use pantheon_core::model::{CompressionRequest, ContextCompressor};
+use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::message::{Message, Role};
+use pantheon_api::model::{CompressionRequest, ContextCompressor};
 
 /// Tool rows are re-compacted down to this floor (bytes) in step 2.
 pub const TOOL_FLOOR_BYTES: usize = 2 * 1024;
@@ -335,7 +335,7 @@ pub fn compress_oldest(
     let note = Message::system(format!(
         "<compressed_context>\n{summary}\n</compressed_context>"
     ))
-    .with_provenance(pantheon_core::provenance::Provenance::memory(
+    .with_provenance(pantheon_api::provenance::Provenance::memory(
         "context-compression",
     ));
     let chars_after = note.content.len() as u32;

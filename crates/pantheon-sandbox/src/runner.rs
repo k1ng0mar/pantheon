@@ -15,7 +15,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crate::SandboxProfile;
-use pantheon_core::error::{Layer, PantheonError};
+use pantheon_api::error::{Layer, PantheonError};
 
 /// Result of a sandboxed command: stdout/stderr merged, exit code, timeout flag.
 pub struct SandboxResult {

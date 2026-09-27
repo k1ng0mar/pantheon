@@ -1,6 +1,6 @@
 //! Tests for `pantheon_exec::context::tests` — sibling file so sources stay test-free.
 use super::*;
-use pantheon_core::message::ToolCallRef;
+use pantheon_api::message::ToolCallRef;
 
 fn budget(limit: u32) -> WindowBudget {
     WindowBudget::new(limit, 0)
@@ -151,7 +151,7 @@ fn live_compressor() -> Option<pantheon_providers::CompressionClient> {
         .filter(|k| !k.trim().is_empty())?;
     let _ = key;
     Some(pantheon_providers::CompressionClient::new(
-        pantheon_core::model::DefaultModel {
+        pantheon_api::model::DefaultModel {
             provider: "router".into(),
             model: "chat".into(),
         },
@@ -162,21 +162,23 @@ fn live_compressor() -> Option<pantheon_providers::CompressionClient> {
 /// Broken compressor: a real client aimed at a dead port. Refused dials
 /// fail deterministically — the live stand-in for a down summarizer.
 fn dead_compressor() -> pantheon_providers::CompressionClient {
-    pantheon_core::catalog::register_custom_provider(pantheon_core::catalog::ProviderMeta {
-        id: "livecompress-dead".into(),
-        label: "livecompress-dead".into(),
-        base_url: "http://127.0.0.1:9/v1".into(),
-        api_mode: pantheon_core::catalog::ApiMode::OpenAi,
-        base_env: String::new(),
-        key_env: "PANTHEON_KEY_LIVECOMPRESS_DEAD".into(),
-        key_header: "Authorization".into(),
-        models: vec![],
-        prominent: false,
-        dev: false,
-        tag: "live-test".into(),
-    });
+    pantheon_providers::catalog::register_custom_provider(
+        pantheon_providers::catalog::ProviderMeta {
+            id: "livecompress-dead".into(),
+            label: "livecompress-dead".into(),
+            base_url: "http://127.0.0.1:9/v1".into(),
+            api_mode: pantheon_providers::catalog::ApiMode::OpenAi,
+            base_env: String::new(),
+            key_env: "PANTHEON_KEY_LIVECOMPRESS_DEAD".into(),
+            key_header: "Authorization".into(),
+            models: vec![],
+            prominent: false,
+            dev: false,
+            tag: "live-test".into(),
+        },
+    );
     pantheon_providers::CompressionClient::new(
-        pantheon_core::model::DefaultModel {
+        pantheon_api::model::DefaultModel {
             provider: "livecompress-dead".into(),
             model: "chat".into(),
         },
@@ -231,7 +233,7 @@ fn compression_absorbs_oldest_exchanges_splicing_a_memory_note() {
     assert!(note.content.contains("<compressed_context>"));
     assert_eq!(
         note.provenance.as_ref().map(|p| p.trust),
-        Some(pantheon_core::provenance::TrustTier::Memory)
+        Some(pantheon_api::provenance::TrustTier::Memory)
     );
 
     assert_eq!(report.exchanges, 2);

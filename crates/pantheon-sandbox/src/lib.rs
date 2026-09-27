@@ -12,7 +12,7 @@ pub mod runner;
 pub use enforce::{capability_label, enforce, Enforcement};
 pub use level::{profile_for, ExecutionBoundary, SandboxProfile};
 
-use pantheon_core::capability::Capability;
+use pantheon_api::capability::Capability;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
