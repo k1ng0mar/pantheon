@@ -106,7 +106,7 @@ fn run_delivered_task(task_id: &Option<String>, say: &Option<String>, target: &s
             let answer = outcome_text(&outcome);
             if target == "session" {
                 println!("{answer}");
-            } else if let Err(e) = crate::gateway::enqueue_outbound(&data_dir(), target, &answer) {
+            } else if let Err(e) = crate::gateway::enqueue_outbound(&data_dir(), target, &answer, target) {
                 eprintln!("queue for {target}: {e}");
                 std::process::exit(1);
             } else {
@@ -132,7 +132,7 @@ fn run_delivered_task(task_id: &Option<String>, say: &Option<String>, target: &s
 /// ledger has the authoritative transcript; this only shapes what gets
 /// delivered, so a shape we do not recognize falls back to empty rather than
 /// inventing text.
-fn outcome_text(outcome: &pantheon_agent::LoopOutcome) -> String {
+pub(crate) fn outcome_text(outcome: &pantheon_agent::LoopOutcome) -> String {
     use pantheon_agent::LoopOutcome;
     match outcome {
         LoopOutcome::Answered { text, .. } => text.clone(),

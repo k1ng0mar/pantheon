@@ -10,13 +10,19 @@
 //! into the runtime (chat / grant / deny / cancel) and move frames back out.
 //! It contains no business logic.
 
-use crate::channel::{Channel, ChannelEvent};
+use crate::channel::{Channel, ChannelEnvelope, ChannelError, ChannelEvent};
 use crate::telegram::{TelegramRestTransport, TelegramTransport};
 use crate::OutboundMessage;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// Send attempts per message before it is dead-lettered. A reply that can
+/// never be delivered (wrong chat id, revoked token, persistent 429) must
+/// not wedge the queue behind it forever: three strikes, then a log line.
+pub const MAX_SEND_ATTEMPTS: u32 = 3;
 
 /// Where polled events go: implemented by the runtime bridge. `sender`
 /// is the platform sender identity when the surface exposes one; the
@@ -119,6 +125,61 @@ pub fn route_event(sink: &dyn EventSink, event: &ChannelEvent) -> String {
     }
 }
 
+/// Choose the channel that should deliver `msg`. Pure: unit-tested.
+///
+/// 1. The channel that claimed the thread (polled an event from it) owns
+///    the reply — first claim wins, so a thread is never stolen.
+/// 2. Otherwise the message's gateway tag names a channel
+///    ("telegram"/"discord").
+/// 3. Otherwise a lone channel takes it (single-surface daemons).
+/// 4. Otherwise `None`: delivering a reply to the wrong surface is worse
+///    than dropping it, so the caller dead-letters with a log.
+pub fn route_outbound(
+    channels: &[Arc<dyn Channel>],
+    claimed: &HashMap<String, String>,
+    msg: &OutboundMessage,
+) -> Option<Arc<dyn Channel>> {
+    if let Some(owner) = claimed.get(&msg.to_conversation) {
+        if let Some(c) = channels.iter().find(|c| c.name() == owner) {
+            return Some(c.clone());
+        }
+    }
+    if !msg.gateway.is_empty() {
+        if let Some(c) = channels.iter().find(|c| c.name() == msg.gateway) {
+            return Some(c.clone());
+        }
+    }
+    if channels.len() == 1 {
+        return Some(channels[0].clone());
+    }
+    None
+}
+
+/// What to do with a message whose send just failed: bump the attempt
+/// counter and requeue, or dead-letter once the bound is hit. Pure apart
+/// from the log line, so the retry bound is unit-testable without sleeping
+/// through daemon ticks.
+fn retry_or_dead_letter(
+    mut msg: OutboundMessage,
+    channel_name: &str,
+    err: &ChannelError,
+) -> Option<OutboundMessage> {
+    msg.attempts += 1;
+    if msg.attempts >= MAX_SEND_ATTEMPTS {
+        eprintln!(
+            "daemon: dead-lettering message to '{}' after {} attempts ({}): {err}",
+            msg.to_conversation, msg.attempts, channel_name,
+        );
+        None
+    } else {
+        eprintln!(
+            "daemon: deliver to {channel_name} failed (attempt {}/{MAX_SEND_ATTEMPTS}): {err}",
+            msg.attempts,
+        );
+        Some(msg)
+    }
+}
+
 /// The daemon loop. Runs until `stop` returns true. Each iteration polls
 /// Telegram (long poll), drains any bridge-fed inboxes (Discord via
 /// `push_inbound`), routes events, and flushes outbound messages.
@@ -140,9 +201,12 @@ impl ChannelDaemon {
     /// Run until `stop` signals. `channels` are drained each tick (their
     /// `poll()` includes bridge-fed inboxes); `telegram` participates in
     /// true long polling when configured. Outbound delivery is
-    /// thread-first (exact claimed-thread owner, else first channel;
-    /// never fan-out) and failed sends are requeued at the front in
-    /// order. Rate-limited sends stay queued for the next tick.
+    /// thread-first (the channel that claimed the thread, else the
+    /// message's gateway tag, else a lone channel — never fan-out, never
+    /// a wrong surface) and failed sends are retried at most
+    /// [`MAX_SEND_ATTEMPTS`] times before the message is dead-lettered
+    /// with a log. Rate-limited sends stay queued for the next tick and
+    /// honor the platform's `Retry-After` hint.
     pub fn run(
         &self,
         channels: Vec<Arc<dyn Channel>>,
@@ -157,7 +221,15 @@ impl ChannelDaemon {
         // `parameters.retry_after` on a 429). The platform knows its window;
         // our exponential guess does not override it.
         let mut rate_wait_ms = 0u64;
-        let mut claimed: Vec<String> = Vec::new();
+        // thread_id -> owning channel name. First claim wins.
+        let mut claimed: HashMap<String, String> = HashMap::new();
+        // The long-poll path has no channel object of its own; attribute
+        // its events to the bound telegram channel (else the first one).
+        let telegram_owner: Option<String> = channels
+            .iter()
+            .find(|c| c.name() == "telegram")
+            .or(channels.first())
+            .map(|c| c.name().to_string());
         while !stop() {
             let mut progressed = false;
             // Telegram long poll (with the persisted cursor).
@@ -166,8 +238,10 @@ impl ChannelDaemon {
                     Ok((events, next)) => {
                         for event in &events {
                             route_event(sink, event);
-                            if !claimed.contains(&event.thread_id) {
-                                claimed.push(event.thread_id.clone());
+                            if let Some(owner) = &telegram_owner {
+                                claimed
+                                    .entry(event.thread_id.clone())
+                                    .or_insert_with(|| owner.clone());
                             }
                         }
                         if next > cursor.get() {
@@ -186,19 +260,17 @@ impl ChannelDaemon {
             for channel in &channels {
                 for event in channel.poll() {
                     route_event(sink, &event);
-                    if !claimed.contains(&event.thread_id) {
-                        claimed.push(event.thread_id.clone());
-                    }
+                    claimed
+                        .entry(event.thread_id.clone())
+                        .or_insert_with(|| channel.name().to_string());
                     progressed = true;
                 }
             }
-            // Deliver outbound messages. Thread-first routing: the channel
-            // that claimed the thread (polled an event from it) owns the
-            // reply; otherwise the first bound channel is the fallback.
-            // Never fan-out: one reply goes to one surface. Failed sends
-            // (rate-limited / transport errors) are requeued at the front
-            // in order so conversations keep sequence; rate-limited ones
-            // also force the idle backoff so we don't hot-loop the API.
+            // Deliver outbound messages. Never fan-out: one reply goes to
+            // one surface, chosen by `route_outbound`. Failed sends are
+            // requeued at the front in order so conversations keep
+            // sequence; rate-limited ones also force the idle backoff so we
+            // don't hot-loop the API.
             {
                 let mut out = outbound.lock().unwrap_or_else(|e| e.into_inner());
                 let msgs: Vec<OutboundMessage> = std::mem::take(&mut *out);
@@ -206,45 +278,46 @@ impl ChannelDaemon {
                 let mut pending: Vec<OutboundMessage> = Vec::new();
                 let mut rate_limited = false;
                 for msg in msgs {
-                    let target = claimed
-                        .iter()
-                        .find(|t| **t == msg.to_conversation)
-                        .and_then(|_| channels.first().cloned())
-                        .or_else(|| channels.first().cloned());
-                    match target {
-                        Some(channel) => {
-                            let envelope = crate::channel::ChannelEnvelope {
-                                thread_id: msg.to_conversation.clone(),
-                                frame: crate::stream::UiFrame {
-                                    id: 0,
-                                    kind: crate::stream::UiFrameKind::Text,
-                                    run_id: String::new(),
-                                    thread_id: msg.to_conversation.clone(),
-                                    name: "delta".into(),
-                                    text: msg.text.clone(),
-                                    interrupt: false,
-                                    genui: None,
-                                },
-                            };
-                            if let Err(e) = channel.send(envelope) {
-                                eprintln!("daemon: deliver to {} failed: {e}", channel.name());
-                                if e.is_rate_limited() {
-                                    rate_limited = true;
-                                    // Honor the platform's own wait hint, not
-                                    // just our backoff guess.
-                                    rate_wait_ms = rate_wait_ms
-                                        .max(crate::delivery::retry_delay_ms(&e, backoff));
-                                }
-                                pending.push(msg);
-                            } else {
-                                progressed = true;
-                            }
+                    let target = route_outbound(&channels, &claimed, &msg);
+                    let Some(channel) = target else {
+                        // No owning surface: misdelivering is worse than
+                        // dropping, so this is a dead letter with a log.
+                        eprintln!(
+                            "daemon: no channel for thread '{}' (gateway '{}'); dead-lettering",
+                            msg.to_conversation, msg.gateway,
+                        );
+                        continue;
+                    };
+                    let envelope = ChannelEnvelope {
+                        thread_id: msg.to_conversation.clone(),
+                        frame: crate::stream::UiFrame {
+                            id: 0,
+                            kind: crate::stream::UiFrameKind::Text,
+                            run_id: String::new(),
+                            thread_id: msg.to_conversation.clone(),
+                            name: "delta".into(),
+                            text: msg.text.clone(),
+                            interrupt: false,
+                            genui: None,
+                        },
+                    };
+                    match channel.send(envelope) {
+                        Ok(()) => {
+                            progressed = true;
                         }
-                        None => {
-                            eprintln!(
-                                "daemon: no channel bound for thread {}; message dropped",
-                                msg.to_conversation
-                            );
+                        Err(e) => {
+                            if e.is_rate_limited() {
+                                rate_limited = true;
+                                // Honor the platform's own wait hint, not
+                                // just our backoff guess.
+                                rate_wait_ms = rate_wait_ms
+                                    .max(crate::delivery::retry_delay_ms(&e, backoff));
+                            }
+                            if let Some(retry) =
+                                retry_or_dead_letter(msg, channel.name(), &e)
+                            {
+                                pending.push(retry);
+                            }
                         }
                     }
                 }

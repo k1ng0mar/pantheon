@@ -19,6 +19,8 @@ use std::time::Duration;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::Message;
 
+use crate::discord::DiscordChannel;
+
 /// Discord gateway URL (v10, JSON encoding — no compression, keeps the
 /// client dependency-free beyond the websocket itself).
 pub const GATEWAY_URL: &str = "wss://gateway.discord.gg/?v=10&encoding=json";
@@ -145,7 +147,7 @@ impl DiscordGateway {
     pub fn run_once(
         &self,
         state: &GatewayState,
-        inbox: &crate::channel::MemoryChannel,
+        inbox: &DiscordChannel,
         stop: &dyn Fn() -> bool,
     ) -> LoopExit {
         let request = match GATEWAY_URL.into_client_request() {
@@ -310,7 +312,10 @@ impl DiscordGateway {
 
     /// The daemon-level loop: run_once until stopped, honoring reconnect
     /// rules and a backoff on repeated failures. Blocks its caller.
-    pub fn run(&self, inbox: &crate::channel::MemoryChannel, stop: &dyn Fn() -> bool) {
+    /// `inbox` is the `DiscordChannel` whose outbox the channel daemon
+    /// drains: one object owns both directions, so replies go out over
+    /// Discord REST instead of into a memory buffer nobody reads.
+    pub fn run(&self, inbox: &DiscordChannel, stop: &dyn Fn() -> bool) {
         let state = GatewayState::new();
         let mut failures: u32 = 0;
         while !stop() {
