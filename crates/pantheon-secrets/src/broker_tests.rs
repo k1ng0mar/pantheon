@@ -205,3 +205,44 @@ fn set_surfaces_the_store_error_when_no_vault_can_take_it() {
         Err(SecretsError::Backend(_))
     ));
 }
+
+#[test]
+fn clone_keeps_the_durable_backends() {
+    // Regression: clone() used to drop every durable vault and fall back
+    // to memory-only, silently losing the platform stores.
+    let broker = SecretsBroker::new()
+        .with_vault(Box::new(MemoryVault::new()))
+        .with_env(EnvVault::from_map([("PANTHEON_SECRET_E", "e")]));
+    broker
+        .set("api.key", SecretValue::new("durable-value"))
+        .unwrap();
+
+    let cloned = broker.clone();
+    // The clone resolves through the SAME backend, not a fresh one.
+    assert_eq!(
+        cloned
+            .resolve("api.key")
+            .unwrap()
+            .map(|s| s.expose().to_string()),
+        Some("durable-value".into())
+    );
+    // Writes through the clone land in the shared backend...
+    cloned
+        .set("api.key", SecretValue::new("via-clone"))
+        .unwrap();
+    assert_eq!(
+        broker
+            .resolve("api.key")
+            .unwrap()
+            .map(|s| s.expose().to_string()),
+        Some("via-clone".into()),
+        "clone must share the backends, not snapshot them"
+    );
+    // ...and policy travels with the clone too.
+    let broker = SecretsBroker::new()
+        .with_env_allowlist(vec!["A".into()])
+        .with_plugin_env_allowlist(vec!["B".into()]);
+    let cloned = broker.clone();
+    assert_eq!(cloned.plugin_env_allowlist(), &["B".to_string()]);
+    assert_eq!(cloned.env_allowlist(), &["A".to_string()]);
+}

@@ -52,6 +52,7 @@ fn round_trips_through_toml() {
         }),
         custom_providers: Default::default(),
         agents: Default::default(),
+        secrets: None,
         embeddings: None,
         search_synthesis: None,
         vision: None,
@@ -428,6 +429,51 @@ fn chat_secrets_seeds_every_aux_key() {
     std::env::remove_var("PANTHEON_TEST_DEC_KEY_A7F3");
     std::env::remove_var("PANTHEON_TEST_CMP_KEY_A7F3");
     std::env::remove_var("PANTHEON_TEST_TTL_KEY_A7F3");
+}
+
+#[test]
+fn chat_secrets_wires_the_secrets_allowlists() {
+    // `[secrets]` must reach the broker: without it, `env:` lookups fail
+    // closed and plugin children get no host vars.
+    let cfg: Config = toml::from_str(
+        "[secrets]\nenv_allowlist = [\"PANTHEON_TEST_ENV_A7F3\", \"PANTHEON_KEEP_*\"]\n\
+         plugin_env_allowlist = [\"PANTHEON_TEST_PLUGIN_A7F3\"]\n",
+    )
+    .unwrap();
+    let broker = chat_secrets(Some(&cfg));
+    assert_eq!(
+        broker.env_allowlist(),
+        &["PANTHEON_TEST_ENV_A7F3".to_string(), "PANTHEON_KEEP_*".to_string()]
+    );
+    assert_eq!(
+        broker.plugin_env_allowlist(),
+        &["PANTHEON_TEST_PLUGIN_A7F3".to_string()]
+    );
+    // The allowlist is enforced end to end: an allowlisted var resolves,
+    // a non-allowlisted one fails closed.
+    std::env::set_var("PANTHEON_TEST_ENV_A7F3", "yes");
+    std::env::set_var("PANTHEON_TEST_OTHER_A7F3", "no");
+    assert_eq!(
+        broker
+            .resolve("env:PANTHEON_TEST_ENV_A7F3")
+            .unwrap()
+            .map(|s| s.expose().to_string()),
+        Some("yes".into())
+    );
+    assert_eq!(broker.resolve("env:PANTHEON_TEST_OTHER_A7F3").unwrap(), None);
+    std::env::remove_var("PANTHEON_TEST_ENV_A7F3");
+    std::env::remove_var("PANTHEON_TEST_OTHER_A7F3");
+}
+
+#[test]
+fn chat_secrets_without_secrets_section_fails_closed() {
+    let cfg = Config::default();
+    let broker = chat_secrets(Some(&cfg));
+    assert!(broker.env_allowlist().is_empty());
+    assert!(broker.plugin_env_allowlist().is_empty());
+    std::env::set_var("PANTHEON_TEST_CLOSED_A7F3", "no");
+    assert_eq!(broker.resolve("env:PANTHEON_TEST_CLOSED_A7F3").unwrap(), None);
+    std::env::remove_var("PANTHEON_TEST_CLOSED_A7F3");
 }
 
 /// A migrated custom provider's model rows must survive the real config

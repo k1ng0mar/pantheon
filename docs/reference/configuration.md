@@ -35,6 +35,19 @@ backend = "native"
 
 Backend selection is mirrored in `memory-backend.toml`. See [Memory](../user-guide/memory.md).
 
+## Secrets
+
+```toml
+[secrets]
+env_allowlist = ["MY_API_KEY", "PANTHEON_*"]
+plugin_env_allowlist = ["MY_PLUGIN_TOKEN"]
+```
+
+The run's secrets-boundary policy. Both lists are empty by default (fail closed):
+
+- `env_allowlist`: env vars readable through the `env:` secret-name form. Entries are exact names or `PREFIX_*` wildcards; `"*"` alone allows all (explicit opt-out). Without an entry, `env:` lookups resolve nothing — secrets must come from `PANTHEON_SECRET_*` or a durable vault, so a name like `env:AWS_SECRET_ACCESS_KEY` can never exfiltrate an arbitrary host variable.
+- `plugin_env_allowlist`: manifest-declared env vars the plugin supervisor may copy from the host into plugin subprocesses (same entry syntax). A project-controlled manifest can declare any name it likes, so a declared name alone never crosses the boundary — only an entry here lets a host var reach plugin code. Extension (Python/JS) hook subprocesses always run with a cleared environment (PATH only) regardless of this list.
+
 ## Agents
 
 ```toml

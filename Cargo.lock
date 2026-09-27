@@ -1861,6 +1861,7 @@ dependencies = [
  "libc",
  "pantheon-api",
  "pantheon-providers",
+ "pantheon-secrets",
  "pantheon-storage",
  "serde",
  "serde_json",

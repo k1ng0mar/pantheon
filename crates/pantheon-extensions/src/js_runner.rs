@@ -121,7 +121,9 @@ impl JsRunnerConfig {
     /// runtime name, or an error naming both when neither exists.
     pub fn detect() -> Result<Self, pantheon_api::error::PantheonError> {
         for candidate in ["bun", "node"] {
-            if Command::new(candidate)
+            let mut probe = Command::new(candidate);
+            crate::minimal_child_env(&mut probe);
+            if probe
                 .arg("--version")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -287,7 +289,10 @@ pub fn fire_js_hook_full(
 ) -> Result<HookOutput, pantheon_api::error::PantheonError> {
     let payload =
         serde_json::to_string(input).map_err(|e| xerr("EXT_INPUT_ENCODE", e.to_string(), false))?;
-    let mut child = Command::new(&cfg.runtime)
+    let mut cmd = Command::new(&cfg.runtime);
+    // Third-party extension code: no ambient host env crosses the boundary.
+    crate::minimal_child_env(&mut cmd);
+    let mut child = cmd
         .arg("--input-type=module")
         .arg("-e")
         .arg(SHIM)
@@ -343,7 +348,10 @@ pub fn fire_hook_verbose(
 ) -> Result<HookOutput, pantheon_api::error::PantheonError> {
     let payload =
         serde_json::to_string(input).map_err(|e| xerr("EXT_INPUT_ENCODE", e.to_string(), false))?;
-    let out = Command::new(&cfg.runtime)
+    let mut cmd = Command::new(&cfg.runtime);
+    // Doctor runs the same third-party code: same cleared environment.
+    crate::minimal_child_env(&mut cmd);
+    let out = cmd
         .arg("--input-type=module")
         .arg("-e")
         .arg(SHIM)

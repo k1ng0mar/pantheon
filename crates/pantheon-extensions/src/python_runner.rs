@@ -194,7 +194,10 @@ pub fn fire_hook_full(
 ) -> Result<HookOutput, PantheonError> {
     let payload =
         serde_json::to_string(input).map_err(|e| xerr("EXT_INPUT_ENCODE", e.to_string(), false))?;
-    let mut child = Command::new(&cfg.python)
+    let mut cmd = Command::new(&cfg.python);
+    // Third-party plugin code: no ambient host env crosses the boundary.
+    crate::minimal_child_env(&mut cmd);
+    let mut child = cmd
         .arg("-c")
         .arg(SHIM)
         .arg(plugin.dir.to_string_lossy().to_string())
@@ -233,3 +236,7 @@ pub fn fire_hook_full(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "python_runner_tests.rs"]
+mod tests;

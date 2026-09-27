@@ -271,3 +271,36 @@ fn omp_extension_runs_through_the_same_path() {
         Some("from-omp")
     );
 }
+
+/// The extension child must NOT inherit host env vars, but MUST still
+/// resolve its runtime via the restored PATH (a successful spawn proves it).
+#[test]
+fn extension_child_does_not_inherit_host_env() {
+    let Some(cfg) = runtime() else { return };
+    let d = tmp("no-inherit");
+    write(&d, "openclaw.plugin.json", r#"{"id":"p","name":"P"}"#);
+    write(
+        &d,
+        "index.js",
+        "export function register(api){ api.on('before_prompt_build', () => ({ context: 'secret=' + (process.env.PANTHEON_EXT_TEST_SECRET || '<unset>') + ' path_set=' + ('PATH' in process.env) })); }",
+    );
+    let p = plugin_from(&d).unwrap();
+    std::env::set_var("PANTHEON_EXT_TEST_SECRET", "must-not-leak");
+    let out = fire_hook(&p, Hook::PreLlmCall, &input(), &cfg);
+    std::env::remove_var("PANTHEON_EXT_TEST_SECRET");
+    let ctx = out
+        .unwrap_or_else(|e| panic!("probe extension failed to run: {e}"))
+        .unwrap_or_default();
+    assert!(
+        ctx.contains("secret=<unset>"),
+        "extension saw the host secret through the environment: {ctx}"
+    );
+    assert!(
+        !ctx.contains("must-not-leak"),
+        "secret material reached extension output: {ctx}"
+    );
+    assert!(
+        ctx.contains("path_set=true"),
+        "PATH must be restored for the child: {ctx}"
+    );
+}

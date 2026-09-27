@@ -24,3 +24,18 @@ pub use manifest::PluginManifest;
 pub use python_runner::{
     fire_hook, fire_hook_full, HookDirective, HookInput, HookOutput, PythonPlugin, RunnerConfig,
 };
+
+/// Wipe a plugin child process's environment down to the curated minimum.
+///
+/// Plugin code is third-party: it must never inherit the host's ambient
+/// environment (API keys, session tokens, `PANTHEON_SECRET_*`). After the
+/// clear, only PATH is restored so the interpreter resolves. Anything a
+/// plugin legitimately needs beyond PATH must arrive through an explicit
+/// operator allowlist, never inheritance.
+pub(crate) fn minimal_child_env(cmd: &mut std::process::Command) {
+    cmd.env_clear();
+    // env_clear() wipes everything set before it, so PATH must come after.
+    if let Ok(path) = std::env::var("PATH") {
+        cmd.env("PATH", path);
+    }
+}
