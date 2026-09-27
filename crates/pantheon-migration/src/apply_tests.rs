@@ -1,6 +1,6 @@
 //! Tests for the writing half: backup -> apply -> validate -> rollback.
 use super::*;
-use crate::apply::{copy_tree, import_targets, is_bridged};
+use crate::apply::{commit_staged, copy_tree, import_targets, is_bridged, stage};
 use crate::{
     analyze, plan, Action, Detected, ItemKind, MigrationPlan, PlanItem, SourceKind, Targets,
 };
@@ -355,7 +355,7 @@ fn copy_tree_skips_symlinks_and_records_them() {
     std::os::unix::fs::symlink(&outside, src.join("link.md")).unwrap();
 
     let mut skipped = Vec::new();
-    copy_tree(&src, &d.join("dst"), &mut skipped).unwrap();
+    copy_tree(&src, &d.join("dst"), &mut skipped, &StageBudgets::unlimited(), &mut BudgetUsage::default()).unwrap();
     assert!(d.join("dst/real.md").is_file());
     assert!(
         !d.join("dst/link.md").exists(),
@@ -560,7 +560,7 @@ fn copy_tree_is_depth_bounded() {
     std::fs::write(p.join("leaf.txt"), "bottom\n").unwrap();
 
     let mut skipped = Vec::new();
-    copy_tree(&src, &d.join("dst"), &mut skipped).unwrap();
+    copy_tree(&src, &d.join("dst"), &mut skipped, &StageBudgets::unlimited(), &mut BudgetUsage::default()).unwrap();
     assert!(
         skipped.iter().any(|s| s.contains("deeper than")),
         "the depth bound should have been reported: {skipped:?}"
@@ -578,10 +578,401 @@ fn copy_tree_still_copies_normal_depths() {
     std::fs::create_dir_all(src.join("a/b/c")).unwrap();
     std::fs::write(src.join("a/b/c/deep.txt"), "kept\n").unwrap();
     let mut skipped = Vec::new();
-    copy_tree(&src, &d.join("out"), &mut skipped).unwrap();
+    copy_tree(&src, &d.join("out"), &mut skipped, &StageBudgets::unlimited(), &mut BudgetUsage::default()).unwrap();
     assert!(skipped.is_empty(), "{skipped:?}");
     assert_eq!(
         std::fs::read_to_string(d.join("out/a/b/c/deep.txt")).unwrap(),
         "kept\n"
     );
+}
+// ---------------------------------------------------------------------------
+// transactional apply: stage -> validate -> commit
+// ---------------------------------------------------------------------------
+
+fn tiny_budgets() -> StageBudgets {
+    StageBudgets {
+        max_total_bytes: 10,
+        max_files: 1_000_000,
+        max_single_file_bytes: 1_000_000,
+    }
+}
+
+#[test]
+fn a_staging_failure_commits_nothing() {
+    // One good skill and one vanished source: the good item must not land
+    // just because it staged first. The old code committed as it went.
+    let d = tmp("txn-stage-fail");
+    fixture(&d);
+    let t = targets(&d);
+    let mut p = plan(&d, SourceKind::Hermes, &t);
+    p.items.push(PlanItem {
+        kind: ItemKind::Skill,
+        path: d.join("skills/gone").to_string_lossy().to_string(),
+        action: Action::Import {
+            target: t
+                .data_dir
+                .join("skills/gone")
+                .to_string_lossy()
+                .to_string(),
+        },
+        note: String::new(),
+    });
+    let m = backup(&p, &t).unwrap();
+    let r = apply(&p, &t, &m).unwrap();
+    assert!(!r.complete);
+    assert_eq!(r.failures(), 1);
+    assert!(
+        !t.data_dir.join("skills/demo").exists(),
+        "a failed apply must leave the target untouched"
+    );
+    assert!(
+        !t.data_dir.join(".migrate-stage").exists(),
+        "the staging tree must be discarded"
+    );
+}
+
+#[test]
+fn a_commit_failure_rolls_back_automatically() {
+    // Two skills stage cleanly; sabotage the second staged tree so its
+    // commit rename fails. The first skill must be rolled back, and the
+    // pre-existing target restored from its pre-image.
+    let d = tmp("txn-commit-fail");
+    fixture(&d);
+    fs::create_dir_all(d.join("skills/b")).unwrap();
+    fs::write(d.join("skills/b/SKILL.md"), "---\nname: b\n---\n").unwrap();
+    let t = targets(&d);
+    // A previous import already landed under skills/demo.
+    fs::create_dir_all(t.data_dir.join("skills/demo")).unwrap();
+    fs::write(t.data_dir.join("skills/demo/SKILL.md"), "OLD\n").unwrap();
+
+    let p = plan(&d, SourceKind::Hermes, &t);
+    let m = backup(&p, &t).unwrap();
+    assert!(
+        m.entries.iter().any(|e| e.target.ends_with("skills/demo")),
+        "the pre-image must exist for the rollback"
+    );
+
+    let staged = stage(&p, &t, &m, &StageBudgets::default(), false).unwrap();
+    assert!(staged.complete);
+    assert!(staged.items.len() >= 2);
+    // Sabotage: remove one staged tree so its rename fails. The extension
+    // commits last (plan order), so the skills are already committed and
+    // must be rolled back.
+    let victim = staged
+        .items
+        .iter()
+        .find(|i| i.live.ends_with("p1"))
+        .expect("extension p1 staged");
+    fs::remove_dir_all(&victim.staged).unwrap();
+
+    let err = commit_staged(&staged).expect_err("the sabotaged rename must fail");
+    assert!(
+        err.to_string().contains("rolled back"),
+        "the error must say the rollback happened: {err}"
+    );
+
+    // the sabotaged extension never landed...
+    assert!(
+        !t.ext_dir.join("p1").exists(),
+        "the sabotaged item must not land"
+    );
+    // ...the created skill was removed by the rollback...
+    assert!(
+        !t.data_dir.join("skills/b").exists(),
+        "a created item must be removed by the rollback"
+    );
+    // ...the earlier-committed skill demo was rolled back to its pre-image...
+    assert_eq!(
+        fs::read_to_string(t.data_dir.join("skills/demo/SKILL.md")).unwrap(),
+        "OLD\n",
+        "the pre-image must be restored"
+    );
+    assert!(
+        !t.data_dir.join("skills/demo/references").exists(),
+        "what the commit added must be gone"
+    );
+    // ...and no staging residue remains.
+    assert!(!t.data_dir.join(".migrate-stage").exists());
+}
+
+#[test]
+fn a_commit_failure_removes_created_targets() {
+    // Same sabotage, but the first item is a create (no pre-image): the
+    // rollback must remove it rather than restore it.
+    let d = tmp("txn-commit-create");
+    fixture(&d);
+    fs::create_dir_all(d.join("skills/b")).unwrap();
+    fs::write(d.join("skills/b/SKILL.md"), "---\nname: b\n---\n").unwrap();
+    let t = targets(&d);
+
+    let p = plan(&d, SourceKind::Hermes, &t);
+    let m = backup(&p, &t).unwrap();
+    let staged = stage(&p, &t, &m, &StageBudgets::default(), false).unwrap();
+    // Sabotage the extension: it commits last, so the skill is already
+    // committed and must be rolled back.
+    let victim = staged
+        .items
+        .iter()
+        .find(|i| i.live.ends_with("p1"))
+        .expect("extension p1 staged");
+    fs::remove_dir_all(&victim.staged).unwrap();
+
+    commit_staged(&staged).expect_err("the sabotaged rename must fail");
+    assert!(
+        !t.data_dir.join("skills/demo").exists(),
+        "a created target must be removed by the rollback"
+    );
+    assert!(!t.ext_dir.join("p1").exists());
+}
+
+#[test]
+fn budget_breach_aborts_cleanly() {
+    let d = tmp("txn-budget-bytes");
+    fixture(&d);
+    let t = targets(&d);
+    let p = plan(&d, SourceKind::Hermes, &t);
+    let m = backup(&p, &t).unwrap();
+
+    let err = apply_with_budgets(&p, &t, &m, false, &tiny_budgets())
+        .expect_err("10 bytes cannot hold a skill");
+    assert!(
+        err.to_string().contains("budget"),
+        "the error must name the budget: {err}"
+    );
+    assert!(
+        !t.data_dir.join("skills").exists(),
+        "a budget abort must commit nothing"
+    );
+    assert!(!t.data_dir.join(".migrate-stage").exists());
+}
+
+#[test]
+fn single_file_budget_rejects_one_big_file() {
+    let d = tmp("txn-budget-file");
+    fs::create_dir_all(d.join("skills/big")).unwrap();
+    fs::write(d.join("skills/big/SKILL.md"), "---\nname: big\n---\n").unwrap();
+    fs::write(d.join("skills/big/blob.bin"), vec![b'x'; 1024]).unwrap();
+    let t = targets(&d);
+    let p = plan(&d, SourceKind::Hermes, &t);
+    let m = backup(&p, &t).unwrap();
+
+    let budgets = StageBudgets {
+        max_single_file_bytes: 100,
+        ..StageBudgets::unlimited()
+    };
+    let err = apply_with_budgets(&p, &t, &m, false, &budgets).expect_err("1 KiB > 100 B budget");
+    assert!(err.to_string().contains("per-file"), "{err}");
+    assert!(!t.data_dir.join("skills").exists());
+}
+
+#[test]
+fn file_count_budget_rejects_many_files() {
+    let d = tmp("txn-budget-count");
+    fs::create_dir_all(d.join("skills/many")).unwrap();
+    fs::write(d.join("skills/many/SKILL.md"), "---\nname: many\n---\n").unwrap();
+    for i in 0..5 {
+        fs::write(d.join(format!("skills/many/f{i}.md")), "x\n").unwrap();
+    }
+    let t = targets(&d);
+    let p = plan(&d, SourceKind::Hermes, &t);
+    let m = backup(&p, &t).unwrap();
+
+    let budgets = StageBudgets {
+        max_files: 3,
+        ..StageBudgets::unlimited()
+    };
+    let err = apply_with_budgets(&p, &t, &m, false, &budgets).expect_err("6 files > 3 budget");
+    assert!(err.to_string().contains("file count"), "{err}");
+    assert!(!t.data_dir.join("skills").exists());
+}
+
+#[test]
+fn backup_breach_leaves_no_partial_backup() {
+    // A pre-existing 1 KiB target with a 10-byte budget: the backup itself
+    // must fail, and the half-written backup tree must be removed.
+    let d = tmp("txn-budget-backup");
+    fixture(&d);
+    let t = targets(&d);
+    fs::create_dir_all(t.data_dir.join("skills/demo")).unwrap();
+    fs::write(
+        t.data_dir.join("skills/demo/SKILL.md"),
+        vec![b'y'; 1024],
+    )
+    .unwrap();
+    let p = plan(&d, SourceKind::Hermes, &t);
+
+    let before: usize = fs::read_dir(t.backup_root())
+        .map(|rd| rd.count())
+        .unwrap_or(0);
+    let err = backup_with_budgets(&p, &t, &tiny_budgets()).expect_err("backup exceeds budget");
+    assert!(err.to_string().contains("budget"), "{err}");
+    let after: Vec<_> = fs::read_dir(t.backup_root())
+        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+        .unwrap_or_default();
+    assert_eq!(before, 0, "precondition: backup root starts empty");
+    assert!(
+        after.is_empty(),
+        "a failed backup must leave no residue: {after:?}"
+    );
+}
+
+#[test]
+fn backup_snapshots_bridge_targets_for_rollback() {
+    // The credentials bridge merges into the live .env, so the backup must
+    // hold its pre-image — otherwise a commit rollback could not restore it.
+    let d = tmp("txn-backup-bridges");
+    fs::write(d.join(".env"), "OPENAI_API_KEY=sk-sourcevalue12345\n").unwrap();
+    let t = targets(&d);
+    fs::create_dir_all(&t.data_dir).unwrap();
+    fs::write(t.data_dir.join(".env"), "OPERATOR_KEY=keepme\n").unwrap();
+
+    let p = plan(&d, SourceKind::Hermes, &t);
+    let m = backup(&p, &t).unwrap();
+    assert!(
+        m.entries.iter().any(|e| e.target.ends_with(".env")),
+        "the live .env must have a pre-image: {:?}",
+        m.entries.iter().map(|e| &e.target).collect::<Vec<_>>()
+    );
+
+    // And the merged commit keeps the operator's key.
+    let r = apply(&p, &t, &m).unwrap();
+    assert!(r.complete, "{:?}", r.outcomes);
+    let store = fs::read_to_string(t.data_dir.join(".env")).unwrap();
+    assert!(store.contains("OPERATOR_KEY=keepme"));
+    assert!(store.contains("OPENAI_API_KEY=sk-sourcevalue12345"));
+}
+
+#[test]
+fn byte_identical_files_are_left_alone() {
+    let d = tmp("txn-unchanged");
+    fixture(&d);
+    let t = targets(&d);
+    // Pre-seed the live target with byte-identical content.
+    fs::create_dir_all(t.data_dir.join("skills/demo")).unwrap();
+    fs::write(
+        t.data_dir.join("skills/demo/SKILL.md"),
+        "---\nname: demo\n---\nbody\n",
+    )
+    .unwrap();
+
+    let p = plan(&d, SourceKind::Hermes, &t);
+    // Narrow the plan to the single identical file so the dir case (which
+    // always re-stages) does not muddy the assertion.
+    let single = MigrationPlan {
+        source: p.source.clone(),
+        root: p.root.clone(),
+        source_version: p.source_version.clone(),
+        items: vec![PlanItem {
+            kind: ItemKind::Skill,
+            path: d.join("skills/demo/SKILL.md").to_string_lossy().to_string(),
+            action: Action::Import {
+                target: t
+                    .data_dir
+                    .join("skills/demo/SKILL.md")
+                    .to_string_lossy()
+                    .to_string(),
+            },
+            note: String::new(),
+        }],
+    };
+    let m = backup(&single, &t).unwrap();
+    let r = apply(&single, &t, &m).unwrap();
+    assert!(r.complete);
+    assert_eq!(r.outcomes[0].status, ApplyStatus::Unchanged);
+}
+
+#[test]
+fn budgets_default_to_sane_values() {
+    let b = StageBudgets::default();
+    assert_eq!(b.max_total_bytes, 1024 * 1024 * 1024);
+    assert_eq!(b.max_files, 100_000);
+    assert_eq!(b.max_single_file_bytes, 100 * 1024 * 1024);
+    let u = StageBudgets::unlimited();
+    assert_eq!(u.max_total_bytes, u64::MAX);
+}
+
+#[test]
+fn a_failed_commit_rolls_back_the_session_quarantine_as_one_dir() {
+    // The session bridge writes `imported-sessions/<source>/` file by file;
+    // the staged (and backup, and rollback) unit is the whole dir.
+    let d = tmp("txn-session-rollback");
+    fs::create_dir_all(d.join("sessions")).unwrap();
+    fs::write(
+        d.join("sessions/t.jsonl"),
+        "{\"role\":\"user\",\"content\":\"new transcript\"}\n",
+    )
+    .unwrap();
+    fs::write(d.join(".env"), "OPENAI_API_KEY=sk-sourcevalue12345\n").unwrap();
+
+    let t = targets(&d);
+    // Pre-existing live quarantine with an old transcript, and a live .env
+    // the credentials bridge will merge into (and commit after the
+    // quarantine, so sabotaging it rolls the quarantine back).
+    let live_q = t.data_dir.join("imported-sessions/hermes");
+    fs::create_dir_all(&live_q).unwrap();
+    fs::write(
+        live_q.join("old.jsonl"),
+        "{\"role\":\"user\",\"content\":\"old transcript\"}\n",
+    )
+    .unwrap();
+    fs::write(t.data_dir.join(".env"), "OPERATOR_KEY=keepme\n").unwrap();
+
+    let p = plan(&d, SourceKind::Hermes, &t);
+    assert!(p.items.iter().any(|i| i.kind == ItemKind::Session));
+    let m = backup(&p, &t).unwrap();
+    assert!(
+        m.entries
+            .iter()
+            .any(|e| e.target.ends_with("imported-sessions/hermes")),
+        "the quarantine must have a pre-image"
+    );
+
+    let staged = stage(&p, &t, &m, &StageBudgets::default(), false).unwrap();
+    assert!(staged.complete);
+    let sess_items: Vec<_> = staged
+        .items
+        .iter()
+        .filter(|i| i.kind == ItemKind::Session)
+        .collect();
+    assert_eq!(
+        sess_items.len(),
+        1,
+        "the quarantine stages as one dir, not per-file: {:?}",
+        sess_items.iter().map(|i| &i.live).collect::<Vec<_>>()
+    );
+    assert!(sess_items[0].staged.is_dir());
+    assert!(sess_items[0].existed, "the live quarantine pre-exists");
+
+    // Sabotage the credentials commit: it is staged last, so the quarantine
+    // is already committed when the rename fails.
+    let victim = staged
+        .items
+        .iter()
+        .find(|i| i.kind == ItemKind::Credentials)
+        .expect("credentials staged");
+    assert!(victim.staged.is_file());
+    fs::remove_file(&victim.staged).unwrap();
+
+    let err = commit_staged(&staged).expect_err("the sabotaged rename must fail");
+    assert!(err.to_string().contains("rolled back"), "{err}");
+
+    // The quarantine is back to its pre-image, byte for byte.
+    assert_eq!(
+        fs::read_to_string(live_q.join("old.jsonl")).unwrap(),
+        "{\"role\":\"user\",\"content\":\"old transcript\"}\n"
+    );
+    assert!(
+        !live_q.join("t.jsonl").exists(),
+        "what the commit added must be gone"
+    );
+    assert!(
+        !live_q.join("manifest.json").exists(),
+        "the staged manifest must be gone too"
+    );
+    // And the credentials merge was rolled back as well.
+    assert_eq!(
+        fs::read_to_string(t.data_dir.join(".env")).unwrap(),
+        "OPERATOR_KEY=keepme\n"
+    );
+    assert!(!t.data_dir.join(".migrate-stage").exists());
 }
