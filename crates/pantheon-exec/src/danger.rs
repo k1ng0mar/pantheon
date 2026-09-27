@@ -10,6 +10,15 @@
 //!
 //! Structured output (`DangerAssessment`) leaves room for an AST-aware
 //! shell analyzer later without changing call sites.
+//!
+//! HEURISTIC PRE-GATE, NOT A PARSER. Every rule below is a substring or
+//! token scan over a normalized command string. This catches the known
+//! bypass spellings cheaply and deterministically, but it cannot see
+//! through everything: nested quoting, obfuscated expansions, commands
+//! fetched or decoded at runtime, and novel spellings will slip past it.
+//! The sandbox — capability policy, filesystem isolation, network egress
+//! control — is the real enforcement boundary. This gate only fails fast
+//! on the obvious cases and must never be treated as a safety proof.
 
 use pantheon_api::error::{Layer, PantheonError};
 
@@ -88,6 +97,65 @@ fn normalize(cmd: &str) -> String {
 /// sandbox remain the real boundary, and a false block costs the user
 /// a manual terminal run of a command the model should not have run
 /// anyway.
+/// HEURISTIC, NOT PARSING. These rules look at tokens and substrings,
+/// not shell grammar. `sh -c`, `eval`, backticks, and `$(...)` are
+/// flagged wholesale because each one re-parses its argument as shell
+/// code, which defeats any token scan that follows. That is deliberately
+/// broad: the model should not be smuggling arbitrary code through a
+/// shell string in the first place.
+///
+/// Strip privilege/escalation and launcher prefixes so `sudo bash -c`,
+/// `env FOO=1 find ...` etc. are judged by the real command word.
+fn strip_wrappers(seg: &str) -> &str {
+    let mut seg = seg.trim();
+    // Iterate: sudo env FOO=1 nice -n 5 rm ... etc.
+    loop {
+        let strip = seg
+            .split_whitespace()
+            .next()
+            .map(|first| {
+                matches!(
+                    first,
+                    "sudo" | "env" | "nice" | "nohup" | "command" | "timeout"
+                ) || first.contains('=')
+            })
+            .unwrap_or(false);
+        if !strip {
+            break;
+        }
+        seg = seg
+            .split_once(char::is_whitespace)
+            .map(|x| x.1)
+            .unwrap_or("")
+            .trim();
+    }
+    seg
+}
+
+/// Split a normalized command into command-list / pipeline segments so
+/// compound commands (`a && b`, `a | b`, `a; b`) are judged per segment.
+fn segments(c: &str) -> impl Iterator<Item = &str> {
+    c.split([';', '&', '|'])
+}
+
+/// First whitespace-delimited token of a segment, or "".
+fn first_word(seg: &str) -> &str {
+    seg.split_whitespace().next().unwrap_or("")
+}
+
+/// Basename of the command word: `/bin/rm` -> `rm`. Catches
+/// path-prefixed invocations the plain `rm ` check would miss.
+fn cmd_name(word: &str) -> &str {
+    word.rsplit('/').next().unwrap_or(word)
+}
+
+/// Replace IFS word-splitting tricks with a space so `rm${IFS}-rf${IFS}/`
+/// tokenizes like `rm -rf /`. The input is already lowercased by
+/// `normalize`, hence `${ifs}`.
+fn expand_ifs(s: &str) -> String {
+    s.replace("${ifs}", " ").replace("$ifs", " ")
+}
+
 /// One arm of the destructive-pattern table: id, human description,
 /// predicate over the normalized command.
 type Pattern = (&'static str, &'static str, fn(&str) -> bool);
@@ -95,57 +163,90 @@ type Pattern = (&'static str, &'static str, fn(&str) -> bool);
 const PATTERNS: &[Pattern] = &[
     (
         "rm_rf_root",
-        "recursive force delete of a filesystem root",
+        "recursive force delete of a filesystem root (or home dir)",
         |c: &str| {
             // rm with both r and f flags (any order or bundling) aiming at
-            // / or a top-level glob. Segment on ; and && so compound
-            // commands still match. Wrapper prefixes (sudo, env, nice,
-            // timeout, nohup, command) are stripped before the check.
-            fn strip_wrappers(seg: &str) -> &str {
-                let mut seg = seg.trim();
-                // Iterate: sudo env FOO=1 nice -n 5 rm ... etc.
-                loop {
-                    let strip = seg
-                        .split_whitespace()
-                        .next()
-                        .map(|first| {
-                            matches!(
-                                first,
-                                "sudo" | "env" | "nice" | "nohup" | "command" | "timeout"
-                            ) || first.contains('=')
-                        })
-                        .unwrap_or(false);
-                    if !strip {
-                        break;
-                    }
-                    seg = seg
-                        .split_once(char::is_whitespace)
-                        .map(|x| x.1)
-                        .unwrap_or("")
-                        .trim();
-                }
-                seg
-            }
+            // / or a top-level glob, ~, or $HOME. Segment on ;, &&, and |
+            // so compound commands still match. Wrapper prefixes (sudo,
+            // env, nice, timeout, nohup, command) are stripped before the
+            // check, as is a leading path (/bin/rm). ${IFS} tricks are
+            // expanded to spaces before tokenizing.
             fn is_root_rm(seg: &str) -> bool {
-                let seg = strip_wrappers(seg);
-                if !seg.starts_with("rm ") {
+                let seg = expand_ifs(strip_wrappers(seg));
+                let mut words = seg.split_whitespace();
+                if cmd_name(words.next().unwrap_or("")) != "rm" {
                     return false;
                 }
-                let has_r = seg.split_whitespace().any(|t| {
-                    t == "-r" || t == "-rf" || t == "-fr" || (t.starts_with('-') && t.contains('r'))
-                });
-                let has_f = seg.split_whitespace().any(|t| {
-                    t == "-f" || t == "-rf" || t == "-fr" || (t.starts_with('-') && t.contains('f'))
-                });
+                let rest: Vec<&str> = words.collect();
+                let has_r = rest.iter().any(|t| t.starts_with('-') && t.contains('r'));
+                let has_f = rest.iter().any(|t| t.starts_with('-') && t.contains('f'));
                 has_r
                     && has_f
-                    && seg
-                        .split_whitespace()
-                        .skip(1)
+                    && rest
+                        .iter()
                         .filter(|t| !t.starts_with('-'))
-                        .any(|t| t == "/" || t == "/*")
+                        .any(|t| {
+                            *t == "/"
+                                || *t == "/*"
+                                || *t == "~"
+                                || t.starts_with("~/")
+                                || *t == "$home"
+                                || t.starts_with("$home/")
+                        })
             }
-            c.split([';', '&']).any(is_root_rm)
+            segments(c).any(is_root_rm)
+        },
+    ),
+    (
+        "shell_dash_c",
+        "explicit shell invocation with -c/--command (hides the real command from scanning)",
+        |c: &str| {
+            segments(c).any(|seg| {
+                let seg = strip_wrappers(seg);
+                let mut w = seg.split_whitespace();
+                matches!(w.next().map(cmd_name), Some("bash" | "sh" | "dash" | "zsh"))
+                    && matches!(w.next(), Some("-c" | "--command"))
+            })
+        },
+    ),
+    (
+        "eval_builtin",
+        "eval re-parses its arguments as shell code",
+        |c: &str| {
+            segments(c).any(|seg| cmd_name(first_word(strip_wrappers(seg))) == "eval")
+        },
+    ),
+    (
+        "exec_builtin",
+        "exec replaces the shell process or rewrites redirections",
+        |c: &str| {
+            segments(c).any(|seg| cmd_name(first_word(strip_wrappers(seg))) == "exec")
+        },
+    ),
+    (
+        "command_subst",
+        "command substitution ($(...) or backticks) executes hidden commands",
+        |c: &str| {
+            // `$( (` (arithmetic expansion) is excluded; it cannot run
+            // commands. Everything else with `$(` or a backtick is treated
+            // as hidden code.
+            c.contains('`') || (c.contains("$(") && !c.contains("$(("))
+        },
+    ),
+    (
+        "ifs_split",
+        "IFS word-splitting trick used to evade token scanning",
+        |c: &str| c.contains("${ifs}") || c.contains("$ifs"),
+    ),
+    (
+        "find_delete_exec",
+        "find with -delete or -exec can mass-delete or run arbitrary commands",
+        |c: &str| {
+            segments(c).any(|seg| {
+                let seg = strip_wrappers(seg);
+                cmd_name(first_word(seg)) == "find"
+                    && (seg.contains(" -delete") || seg.contains(" -exec"))
+            })
         },
     ),
     ("fork_bomb", "shell fork bomb", |c: &str| {
