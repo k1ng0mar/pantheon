@@ -3,26 +3,31 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon: Install</title>
-  <meta name="description" content="Install Pantheon in a minute: prebuilt binary, verified, with a default config. Linux, macOS, Windows.">
-  <meta property="og:title" content="Pantheon: Install">
+  <title>Pantheon: install</title>
+  <meta name="description" content="Install Pantheon in a minute. One command to install, one command to set up. Linux, macOS, Windows.">
+  <meta property="og:title" content="Pantheon: install">
   <meta property="og:type" content="website">
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
+  <link rel="preconnect" href="https://api.fontshare.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
       theme: {
         extend: {
           colors: {
-            ink: '#0b0c0e', panel: '#101216', rule: '#202329',
-            chalk: '#eceae5', ash: '#8a9099',
-            brand: '#7223FF', branddark: '#4B00CD', allow: '#7fa86f', deny: '#d2543f'
+            ink: '#0b0c0e', panel: '#111316', rule: '#1e2024',
+            chalk: '#f2f1ee', ash: '#9a9aa3',
+            brand: '#7223FF', branddark: '#5e1fe8'
           },
-          fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['IBM Plex Sans', 'sans-serif'] }
+          fontFamily: {
+            mono: ['JetBrains Mono', 'monospace'],
+            sans: ['General Sans', 'sans-serif']
+          }
         }
       }
     }
@@ -30,29 +35,30 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #0b0c0e; color: #eceae5; font-family: 'IBM Plex Sans', sans-serif; font-size: 16px; }
-    /* Explicit type scale: display 40-60 / h2 28 / h3 20 / body 16 (each step >= 1.25x) */
-    .t-display { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: clamp(2.5rem, 1.6rem + 4vw, 3.75rem); line-height: 1.08; letter-spacing: -0.02em; }
-    .t-h2 { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: clamp(1.5rem, 1.3rem + 1vw, 1.75rem); line-height: 1.2; letter-spacing: -0.01em; }
-    .t-h3 { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 1.25rem; line-height: 1.3; }
-    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
-    .rule { height: 1px; background: #202329; }
-    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
+    body { background: #0b0c0e; color: #f2f1ee; font-family: 'General Sans', sans-serif; font-size: 16px; line-height: 1.6; }
+    /* Type scale: display 40-64 / h2 28 / h3 20 / body 16 (each step >= 1.25x) */
+    .t-display { font-weight: 600; font-size: clamp(2.5rem, 1.5rem + 5vw, 4rem); line-height: 1.05; letter-spacing: -0.02em; }
+    .t-h3 { font-weight: 600; font-size: 1.25rem; line-height: 1.3; }
+    :focus-visible { outline: 2px solid #a379ff; outline-offset: 3px; }
+    .rule { height: 1px; background: #1e2024; }
     .cmd { font-family: 'JetBrains Mono', monospace; }
     .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
     .logo-mark img { height: 26px; width: auto; }
-    pre { background: #101216; border: 1px solid #202329; border-radius: 6px; padding: 1rem; overflow-x: auto; }
-    pre code { font-family: 'JetBrains Mono', monospace; font-size: .82rem; color: #eceae5; }
-    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #a379ff; background: rgba(114,35,255,.1); padding: .12em .3em; border-radius: 2px; }
-    .copy-btn { border: 1px solid #202329; color: #8a9099; border-radius: 4px; padding: .3rem .6rem; font-family: 'JetBrains Mono', monospace; font-size: .7rem; flex: none; }
-    .copy-btn:hover { color: #eceae5; border-color: #8a9099; }
+    .cmdbox { background: #111316; border: 1px solid #1e2024; border-radius: 8px; padding: 1rem 1.25rem; }
+    .cmdbox code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #f2f1ee; }
+    code:not(.cmdbox code):not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #b18cff; }
+    pre { background: #111316; border: 1px solid #1e2024; border-radius: 8px; padding: 1.25rem; overflow-x: auto; }
+    pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #f2f1ee; }
+    .copy-btn { border: 1px solid #1e2024; color: #9a9aa3; border-radius: 6px; padding: .4rem .8rem; font-family: 'JetBrains Mono', monospace; font-size: .75rem; flex: none; min-height: 44px; }
+    .copy-btn:hover { color: #f2f1ee; border-color: #9a9aa3; }
     .copy-btn[data-state="done"] { color: #7fa86f; border-color: #7fa86f; }
-    .card { border: 1px solid #202329; border-radius: 8px; padding: 1.5rem; background: #101216; }
-    .tab-btn { font-family: 'JetBrains Mono', monospace; font-size: .8rem; padding: .5rem 1rem; border: 1px solid #202329; border-radius: 6px 6px 0 0; color: #8a9099; border-bottom: none; }
-    .tab-btn[aria-selected="true"] { color: #eceae5; background: #101216; border-color: #7223FF; border-bottom: 1px solid #101216; }
-    .tab-panel { border: 1px solid #202329; border-radius: 0 6px 6px 6px; padding: 1.25rem; }
+    .num { font-family: 'JetBrains Mono', monospace; font-size: .8rem; color: #a379ff; font-weight: 600; }
+    .tab-btn { font-family: 'JetBrains Mono', monospace; font-size: .8rem; padding: .65rem 1.1rem; border: 1px solid #1e2024; border-radius: 8px 8px 0 0; color: #9a9aa3; border-bottom: none; min-height: 44px; }
+    .tab-btn[aria-selected="true"] { color: #f2f1ee; background: #111316; border-color: #7223FF; border-bottom: 1px solid #111316; }
+    .tab-panel { border: 1px solid #1e2024; border-radius: 0 8px 8px 8px; padding: 1.25rem; }
     @media (min-width: 768px) { .tab-panel { padding: 1.5rem; } }
-    section { scroll-margin-top: 4.5rem; }
+    a.link { color: #a379ff; }
+    a.link:hover { text-decoration: underline; }
     .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }
     .reveal.in { opacity: 1; transform: none; }
     @media (prefers-reduced-motion: reduce) {
@@ -66,150 +72,96 @@
   <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 cmd text-sm bg-panel border border-rule px-3 py-2 rounded">Skip to content</a>
 
   <nav class="sticky top-0 z-40 bg-ink/90 backdrop-blur border-b border-rule">
-    <div class="max-w-6xl mx-auto px-5 md:px-8 h-14 flex items-center justify-between gap-6">
+    <div class="max-w-5xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between gap-6">
       <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
         <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-        <span class="cmd font-bold text-chalk text-base tracking-tight">pantheon</span>
+        <span class="font-semibold text-chalk text-lg tracking-tight">pantheon</span>
       </a>
-      <div class="hidden md:flex items-center gap-6 text-sm">
+      <div class="hidden md:flex items-center gap-7 text-[15px]">
         <a href="product.html" class="text-ash hover:text-chalk">Product</a>
         <a href="install.html" class="text-chalk">Install</a>
         <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-        <a href="terminal.html" class="text-ash hover:text-chalk">Terminal</a>
         <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
       </div>
       <div class="flex items-center gap-3">
-        <a href="#os" class="cmd text-xs text-white bg-brand px-3 py-1.5 rounded hover:bg-branddark">Install</a>
-        <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk cmd text-sm px-2 py-1" aria-expanded="false" aria-controls="menu">menu</button>
+        <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
       </div>
     </div>
-    <div id="menu" class="hidden md:hidden border-t border-rule px-5 py-3 flex flex-col gap-3 text-sm">
-      <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-      <a href="install.html" class="text-chalk">Install</a>
-      <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-      <a href="terminal.html" class="text-ash hover:text-chalk">Terminal</a>
-      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
+    <div id="menu" class="hidden md:hidden border-t border-rule px-5 py-4 flex-col gap-1 text-[15px]">
+      <a href="product.html" class="text-ash hover:text-chalk py-2.5 block">Product</a>
+      <a href="install.html" class="text-chalk py-2.5 block">Install</a>
+      <a href="docs.html" class="text-ash hover:text-chalk py-2.5 block">Docs</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk py-2.5 block">GitHub</a>
     </div>
   </nav>
 
   <main id="main">
-  <section class="max-w-6xl mx-auto px-5 md:px-8 pt-16 md:pt-20 pb-12">
-    <p class="cmd text-xs text-brand tracking-wide reveal">INSTALL</p>
-    <h1 class="t-display text-chalk mt-5 reveal">A minute to a working agent.</h1>
-    <p class="text-ash mt-5 max-w-2xl leading-relaxed reveal">One prebuilt binary from GitHub Releases. The installer needs only <code>curl</code> and <code>tar</code>, no Node, npm, Git, Python, Rust, or Cargo. Re-running it never touches your config.</p>
+  <section class="max-w-5xl mx-auto px-5 md:px-8 pt-20 md:pt-32 pb-12">
+    <p class="text-sm text-ash reveal">Install</p>
+    <h1 class="t-display text-chalk mt-6 max-w-3xl reveal">Two commands. One minute.</h1>
   </section>
 
-  <section id="os" class="max-w-6xl mx-auto px-5 md:px-8 pb-12">
-    <div class="reveal flex flex-wrap" role="tablist" aria-label="Install methods">
-      <button type="button" class="tab-btn" id="tab-unix" role="tab" aria-selected="true" aria-controls="panel-unix">Linux / macOS</button>
-      <button type="button" class="tab-btn" id="tab-win" role="tab" aria-selected="false" aria-controls="panel-win">Windows</button>
-      <button type="button" class="tab-btn" id="tab-src" role="tab" aria-selected="false" aria-controls="panel-src">Source</button>
-    </div>
-    <div id="panel-unix" class="tab-panel reveal" role="tabpanel" aria-labelledby="tab-unix">
-      <div class="flex items-start gap-3">
-        <code class="cmd text-[.82rem] text-chalk break-all flex-1 leading-relaxed" id="cmd-unix">curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash</code>
-        <button type="button" class="copy-btn" data-copy="#cmd-unix" aria-label="Copy install command">copy</button>
-      </div>
-    </div>
-    <div id="panel-win" class="tab-panel reveal hidden" role="tabpanel" aria-labelledby="tab-win">
-      <div class="flex items-start gap-3">
-        <code class="cmd text-[.82rem] text-chalk break-all flex-1 leading-relaxed" id="cmd-win">iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb | iex</code>
-        <button type="button" class="copy-btn" data-copy="#cmd-win" aria-label="Copy install command">copy</button>
-      </div>
-    </div>
-    <div id="panel-src" class="tab-panel reveal hidden" role="tabpanel" aria-labelledby="tab-src">
-      <div>
-        <pre><code>git clone https://github.com/k1ng0mar/pantheon.git
+  <section class="max-w-5xl mx-auto px-5 md:px-8 pb-20 md:pb-28">
+    <div class="space-y-14 max-w-3xl">
+      <div class="reveal">
+        <p class="num">Step 1</p>
+        <h2 class="t-h3 text-chalk mt-3">Install Pantheon.</h2>
+        <div class="mt-5">
+          <div class="flex flex-wrap" role="tablist" aria-label="Install methods">
+            <button type="button" class="tab-btn" id="tab-unix" role="tab" aria-selected="true" aria-controls="panel-unix">Linux / macOS</button>
+            <button type="button" class="tab-btn" id="tab-win" role="tab" aria-selected="false" aria-controls="panel-win">Windows</button>
+            <button type="button" class="tab-btn" id="tab-src" role="tab" aria-selected="false" aria-controls="panel-src">Source</button>
+          </div>
+          <div id="panel-unix" class="tab-panel" role="tabpanel" aria-labelledby="tab-unix">
+            <div class="flex items-center gap-4">
+              <code class="break-all flex-1 leading-relaxed" id="cmd-unix">curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash</code>
+              <button type="button" class="copy-btn" data-copy="#cmd-unix" aria-label="Copy install command">copy</button>
+            </div>
+          </div>
+          <div id="panel-win" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-win">
+            <div class="flex items-center gap-4">
+              <code class="break-all flex-1 leading-relaxed" id="cmd-win">iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb | iex</code>
+              <button type="button" class="copy-btn" data-copy="#cmd-win" aria-label="Copy install command">copy</button>
+            </div>
+          </div>
+          <div id="panel-src" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-src">
+            <pre><code>git clone https://github.com/k1ng0mar/pantheon.git
 cd pantheon
-cargo build --release   # binary: target/release/pantheon</code></pre>
-        <p class="text-ash text-sm mt-3 leading-relaxed">Requires a Rust toolchain (edition 2021). SQLite is bundled, no database to run.</p>
+cargo build --release</code></pre>
+          </div>
+        </div>
       </div>
-    </div>
-    <p class="text-ash text-sm mt-4 leading-relaxed reveal">Pin a release: <code>PANTHEON_VERSION=v0.1.0 bash install.sh</code>. Prefer a package? Grab the asset for your platform from <a href="https://github.com/k1ng0mar/pantheon/releases" target="_blank" rel="noopener" class="underline decoration-brand underline-offset-4 hover:text-chalk">GitHub Releases</a>.</p>
-  </section>
 
-  <div class="rule max-w-6xl mx-auto"></div>
-
-  <section class="max-w-6xl mx-auto px-5 md:px-8 py-12">
-    <h2 class="t-h2 text-chalk reveal">What the installer does</h2>
-    <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">Four explicit stages. A failure names its stage, and a runtime-probe timeout says exactly that, never disguised as a failed install.</p>
-    <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6 mt-8">
-      <div class="card reveal"><p class="cmd text-brand text-sm">[1/4]</p><h3 class="t-h3 text-chalk mt-2">Checking environment</h3><p class="text-ash text-[.85rem] mt-2 leading-relaxed">Detects OS and architecture, confirms <code>curl</code> and <code>tar</code>. Nothing else required.</p></div>
-      <div class="card reveal"><p class="cmd text-brand text-sm">[2/4]</p><h3 class="t-h3 text-chalk mt-2">Installing Pantheon</h3><p class="text-ash text-[.85rem] mt-2 leading-relaxed">Resolves the release, downloads the binary, verifies the checksum, links into <code>~/.local/bin</code>.</p></div>
-      <div class="card reveal"><p class="cmd text-brand text-sm">[3/4]</p><h3 class="t-h3 text-chalk mt-2">Initializing</h3><p class="text-ash text-[.85rem] mt-2 leading-relaxed">Creates <code>~/.pantheon</code>, writes a default config only if none exists, prepares storage.</p></div>
-      <div class="card reveal"><p class="cmd text-brand text-sm">[4/4]</p><h3 class="t-h3 text-chalk mt-2">Verifying installation</h3><p class="text-ash text-[.85rem] mt-2 leading-relaxed"><code>--version</code>, runtime probe, config check, storage check, each reported on its own.</p></div>
-    </div>
-  </section>
-
-  <div class="rule max-w-6xl mx-auto"></div>
-
-  <section class="max-w-6xl mx-auto px-5 md:px-8 py-12">
-    <h2 class="t-h2 text-chalk reveal">Then point it at a model</h2>
-    <div class="grid md:grid-cols-2 gap-8 mt-8 items-start">
       <div class="reveal">
-        <pre><code>pantheon setup --yes \
-  --provider openai \
-  --model gpt-4o-mini \
-  --api-key-env OPENAI_API_KEY
-
-export OPENAI_API_KEY=sk-...
-pantheon</code></pre>
-      </div>
-      <div class="reveal">
-        <ul class="space-y-4 text-sm leading-relaxed">
-          <li class="text-ash"><span class="cmd text-chalk">pantheon setup</span>, five questions, or all flags with <code>--yes</code>. Config stores the key's name, never its value.</li>
-          <li class="text-ash"><span class="cmd text-chalk">pantheon doctor</span>, exit 0 means config, key, ledger, memory, and plugins are healthy. Failures name their fix.</li>
-          <li class="text-ash"><span class="cmd text-chalk">pantheon update</span>, latest release for your platform, with a backup kept. <code>--check</code> reports without changing anything.</li>
-        </ul>
-        <div class="mt-6 flex flex-wrap gap-3">
-          <a href="getting-started.html" class="cmd text-sm text-white bg-brand px-5 py-2.5 rounded hover:bg-branddark">Getting started guide</a>
-          <a href="troubleshooting.html" class="cmd text-sm border border-rule px-5 py-2.5 rounded text-chalk hover:border-ash">Stuck? Troubleshoot</a>
+        <p class="num">Step 2</p>
+        <h2 class="t-h3 text-chalk mt-3">Set it up.</h2>
+        <p class="text-ash mt-2 leading-relaxed">Run setup and answer a few questions about which AI to use. Then type <code>pantheon</code> and start talking.</p>
+        <div class="cmdbox flex items-center gap-4 mt-5">
+          <code class="break-all flex-1 leading-relaxed" id="setup-cmd">pantheon setup</code>
+          <button type="button" class="copy-btn" data-copy="#setup-cmd" aria-label="Copy setup command">copy</button>
         </div>
       </div>
     </div>
+
+    <p class="text-ash text-sm mt-16 reveal">Something not working? See <a href="troubleshooting.html" class="link">troubleshooting</a>, or read the <a href="getting-started.html" class="link">getting started guide</a>.</p>
   </section>
   </main>
 
-  <div class="glow-line max-w-6xl mx-auto"></div>
-
-  <footer class="py-14">
-    <div class="max-w-6xl mx-auto px-5 md:px-8">
-      <div class="grid md:grid-cols-4 gap-10">
-        <div>
-          <div class="flex items-center gap-2.5">
-            <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-            <span class="cmd font-bold text-chalk">pantheon</span>
-          </div>
-          <p class="text-ash text-sm mt-3 leading-relaxed">Durable agent runtime. MIT licensed.<br>No hosted tier. Your data stays home.</p>
+  <footer class="border-t border-rule">
+    <div class="max-w-5xl mx-auto px-5 md:px-8 py-12">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div class="flex items-center gap-2.5">
+          <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+          <span class="font-semibold text-chalk">pantheon</span>
         </div>
-        <div>
-          <p class="cmd text-xs text-ash">PRODUCT</p>
-          <div class="flex flex-col gap-2 mt-3 text-sm">
-            <a href="product.html" class="text-ash hover:text-chalk">How it works</a>
-            <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-            <a href="terminal.html" class="text-ash hover:text-chalk">Terminal reference</a>
-          </div>
-        </div>
-        <div>
-          <p class="cmd text-xs text-ash">DOCS</p>
-          <div class="flex flex-col gap-2 mt-3 text-sm">
-            <a href="docs.html" class="text-ash hover:text-chalk">Overview</a>
-            <a href="getting-started.html" class="text-ash hover:text-chalk">Getting started</a>
-            <a href="configuration.html" class="text-ash hover:text-chalk">Configuration</a>
-            <a href="architecture.html" class="text-ash hover:text-chalk">Architecture</a>
-          </div>
-        </div>
-        <div>
-          <p class="cmd text-xs text-ash">PROJECT</p>
-          <div class="flex flex-col gap-2 mt-3 text-sm">
-            <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
-            <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/developer/contributing.md" target="_blank" rel="noopener" class="text-ash hover:text-chalk">Contribute</a>
-            <a href="troubleshooting.html" class="text-ash hover:text-chalk">Troubleshooting</a>
-          </div>
+        <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
+          <a href="product.html" class="text-ash hover:text-chalk">Product</a>
+          <a href="install.html" class="text-ash hover:text-chalk">Install</a>
+          <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
         </div>
       </div>
-      <div class="rule my-8"></div>
-      <p class="text-ash text-xs">© 2026 Pantheon. MIT licensed.</p>
+      <p class="text-ash text-sm mt-8">An assistant that does everything. MIT licensed.</p>
     </div>
   </footer>
 
@@ -226,12 +178,12 @@ pantheon</code></pre>
       });
     });
     var tabs = [['tab-unix', 'panel-unix'], ['tab-win', 'panel-win'], ['tab-src', 'panel-src']];
-    tabs.forEach(function ([tabId, panelId]) {
-      document.getElementById(tabId).addEventListener('click', function () {
-        tabs.forEach(function ([t, p]) {
-          var selected = t === tabId;
-          document.getElementById(t).setAttribute('aria-selected', String(selected));
-          document.getElementById(p).classList.toggle('hidden', !selected);
+    tabs.forEach(function (pair) {
+      document.getElementById(pair[0]).addEventListener('click', function () {
+        tabs.forEach(function (p) {
+          var selected = p[0] === pair[0];
+          document.getElementById(p[0]).setAttribute('aria-selected', String(selected));
+          document.getElementById(p[1]).classList.toggle('hidden', !selected);
         });
       });
     });
@@ -240,6 +192,7 @@ pantheon</code></pre>
     if (menuBtn && menu) {
       menuBtn.addEventListener('click', function () {
         var open = menu.classList.toggle('hidden');
+        menu.classList.toggle('flex', !open);
         menuBtn.setAttribute('aria-expanded', String(!open));
       });
     }

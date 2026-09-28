@@ -3,29 +3,31 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon: a personal agent that remembers</title>
-  <meta name="description" content="Pantheon is a personal agent that runs on your machine. Every conversation, tool call, and decision is written to a local ledger, so nothing is lost when the model changes or the process dies. MIT licensed.">
-  <meta property="og:title" content="Pantheon: a personal agent that remembers">
-  <meta property="og:description" content="A personal agent that runs on your machine. Every conversation, tool call, and decision is written to a local ledger you can replay.">
+  <title>Pantheon: an assistant that does everything</title>
+  <meta name="description" content="Pantheon is an assistant that runs on your computer. It does everything, asks before doing anything important, and keeps your data at home. Free and open source.">
+  <meta property="og:title" content="Pantheon: an assistant that does everything">
+  <meta property="og:description" content="An assistant that runs on your computer. It does everything and asks before doing anything important.">
   <meta property="og:type" content="website">
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
+  <link rel="preconnect" href="https://api.fontshare.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
       theme: {
         extend: {
           colors: {
-            ink: '#0b0c0e', panel: '#101216', rule: '#202329',
-            chalk: '#eceae5', ash: '#8a9099',
-            brand: '#7223FF', branddark: '#4B00CD', allow: '#7fa86f', deny: '#d2543f'
+            ink: '#0b0c0e', panel: '#111316', rule: '#1e2024',
+            chalk: '#f2f1ee', ash: '#9a9aa3',
+            brand: '#7223FF', branddark: '#5e1fe8'
           },
           fontFamily: {
             mono: ['JetBrains Mono', 'monospace'],
-            sans: ['IBM Plex Sans', 'sans-serif']
+            sans: ['General Sans', 'sans-serif']
           }
         }
       }
@@ -34,39 +36,35 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #0b0c0e; color: #eceae5; font-family: 'IBM Plex Sans', sans-serif; font-size: 16px; }
-    /* Explicit type scale: display 40-60 / h2 28 / h3 20 / body 16 (each step >= 1.25x) */
-    .t-display { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: clamp(2.5rem, 1.6rem + 4vw, 3.75rem); line-height: 1.08; letter-spacing: -0.02em; }
-    .t-h2 { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: clamp(1.5rem, 1.3rem + 1vw, 1.75rem); line-height: 1.2; letter-spacing: -0.01em; }
-    .t-h3 { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 1.25rem; line-height: 1.3; }
-    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
-    .rule { height: 1px; background: #202329; }
-    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
+    body { background: #0b0c0e; color: #f2f1ee; font-family: 'General Sans', sans-serif; font-size: 16px; line-height: 1.6; }
+    /* Type scale: display 40-64 / h2 28 / h3 20 / body 16 (each step >= 1.25x) */
+    .t-display { font-weight: 600; font-size: clamp(2.5rem, 1.5rem + 5vw, 4rem); line-height: 1.05; letter-spacing: -0.02em; }
+    .t-h2 { font-weight: 600; font-size: 1.75rem; line-height: 1.2; letter-spacing: -0.01em; }
+    .t-h3 { font-weight: 600; font-size: 1.25rem; line-height: 1.3; }
+    :focus-visible { outline: 2px solid #a379ff; outline-offset: 3px; }
+    .rule { height: 1px; background: #1e2024; }
     .cmd { font-family: 'JetBrains Mono', monospace; }
     .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
     .logo-mark img { height: 26px; width: auto; }
-    pre { background: #101216; border: 1px solid #202329; border-radius: 6px; padding: 1rem; overflow-x: auto; }
-    pre code { font-family: 'JetBrains Mono', monospace; font-size: .82rem; color: #eceae5; }
-    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #a379ff; background: rgba(114,35,255,.1); padding: .12em .3em; border-radius: 2px; }
-    .copy-btn { border: 1px solid #202329; color: #8a9099; border-radius: 4px; padding: .3rem .6rem; font-family: 'JetBrains Mono', monospace; font-size: .7rem; flex: none; }
-    .copy-btn:hover { color: #eceae5; border-color: #8a9099; }
+    .cmdbox { background: #111316; border: 1px solid #1e2024; border-radius: 8px; padding: 1rem 1.25rem; }
+    .cmdbox code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #f2f1ee; }
+    code:not(.cmdbox code):not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #b18cff; }
+    pre { background: #111316; border: 1px solid #1e2024; border-radius: 8px; padding: 1.25rem; overflow-x: auto; }
+    pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #f2f1ee; }
+    .copy-btn { border: 1px solid #1e2024; color: #9a9aa3; border-radius: 6px; padding: .4rem .8rem; font-family: 'JetBrains Mono', monospace; font-size: .75rem; flex: none; min-height: 44px; }
+    .copy-btn:hover { color: #f2f1ee; border-color: #9a9aa3; }
     .copy-btn[data-state="done"] { color: #7fa86f; border-color: #7fa86f; }
-    .ledger { background: #101216; border: 1px solid #202329; border-radius: 8px; }
-    .ledger-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem 1rem; border-bottom: 1px solid #202329; }
-    .ledger-body { padding: .75rem; overflow-x: auto; }
-    .ledger table { min-width: 460px; }
-    .ledger th { font-family: 'JetBrains Mono', monospace; font-size: .75rem; color: #8a9099; font-weight: 500; text-align: left; padding: .5rem .75rem; border-bottom: 1px solid #202329; white-space: nowrap; }
-    .ledger td { padding: .5rem .75rem; border-bottom: 1px solid #181b20; font-size: .8125rem; vertical-align: top; }
-    .ledger tr:last-child td { border-bottom: none; }
-    .seq { font-family: 'JetBrains Mono', monospace; color: #8a9099; white-space: nowrap; }
-    .ev { font-family: 'JetBrains Mono', monospace; color: #eceae5; white-space: nowrap; }
-    .ev-app { color: #7fa86f; }
-    .card { border: 1px solid #202329; border-radius: 8px; padding: 1.5rem; background: #101216; }
-    .card:hover { border-color: #3a3f47; }
+    .btn-primary { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: .8rem 1.75rem; background: #7223FF; color: #fff; font-weight: 600; font-size: 1rem; border-radius: 8px; }
+    .btn-primary:hover { background: #5e1fe8; }
+    .btn-secondary { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: .8rem 1.75rem; border: 1px solid #1e2024; color: #f2f1ee; font-weight: 500; font-size: 1rem; border-radius: 8px; }
+    .btn-secondary:hover { border-color: #9a9aa3; }
+    .num { font-family: 'JetBrains Mono', monospace; font-size: .8rem; color: #a379ff; font-weight: 600; }
     summary { list-style: none; cursor: pointer; }
     summary::-webkit-details-marker { display: none; }
-    .chevron { display: inline-block; transition: transform .15s; }
+    .chevron { display: inline-block; transition: transform .15s; color: #9a9aa3; }
     details[open] summary .chevron { transform: rotate(90deg); }
+    a.link { color: #a379ff; }
+    a.link:hover { text-decoration: underline; }
     .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }
     .reveal.in { opacity: 1; transform: none; }
     @media (prefers-reduced-motion: reduce) {
@@ -80,234 +78,148 @@
   <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 cmd text-sm bg-panel border border-rule px-3 py-2 rounded">Skip to content</a>
 
   <nav class="sticky top-0 z-40 bg-ink/90 backdrop-blur border-b border-rule">
-    <div class="max-w-6xl mx-auto px-5 md:px-8 h-14 flex items-center justify-between gap-6">
+    <div class="max-w-5xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between gap-6">
       <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
         <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-        <span class="cmd font-bold text-chalk text-base tracking-tight">pantheon</span>
+        <span class="font-semibold text-chalk text-lg tracking-tight">pantheon</span>
       </a>
-      <div class="hidden md:flex items-center gap-6 text-sm">
+      <div class="hidden md:flex items-center gap-7 text-[15px]">
         <a href="product.html" class="text-ash hover:text-chalk">Product</a>
         <a href="install.html" class="text-ash hover:text-chalk">Install</a>
         <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-        <a href="terminal.html" class="text-ash hover:text-chalk">Terminal</a>
         <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
       </div>
       <div class="flex items-center gap-3">
-        <a href="install.html" class="cmd text-xs text-white bg-brand px-3 py-1.5 rounded hover:bg-branddark">Install</a>
-        <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk cmd text-sm px-2 py-1" aria-expanded="false" aria-controls="menu">menu</button>
+        <a href="install.html" class="hidden sm:inline-flex text-sm font-semibold text-white bg-brand px-4 py-2 rounded-lg hover:bg-branddark min-h-[44px] items-center">Install</a>
+        <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
       </div>
     </div>
-    <div id="menu" class="hidden md:hidden border-t border-rule px-5 py-3 flex flex-col gap-3 text-sm">
-      <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-      <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-      <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-      <a href="terminal.html" class="text-ash hover:text-chalk">Terminal</a>
-      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
+    <div id="menu" class="hidden md:hidden border-t border-rule px-5 py-4 flex-col gap-1 text-[15px]">
+      <a href="product.html" class="text-ash hover:text-chalk py-2.5 block">Product</a>
+      <a href="install.html" class="text-ash hover:text-chalk py-2.5 block">Install</a>
+      <a href="docs.html" class="text-ash hover:text-chalk py-2.5 block">Docs</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk py-2.5 block">GitHub</a>
     </div>
   </nav>
 
   <main id="main">
   <!-- Hero -->
-  <section class="max-w-6xl mx-auto px-5 md:px-8 pt-16 md:pt-24 pb-16">
-    <div class="grid lg:grid-cols-12 gap-10 lg:gap-14 items-start">
-      <div class="lg:col-span-5">
-        <p class="cmd text-xs text-brand tracking-wide">local-first agent runtime · mit · 19 crates</p>
-        <h1 class="t-display text-chalk mt-5">
-          Talk to it today.<br>It remembers tomorrow.
-        </h1>
-        <p class="text-ash mt-6 text-[1.05rem] leading-relaxed max-w-md">
-          Pantheon is a personal agent that runs on your machine. Every
-          conversation, tool call, and decision lands in a local ledger, so
-          nothing is lost when the model changes, the process dies, or you
-          close the laptop.
-        </p>
-        <div class="mt-8 border border-rule rounded-md bg-panel p-3 flex items-start gap-3">
-          <code class="cmd text-[.78rem] text-chalk break-all flex-1 leading-relaxed" id="install-cmd">curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash</code>
-          <button type="button" class="copy-btn" data-copy="#install-cmd" aria-label="Copy install command">copy</button>
+  <section class="max-w-5xl mx-auto px-5 md:px-8 pt-20 md:pt-32 pb-20 md:pb-28">
+    <p class="text-sm text-ash reveal">Free and open source &middot; MIT</p>
+    <h1 class="t-display text-chalk mt-6 max-w-3xl reveal">An assistant that does everything.</h1>
+    <p class="text-ash mt-6 text-lg leading-relaxed max-w-2xl reveal">
+      Pantheon runs on your computer. It talks to AI models for you, keeps a
+      record of everything it does, and asks before doing anything important.
+    </p>
+    <div class="mt-10 max-w-2xl reveal">
+      <div class="cmdbox flex items-center gap-4">
+        <code class="break-all flex-1 leading-relaxed" id="install-cmd">curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash</code>
+        <button type="button" class="copy-btn" data-copy="#install-cmd" aria-label="Copy install command">copy</button>
+      </div>
+      <div class="mt-8 flex flex-wrap gap-4">
+        <a href="install.html" class="btn-primary">Install Pantheon</a>
+        <a href="product.html" class="btn-secondary">How it works</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- What it does -->
+  <section class="max-w-5xl mx-auto px-5 md:px-8 py-20 md:py-28">
+    <h2 class="t-h2 text-chalk reveal">What it does</h2>
+    <div class="mt-12">
+      <div class="py-10 border-t border-rule reveal">
+        <h3 class="t-h3 text-chalk mt-3">It remembers.</h3>
+        <p class="text-ash mt-2 max-w-2xl leading-relaxed">Every conversation is saved on your machine. Ask about something from last week and it still knows.</p>
+      </div>
+      <div class="py-10 border-t border-rule reveal">
+        <h3 class="t-h3 text-chalk mt-3">It asks first.</h3>
+        <p class="text-ash mt-2 max-w-2xl leading-relaxed">Before doing anything that matters, like deleting files or pushing code, it stops and asks you.</p>
+      </div>
+      <div class="py-10 border-t border-rule reveal">
+        <h3 class="t-h3 text-chalk mt-3">It does not lose your work.</h3>
+        <p class="text-ash mt-2 max-w-2xl leading-relaxed">Close your laptop in the middle of a task. When you come back, it picks up right where it left off.</p>
+      </div>
+      <div class="py-10 border-t border-b border-rule reveal">
+        <h3 class="t-h3 text-chalk mt-3">Your data stays home.</h3>
+        <p class="text-ash mt-2 max-w-2xl leading-relaxed">Everything lives on your computer. There is no account, no cloud, nothing uploaded.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Get started -->
+  <section class="max-w-5xl mx-auto px-5 md:px-8 py-20 md:py-28">
+    <h2 class="t-h2 text-chalk reveal">Two steps to a working assistant</h2>
+    <div class="mt-12 space-y-12">
+      <div class="reveal">
+        <p class="num">Step 1</p>
+        <h3 class="t-h3 text-chalk mt-3">Install it.</h3>
+        <p class="text-ash mt-2 max-w-2xl leading-relaxed">One command. Works on Linux, macOS, and Windows.</p>
+        <div class="cmdbox flex items-center gap-4 mt-5 max-w-2xl">
+          <code class="break-all flex-1 leading-relaxed" id="install-cmd-2">curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash</code>
+          <button type="button" class="copy-btn" data-copy="#install-cmd-2" aria-label="Copy install command">copy</button>
         </div>
-        <p class="text-ash text-sm mt-3 leading-relaxed">
-          Prebuilt binary from GitHub Releases. Needs only <code>curl</code> and
-          <code>tar</code>, no toolchain. <a href="install.html" class="underline decoration-brand underline-offset-4 hover:text-chalk">Install options</a>
-        </p>
-        <div class="mt-8 flex flex-wrap gap-3">
-          <a href="install.html" class="cmd text-sm text-white bg-brand px-4 py-2 rounded hover:bg-branddark">Get started</a>
-          <a href="product.html" class="cmd text-sm border border-rule px-4 py-2 rounded text-chalk hover:border-ash">How it works</a>
+      </div>
+      <div class="reveal">
+        <p class="num">Step 2</p>
+        <h3 class="t-h3 text-chalk mt-3">Tell it which AI to use.</h3>
+        <p class="text-ash mt-2 max-w-2xl leading-relaxed">Run <code>pantheon setup</code> and answer a few questions. Then just type <code>pantheon</code> and start talking.</p>
+        <div class="cmdbox flex items-center gap-4 mt-5 max-w-2xl">
+          <code class="break-all flex-1 leading-relaxed" id="setup-cmd">pantheon setup</code>
+          <button type="button" class="copy-btn" data-copy="#setup-cmd" aria-label="Copy setup command">copy</button>
         </div>
       </div>
-      <div class="lg:col-span-7">
-        <div class="ledger reveal">
-          <div class="ledger-head">
-            <span class="cmd text-xs text-ash whitespace-nowrap">sqlite3 ~/.pantheon/ledger.db</span>
-            <span class="cmd text-xs text-ash whitespace-nowrap">run_1790413737088_9031</span>
-          </div>
-          <div class="ledger-body">
-            <table class="w-full">
-              <thead>
-                <tr><th class="w-14">seq</th><th class="w-40">event</th><th>event_json</th></tr>
-              </thead>
-              <tbody>
-                <tr><td class="seq">#62</td><td class="ev">RunStarted</td><td class="seq">run_id = run_1790413737088_9031</td></tr>
-                <tr><td class="seq">#63</td><td class="ev ev-app">ToolStarted</td><td class="seq">tool = "bash", provenance = { trust: system }</td></tr>
-                <tr><td class="seq">#64</td><td class="ev">RunProgress</td><td class="seq">detail = "list the files in this directory"</td></tr>
-                <tr><td class="seq">#65</td><td class="ev ev-app">RunCompleted</td><td class="seq">detail = "4 files listed"</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <p class="text-ash text-xs mt-3 leading-relaxed max-w-lg">
-          Four real rows from a local install's <code class="cmd text-[.7rem]">events</code> table.
-          Everything the agent did, written down, replayable with
-          <code class="cmd text-[.7rem]">pantheon runs &lt;id&gt;</code>.
-        </p>
-      </div>
     </div>
   </section>
-
-  <div class="rule max-w-6xl mx-auto"></div>
-
-  <!-- Quickstart -->
-  <section class="max-w-6xl mx-auto px-5 md:px-8 py-16 md:py-20">
-    <h2 class="t-h2 text-chalk reveal">Three commands to a working agent</h2>
-    <div class="grid md:grid-cols-3 gap-6 mt-10">
-      <div class="card reveal">
-        <p class="cmd text-brand text-sm">01</p>
-        <h3 class="t-h3 text-chalk mt-2">Install</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">One script, no toolchain. The binary lands in <code>~/.local/bin</code>, data in <code>~/.pantheon</code>, verified before the installer exits.</p>
-      </div>
-      <div class="card reveal">
-        <p class="cmd text-brand text-sm">02</p>
-        <h3 class="t-h3 text-chalk mt-2">Point at a model</h3>
-        <pre class="mt-3"><code>pantheon setup --yes \
-  --provider openai \
-  --model gpt-4o-mini \
-  --api-key-env OPENAI_API_KEY</code></pre>
-      </div>
-      <div class="card reveal">
-        <p class="cmd text-brand text-sm">03</p>
-        <h3 class="t-h3 text-chalk mt-2">Work</h3>
-        <pre class="mt-3"><code>export OPENAI_API_KEY=sk-...
-pantheon</code></pre>
-        <p class="text-ash text-sm mt-3 leading-relaxed">Start a session, walk away, come back tomorrow. Runs, memory, history, exactly where you left them.</p>
-      </div>
-    </div>
-  </section>
-
-  <div class="rule max-w-6xl mx-auto"></div>
-
-  <!-- Features -->
-  <section class="max-w-6xl mx-auto px-5 md:px-8 py-16 md:py-20">
-    <div class="flex items-end justify-between gap-6">
-      <h2 class="t-h2 text-chalk reveal">The hard parts, handled</h2>
-      <a href="product.html" class="cmd text-sm text-ash hover:text-chalk flex-none reveal">Full tour →</a>
-    </div>
-    <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6 mt-10">
-      <a href="product.html#authority" class="card reveal block">
-        <h3 class="t-h3 text-chalk">It asks first</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">The model proposes, the runtime disposes. Capability checks, policy, and approvals are enforced in Rust, not suggested in a system prompt.</p>
-      </a>
-      <a href="product.html#ledger" class="card reveal block">
-        <h3 class="t-h3 text-chalk">Everything is written down</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">Every turn, tool call, and approval lands as a typed row in SQLite. Query it, replay it, hand it to an auditor. No network required.</p>
-      </a>
-      <a href="product.html#recovery" class="card reveal block">
-        <h3 class="t-h3 text-chalk">Survives a crash</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed"><code>kill -9</code> the process mid-run. The next turn resumes from committed state, finished calls skipped, interrupted ones re-executed. Nothing lost, nothing run twice.</p>
-      </a>
-      <a href="product.html#approvals" class="card reveal block">
-        <h3 class="t-h3 text-chalk">Approvals that wait for you</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">A gated tool call parks the run instead of blocking it. Approve from the terminal, a script, or a chat button. Either way the decision lands in the ledger.</p>
-      </a>
-      <a href="product.html#memory" class="card reveal block">
-        <h3 class="t-h3 text-chalk">Memory it can't fake</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">Five memory layers, provenance on every record. The model can propose memories. Only you, or your policy, can promote them.</p>
-      </a>
-      <a href="product.html#surfaces" class="card reveal block">
-        <h3 class="t-h3 text-chalk">One agent, every screen</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">Terminal, web, Discord, Telegram. One agent, one ledger, whichever screen is closest.</p>
-      </a>
-    </div>
-  </section>
-
-  <div class="rule max-w-6xl mx-auto"></div>
-
-  <!-- Surfaces strip -->
-  <section class="max-w-6xl mx-auto px-5 md:px-8 py-16 md:py-20">
-    <h2 class="t-h2 text-chalk reveal">Talk to it from anywhere</h2>
-    <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6 mt-10 text-sm">
-      <div class="card reveal"><h3 class="t-h3 text-chalk">terminal</h3><p class="cmd text-xs text-ash mt-1">pantheon</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">The full session: history, inline approvals, model switching mid-conversation.</p></div>
-      <div class="card reveal"><h3 class="t-h3 text-chalk">scripts</h3><p class="cmd text-xs text-ash mt-1">pantheon run</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Single turns for CI and cron. Output here, or delivered to a channel.</p></div>
-      <div class="card reveal"><h3 class="t-h3 text-chalk">local web</h3><p class="cmd text-xs text-ash mt-1">pantheon serve</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">A local web client on the same runtime and ledger. Your data never leaves the machine.</p></div>
-      <div class="card reveal"><h3 class="t-h3 text-chalk">messaging</h3><p class="cmd text-xs text-ash mt-1">pantheon gateway</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Discord and Telegram, gated by a pairing allowlist you control.</p></div>
-    </div>
-  </section>
-
-  <div class="rule max-w-6xl mx-auto"></div>
 
   <!-- FAQ -->
-  <section class="max-w-6xl mx-auto px-5 md:px-8 py-16 md:py-20">
-    <h2 class="t-h2 text-chalk reveal">Common questions</h2>
-    <div class="mt-8 max-w-3xl space-y-3">
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Do I need Rust, Node, or Docker to install?</summary><p class="text-ash text-sm mt-3 leading-relaxed">No. The installer fetches a prebuilt binary and needs only <code>curl</code> and <code>tar</code>. Rust is only for building from source; SQLite is bundled, so there's no database to install or run.</p></details>
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Which models does it work with?</summary><p class="text-ash text-sm mt-3 leading-relaxed">Any OpenAI-compatible endpoint or Anthropic, plus custom URLs via <code>pantheon provider add</code>. The agent never chooses its own model: the runtime resolves a default, a failure-only fallback chain, and per-job helpers. See <a href="providers.html" class="underline decoration-brand underline-offset-4">Providers</a>.</p></details>
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Where does my data live?</summary><p class="text-ash text-sm mt-3 leading-relaxed">On your machine, full stop: <code>~/.pantheon</code> (or <code>$PANTHEON_DATA_DIR</code>) holds the config, key store, ledger, and memory. There is no hosted control plane, no account, nothing phoning home.</p></details>
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> What happens when a tool call needs permission?</summary><p class="text-ash text-sm mt-3 leading-relaxed">The run parks, durably, not blocked, and asks. Answer inline in the session, or from anywhere with <code>pantheon run --grant/--deny</code>, including chat buttons. A denial becomes transcript text, not a crash.</p></details>
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> How do I update?</summary><p class="text-ash text-sm mt-3 leading-relaxed"><code>pantheon update</code> fetches the latest GitHub release for your platform and swaps the binary, keeping a backup of the old one. <code>--check</code> reports what's available without changing anything.</p></details>
+  <section class="max-w-5xl mx-auto px-5 md:px-8 py-20 md:py-28">
+    <h2 class="t-h2 text-chalk reveal">Questions</h2>
+    <div class="mt-10 max-w-3xl">
+      <details class="py-6 border-t border-rule reveal">
+        <summary class="text-chalk font-medium"><span class="chevron mr-2">&#9656;</span> Do I need to know how to code?</summary>
+        <p class="text-ash mt-3 leading-relaxed">No. If you can use a chat app, you can use Pantheon. You type, it answers, and it can use tools on your computer when you ask it to.</p>
+      </details>
+      <details class="py-6 border-t border-rule reveal">
+        <summary class="text-chalk font-medium"><span class="chevron mr-2">&#9656;</span> Which AI do I talk to?</summary>
+        <p class="text-ash mt-3 leading-relaxed">Whichever you like. Pantheon works with OpenAI, Anthropic, and others. You bring your own API key, and you can switch models any time without losing anything.</p>
+      </details>
+      <details class="py-6 border-t border-rule reveal">
+        <summary class="text-chalk font-medium"><span class="chevron mr-2">&#9656;</span> Where does my data go?</summary>
+        <p class="text-ash mt-3 leading-relaxed">Nowhere. It stays on your computer. There is no account to sign up for and nothing is uploaded.</p>
+      </details>
+      <details class="py-6 border-t border-b border-rule reveal">
+        <summary class="text-chalk font-medium"><span class="chevron mr-2">&#9656;</span> What does it cost?</summary>
+        <p class="text-ash mt-3 leading-relaxed">Pantheon itself is free. You pay your AI provider for what you use, the same as you would talking to them directly.</p>
+      </details>
     </div>
   </section>
 
-  <!-- Final CTA -->
-  <section class="max-w-6xl mx-auto px-5 md:px-8 pb-20">
-    <div class="card reveal text-center py-12">
-      <h2 class="t-h2 text-chalk">Keep the agent. Swap the model.</h2>
-      <p class="text-ash mt-3">Install in a minute. Your agent keeps everything it learns.</p>
-      <div class="mt-6 flex flex-wrap justify-center gap-3">
-        <a href="install.html" class="cmd text-sm text-white bg-brand px-5 py-2.5 rounded hover:bg-branddark">Install Pantheon</a>
-        <a href="docs.html" class="cmd text-sm border border-rule px-5 py-2.5 rounded text-chalk hover:border-ash">Read the docs</a>
-      </div>
+  <!-- CTA -->
+  <section class="max-w-5xl mx-auto px-5 md:px-8 py-20 md:py-28 text-center">
+    <h2 class="t-h2 text-chalk reveal">Takes a minute to install.</h2>
+    <p class="text-ash mt-4 reveal">Free forever. Your assistant keeps everything it learns.</p>
+    <div class="mt-8 flex flex-wrap justify-center gap-4 reveal">
+      <a href="install.html" class="btn-primary">Install Pantheon</a>
+      <a href="docs.html" class="btn-secondary">Read the docs</a>
     </div>
   </section>
   </main>
 
-  <div class="glow-line max-w-6xl mx-auto"></div>
-
-  <footer class="py-14">
-    <div class="max-w-6xl mx-auto px-5 md:px-8">
-      <div class="grid md:grid-cols-4 gap-10">
-        <div>
-          <div class="flex items-center gap-2.5">
-            <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-            <span class="cmd font-bold text-chalk">pantheon</span>
-          </div>
-          <p class="text-ash text-sm mt-3 leading-relaxed">A personal agent that remembers.<br>MIT licensed. Your data stays home.</p>
+  <footer class="border-t border-rule">
+    <div class="max-w-5xl mx-auto px-5 md:px-8 py-12">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div class="flex items-center gap-2.5">
+          <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+          <span class="font-semibold text-chalk">pantheon</span>
         </div>
-        <div>
-          <p class="cmd text-xs text-ash">PRODUCT</p>
-          <div class="flex flex-col gap-2 mt-3 text-sm">
-            <a href="product.html" class="text-ash hover:text-chalk">How it works</a>
-            <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-            <a href="terminal.html" class="text-ash hover:text-chalk">Terminal reference</a>
-          </div>
-        </div>
-        <div>
-          <p class="cmd text-xs text-ash">DOCS</p>
-          <div class="flex flex-col gap-2 mt-3 text-sm">
-            <a href="docs.html" class="text-ash hover:text-chalk">Overview</a>
-            <a href="getting-started.html" class="text-ash hover:text-chalk">Getting started</a>
-            <a href="configuration.html" class="text-ash hover:text-chalk">Configuration</a>
-            <a href="architecture.html" class="text-ash hover:text-chalk">Architecture</a>
-          </div>
-        </div>
-        <div>
-          <p class="cmd text-xs text-ash">PROJECT</p>
-          <div class="flex flex-col gap-2 mt-3 text-sm">
-            <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
-            <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/developer/contributing.md" target="_blank" rel="noopener" class="text-ash hover:text-chalk">Contribute</a>
-            <a href="troubleshooting.html" class="text-ash hover:text-chalk">Troubleshooting</a>
-          </div>
+        <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
+          <a href="product.html" class="text-ash hover:text-chalk">Product</a>
+          <a href="install.html" class="text-ash hover:text-chalk">Install</a>
+          <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
         </div>
       </div>
-      <div class="rule my-8"></div>
-      <p class="text-ash text-xs">© 2026 Pantheon. MIT licensed.</p>
+      <p class="text-ash text-sm mt-8">An assistant that does everything. MIT licensed.</p>
     </div>
   </footer>
 
@@ -328,6 +240,7 @@ pantheon</code></pre>
     if (menuBtn && menu) {
       menuBtn.addEventListener('click', function () {
         var open = menu.classList.toggle('hidden');
+        menu.classList.toggle('flex', !open);
         menuBtn.setAttribute('aria-expanded', String(!open));
       });
     }

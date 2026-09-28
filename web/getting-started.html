@@ -3,24 +3,31 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon: Rust Agent Runtime</title>
-  <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
-  <meta property="og:title" content="Pantheon: Rust Agent Runtime">
-  <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
+  <title>Pantheon: Getting started</title>
+  <meta name="description" content="Pantheon documentation.">
+  <meta property="og:title" content="Pantheon docs">
   <meta property="og:type" content="website">
-  <link rel="stylesheet" href="https://cdn.tailwindcss.com">
+  <meta property="og:image" content="logo.png">
+  <link rel="icon" href="logo.png">
+  <link rel="preconnect" href="https://api.fontshare.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
       theme: {
         extend: {
           colors: {
-            bg: '#0d0d0d', fg: '#e8e6e1', muted: '#71717a', accent: '#7223FF', accentdark: '#4B00CD',
-            card: '#1c1c1e', border: '#2e2e30',
+            ink: '#0b0c0e', panel: '#111316', rule: '#1e2024',
+            chalk: '#f2f1ee', ash: '#9a9aa3',
+            brand: '#7223FF', branddark: '#5e1fe8'
           },
-          fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Inter', 'sans-serif'] }
+          fontFamily: {
+            mono: ['JetBrains Mono', 'monospace'],
+            sans: ['General Sans', 'sans-serif']
+          }
         }
       }
     }
@@ -28,63 +35,59 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #0d0d0d; color: #e8e6e1; font-family: 'Inter', sans-serif; }
+    body { background: #0b0c0e; color: #f2f1ee; font-family: 'General Sans', sans-serif; font-size: 16px; line-height: 1.65; }
+    :focus-visible { outline: 2px solid #a379ff; outline-offset: 3px; }
     .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
-    .radial-core { background: radial-gradient(ellipse at center, rgba(114,35,255,0.06) 0%, transparent 70%); }
-    .logo-mark { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
-    .logo-mark img { height: 32px; width: auto; }
-    .logo-mark-sm { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; }
-    .logo-mark-sm img { height: 22px; width: auto; }
+    .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
+    .logo-mark img { height: 26px; width: auto; }
+    /* Doc content type scale: h1 30 / h2 22 / h3 20 / body 16 (each step >= 1.25x) */
+    .doc h1 { font-size: 1.875rem; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
+    .doc h2 { font-size: 1.375rem; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
+    .doc h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.3; }
+    .doc p, .doc li { color: #c9c9cf; }
+    .doc h1, .doc h2, .doc h3 { color: #f2f1ee; }
+    .doc pre { background: #111316; border: 1px solid #1e2024; border-radius: 8px; padding: 1.25rem; overflow-x: auto; margin: 1.5rem 0; }
+    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #f2f1ee; background: none; padding: 0; }
+    .doc code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #b18cff; }
+    .doc table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }
+    .doc th, .doc td { border-bottom: 1px solid #1e2024; padding: .65rem .8rem; text-align: left; font-size: .9rem; vertical-align: top; }
+    .doc th { font-size: .75rem; font-weight: 600; color: #9a9aa3; text-transform: uppercase; letter-spacing: .04em; }
+    .doc tr:hover td { background: rgba(114,35,255,.04); }
+    .doc blockquote { border-left: 2px solid #7223FF; padding-left: 1.25rem; margin: 1.5rem 0; color: #c9c9cf; }
+    .doc p a, .doc li a, .doc td a { color: #a379ff; text-decoration: underline; text-underline-offset: 3px; }
+    .doc ul { list-style: disc; padding-left: 1.5rem; }
+    .doc ol { list-style: decimal; padding-left: 1.5rem; }
     @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
-    pre { background: #1c1c1e; border: 1px solid #2e2e30; border-radius: 8px; padding: 1rem; overflow-x: auto; }
-    pre code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #e8e6e1; }
-    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: #7223FF; background: rgba(114,35,255,0.1); padding: 0.15em 0.3em; border-radius: 3px; }
-    h1, h2, h3, h4 { font-family: 'JetBrains Mono', monospace; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
-    th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
-    tr:hover td { background: rgba(114,35,255,0.05); }
-    blockquote { border-left: 2px solid #7223FF; padding-left: 1rem; margin: 1rem 0; color: #e8e6e1; font-style: italic; }
-    p a, li a, td a { color: #e8e6e1; text-decoration: underline; text-decoration-color: #7223FF; text-underline-offset: 3px; }
-    details { cursor: pointer; }
-    details summary { list-style: none; }
-    details summary::-webkit-details-marker { display: none; }
-    details[open] summary .chevron { transform: rotate(90deg); }
-    .chevron { display: inline-block; transition: transform 0.15s; }
     @media (max-width: 640px) {
-      table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .doc table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
     }
   </style>
 </head>
 <body class="antialiased">
 
-  <nav class="fixed top-0 left-0 right-0 z-50 bg-bg/80 backdrop-blur border-b border-border">
-    <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between gap-6">
-      <a href="index.html" class="flex items-center gap-3">
-        <div class="logo-mark"><img src="logo.svg" alt="Pantheon" width="32" height="32"></div>
-        <span class="font-mono font-bold text-fg text-lg tracking-tight">pantheon</span>
+  <nav class="sticky top-0 z-40 bg-ink/90 backdrop-blur border-b border-rule">
+    <div class="max-w-5xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between gap-6">
+      <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
+        <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+        <span class="font-semibold text-chalk text-lg tracking-tight">pantheon</span>
       </a>
-      <div class="hidden md:flex items-center gap-6 text-sm">
-        <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
-        <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
-        <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
-        <a href="docs.html" class="text-muted hover:text-fg transition-colors">Docs</a>
-        <a href="terminal.html" class="text-muted hover:text-fg transition-colors">Terminal</a>
-        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+      <div class="hidden md:flex items-center gap-7 text-[15px]">
+        <a href="product.html" class="text-ash hover:text-chalk">Product</a>
+        <a href="install.html" class="text-ash hover:text-chalk">Install</a>
+        <a href="docs.html" class="text-chalk">Docs</a>
+        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
       </div>
-      <button type="button" id="menu-btn" class="md:hidden text-muted hover:text-fg font-mono text-sm px-2 py-1" aria-expanded="false" aria-controls="menu">menu</button>
+      <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
     </div>
-    <div id="menu" class="hidden md:hidden border-t border-border px-6 py-4 flex-col gap-4 text-sm">
-      <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
-      <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
-      <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
-      <a href="docs.html" class="text-muted hover:text-fg transition-colors">Docs</a>
-      <a href="terminal.html" class="text-muted hover:text-fg transition-colors">Terminal</a>
-      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
+    <div id="menu" class="hidden md:hidden border-t border-rule px-5 py-4 flex-col gap-1 text-[15px]">
+      <a href="product.html" class="text-ash hover:text-chalk py-2.5 block">Product</a>
+      <a href="install.html" class="text-ash hover:text-chalk py-2.5 block">Install</a>
+      <a href="docs.html" class="text-chalk py-2.5 block">Docs</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk py-2.5 block">GitHub</a>
     </div>
   </nav>
 
-  <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
+  <main class="doc max-w-3xl mx-auto px-6 pt-24 pb-16">
 <h1 id="getting-started" class="text-3xl font-bold tracking-tight mb-2">Getting started</h1><div class="glow-line my-6"></div>
 <p class="my-3 leading-relaxed">Install Pantheon, point it at a model, start working.</p>
 <h2 id="install" class="text-xl font-bold tracking-tight mt-10 mb-3">Install</h2>
@@ -132,26 +135,21 @@ pantheon doctor
 </ul>
 </main>
 
-  <div class="glow-line max-w-5xl mx-auto"></div>
-
-  <footer class="py-16">
-    <div class="max-w-5xl mx-auto px-6">
-      <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-        <div class="flex items-center gap-3">
-          <div class="logo-mark-sm"><img src="logo.svg" alt="Pantheon" width="22" height="22"></div>
-          <div>
-            <span class="font-mono font-bold text-fg text-sm">pantheon</span>
-            <p class="text-muted text-xs mt-0.5">Durable agent runtime. MIT licensed. <span class="font-mono">k1ng0mar/pantheon</span> on GitHub.</p>
-          </div>
+  <footer class="border-t border-rule mt-8">
+    <div class="max-w-5xl mx-auto px-5 md:px-8 py-12">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div class="flex items-center gap-2.5">
+          <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+          <span class="font-semibold text-chalk">pantheon</span>
         </div>
-        <div class="flex gap-8 text-sm">
-          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Source</a>
-          <a href="https://github.com/k1ng0mar/pantheon/blob/master/README.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Docs</a>
-          <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/developer/contributing.md" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">Contribute</a>
+        <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
+          <a href="product.html" class="text-ash hover:text-chalk">Product</a>
+          <a href="install.html" class="text-ash hover:text-chalk">Install</a>
+          <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
         </div>
       </div>
-      <div class="glow-line my-8"></div>
-      <p class="text-muted text-xs text-center">No hosted tier. No subscription. Your data stays on your machine.</p>
+      <p class="text-ash text-sm mt-8">An AI assistant that remembers. MIT licensed.</p>
     </div>
   </footer>
 

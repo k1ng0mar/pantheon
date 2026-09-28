@@ -203,7 +203,7 @@ def render(md: str, src: str) -> tuple[str, str]:
     close_table()
     body = "\n".join(out)
     return title, (
-        '<main class="max-w-3xl mx-auto px-6 pt-24 pb-16">\n' + body + "\n</main>"
+        '<main class="doc max-w-3xl mx-auto px-6 pt-24 pb-16">\n' + body + "\n</main>"
     )
 
 
@@ -212,9 +212,12 @@ def main() -> int:
     for src, page in PAGES.items():
         md = (DOCS / src).read_text()
         title, body = render(md, src)
+        page_title = html.escape(title)
+        if not page_title.lower().startswith("pantheon"):
+            page_title = f"Pantheon: {page_title}"
         html_page = layout.replace("%BODY%", body).replace(
-            "<title>Pantheon — Rust Agent Runtime</title>",
-            f"<title>Pantheon — {html.escape(title)}</title>",
+            "<title>Pantheon docs</title>",
+            f"<title>{page_title}</title>",
         )
         (WEB / page).write_text(html_page)
         print(f"  {src} -> {page}")
