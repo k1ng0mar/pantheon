@@ -1,7 +1,6 @@
 //! Tests for `pantheon_secrets::broker::tests` — sibling file so sources stay test-free.
 use super::*;
-use crate::{EncryptedFileVault, MemoryVault};
-use tempfile::tempdir;
+use crate::MemoryVault;
 
 #[test]
 fn resolves_from_durable_then_env() {
