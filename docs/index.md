@@ -2,11 +2,11 @@
 
 > The model is replaceable. The agent should not be.
 
-Pantheon is a durable agent runtime. The model reasons and generates language; Pantheon provides everything around it — lifecycle, state, policy, execution, memory, recovery, events — so an agent persists across model changes, restarts, and interruptions.
+Pantheon is a durable agent runtime. The model reasons and generates language; Pantheon provides everything around it, lifecycle, state, policy, execution, memory, recovery, events, so an agent persists across model changes, restarts, and interruptions.
 
 ## Start here
 
-- [Getting started](getting-started.md) — install, set up, run your first session.
+- [Getting started](getting-started.md), install, set up, run your first session.
 
 ## User guide
 

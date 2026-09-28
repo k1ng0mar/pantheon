@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon — Troubleshooting</title>
+  <title>Pantheon: Rust Agent Runtime</title>
   <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
-  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:title" content="Pantheon: Rust Agent Runtime">
   <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
   <meta property="og:type" content="website">
   <link rel="stylesheet" href="https://cdn.tailwindcss.com">
@@ -102,7 +102,7 @@
 </tbody></table>
 <h2 id="common-issues" class="text-xl font-bold tracking-tight mt-10 mb-3">Common issues</h2>
 <h3 id="runtime-probe-times-out" class="font-bold mt-6 mb-2">Runtime probe times out</h3>
-<p class="my-3 leading-relaxed">The installer prints <code>⚠ Runtime probe timed out after 10s</code>. The install itself succeeded — the check could not complete. Run <code>pantheon doctor</code> to diagnose.</p>
+<p class="my-3 leading-relaxed">The installer prints <code>⚠ Runtime probe timed out after 10s</code>. The install itself succeeded, the check could not complete. Run <code>pantheon doctor</code> to diagnose.</p>
 <h3 id="provider-connection-fails" class="font-bold mt-6 mb-2">Provider connection fails</h3>
 <p class="my-3 leading-relaxed">Verify the API key is set in the env var named by <code>config.toml</code> (e.g. <code>OPENAI_API_KEY</code>). <code>pantheon doctor</code> reports which var is missing.</p>
 <h3 id="memory-not-persisting" class="font-bold mt-6 mb-2">Memory not persisting</h3>
@@ -119,12 +119,12 @@ pantheon doctor &lt;plugin_dir&gt; # per-plugin preflight
 pantheon repair --dry-run    # what repair would change, touching nothing
 pantheon repair              # fix what can be fixed safely (backs up first)
 </code></pre>
-<p class="my-3 leading-relaxed"><code>doctor</code> diagnoses and changes nothing; <code>repair</code> fixes. A failed check names its fix — <code>pantheon setup</code> for config, <code>export VAR=...</code> for keys.</p>
+<p class="my-3 leading-relaxed"><code>doctor</code> diagnoses and changes nothing; <code>repair</code> fixes. A failed check names its fix, <code>pantheon setup</code> for config, <code>export VAR=...</code> for keys.</p>
 <h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><a href="getting-started.html">Getting started</a> — install and setup</li>
-<li><a href="configuration.html">Configuration</a> — config fields and data directory</li>
-<li><a href="terminal.html">Terminal reference</a> — <code>doctor</code>, <code>repair</code>, <code>reset</code> flags</li>
+<li><a href="getting-started.html">Getting started</a>, install and setup</li>
+<li><a href="configuration.html">Configuration</a>, config fields and data directory</li>
+<li><a href="terminal.html">Terminal reference</a>, <code>doctor</code>, <code>repair</code>, <code>reset</code> flags</li>
 </ul>
 </main>
 

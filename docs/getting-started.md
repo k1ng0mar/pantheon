@@ -26,7 +26,7 @@ Prefer source? `git clone` + `cargo build --release` (Rust edition 2021). SQLite
 pantheon setup
 ```
 
-Answer five questions — profile, provider, model, API key location, policy — and you get `~/.pantheon/config.toml`. Scripted setups pass flags instead of answering:
+Answer five questions, profile, provider, model, API key location, policy, and you get `~/.pantheon/config.toml`. Scripted setups pass flags instead of answering:
 
 ```sh
 pantheon setup --yes --provider openai --model gpt-4o-mini \
@@ -42,7 +42,7 @@ export OPENAI_API_KEY=sk-...
 pantheon
 ```
 
-Talk to it. Leave. Come back — the work remains, with its history. `/help` lists session commands.
+Talk to it. Leave. Come back, the work remains, with its history. `/help` lists session commands.
 
 No terminal? No session. For scripts and CI:
 
@@ -60,7 +60,7 @@ Exit 0 means config, key, ledger, memory, and plugins are healthy. Anything else
 
 ## Next steps
 
-- [Sessions](user-guide/sessions.md) — the interface, approvals, inspecting runs
-- [Agents](user-guide/agents.md) — identities that persist
-- [Runs](user-guide/runs.md) — lifecycle, recovery, pipelines, scheduling
-- [Configuration](reference/configuration.md) — every `config.toml` field
+- [Sessions](user-guide/sessions.md), the interface, approvals, inspecting runs
+- [Agents](user-guide/agents.md), identities that persist
+- [Runs](user-guide/runs.md), lifecycle, recovery, pipelines, scheduling
+- [Configuration](reference/configuration.md), every `config.toml` field

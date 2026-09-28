@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon — Install</title>
+  <title>Pantheon: Install</title>
   <meta name="description" content="Install Pantheon in a minute: prebuilt binary, verified, with a default config. Linux, macOS, Windows.">
-  <meta property="og:title" content="Pantheon — Install">
+  <meta property="og:title" content="Pantheon: Install">
   <meta property="og:type" content="website">
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
@@ -92,7 +92,7 @@
   <section class="max-w-6xl mx-auto px-5 md:px-8 pt-16 md:pt-20 pb-12">
     <p class="cmd text-xs text-brand tracking-wide reveal">INSTALL</p>
     <h1 class="cmd font-bold text-chalk text-3xl md:text-4xl tracking-tight mt-4 reveal">A minute to a working agent.</h1>
-    <p class="text-ash mt-5 max-w-2xl leading-relaxed reveal">One prebuilt binary from GitHub Releases. The installer needs only <code>curl</code> and <code>tar</code> — no Node, npm, Git, Python, Rust, or Cargo. Re-running it never touches your config.</p>
+    <p class="text-ash mt-5 max-w-2xl leading-relaxed reveal">One prebuilt binary from GitHub Releases. The installer needs only <code>curl</code> and <code>tar</code>, no Node, npm, Git, Python, Rust, or Cargo. Re-running it never touches your config.</p>
   </section>
 
   <section id="os" class="max-w-6xl mx-auto px-5 md:px-8 pb-12">
@@ -118,7 +118,7 @@
         <pre><code>git clone https://github.com/k1ng0mar/pantheon.git
 cd pantheon
 cargo build --release   # binary: target/release/pantheon</code></pre>
-        <p class="text-ash text-sm mt-3 leading-relaxed">Requires a Rust toolchain (edition 2021). SQLite is bundled — no database to run.</p>
+        <p class="text-ash text-sm mt-3 leading-relaxed">Requires a Rust toolchain (edition 2021). SQLite is bundled, no database to run.</p>
       </div>
     </div>
     <p class="text-ash text-sm mt-4 leading-relaxed reveal">Pin a release: <code>PANTHEON_VERSION=v0.1.0 bash install.sh</code>. Prefer a package? Grab the asset for your platform from <a href="https://github.com/k1ng0mar/pantheon/releases" target="_blank" rel="noopener" class="underline decoration-brand underline-offset-4 hover:text-chalk">GitHub Releases</a>.</p>
@@ -128,12 +128,12 @@ cargo build --release   # binary: target/release/pantheon</code></pre>
 
   <section class="max-w-6xl mx-auto px-5 md:px-8 py-12">
     <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">What the installer does</h2>
-    <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">Four explicit stages. A failure names its stage — and a runtime-probe timeout says exactly that, never disguised as a failed install.</p>
+    <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">Four explicit stages. A failure names its stage, and a runtime-probe timeout says exactly that, never disguised as a failed install.</p>
     <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6 mt-8">
       <div class="card reveal"><p class="cmd text-brand text-sm">[1/4]</p><h3 class="cmd text-chalk mt-2 text-sm">Checking environment</h3><p class="text-ash text-[.85rem] mt-2 leading-relaxed">Detects OS and architecture, confirms <code>curl</code> and <code>tar</code>. Nothing else required.</p></div>
       <div class="card reveal"><p class="cmd text-brand text-sm">[2/4]</p><h3 class="cmd text-chalk mt-2 text-sm">Installing Pantheon</h3><p class="text-ash text-[.85rem] mt-2 leading-relaxed">Resolves the release, downloads the binary, verifies the checksum, links into <code>~/.local/bin</code>.</p></div>
       <div class="card reveal"><p class="cmd text-brand text-sm">[3/4]</p><h3 class="cmd text-chalk mt-2 text-sm">Initializing</h3><p class="text-ash text-[.85rem] mt-2 leading-relaxed">Creates <code>~/.pantheon</code>, writes a default config only if none exists, prepares storage.</p></div>
-      <div class="card reveal"><p class="cmd text-brand text-sm">[4/4]</p><h3 class="cmd text-chalk mt-2 text-sm">Verifying installation</h3><p class="text-ash text-[.85rem] mt-2 leading-relaxed"><code>--version</code>, runtime probe, config check, storage check — each reported on its own.</p></div>
+      <div class="card reveal"><p class="cmd text-brand text-sm">[4/4]</p><h3 class="cmd text-chalk mt-2 text-sm">Verifying installation</h3><p class="text-ash text-[.85rem] mt-2 leading-relaxed"><code>--version</code>, runtime probe, config check, storage check, each reported on its own.</p></div>
     </div>
   </section>
 
@@ -153,9 +153,9 @@ pantheon</code></pre>
       </div>
       <div class="reveal">
         <ul class="space-y-4 text-sm leading-relaxed">
-          <li class="text-ash"><span class="cmd text-chalk">pantheon setup</span> — five questions, or all flags with <code>--yes</code>. Config stores the key's name, never its value.</li>
-          <li class="text-ash"><span class="cmd text-chalk">pantheon doctor</span> — exit 0 means config, key, ledger, memory, and plugins are healthy. Failures name their fix.</li>
-          <li class="text-ash"><span class="cmd text-chalk">pantheon update</span> — latest release for your platform, with a backup kept. <code>--check</code> reports without changing anything.</li>
+          <li class="text-ash"><span class="cmd text-chalk">pantheon setup</span>, five questions, or all flags with <code>--yes</code>. Config stores the key's name, never its value.</li>
+          <li class="text-ash"><span class="cmd text-chalk">pantheon doctor</span>, exit 0 means config, key, ledger, memory, and plugins are healthy. Failures name their fix.</li>
+          <li class="text-ash"><span class="cmd text-chalk">pantheon update</span>, latest release for your platform, with a backup kept. <code>--check</code> reports without changing anything.</li>
         </ul>
         <div class="mt-6 flex flex-wrap gap-3">
           <a href="getting-started.html" class="cmd text-sm text-ink bg-brand px-5 py-2.5 rounded hover:bg-chalk">Getting started guide</a>

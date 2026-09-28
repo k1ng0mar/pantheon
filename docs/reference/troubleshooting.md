@@ -22,7 +22,7 @@ Every error is a structured `PantheonError`: code, layer, retryable flag, cause,
 
 ### Runtime probe times out
 
-The installer prints `⚠ Runtime probe timed out after 10s`. The install itself succeeded — the check could not complete. Run `pantheon doctor` to diagnose.
+The installer prints `⚠ Runtime probe timed out after 10s`. The install itself succeeded, the check could not complete. Run `pantheon doctor` to diagnose.
 
 ### Provider connection fails
 
@@ -50,10 +50,10 @@ pantheon repair --dry-run    # what repair would change, touching nothing
 pantheon repair              # fix what can be fixed safely (backs up first)
 ```
 
-`doctor` diagnoses and changes nothing; `repair` fixes. A failed check names its fix — `pantheon setup` for config, `export VAR=...` for keys.
+`doctor` diagnoses and changes nothing; `repair` fixes. A failed check names its fix, `pantheon setup` for config, `export VAR=...` for keys.
 
 ## See also
 
-- [Getting started](../getting-started.md) — install and setup
-- [Configuration](configuration.md) — config fields and data directory
-- [Terminal reference](terminal.md) — `doctor`, `repair`, `reset` flags
+- [Getting started](../getting-started.md), install and setup
+- [Configuration](configuration.md), config fields and data directory
+- [Terminal reference](terminal.md), `doctor`, `repair`, `reset` flags

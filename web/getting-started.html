@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon — Getting started</title>
+  <title>Pantheon: Rust Agent Runtime</title>
   <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
-  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:title" content="Pantheon: Rust Agent Runtime">
   <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
   <meta property="og:type" content="website">
   <link rel="stylesheet" href="https://cdn.tailwindcss.com">
@@ -102,7 +102,7 @@ iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb
 <pre><code>
 pantheon setup
 </code></pre>
-<p class="my-3 leading-relaxed">Answer five questions — profile, provider, model, API key location, policy — and you get <code>~/.pantheon/config.toml</code>. Scripted setups pass flags instead of answering:</p>
+<p class="my-3 leading-relaxed">Answer five questions, profile, provider, model, API key location, policy, and you get <code>~/.pantheon/config.toml</code>. Scripted setups pass flags instead of answering:</p>
 <pre><code>
 pantheon setup --yes --provider openai --model gpt-4o-mini \
   --api-key-env OPENAI_API_KEY --policy coder
@@ -113,7 +113,7 @@ pantheon setup --yes --provider openai --model gpt-4o-mini \
 export OPENAI_API_KEY=sk-...
 pantheon
 </code></pre>
-<p class="my-3 leading-relaxed">Talk to it. Leave. Come back — the work remains, with its history. <code>/help</code> lists session commands.</p>
+<p class="my-3 leading-relaxed">Talk to it. Leave. Come back, the work remains, with its history. <code>/help</code> lists session commands.</p>
 <p class="my-3 leading-relaxed">No terminal? No session. For scripts and CI:</p>
 <pre><code>
 pantheon run --taskID t1 --say &quot;summarize these logs&quot; --deliver session
@@ -125,10 +125,10 @@ pantheon doctor
 <p class="my-3 leading-relaxed">Exit 0 means config, key, ledger, memory, and plugins are healthy. Anything else names its fix.</p>
 <h2 id="next-steps" class="text-xl font-bold tracking-tight mt-10 mb-3">Next steps</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><a href="sessions.html">Sessions</a> — the interface, approvals, inspecting runs</li>
-<li><a href="agents.html">Agents</a> — identities that persist</li>
-<li><a href="runs.html">Runs</a> — lifecycle, recovery, pipelines, scheduling</li>
-<li><a href="configuration.html">Configuration</a> — every <code>config.toml</code> field</li>
+<li><a href="sessions.html">Sessions</a>, the interface, approvals, inspecting runs</li>
+<li><a href="agents.html">Agents</a>, identities that persist</li>
+<li><a href="runs.html">Runs</a>, lifecycle, recovery, pipelines, scheduling</li>
+<li><a href="configuration.html">Configuration</a>, every <code>config.toml</code> field</li>
 </ul>
 </main>
 

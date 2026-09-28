@@ -1,6 +1,6 @@
 # Configuration
 
-`config.toml` in the data dir is the single source of truth for persistent configuration. Setup writes it, the runtime reads it, every verb uses it. Secrets are never in it — config names env vars, the runtime resolves them at the execution boundary.
+`config.toml` in the data dir is the single source of truth for persistent configuration. Setup writes it, the runtime reads it, every verb uses it. Secrets are never in it, config names env vars, the runtime resolves them at the execution boundary.
 
 ## Model
 
@@ -20,7 +20,7 @@ Env overrides: `PANTHEON_PROVIDER`, `PANTHEON_MODEL`, `PANTHEON_REASONING`, `PAN
 
 ## Auxiliaries
 
-One `[judge]`, `[compression]`, `[title_gen]`, `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]`, `[mcp_synthesis]`, `[extraction]`, `[rerank]`, `[planner]` section each, same shape (`provider`, `model`, optional `api_key_env`). Absent means `auto` — the run's default model — except `[embeddings]`, which falls back to a local embedder. Env overrides: `PANTHEON_<AUX>_PROVIDER` / `PANTHEON_<AUX>_MODEL` (e.g. `PANTHEON_RERANK_MODEL`). `[extraction]`, `[rerank]`, and `[planner]` have no call sites yet — they exist so you can pin a cheap model ahead of those workloads landing.
+One `[judge]`, `[compression]`, `[title_gen]`, `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]`, `[mcp_synthesis]`, `[extraction]`, `[rerank]`, `[planner]` section each, same shape (`provider`, `model`, optional `api_key_env`). Absent means `auto`, the run's default model, except `[embeddings]`, which falls back to a local embedder. Env overrides: `PANTHEON_<AUX>_PROVIDER` / `PANTHEON_<AUX>_MODEL` (e.g. `PANTHEON_RERANK_MODEL`). `[extraction]`, `[rerank]`, and `[planner]` have no call sites yet, they exist so you can pin a cheap model ahead of those workloads landing.
 
 ## Reflection
 
@@ -34,11 +34,11 @@ max_proposals = 5       # proposal cap per pass
 # api_key_env = "OPENAI_API_KEY"
 ```
 
-Reflection is Pantheon's ledger-native self-improvement loop: each pass reads structured ledger signals (repeated tool sequences, user corrections, denied approvals, repeated failures), generates proposals with provenance (memory lessons, skill proposals, persona notes), eval-gates skill/persona proposals against bounded evals, and holds them for approval. Memory lessons auto-apply at the `Memory` trust tier; everything else needs `/reflect`'s y/n card (or `pantheon reflect --approve <id>`). Every LLM call the pipeline makes resolves through the `Reflection` auxiliary slot — never the chat model — so pin a small model here to keep background self-improvement cheap.
+Reflection is Pantheon's ledger-native self-improvement loop: each pass reads structured ledger signals (repeated tool sequences, user corrections, denied approvals, repeated failures), generates proposals with provenance (memory lessons, skill proposals, persona notes), eval-gates skill/persona proposals against bounded evals, and holds them for approval. Memory lessons auto-apply at the `Memory` trust tier; everything else needs `/reflect`'s y/n card (or `pantheon reflect --approve <id>`). Every LLM call the pipeline makes resolves through the `Reflection` auxiliary slot, never the chat model, so pin a small model here to keep background self-improvement cheap.
 
-- `/reflect` — manual one-shot pass (background); `/reflect on|off` toggles the loop (persisted here); `/reflect status` shows the toggle plus the last pass summary.
+- `/reflect`, manual one-shot pass (background); `/reflect on|off` toggles the loop (persisted here); `/reflect status` shows the toggle plus the last pass summary.
 - `pantheon reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]`
-- `pantheon schedule reflect --cron '0 2 * * *'` — nightly passes via the normal scheduler.
+- `pantheon schedule reflect --cron '0 2 * * *'`, nightly passes via the normal scheduler.
 
 ## Policy
 
@@ -52,25 +52,25 @@ max_turns          = 16      # agent turns per run
 max_tool_calls     = 32      # tool calls per run
 max_delegate_depth = 2       # how deep /swarm delegation may nest
 max_iterations     = 3       # pipeline iterations (pantheon pipeline)
-# max_tokens       = 50000   # per-run token cap — strictly optional, absent = uncapped
+# max_tokens       = 50000   # per-run token cap, strictly optional, absent = uncapped
 
 [goal]
 max_iterations     = 10      # turns allowed per /goal before the TUI stops and asks
 ```
 
-Every key is optional; a `0` is treated as unset. These are the session defaults — `/set <key> <value>` retunes them live for the current session (`max_turns`, `max_tool_calls`, `max_delegate_depth`, `max_tokens`; `0` clears the token cap), and `/tokens [n|off]` manages the token cap on its own. There is no cost cap: cost is tracked for `pantheon stats` / `/stats` only.
+Every key is optional; a `0` is treated as unset. These are the session defaults, `/set <key> <value>` retunes them live for the current session (`max_turns`, `max_tool_calls`, `max_delegate_depth`, `max_tokens`; `0` clears the token cap), and `/tokens [n|off]` manages the token cap on its own. There is no cost cap: cost is tracked for `pantheon stats` / `/stats` only.
 
 ## Temporal awareness
 
 ```toml
 [temporal]
-enabled            = true    # master switch (default on — zero tokens, pure string injection)
+enabled            = true    # master switch (default on, zero tokens, pure string injection)
 min_gap_secs       = 7200    # idle seconds before an elapsed-gap hint fires (0 = off)
 notify_date_change = true    # hint when the local date rolled over, even on a short gap
 # timezone         = "Africa/Lagos"  # IANA name; absent = system local timezone
 ```
 
-Tacit temporal awareness: the model notices when a conversation has meaningfully aged, without timestamping every message. Before a turn's first model call the pipeline reads the last assistant turn's timestamp from the durable ledger (restart-safe) and, when the gap matters, appends one coarse hint to the outgoing user message — for the API call only, never written to the ledger or transcript, and never on the system prompt (prompt caching unaffected). Wording is coarse and gets coarser with the gap: `about 40 minutes`, `about 5 hours`, `about a day`, `about 3 days`. A date rollover across a short gap yields `[temporal: the previous exchange was yesterday]`; multi-day gaps already imply the date change, so wordings never stack. The conversation's standing system preamble tells the model to factor such hints in and never quote them.
+Tacit temporal awareness: the model notices when a conversation has meaningfully aged, without timestamping every message. Before a turn's first model call the pipeline reads the last assistant turn's timestamp from the durable ledger (restart-safe) and, when the gap matters, appends one coarse hint to the outgoing user message, for the API call only, never written to the ledger or transcript, and never on the system prompt (prompt caching unaffected). Wording is coarse and gets coarser with the gap: `about 40 minutes`, `about 5 hours`, `about a day`, `about 3 days`. A date rollover across a short gap yields `[temporal: the previous exchange was yesterday]`; multi-day gaps already imply the date change, so wordings never stack. The conversation's standing system preamble tells the model to factor such hints in and never quote them.
 
 `policy = "reader" | "coder" | "coder_memory"`. Tools declare the capability they need; the policy decides allow/deny/approve per operation. `coder_memory` adds the `MemoryWrite` capability.
 
@@ -93,8 +93,8 @@ plugin_env_allowlist = ["MY_PLUGIN_TOKEN"]
 
 The run's secrets-boundary policy. Both lists are empty by default (fail closed):
 
-- `env_allowlist`: env vars readable through the `env:` secret-name form. Entries are exact names or `PREFIX_*` wildcards; `"*"` alone allows all (explicit opt-out). Without an entry, `env:` lookups resolve nothing — secrets must come from `PANTHEON_SECRET_*` or a durable vault, so a name like `env:AWS_SECRET_ACCESS_KEY` can never exfiltrate an arbitrary host variable.
-- `plugin_env_allowlist`: manifest-declared env vars the plugin supervisor may copy from the host into plugin subprocesses (same entry syntax). A project-controlled manifest can declare any name it likes, so a declared name alone never crosses the boundary — only an entry here lets a host var reach plugin code. Extension (Python/JS) hook subprocesses always run with a cleared environment (PATH only) regardless of this list.
+- `env_allowlist`: env vars readable through the `env:` secret-name form. Entries are exact names or `PREFIX_*` wildcards; `"*"` alone allows all (explicit opt-out). Without an entry, `env:` lookups resolve nothing, secrets must come from `PANTHEON_SECRET_*` or a durable vault, so a name like `env:AWS_SECRET_ACCESS_KEY` can never exfiltrate an arbitrary host variable.
+- `plugin_env_allowlist`: manifest-declared env vars the plugin supervisor may copy from the host into plugin subprocesses (same entry syntax). A project-controlled manifest can declare any name it likes, so a declared name alone never crosses the boundary, only an entry here lets a host var reach plugin code. Extension (Python/JS) hook subprocesses always run with a cleared environment (PATH only) regardless of this list.
 
 ## Agents
 

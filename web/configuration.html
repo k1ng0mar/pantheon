@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon — Configuration</title>
+  <title>Pantheon: Rust Agent Runtime</title>
   <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
-  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:title" content="Pantheon: Rust Agent Runtime">
   <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
   <meta property="og:type" content="website">
   <link rel="stylesheet" href="https://cdn.tailwindcss.com">
@@ -86,7 +86,7 @@
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
 <h1 id="configuration" class="text-3xl font-bold tracking-tight mb-2">Configuration</h1><div class="glow-line my-6"></div>
-<p class="my-3 leading-relaxed"><code>config.toml</code> in the data dir is the single source of truth for persistent configuration. Setup writes it, the runtime reads it, every verb uses it. Secrets are never in it — config names env vars, the runtime resolves them at the execution boundary.</p>
+<p class="my-3 leading-relaxed"><code>config.toml</code> in the data dir is the single source of truth for persistent configuration. Setup writes it, the runtime reads it, every verb uses it. Secrets are never in it, config names env vars, the runtime resolves them at the execution boundary.</p>
 <h2 id="model" class="text-xl font-bold tracking-tight mt-10 mb-3">Model</h2>
 <pre><code>
 [model]
@@ -101,7 +101,7 @@ model    = &quot;claude-sonnet-4-5&quot;
 </code></pre>
 <p class="my-3 leading-relaxed">Env overrides: <code>PANTHEON_PROVIDER</code>, <code>PANTHEON_MODEL</code>, <code>PANTHEON_REASONING</code>, <code>PANTHEON_REASONING_BUDGET</code>. Fallbacks are ordered, failure-only, runtime-controlled. Reasoning maps per wire mode (<code>reasoning_effort</code>, including <code>minimal</code> and <code>xhigh</code>, on OpenAI; thinking budget on Anthropic: 1k/4k/10k/20k/32k for minimal/low/medium/high/xhigh, <code>max</code> fills the window). An exact <code>reasoning_budget</code> overrides the mapping on budget wires (<code>0</code> disables); aux turns always run without it. Unknown spellings resolve to off and <code>doctor</code> flags them.</p>
 <h2 id="auxiliaries" class="text-xl font-bold tracking-tight mt-10 mb-3">Auxiliaries</h2>
-<p class="my-3 leading-relaxed">One <code>[judge]</code>, <code>[compression]</code>, <code>[title_gen]</code>, <code>[embeddings]</code>, <code>[search_synthesis]</code>, <code>[vision]</code>, <code>[scheduled]</code>, <code>[mcp_synthesis]</code>, <code>[extraction]</code>, <code>[rerank]</code>, <code>[planner]</code> section each, same shape (<code>provider</code>, <code>model</code>, optional <code>api_key_env</code>). Absent means <code>auto</code> — the run&#x27;s default model — except <code>[embeddings]</code>, which falls back to a local embedder. Env overrides: <code>PANTHEON_&lt;AUX&gt;_PROVIDER</code> / <code>PANTHEON_&lt;AUX&gt;_MODEL</code> (e.g. <code>PANTHEON_RERANK_MODEL</code>). <code>[extraction]</code>, <code>[rerank]</code>, and <code>[planner]</code> have no call sites yet — they exist so you can pin a cheap model ahead of those workloads landing.</p>
+<p class="my-3 leading-relaxed">One <code>[judge]</code>, <code>[compression]</code>, <code>[title_gen]</code>, <code>[embeddings]</code>, <code>[search_synthesis]</code>, <code>[vision]</code>, <code>[scheduled]</code>, <code>[mcp_synthesis]</code>, <code>[extraction]</code>, <code>[rerank]</code>, <code>[planner]</code> section each, same shape (<code>provider</code>, <code>model</code>, optional <code>api_key_env</code>). Absent means <code>auto</code>, the run&#x27;s default model, except <code>[embeddings]</code>, which falls back to a local embedder. Env overrides: <code>PANTHEON_&lt;AUX&gt;_PROVIDER</code> / <code>PANTHEON_&lt;AUX&gt;_MODEL</code> (e.g. <code>PANTHEON_RERANK_MODEL</code>). <code>[extraction]</code>, <code>[rerank]</code>, and <code>[planner]</code> have no call sites yet, they exist so you can pin a cheap model ahead of those workloads landing.</p>
 <h2 id="reflection" class="text-xl font-bold tracking-tight mt-10 mb-3">Reflection</h2>
 <pre><code>
 [reflect]
@@ -112,11 +112,11 @@ max_proposals = 5       # proposal cap per pass
 # model       = &quot;gpt-4o-mini&quot;
 # api_key_env = &quot;OPENAI_API_KEY&quot;
 </code></pre>
-<p class="my-3 leading-relaxed">Reflection is Pantheon&#x27;s ledger-native self-improvement loop: each pass reads structured ledger signals (repeated tool sequences, user corrections, denied approvals, repeated failures), generates proposals with provenance (memory lessons, skill proposals, persona notes), eval-gates skill/persona proposals against bounded evals, and holds them for approval. Memory lessons auto-apply at the <code>Memory</code> trust tier; everything else needs <code>/reflect</code>&#x27;s y/n card (or <code>pantheon reflect --approve &lt;id&gt;</code>). Every LLM call the pipeline makes resolves through the <code>Reflection</code> auxiliary slot — never the chat model — so pin a small model here to keep background self-improvement cheap.</p>
+<p class="my-3 leading-relaxed">Reflection is Pantheon&#x27;s ledger-native self-improvement loop: each pass reads structured ledger signals (repeated tool sequences, user corrections, denied approvals, repeated failures), generates proposals with provenance (memory lessons, skill proposals, persona notes), eval-gates skill/persona proposals against bounded evals, and holds them for approval. Memory lessons auto-apply at the <code>Memory</code> trust tier; everything else needs <code>/reflect</code>&#x27;s y/n card (or <code>pantheon reflect --approve &lt;id&gt;</code>). Every LLM call the pipeline makes resolves through the <code>Reflection</code> auxiliary slot, never the chat model, so pin a small model here to keep background self-improvement cheap.</p>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><code>/reflect</code> — manual one-shot pass (background); <code>/reflect on|off</code> toggles the loop (persisted here); <code>/reflect status</code> shows the toggle plus the last pass summary.</li>
+<li><code>/reflect</code>, manual one-shot pass (background); <code>/reflect on|off</code> toggles the loop (persisted here); <code>/reflect status</code> shows the toggle plus the last pass summary.</li>
 <li><code>pantheon reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]</code></li>
-<li><code>pantheon schedule reflect --cron &#x27;0 2 * * *&#x27;</code> — nightly passes via the normal scheduler.</li>
+<li><code>pantheon schedule reflect --cron &#x27;0 2 * * *&#x27;</code>, nightly passes via the normal scheduler.</li>
 </ul>
 <h2 id="policy" class="text-xl font-bold tracking-tight mt-10 mb-3">Policy</h2>
 <p class="my-3 leading-relaxed"><code>policy = &quot;reader&quot; | &quot;coder&quot; | &quot;coder_memory&quot;</code>. Tools declare the capability they need; the policy decides allow/deny/approve per operation. <code>coder_memory</code> adds the <code>MemoryWrite</code> capability.</p>
@@ -127,21 +127,21 @@ max_turns          = 16      # agent turns per run
 max_tool_calls     = 32      # tool calls per run
 max_delegate_depth = 2       # how deep /swarm delegation may nest
 max_iterations     = 3       # pipeline iterations (pantheon pipeline)
-# max_tokens       = 50000   # per-run token cap — strictly optional, absent = uncapped
+# max_tokens       = 50000   # per-run token cap, strictly optional, absent = uncapped
 
 [goal]
 max_iterations     = 10      # turns allowed per /goal before the TUI stops and asks
 </code></pre>
-<p class="my-3 leading-relaxed">Every key is optional; a <code>0</code> is treated as unset. These are the session defaults — <code>/set &lt;key&gt; &lt;value&gt;</code> retunes them live for the current session (<code>max_turns</code>, <code>max_tool_calls</code>, <code>max_delegate_depth</code>, <code>max_tokens</code>; <code>0</code> clears the token cap), and <code>/tokens [n|off]</code> manages the token cap on its own. There is no cost cap: cost is tracked for <code>pantheon stats</code> / <code>/stats</code> only.</p>
+<p class="my-3 leading-relaxed">Every key is optional; a <code>0</code> is treated as unset. These are the session defaults, <code>/set &lt;key&gt; &lt;value&gt;</code> retunes them live for the current session (<code>max_turns</code>, <code>max_tool_calls</code>, <code>max_delegate_depth</code>, <code>max_tokens</code>; <code>0</code> clears the token cap), and <code>/tokens [n|off]</code> manages the token cap on its own. There is no cost cap: cost is tracked for <code>pantheon stats</code> / <code>/stats</code> only.</p>
 <h2 id="temporal-awareness" class="text-xl font-bold tracking-tight mt-10 mb-3">Temporal awareness</h2>
 <pre><code>
 [temporal]
-enabled            = true    # master switch (default on — zero tokens, pure string injection)
+enabled            = true    # master switch (default on, zero tokens, pure string injection)
 min_gap_secs       = 7200    # idle seconds before an elapsed-gap hint fires (0 = off)
 notify_date_change = true    # hint when the local date rolled over, even on a short gap
 # timezone         = &quot;Africa/Lagos&quot;  # IANA name; absent = system local timezone
 </code></pre>
-<p class="my-3 leading-relaxed">Tacit temporal awareness: the model notices when a conversation has meaningfully aged, without timestamping every message. Before a turn&#x27;s first model call the pipeline reads the last assistant turn&#x27;s timestamp from the durable ledger (restart-safe) and, when the gap matters, appends one coarse hint to the outgoing user message — for the API call only, never written to the ledger or transcript, and never on the system prompt (prompt caching unaffected). Wording is coarse and gets coarser with the gap: <code>about 40 minutes</code>, <code>about 5 hours</code>, <code>about a day</code>, <code>about 3 days</code>. A date rollover across a short gap yields <code>[temporal: the previous exchange was yesterday]</code>; multi-day gaps already imply the date change, so wordings never stack. The conversation&#x27;s standing system preamble tells the model to factor such hints in and never quote them.</p>
+<p class="my-3 leading-relaxed">Tacit temporal awareness: the model notices when a conversation has meaningfully aged, without timestamping every message. Before a turn&#x27;s first model call the pipeline reads the last assistant turn&#x27;s timestamp from the durable ledger (restart-safe) and, when the gap matters, appends one coarse hint to the outgoing user message, for the API call only, never written to the ledger or transcript, and never on the system prompt (prompt caching unaffected). Wording is coarse and gets coarser with the gap: <code>about 40 minutes</code>, <code>about 5 hours</code>, <code>about a day</code>, <code>about 3 days</code>. A date rollover across a short gap yields <code>[temporal: the previous exchange was yesterday]</code>; multi-day gaps already imply the date change, so wordings never stack. The conversation&#x27;s standing system preamble tells the model to factor such hints in and never quote them.</p>
 <p class="my-3 leading-relaxed"><code>policy = &quot;reader&quot; | &quot;coder&quot; | &quot;coder_memory&quot;</code>. Tools declare the capability they need; the policy decides allow/deny/approve per operation. <code>coder_memory</code> adds the <code>MemoryWrite</code> capability.</p>
 <h2 id="memory" class="text-xl font-bold tracking-tight mt-10 mb-3">Memory</h2>
 <pre><code>
@@ -157,8 +157,8 @@ plugin_env_allowlist = [&quot;MY_PLUGIN_TOKEN&quot;]
 </code></pre>
 <p class="my-3 leading-relaxed">The run&#x27;s secrets-boundary policy. Both lists are empty by default (fail closed):</p>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><code>env_allowlist</code>: env vars readable through the <code>env:</code> secret-name form. Entries are exact names or <code>PREFIX_*</code> wildcards; <code>&quot;*&quot;</code> alone allows all (explicit opt-out). Without an entry, <code>env:</code> lookups resolve nothing — secrets must come from <code>PANTHEON_SECRET_*</code> or a durable vault, so a name like <code>env:AWS_SECRET_ACCESS_KEY</code> can never exfiltrate an arbitrary host variable.</li>
-<li><code>plugin_env_allowlist</code>: manifest-declared env vars the plugin supervisor may copy from the host into plugin subprocesses (same entry syntax). A project-controlled manifest can declare any name it likes, so a declared name alone never crosses the boundary — only an entry here lets a host var reach plugin code. Extension (Python/JS) hook subprocesses always run with a cleared environment (PATH only) regardless of this list.</li>
+<li><code>env_allowlist</code>: env vars readable through the <code>env:</code> secret-name form. Entries are exact names or <code>PREFIX_*</code> wildcards; <code>&quot;*&quot;</code> alone allows all (explicit opt-out). Without an entry, <code>env:</code> lookups resolve nothing, secrets must come from <code>PANTHEON_SECRET_*</code> or a durable vault, so a name like <code>env:AWS_SECRET_ACCESS_KEY</code> can never exfiltrate an arbitrary host variable.</li>
+<li><code>plugin_env_allowlist</code>: manifest-declared env vars the plugin supervisor may copy from the host into plugin subprocesses (same entry syntax). A project-controlled manifest can declare any name it likes, so a declared name alone never crosses the boundary, only an entry here lets a host var reach plugin code. Extension (Python/JS) hook subprocesses always run with a cleared environment (PATH only) regardless of this list.</li>
 </ul>
 <h2 id="agents" class="text-xl font-bold tracking-tight mt-10 mb-3">Agents</h2>
 <pre><code>
