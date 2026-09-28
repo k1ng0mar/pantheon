@@ -1,42 +1,43 @@
 # Pantheon docs
 
-> The model is replaceable. The agent should not be.
+> The model is replaceable. Your agent is not.
 
-Pantheon is a durable agent runtime. The model reasons and generates language; Pantheon provides everything around it, lifecycle, state, policy, execution, memory, recovery, events, so an agent persists across model changes, restarts, and interruptions.
+Pantheon is an assistant that runs on your own computer. It talks to AI models for you, remembers what happened, asks before doing anything important, and picks up where it left off, even if you close the laptop or switch models.
 
 ## Start here
 
-- [Getting started](getting-started.md), install, set up, run your first session.
+- [Getting started](getting-started.md): install, set up, have your first conversation.
 
 ## User guide
 
 | Page | Contents |
 |---|---|
-| [Sessions](user-guide/sessions.md) | Terminal interface, one-shot runs, reading back what happened |
-| [Agents](user-guide/agents.md) | Identities, profiles, collaboration |
-| [Memory](user-guide/memory.md) | Layers, trust, learning into skills |
-| [Runs](user-guide/runs.md) | Lifecycle, approvals, recovery, pipelines, scheduling |
+| [Sessions](user-guide/sessions.md) | The terminal app, one-off tasks, looking back at old conversations |
+| [Agents](user-guide/agents.md) | Named assistants with their own personality and memory |
+| [Memory](user-guide/memory.md) | What it remembers, and how it earns your trust |
+| [Runs](user-guide/runs.md) | How work happens, permissions, recovering from crashes |
 | [Channels](user-guide/channels.md) | Terminal, web, Discord, Telegram |
-| [Providers](user-guide/providers.md) | Models, fallbacks, custom endpoints |
-| [Extensions](user-guide/extensions.md) | Plugins, hooks, capability gating |
+| [Providers](user-guide/providers.md) | Which AI models it talks to, and how to switch |
+| [Scheduling](user-guide/scheduling.md) | Recurring tasks that run on their own |
+| [Extensions](user-guide/extensions.md) | Plugins and extra capabilities |
 
 ## Reference
 
 | Page | Contents |
 |---|---|
-| [Terminal](reference/terminal.md) | Every verb, flag, exit code, environment variable |
-| [Configuration](reference/configuration.md) | `config.toml` fields, secrets, data directory |
-| [Troubleshooting](reference/troubleshooting.md) | Error codes, common issues, diagnostics |
+| [Terminal](reference/terminal.md) | Every command, flag, and exit code |
+| [Configuration](reference/configuration.md) | The `config.toml` file, settings, secrets |
+| [Troubleshooting](reference/troubleshooting.md) | Error codes, common problems, how to fix them |
 
 ## Developer
 
 | Page | Contents |
 |---|---|
-| [Architecture](developer/architecture.md) | System design, crate map, locked decisions |
-| [Contributing](developer/contributing.md) | Boundaries, tests, adding a verb or tool |
-| [TUI states](developer/tui.md) | Interface state matrix (internal spec) |
-| [Decisions](developer/decisions/) | Architecture decision records (internal) |
+| [Architecture](developer/architecture.md) | How the system is put together |
+| [Contributing](developer/contributing.md) | How to add code or docs |
+| [TUI states](developer/tui.md) | Terminal interface spec (internal) |
+| [Decisions](developer/decisions/) | Past design decisions (internal) |
 
-## Principles
+## The idea behind it
 
-Persistent agents. Runtime authority over model authority. Experience becomes knowledge. Knowledge is not authority. Everything important is recoverable. One environment, many agents. Interfaces are replaceable.
+Your assistant should outlive the model it talks to. Change models, restart the machine, close the app: the assistant stays the same, and everything it learned stays with it.

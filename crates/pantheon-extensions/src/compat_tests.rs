@@ -1,21 +1,6 @@
 //! Tests for the section 8 compat adapter: manifest reading, hook mapping,
 //! registration scanning, and plugin.yaml generation.
 use super::*;
-use std::fs;
-use std::path::PathBuf;
-
-fn tmp(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("pantheon-compat-{}-{}", name, std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
-    d
-}
-
-fn write(d: &Path, rel: &str, body: &str) {
-    let p = d.join(rel);
-    fs::create_dir_all(p.parent().unwrap()).unwrap();
-    fs::write(p, body).unwrap();
-}
 
 // ---------------------------------------------------------------------------
 // hook mapping

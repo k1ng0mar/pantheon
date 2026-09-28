@@ -4,7 +4,6 @@ use crate::plugin_tools::validate_plugin_tool_name;
 
 /// Registry wiring: plugin tools execute through the shared supervisor
 /// and respect direct-execute gating.
-
 fn err_code(err: &pantheon_api::error::PantheonError) -> &str {
     err.code.as_str()
 }

@@ -40,19 +40,21 @@ fn title_replaces_name_in_the_command_registry() {
 
 #[test]
 fn reset_ephemeral_clears_turn_state_but_keeps_identity() {
-    let mut state = TuiState::default();
-    state.session_id = "sess-1".to_string();
-    state.title = Some("my chat".to_string());
+    let mut state = TuiState {
+        session_id: "sess-1".to_string(),
+        title: Some("my chat".to_string()),
+        queued_message: Some("queued".to_string()),
+        ready: false,
+        active_run: Some("run-9".to_string()),
+        status_line: "working".to_string(),
+        turn_started_at: Some(std::time::Instant::now()),
+        turn_in: Some(10),
+        turn_out: Some(20),
+        ..Default::default()
+    };
     state.blocks.push(TranscriptBlock {
         kind: BlockKind::Status("x".into()),
     });
-    state.queued_message = Some("queued".to_string());
-    state.ready = false;
-    state.active_run = Some("run-9".to_string());
-    state.status_line = "working".to_string();
-    state.turn_started_at = Some(std::time::Instant::now());
-    state.turn_in = Some(10);
-    state.turn_out = Some(20);
 
     assert!(state.reset_ephemeral(), "a turn was in flight");
 
@@ -71,8 +73,7 @@ fn reset_ephemeral_clears_turn_state_but_keeps_identity() {
 
 #[test]
 fn reset_while_idle_reports_no_turn_running() {
-    let mut state = TuiState::default();
-    state.ready = true; // booted and waiting for input: genuinely idle
+    let mut state = TuiState { ready: true, ..Default::default() }; // booted and waiting for input: genuinely idle
     assert!(
         !state.reset_ephemeral(),
         "nothing to cancel when idle, but the clear still applies"

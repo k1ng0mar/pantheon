@@ -1,13 +1,13 @@
 # Extensions
 
-Two tiers: **skills** are portable knowledge (they explain how, see [Memory](memory.md)); **extensions** are runtime code, hooks that inject context, tools that run in child processes. This page covers extensions.
+Two ways to teach Pantheon new tricks. **Skills** are portable know-how: written instructions for how to do something (see [Memory](memory.md)). **Extensions** are actual code: plugins that run when something happens, or new tools. This page is about extensions.
 
 ## Write one
 
 ```
 my-plugin/
-├── plugin.yaml      # manifest (required)
-└── __init__.py      # Python entry
+├── plugin.yaml      # describes the plugin (required)
+└── __init__.py      # the code (Python)
 ```
 
 ```yaml
@@ -17,30 +17,30 @@ provides_hooks:
   - pre_llm_call
 ```
 
-One JSON line in on stdin, one JSON line out on stdout. Return `{"context": "..."}` to inject a system block, `{}` to stay silent. Hook timeout is global (10s), answer fast, work asynchronously.
+Pantheon sends your code one JSON line, your code answers with one JSON line. Answer `{"context": "..."}` to add background the model should see, or `{}` to stay quiet. Hooks have 10 seconds to answer, so do slow work elsewhere.
 
-## Semantics
+## How they behave
 
-- **Fail-open hooks** (context injection, result transforms): a crash, timeout, or bad output skips the hook; the turn continues. A broken plugin never breaks a run.
-- **The gate hook** (`pre_tool_call`) fails **closed**: it may deny, so its failures deny.
-- Three consecutive failures disable the plugin for the session, loudly. A new session retries.
-- Nothing bypasses capability policy. A plugin that executes registers tools carrying capabilities like any built-in.
+- **Most hooks fail open**: if your plugin crashes, times out, or returns garbage, the hook is skipped and the conversation continues. A broken plugin never breaks Pantheon.
+- **The permission hook fails closed**: it can deny tool calls, so its failures count as denials.
+- Three crashes in a row disables the plugin for the session, loudly. A new session gives it another chance.
+- Nothing bypasses your permissions. A plugin's tools need capabilities like any built-in tool.
 
 ## Manage and debug
 
 ```sh
 pantheon plugins list|install <name>|enable|disable <name>
 pantheon extensions                 # what actually loaded
-pantheon hook <name> [--session S]  # fire once, see the injection (or silence)
-pantheon doctor <plugin_dir>        # static preflight: manifest, hooks, entry files
+pantheon hook <name> [--session S]  # run a hook once and see what it adds
+pantheon doctor <plugin_dir>        # preflight check: manifest, hooks, files
 ```
 
-Debug order: `doctor` (usually a manifest typo), `extensions` (did it load?), fire the hook by hand (`echo '{"hook":"pre_llm_call",...}' | python3 __init__.py`). Hermes plugins load natively; OpenClaw TypeScript entries are flagged, Python is the supported runtime.
+When something does not work, check in this order: `doctor` (usually a typo in the manifest), `extensions` (did it load?), then run the hook by hand (`echo '{"hook":"pre_llm_call",...}' | python3 __init__.py`).
 
-`pantheon mcp list` (read-only) shows migration-declared MCP servers and whether each could register. A stdio JSON-RPC client exists in the `pantheon-mcp` crate (connect, list tools, call tools), but no CLI verb or tool surface wires it up yet, agents can't reach MCP servers today. No launcher yet.
+A note on MCP servers: `pantheon mcp list` shows declared MCP servers and whether each could load, but agents cannot reach MCP servers yet. No launcher exists yet either.
 
 ## See also
 
-- [Memory](memory.md), skills, the knowledge half
-- [Terminal reference](../reference/terminal.md#extend), plugin and hook verbs
-- [Architecture](../developer/architecture.md), hooks, compat adapter, capabilities
+- [Memory](memory.md): skills, the knowledge half of extensibility
+- [Terminal reference](../reference/terminal.md#extend): plugin and hook commands
+- [Architecture](../developer/architecture.md): hooks and capabilities

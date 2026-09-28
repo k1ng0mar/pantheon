@@ -20,9 +20,8 @@
       theme: {
         extend: {
           colors: {
-            ink: '#0b0c0e', panel: '#111316', rule: '#1e2024',
-            chalk: '#f2f1ee', ash: '#9a9aa3',
-            brand: '#7223FF', branddark: '#5e1fe8'
+            paper: '#fafaf9', ink: '#141417', grey: '#6f6f76', line: '#e9e6e1',
+            codebg: '#f1efeb', brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
             mono: ['JetBrains Mono', 'monospace'],
@@ -35,25 +34,20 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #0b0c0e; color: #f2f1ee; font-family: 'Alpino', sans-serif; font-size: 16px; line-height: 1.6; }
-    /* Type scale: display 40-64 / h2 28 / h3 20 / body 16 (each step >= 1.25x) */
-    .t-display { font-family: 'Array', sans-serif; font-weight: 600; font-size: clamp(2.5rem, 1.5rem + 5vw, 4rem); line-height: 1.05; letter-spacing: -0.02em; }
-    .t-h2 { font-weight: 600; font-size: 1.75rem; line-height: 1.2; letter-spacing: -0.01em; }
-    .t-h3 { font-weight: 600; font-size: 1.25rem; line-height: 1.3; }
-    :focus-visible { outline: 2px solid #a379ff; outline-offset: 3px; }
-    .rule { height: 1px; background: #1e2024; }
-    .cmd { font-family: 'JetBrains Mono', monospace; }
+    body { background: #fafaf9; color: #141417; font-family: 'Alpino', sans-serif; font-size: 1.0625rem; line-height: 1.7; }
+    .t-display { font-family: 'Array', sans-serif; font-weight: 600; font-size: clamp(2.5rem, 2.75rem + 3.5vw, 4.25rem); line-height: 1.05; letter-spacing: -0.025em; }
+    .t-statement { font-family: 'Array', sans-serif; font-weight: 500; font-size: clamp(1.6rem, 1.4rem + 1.5vw, 2.25rem); line-height: 1.25; letter-spacing: -0.015em; }
+    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
     .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
     .logo-mark img { height: 26px; width: auto; }
-    code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #b18cff; }
-    .btn-primary { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: .8rem 1.75rem; background: #7223FF; color: #fff; font-weight: 600; font-size: 1rem; border-radius: 8px; }
-    .btn-primary:hover { background: #5e1fe8; }
-    .btn-secondary { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: .8rem 1.75rem; border: 1px solid #1e2024; color: #f2f1ee; font-weight: 500; font-size: 1rem; border-radius: 8px; }
-    .btn-secondary:hover { border-color: #9a9aa3; }
-    .num { font-family: 'JetBrains Mono', monospace; font-size: .8rem; color: #a379ff; font-weight: 600; }
-    a.link { color: #a379ff; }
-    a.link:hover { text-decoration: underline; }
-    section { scroll-margin-top: 5rem; }
+    code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
+    .btn-primary { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: .85rem 2rem; background: #7223FF; color: #fff; font-weight: 600; font-size: 1rem; border-radius: 999px; }
+    .btn-primary:hover { background: #5c1de0; }
+    .btn-ghost { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: .85rem 2rem; border: 1px solid #e9e6e1; color: #141417; font-weight: 500; font-size: 1rem; border-radius: 999px; }
+    .btn-ghost:hover { border-color: #141417; }
+    .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: #7223FF; }
+    a.link { color: #7223FF; }
+    a.link:hover { text-decoration: underline; text-underline-offset: 3px; }
     .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }
     .reveal.in { opacity: 1; transform: none; }
     @media (prefers-reduced-motion: reduce) {
@@ -64,124 +58,120 @@
   </style>
 </head>
 <body class="antialiased">
-  <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 cmd text-sm bg-panel border border-rule px-3 py-2 rounded">Skip to content</a>
+  <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 font-mono text-sm bg-paper border border-line px-3 py-2 rounded">Skip to content</a>
 
-  <nav class="sticky top-0 z-40 bg-ink/90 backdrop-blur border-b border-rule">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between gap-6">
-      <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
-        <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-        <span class="font-semibold text-chalk text-lg tracking-tight">pantheon</span>
-      </a>
-      <div class="hidden md:flex items-center gap-7 text-[15px]">
-        <a href="product.html" class="text-chalk">Product</a>
-        <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-        <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
-      </div>
-      <div class="flex items-center gap-3">
-        <a href="install.html" class="hidden sm:inline-flex text-sm font-semibold text-white bg-brand px-4 py-2 rounded-lg hover:bg-branddark min-h-[44px] items-center">Install</a>
-        <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
-      </div>
-    </div>
-    <div id="menu" class="hidden md:hidden border-t border-rule px-5 py-4 flex-col gap-1 text-[15px]">
-      <a href="product.html" class="text-chalk py-2.5 block">Product</a>
-      <a href="install.html" class="text-ash hover:text-chalk py-2.5 block">Install</a>
-      <a href="docs.html" class="text-ash hover:text-chalk py-2.5 block">Docs</a>
-      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk py-2.5 block">GitHub</a>
-    </div>
-  </nav>
+  <header class="max-w-6xl mx-auto px-6 md:px-10 pt-8 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
+      <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+      <span class="font-semibold text-ink text-lg tracking-tight">pantheon</span>
+    </a>
+    <nav class="flex items-center gap-6 md:gap-8 text-[15px]" aria-label="Main">
+      <a href="product.html" class="hidden sm:inline text-ink">Product</a>
+      <a href="install.html" class="hidden sm:inline text-grey hover:text-ink">Install</a>
+      <a href="docs.html" class="hidden sm:inline text-grey hover:text-ink">Docs</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="hidden sm:inline text-grey hover:text-ink">GitHub</a>
+      <button type="button" id="menu-btn" class="sm:hidden text-grey hover:text-ink text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
+    </nav>
+  </header>
+  <div id="menu" class="hidden sm:hidden max-w-6xl mx-auto px-6 py-4 flex-col gap-1 text-[15px] border-b border-line">
+    <a href="product.html" class="text-ink py-2.5 block">Product</a>
+    <a href="install.html" class="text-grey hover:text-ink py-2.5 block">Install</a>
+    <a href="docs.html" class="text-grey hover:text-ink py-2.5 block">Docs</a>
+    <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink py-2.5 block">GitHub</a>
+  </div>
 
   <main id="main">
-  <section class="max-w-5xl mx-auto px-5 md:px-8 pt-20 md:pt-32 pb-16 md:pb-24">
-    <p class="text-sm text-ash reveal">How it works</p>
-    <h1 class="t-display text-chalk mt-6 max-w-3xl reveal">The AI is replaceable. Your assistant is not.</h1>
-    <p class="text-ash mt-6 text-lg leading-relaxed max-w-2xl reveal">
+  <section class="max-w-6xl mx-auto px-6 md:px-10 pt-24 md:pt-40 pb-24 md:pb-36">
+    <p class="eyebrow reveal">How it works</p>
+    <h1 class="t-display text-ink mt-8 max-w-4xl reveal">The model is replaceable. Your agent is not.</h1>
+    <p class="text-grey mt-8 text-lg md:text-xl leading-relaxed max-w-2xl reveal">
       Pantheon sits between you and the AI model. You talk to Pantheon, it
       talks to the model, and it keeps track of everything. Change models any
       time. Your assistant stays the same.
     </p>
   </section>
 
-  <section class="max-w-5xl mx-auto px-5 md:px-8 py-16 md:py-24">
-    <div>
-      <div class="py-12 border-t border-rule reveal">
-        <h2 class="t-h2 text-chalk mt-4">A memory that does not forget.</h2>
-        <p class="text-ash mt-4 max-w-2xl leading-relaxed">
-          Most AI chatbots forget everything when you close them. Pantheon
-          writes every conversation down on your computer, so it builds on
-          what it learned yesterday instead of starting over every morning.
-        </p>
-      </div>
-      <div class="py-12 border-t border-rule reveal">
-        <h2 class="t-h2 text-chalk mt-4">You stay in control.</h2>
-        <p class="text-ash mt-4 max-w-2xl leading-relaxed">
-          Pantheon can read files, run commands, and change things on your
-          computer, but only with your say so. Anything that matters gets a
-          clear yes or no from you first. It never does something important
-          behind your back.
-        </p>
-      </div>
-      <div class="py-12 border-t border-b border-rule reveal">
-        <h2 class="t-h2 text-chalk mt-4">Use any model you like.</h2>
-        <p class="text-ash mt-4 max-w-2xl leading-relaxed">
-          The AI model is just one part of the setup, and it is easy to swap.
-          Try a new one, go back to the old one, use different models for
-          different jobs. Your conversations, memory, and settings stay put.
-        </p>
-      </div>
-    </div>
+  <section class="max-w-6xl mx-auto px-6 md:px-10 py-24 md:py-36">
+    <p class="eyebrow reveal">Memory</p>
+    <h2 class="t-statement text-ink mt-6 max-w-3xl reveal">A memory that does not forget.</h2>
+    <p class="text-grey mt-6 max-w-2xl leading-relaxed reveal">
+      Most AI chatbots forget everything when you close them. Pantheon writes
+      every conversation down on your computer, so it builds on what it learned
+      yesterday instead of starting over every morning.
+    </p>
   </section>
 
-  <section class="max-w-5xl mx-auto px-5 md:px-8 py-16 md:py-24">
-    <h2 class="t-h2 text-chalk reveal">Talk to it anywhere</h2>
-    <p class="text-ash mt-4 max-w-2xl leading-relaxed reveal">
+  <section class="max-w-6xl mx-auto px-6 md:px-10 py-24 md:py-36">
+    <p class="eyebrow reveal">Control</p>
+    <h2 class="t-statement text-ink mt-6 max-w-3xl reveal">You stay in control.</h2>
+    <p class="text-grey mt-6 max-w-2xl leading-relaxed reveal">
+      Pantheon can read files, run commands, and change things on your
+      computer, but only with your say so. Anything that matters gets a clear
+      yes or no from you first. It never does something important behind your
+      back.
+    </p>
+  </section>
+
+  <section class="max-w-6xl mx-auto px-6 md:px-10 py-24 md:py-36">
+    <p class="eyebrow reveal">Models</p>
+    <h2 class="t-statement text-ink mt-6 max-w-3xl reveal">Use any model you like.</h2>
+    <p class="text-grey mt-6 max-w-2xl leading-relaxed reveal">
+      The AI model is just one part of the setup, and it is easy to swap. Try
+      a new one, go back to the old one, use different models for different
+      jobs. Your conversations, memory, and settings stay put.
+    </p>
+  </section>
+
+  <section class="max-w-6xl mx-auto px-6 md:px-10 py-24 md:py-36">
+    <h2 class="t-statement text-ink reveal">Talk to it anywhere</h2>
+    <p class="text-grey mt-6 max-w-2xl leading-relaxed reveal">
       Same assistant, same memory, whichever screen is closest.
     </p>
-    <div class="mt-10 max-w-2xl">
-      <div class="py-6 border-t border-rule flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-6 reveal">
-        <p class="cmd text-sm text-chalk w-28 flex-none">terminal</p>
-        <p class="text-ash text-[15px]">Type <code>pantheon</code> and talk. The full experience.</p>
+    <dl class="mt-14 max-w-3xl">
+      <div class="py-8 border-t border-line reveal">
+        <dt class="font-mono text-sm text-ink">terminal</dt>
+        <dd class="text-grey mt-2">Type <code>pantheon</code> and talk. The full experience.</dd>
       </div>
-      <div class="py-6 border-t border-rule flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-6 reveal">
-        <p class="cmd text-sm text-chalk w-28 flex-none">web</p>
-        <p class="text-ash text-[15px]">A local web page on your machine. Same assistant, nicer to look at.</p>
+      <div class="py-8 border-t border-line reveal">
+        <dt class="font-mono text-sm text-ink">web</dt>
+        <dd class="text-grey mt-2">A local web page on your machine. Same assistant, nicer to look at.</dd>
       </div>
-      <div class="py-6 border-t border-rule flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-6 reveal">
-        <p class="cmd text-sm text-chalk w-28 flex-none">messaging</p>
-        <p class="text-ash text-[15px]">Discord and Telegram, for when you are away from your computer.</p>
+      <div class="py-8 border-t border-line reveal">
+        <dt class="font-mono text-sm text-ink">messaging</dt>
+        <dd class="text-grey mt-2">Discord and Telegram, for when you are away from your computer.</dd>
       </div>
-      <div class="py-6 border-t border-b border-rule flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-6 reveal">
-        <p class="cmd text-sm text-chalk w-28 flex-none">scripts</p>
-        <p class="text-ash text-[15px]">One-off tasks from the command line or on a schedule.</p>
+      <div class="py-8 border-t border-b border-line reveal">
+        <dt class="font-mono text-sm text-ink">scripts</dt>
+        <dd class="text-grey mt-2">One-off tasks from the command line or on a schedule.</dd>
       </div>
-    </div>
+    </dl>
   </section>
 
-  <section class="max-w-5xl mx-auto px-5 md:px-8 py-20 md:py-28 text-center">
-    <h2 class="t-h2 text-chalk reveal">See for yourself.</h2>
-    <p class="text-ash mt-4 reveal">Install it, ask it something, close it, ask again tomorrow.</p>
-    <div class="mt-8 flex flex-wrap justify-center gap-4 reveal">
+  <section class="max-w-6xl mx-auto px-6 md:px-10 py-24 md:py-36">
+    <h2 class="t-statement text-ink reveal">See for yourself.</h2>
+    <p class="text-grey mt-6 reveal">Install it, ask it something, close it, ask again tomorrow.</p>
+    <div class="mt-10 flex flex-wrap gap-4 reveal">
       <a href="install.html" class="btn-primary">Install Pantheon</a>
-      <a href="architecture.html" class="btn-secondary">Technical deep dive</a>
+      <a href="architecture.html" class="btn-ghost">Technical deep dive</a>
     </div>
   </section>
   </main>
 
-  <footer class="border-t border-rule">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 py-12">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+  <footer class="border-t border-line mt-12">
+    <div class="max-w-6xl mx-auto px-6 md:px-10 py-14">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-8">
         <div class="flex items-center gap-2.5">
           <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-          <span class="font-semibold text-chalk">pantheon</span>
+          <span class="font-semibold text-ink">pantheon</span>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
-          <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-          <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-          <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
+          <a href="product.html" class="text-grey hover:text-ink">Product</a>
+          <a href="install.html" class="text-grey hover:text-ink">Install</a>
+          <a href="docs.html" class="text-grey hover:text-ink">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink">GitHub</a>
         </div>
       </div>
-      <p class="text-ash text-sm mt-8">An assistant that does everything. MIT licensed.</p>
+      <p class="text-grey text-sm mt-10">An assistant that does everything. MIT licensed.</p>
     </div>
   </footer>
 

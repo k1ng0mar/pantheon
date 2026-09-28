@@ -1,19 +1,19 @@
 # Terminal reference
 
-Every `pantheon` verb, its flags, and exit codes. Anything not listed here does not exist, typos exit 2 with a suggestion.
+Every `pantheon` command, its flags, and its exit codes. If it is not listed here, it does not exist; a typo exits with code 2 and a suggestion.
 
 ## Conventions
 
-- Exit 0 = success. Exit 1 = operation failed (the message names a structured code like `SAFE_STALE`). Exit 2 = usage error.
+- Exit 0 means it worked. Exit 1 means something failed (the message names an error code like `SAFE_STALE`). Exit 2 means you used it wrong.
 - Flags are `--flag value` or `--flag=value`. Boolean flags (`--yes`) take no value.
-- `PANTHEON_DATA_DIR` overrides the data dir (default `~/.pantheon`) for every verb.
-- JSON on stdout means the command is for scripts: `doctor`, `audit`, `mcp list --json`, `repair --json`. Every other verb prints human-oriented text.
+- `PANTHEON_DATA_DIR` changes the data folder (default `~/.pantheon`) for every command.
+- Commands that print JSON are for scripts: `doctor`, `audit`, `mcp list --json`, `repair --json`. Everything else prints for humans.
 
 ## Start
 
 ```sh
-pantheon                      # open the interactive session (the terminal interface)
-pantheon --resume [id]        # enter the session on a run (unknown ids fail loudly)
+pantheon                      # open the app (needs a real terminal)
+pantheon --resume [id]        # open the app on a past conversation
 pantheon --help | --version
 ```
 
@@ -26,14 +26,14 @@ pantheon run --taskID <id> --grant <scope> [--no-resume]
 pantheon run --taskID <id> --deny  <scope> [--no-resume]
 ```
 
-With `--deliver` (default `session`): a real model turn, printed here or queued for the gateway. Without it: synthetic ledger events only (`--say` records a line, `--fail CODE` ends the run, `--tool` names a tool, `--ext` fires hooks), for recovery/ledger testing, never a model call.
+With `--deliver` (default `session`): a real reply from the model, printed here or sent to your phone. Without it: no model call, just a recorded note (`--say` writes a line, `--fail CODE` ends the run), used for testing and recovery.
 
-## Inspect a run
+## Look at past work
 
 ```sh
-pantheon runs                          # every run, status and title
-pantheon runs <run_id> [--metrics]     # event trace, or one line of counters
-pantheon audit <run_id> [OUT.jsonl]    # sequence-validated JSONL trajectory
+pantheon runs                          # every conversation, status and title
+pantheon runs <run_id> [--metrics]     # the full record, or a line of counts
+pantheon audit <run_id> [OUT.jsonl]    # machine-readable record for scripts
 pantheon logs [agent|errors|gateway] [-n N] [-f] [--level LVL] [--since DUR] [--grep RE]
 ```
 
@@ -45,17 +45,17 @@ pantheon setup [--yes] [--profile P] [--provider P] [--model M]
                [--policy reader|coder|coder_memory] [--memory BACKEND]
                [--fallback-provider P] [--fallback-model M]
 pantheon update [--check] [--version TAG] [--repo OWNER/REPO]
-pantheon model [--list] [--auxiliary KIND]     # provider picker, keys -> .env
-pantheon provider <add|list|remove>            # custom-endpoint registry
-pantheon provider models <name>                # live /models fetch
-pantheon providers                             # catalog listing
-pantheon fallback <add|list|remove>            # ordered fallback chain
-pantheon doctor [<plugin_dir>]                 # system preflight, or per-plugin
+pantheon model [--list] [--auxiliary KIND]     # pick a provider, keys go to .env
+pantheon provider <add|list|remove>            # your custom AI endpoints
+pantheon provider models <name>                # fetch that endpoint's model list
+pantheon providers                             # everything in the catalog
+pantheon fallback <add|list|remove>            # backup models, in order
+pantheon doctor [<plugin_dir>]                 # health check (changes nothing)
 pantheon repair [--dry-run] [--json]           # fix what can be fixed safely
 pantheon reset [--config|--state|--everything] [--yes]  # typed confirmation unless --yes
 ```
 
-`doctor` diagnoses and changes nothing; `repair` is the fixing half. `reset --state` refuses while a run lease is live.
+`doctor` only diagnoses. `repair` actually fixes things. `reset --state` refuses while a run is in progress.
 
 ## Memory
 
@@ -66,7 +66,7 @@ pantheon memory backend list | select NAME [k=v ...] | scaffold NAME [http|stdio
 pantheon memory vault search QUERY | read PATH | list [CATEGORY]
 ```
 
-`recall --ns NAME` (or `--ns '*'`) reads another agent's namespace. `sync` refuses on conflict.
+`recall --ns NAME` (or `--ns '*'`) reads another agent's memories. `sync` refuses if there is a conflict.
 
 ## Extend
 
@@ -75,48 +75,46 @@ pantheon skills list|import <name>|doctor
 pantheon plugins list|install <name>|enable <name>|disable <name>
 pantheon extensions                       # what actually loaded
 pantheon hook <name> [--session S] [--platform P]
-pantheon mcp list [--json]                # read-only: migration-declared servers
+pantheon mcp list [--json]                # declared MCP servers (read-only for now)
 pantheon migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp> [path]
                [--kind K] [--json] [--yes] [--merge-providers]
 ```
 
-`apply` is the only writer (`backup → apply → validate`, needs `--yes` or typed source name).
+`migrate apply` is the only one that writes (`backup, apply, check`, needs `--yes` or the source name typed out).
 
-## Run unattended
+## Unattended work
 
 ```sh
 pantheon schedule <task> [--every 30m | --cron "*/5 * * * *"] [--agent N] [--model M] [--provider P]
                [--timeout 10m] [--overlap skip|replace|queue]
 pantheon schedule list|pause|resume|cancel|run <id>
-pantheon schedule tick [--watch]      # advance the scheduler manually; --watch loops
-pantheon swarm status [<id>] | list   # recorded swarms only; the swarm verb doesn't spawn
-# (sub-agent work happens through in-session delegation, the engine's
-# Delegate arm, not through the swarm verb; spawn caps still apply)
+pantheon schedule tick [--watch]      # fire due jobs now; --watch keeps looping
+pantheon swarm status [<id>] | list   # past agent collaborations; never starts new work
 pantheon gateway start|restart|stop|status|run [discord|telegram]
-pantheon serve [--port N] [--host H]      # AG-UI server
+pantheon serve [--port N] [--host H]      # the local web page + API
 pantheon pipeline --spec "task" [RUN_ID]
 pantheon pipeline RUN_ID --approve plan|review | --deny plan|review
 ```
 
 ## Environment variables
 
-| Variable | Effect |
+| Variable | What it does |
 |---|---|
-| `PANTHEON_DATA_DIR` | Data directory (default `~/.pantheon`) |
-| `PANTHEON_REPO` | Release repo for installer/`update` |
-| `PANTHEON_VERSION` | Pin installer version |
-| `PANTHEON_LOG_LEVEL` | `debug`/`info` (default)/`warning`/`error` |
-| `PANTHEON_PROVIDER` / `PANTHEON_MODEL` | Default model when no config/flags |
-| `PANTHEON_REASONING` | Reasoning effort: `off` (default), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `PANTHEON_DATA_DIR` | Data folder (default `~/.pantheon`) |
+| `PANTHEON_REPO` | Release repo for the installer and `update` |
+| `PANTHEON_VERSION` | Pin an installer version |
+| `PANTHEON_LOG_LEVEL` | `debug` / `info` (default) / `warning` / `error` |
+| `PANTHEON_PROVIDER` / `PANTHEON_MODEL` | Default model when nothing else is set |
+| `PANTHEON_REASONING` | How hard it thinks: `off` (default), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `PANTHEON_API_KEY` | API key fallback |
-| `PANTHEON_DISCORD_TOKEN` / `PANTHEON_TELEGRAM_BOT_TOKEN` | Gateway tokens |
-| `PANTHEON_GATEWAY_ALLOW` | **Required** for gateway: allowlisted chat/user ids |
-| `PANTHEON_SERVE_TOKEN` | Bearer token for `serve` |
-| `PANTHEON_MEMORY_NAMESPACE` | Namespace for memory verbs (default `nyx`) |
-| `PANTHEON_EXT_DIR` / `PANTHEON_SKILLS_DIR` | Extension dir / extra skill root |
-| `PANTHEON_HTTP_TIMEOUT_MS` | Provider HTTP timeout (default 120000) |
-| `PANTHEON_STALL_BUDGET_MS` | Watchdog stall budget (default 30000) |
-| `PANTHEON_RUN_LEASE_TTL_MS` | Run lease TTL (default 30000) |
-| `PANTHEON_PIPELINE_EVAL` | `=1` enables the strict pipeline evaluator |
-| `PANTHEON_KEY_<NAME>` | Stacked keys (`k1,k2` rotate on 401/403/429) |
-| `PANTHEON_<AUX>_PROVIDER` / `PANTHEON_<AUX>_MODEL` | Aux overrides (JUDGE, COMPRESSION, TITLEGEN, EMBEDDINGS, SEARCH_SYNTHESIS, VISION, SCHEDULED, MCP_SYNTHESIS) |
+| `PANTHEON_DISCORD_TOKEN` / `PANTHEON_TELEGRAM_BOT_TOKEN` | Chat app tokens |
+| `PANTHEON_GATEWAY_ALLOW` | **Required** for the gateway: who may talk to it |
+| `PANTHEON_SERVE_TOKEN` | Password for `serve` |
+| `PANTHEON_MEMORY_NAMESPACE` | Namespace for memory commands (default `nyx`) |
+| `PANTHEON_EXT_DIR` / `PANTHEON_SKILLS_DIR` | Where plugins live / extra skill folder |
+| `PANTHEON_HTTP_TIMEOUT_MS` | How long to wait for the AI (default 120000) |
+| `PANTHEON_STALL_BUDGET_MS` | Watchdog patience (default 30000) |
+| `PANTHEON_RUN_LEASE_TTL_MS` | Run ownership timeout (default 30000) |
+| `PANTHEON_PIPELINE_EVAL` | `=1` turns on the strict pipeline checker |
+| `PANTHEON_KEY_<NAME>` | Backup keys (`k1,k2` rotate on 401/403/429) |
+| `PANTHEON_<AUX>_PROVIDER` / `PANTHEON_<AUX>_MODEL` | Helper model overrides (JUDGE, COMPRESSION, TITLEGEN, EMBEDDINGS, SEARCH_SYNTHESIS, VISION, SCHEDULED, MCP_SYNTHESIS) |

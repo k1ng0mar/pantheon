@@ -1,10 +1,10 @@
 # Channels
 
-One agent, every surface. Identity, memory, and history follow you from the terminal to your phone to the browser, the interface presents, the runtime remembers.
+One assistant, every screen. Your identity, memory, and history follow you from the terminal to your phone to the browser. The interface changes; the assistant does not.
 
 ## Terminal
 
-`pantheon` opens the interactive interface; `pantheon run` serves scripts and automation. See [Sessions](sessions.md).
+`pantheon` opens the app; `pantheon run` handles scripts and automation. See [Sessions](sessions.md).
 
 ## Web
 
@@ -12,23 +12,23 @@ One agent, every surface. Identity, memory, and history follow you from the term
 pantheon serve [--port N] [--host H]
 ```
 
-A local AG-UI server: web client at `/`, RPC at `/agui/rpc`, everything else gated by `PANTHEON_SERVE_TOKEN`. It runs the same Session runtime as the terminal and replays the ledger stream, a minimal reference surface, not a second product.
+A local web page on your machine, plus an API other apps can talk to. It runs the same assistant as the terminal and shows the same conversations. Access is locked behind a token (`PANTHEON_SERVE_TOKEN`).
 
 ## Messaging
 
 Discord and Telegram connect through the gateway:
 
 ```sh
-pantheon gateway start    # supervised service (systemd/launchd), verified active
+pantheon gateway start    # start the background service
 pantheon gateway restart|stop|status|run
 ```
 
-Two requirements, both non-negotiable: channel tokens (`PANTHEON_DISCORD_TOKEN`, `PANTHEON_TELEGRAM_BOT_TOKEN` in `<data_dir>/.env`, never in config) and the pairing allowlist (`PANTHEON_GATEWAY_ALLOW`). Unknown senders are refused before anything reaches the runtime.
+Two things are required, no exceptions: your chat app tokens (put them in `<data_dir>/.env`, never in the config file) and a list of who is allowed to talk to it (`PANTHEON_GATEWAY_ALLOW`). Strangers are turned away before anything reaches the assistant.
 
-Replies route back with `pantheon run --say ... --deliver telegram|discord`, a durable outbox, so delivery survives gateway downtime.
+Replies go out with `pantheon run --say ... --deliver telegram|discord`. Outgoing messages are saved first, so they get delivered even if the gateway was down when they were queued.
 
 ## See also
 
-- [Sessions](sessions.md), the terminal interface
-- [Configuration](../reference/configuration.md#gateway), tokens and allowlist
-- [Troubleshooting](../reference/troubleshooting.md), connection issues
+- [Sessions](sessions.md): the terminal app
+- [Configuration](../reference/configuration.md#gateway): tokens and the allowlist
+- [Troubleshooting](../reference/troubleshooting.md): connection problems

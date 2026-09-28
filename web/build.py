@@ -139,7 +139,7 @@ def render(md: str, src: str) -> tuple[str, str]:
         if line.strip() == "---":
             close_list()
             close_table()
-            out.append('<div class="glow-line my-8"></div>')
+            out.append('<div class="hairline my-8"></div>')
             continue
         m = re.match(r"^(#{1,3})\s+(.*)", line)
         if m:
@@ -151,7 +151,7 @@ def render(md: str, src: str) -> tuple[str, str]:
                 title = m.group(2).strip()
                 out.append(
                     f'<h1 id="{sid}" class="text-3xl font-bold tracking-tight mb-2">{text}</h1>'
-                    '<div class="glow-line my-6"></div>'
+                    '<div class="hairline my-6"></div>'
                 )
             elif level == 2:
                 out.append(

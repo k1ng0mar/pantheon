@@ -50,11 +50,13 @@ pub struct DashboardConfig {
     pub bind: String,
     pub port: u16,
     pub open_browser: bool,
-    /// Called with `(run_id, granted)` after an approval decision is
-    /// durably recorded. The TUI wires this to its session-resume path;
-    /// the dashboard itself never resumes runs.
-    pub on_approval: Option<Arc<dyn Fn(&str, bool) + Send + Sync>>,
+    pub on_approval: Option<ApprovalCallback>,
 }
+
+/// Callback fired with `(run_id, granted)` after an approval decision is
+/// durably recorded. The TUI wires this to its session-resume path;
+/// the dashboard itself never resumes runs.
+pub type ApprovalCallback = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
 /// Shared request state.
 pub struct App {
@@ -62,7 +64,7 @@ pub struct App {
     pub token: String,
     pub bind: String,
     pub bind_all: bool,
-    pub on_approval: Option<Arc<dyn Fn(&str, bool) + Send + Sync>>,
+    pub on_approval: Option<ApprovalCallback>,
 }
 
 /// Generate the per-instance 256-bit token: 32 bytes from the OS RNG,

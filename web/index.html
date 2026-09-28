@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pantheon: an assistant that does everything</title>
-  <meta name="description" content="Pantheon is an assistant that runs on your computer. It does everything, asks before doing anything important, and keeps your data at home. Free and open source.">
+  <meta name="description" content="Pantheon is an assistant that runs on your computer. It does everything, asks before doing anything important, and keeps your data at home.">
   <meta property="og:title" content="Pantheon: an assistant that does everything">
   <meta property="og:description" content="An assistant that runs on your computer. It does everything and asks before doing anything important.">
   <meta property="og:type" content="website">
@@ -21,9 +21,8 @@
       theme: {
         extend: {
           colors: {
-            ink: '#0b0c0e', panel: '#111316', rule: '#1e2024',
-            chalk: '#f2f1ee', ash: '#9a9aa3',
-            brand: '#7223FF', branddark: '#5e1fe8'
+            paper: '#fafaf9', ink: '#141417', grey: '#6f6f76', line: '#e9e6e1',
+            codebg: '#f1efeb', brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
             mono: ['JetBrains Mono', 'monospace'],
@@ -36,35 +35,29 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #0b0c0e; color: #f2f1ee; font-family: 'Alpino', sans-serif; font-size: 16px; line-height: 1.6; }
-    /* Type scale: display 40-64 / h2 28 / h3 20 / body 16 (each step >= 1.25x) */
-    .t-display { font-family: 'Array', sans-serif; font-weight: 600; font-size: clamp(2.5rem, 1.5rem + 5vw, 4rem); line-height: 1.05; letter-spacing: -0.02em; }
-    .t-h2 { font-weight: 600; font-size: 1.75rem; line-height: 1.2; letter-spacing: -0.01em; }
-    .t-h3 { font-weight: 600; font-size: 1.25rem; line-height: 1.3; }
-    :focus-visible { outline: 2px solid #a379ff; outline-offset: 3px; }
-    .rule { height: 1px; background: #1e2024; }
-    .cmd { font-family: 'JetBrains Mono', monospace; }
+    body { background: #fafaf9; color: #141417; font-family: 'Alpino', sans-serif; font-size: 1.0625rem; line-height: 1.7; }
+    .t-display { font-family: 'Array', sans-serif; font-weight: 600; font-size: clamp(2.75rem, 3rem + 4vw, 4.75rem); line-height: 1.03; letter-spacing: -0.025em; }
+    .t-statement { font-family: 'Array', sans-serif; font-weight: 500; font-size: clamp(1.6rem, 1.4rem + 1.5vw, 2.25rem); line-height: 1.25; letter-spacing: -0.015em; }
+    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
     .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
     .logo-mark img { height: 26px; width: auto; }
-    .cmdbox { background: #111316; border: 1px solid #1e2024; border-radius: 8px; padding: 1rem 1.25rem; }
-    .cmdbox code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #f2f1ee; }
-    code:not(.cmdbox code):not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #b18cff; }
-    pre { background: #111316; border: 1px solid #1e2024; border-radius: 8px; padding: 1.25rem; overflow-x: auto; }
-    pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #f2f1ee; }
-    .copy-btn { border: 1px solid #1e2024; color: #9a9aa3; border-radius: 6px; padding: .4rem .8rem; font-family: 'JetBrains Mono', monospace; font-size: .75rem; flex: none; min-height: 44px; }
-    .copy-btn:hover { color: #f2f1ee; border-color: #9a9aa3; }
-    .copy-btn[data-state="done"] { color: #7fa86f; border-color: #7fa86f; }
-    .btn-primary { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: .8rem 1.75rem; background: #7223FF; color: #fff; font-weight: 600; font-size: 1rem; border-radius: 8px; }
-    .btn-primary:hover { background: #5e1fe8; }
-    .btn-secondary { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: .8rem 1.75rem; border: 1px solid #1e2024; color: #f2f1ee; font-weight: 500; font-size: 1rem; border-radius: 8px; }
-    .btn-secondary:hover { border-color: #9a9aa3; }
-    .num { font-family: 'JetBrains Mono', monospace; font-size: .8rem; color: #a379ff; font-weight: 600; }
+    .cmdbox { background: #f1efeb; border: 1px solid #e9e6e1; border-radius: 20px; padding: 1.25rem 1.4rem; }
+    .cmdbox code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #141417; }
+    code:not(.cmdbox code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
+    .copy-btn { border: 1px solid #e9e6e1; background: #fafaf9; color: #6f6f76; border-radius: 999px; padding: .45rem 1rem; font-family: 'JetBrains Mono', monospace; font-size: .75rem; flex: none; min-height: 44px; }
+    .copy-btn:hover { color: #141417; border-color: #6f6f76; }
+    .copy-btn[data-state="done"] { color: #2e7d46; border-color: #2e7d46; }
+    .btn-primary { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: .85rem 2rem; background: #7223FF; color: #fff; font-weight: 600; font-size: 1rem; border-radius: 999px; }
+    .btn-primary:hover { background: #5c1de0; }
+    .btn-ghost { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: .85rem 2rem; border: 1px solid #e9e6e1; color: #141417; font-weight: 500; font-size: 1rem; border-radius: 999px; }
+    .btn-ghost:hover { border-color: #141417; }
+    .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: #7223FF; }
     summary { list-style: none; cursor: pointer; }
     summary::-webkit-details-marker { display: none; }
-    .chevron { display: inline-block; transition: transform .15s; color: #9a9aa3; }
-    details[open] summary .chevron { transform: rotate(90deg); }
-    a.link { color: #a379ff; }
-    a.link:hover { text-decoration: underline; }
+    .plus { display: inline-block; transition: transform .15s; color: #6f6f76; font-weight: 400; }
+    details[open] summary .plus { transform: rotate(45deg); }
+    a.link { color: #7223FF; }
+    a.link:hover { text-decoration: underline; text-underline-offset: 3px; }
     .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }
     .reveal.in { opacity: 1; transform: none; }
     @media (prefers-reduced-motion: reduce) {
@@ -75,151 +68,156 @@
   </style>
 </head>
 <body class="antialiased">
-  <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 cmd text-sm bg-panel border border-rule px-3 py-2 rounded">Skip to content</a>
+  <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 font-mono text-sm bg-paper border border-line px-3 py-2 rounded">Skip to content</a>
 
-  <nav class="sticky top-0 z-40 bg-ink/90 backdrop-blur border-b border-rule">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between gap-6">
-      <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
-        <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-        <span class="font-semibold text-chalk text-lg tracking-tight">pantheon</span>
-      </a>
-      <div class="hidden md:flex items-center gap-7 text-[15px]">
-        <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-        <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-        <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
-      </div>
-      <div class="flex items-center gap-3">
-        <a href="install.html" class="hidden sm:inline-flex text-sm font-semibold text-white bg-brand px-4 py-2 rounded-lg hover:bg-branddark min-h-[44px] items-center">Install</a>
-        <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
-      </div>
-    </div>
-    <div id="menu" class="hidden md:hidden border-t border-rule px-5 py-4 flex-col gap-1 text-[15px]">
-      <a href="product.html" class="text-ash hover:text-chalk py-2.5 block">Product</a>
-      <a href="install.html" class="text-ash hover:text-chalk py-2.5 block">Install</a>
-      <a href="docs.html" class="text-ash hover:text-chalk py-2.5 block">Docs</a>
-      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk py-2.5 block">GitHub</a>
-    </div>
-  </nav>
+  <header class="max-w-6xl mx-auto px-6 md:px-10 pt-8 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
+      <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+      <span class="font-semibold text-ink text-lg tracking-tight">pantheon</span>
+    </a>
+    <nav class="flex items-center gap-6 md:gap-8 text-[15px]" aria-label="Main">
+      <a href="product.html" class="hidden sm:inline text-grey hover:text-ink">Product</a>
+      <a href="install.html" class="hidden sm:inline text-grey hover:text-ink">Install</a>
+      <a href="docs.html" class="hidden sm:inline text-grey hover:text-ink">Docs</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="hidden sm:inline text-grey hover:text-ink">GitHub</a>
+      <button type="button" id="menu-btn" class="sm:hidden text-grey hover:text-ink text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
+    </nav>
+  </header>
+  <div id="menu" class="hidden sm:hidden max-w-6xl mx-auto px-6 py-4 flex-col gap-1 text-[15px] border-b border-line">
+    <a href="product.html" class="text-grey hover:text-ink py-2.5 block">Product</a>
+    <a href="install.html" class="text-grey hover:text-ink py-2.5 block">Install</a>
+    <a href="docs.html" class="text-grey hover:text-ink py-2.5 block">Docs</a>
+    <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink py-2.5 block">GitHub</a>
+  </div>
 
   <main id="main">
   <!-- Hero -->
-  <section class="max-w-5xl mx-auto px-5 md:px-8 pt-20 md:pt-32 pb-20 md:pb-28">
-    <p class="text-sm text-ash reveal">Free and open source &middot; MIT</p>
-    <h1 class="t-display text-chalk mt-6 max-w-3xl reveal">An assistant that does everything.</h1>
-    <p class="text-ash mt-6 text-lg leading-relaxed max-w-2xl reveal">
+  <section class="max-w-6xl mx-auto px-6 md:px-10 pt-24 md:pt-40 pb-24 md:pb-36">
+    <h1 class="t-display text-ink max-w-4xl reveal">An assistant that does everything.</h1>
+    <p class="text-grey mt-8 text-lg md:text-xl leading-relaxed max-w-2xl reveal">
       Pantheon runs on your computer. It talks to AI models for you, keeps a
       record of everything it does, and asks before doing anything important.
     </p>
-    <div class="mt-10 max-w-2xl reveal">
+    <div class="mt-12 max-w-2xl reveal">
       <div class="cmdbox flex items-center gap-4">
         <code class="break-all flex-1 leading-relaxed" id="install-cmd">curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash</code>
         <button type="button" class="copy-btn" data-copy="#install-cmd" aria-label="Copy install command">copy</button>
       </div>
-      <div class="mt-8 flex flex-wrap gap-4">
+      <div class="mt-10 flex flex-wrap gap-4">
         <a href="install.html" class="btn-primary">Install Pantheon</a>
-        <a href="product.html" class="btn-secondary">How it works</a>
+        <a href="product.html" class="btn-ghost">How it works</a>
       </div>
     </div>
   </section>
 
-  <!-- What it does -->
-  <section class="max-w-5xl mx-auto px-5 md:px-8 py-20 md:py-28">
-    <h2 class="t-h2 text-chalk reveal">What it does</h2>
-    <div class="mt-12">
-      <div class="py-10 border-t border-rule reveal">
-        <h3 class="t-h3 text-chalk mt-3">It remembers.</h3>
-        <p class="text-ash mt-2 max-w-2xl leading-relaxed">Every conversation is saved on your machine. Ask about something from last week and it still knows.</p>
-      </div>
-      <div class="py-10 border-t border-rule reveal">
-        <h3 class="t-h3 text-chalk mt-3">It asks first.</h3>
-        <p class="text-ash mt-2 max-w-2xl leading-relaxed">Before doing anything that matters, like deleting files or pushing code, it stops and asks you.</p>
-      </div>
-      <div class="py-10 border-t border-rule reveal">
-        <h3 class="t-h3 text-chalk mt-3">It does not lose your work.</h3>
-        <p class="text-ash mt-2 max-w-2xl leading-relaxed">Close your laptop in the middle of a task. When you come back, it picks up right where it left off.</p>
-      </div>
-      <div class="py-10 border-t border-b border-rule reveal">
-        <h3 class="t-h3 text-chalk mt-3">Your data stays home.</h3>
-        <p class="text-ash mt-2 max-w-2xl leading-relaxed">Everything lives on your computer. There is no account, no cloud, nothing uploaded.</p>
-      </div>
-    </div>
+  <!-- One idea: memory -->
+  <section class="max-w-6xl mx-auto px-6 md:px-10 py-24 md:py-36">
+    <p class="eyebrow reveal">Memory</p>
+    <h2 class="t-statement text-ink mt-6 max-w-3xl reveal">It remembers, so you do not have to repeat yourself.</h2>
+    <p class="text-grey mt-6 max-w-2xl leading-relaxed reveal">
+      Every conversation is saved on your machine. Ask about something from last
+      week and it still knows.
+    </p>
+  </section>
+
+  <!-- One idea: control -->
+  <section class="max-w-6xl mx-auto px-6 md:px-10 py-24 md:py-36">
+    <p class="eyebrow reveal">Control</p>
+    <h2 class="t-statement text-ink mt-6 max-w-3xl reveal">It asks first. Always.</h2>
+    <p class="text-grey mt-6 max-w-2xl leading-relaxed reveal">
+      Before doing anything that matters, like deleting files or pushing code,
+      it stops and asks you. Nothing important happens behind your back.
+    </p>
+  </section>
+
+  <!-- One idea: home -->
+  <section class="max-w-6xl mx-auto px-6 md:px-10 py-24 md:py-36">
+    <p class="eyebrow reveal">Privacy</p>
+    <h2 class="t-statement text-ink mt-6 max-w-3xl reveal">Your data stays home.</h2>
+    <p class="text-grey mt-6 max-w-2xl leading-relaxed reveal">
+      Everything lives on your computer. There is no account, no cloud,
+      nothing uploaded.
+    </p>
   </section>
 
   <!-- Get started -->
-  <section class="max-w-5xl mx-auto px-5 md:px-8 py-20 md:py-28">
-    <h2 class="t-h2 text-chalk reveal">Two steps to a working assistant</h2>
-    <div class="mt-12 space-y-12">
+  <section class="max-w-6xl mx-auto px-6 md:px-10 py-24 md:py-36">
+    <h2 class="t-statement text-ink reveal">Get started</h2>
+    <div class="mt-14 space-y-12 max-w-2xl">
       <div class="reveal">
-        <p class="num">Step 1</p>
-        <h3 class="t-h3 text-chalk mt-3">Install it.</h3>
-        <p class="text-ash mt-2 max-w-2xl leading-relaxed">One command. Works on Linux, macOS, and Windows.</p>
-        <div class="cmdbox flex items-center gap-4 mt-5 max-w-2xl">
+        <p class="text-ink font-medium">Install Pantheon:</p>
+        <div class="cmdbox flex items-center gap-4 mt-4">
           <code class="break-all flex-1 leading-relaxed" id="install-cmd-2">curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash</code>
           <button type="button" class="copy-btn" data-copy="#install-cmd-2" aria-label="Copy install command">copy</button>
         </div>
       </div>
       <div class="reveal">
-        <p class="num">Step 2</p>
-        <h3 class="t-h3 text-chalk mt-3">Tell it which AI to use.</h3>
-        <p class="text-ash mt-2 max-w-2xl leading-relaxed">Run <code>pantheon setup</code> and answer a few questions. Then just type <code>pantheon</code> and start talking.</p>
-        <div class="cmdbox flex items-center gap-4 mt-5 max-w-2xl">
+        <p class="text-ink font-medium">Configure your provider:</p>
+        <div class="cmdbox flex items-center gap-4 mt-4">
           <code class="break-all flex-1 leading-relaxed" id="setup-cmd">pantheon setup</code>
           <button type="button" class="copy-btn" data-copy="#setup-cmd" aria-label="Copy setup command">copy</button>
         </div>
       </div>
+      <div class="reveal">
+        <p class="text-ink font-medium">Then start Pantheon:</p>
+        <div class="cmdbox flex items-center gap-4 mt-4">
+          <code class="break-all flex-1 leading-relaxed" id="start-cmd">pantheon</code>
+          <button type="button" class="copy-btn" data-copy="#start-cmd" aria-label="Copy start command">copy</button>
+        </div>
+      </div>
+      <p class="text-grey leading-relaxed reveal">That is it. Pantheon handles the runtime, state, tools, memory, and everything around the model.</p>
     </div>
   </section>
 
-  <!-- FAQ -->
-  <section class="max-w-5xl mx-auto px-5 md:px-8 py-20 md:py-28">
-    <h2 class="t-h2 text-chalk reveal">Questions</h2>
-    <div class="mt-10 max-w-3xl">
-      <details class="py-6 border-t border-rule reveal">
-        <summary class="text-chalk font-medium"><span class="chevron mr-2">&#9656;</span> Do I need to know how to code?</summary>
-        <p class="text-ash mt-3 leading-relaxed">No. If you can use a chat app, you can use Pantheon. You type, it answers, and it can use tools on your computer when you ask it to.</p>
+  <!-- Questions -->
+  <section class="max-w-6xl mx-auto px-6 md:px-10 py-24 md:py-36">
+    <h2 class="t-statement text-ink reveal">Questions</h2>
+    <div class="mt-12 max-w-3xl">
+      <details class="py-7 border-t border-line reveal">
+        <summary class="text-ink font-medium text-lg"><span class="plus mr-3">+</span>Do I need to know how to code?</summary>
+        <p class="text-grey mt-4 leading-relaxed">No. If you can use a chat app, you can use Pantheon. You type, it answers, and it can use tools on your computer when you ask it to.</p>
       </details>
-      <details class="py-6 border-t border-rule reveal">
-        <summary class="text-chalk font-medium"><span class="chevron mr-2">&#9656;</span> Which AI do I talk to?</summary>
-        <p class="text-ash mt-3 leading-relaxed">Whichever you like. Pantheon works with OpenAI, Anthropic, and others. You bring your own API key, and you can switch models any time without losing anything.</p>
+      <details class="py-7 border-t border-line reveal">
+        <summary class="text-ink font-medium text-lg"><span class="plus mr-3">+</span>Which AI do I talk to?</summary>
+        <p class="text-grey mt-4 leading-relaxed">Whichever you like. Pantheon works with OpenAI, Anthropic, and others. You bring your own API key, and you can switch models any time without losing anything.</p>
       </details>
-      <details class="py-6 border-t border-rule reveal">
-        <summary class="text-chalk font-medium"><span class="chevron mr-2">&#9656;</span> Where does my data go?</summary>
-        <p class="text-ash mt-3 leading-relaxed">Nowhere. It stays on your computer. There is no account to sign up for and nothing is uploaded.</p>
+      <details class="py-7 border-t border-line reveal">
+        <summary class="text-ink font-medium text-lg"><span class="plus mr-3">+</span>Where does my data go?</summary>
+        <p class="text-grey mt-4 leading-relaxed">Nowhere. It stays on your computer. There is no account to sign up for and nothing is uploaded.</p>
       </details>
-      <details class="py-6 border-t border-b border-rule reveal">
-        <summary class="text-chalk font-medium"><span class="chevron mr-2">&#9656;</span> What does it cost?</summary>
-        <p class="text-ash mt-3 leading-relaxed">Pantheon itself is free. You pay your AI provider for what you use, the same as you would talking to them directly.</p>
+      <details class="py-7 border-t border-b border-line reveal">
+        <summary class="text-ink font-medium text-lg"><span class="plus mr-3">+</span>What does it cost?</summary>
+        <p class="text-grey mt-4 leading-relaxed">Pantheon itself is free. You pay your AI provider for what you use, the same as you would talking to them directly.</p>
       </details>
     </div>
   </section>
 
   <!-- CTA -->
-  <section class="max-w-5xl mx-auto px-5 md:px-8 py-20 md:py-28 text-center">
-    <h2 class="t-h2 text-chalk reveal">Takes a minute to install.</h2>
-    <p class="text-ash mt-4 reveal">Free forever. Your assistant keeps everything it learns.</p>
-    <div class="mt-8 flex flex-wrap justify-center gap-4 reveal">
+  <section class="max-w-6xl mx-auto px-6 md:px-10 py-24 md:py-36">
+    <h2 class="t-statement text-ink reveal">Takes a minute to install.</h2>
+    <p class="text-grey mt-6 reveal">Free forever. Your assistant keeps everything it learns.</p>
+    <div class="mt-10 flex flex-wrap gap-4 reveal">
       <a href="install.html" class="btn-primary">Install Pantheon</a>
-      <a href="docs.html" class="btn-secondary">Read the docs</a>
+      <a href="docs.html" class="btn-ghost">Read the docs</a>
     </div>
   </section>
   </main>
 
-  <footer class="border-t border-rule">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 py-12">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+  <footer class="border-t border-line mt-12">
+    <div class="max-w-6xl mx-auto px-6 md:px-10 py-14">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-8">
         <div class="flex items-center gap-2.5">
           <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-          <span class="font-semibold text-chalk">pantheon</span>
+          <span class="font-semibold text-ink">pantheon</span>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
-          <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-          <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-          <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
+          <a href="product.html" class="text-grey hover:text-ink">Product</a>
+          <a href="install.html" class="text-grey hover:text-ink">Install</a>
+          <a href="docs.html" class="text-grey hover:text-ink">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink">GitHub</a>
         </div>
       </div>
-      <p class="text-ash text-sm mt-8">An assistant that does everything. MIT licensed.</p>
+      <p class="text-grey text-sm mt-10">An assistant that does everything. MIT licensed.</p>
     </div>
   </footer>
 

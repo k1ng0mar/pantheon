@@ -279,8 +279,7 @@ fn enabled_without_slot_stays_deterministic() {
             "always use tabs for indentation",
         );
     }
-    let mut config = ConsolidationConfig::default();
-    config.enabled = true;
+    let config = ConsolidationConfig { enabled: true, ..Default::default() };
     let spy = SpyDistill::default();
     let model_policy = policy_without_slot();
 
@@ -315,8 +314,7 @@ fn enabled_with_slot_routes_through_auxiliary_never_chat() {
             "always use tabs for indentation",
         );
     }
-    let mut config = ConsolidationConfig::default();
-    config.enabled = true;
+    let config = ConsolidationConfig { enabled: true, ..Default::default() };
     let spy = SpyDistill::default();
     let model_policy = policy_with_slot();
 

@@ -1,6 +1,6 @@
 # Sessions
 
-The terminal interface is how you work with Pantheon directly. Everything you do lands in the ledger, so conversations survive exits, crashes, and channel switches.
+The terminal app is how you talk to Pantheon directly. Everything is written down as it happens, so conversations survive exits, crashes, and switching to your phone.
 
 ## Open a session
 
@@ -8,55 +8,55 @@ The terminal interface is how you work with Pantheon directly. Everything you do
 pantheon
 ```
 
-Bare `pantheon` opens the interface. It requires a terminal; without one it exits and points you at `pantheon run`. Your last run resumes automatically; `/help` lists every command.
+That opens the app. It needs a real terminal; without one it tells you to use `pantheon run` instead. Your last conversation picks up where you left off. Type `/help` to see every command.
 
 ## The interface
 
-- **Status bar**: context window %, turn tokens, tok/s, live model, what the turn costs, at a glance.
-- **Tabs** (`Ctrl+Tab`, `Alt+1..9`): background sessions keep running; a turn finishing on an unfocused tab raises a badge instead of stealing focus.
-- **Turn timeline** (`Ctrl+O`): a read-only rail of the run's turns for jumping back through a long session.
-- **Rewind** (double-`Esc`, then confirm): rolls the session view back one turn. The ledger stays append-only, rewind writes a marker, never rewrites history.
-- **Editor** (`Ctrl+E`): a fullscreen draft editor for long prompts.
+- **Status bar**: shows how much of the conversation fits in the model's memory, what the last reply cost, and which model is active.
+- **Tabs** (`Ctrl+Tab`, `Alt+1..9`): keep several conversations open. A reply finishing in another tab shows a badge instead of yanking you over.
+- **Turn timeline** (`Ctrl+O`): scroll back through the turns of a long conversation.
+- **Rewind** (double-`Esc`, then confirm): undo the last turn in the view. History is never rewritten; the rewind is recorded as its own entry.
+- **Editor** (`Ctrl+E`): a fullscreen editor for writing long messages.
 
-Useful commands: `/models` (browse providers and models, Enter switches), `/model [provider id]` (show or switch the live model), `/reasoning [off|minimal|low|medium|high|xhigh|max]` (effort for chat turns), `/runs` (browse conversations), `/resume <id>` (jump to one), `/history`, `/status`, `/name <title>`, `/agent [name]`, `/agents`, `/remember KEY TEXT` (store agent memory), `/skills [filter]`, `/settings`, `/gateway`, `/doctor`, `/sessions` (live sessions), `/new`, `/compress`, `/export [markdown|json]`, `/clear`, `/exit`, `/goal [text]` (session objective, iteration-limited), `/tokens [n|off]` (per-run token cap), `/set [key value]` (live budget tuning).
+Useful commands: `/models` (browse AI models, Enter switches), `/model [provider]` (show or change the current model), `/reasoning [off|minimal|low|medium|high|xhigh|max]` (how hard the model thinks), `/runs` (browse conversations), `/resume <id>` (open one), `/history`, `/status`, `/name <title>`, `/agent [name]`, `/agents`, `/remember KEY TEXT` (save a memory), `/skills [filter]`, `/settings`, `/gateway`, `/doctor`, `/sessions` (live sessions), `/new`, `/compress`, `/export [markdown|json]`, `/clear`, `/exit`, `/goal [text]` (set a goal for this session), `/tokens [n|off]` (cap spending), `/set [key value]` (change limits on the fly).
 
-Start on a specific run from the shell: `pantheon --resume [id]`.
+Open a specific conversation from the shell: `pantheon --resume [id]`.
 
-## Approve work
+## Saying yes or no
 
-When a tool call needs a human, the run parks and shows a permission card: `y` allows it, `n` denies it. Approval covers that one operation, never a blank check for future calls.
+When Pantheon wants to do something that matters, like deleting files or pushing code, the conversation pauses and shows a permission card: `y` allows it, `n` refuses. Permission covers that one action only, never a blank check.
 
-Away from the terminal? Settle it out of band:
+Away from the terminal? Answer from anywhere:
 
 ```sh
-pantheon run --taskID <id> --grant <scope>   # allow, then continue the run
-pantheon run --taskID <id> --deny  <scope>   # refuse; recorded in the transcript
+pantheon run --taskID <id> --grant <scope>   # allow it, and the work continues
+pantheon run --taskID <id> --deny  <scope>   # refuse it; the refusal is written into the conversation
 ```
 
-A denial doesn't kill the run, the model sees "denied by operator" and adapts.
+Saying no does not kill the conversation. The model sees "denied by operator" and works around it.
 
-## Run without a terminal
+## Tasks without the app
 
 ```sh
 pantheon run --taskID <id> --say "text" --deliver session|telegram|discord
 ```
 
-A real model turn, delivered where you ask: printed here, or queued for the gateway to send. The queue is durable, so a delivered task survives gateway downtime.
+One real reply from the model, printed here or sent to your phone. The request is saved first, so it survives even if the messaging service is down.
 
-## Look back
+## Looking back
 
 ```sh
-pantheon runs                 # all runs, with status and title
-pantheon runs <id>            # the full event trace, in words
-pantheon runs <id> --metrics  # counters: turns, tools, approvals
-pantheon audit <id> [out]     # sequence-checked JSONL for scripts
-pantheon logs [errors] [-f]   # process logs, including pre-run failures
+pantheon runs                 # all conversations, with status and title
+pantheon runs <id>            # the full record of one, in plain words
+pantheon runs <id> --metrics  # counts: turns, tool uses, permissions
+pantheon audit <id> [out]     # machine-readable record for scripts
+pantheon logs [errors] [-f]   # what the program has been doing
 ```
 
-`runs` answers "why did that turn end that way" (approvals included). `logs` answers "what has the process been doing". States: `running`, `awaiting_approval`, `completed`, `failed`, `canceled`.
+`runs` answers "why did that conversation end that way". `logs` answers "what has the program been doing". A run is `running`, `awaiting_approval`, `completed`, `failed`, or `canceled`.
 
 ## See also
 
-- [Runs](runs.md), lifecycle, recovery, pipelines, scheduling
-- [Channels](channels.md), messaging apps and the web client
-- [Terminal reference](../reference/terminal.md), every flag and exit code
+- [Runs](runs.md): how work happens, recovers, and gets scheduled
+- [Channels](channels.md): messaging apps and the web page
+- [Terminal reference](../reference/terminal.md): every flag and exit code

@@ -63,9 +63,6 @@ fn err_code(err: &pantheon_api::error::PantheonError) -> &str {
     err.code.as_str()
 }
 
-/// A squatting plugin tool named `shell` is rejected with a structured
-/// conflict error, and a legitimately-named plugin tool passes.
-
 /// A plugin manifest that squats `shell` fails registration and registers
 /// nothing; a legitimately-named tool from the same path registers fine.
 #[test]

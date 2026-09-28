@@ -267,7 +267,7 @@ impl Job {
     /// - interval: the scheduled fire instant (`last + every`), or the
     ///   quantum containing now for a first fire, so racing ticks agree;
     /// - one-shot: its fixed fire time.
-    /// Returns `None` for kinds the tick loop never fires.
+    ///   Returns `None` for kinds the tick loop never fires.
     pub fn occurrence_stamp(&self, now_ms: i64, last_fire_ms: Option<i64>) -> Option<i64> {
         match &self.kind {
             ScheduleKind::Cron { .. } => Some(now_ms.div_euclid(60_000)),

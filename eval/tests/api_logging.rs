@@ -1,11 +1,6 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
 use pantheon_api::logging::rotate_log;
-use std::path::Path;
-
-fn read(dir: &Path, name: &str) -> String {
-    std::fs::read_to_string(dir.join("logs").join(name)).unwrap_or_default()
-}
 
 #[test]
 fn rotation_renames_generations_in_order_and_drops_the_oldest() {

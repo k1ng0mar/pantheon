@@ -4,6 +4,12 @@
 //! (`cargo test -p <crate>`). Everything behavioral — SQLite stores,
 //! threads, sockets, subprocesses, timing, filesystem — lives here and
 //! runs via `cargo test -p pantheon-eval`.
+//!
+//! Note on `clippy::result_large_err`: the tool closures below must match
+//! `ToolRegistry::register`'s `Result<_, PantheonError>` signature, and
+//! `PantheonError` is the shared workspace error type. The signature is
+//! fixed by the registry API, so the lint is silenced for this file.
+#![allow(clippy::result_large_err)]
 
 use pantheon_api::capability::Policy;
 use pantheon_api::events::Event;
