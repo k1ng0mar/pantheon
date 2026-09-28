@@ -75,8 +75,9 @@ pub struct ModelRow {
 
 /// A pending rewind confirmation: the last turn the operator could roll
 /// back to, captured while the session is idle. Confirming appends a
-/// rewind marker to the ledger (history is never rewritten) and truncates
-/// the live transcript view back to the pre-turn state.
+/// `TurnRewound` marker to the ledger (history is never rewritten) and
+/// truncates the live transcript view back to the pre-turn state. Replay
+/// honors the marker, so a resumed session never sees the rewound turns.
 #[derive(Debug, Clone)]
 pub struct RewindOffer {
     /// 1-based turn number being rewound.
@@ -1753,13 +1754,26 @@ fn do_rewind(state: &mut TuiState, session: &Arc<Session>) {
     let Some(offer) = state.rewind_offer.take() else {
         return;
     };
-    let detail = format!(
-        "rewind: operator discarded turn {} from the live view; ledger history retained",
-        offer.turn_no
-    );
-    if let Err(e) = session.supervisor.emit(RuntimeErrorEvent::RunProgress {
+    // Resolve the ledger turn id of the turn being rewound: the most
+    // recent TurnStarted in the effective history is the turn the operator
+    // sees as last (replay already honors earlier rewinds).
+    let turn_id = session
+        .supervisor
+        .replay(&state.session_id)
+        .ok()
+        .and_then(|entries| {
+            entries.iter().rev().find_map(|e| match &e.event {
+                RuntimeErrorEvent::TurnStarted { turn_id, .. } => Some(turn_id.clone()),
+                _ => None,
+            })
+        });
+    let Some(turn_id) = turn_id else {
+        state.add_status("rewind: no turn in ledger history, turn kept".to_string());
+        return;
+    };
+    if let Err(e) = session.supervisor.emit(RuntimeErrorEvent::TurnRewound {
         run_id: state.session_id.clone(),
-        detail,
+        turn_id,
     }) {
         state.add_status(format!("rewind: ledger marker failed, turn kept: {e}"));
         return;
