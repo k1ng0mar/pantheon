@@ -126,7 +126,7 @@ impl TabList {
         self.active = 0;
         let target = active_run_id
             .is_empty()
-            .then(|| prev_active)
+            .then_some(prev_active)
             .flatten()
             .unwrap_or_else(|| active_run_id.to_string());
         if !target.is_empty() {

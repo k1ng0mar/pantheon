@@ -366,11 +366,11 @@ fn notifier_detection_from_explicit_path() {
     std::fs::create_dir_all(&bins).unwrap();
 
     // Empty dir: none (on this Linux host).
-    assert_eq!(detect_notifier(&[bins.clone()]), Notifier::None);
+    assert_eq!(detect_notifier(std::slice::from_ref(&bins)), Notifier::None);
 
     // notify-send present and executable: selected with its path.
     let stub = write_stub(&bins, "notify-send", "#!/bin/sh\nexit 0\n");
-    assert_eq!(detect_notifier(&[bins.clone()]), Notifier::NotifySend(stub));
+    assert_eq!(detect_notifier(std::slice::from_ref(&bins)), Notifier::NotifySend(stub));
 }
 
 #[test]

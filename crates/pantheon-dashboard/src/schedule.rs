@@ -56,7 +56,7 @@ impl From<&StoredJob> for Job {
             model: s.model.clone(),
             provider: s.provider.clone(),
             timeout_secs: s.timeout_secs,
-            overlap: s.overlap.clone(),
+            overlap: s.overlap,
             deliver: s.deliver.clone(),
         }
     }

@@ -1,13 +1,10 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
-use pantheon_api::capability::{Capability, Policy};
-use pantheon_api::provenance::TrustTier;
-use pantheon_memory::backend::{BackendKind, BackendRegistry, BackendSelection};
+use pantheon_memory::backend::{BackendRegistry, BackendSelection};
 use pantheon_memory::Provenance;
 use pantheon_memory::{
-    load_selection, open_selected, save_selection, write_via, LayerKind, MemoryStore, Proposal,
+    load_selection, open_selected, save_selection, write_via, LayerKind, Proposal,
 };
-use std::collections::HashMap;
 
 #[test]
 fn plugin_factory_reads_url_from_selection_options() {

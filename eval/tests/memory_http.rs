@@ -1,7 +1,5 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
-use pantheon_api::capability::Policy;
-use pantheon_api::provenance::TrustTier;
 use pantheon_memory::http_backend::HttpBackend;
 use pantheon_memory::{LayerKind, MemoryBackend};
 

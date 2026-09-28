@@ -1,6 +1,5 @@
 //! Tests for `pantheon_exec::supervisor::tests` — sibling file so sources stay test-free.
 use super::*;
-use crate::plugins::{EnvVarDecl, ToolCapability};
 
 #[test]
 fn protocol_round_trips() {

@@ -2776,7 +2776,7 @@ fn auto_reflect_due(turns_completed: u32, enabled: bool, auto_turns: u32, runnin
         && !running
         && auto_turns > 0
         && turns_completed > 0
-        && turns_completed % auto_turns == 0
+        && turns_completed.is_multiple_of(auto_turns)
 }
 
 /// Maybe fire an automatic reflection pass after a completed turn. Reads
@@ -3511,11 +3511,10 @@ fn tui_loop(
                         // Yank the last assistant message to the clipboard.
                         // Only when the composer is empty so it never eats
                         // typed text; /yank covers the rest.
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            if state.input.trim().is_empty() {
+                        KeyCode::Char('y') | KeyCode::Char('Y')
+                            if state.input.trim().is_empty() => {
                                 do_yank(state, "");
                             }
-                        }
                         _ => {}
                     }
                     state.tick();
@@ -5532,11 +5531,10 @@ fn handle_slash(
         let word = cmd.split_whitespace().next().unwrap_or(cmd);
         if let Some(name) = word.strip_prefix('/') {
             let name = name.trim();
-            if !name.is_empty() && !crate::commands::is_builtin(name) {
-                if try_invoke_skill(state, session, tx, name, cmd) {
+            if !name.is_empty() && !crate::commands::is_builtin(name)
+                && try_invoke_skill(state, session, tx, name, cmd) {
                     return;
                 }
-            }
         }
     }
     state.add_status(format!("unknown command: {cmd} (try /help)"));
@@ -5582,9 +5580,7 @@ fn try_invoke_skill(
     let Some(skill) = find_skill_by_name(&skills, name) else {
         return false;
     };
-    let input = full_cmd
-        .splitn(2, char::is_whitespace)
-        .nth(1)
+    let input = full_cmd.split_once(char::is_whitespace).map(|x| x.1)
         .unwrap_or("")
         .trim();
     let body = match pantheon_exec::skills::skill_body(skill) {

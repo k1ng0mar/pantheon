@@ -1,8 +1,7 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
 use pantheon_api::events::Event;
-use pantheon_api::provenance::Provenance;
-use pantheon_storage::{audit_line, export_jsonl, LedgerEntry};
+use pantheon_storage::{export_jsonl, LedgerEntry};
 
 fn entry(id: i64, event: Event) -> LedgerEntry {
     LedgerEntry {

@@ -1,9 +1,8 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
-use pantheon_api::capability::{Capability, Policy};
+use pantheon_api::capability::Capability;
 use pantheon_api::error::PantheonError;
-use pantheon_api::provenance::{Provenance, TrustTier};
-use pantheon_memory::{LayerKind, MemoryBackend, MemoryRecord, MemoryStore, Proposal, Recalled};
+use pantheon_memory::{LayerKind, MemoryBackend, MemoryStore, Proposal};
 use pantheon_tools::memory_tools::{
     register_memory_tools, resolve_namespace, MemoryToolEvent, MemoryToolOptions, VecMemorySink,
 };

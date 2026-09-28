@@ -988,9 +988,7 @@ fn quarantine_collapse(rel: &Path) -> Option<PathBuf> {
         return None;
     }
     let source = parts.next()?;
-    if parts.next().is_none() {
-        return None;
-    }
+    parts.next()?;
     Some(PathBuf::from("imported-sessions").join(source))
 }
 

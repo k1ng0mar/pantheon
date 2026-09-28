@@ -23,8 +23,6 @@
 //!   caller, same as shell output.
 use crate::plugins::PluginManifest;
 use crate::{compact_output, CompactionPolicy};
-#[cfg(test)]
-use pantheon_api::capability::Capability;
 use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};

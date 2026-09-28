@@ -1,12 +1,6 @@
 //! Tests for `pantheon_tools::plugin_tools` — the registration half that
 //! split out of `pantheon-exec::supervisor_tests` (capability ≠ tool).
-use crate::plugin_tools::{register_plugin_tools, validate_plugin_tool_name};
-use crate::tools::ToolRegistry;
-use pantheon_api::capability::Capability;
-use pantheon_exec::plugins::{PluginManifest, ToolCapability};
-use pantheon_exec::supervisor::PluginSupervisor;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use crate::plugin_tools::validate_plugin_tool_name;
 
 /// Registry wiring: plugin tools execute through the shared supervisor
 /// and respect direct-execute gating.

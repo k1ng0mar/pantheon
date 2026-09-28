@@ -363,7 +363,7 @@ fn empty_buffer_app_affordances_survive() {
 
 #[test]
 fn move_to_end_parks_for_mention_completion() {
-    let (mut text, mut v) = vstate("hello @");
+    let (text, mut v) = vstate("hello @");
     v.mode = VimMode::Insert;
     move_to_end(&text, &mut v);
     let (r, c) = v.cursor(&text);

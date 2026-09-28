@@ -1,6 +1,5 @@
 //! Tests for `pantheon_memory::markdown::tests` — sibling file so sources stay test-free.
 use super::*;
-use crate::LayerKind;
 use pantheon_api::provenance::TrustTier;
 
 #[test]
