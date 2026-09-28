@@ -73,7 +73,10 @@ fn reset_ephemeral_clears_turn_state_but_keeps_identity() {
 
 #[test]
 fn reset_while_idle_reports_no_turn_running() {
-    let mut state = TuiState { ready: true, ..Default::default() }; // booted and waiting for input: genuinely idle
+    let mut state = TuiState {
+        ready: true,
+        ..Default::default()
+    }; // booted and waiting for input: genuinely idle
     assert!(
         !state.reset_ephemeral(),
         "nothing to cancel when idle, but the clear still applies"

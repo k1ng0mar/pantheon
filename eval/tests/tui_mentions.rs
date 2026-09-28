@@ -131,10 +131,7 @@ fn resolve_mentions_enforces_total_cap() {
     assert!(display.contains("@b.txt [attached"), "{display}");
     assert!(display.contains("(truncated)"), "{display}");
     let section = model.split("<attached_files>").nth(1).unwrap();
-    assert!(
-        section.len() <= MAX_ATTACH_BYTES + 1024,
-        "budget blown"
-    );
+    assert!(section.len() <= MAX_ATTACH_BYTES + 1024, "budget blown");
 }
 
 #[test]

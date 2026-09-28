@@ -1,8 +1,7 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
 use pantheon_extensions::compat::{
-    detect_kind, entry_file, inspect, read_manifest, render_plugin_yaml,
-    CompatKind,
+    detect_kind, entry_file, inspect, read_manifest, render_plugin_yaml, CompatKind,
 };
 use pantheon_extensions::hooks::Hook;
 use pantheon_extensions::manifest::PluginManifest;
