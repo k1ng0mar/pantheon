@@ -108,6 +108,7 @@ pantheon schedule &quot;nightly review&quot; --every 24h
 pantheon schedule list|pause|resume|cancel|run &lt;id&gt;
 </code></pre>
 <p class="my-3 leading-relaxed">Due jobs fire on a tick: <code>pantheon schedule tick [--watch]</code> is the primitive a daemon, cron entry, or CI step calls (<code>--watch</code> keeps it running in the foreground). Cron expressions are validated at creation — an invalid or never-firing expression is rejected rather than stored as a job that would silently never run. Occurrences are claimed atomically in the ledger, so a restart never double-fires a run.</p>
+<p class="my-3 leading-relaxed">Full coverage — background service, delivery targets, templates, the model rule — lives in <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/user-guide/scheduling.md">Scheduling</a>.</p>
 <h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="sessions.html">Sessions</a> — interacting with runs, approvals in the terminal</li>

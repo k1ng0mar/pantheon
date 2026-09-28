@@ -30,11 +30,11 @@ impl ChatTransport for StubTransport {
 }
 
 #[test]
-fn outcome_carries_catalog_cost_so_cost_ceiling_trips() {
+fn outcome_carries_catalog_cost_for_stats() {
     // Regression: the adapter bakes `cost_cents` at parse time from
-    // `cost_usd: None` (always 0), so the agent loop's `max_cost_cents`
-    // budget accumulated zeros and could never trip. The chain now
-    // stamps the catalog estimate onto the outcome before returning it.
+    // `cost_usd: None` (always 0), so cost tracking accumulated zeros.
+    // The chain now stamps the catalog estimate onto the outcome before
+    // returning it; stats (not a cap — the cost cap was removed) read it.
     // Uses a cataloged priced model (openai/gpt-4o-mini) so the estimate
     // is real; the stub transport means no network and no API key.
     let policy = ModelPolicy {
@@ -82,16 +82,6 @@ fn outcome_carries_catalog_cost_so_cost_ceiling_trips() {
         out.cost_cents(),
         expected,
         "outcome must carry the catalog estimate, got {out:?}"
-    );
-    // The accumulation the agent loop performs (`total_cost_cents +=
-    // outcome.cost_cents()`, then `total_cost_cents >= max_cost_cents`):
-    // a cap equal to this turn's cost trips on the single turn now.
-    let mut total_cost_cents = 0u32;
-    total_cost_cents += out.cost_cents();
-    let cap = expected;
-    assert!(
-        total_cost_cents >= cap,
-        "budget check (total {total_cost_cents} >= cap {cap}) must trip"
     );
 }
 

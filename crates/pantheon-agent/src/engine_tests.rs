@@ -267,7 +267,6 @@ fn budget_cap_stops_before_the_turn() {
         max_turns: 3,
         max_tool_calls: 32,
         max_tokens: None,
-        max_cost_cents: None,
         max_delegate_depth: 2,
     };
     let mut t = vec![];

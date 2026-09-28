@@ -84,11 +84,10 @@ pub struct Budget {
     pub max_turns: u32,
     pub max_tool_calls: u32,
     /// Maximum tokens (input + output) across the entire run.
-    /// `None` means no token cap (not "unlimited by design").
+    /// `None` means no token cap (not "unlimited by design"). Strictly
+    /// optional: Pantheon never requires it, `/tokens` manages it per
+    /// session, and cost tracking in stats is unaffected by its absence.
     pub max_tokens: Option<u32>,
-    /// Maximum cost in US cents (e.g. 500 = $5.00).
-    /// `None` means no cost cap.
-    pub max_cost_cents: Option<u32>,
     /// Maximum delegation depth. A loop running at `depth` may spawn a
     /// child (which runs at `depth + 1`) only while
     /// `depth + 1 <= max_delegate_depth`; deeper requests are refused
@@ -107,7 +106,6 @@ impl Default for Budget {
             max_turns: 16,
             max_tool_calls: 32,
             max_tokens: None,
-            max_cost_cents: None,
             max_delegate_depth: 2,
         }
     }
@@ -250,19 +248,15 @@ impl<'a> AgentLoop<'a> {
                 run_id: self.run_id.clone(),
             });
 
-            // Track token and cost budgets across the run
+            // Track token and cost budgets across the run. Cost is tracked
+            // for stats only: there is no cost cap (removed; a money cap
+            // is the wrong unit for an agent loop — tokens are the
+            // honest bound).
             total_tokens += outcome.tokens();
             total_cost_cents += outcome.cost_cents();
             if let Some(cap) = self.budget.max_tokens {
                 if total_tokens >= cap {
                     return Ok(LoopOutcome::BudgetExhausted { cap: "max_tokens" });
-                }
-            }
-            if let Some(cap) = self.budget.max_cost_cents {
-                if total_cost_cents >= cap {
-                    return Ok(LoopOutcome::BudgetExhausted {
-                        cap: "max_cost_cents",
-                    });
                 }
             }
 

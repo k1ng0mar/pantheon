@@ -44,6 +44,22 @@ Reflection is Pantheon's ledger-native self-improvement loop: each pass reads st
 
 `policy = "reader" | "coder" | "coder_memory"`. Tools declare the capability they need; the policy decides allow/deny/approve per operation. `coder_memory` adds the `MemoryWrite` capability.
 
+## Budgets
+
+```toml
+[budget]
+max_turns          = 16      # agent turns per run
+max_tool_calls     = 32      # tool calls per run
+max_delegate_depth = 2       # how deep /swarm delegation may nest
+max_iterations     = 3       # pipeline iterations (pantheon pipeline)
+# max_tokens       = 50000   # per-run token cap — strictly optional, absent = uncapped
+
+[goal]
+max_iterations     = 10      # turns allowed per /goal before the TUI stops and asks
+```
+
+Every key is optional; a `0` is treated as unset. These are the session defaults — `/set <key> <value>` retunes them live for the current session (`max_turns`, `max_tool_calls`, `max_delegate_depth`, `max_tokens`; `0` clears the token cap), and `/tokens [n|off]` manages the token cap on its own. There is no cost cap: cost is tracked for `pantheon stats` / `/stats` only.
+
 ## Temporal awareness
 
 ```toml

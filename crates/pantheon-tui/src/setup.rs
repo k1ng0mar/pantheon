@@ -211,6 +211,8 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         rerank: None,
         consolidation: None,
         temporal: None,
+        budget: None,
+        goal: None,
     };
 
     match cfg.save(data_dir) {

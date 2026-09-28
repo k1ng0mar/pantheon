@@ -763,7 +763,6 @@ fn drive_test_loop<'a>(
             max_turns: 4,
             max_tool_calls: 8,
             max_tokens: None,
-            max_cost_cents: None,
             max_delegate_depth: 2,
         },
         sink,
@@ -1097,9 +1096,10 @@ fn delegate_child_session_runs_one_level_deeper() {
         );
         // Depth limits nesting, never the work a level may do: the turn
         // bound stays the default budget at every depth.
-        assert_eq!(child.budget.max_turns, 16);
-        assert_eq!(child.budget.max_tool_calls, 32);
-        assert_eq!(child.budget.max_delegate_depth, 2);
+        let child_budget = child.budget_snapshot();
+        assert_eq!(child_budget.max_turns, 16);
+        assert_eq!(child_budget.max_tool_calls, 32);
+        assert_eq!(child_budget.max_delegate_depth, 2);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -211,6 +211,21 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "runtime",
         },
         CommandMeta {
+            name: "goal",
+            desc: "set or show the session goal (iteration-limited)",
+            category: "agent",
+        },
+        CommandMeta {
+            name: "tokens",
+            desc: "show or set the per-run token cap (default: uncapped)",
+            category: "agent",
+        },
+        CommandMeta {
+            name: "set",
+            desc: "show or set session budget values",
+            category: "agent",
+        },
+        CommandMeta {
             name: "help",
             desc: "list commands",
             category: "system",

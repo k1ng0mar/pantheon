@@ -150,10 +150,9 @@ impl<T: ChatTransport> ProviderChain<T> {
                             meta.cost.estimate(usage.input_tokens, usage.output_tokens);
                         // The adapter baked `cost_cents` at parse time from
                         // `cost_usd: None` (always 0) — it never sees catalog
-                        // prices, so the chain owns the fix-up. The agent
-                        // loop's `max_cost_cents` budget reads
-                        // `outcome.cost_cents()`; without this it can never
-                        // trip.
+                        // prices, so the chain owns the fix-up. Cost feeds
+                        // stats only (there is no cost cap); without this
+                        // every tracked turn would report $0.
                         if let Some(usd) = usage.cost_usd {
                             stamp_outcome_cost(&mut turn.outcome, (usd * 100.0) as u32);
                         }

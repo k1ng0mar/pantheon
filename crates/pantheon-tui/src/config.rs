@@ -343,6 +343,62 @@ pub struct RetentionSection {
     pub keep_days: u32,
 }
 
+/// Run budgets (`[budget]` in config.toml). Every key is optional and
+/// every key is overridable per session via `/set` (and `/tokens` for
+/// the token cap). A `0` is treated as unset — a zero cap would end
+/// every run before it starts, so it falls back to the default instead
+/// of silently bricking the session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct BudgetSection {
+    /// Max agent turns per run. Default 16.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    /// Max tool calls per run. Default 32.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
+    /// Max delegation depth. Default 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_delegate_depth: Option<u32>,
+    /// Max pipeline iterations (`pantheon pipeline`). Default 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<u32>,
+    /// Max tokens (input + output) per run. Absent = uncapped.
+    /// Strictly optional: Pantheon never requires it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+}
+
+impl BudgetSection {
+    fn nz(value: Option<u32>, default: u32) -> u32 {
+        value.filter(|&v| v > 0).unwrap_or(default)
+    }
+
+    /// Resolve to the runtime [`pantheon_agent::Budget`].
+    pub fn resolve(&self) -> pantheon_agent::Budget {
+        pantheon_agent::Budget {
+            max_turns: Self::nz(self.max_turns, 16),
+            max_tool_calls: Self::nz(self.max_tool_calls, 32),
+            max_tokens: self.max_tokens.filter(|&v| v > 0),
+            max_delegate_depth: Self::nz(self.max_delegate_depth, 2),
+        }
+    }
+
+    /// Pipeline iteration cap for `pantheon pipeline`. Default 3.
+    pub fn pipeline_iterations(&self) -> u32 {
+        Self::nz(self.max_iterations, 3)
+    }
+}
+
+/// `/goal` behavior (`[goal]` in config.toml).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GoalSection {
+    /// Max iterations pursuing one `/goal` before the TUI stops the
+    /// session's turns and asks. Default 10. Overridable per session
+    /// via `/goal iterations <n>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<u32>,
+}
+
 /// TUI chrome (`[tui]` in config.toml).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct TuiSection {
@@ -573,6 +629,13 @@ pub struct Config {
     /// defaults (2h gap, date-rollover hints, system local timezone).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporal: Option<TemporalSection>,
+    /// Run budgets (`[budget]`). Absent = runtime defaults (16 turns,
+    /// 32 tool calls, depth 2, uncapped tokens, 3 pipeline iterations).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<BudgetSection>,
+    /// `/goal` behavior (`[goal]`). Absent = 10-iteration default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<GoalSection>,
     /// TUI chrome (`[tui]`). Absent = defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tui: Option<TuiSection>,
@@ -600,6 +663,29 @@ impl Config {
             .as_ref()
             .map(|r| r.keep_days)
             .unwrap_or(DEFAULT_RETENTION_DAYS)
+    }
+    /// Effective run budget. Absent `[budget]` = the runtime defaults
+    /// (16 turns, 32 tool calls, depth 2, uncapped tokens).
+    pub fn budget(&self) -> pantheon_agent::Budget {
+        self.budget
+            .as_ref()
+            .map(BudgetSection::resolve)
+            .unwrap_or_default()
+    }
+    /// Max `/goal` iterations. Absent `[goal]` = 10.
+    pub fn goal_iterations(&self) -> u32 {
+        self.goal
+            .as_ref()
+            .and_then(|g| g.max_iterations)
+            .filter(|&v| v > 0)
+            .unwrap_or(10)
+    }
+    /// Max pipeline iterations (`pantheon pipeline`). Absent `[budget]` = 3.
+    pub fn pipeline_iterations(&self) -> u32 {
+        self.budget
+            .as_ref()
+            .map(BudgetSection::pipeline_iterations)
+            .unwrap_or(3)
     }
     /// Load the config, or explain why it could not be read.
     ///

@@ -107,6 +107,16 @@ pub struct RewindOffer {
     pub preview: String,
 }
 
+/// A `/goal` objective with its iteration budget. Each agent turn
+/// started while a goal is active consumes one iteration; at the cap
+/// the TUI refuses new turns until the user raises or clears the goal.
+#[derive(Debug, Clone, Default)]
+pub struct ActiveGoal {
+    pub text: String,
+    pub iterations_used: u32,
+    pub max_iterations: u32,
+}
+
 /// Runtime state for the TUI session.
 pub struct TuiState {
     pub session_id: String,
@@ -188,6 +198,12 @@ pub struct TuiState {
     pub turn_started_at: Option<Instant>,
     /// Completed turns. The status bar shows this + 1 while a turn runs.
     pub turns_completed: u32,
+    /// Active `/goal`: the session objective plus its iteration budget.
+    /// Each `start_turn` consumes one iteration; at the cap the TUI
+    /// refuses new turns until the user raises (`/goal iterations N`)
+    /// or clears (`/goal clear`) the goal. The text is mirrored into
+    /// the runtime session so the model keeps pursuing it across turns.
+    pub goal: Option<ActiveGoal>,
     /// Background-turn contract for the tab layer: set when a turn
     /// finishes while this session's tab is not focused. The tab UI
     /// renders it as a badge. Cleared by `attention_clear` when the tab
@@ -278,6 +294,7 @@ impl Default for TuiState {
             turn_out: None,
             turn_started_at: None,
             turns_completed: 0,
+            goal: None,
             attention: false,
             attention_note: None,
             timeline: None,
@@ -338,6 +355,7 @@ impl TuiState {
             turn_out: None,
             turn_started_at: None,
             turns_completed: 0,
+            goal: None,
             attention: false,
             attention_note: None,
             timeline: None,
@@ -700,6 +718,28 @@ impl TuiState {
     /// run. A newer queued message replaces an older one: the single slot
     /// holds the latest intent, and it drains on the next TurnComplete.
     ///
+    /// The `/goal` iteration gate. Returns the refusal message when the
+    /// active goal's iteration budget is exhausted, else `None`.
+    /// Extracted so the rule is testable against the shipped code.
+    pub fn goal_refusal(&self) -> Option<String> {
+        let g = self.goal.as_ref()?;
+        if g.iterations_used >= g.max_iterations {
+            Some(format!(
+                "goal iteration budget exhausted ({}/{}). /goal iterations N to raise it, /goal clear to drop the goal.",
+                g.iterations_used, g.max_iterations
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Consume one goal iteration. Call when a turn starts under a goal.
+    pub fn consume_goal_iteration(&mut self) {
+        if let Some(g) = self.goal.as_mut() {
+            g.iterations_used = g.iterations_used.saturating_add(1);
+        }
+    }
+
     /// Extracted from the event loop so the guard rules are testable
     /// against the shipped code rather than a copy of it.
     pub fn begin_turn(&mut self, msg: String) -> bool {
@@ -2133,6 +2173,11 @@ pub fn run_tui_session_with(
         }
     };
 
+    // Run budgets from `[budget]` in config.toml (max turns, tool calls,
+    // delegate depth, token cap). Absent = the runtime defaults; `/set`
+    // and `/tokens` retune them live for this session.
+    session.set_budget(file_cfg.as_ref().map(|c| c.budget()).unwrap_or_default());
+
     // Tacit temporal awareness (`[temporal]` in config.toml). Absent
     // section = the runtime defaults (enabled, 2h gap, system timezone).
     if let Some(t) = file_cfg.as_ref().and_then(|c| c.temporal.clone()) {
@@ -2322,9 +2367,18 @@ fn start_turn(
     tx: &std::sync::mpsc::Sender<TuiEvent>,
     msg: String,
 ) -> bool {
+    // An active /goal caps how many turns may pursue it. Background
+    // tasks (/btw) and resumes bypass start_turn, so they never consume
+    // the goal's iterations.
+    let refusal = state.goal_refusal();
+    if let Some(refusal) = refusal {
+        state.add_status(refusal);
+        return false;
+    }
     if !state.begin_turn(msg.clone()) {
         return false;
     }
+    state.consume_goal_iteration();
     session.reset_cancel();
     let run_id = resolve_send_run_id(state).to_string();
     state.active_run = Some(run_id.clone());
@@ -2427,6 +2481,180 @@ fn do_btw(
     ));
     spawn_bg_task(tx, session, &task, prompt);
     state.bg_tasks.push(task);
+}
+
+/// `/goal [text]` — set or show the session's objective. Each agent turn
+/// started while a goal is active consumes one iteration; at the cap the
+/// TUI refuses new turns until `/goal iterations N` raises it or
+/// `/goal clear` drops it. The text is mirrored into the runtime session
+/// so the model keeps pursuing it across turns.
+fn do_goal(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
+    let arg = cmd.strip_prefix("/goal").map(str::trim).unwrap_or("");
+    if arg.is_empty() {
+        match state.goal.clone() {
+            Some(g) => {
+                state.add_status(format!("goal: {}", g.text));
+                state.add_status(format!(
+                    "iterations: {}/{}",
+                    g.iterations_used, g.max_iterations
+                ));
+            }
+            None => state.add_status("no active goal — /goal <text> to set one".into()),
+        }
+        return;
+    }
+    if arg == "clear" {
+        state.goal = None;
+        session.set_goal(None);
+        state.add_status("goal cleared".into());
+        return;
+    }
+    // `/goal iterations <n>` adjusts the cap; anything else — even text
+    // starting with "iterations" — is goal text.
+    if let Some(rest) = arg
+        .strip_prefix("iterations")
+        .map(str::trim)
+        .filter(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()))
+    {
+        match rest.parse::<u32>() {
+            Ok(n) if n > 0 => match state.goal.as_mut() {
+                Some(g) => {
+                    g.max_iterations = n;
+                    state.add_status(format!("goal iteration limit: {n}"));
+                }
+                None => state.add_status("no active goal — /goal <text> first".into()),
+            },
+            _ => state.add_status("usage: /goal iterations <n> (n >= 1)".into()),
+        }
+        return;
+    }
+    let max_iterations = crate::config::Config::load_or_report(&crate::terminal::data_dir())
+        .map(|c| c.goal_iterations())
+        .unwrap_or(10);
+    let text = arg.to_string();
+    session.set_goal(Some(text.clone()));
+    state.goal = Some(ActiveGoal {
+        text: text.clone(),
+        iterations_used: 0,
+        max_iterations,
+    });
+    state.add_status(format!("goal set ({max_iterations} iterations): {text}"));
+}
+
+/// `/tokens [n|off]` — show or set the per-run token cap. Strictly
+/// optional: the default is uncapped (`None`), Pantheon never requires
+/// it, and `[budget] max_tokens` only sets the session default.
+fn do_tokens(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
+    let arg = cmd.strip_prefix("/tokens").map(str::trim).unwrap_or("");
+    let mut budget = session.budget_snapshot();
+    if arg.is_empty() {
+        match budget.max_tokens {
+            Some(n) => state.add_status(format!("max tokens: {n}")),
+            None => state.add_status("max tokens: uncapped".into()),
+        }
+        return;
+    }
+    if matches!(arg, "off" | "clear" | "none" | "uncapped") {
+        budget.max_tokens = None;
+        session.set_budget(budget);
+        state.add_status("max tokens: uncapped".into());
+        return;
+    }
+    match arg.parse::<u32>() {
+        Ok(n) if n > 0 => {
+            budget.max_tokens = Some(n);
+            session.set_budget(budget);
+            state.add_status(format!("max tokens: {n}"));
+        }
+        _ => state.add_status("usage: /tokens [n | off]".into()),
+    }
+}
+
+/// `/set [key value]` — show or retune the session's run budget live.
+/// Session-scoped: config.toml `[budget]` holds the defaults, `/set`
+/// changes this session only and the next turn picks it up.
+fn do_set(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
+    let arg = cmd.strip_prefix("/set").map(str::trim).unwrap_or("");
+    let mut budget = session.budget_snapshot();
+    if arg.is_empty() {
+        state.add_status("session budget:".into());
+        state.add_status(format!("  max_turns = {}", budget.max_turns));
+        state.add_status(format!("  max_tool_calls = {}", budget.max_tool_calls));
+        state.add_status(format!(
+            "  max_delegate_depth = {}",
+            budget.max_delegate_depth
+        ));
+        state.add_status(format!(
+            "  max_tokens = {}",
+            budget
+                .max_tokens
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "uncapped".into())
+        ));
+        state.add_status(
+            "usage: /set <key> <value> — this session only; [budget] in config.toml holds the defaults"
+                .into(),
+        );
+        return;
+    }
+    let (key, val) = match arg.split_once(char::is_whitespace) {
+        Some((k, v)) => (k.to_lowercase(), v.trim().to_string()),
+        None => {
+            state.add_status(format!("usage: /set <key> <value> — unknown: {arg}"));
+            return;
+        }
+    };
+    let n: u32 = match val.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            state.add_status(format!("usage: /set {key} <number>"));
+            return;
+        }
+    };
+    // max_tokens accepts 0 = uncapped; the loop bounds require >= 1.
+    let label = match key.as_str() {
+        "max_turns" | "turns" => {
+            if n == 0 {
+                state.add_status("max_turns must be >= 1".into());
+                return;
+            }
+            budget.max_turns = n;
+            "max_turns"
+        }
+        "max_tool_calls" | "tool_calls" => {
+            if n == 0 {
+                state.add_status("max_tool_calls must be >= 1".into());
+                return;
+            }
+            budget.max_tool_calls = n;
+            "max_tool_calls"
+        }
+        "max_delegate_depth" | "delegate_depth" | "depth" => {
+            if n == 0 {
+                state.add_status("max_delegate_depth must be >= 1".into());
+                return;
+            }
+            budget.max_delegate_depth = n;
+            "max_delegate_depth"
+        }
+        "max_tokens" | "tokens" => {
+            budget.max_tokens = if n == 0 { None } else { Some(n) };
+            "max_tokens"
+        }
+        _ => {
+            state.add_status(format!(
+                "unknown key: {key} (max_turns, max_tool_calls, max_delegate_depth, max_tokens)"
+            ));
+            return;
+        }
+    };
+    session.set_budget(budget);
+    let shown = if label == "max_tokens" && n == 0 {
+        "uncapped".to_string()
+    } else {
+        n.to_string()
+    };
+    state.add_status(format!("{label} = {shown} (this session)"));
 }
 
 /// `/reflect [on|off|status]` — the reflection toggle, OpenClaw-`/dreaming`
@@ -4154,6 +4382,25 @@ fn handle_slash(
         do_consolidate(state, tx, cmd);
         return;
     }
+    // Session objective with an iteration budget: /goal <text> sets it,
+    // /goal shows it, /goal clear drops it, /goal iterations N retunes
+    // the cap. Each turn started under a goal consumes one iteration.
+    if cmd == "/goal" || cmd.starts_with("/goal ") {
+        do_goal(state, session, cmd);
+        return;
+    }
+    // Token cap: strictly optional, session-scoped. Bare /tokens shows it.
+    if cmd == "/tokens" || cmd.starts_with("/tokens ") {
+        do_tokens(state, session, cmd);
+        return;
+    }
+    // Live budget tuning for this session ([budget] holds the defaults).
+    // Placed before /help; "/settings" does not match "/set " so the
+    // prefix check cannot swallow it.
+    if cmd == "/set" || cmd.starts_with("/set ") {
+        do_set(state, session, cmd);
+        return;
+    }
     if cmd == "/help" {
         state.add_status("commands:".into());
         state.add_status("  /help              this list".into());
@@ -4163,7 +4410,23 @@ fn handle_slash(
             "  /reasoning [LVL]   reasoning effort: off|minimal|low|medium|high|xhigh|max".into(),
         );
         state.add_status("  /remember KEY TEXT remember this (agent memory, user trust)".into());
+        state.add_status(
+            "  /goal [TEXT]        set/show the session goal (iteration-limited)".into(),
+        );
+        state.add_status("  /goal clear         drop the session goal".into());
+        state.add_status("  /goal iterations N  retune the goal's iteration budget".into());
+        state.add_status(
+            "  /tokens [N|off]     show/set the per-run token cap (default: uncapped)".into(),
+        );
+        state.add_status(
+            "  /set [KEY VAL]      show/set session budget (max_turns, max_tool_calls, max_delegate_depth, max_tokens)"
+                .into(),
+        );
+        state
+            .add_status("  /learn LESSON      save a behavioral lesson for future sessions".into());
         state.add_status("  /skills [FILTER]   installed skills".into());
+        state.add_status("  /<skill> [input]   invoke an installed skill by name".into());
+        state.add_status("  /tools [reload]    rebuild the tool registry in place".into());
         state.add_status(
             "  /settings          data dir, model, policy, memory, server, agents".into(),
         );
@@ -4584,6 +4847,10 @@ fn handle_slash(
         state.blocks.clear();
         state.title = None;
         state.scroll_offset = 0;
+        // A new conversation is a new objective: the /goal iteration gate
+        // belongs to the old work and must not block the new session.
+        state.goal = None;
+        session.set_goal(None);
         // Do not force ready here: a turn may still be running for the
         // previous run, and the Enter guard must keep applying to it.
         state.add_status("new conversation (unsaved until the first turn)".into());
