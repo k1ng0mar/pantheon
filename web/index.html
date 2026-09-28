@@ -39,8 +39,10 @@
     .t-display { font-family: 'Array', sans-serif; font-weight: 600; font-size: clamp(2.75rem, 3rem + 4vw, 4.75rem); line-height: 1.03; letter-spacing: -0.025em; }
     .t-statement { font-family: 'Array', sans-serif; font-weight: 500; font-size: clamp(1.6rem, 1.4rem + 1.5vw, 2.25rem); line-height: 1.25; letter-spacing: -0.015em; }
     :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
-    .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
-    .logo-mark img { height: 26px; width: auto; }
+    .logo-mark { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; flex: none;
+      filter: drop-shadow(0 2px 8px rgba(114,35,255,.25)); transition: transform .2s; }
+    .logo-mark:hover { transform: scale(1.08); }
+    .logo-mark img { height: 38px; width: auto; }
     .cmdbox { background: #f1efeb; border: 1px solid #e9e6e1; border-radius: 20px; padding: 1.25rem 1.4rem; }
     .cmdbox code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #141417; }
     code:not(.cmdbox code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
@@ -75,7 +77,7 @@
 
   <header class="max-w-6xl mx-auto px-6 md:px-10 pt-8 flex items-center justify-between">
     <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
-      <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+      <span class="logo-mark"><img src="logo.svg" alt="" width="38" height="38"></span>
       <span class="font-semibold text-ink text-lg tracking-tight">pantheon</span>
     </a>
     <nav class="flex items-center gap-6 md:gap-8 text-[15px]" aria-label="Main">
@@ -210,7 +212,7 @@
     <div class="max-w-6xl mx-auto px-6 md:px-10 py-14">
       <div class="flex flex-col md:flex-row md:items-center justify-between gap-8">
         <div class="flex items-center gap-2.5">
-          <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+          <span class="logo-mark"><img src="logo.svg" alt="" width="38" height="38"></span>
           <span class="font-semibold text-ink">pantheon</span>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
