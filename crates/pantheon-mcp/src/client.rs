@@ -311,9 +311,8 @@ impl McpClient {
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
         }))
-        .map_err(|e| {
+        .inspect_err(|_| {
             self.kill();
-            e
         })
     }
 

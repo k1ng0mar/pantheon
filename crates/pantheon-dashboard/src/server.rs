@@ -168,7 +168,7 @@ fn read_request(stream: &TcpStream) -> Option<Request> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;
-    let line = line.trim_end_matches(|c| c == '\r' || c == '\n');
+    let line = line.trim_end_matches(['\r', '\n']);
     let mut parts = line.splitn(3, ' ');
     let method = parts.next()?.to_string();
     let target = parts.next()?;
@@ -187,7 +187,7 @@ fn read_request(stream: &TcpStream) -> Option<Request> {
     loop {
         let mut h = String::new();
         reader.read_line(&mut h).ok()?;
-        let h = h.trim_end_matches(|c| c == '\r' || c == '\n');
+        let h = h.trim_end_matches(['\r', '\n']);
         if h.is_empty() {
             break;
         }
@@ -270,10 +270,10 @@ fn write_response(mut stream: &TcpStream, resp: &Response) {
             if stream.write_all(head.as_bytes()).is_err() {
                 return;
             }
-            run(&stream);
+            run(stream);
             // Terminal zero-chunk; a client that already went away makes
             // this fail silently, which is fine.
-            let _ = write_chunk(&stream, &[]);
+            let _ = write_chunk(stream, &[]);
         }
     }
 }
@@ -307,10 +307,8 @@ where
             write_response(&stream, &resp);
         });
     }
-    for stream in listener.incoming() {
-        if let Ok(s) = stream {
-            let _ = tx.send(s);
-        }
+    for s in listener.incoming().flatten() {
+        let _ = tx.send(s);
     }
     // `serve` never returns; the process owns this thread.
     std::process::exit(0);

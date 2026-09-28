@@ -1,6 +1,5 @@
 //! Tests for `pantheon_memory::plugins::tests` — sibling file so sources stay test-free.
 use super::*;
-use crate::MemoryBackend;
 use std::path::PathBuf;
 
 fn tmp_dir(tag: &str) -> PathBuf {

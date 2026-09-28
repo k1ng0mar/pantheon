@@ -1,6 +1,5 @@
 //! Tests for `pantheon_storage::claims::tests` — sibling file so sources stay test-free.
 use super::*;
-use tempfile::tempdir;
 
 #[test]
 fn first_claim_wins_and_replay_is_rejected() {

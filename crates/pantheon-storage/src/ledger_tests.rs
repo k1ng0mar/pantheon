@@ -1,6 +1,5 @@
 //! Tests for `pantheon_storage::ledger::tests` — sibling file so sources stay test-free.
 use super::*;
-use tempfile::tempdir;
 
 #[test]
 fn durability_pragmas_set_busy_timeout_and_synchronous() {

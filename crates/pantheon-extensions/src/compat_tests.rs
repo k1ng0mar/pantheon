@@ -1,7 +1,6 @@
 //! Tests for the section 8 compat adapter: manifest reading, hook mapping,
 //! registration scanning, and plugin.yaml generation.
 use super::*;
-use crate::manifest::PluginManifest;
 use std::fs;
 use std::path::PathBuf;
 

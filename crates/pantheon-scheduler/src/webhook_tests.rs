@@ -112,7 +112,7 @@ fn malformed_signatures_are_rejected() {
         "sha256=abc",
         "md5=d41d8cd98f00b204e9800998ecf8427e",
         "sha256=",
-        &"sha256=".to_string() as &str,
+        "sha256=" as &str,
     ] {
         let mut ledger = ClaimLedger::new();
         let err = accept(

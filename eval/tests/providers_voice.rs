@@ -121,7 +121,7 @@ fn http_voice_backends_honor_http_timeout() {
     // (which never set it) are unaffected.
     let prev = std::env::var("PANTHEON_HTTP_TIMEOUT_MS").ok();
     std::env::set_var("PANTHEON_HTTP_TIMEOUT_MS", "300");
-    let out = (|| {
+    let out = {
         let base = format!("http://127.0.0.1:{port}");
         let dir = std::env::temp_dir().join(format!("pantheon-voice-to-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -134,7 +134,7 @@ fn http_voice_backends_honor_http_timeout() {
         let tts_err = tts.synthesize(&TtsRequest::new("hello")).unwrap_err();
         let _ = std::fs::remove_dir_all(&dir);
         (started.elapsed(), stt_err, tts_err)
-    })();
+    };
     match prev {
         Some(v) => std::env::set_var("PANTHEON_HTTP_TIMEOUT_MS", v),
         None => std::env::remove_var("PANTHEON_HTTP_TIMEOUT_MS"),

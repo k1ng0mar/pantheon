@@ -394,7 +394,7 @@ pub fn encode_sixel(rgb: &[u8], w: u32, h: u32) -> Vec<u8> {
         ((r >> 5) as usize) << 5 | ((g >> 5) as usize) << 2 | ((b >> 6) as usize)
     };
     let mut used = [false; 256];
-    for px in rgb.chunks_exact(3) {
+    for px in rgb.as_chunks::<3>().0 {
         used[quant(px[0], px[1], px[2])] = true;
     }
     let mut out: Vec<u8> = Vec::new();
@@ -592,9 +592,7 @@ pub fn render_mermaid(src: &str) -> Option<Vec<String>> {
             continue;
         }
         // Bare node definition line.
-        if parse_node_def(line, &mut nodes).is_none() {
-            return None;
-        }
+        parse_node_def(line, &mut nodes)?;
     }
     if nodes.is_empty() {
         return None;
@@ -1347,7 +1345,7 @@ impl ImagePaintState {
     pub fn reserve(&mut self, img: &ImageRef, line_idx: usize, term_width: u16) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        let cols = (term_width.saturating_sub(12).min(48).max(16)) as u16;
+        let cols = term_width.saturating_sub(12).min(48).max(16);
         // Thumbnail rows at ~2:1 cell aspect + one label row.
         let rows = match (img.width, img.height) {
             (Some(w), Some(h)) if w > 0 && h > 0 => {

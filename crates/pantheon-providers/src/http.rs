@@ -239,7 +239,7 @@ fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, Panthe
             // or falling back instead of hammering a rate-limited endpoint.
             let retry_after = if code == 429 {
                 resp.header("retry-after")
-                    .and_then(|v| parse_retry_after(v))
+                    .and_then(parse_retry_after)
             } else {
                 None
             };

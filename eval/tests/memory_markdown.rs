@@ -1,9 +1,8 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
-use pantheon_api::provenance::TrustTier;
 use pantheon_memory::markdown::{detect_conflict, export_agent, import_agent, sync};
 use pantheon_memory::Provenance;
-use pantheon_memory::{propose_write, recall, LayerKind, MemoryStore, Proposal};
+use pantheon_memory::{LayerKind, MemoryStore, Proposal};
 
 /// The laundering regression: an Untrusted record exported to
 /// MEMORY.md and reimported must come back Untrusted, not User.
