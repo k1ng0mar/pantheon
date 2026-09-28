@@ -18,7 +18,7 @@ pub fn policy_for_config(
         return preset.to_policy();
     }
     if let Ok(p) = std::env::var("PANTHEON_POLICY") {
-        if let Some(preset) = PolicyPreset::from_str(&p) {
+        if let Some(preset) = PolicyPreset::parse(&p) {
             return preset.to_policy();
         }
     }

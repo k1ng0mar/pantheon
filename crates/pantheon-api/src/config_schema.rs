@@ -73,7 +73,7 @@ pub enum PolicyPreset {
 }
 
 impl PolicyPreset {
-    /// Canonical config spelling. Round-trips with `from_str`, so a preset
+    /// Canonical config spelling. Round-trips with `parse`, so a preset
     /// read from config can be printed back in the form the user wrote.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -83,7 +83,7 @@ impl PolicyPreset {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "reader" => Some(Self::Reader),
             "coder" => Some(Self::Coder),
