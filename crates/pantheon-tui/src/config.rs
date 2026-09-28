@@ -149,11 +149,186 @@ pub type VisionSection = AuxSection;
 /// interactive chat.
 pub type ScheduledSection = AuxSection;
 
+/// Default completed turns before an automatic reflection pass.
+pub const DEFAULT_REFLECT_AUTO_TURNS: u32 = 20;
+
+/// Default proposal cap per reflection pass.
+pub const DEFAULT_REFLECT_MAX_PROPOSALS: usize = 5;
+
+fn default_reflect_auto_turns() -> u32 {
+    DEFAULT_REFLECT_AUTO_TURNS
+}
+
+fn default_reflect_max_proposals() -> usize {
+    DEFAULT_REFLECT_MAX_PROPOSALS
+}
+
+/// `[reflect]`: Reflection — Pantheon's ledger-native self-improvement
+/// loop, plus the auxiliary model pin for its LLM-backed steps, in one
+/// table.
+///
+/// Behavior knobs (`enabled`, `auto_turns`, `max_proposals`) and the model
+/// pin share the table the same way `[scheduled]` doubles as both the
+/// schedule-model pin and the background-runs section: one `[reflect]`
+/// table is everything the feature needs. Absent `provider`/`model` =
+/// `auto`: the run's default model answers reflection LLM calls —
+/// configure a small/cheap model here (or
+/// `PANTHEON_REFLECTION_PROVIDER`/`PANTHEON_REFLECTION_MODEL`) so
+/// background self-improvement never competes with interactive chat.
+///
+/// LLM-backed reflection steps are **off by default** (`enabled = false`):
+/// the deterministic signal-extraction pipeline always runs, but anything
+/// spending model tokens needs explicit opt-in. Every LLM call the
+/// reflection pipeline makes resolves through the
+/// [`AuxiliaryKind::Reflection`](pantheon_api::model::AuxiliaryKind)
+/// slot — never the chat model directly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReflectSection {
+    /// Allow LLM-backed reflection steps. Default false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Completed turns before an automatic reflection pass runs. Default
+    /// 20. `0` disables the automatic trigger.
+    #[serde(default = "default_reflect_auto_turns")]
+    pub auto_turns: u32,
+    /// Maximum proposals generated per pass. Default 5.
+    #[serde(default = "default_reflect_max_proposals")]
+    pub max_proposals: usize,
+    /// Auxiliary model pin for reflection LLM calls. Absent = `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Auxiliary model pin for reflection LLM calls. Absent = `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Env var name holding the API key for the endpoint. Never the key
+    /// itself. Seeds the `PANTHEON_REFLECTION_API_KEY` vault entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+}
+
+/// `[consolidation]`: Consolidation — Pantheon's background memory
+/// consolidation, plus the auxiliary model pin for its LLM-backed
+/// distill step, in one table.
+///
+/// Behavior knobs (`enabled`, `half_life_days`, `min_sessions`,
+/// `min_score`, `cron`) and the model pin share the table the same way
+/// `[reflect]` does: one `[consolidation]` table is everything the
+/// feature needs. Absent `provider`/`model` = `auto`: the run's default
+/// model answers consolidation LLM calls — configure a small/cheap
+/// model here (or `PANTHEON_CONSOLIDATION_PROVIDER` /
+/// `PANTHEON_CONSOLIDATION_MODEL`) so nightly memory consolidation
+/// never competes with interactive chat.
+///
+/// LLM-backed consolidation steps are **off by default**
+/// (`enabled = false`): the deterministic stage/weigh/promote pipeline
+/// always runs, but anything spending model tokens needs explicit
+/// opt-in. Every LLM call the consolidation pipeline makes resolves
+/// through the
+/// [`AuxiliaryKind::Consolidation`](pantheon_api::model::AuxiliaryKind)
+/// slot — never the chat model directly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConsolidationSection {
+    /// Allow LLM-backed consolidation steps (candidate distillation).
+    /// Default false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Recency half-life for the scoring decay curve, in days. Default
+    /// 14.
+    #[serde(default = "default_consolidation_half_life")]
+    pub half_life_days: f64,
+    /// Distinct sessions a candidate must appear in before promotion.
+    /// Default 3.
+    #[serde(default = "default_consolidation_min_sessions")]
+    pub min_sessions: usize,
+    /// Minimum decayed score for promotion. Default 2.0.
+    #[serde(default = "default_consolidation_min_score")]
+    pub min_score: f64,
+    /// Default cron for `pantheon consolidate --schedule`. Default
+    /// `0 3 * * *` (03:00 nightly).
+    #[serde(default = "default_consolidation_cron")]
+    pub cron: String,
+    /// Auxiliary model pin for consolidation LLM calls. Absent = `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Auxiliary model pin for consolidation LLM calls. Absent = `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Env var name holding the API key for the endpoint. Never the key
+    /// itself. Seeds the `PANTHEON_CONSOLIDATION_API_KEY` vault entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+}
+
+fn default_consolidation_half_life() -> f64 {
+    14.0
+}
+
+fn default_consolidation_min_sessions() -> usize {
+    3
+}
+
+fn default_consolidation_min_score() -> f64 {
+    2.0
+}
+
+fn default_consolidation_cron() -> String {
+    "0 3 * * *".to_string()
+}
+
 /// Default event-history retention when `[retention]` is absent.
 pub const DEFAULT_RETENTION_DAYS: u32 = 90;
 
 fn default_retention_days() -> u32 {
     DEFAULT_RETENTION_DAYS
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_temporal_min_gap_secs() -> u64 {
+    7200
+}
+
+/// `[temporal]`: tacit temporal awareness — the model notices when a
+/// conversation has meaningfully aged, without timestamping every
+/// message. Before a turn's first model call the pipeline measures the
+/// idle gap since the last assistant turn (from the durable ledger, so
+/// it is restart-safe) and, when the gap matters, appends one coarse,
+/// human-friendly hint to the outgoing user message — for the API call
+/// only, never persisted, never on the system prompt.
+///
+/// Zero tokens by construction (pure string injection), so this defaults
+/// to on. Absent section = all defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TemporalSection {
+    /// Master switch. Default true.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Idle seconds before an elapsed-gap hint fires. Default 7200 (2h).
+    /// `0` disables the elapsed-gap trigger; the date-rollover trigger
+    /// still works.
+    #[serde(default = "default_temporal_min_gap_secs")]
+    pub min_gap_secs: u64,
+    /// Hint when the local calendar date rolled over since the last
+    /// turn, even on a short gap. Default true.
+    #[serde(default = "default_true")]
+    pub notify_date_change: bool,
+    /// IANA timezone name, e.g. `timezone = "Africa/Lagos"`. Absent =
+    /// the system local timezone; unparseable falls back to UTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+}
+
+impl From<&TemporalSection> for pantheon_api::temporal::TemporalConfig {
+    fn from(s: &TemporalSection) -> Self {
+        pantheon_api::temporal::TemporalConfig {
+            enabled: s.enabled,
+            min_gap_secs: s.min_gap_secs,
+            notify_date_change: s.notify_date_change,
+            timezone: s.timezone.clone(),
+        }
+    }
 }
 
 /// `[retention]`: how long the event ledger keeps transcripts.
@@ -166,6 +341,34 @@ pub struct RetentionSection {
     /// Days of event history to keep. Default 90. `0` = disabled.
     #[serde(default = "default_retention_days")]
     pub keep_days: u32,
+}
+
+/// TUI chrome (`[tui]` in config.toml).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct TuiSection {
+    /// Active theme name (`pantheon`, `dark`, `light`). Absent = default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    /// Modal vim editing for the composer (`/vim`). Absent = off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vim: Option<bool>,
+}
+
+/// Phone approval notifications (`[approvals]` in config.toml).
+/// Opt-in: absent or `notify_channel` unset = no phone notifications.
+/// When enabled, the TUI sends a Telegram/Discord message whenever a run
+/// parks on an approval — with Grant/Deny buttons that route back through
+/// the gateway daemon into the pending approval flow.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ApprovalsSection {
+    /// Channel to notify: `telegram` or `discord`. Unset = disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_channel: Option<String>,
+    /// Chat (Telegram) or channel (Discord) id to send the notification to.
+    /// Unset = disabled even when `notify_channel` is set: without a
+    /// destination there is nowhere to deliver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_chat_id: Option<String>,
 }
 
 impl Default for RetentionSection {
@@ -181,6 +384,24 @@ impl Default for RetentionSection {
 /// scoped to MCP results). Absent = `auto`: the run's default model
 /// summarizes.
 pub type McpSynthesisSection = AuxSection;
+
+/// `[extraction]`: the structured-extraction model. Pulls fields and
+/// records out of prose and tool outputs into typed values the runtime
+/// can act on. Absent = `auto`: the run's default model extracts. No
+/// call sites yet — pin a model here ahead of the extraction workload.
+pub type ExtractionSection = AuxSection;
+
+/// `[rerank]`: the rerank model. Scores and orders search and
+/// memory-retrieval candidates before they enter context. Absent =
+/// `auto`: the run's default model reranks. No call sites yet — pin a
+/// model here ahead of the reranking workload.
+pub type RerankSection = AuxSection;
+
+/// `[planner]`: the planner model for a future planner/worker split,
+/// where planning and execution run on different models. Absent =
+/// `auto`: the run's default model plans. No call sites yet — pin a
+/// model here ahead of the planner workload.
+pub type PlannerSection = AuxSection;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MemorySection {
@@ -299,10 +520,33 @@ pub struct Config {
     pub scheduled: Option<ScheduledSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_synthesis: Option<McpSynthesisSection>,
+    /// `[extraction]`: structured-extraction model pin. Absent = `auto`.
+    /// No call sites yet; pin ahead of the workload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extraction: Option<ExtractionSection>,
+    /// `[rerank]`: rerank model pin. Absent = `auto`. No call sites yet;
+    /// pin ahead of the workload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<RerankSection>,
+    /// `[planner]`: planner model pin for a future planner/worker split.
+    /// Absent = `auto`. No call sites yet; pin ahead of the workload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner: Option<PlannerSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compression: Option<CompressionSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_gen: Option<TitleGenSection>,
+    /// `[reflect]`: behavior knobs + auxiliary model pin for Reflection.
+    /// Absent = reflection LLM steps off (`enabled = false`), and if
+    /// enabled later, `auto` = the run's default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reflect: Option<ReflectSection>,
+    /// `[consolidation]`: behavior knobs + auxiliary model pin for
+    /// Consolidation. Absent = consolidation LLM steps off
+    /// (`enabled = false`), and if enabled later, `auto` = the run's
+    /// default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consolidation: Option<ConsolidationSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stt: Option<VoiceSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -325,6 +569,16 @@ pub struct Config {
     /// `keep_days = 0` disables pruning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<RetentionSection>,
+    /// Tacit temporal awareness (`[temporal]`). Absent = enabled with
+    /// defaults (2h gap, date-rollover hints, system local timezone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporal: Option<TemporalSection>,
+    /// TUI chrome (`[tui]`). Absent = defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tui: Option<TuiSection>,
+    /// Phone approval notifications (`[approvals]`). Absent = disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvals: Option<ApprovalsSection>,
     /// User-defined providers (`pantheon model` → Custom provider).
     /// Empty for configs written before this existed (back-compat).
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -546,6 +800,37 @@ impl Config {
                 );
             }
         }
+        // `[reflect]` carries its own model pin (provider/model are
+        // optional: absent = `auto`). A half-set pin is a config error —
+        // the aux target needs both.
+        // `[reflect]` carries its own model pin (provider/model are
+        // optional: absent = `auto`). A half-set pin is a config error —
+        // the aux target needs both.
+        if let Some(r) = &self.reflect {
+            match (&r.provider, &r.model) {
+                (Some(p), Some(m)) => {
+                    aux_problem("reflect", (p, m, &r.api_key_env), &mut problems)
+                }
+                (None, None) => {}
+                _ => problems.push(
+                    "reflect.provider and reflect.model must be set together (or both absent for `auto`)".into(),
+                ),
+            }
+        }
+        // `[consolidation]` carries its own model pin (provider/model are
+        // optional: absent = `auto`). A half-set pin is a config error —
+        // the aux target needs both.
+        if let Some(c) = &self.consolidation {
+            match (&c.provider, &c.model) {
+                (Some(p), Some(m)) => {
+                    aux_problem("consolidation", (p, m, &c.api_key_env), &mut problems)
+                }
+                (None, None) => {}
+                _ => problems.push(
+                    "consolidation.provider and consolidation.model must be set together (or both absent for `auto`)".into(),
+                ),
+            }
+        }
         if let Some(mem) = &self.memory {
             if mem.backend.trim().is_empty() {
                 problems.push("memory.backend is empty".into());
@@ -707,6 +992,30 @@ const AUX_SLOTS: &[AuxSlot] = &[
         auto: true,
         section: |c| c.mcp_synthesis.as_ref(),
     },
+    AuxSlot {
+        kind: pantheon_api::model::AuxiliaryKind::Extraction,
+        name: "extraction",
+        env_prefix: "EXTRACTION",
+        vault_name: "PANTHEON_EXTRACTION_API_KEY",
+        auto: true,
+        section: |c| c.extraction.as_ref(),
+    },
+    AuxSlot {
+        kind: pantheon_api::model::AuxiliaryKind::Rerank,
+        name: "rerank",
+        env_prefix: "RERANK",
+        vault_name: "PANTHEON_RERANK_API_KEY",
+        auto: true,
+        section: |c| c.rerank.as_ref(),
+    },
+    AuxSlot {
+        kind: pantheon_api::model::AuxiliaryKind::Planner,
+        name: "planner",
+        env_prefix: "PLANNER",
+        vault_name: "PANTHEON_PLANNER_API_KEY",
+        auto: true,
+        section: |c| c.planner.as_ref(),
+    },
 ];
 
 /// Borrow one slot's section for validation.
@@ -732,6 +1041,106 @@ fn slot_aux(slot: &AuxSlot, cfg: Option<&Config>) -> Option<pantheon_api::model:
         provider,
         model,
     })
+}
+
+/// Resolve the reflection auxiliary model (`AuxiliaryKind::Reflection`).
+/// `[reflect] provider/model` pin wins, then
+/// `PANTHEON_REFLECTION_PROVIDER`/`PANTHEON_REFLECTION_MODEL`, else `auto`
+/// (the run's default model). Reflection keeps its own row outside
+/// `AUX_SLOTS` because `[reflect]` is a combined behavior + model-pin
+/// table, not a pure [`AuxSection`]; the resolution order is identical.
+///
+/// Every LLM call the reflection pipeline makes resolves through this
+/// slot — never the chat model directly — so pinning a cheap model here
+/// keeps background self-improvement off the interactive model's bill.
+pub fn reflect_aux_model(
+    cfg: Option<&Config>,
+    default: &pantheon_api::model::DefaultModel,
+) -> pantheon_api::model::AuxiliaryModel {
+    use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel};
+    let section_pin = cfg.and_then(|c| c.reflect.as_ref()).and_then(|r| {
+        aux_target(
+            match (&r.provider, &r.model) {
+                (Some(p), Some(m)) => Some((p, m)),
+                _ => None,
+            },
+            std::env::var("PANTHEON_REFLECTION_PROVIDER").ok(),
+            std::env::var("PANTHEON_REFLECTION_MODEL").ok(),
+        )
+    });
+    let (provider, model) =
+        section_pin.unwrap_or_else(|| (default.provider.clone(), default.model.clone()));
+    AuxiliaryModel {
+        kind: AuxiliaryKind::Reflection,
+        provider,
+        model,
+    }
+}
+
+/// `[reflect]` → [`pantheon_reflect::ReflectConfig`]. Absent section =
+/// defaults (LLM-backed reflection steps off).
+pub fn reflect_config(cfg: Option<&Config>) -> pantheon_reflect::ReflectConfig {
+    match cfg.and_then(|c| c.reflect.as_ref()) {
+        Some(r) => pantheon_reflect::ReflectConfig {
+            enabled: r.enabled,
+            auto_turns: r.auto_turns,
+            max_proposals: r.max_proposals,
+            ..Default::default()
+        },
+        None => pantheon_reflect::ReflectConfig::default(),
+    }
+}
+
+/// Resolve the consolidation auxiliary model
+/// (`AuxiliaryKind::Consolidation`). `[consolidation] provider/model`
+/// pin wins, then `PANTHEON_CONSOLIDATION_PROVIDER` /
+/// `PANTHEON_CONSOLIDATION_MODEL`, else `auto` (the run's default
+/// model). Consolidation keeps its own resolver outside `AUX_SLOTS`
+/// because `[consolidation]` is a combined behavior + model-pin table,
+/// not a pure [`AuxSection`]; the resolution order is identical.
+///
+/// Every LLM call the consolidation pipeline makes resolves through
+/// this slot — never the chat model directly — so pinning a cheap model
+/// here keeps nightly memory consolidation off the interactive model's
+/// bill.
+pub fn consolidation_aux_model(
+    cfg: Option<&Config>,
+    default: &pantheon_api::model::DefaultModel,
+) -> pantheon_api::model::AuxiliaryModel {
+    use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel};
+    let section_pin = cfg.and_then(|c| c.consolidation.as_ref()).and_then(|s| {
+        aux_target(
+            match (&s.provider, &s.model) {
+                (Some(p), Some(m)) => Some((p, m)),
+                _ => None,
+            },
+            std::env::var("PANTHEON_CONSOLIDATION_PROVIDER").ok(),
+            std::env::var("PANTHEON_CONSOLIDATION_MODEL").ok(),
+        )
+    });
+    let (provider, model) =
+        section_pin.unwrap_or_else(|| (default.provider.clone(), default.model.clone()));
+    AuxiliaryModel {
+        kind: AuxiliaryKind::Consolidation,
+        provider,
+        model,
+    }
+}
+
+/// `[consolidation]` → [`pantheon_consolidate::ConsolidationConfig`].
+/// Absent section = defaults (LLM-backed consolidation steps off).
+pub fn consolidation_config(cfg: Option<&Config>) -> pantheon_consolidate::ConsolidationConfig {
+    match cfg.and_then(|c| c.consolidation.as_ref()) {
+        Some(s) => pantheon_consolidate::ConsolidationConfig {
+            enabled: s.enabled,
+            half_life_days: s.half_life_days,
+            min_sessions: s.min_sessions,
+            min_score: s.min_score,
+            cron: s.cron.clone(),
+            ..Default::default()
+        },
+        None => pantheon_consolidate::ConsolidationConfig::default(),
+    }
 }
 
 /// Seed a named vault entry from an env-var name in config, so the session
@@ -766,6 +1175,17 @@ pub fn with_aux_keys(
             .and_then(|s| s.api_key_env.clone());
         secrets = seed_env_key(secrets, env, slot.vault_name);
     }
+    // `[reflect]` is not an AUX_SLOTS row (combined behavior + pin
+    // table); seed its key the same way.
+    let reflect_env = cfg
+        .and_then(|c| c.reflect.as_ref())
+        .and_then(|r| r.api_key_env.clone());
+    secrets = seed_env_key(secrets, reflect_env, "PANTHEON_REFLECTION_API_KEY");
+    // `[consolidation]` likewise: its key seeds PANTHEON_CONSOLIDATION_API_KEY.
+    let consolidate_env = cfg
+        .and_then(|c| c.consolidation.as_ref())
+        .and_then(|s| s.api_key_env.clone());
+    secrets = seed_env_key(secrets, consolidate_env, "PANTHEON_CONSOLIDATION_API_KEY");
     secrets
 }
 
@@ -1009,6 +1429,44 @@ pub fn build_model_policy(
     }
 }
 
+/// Build the model policy for a scheduled job run.
+///
+/// Model rule for scheduled work, in precedence order:
+///
+/// 1. **Explicit pin** — `--model`/`--provider` on `schedule create`, or a
+///    template's `model` var (which becomes a pin). Always wins.
+/// 2. **Scheduled auxiliary** — the `[scheduled]` config section (or
+///    `PANTHEON_SCHEDULED_PROVIDER`/`PANTHEON_SCHEDULED_MODEL`). This is the
+///    default for unpinned jobs.
+/// 3. **Never the interactive default** — unless the `[scheduled]` slot
+///    itself resolves to it (`auto` with no pin configured).
+///
+/// Scheduled work is background work: it burns cheap tokens by default.
+/// Before this, an unpinned job silently used the interactive chat model,
+/// so configuring `[scheduled]` changed nothing at fire time.
+pub fn build_scheduled_model_policy(
+    cfg: Option<&Config>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> pantheon_api::model::ModelPolicy {
+    // Resolve pins against config/env exactly like the interactive path, so
+    // a partial pin (--model with no --provider) keeps today's fallback.
+    let mut policy = build_model_policy(cfg, provider.clone(), model.clone());
+    if provider.is_none() && model.is_none() {
+        if let Some(aux) = policy
+            .auxiliaries
+            .iter()
+            .find(|a| a.kind == pantheon_api::model::AuxiliaryKind::Scheduled)
+        {
+            policy.default = pantheon_api::model::DefaultModel {
+                provider: aux.provider.clone(),
+                model: aux.model.clone(),
+            };
+        }
+    }
+    policy
+}
+
 /// Exact thinking budget: `PANTHEON_REASONING_BUDGET` wins, then
 /// `[model].reasoning_budget`. Zero disables (reads as "no budget").
 /// Applies to budget wires only; effort-string wires ignore it.
@@ -1059,7 +1517,7 @@ pub fn auxiliaries(
         provider: default.provider.clone(),
         model: default.model.clone(),
     };
-    let mut out = Vec::with_capacity(AUX_SLOTS.len());
+    let mut out = Vec::with_capacity(AUX_SLOTS.len() + 1);
     for slot in AUX_SLOTS {
         match slot_aux(slot, cfg) {
             Some(pinned) => out.push(pinned),
@@ -1069,5 +1527,13 @@ pub fn auxiliaries(
             None => {}
         }
     }
+    // Reflection is always an `auto`-eligible slot: absent `[reflect]`
+    // pin = the run's default model.
+    out.push(reflect_aux_model(cfg, default));
+    // Consolidation is always an `auto`-eligible slot too: absent
+    // `[consolidation]` pin = the run's default model. The distill step
+    // resolves through this entry and can never borrow the chat model
+    // directly.
+    out.push(consolidation_aux_model(cfg, default));
     out
 }

@@ -11,6 +11,7 @@
 //! | `pantheon::runtime` | `pantheon-runtime` | lifecycle, turn, context, state |
 //! | `pantheon::swarm` | `pantheon-swarm` | delegation, coordination |
 //! | `pantheon::providers` | `pantheon-providers` | catalog, provider, streaming |
+//! | `pantheon::reflect` | `pantheon-reflect` | ledger-native self-improvement |
 //! | `pantheon::capability` | `pantheon-capability` | capability registry, resolution |
 //! | `pantheon::tools` | `pantheon-tools` | callable tools + registry |
 //! | `pantheon::exec` | `pantheon-exec` | process/fs execution engine |
@@ -39,6 +40,7 @@ pub use pantheon_mcp as mcp;
 pub use pantheon_memory as memory;
 pub use pantheon_migration as migration;
 pub use pantheon_providers as providers;
+pub use pantheon_reflect as reflect;
 pub use pantheon_runtime as runtime;
 pub use pantheon_sandbox as sandbox;
 pub use pantheon_scheduler as scheduler;

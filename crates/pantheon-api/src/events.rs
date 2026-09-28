@@ -110,6 +110,24 @@ pub enum Event {
         run_id: String,
         turn_id: String,
     },
+    /// The operator snapshotted the session at this turn (`/checkpoint`).
+    /// A durable, named marker: `/checkpoints` lists them and `/restore`
+    /// rewinds to one by emitting `TurnRewound` at the turn that follows
+    /// the checkpoint's turn. Like rewind markers, this is a read-time
+    /// projection aid — raw history is never rewritten.
+    CheckpointCreated {
+        run_id: String,
+        turn_id: String,
+        name: String,
+    },
+    /// The operator steered the running turn (`/steer`): mid-turn guidance
+    /// injected without canceling or restarting. The guidance also lands in
+    /// the transcript as a marked user message (see `rebuild_messages`), so
+    /// resume stays faithful; this row is the durable steering record.
+    SteeringProvided {
+        run_id: String,
+        text: String,
+    },
     ModelRequested {
         run_id: String,
         model: String,
@@ -159,6 +177,18 @@ pub enum Event {
     ToolMessage {
         run_id: String,
         message: Message,
+    },
+    /// A reasoning trace captured at import time (session migration).
+    ///
+    /// Foreign agents persist their thinking in transcript files; Pantheon
+    /// keeps it durable so an imported session shows its original
+    /// deliberation. Read-only: `rebuild_messages` skips it (it is never
+    /// sent to the model as a conversation message); the TUI surfaces it
+    /// through `rebuild_transcript` as a Thinking block.
+    ImportedReasoning {
+        run_id: String,
+        turn_id: String,
+        text: String,
     },
     AgentSpawned {
         run_id: String,
@@ -258,4 +288,295 @@ pub enum Event {
         /// derived the title locally from the first prompt.
         source: String,
     },
+    /// One model call's token/cost accounting, persisted. `ModelEvent::Usage`
+    /// used to be dropped by `to_event`, so historical spend was invisible;
+    /// this event makes the event ledger the source of truth for
+    /// `pantheon stats`. The model/provider are captured from the most
+    /// recent `ModelRequested`/`Attempt` seen by the persisting sink.
+    UsageRecorded {
+        run_id: String,
+        /// Model identifier, e.g. `anthropic:claude-opus-4-6` (provider
+        /// prefix when known); "unknown" when the sink saw no request.
+        model: String,
+        /// Provider name, e.g. `anthropic`; empty when unknown.
+        provider: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        total_tokens: u64,
+        /// USD cost for this call, when the catalog priced it.
+        cost_usd: Option<f64>,
+    },
+}
+impl Event {
+    /// A copy of this event addressed to a different run.
+    ///
+    /// Used by session fork: the forked run's history is the source run's
+    /// event prefix verbatim, re-addressed. Every field except `run_id`
+    /// is preserved, so replay, metrics, and resume see the fork as if
+    /// the conversation had always lived there.
+    pub fn with_run_id(&self, run_id: &str) -> Event {
+        match self.clone() {
+            Event::RunStarted { run_id: _ } => Event::RunStarted {
+                run_id: run_id.to_string(),
+            },
+            Event::RunProgress { run_id: _, detail } => Event::RunProgress {
+                run_id: run_id.to_string(),
+                detail,
+            },
+            Event::RunCompleted { run_id: _ } => Event::RunCompleted {
+                run_id: run_id.to_string(),
+            },
+            Event::RunFailed { run_id: _, code } => Event::RunFailed {
+                run_id: run_id.to_string(),
+                code,
+            },
+            Event::RunCanceled { run_id: _, reason } => Event::RunCanceled {
+                run_id: run_id.to_string(),
+                reason,
+            },
+            Event::RunRecovered { run_id: _ } => Event::RunRecovered {
+                run_id: run_id.to_string(),
+            },
+            Event::AgentBound {
+                run_id: _,
+                agent_id,
+                profile,
+            } => Event::AgentBound {
+                run_id: run_id.to_string(),
+                agent_id,
+                profile,
+            },
+            Event::TurnStarted { run_id: _, turn_id } => Event::TurnStarted {
+                run_id: run_id.to_string(),
+                turn_id,
+            },
+            Event::TurnParked {
+                run_id: _,
+                turn_id,
+                reason,
+            } => Event::TurnParked {
+                run_id: run_id.to_string(),
+                turn_id,
+                reason,
+            },
+            Event::TurnCompleted {
+                run_id: _,
+                turn_id,
+                outcome,
+            } => Event::TurnCompleted {
+                run_id: run_id.to_string(),
+                turn_id,
+                outcome,
+            },
+            Event::TurnFailed {
+                run_id: _,
+                turn_id,
+                code,
+            } => Event::TurnFailed {
+                run_id: run_id.to_string(),
+                turn_id,
+                code,
+            },
+            Event::TurnRewound { run_id: _, turn_id } => Event::TurnRewound {
+                run_id: run_id.to_string(),
+                turn_id,
+            },
+            Event::CheckpointCreated {
+                run_id: _,
+                turn_id,
+                name,
+            } => Event::CheckpointCreated {
+                run_id: run_id.to_string(),
+                turn_id,
+                name,
+            },
+            Event::SteeringProvided { run_id: _, text } => Event::SteeringProvided {
+                run_id: run_id.to_string(),
+                text,
+            },
+            Event::ModelRequested { run_id: _, model } => Event::ModelRequested {
+                run_id: run_id.to_string(),
+                model,
+            },
+            Event::ModelDelta { run_id: _, delta } => Event::ModelDelta {
+                run_id: run_id.to_string(),
+                delta,
+            },
+            Event::ModelCompleted { run_id: _ } => Event::ModelCompleted {
+                run_id: run_id.to_string(),
+            },
+            Event::ToolRequested { run_id: _, tool } => Event::ToolRequested {
+                run_id: run_id.to_string(),
+                tool,
+            },
+            Event::ToolStarted {
+                run_id: _,
+                call_id,
+                tool,
+                args,
+                provenance,
+            } => Event::ToolStarted {
+                run_id: run_id.to_string(),
+                call_id,
+                tool,
+                args,
+                provenance,
+            },
+            Event::ToolOutput {
+                run_id: _,
+                call_id,
+                tool,
+                truncated,
+                provenance,
+            } => Event::ToolOutput {
+                run_id: run_id.to_string(),
+                call_id,
+                tool,
+                truncated,
+                provenance,
+            },
+            Event::ToolCompleted {
+                run_id: _,
+                call_id,
+                tool,
+                provenance,
+            } => Event::ToolCompleted {
+                run_id: run_id.to_string(),
+                call_id,
+                tool,
+                provenance,
+            },
+            Event::AssistantMessage { run_id: _, message } => Event::AssistantMessage {
+                run_id: run_id.to_string(),
+                message,
+            },
+            Event::ToolMessage { run_id: _, message } => Event::ToolMessage {
+                run_id: run_id.to_string(),
+                message,
+            },
+            Event::ImportedReasoning {
+                run_id: _,
+                turn_id,
+                text,
+            } => Event::ImportedReasoning {
+                run_id: run_id.to_string(),
+                turn_id,
+                text,
+            },
+            Event::AgentSpawned { run_id: _, agent } => Event::AgentSpawned {
+                run_id: run_id.to_string(),
+                agent,
+            },
+            Event::AgentMessage { run_id: _, agent } => Event::AgentMessage {
+                run_id: run_id.to_string(),
+                agent,
+            },
+            Event::AgentCompleted { run_id: _, agent } => Event::AgentCompleted {
+                run_id: run_id.to_string(),
+                agent,
+            },
+            Event::MemoryProposed { run_id: _ } => Event::MemoryProposed {
+                run_id: run_id.to_string(),
+            },
+            Event::ApprovalRequested { run_id: _, scope } => Event::ApprovalRequested {
+                run_id: run_id.to_string(),
+                scope,
+            },
+            Event::ApprovalGranted { run_id: _, scope } => Event::ApprovalGranted {
+                run_id: run_id.to_string(),
+                scope,
+            },
+            Event::ApprovalDenied { run_id: _, scope } => Event::ApprovalDenied {
+                run_id: run_id.to_string(),
+                scope,
+            },
+            Event::DecisionRequested {
+                run_id: _,
+                point,
+                model,
+            } => Event::DecisionRequested {
+                run_id: run_id.to_string(),
+                point,
+                model,
+            },
+            Event::DecisionMade {
+                run_id: _,
+                point,
+                model,
+                answer,
+            } => Event::DecisionMade {
+                run_id: run_id.to_string(),
+                point,
+                model,
+                answer,
+            },
+            Event::DecisionRecorded {
+                run_id: _,
+                point,
+                model,
+                action,
+            } => Event::DecisionRecorded {
+                run_id: run_id.to_string(),
+                point,
+                model,
+                action,
+            },
+            Event::ContextTrimmed {
+                run_id: _,
+                estimated,
+                window,
+                dropped_rows,
+                compacted_rows,
+            } => Event::ContextTrimmed {
+                run_id: run_id.to_string(),
+                estimated,
+                window,
+                dropped_rows,
+                compacted_rows,
+            },
+            Event::ContextCompressed {
+                run_id: _,
+                model,
+                exchanges,
+                rows,
+                chars_before,
+                chars_after,
+            } => Event::ContextCompressed {
+                run_id: run_id.to_string(),
+                model,
+                exchanges,
+                rows,
+                chars_before,
+                chars_after,
+            },
+            Event::SessionTitled {
+                run_id: _,
+                title,
+                model,
+                source,
+            } => Event::SessionTitled {
+                run_id: run_id.to_string(),
+                title,
+                model,
+                source,
+            },
+            Event::UsageRecorded {
+                run_id: _,
+                model,
+                provider,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cost_usd,
+            } => Event::UsageRecorded {
+                run_id: run_id.to_string(),
+                model,
+                provider,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cost_usd,
+            },
+        }
+    }
 }

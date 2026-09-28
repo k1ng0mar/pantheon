@@ -23,6 +23,8 @@
 //! way — that is what keeps the dependency graph acyclic.
 
 pub mod capability;
+pub mod config_schema;
+pub mod dotenv;
 pub mod error;
 pub mod events;
 pub mod ident;
@@ -30,3 +32,4 @@ pub mod logging;
 pub mod message;
 pub mod model;
 pub mod provenance;
+pub mod temporal;

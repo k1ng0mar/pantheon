@@ -12,6 +12,44 @@
 use crate::terminal::data_dir;
 use pantheon_migration::read_mcp_declarations;
 
+/// Re-exported from `pantheon_migration` (single source of truth, shared
+/// with the dashboard). Kept as a local name so existing callers inside
+/// this crate do not churn.
+pub use pantheon_migration::server_readiness;
+
+/// Re-scan the MCP declaration files and report per-server readiness.
+/// Pure file re-read: it cannot fail the session, and on any read problem
+/// the previous state simply stands — the session is never lost to a
+/// reload.
+pub fn reload_report(dd: &std::path::Path) -> Vec<String> {
+    let groups = read_mcp_declarations(dd);
+    let mut lines = vec!["mcp: re-scanned declarations".to_string()];
+    let mut total = 0usize;
+    let mut ready = 0usize;
+    for g in &groups {
+        for s in &g.servers {
+            total += 1;
+            match server_readiness(s) {
+                None => {
+                    ready += 1;
+                    lines.push(format!("  {}/{} [{}] ok", g.source, s.name, s.transport));
+                }
+                Some(blocker) => {
+                    lines.push(format!(
+                        "  {}/{} [{}] FAIL: {}",
+                        g.source, s.name, s.transport, blocker
+                    ));
+                }
+            }
+        }
+    }
+    if total == 0 {
+        lines.push("  no MCP declarations found".to_string());
+    }
+    lines.push(format!("{total} server(s), {ready} ready"));
+    lines
+}
+
 /// One server's readiness, and why.
 struct Row {
     source: String,

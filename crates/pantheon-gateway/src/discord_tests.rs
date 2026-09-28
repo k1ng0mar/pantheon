@@ -25,6 +25,17 @@ fn parses_approval_interactions_into_channel_events() {
     assert_eq!(event.thread_id, "chan-1");
     assert_eq!(event.approval, Some(crate::channel::ApprovalAnswer::Deny));
     assert_eq!(event.scope.as_deref(), Some("call_1_0"));
+    assert_eq!(event.run_id, None);
+    // New `deny:{run_id}:{scope}` from phone notifications.
+    let event = parse_event(&json!({
+        "type": 2,
+        "channel_id": "chan-1",
+        "data": {"custom_id": "deny:run_3_0002:turn_1-call_0_0:shell:{}", "channel_id": "chan-1"}
+    }))
+    .unwrap()
+    .unwrap();
+    assert_eq!(event.run_id.as_deref(), Some("run_3_0002"));
+    assert_eq!(event.scope.as_deref(), Some("turn_1-call_0_0:shell:{}"));
     assert!(parse_event(&json!({"type": 2, "data": {"custom_id": "unknown:x"}})).is_err());
 }
 

@@ -26,6 +26,18 @@ members = [
   # pantheon-tui is the one terminal application: the `pantheon` binary
   # (interactive session + non-interactive verbs) lives here.
   "crates/pantheon-tui",
+  # Ledger-native self-improvement: reflection passes over structured
+  # ledger signals, proposal generation with provenance, eval-gating,
+  # approvals, application, and audit. Driven by pantheon-tui.
+  "crates/pantheon-reflect",
+  # Background memory consolidation: stage/weigh/promote passes over
+  # ledger events, promoting durable facts into long-term memory with
+  # provenance. Driven by pantheon-tui.
+  "crates/pantheon-consolidate",
+  # Web dashboard: std-only HTTP control plane over the ledger,
+  # scheduler, config, keys, logs, skills/MCP, and gateway. Driven by
+  # pantheon-tui (`pantheon dashboard`).
+  "crates/pantheon-dashboard",
   # Behavioral/integration/eval test suite. Not shipped; runs with
   # `cargo test -p pantheon-eval`.
   "eval",

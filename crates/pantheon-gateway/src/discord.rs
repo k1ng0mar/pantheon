@@ -109,25 +109,9 @@ pub fn parse_event(payload: &Value) -> Result<Option<ChannelEvent>, ChannelError
             .get("custom_id")
             .and_then(Value::as_str)
             .ok_or_else(|| ChannelError::new("DISCORD_EVENT", "interaction has no custom_id"))?;
-        let (answer, scope) = custom_id
-            .split_once(':')
+        let (approval, run_id, scope) = crate::channel::parse_approval_callback(custom_id)
             .ok_or_else(|| ChannelError::new("DISCORD_EVENT", "invalid approval custom_id"))?;
-        let approval = match answer {
-            "grant" => Some(crate::channel::ApprovalAnswer::Grant),
-            "deny" => Some(crate::channel::ApprovalAnswer::Deny),
-            _ => {
-                return Err(ChannelError::new(
-                    "DISCORD_EVENT",
-                    "unknown approval answer",
-                ))
-            }
-        };
-        if scope.is_empty() {
-            return Err(ChannelError::new(
-                "DISCORD_EVENT",
-                "approval scope is empty",
-            ));
-        }
+        let approval = Some(approval);
         let channel_id = data
             .get("channel_id")
             .and_then(Value::as_str)
@@ -147,10 +131,10 @@ pub fn parse_event(payload: &Value) -> Result<Option<ChannelEvent>, ChannelError
             .map(|id| id.to_string());
         return Ok(Some(ChannelEvent {
             thread_id: channel_id.to_string(),
-            run_id: None,
+            run_id,
             text: String::new(),
             approval,
-            scope: Some(scope.to_string()),
+            scope: Some(scope),
             sender,
         }));
     }

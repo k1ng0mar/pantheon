@@ -1,0 +1,29 @@
+[package]
+name = "pantheon-dashboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Pantheon's web dashboard: a std-only HTTP/1.1 server (no tokio, no axum —
+# the rest of Pantheon is std-only) serving a single self-contained SPA over
+# the event ledger, scheduler, approvals, stats, and memory. Localhost-only
+# by default; that is the whole protection model for the approval actions.
+
+[dependencies]
+pantheon-api = { path = "../pantheon-api" }
+pantheon-storage = { path = "../pantheon-storage" }
+pantheon-runtime = { path = "../pantheon-runtime" }
+pantheon-scheduler = { path = "../pantheon-scheduler" }
+pantheon-memory = { path = "../pantheon-memory" }
+pantheon-exec = { path = "../pantheon-exec" }
+pantheon-migration = { path = "../pantheon-migration" }
+pantheon-gateway = { path = "../pantheon-gateway" }
+pantheon-reflect = { path = "../pantheon-reflect" }
+pantheon-consolidate = { path = "../pantheon-consolidate" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[lints]
+workspace = true

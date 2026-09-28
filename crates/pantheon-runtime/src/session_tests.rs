@@ -16,6 +16,7 @@ fn streaming_deltas_persist_as_model_delta_rows() {
         sup: &sup,
         run_id: "run_stream",
         poison: &poison,
+        model: RefCell::new(None),
     };
     sink.emit(ModelEvent::Attempt {
         provider: "router".into(),
@@ -52,20 +53,24 @@ fn streaming_deltas_persist_as_model_delta_rows() {
     assert_eq!(deltas, vec!["part1".to_string(), "part2".to_string()]);
     // Other events also projected.
     // Event order: RunStarted (from start_run) -> Attempt/ModelRequested,
-    // two TextDelta->ModelDelta, then Completed->ModelCompleted.
-    // Usage events are provider-plane only (to_event returns None) and
-    // are NOT persisted to the ledger -- by design.
+    // two TextDelta->ModelDelta, Usage->UsageRecorded (persisted so
+    // `pantheon stats` can aggregate historical spend), then
+    // Completed->ModelCompleted.
     let kinds: Vec<&str> = entries
         .iter()
         .map(|e| match &e.event {
             Event::RunStarted { .. } => "start",
             Event::ModelRequested { .. } => "req",
             Event::ModelDelta { .. } => "delta",
+            Event::UsageRecorded { .. } => "usage",
             Event::ModelCompleted { .. } => "done",
             _ => "skip",
         })
         .collect();
-    assert_eq!(kinds, vec!["start", "req", "delta", "delta", "done"]);
+    assert_eq!(
+        kinds,
+        vec!["start", "req", "delta", "delta", "usage", "done"]
+    );
     // rebuild_messages skips deltas (they are not full messages), but
     // the transcript still has the persisted content for inspection.
     let msgs = rebuild_messages(entries);

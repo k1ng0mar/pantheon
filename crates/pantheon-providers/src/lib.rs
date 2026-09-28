@@ -6,6 +6,7 @@ pub mod anthropic;
 pub mod catalog;
 pub mod chain;
 pub mod compress;
+pub mod distill;
 pub mod embeddings;
 pub mod http;
 pub mod judge;
@@ -19,6 +20,7 @@ use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, ModelPoli
 pub use crate::catalog::{ApiMode, ModelCost, ModelMeta, ProviderMeta};
 pub use crate::chain::ProviderChain;
 pub use crate::compress::CompressionClient;
+pub use crate::distill::{DistillClient, DISTILL_TIMEOUT_SECS};
 pub use crate::http::{
     auth_header_pair, http_agent, http_timeout, parse_retry_after, retry_after_secs, ChatTransport,
     HttpTransport, ResolvedModel, ToolChoice, TurnOptions, WireRequest, MAX_RETRY_AFTER_SECS,

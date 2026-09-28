@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 pantheon-api = { path = "../pantheon-api" }
 pantheon-agent = { path = "../pantheon-agent" }
+pantheon-consolidate = { path = "../pantheon-consolidate" }
 pantheon-secrets = { path = "../pantheon-secrets" }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }

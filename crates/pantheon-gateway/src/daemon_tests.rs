@@ -10,7 +10,7 @@ use serde_json::json;
 
 struct RecordingSink {
     messages: Mutex<Vec<(String, String)>>,
-    approvals: Mutex<Vec<(String, String, bool)>>,
+    approvals: Mutex<Vec<(String, Option<String>, String, bool)>>,
 }
 impl EventSink for RecordingSink {
     fn on_message(&self, thread: &str, _sender: Option<&str>, text: &str) {
@@ -19,11 +19,20 @@ impl EventSink for RecordingSink {
             .unwrap()
             .push((thread.into(), text.into()));
     }
-    fn on_approval(&self, thread: &str, _sender: Option<&str>, scope: &str, grant: bool) {
-        self.approvals
-            .lock()
-            .unwrap()
-            .push((thread.into(), scope.into(), grant));
+    fn on_approval(
+        &self,
+        thread: &str,
+        _sender: Option<&str>,
+        run_id: Option<&str>,
+        scope: &str,
+        grant: bool,
+    ) {
+        self.approvals.lock().unwrap().push((
+            thread.into(),
+            run_id.map(|s| s.to_string()),
+            scope.into(),
+            grant,
+        ));
     }
 }
 
@@ -74,7 +83,7 @@ fn events_route_to_messages_and_approvals() {
     );
     assert_eq!(
         *sink.approvals.lock().unwrap(),
-        vec![("42".to_string(), "call_0_0".to_string(), true)]
+        vec![("42".to_string(), None, "call_0_0".to_string(), true)]
     );
 }
 

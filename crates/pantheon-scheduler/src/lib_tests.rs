@@ -23,11 +23,15 @@ fn blank_pins_are_rejected_not_silently_inherited() {
 }
 
 #[test]
-fn effective_model_falls_back_to_the_runtime_default() {
+fn effective_model_prefers_pin_then_scheduled_aux_then_default() {
     let mut j = Job::new("j1", ScheduleKind::Manual, "nyx");
-    assert_eq!(j.effective_model("big"), "big");
+    // Unpinned: the `[scheduled]` auxiliary wins over the interactive default.
+    assert_eq!(j.effective_model(Some("cheap"), "big"), "cheap");
+    // No aux configured either: the default, as before.
+    assert_eq!(j.effective_model(None, "big"), "big");
+    // A pin beats both.
     j.pin_model("small", None).unwrap();
-    assert_eq!(j.effective_model("big"), "small");
+    assert_eq!(j.effective_model(Some("cheap"), "big"), "small");
 }
 
 #[test]

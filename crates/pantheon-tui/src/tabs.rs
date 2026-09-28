@@ -24,7 +24,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use pantheon_storage::RunListing;
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -264,7 +264,12 @@ const BUSY_GLYPH: &str = "●";
 /// inactive tabs dim, and a yellow ● marks sessions with a running turn.
 /// When the bar is wider than the area, a window around the active tab is
 /// shown so the selected tab is never the one clipped away.
-pub fn render_tab_bar(f: &mut Frame, area: Rect, tabs: &TabList) {
+pub fn render_tab_bar(
+    f: &mut Frame,
+    area: Rect,
+    tabs: &TabList,
+    theme: &crate::session::theme::Theme,
+) {
     if area.width == 0 || area.height == 0 || tabs.is_empty() {
         return;
     }
@@ -300,27 +305,27 @@ pub fn render_tab_bar(f: &mut Frame, area: Rect, tabs: &TabList) {
         used += sep_w + widths[end];
     }
 
-    // Build the line: dim separators, bold-cyan active tab, dim inactive
+    // Build the line: dim separators, bold active tab, dim inactive
     // tabs, and a yellow busy glyph as its own span so it reads as a
     // status rather than part of the name.
     let mut line_spans: Vec<Span> = Vec::new();
     for i in start..=end {
         if i > start {
-            line_spans.push(Span::styled(TAB_SEP, Style::default().fg(Color::DarkGray)));
+            line_spans.push(Span::styled(TAB_SEP, Style::default().fg(theme.dim)));
         }
         let tab = &tabs.tabs()[i];
         let style = if i == active {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.tab_active)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.tab_idle)
         };
         line_spans.push(Span::styled(format!(" {} {}", i + 1, tab.label()), style));
         if tab.busy {
             line_spans.push(Span::styled(
                 format!(" {BUSY_GLYPH}"),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.running),
             ));
         }
     }

@@ -20,6 +20,7 @@ pantheon-mcp = { path = "../pantheon-mcp" }
 pantheon-memory = { path = "../pantheon-memory" }
 pantheon-migration = { path = "../pantheon-migration" }
 pantheon-providers = { path = "../pantheon-providers" }
+pantheon-reflect = { path = "../pantheon-reflect" }
 pantheon-runtime = { path = "../pantheon-runtime" }
 pantheon-sandbox = { path = "../pantheon-sandbox" }
 pantheon-scheduler = { path = "../pantheon-scheduler" }

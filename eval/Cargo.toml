@@ -34,7 +34,12 @@ pantheon-scheduler = { path = "../crates/pantheon-scheduler" }
 pantheon-gateway = { path = "../crates/pantheon-gateway" }
 pantheon-migration = { path = "../crates/pantheon-migration" }
 pantheon-tui = { path = "../crates/pantheon-tui" }
+pantheon-reflect = { path = "../crates/pantheon-reflect" }
+pantheon-consolidate = { path = "../crates/pantheon-consolidate" }
+pantheon-dashboard = { path = "../crates/pantheon-dashboard" }
 serde_json = "1"
 tempfile = "3"
 serde_yaml = "0.9"
+chrono = "0.4"
+chrono-tz = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }

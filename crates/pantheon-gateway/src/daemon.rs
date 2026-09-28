@@ -30,8 +30,18 @@ pub const MAX_SEND_ATTEMPTS: u32 = 3;
 pub trait EventSink: Send + Sync {
     /// A user message arrived.
     fn on_message(&self, thread_id: &str, sender: Option<&str>, text: &str);
-    /// An approval button was clicked.
-    fn on_approval(&self, thread_id: &str, sender: Option<&str>, scope: &str, grant: bool);
+    /// An approval button was clicked. `run_id` is `Some` for phone
+    /// notifications sent about locally-started runs (the callback carries
+    /// it); `None` for the legacy button format, where the sink falls back
+    /// to its thread→run map.
+    fn on_approval(
+        &self,
+        thread_id: &str,
+        sender: Option<&str>,
+        run_id: Option<&str>,
+        scope: &str,
+        grant: bool,
+    );
 }
 
 /// Persisted `update_id` cursor so a daemon restart skips already-seen
@@ -111,6 +121,7 @@ pub fn route_event(sink: &dyn EventSink, event: &ChannelEvent) -> String {
             sink.on_approval(
                 &event.thread_id,
                 event.sender.as_deref(),
+                event.run_id.as_deref(),
                 scope,
                 matches!(answer, crate::channel::ApprovalAnswer::Grant),
             );

@@ -23,7 +23,14 @@ impl CommandMeta {
 
 /// Commands that take an argument and can complete it.
 pub fn arg_completes(name: &str) -> bool {
-    matches!(name, "model" | "resume" | "name")
+    matches!(name, "model" | "resume" | "title")
+}
+
+/// True when `name` is a built-in slash command (without the leading
+/// slash). The dynamic `/<skill>` dispatch consults this so built-ins
+/// always win over skill names.
+pub fn is_builtin(name: &str) -> bool {
+    registry().contains_key(name)
 }
 
 /// Every command the session actually dispatches, grouped. Absent on
@@ -84,6 +91,11 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "agent",
         },
         CommandMeta {
+            name: "learn",
+            desc: "save a behavioral lesson for future sessions",
+            category: "agent",
+        },
+        CommandMeta {
             name: "skills",
             desc: "browse skills",
             category: "agent",
@@ -119,8 +131,13 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "session",
         },
         CommandMeta {
-            name: "name",
+            name: "title",
             desc: "show or rename this conversation",
+            category: "session",
+        },
+        CommandMeta {
+            name: "reset",
+            desc: "reset turn state, keeping the session",
             category: "session",
         },
         CommandMeta {
@@ -146,6 +163,11 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
         CommandMeta {
             name: "mcp",
             desc: "MCP server declarations",
+            category: "runtime",
+        },
+        CommandMeta {
+            name: "tools",
+            desc: "rebuild the tool registry in place",
             category: "runtime",
         },
         CommandMeta {

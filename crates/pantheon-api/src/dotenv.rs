@@ -185,3 +185,81 @@ pub fn delete_dotenv_key(data_dir: &Path, key: &str) -> std::io::Result<bool> {
     }
     Ok(removed)
 }
+
+/// Validate a dotenv key name (`KEY=...`). Mirrors the parser's rule so a
+/// rejected key is rejected the same way everywhere.
+pub fn valid_key(key: &str) -> bool {
+    !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Apply many upserts and deletes to `<data_dir>/.env` in one atomic step:
+/// a single read, a single temp-file + rename write, owner-only permissions.
+///
+/// Line-preserving like [`upsert_dotenv`]: comments, order, and unrelated
+/// keys survive; hand-edited duplicates collapse (last-wins). Values must
+/// be single-line — a value containing `\n` or `\r` is rejected rather
+/// than written in a form the parser would read back differently.
+pub fn apply_dotenv_batch(
+    data_dir: &Path,
+    upserts: &[(String, String)],
+    deletes: &[String],
+) -> std::io::Result<()> {
+    for (key, value) in upserts {
+        if !valid_key(key) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid env key {key:?}"),
+            ));
+        }
+        if value.contains('\n') || value.contains('\r') {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("value for {key} must be single-line"),
+            ));
+        }
+    }
+    for key in deletes {
+        if !valid_key(key) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid env key {key:?}"),
+            ));
+        }
+    }
+    std::fs::create_dir_all(data_dir)?;
+    let path = dotenv_path(data_dir);
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<String> = Vec::new();
+    let mut done: Vec<bool> = vec![false; upserts.len()];
+    for raw_line in existing.lines() {
+        match dotenv_line_key(raw_line) {
+            Some(k) if deletes.iter().any(|d| d == k) => continue,
+            Some(k) => match upserts.iter().position(|(uk, _)| uk == k) {
+                Some(i) => {
+                    // First occurrence is replaced, later duplicates dropped:
+                    // the file collapses to one line per key (last-wins).
+                    if done[i] {
+                        continue;
+                    }
+                    done[i] = true;
+                    lines.push(format!("{}={}", upserts[i].0, upserts[i].1));
+                }
+                None => lines.push(raw_line.to_string()),
+            },
+            None => lines.push(raw_line.to_string()),
+        }
+    }
+    for (i, (key, value)) in upserts.iter().enumerate() {
+        if !done[i] {
+            lines.push(format!("{key}={value}"));
+        }
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    // Temp file + rename: a crash mid-write never leaves half a key file.
+    let tmp = path.with_extension("env.tmp");
+    std::fs::write(&tmp, &text)?;
+    restrict_permissions(&tmp)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}

@@ -7,12 +7,17 @@ use serde::{Deserialize, Serialize};
 pub mod cron;
 pub mod durable;
 pub mod idempotency;
+pub mod templates;
 pub mod tick;
 pub mod webhook;
 
 pub use cron::{civil_from_ms, CronError, CronSchedule};
 pub use durable::DurableClaimLedger;
 pub use idempotency::{occurrence_key, runs_for_missed, ClaimLedger};
+pub use templates::{
+    apply_defaults, builtin_templates, is_reserved_var, render_prompt, ScheduleTemplate,
+    TemplateSchedule, TemplateStore, TemplateVar,
+};
 pub use tick::{RunOutcome, TickDecision, TickDriver};
 pub use webhook::{
     accept as accept_webhook, route as route_webhook, sign as sign_webhook, verify_signature, Fire,
@@ -105,6 +110,12 @@ pub struct Job {
     /// What a tick does when the job is still running. Default: skip.
     #[serde(default)]
     pub overlap: OverlapPolicy,
+    /// Where the job's result goes after the run completes (`log` |
+    /// `telegram` | `discord` | `notify` | `file:<path>`). `None` = `log`,
+    /// today's behavior. Interpreted by the delivery layer, never by the
+    /// tick driver itself.
+    #[serde(default)]
+    pub deliver: Option<String>,
 }
 
 impl Job {
@@ -120,6 +131,7 @@ impl Job {
             provider: None,
             timeout_secs: None,
             overlap: OverlapPolicy::default(),
+            deliver: None,
         }
     }
 
@@ -142,10 +154,21 @@ impl Job {
         Ok(())
     }
 
-    /// What fires this job should resolve the model from: the pin, else the
-    /// runtime default the caller passes in.
-    pub fn effective_model<'a>(&'a self, default: &'a str) -> &'a str {
-        self.model.as_deref().unwrap_or(default)
+    /// Which model this job's agent turn should run on.
+    ///
+    /// Precedence: the job's own pin (`--model`, or the template's `model`
+    /// var which becomes a pin) > the `[scheduled]` auxiliary model > the
+    /// runtime default passed in. `scheduled_aux` is the resolved
+    /// `[scheduled]` auxiliary model name (`auto` already applied by the
+    /// caller); `default` is the interactive default. Scheduled work is
+    /// background work: it burns the cheap auxiliary model by default and
+    /// never silently uses the interactive model.
+    pub fn effective_model<'a>(
+        &'a self,
+        scheduled_aux: Option<&'a str>,
+        default: &'a str,
+    ) -> &'a str {
+        self.model.as_deref().or(scheduled_aux).unwrap_or(default)
     }
     /// Next fire decision: pure function of now vs last fire (testable).
     pub fn due(&self, now_ms: i64, last_fire_ms: Option<i64>) -> bool {
@@ -182,6 +205,48 @@ impl Job {
         match &self.kind {
             ScheduleKind::Cron { expr } => cron::CronSchedule::validate(expr),
             _ => Ok(()),
+        }
+    }
+
+    /// Next scheduled fire after `now_ms`, or `None` for paused jobs and
+    /// kinds with no schedule (manual, webhook, conditional). Pure function
+    /// of the job and the clock, for status displays and tests.
+    ///
+    /// Cron times are UTC (see [`cron`]). The forward scan is bounded to one
+    /// year of minutes; an expression that never matches in that window
+    /// (e.g. February 30th) reports no next fire rather than scanning
+    /// forever.
+    pub fn next_fire_ms(&self, now_ms: i64, last_fire_ms: Option<i64>) -> Option<i64> {
+        if self.paused {
+            return None;
+        }
+        match &self.kind {
+            ScheduleKind::Manual
+            | ScheduleKind::Webhook { .. }
+            | ScheduleKind::Conditional { .. } => None,
+            ScheduleKind::OneShot { at_ms } => {
+                (last_fire_ms.is_none() && *at_ms > now_ms).then_some(*at_ms)
+            }
+            ScheduleKind::Interval { every_ms } => {
+                let next = match last_fire_ms {
+                    None => now_ms, // never fired: due immediately
+                    Some(last) => last.saturating_add(*every_ms as i64),
+                };
+                Some(next.max(now_ms))
+            }
+            ScheduleKind::Cron { expr } => {
+                let schedule = cron::CronSchedule::parse(expr).ok()?;
+                // Start at the next minute boundary: the current minute's
+                // fire (if any) is "now", handled by `due`.
+                let mut t = (now_ms.div_euclid(60_000) + 1) * 60_000;
+                for _ in 0..525_600 {
+                    if schedule.matches_ms(t) {
+                        return Some(t);
+                    }
+                    t += 60_000;
+                }
+                None
+            }
         }
     }
 

@@ -203,6 +203,14 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         agents: Default::default(),
         secrets: None,
         retention: None,
+        tui: None,
+        approvals: None,
+        reflect: None,
+        extraction: None,
+        planner: None,
+        rerank: None,
+        consolidation: None,
+        temporal: None,
     };
 
     match cfg.save(data_dir) {

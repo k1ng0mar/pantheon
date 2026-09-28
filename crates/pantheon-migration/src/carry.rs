@@ -59,6 +59,55 @@ pub struct McpServer {
     /// True when the source declared a credential we refused to copy.
     #[serde(default)]
     pub needs_credentials: bool,
+    /// Operator toggle. Defaults to true so every declaration written
+    /// before this field existed reads as enabled. Nothing consumes it
+    /// yet — Pantheon has no MCP launcher (spec section 15) — but the
+    /// dashboard and `pantheon mcp` surface it, and the launcher will
+    /// honor it when it lands.
+    #[serde(default = "mcp_enabled_default")]
+    pub enabled: bool,
+}
+
+/// `serde` default for [`McpServer::enabled`]: old declaration files have
+/// no such key and must read as enabled.
+fn mcp_enabled_default() -> bool {
+    true
+}
+
+/// Readiness of one declared server: `None` means ready to register,
+/// `Some(blocker)` says why not. Single source of truth for the `/mcp`
+/// listing, `/mcp reload`, and the dashboard's MCP view.
+///
+/// Honest scope note: Pantheon still has no MCP server launcher (spec
+/// section 15), so "ready" means prepared-but-unattached, and "reload"
+/// re-scans the declaration files on disk — there are no live clients
+/// to drop and reconnect. When a launcher lands, this is its hook point.
+pub fn server_readiness(s: &McpServer) -> Option<String> {
+    let blocker = match s.transport.as_str() {
+        "stdio" => match s.command.as_deref() {
+            Some(c) if !c.trim().is_empty() => String::new(),
+            _ => "no command declared".to_string(),
+        },
+        "http" | "sse" => match s.url.as_deref() {
+            Some(u) if !u.trim().is_empty() => String::new(),
+            _ => "no url declared".to_string(),
+        },
+        other => format!("unsupported transport {other:?}"),
+    };
+    let blocker = if s.needs_credentials && blocker.is_empty() {
+        if s.requires_env.is_empty() {
+            "needs a credential (value not in the source)".to_string()
+        } else {
+            format!("needs a credential ({})", s.requires_env.join(", "))
+        }
+    } else {
+        blocker
+    };
+    if blocker.is_empty() {
+        None
+    } else {
+        Some(blocker)
+    }
 }
 
 /// A `mcp.json`-shaped document, as Claude Code / omp / others write it.
@@ -157,6 +206,7 @@ pub fn parse_mcp_json(body: &str) -> Result<Vec<McpServer>, PantheonError> {
             url: e.url,
             requires_env,
             needs_credentials,
+            enabled: true,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -242,6 +292,7 @@ pub fn parse_hermes_mcp(config_yaml: &str) -> Vec<McpServer> {
                 url: None,
                 requires_env: Vec::new(),
                 needs_credentials: false,
+                enabled: true,
             });
             continue;
         }

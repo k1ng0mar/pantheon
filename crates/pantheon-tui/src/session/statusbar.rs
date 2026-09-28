@@ -34,6 +34,12 @@ pub struct StatusBarData {
     pub session_prefix: String,
     /// Session cost in dollars; `None` when the catalog knows no price.
     pub cost_usd: Option<f64>,
+    /// Cached git label, e.g. `⎇ main*`; `None` outside a checkout (or
+    /// before the first refresh) omits the segment entirely.
+    pub git: Option<String>,
+    /// Background tasks alive (`/btw`), e.g. `Some("bg 2 ⠋")`; `None`
+    /// hides the segment so non-users of `/btw` see no noise.
+    pub bg: Option<String>,
 }
 
 /// Missing value glyph. One rule, used everywhere: unknown is `—`.
@@ -82,7 +88,7 @@ pub fn render(data: &StatusBarData, width: usize) -> String {
         (Some(i), Some(o)) => Some(format!("in {} out {}", fmt_count(i), fmt_count(o))),
         _ => None,
     };
-    let parts = vec![
+    let mut parts = vec![
         format!("{} {}", data.icon, data.status_word),
         seg("ctx", ctx),
         seg("turn", turn),
@@ -93,6 +99,14 @@ pub fn render(data: &StatusBarData, width: usize) -> String {
         seg("cost", data.cost_usd.map(fmt_cost)),
         format!("sess {}", data.session_prefix),
     ];
+    // Background tasks: shown only while at least one is alive.
+    if let Some(b) = data.bg.as_deref() {
+        parts.push(b.to_string());
+    }
+    // Git metadata is a cached extra: present only inside a checkout.
+    if let Some(g) = data.git.as_deref() {
+        parts.push(g.to_string());
+    }
     let mut line = parts.join("  │  ");
     if width > 0 {
         let w = line.chars().count();
