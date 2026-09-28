@@ -147,7 +147,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             println!("  coder        shell + edits allowed (recommended)");
             println!("  coder_memory coder + memory writes");
             let a = prompt("Policy", Some("coder"));
-            PolicyPreset::from_str(&a).unwrap_or(PolicyPreset::Coder)
+            PolicyPreset::parse(&a).unwrap_or(PolicyPreset::Coder)
         }
     });
 
@@ -303,7 +303,7 @@ pub fn cmd_setup(args: &[String]) {
     let parsed = crate::args::Args::parse(&args[1.min(args.len())..]);
     let flag = |name: &str| parsed.flag(name);
     let policy = flag("policy")
-        .and_then(|p| PolicyPreset::from_str(&p))
+        .and_then(|p| PolicyPreset::parse(&p))
         .or_else(|| {
             let bad = flag("policy");
             if let Some(b) = bad {

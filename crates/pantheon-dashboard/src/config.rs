@@ -164,7 +164,7 @@ fn validate_change(
         let s = new
             .as_str()
             .ok_or_else(|| "policy must be a string".to_string())?;
-        PolicyPreset::from_str(s).ok_or_else(|| {
+        PolicyPreset::parse(s).ok_or_else(|| {
             format!("unknown policy '{s}'; expected reader, coder, or coder_memory")
         })?;
         return Ok(());
