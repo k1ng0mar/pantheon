@@ -227,6 +227,10 @@ fn query_usize(q: &HashMap<String, String>, key: &str, default: usize) -> usize 
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 const STYLE_CSS: &str = include_str!("../assets/style.css");
 const APP_JS: &str = include_str!("../assets/app.js");
+const MANIFEST_JSON: &str = include_str!("../assets/manifest.json");
+const SW_JS: &str = include_str!("../assets/sw.js");
+const ICON_192: &[u8] = include_bytes!("../assets/icon-192.png");
+const ICON_512: &[u8] = include_bytes!("../assets/icon-512.png");
 
 // ---------------------------------------------------------------------------
 // Dispatch
@@ -250,6 +254,19 @@ fn dispatch(app: &App, req: &Request) -> Response {
     }
     if req.method == "GET" && segs == ["app.js"] {
         return Response::ok_js(APP_JS);
+    }
+    // PWA shell assets: no token needed (they cannot do anything without one).
+    if req.method == "GET" && segs == ["manifest.json"] {
+        return Response::ok_bytes("application/manifest+json", MANIFEST_JSON.as_bytes());
+    }
+    if req.method == "GET" && segs == ["sw.js"] {
+        return Response::ok_js(SW_JS);
+    }
+    if req.method == "GET" && segs == ["icon-192.png"] {
+        return Response::ok_bytes("image/png", ICON_192);
+    }
+    if req.method == "GET" && segs == ["icon-512.png"] {
+        return Response::ok_bytes("image/png", ICON_512);
     }
     if segs.first().map(String::as_str) != Some("api") {
         return Response::not_found();

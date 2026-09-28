@@ -194,6 +194,9 @@ fn timeline_item(e: &pantheon_storage::LedgerEntry) -> serde_json::Value {
         Event::ApprovalRequested { .. } => "approval_requested",
         Event::ApprovalGranted { .. } => "approval_granted",
         Event::ApprovalDenied { .. } => "approval_denied",
+        Event::AgentSpawned { .. } => "agent_spawned",
+        Event::AgentMessage { .. } => "agent_message",
+        Event::AgentCompleted { .. } => "agent_completed",
         Event::SessionTitled { .. } => "titled",
         _ => "other",
     };
@@ -216,6 +219,9 @@ fn timeline_item(e: &pantheon_storage::LedgerEntry) -> serde_json::Value {
         Event::ApprovalRequested { scope, .. } => Some(redact(scope)),
         Event::ApprovalGranted { scope, .. } => Some(redact(scope)),
         Event::ApprovalDenied { scope, .. } => Some(redact(scope)),
+        Event::AgentSpawned { agent, .. } => Some(agent.clone()),
+        Event::AgentMessage { agent, .. } => Some(agent.clone()),
+        Event::AgentCompleted { agent, .. } => Some(agent.clone()),
         Event::SessionTitled { title, .. } => Some(title.clone()),
         _ => None,
     };

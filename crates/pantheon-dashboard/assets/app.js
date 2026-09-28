@@ -127,6 +127,7 @@ function icon(name, size) {
     plus: '<path d="M12 5v14M5 12h14"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
     arrow: '<path d="M5 12h14m-6-6 6 6-6 6"/>',
+    back: '<path d="M19 12H5m6 6-6-6 6-6"/>',
     wrench: '<path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3z"/>',
     bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
   };
@@ -450,7 +451,7 @@ renderers.overview = async function () {
 
 /* ---------------- runs ---------------- */
 renderers.runs = async function () {
-  if (state.param) return renderRunDetail(state.param);
+  if (state.param) return renderers.inspector();
   setView(viewHead("Runs", "search, export, prune") +
     '<div class="toolbar"><input id="rq" class="input" placeholder="search id or title" style="width:220px" aria-label="search runs">' +
     '<select id="rstatus" class="select" aria-label="filter by status"><option value="">all statuses</option>' +
@@ -483,7 +484,7 @@ renderers.runs = async function () {
           "<td class='mono'>" + relTime(r.created_ms) + "</td></tr>"
         ).join("") + "</tbody></table></div></div>";
       $$("#rlist [data-run]").forEach((tr) => {
-        const go = () => { location.hash = "#/runs/" + encodeURIComponent(tr.dataset.run); };
+        const go = () => { location.hash = "#/inspector/" + encodeURIComponent(tr.dataset.run); };
         tr.onclick = go;
         tr.onkeydown = (e) => { if (e.key === "Enter") go(); };
       });
@@ -496,25 +497,100 @@ renderers.runs = async function () {
   load();
 };
 
-async function renderRunDetail(id) {
-  setView(viewHead("Run", id) + loading("run detail"));
+/* ---------------- run / subagent inspector ---------------- */
+/* Display metadata for the event kinds served by GET /api/runs/:id. */
+const INSP_KINDS = {
+  run_started:        { label: "Run started",        milestone: true,  tone: "" },
+  run_completed:      { label: "Run completed",      milestone: true,  tone: "ok" },
+  run_failed:         { label: "Run failed",         milestone: true,  tone: "err" },
+  run_canceled:       { label: "Run canceled",       milestone: true,  tone: "warn" },
+  turn_started:       { label: "Turn started",       milestone: false, tone: "" },
+  turn_completed:     { label: "Turn completed",     milestone: false, tone: "" },
+  turn_parked:        { label: "Turn parked",        milestone: false, tone: "warn" },
+  model_requested:    { label: "Model requested",    milestone: false, tone: "" },
+  model_completed:    { label: "Model responded",    milestone: false, tone: "" },
+  usage:              { label: "Usage recorded",     milestone: false, tone: "" },
+  approval_requested: { label: "Approval requested", milestone: false, tone: "warn" },
+  approval_granted:   { label: "Approval granted",   milestone: false, tone: "ok" },
+  approval_denied:    { label: "Approval denied",    milestone: false, tone: "err" },
+  agent_spawned:      { label: "Subagent spawned",   milestone: false, tone: "accent" },
+  agent_message:      { label: "Subagent message",   milestone: false, tone: "accent" },
+  agent_completed:    { label: "Subagent completed", milestone: false, tone: "ok" },
+  titled:             { label: "Session retitled",   milestone: false, tone: "" },
+  other:              { label: "Event",              milestone: false, tone: "" },
+};
+function inspKind(k) { return INSP_KINDS[k] || INSP_KINDS.other; }
+
+/* Execution timeline: milestone checkpoints, turn group headers, and
+   clickable event nodes. Turn grouping is visual only. */
+function inspTimelineHtml(timeline) {
+  let html = "", lastTurn = null;
+  timeline.forEach((t, i) => {
+    const k = inspKind(t.kind);
+    if (t.kind === "turn_started" && typeof t.detail === "string") {
+      const m = /turn\s+(\S+)/i.exec(t.detail);
+      if (m && m[1] !== lastTurn) {
+        lastTurn = m[1];
+        html += '<li class="ev-group">Turn ' + esc(m[1]) + "</li>";
+      }
+    }
+    html +=
+      '<li class="ev' + (k.milestone ? " milestone" : "") + '" data-ev="' + i + '" tabindex="0" role="button" aria-label="' + esc(k.label) + '">' +
+      '<span class="ev-dot" data-tone="' + esc(k.tone) + '"></span>' +
+      '<div class="ev-main"><div class="ev-top"><span class="ev-kind">' + esc(k.label) + "</span>" +
+      '<span class="ev-ts mono">' + fmtTime(t.ts_ms) + "</span></div>" +
+      (t.detail ? '<div class="ev-detail">' + esc(String(t.detail)) + "</div>" : "") +
+      "</div></li>";
+  });
+  return html;
+}
+
+/* Detail viewport for the selected timeline event. */
+function inspDetailHtml(t) {
+  if (!t) return emptyState("No event selected", "Click an event in the timeline to inspect it.");
+  const k = inspKind(t.kind);
+  const isApproval = t.kind === "approval_requested" || t.kind === "approval_granted" || t.kind === "approval_denied";
+  return '<dl class="kv">' +
+    "<dt>Event</dt><dd>" + esc(k.label) + "</dd>" +
+    "<dt>Time</dt><dd class='mono'>" + fmtTime(t.ts_ms) + "</dd>" +
+    "<dt>Sequence</dt><dd class='mono'>#" + t.seq + "</dd>" +
+    "<dt>Detail</dt><dd>" + (t.detail ? esc(String(t.detail)) : '<span class="text-faint">—</span>') + "</dd>" +
+    (isApproval ? "<dt></dt><dd><a href='#/approvals'>Open approvals</a></dd>" : "") +
+    "</dl>";
+}
+
+renderers.inspector = async function () {
+  const id = state.param || "";
+  setView(viewHead("Inspector", "") + loading("run detail"));
   try {
     const r = await api("GET", "/api/runs/" + encodeURIComponent(id));
+    const timeline = r.timeline || [];
+    const title = r.title || ("Run " + id.slice(0, 12));
     const transcript = (r.transcript || []).map((m) =>
       m.type === "reasoning"
         ? '<div class="msg" data-role="reason"><div class="m-role">reasoning</div><div class="m-body">' + esc(m.content) + "</div></div>"
         : '<div class="msg" data-role="' + esc(m.role) + '"><div class="m-role">' + esc(m.role) + '</div><div class="m-body">' + esc(m.content) + "</div></div>"
     ).join("");
-    const timeline = (r.timeline || []).map((t) =>
-      "<li><span class='t-ts'>" + fmtTime(t.ts_ms) + "</span><span class='t-kind'>" + esc(t.kind) + "</span>" +
-      "<span class='t-body'>" + esc(typeof t.detail === "string" ? t.detail : JSON.stringify(t.detail)) + "</span></li>"
-    ).join("");
     setView(
-      viewHead("Run " + id.slice(0, 12), r.title || "",
-        '<span class="btn-row"><button class="btn small" id="rd-json">JSON</button>' +
-        '<button class="btn small" id="rd-md">Markdown</button>' +
-        '<button class="btn small danger" id="rd-prune">Prune</button></span>') +
-      '<div class="panel"><div class="panel-body"><dl class="kv">' +
+      '<div class="insp-head"><a class="btn small" href="#/runs">' + icon("back", 14) + " Runs</a>" +
+      statusPill(r.status) +
+      '<h1 class="view-title">' + esc(title) + '</h1><span class="mono text-faint">' + esc(id.slice(0, 12)) + "</span>" +
+      '<span class="spacer"></span><span class="btn-row">' +
+      '<button class="btn small" id="rd-json">JSON</button>' +
+      '<button class="btn small" id="rd-md">Markdown</button>' +
+      '<button class="btn small danger" id="rd-prune">Prune</button></span></div>' +
+      '<div class="insp-grid">' +
+      '<div class="panel"><div class="panel-head"><span class="panel-title">Execution timeline</span><span class="spacer"></span>' +
+      '<span class="view-sub">' + timeline.length + " events</span></div>" +
+      '<div class="panel-body">' +
+      '<div class="ev-note">Per-tool-call detail isn\u2019t recorded in the ledger yet \u2014 this timeline shows run, turn, model, approval, and subagent events.</div>' +
+      (timeline.length
+        ? '<ol class="ev-list">' + inspTimelineHtml(timeline) + "</ol>"
+        : emptyState("No events recorded", "This run has no ledger events yet.")) +
+      "</div></div>" +
+      '<div class="insp-side">' +
+      '<div class="panel"><div class="panel-head"><span class="panel-title">Run summary</span></div>' +
+      '<div class="panel-body"><dl class="kv">' +
       "<dt>Status</dt><dd>" + statusPill(r.status) + "</dd>" +
       "<dt>Model</dt><dd class='mono'>" + esc(r.model || "—") + (r.provider ? " <span class='view-sub'>" + esc(r.provider) + "</span>" : "") + "</dd>" +
       "<dt>Tokens</dt><dd class='mono'>" + fmtNum(r.input_tokens + r.output_tokens) + " (" + fmtNum(r.input_tokens) + " in / " + fmtNum(r.output_tokens) + " out)</dd>" +
@@ -523,11 +599,29 @@ async function renderRunDetail(id) {
       "<dt>Created</dt><dd class='mono'>" + fmtTime(r.created_ms) + "</dd>" +
       (r.ended_ms ? "<dt>Ended</dt><dd class='mono'>" + fmtTime(r.ended_ms) + "</dd>" : "") +
       "</dl></div></div>" +
+      '<div class="panel"><div class="panel-head"><span class="panel-title">Event detail</span></div>' +
+      '<div class="panel-body" id="insp-detail">' + inspDetailHtml(null) + "</div></div>" +
+      "</div>" +
+      "</div>" +
       '<div class="section-label">Transcript</div><div class="panel"><div class="panel-body">' +
-      (transcript || emptyState("No transcript", "This run recorded no messages.")) + "</div></div>" +
-      '<div class="section-label">Timeline</div><div class="panel"><div class="panel-body flush">' +
-      (timeline ? '<ul class="tl">' + timeline + "</ul>" : emptyState("No events", "")) + "</div></div>"
+      (transcript || emptyState("No transcript", "This run recorded no messages.")) + "</div></div>"
     );
+    const items = $$(".ev-list .ev");
+    const select = (i) => {
+      items.forEach((el) => el.classList.toggle("sel", +el.dataset.ev === i));
+      $("#insp-detail").innerHTML = inspDetailHtml(timeline[i]);
+    };
+    items.forEach((el) => {
+      el.onclick = () => select(+el.dataset.ev);
+      el.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(+el.dataset.ev); } };
+    });
+    if (timeline.length) {
+      let def = timeline.length - 1;
+      for (let i = timeline.length - 1; i >= 0; i--) {
+        if (inspKind(timeline[i].kind).milestone && timeline[i].kind !== "run_started") { def = i; break; }
+      }
+      select(def);
+    }
     $("#rd-json").onclick = () => download("/api/runs/" + encodeURIComponent(id) + "/export?format=json", "run-" + id + ".json");
     $("#rd-md").onclick = () => download("/api/runs/" + encodeURIComponent(id) + "/export?format=md", "run-" + id + ".md");
     $("#rd-prune").onclick = async () => {
@@ -544,10 +638,11 @@ async function renderRunDetail(id) {
       } catch (e) { toast("Prune failed: " + e.message, "err"); }
     };
   } catch (e) {
-    setView(viewHead("Run", id) + errorState(e.message, true));
-    $("[data-retry]").onclick = () => renderRunDetail(id);
+    setView(viewHead("Inspector", "") + errorState(e.message, true));
+    $("[data-retry]").onclick = () => renderers.inspector();
   }
-}
+};
+
 
 /* ---------------- approvals ---------------- */
 function wireApprovalButtons(root) {
@@ -1357,6 +1452,9 @@ renderers.system = async function () {
 
 /* ---------------- boot ---------------- */
 (function boot() {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
   initTheme();
   if (!TOKEN) {
     $("#gate").hidden = false;
