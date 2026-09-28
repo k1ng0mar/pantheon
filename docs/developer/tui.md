@@ -239,8 +239,7 @@ itself so the card is self-describing and no inference is needed.
 ### Interruption: cooperative-only cancel boundary
 
 The cancel token is checked at turn entry and (via the `turn + 1` recursion)
-after each tool batch. An **in-flight provider request cannot be aborted** —
-the HTTP stream runs to completion and the cancel is observed on the next
+after each tool batch. An **in-flight provider request cannot be aborted**. The HTTP stream runs to completion and the cancel is observed on the next
 boundary. A request hung at the network layer still needs the watchdog.
 
 Acceptable for now: intent is recorded durably the instant the user confirms,
