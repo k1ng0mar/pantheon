@@ -1,6 +1,6 @@
 # Terminal reference
 
-Every `pantheon` verb, its flags, and exit codes. Anything not listed here does not exist — typos exit 2 with a suggestion.
+Every `pantheon` verb, its flags, and exit codes. Anything not listed here does not exist, typos exit 2 with a suggestion.
 
 ## Conventions
 
@@ -26,7 +26,7 @@ pantheon run --taskID <id> --grant <scope> [--no-resume]
 pantheon run --taskID <id> --deny  <scope> [--no-resume]
 ```
 
-With `--deliver` (default `session`): a real model turn, printed here or queued for the gateway. Without it: synthetic ledger events only (`--say` records a line, `--fail CODE` ends the run, `--tool` names a tool, `--ext` fires hooks) — for recovery/ledger testing, never a model call.
+With `--deliver` (default `session`): a real model turn, printed here or queued for the gateway. Without it: synthetic ledger events only (`--say` records a line, `--fail CODE` ends the run, `--tool` names a tool, `--ext` fires hooks), for recovery/ledger testing, never a model call.
 
 ## Inspect a run
 
@@ -90,8 +90,8 @@ pantheon schedule <task> [--every 30m | --cron "*/5 * * * *"] [--agent N] [--mod
 pantheon schedule list|pause|resume|cancel|run <id>
 pantheon schedule tick [--watch]      # advance the scheduler manually; --watch loops
 pantheon swarm status [<id>] | list   # recorded swarms only; the swarm verb doesn't spawn
-# (sub-agent work happens through in-session delegation — the engine's
-# Delegate arm — not through the swarm verb; spawn caps still apply)
+# (sub-agent work happens through in-session delegation, the engine's
+# Delegate arm, not through the swarm verb; spawn caps still apply)
 pantheon gateway start|restart|stop|status|run [discord|telegram]
 pantheon serve [--port N] [--host H]      # AG-UI server
 pantheon pipeline --spec "task" [RUN_ID]

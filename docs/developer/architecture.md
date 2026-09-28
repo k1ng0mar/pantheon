@@ -38,11 +38,11 @@ The supervisor owns agent lifecycle, runs, approvals, scheduling, and recovery. 
 
 ## Capabilities
 
-The security backbone: granular capabilities (`filesystem.read`, `shell.execute`, `git.push`, `memory.write`, `agent.spawn`, …) mapped through per-agent policies. Knowledge never implies authority — skills, memories, and tool descriptions inform; only policy permits.
+The security backbone: granular capabilities (`filesystem.read`, `shell.execute`, `git.push`, `memory.write`, `agent.spawn`, …) mapped through per-agent policies. Knowledge never implies authority, skills, memories, and tool descriptions inform; only policy permits.
 
 ## Execution
 
-Tools run under policy-chosen sandbox boundaries (process isolation up through container/VM). A boundary that can't initialize fails closed — `SANDBOX_UNAVAILABLE` rather than running unconfined. File writes go through checkpointed, atomic apply with stale-check rejection and rollback.
+Tools run under policy-chosen sandbox boundaries (process isolation up through container/VM). A boundary that can't initialize fails closed, `SANDBOX_UNAVAILABLE` rather than running unconfined. File writes go through checkpointed, atomic apply with stale-check rejection and rollback.
 
 ## Memory and storage
 
@@ -54,7 +54,7 @@ Resolved at the execution boundary through a broker (OS keychain → encrypted f
 
 ## Providers
 
-Transport adapters only — OpenAI-compatible and Anthropic behind one `ModelTurn` interface, no SDKs above the provider crate. Default model, failure-only fallback chain, per-capability auxiliaries. No routing; agents never choose models.
+Transport adapters only, OpenAI-compatible and Anthropic behind one `ModelTurn` interface, no SDKs above the provider crate. Default model, failure-only fallback chain, per-capability auxiliaries. No routing; agents never choose models.
 
 ## Surfaces
 
@@ -62,7 +62,7 @@ CLI, TUI, web (`serve`), and gateways (Discord, Telegram) all drive the same Ses
 
 ## Migration
 
-`pantheon migrate hermes|openclaw|omp`: detect → plan → approve → backup → apply → validate. The apply itself is transactional (stage → validate → commit): everything detected is imported or archived with a reason — nothing silently dropped, credentials never written outside `<data_dir>/.env`.
+`pantheon migrate hermes|openclaw|omp`: detect → plan → approve → backup → apply → validate. The apply itself is transactional (stage → validate → commit): everything detected is imported or archived with a reason, nothing silently dropped, credentials never written outside `<data_dir>/.env`.
 
 ## Locked decisions
 
@@ -100,6 +100,6 @@ CLI, TUI, web (`serve`), and gateways (Discord, Telegram) all drive the same Ses
 
 ## See also
 
-- [Contributing](contributing.md) — boundaries and change mechanics
-- [Decisions](decisions/) — records behind the locks above
-- [Terminal reference](../reference/terminal.md) — the surface this architecture serves
+- [Contributing](contributing.md), boundaries and change mechanics
+- [Decisions](decisions/), records behind the locks above
+- [Terminal reference](../reference/terminal.md), the surface this architecture serves

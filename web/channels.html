@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon — Channels</title>
+  <title>Pantheon: Rust Agent Runtime</title>
   <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
-  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:title" content="Pantheon: Rust Agent Runtime">
   <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
   <meta property="og:type" content="website">
   <link rel="stylesheet" href="https://cdn.tailwindcss.com">
@@ -86,14 +86,14 @@
 
   <main class="max-w-3xl mx-auto px-6 pt-24 pb-16">
 <h1 id="channels" class="text-3xl font-bold tracking-tight mb-2">Channels</h1><div class="glow-line my-6"></div>
-<p class="my-3 leading-relaxed">One agent, every surface. Identity, memory, and history follow you from the terminal to your phone to the browser — the interface presents, the runtime remembers.</p>
+<p class="my-3 leading-relaxed">One agent, every surface. Identity, memory, and history follow you from the terminal to your phone to the browser, the interface presents, the runtime remembers.</p>
 <h2 id="terminal" class="text-xl font-bold tracking-tight mt-10 mb-3">Terminal</h2>
 <p class="my-3 leading-relaxed"><code>pantheon</code> opens the interactive interface; <code>pantheon run</code> serves scripts and automation. See <a href="sessions.html">Sessions</a>.</p>
 <h2 id="web" class="text-xl font-bold tracking-tight mt-10 mb-3">Web</h2>
 <pre><code>
 pantheon serve [--port N] [--host H]
 </code></pre>
-<p class="my-3 leading-relaxed">A local AG-UI server: web client at <code>/</code>, RPC at <code>/agui/rpc</code>, everything else gated by <code>PANTHEON_SERVE_TOKEN</code>. It runs the same Session runtime as the terminal and replays the ledger stream — a minimal reference surface, not a second product.</p>
+<p class="my-3 leading-relaxed">A local AG-UI server: web client at <code>/</code>, RPC at <code>/agui/rpc</code>, everything else gated by <code>PANTHEON_SERVE_TOKEN</code>. It runs the same Session runtime as the terminal and replays the ledger stream, a minimal reference surface, not a second product.</p>
 <h2 id="messaging" class="text-xl font-bold tracking-tight mt-10 mb-3">Messaging</h2>
 <p class="my-3 leading-relaxed">Discord and Telegram connect through the gateway:</p>
 <pre><code>
@@ -101,12 +101,12 @@ pantheon gateway start    # supervised service (systemd/launchd), verified activ
 pantheon gateway restart|stop|status|run
 </code></pre>
 <p class="my-3 leading-relaxed">Two requirements, both non-negotiable: channel tokens (<code>PANTHEON_DISCORD_TOKEN</code>, <code>PANTHEON_TELEGRAM_BOT_TOKEN</code> in <code>&lt;data_dir&gt;/.env</code>, never in config) and the pairing allowlist (<code>PANTHEON_GATEWAY_ALLOW</code>). Unknown senders are refused before anything reaches the runtime.</p>
-<p class="my-3 leading-relaxed">Replies route back with <code>pantheon run --say ... --deliver telegram|discord</code> — a durable outbox, so delivery survives gateway downtime.</p>
+<p class="my-3 leading-relaxed">Replies route back with <code>pantheon run --say ... --deliver telegram|discord</code>, a durable outbox, so delivery survives gateway downtime.</p>
 <h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><a href="sessions.html">Sessions</a> — the terminal interface</li>
-<li><a href="configuration.html#gateway">Configuration</a> — tokens and allowlist</li>
-<li><a href="troubleshooting.html">Troubleshooting</a> — connection issues</li>
+<li><a href="sessions.html">Sessions</a>, the terminal interface</li>
+<li><a href="configuration.html#gateway">Configuration</a>, tokens and allowlist</li>
+<li><a href="troubleshooting.html">Troubleshooting</a>, connection issues</li>
 </ul>
 </main>
 

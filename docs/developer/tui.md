@@ -19,7 +19,7 @@
 
 The interaction/state matrix. Each state maps to: what triggers it, what the
 screen shows, and what transitions out. Implementation order follows the
-families — SESSION and AGENT first (they are the shell), then TOOLS, then the
+families, SESSION and AGENT first (they are the shell), then TOOLS, then the
 rest.
 
 Visual primitives shared by every family:
@@ -155,7 +155,7 @@ Removed from the surface: `/memory` (`/remember` covers it), `/policy`,
 | PARTIAL | per-run partial-failure summary (see ORCHESTRATION) |
 | CHECKPOINT | `✓ checkpoint {hash}` one-liner; /undo → checkpoint card with [r] restore; double-Esc rewind → `TurnRewound` event (durable, audit-kept; replay skips the rewound turn) |
 | CRASH RECOVERY | on boot after crash: last checkpoint, transcript tail, resume prompt |
-| SECRET DETECTED | `× secret detected in output · redacted · rotate advised` — never renders the secret |
+| SECRET DETECTED | `× secret detected in output · redacted · rotate advised`, never renders the secret |
 
 ---
 
@@ -166,7 +166,7 @@ Removed from the surface: `/memory` (`/remember` covers it), `/policy`,
 - Session tabs: opencode-style bar across the top, `[ 1 title ● │ 2 other ]`.
   Ctrl+Tab cycles, Alt+1–9 jumps (checked before the Char handler; Alt+1
   arrives as Char('1')+ALT). The active tab is bold cyan, inactive tabs dim,
-  and a yellow ● marks sessions with a running turn — the "background
+  and a yellow ● marks sessions with a running turn, the "background
   session" indicator: you can switch away mid-run and the tab shows it is
   still working.
 - Status bar: live telemetry, real or absent. Ready/working/interrupted word,

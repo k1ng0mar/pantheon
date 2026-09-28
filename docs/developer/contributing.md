@@ -25,8 +25,8 @@ Rules that keep the architecture honest:
 
 ## Testing
 
-- `cargo test --workspace` — the workspace test gate
-- `python3 eval/run.py` — eval cases
+- `cargo test --workspace`, the workspace test gate
+- `python3 eval/run.py`, eval cases
 - Nothing ships until both are green.
 
 ## Common changes
@@ -58,5 +58,5 @@ Known deviations are recorded in `decisions/0001-workspace-restructure.md`. Revi
 
 ## See also
 
-- [Architecture](architecture.md) — system design, crate map, locked decisions
-- [Terminal reference](../reference/terminal.md) — the surface your verb joins
+- [Architecture](architecture.md), system design, crate map, locked decisions
+- [Terminal reference](../reference/terminal.md), the surface your verb joins

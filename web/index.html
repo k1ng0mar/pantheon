@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon — the model is not the runtime</title>
+  <title>Pantheon: the model is not the runtime</title>
   <meta name="description" content="Pantheon is a durable agent runtime. Capability-gated execution, an append-only SQLite ledger, approvals, and crash recovery. The model is replaceable; the agent persists. MIT licensed.">
-  <meta property="og:title" content="Pantheon — the model is not the runtime">
+  <meta property="og:title" content="Pantheon: the model is not the runtime">
   <meta property="og:description" content="A durable agent runtime that owns run state, policy, execution, and recovery. Every decision lands in an append-only ledger you can replay.">
   <meta property="og:type" content="website">
   <meta property="og:image" content="logo.png">
@@ -112,7 +112,7 @@
         <p class="text-ash mt-6 text-[1.05rem] leading-relaxed max-w-md">
           Models come and go. Pantheon is what remains: the runtime that owns
           your agent's state, enforces its permissions, and records everything
-          it does. Swap the model — keep the agent.
+          it does. Swap the model, keep the agent.
         </p>
         <div class="mt-8 border border-rule rounded-md bg-panel p-3 flex items-start gap-3">
           <code class="cmd text-[.78rem] text-chalk break-all flex-1 leading-relaxed" id="install-cmd">curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash</code>
@@ -120,7 +120,7 @@
         </div>
         <p class="text-ash text-sm mt-3 leading-relaxed">
           Prebuilt binary from GitHub Releases. Needs only <code>curl</code> and
-          <code>tar</code> — no toolchain. <a href="install.html" class="underline decoration-brand underline-offset-4 hover:text-chalk">Install options</a>
+          <code>tar</code>, no toolchain. <a href="install.html" class="underline decoration-brand underline-offset-4 hover:text-chalk">Install options</a>
         </p>
         <div class="mt-8 flex flex-wrap gap-3">
           <a href="install.html" class="cmd text-sm text-ink bg-brand px-4 py-2 rounded hover:bg-chalk">Get started</a>
@@ -147,7 +147,7 @@
         </div>
         <p class="text-ash text-xs mt-3 leading-relaxed max-w-lg">
           Four real rows from a local install's <code class="cmd text-[.7rem]">events</code> table.
-          Everything the agent did, written down — replayable with
+          Everything the agent did, written down, replayable with
           <code class="cmd text-[.7rem]">pantheon runs &lt;id&gt;</code>.
         </p>
       </div>
@@ -163,7 +163,7 @@
       <div class="card reveal">
         <p class="cmd text-brand text-sm">01</p>
         <h3 class="cmd text-chalk mt-2">Install</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">One script, no toolchain. The binary lands in <code>~/.local/bin</code>, data in <code>~/.pantheon</code> — verified before the installer exits.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed">One script, no toolchain. The binary lands in <code>~/.local/bin</code>, data in <code>~/.pantheon</code>, verified before the installer exits.</p>
       </div>
       <div class="card reveal">
         <p class="cmd text-brand text-sm">02</p>
@@ -178,7 +178,7 @@
         <h3 class="cmd text-chalk mt-2">Work</h3>
         <pre class="mt-3"><code>export OPENAI_API_KEY=sk-...
 pantheon</code></pre>
-        <p class="text-ash text-sm mt-3 leading-relaxed">Start a session, walk away, come back tomorrow. Runs, memory, history — exactly where you left them.</p>
+        <p class="text-ash text-sm mt-3 leading-relaxed">Start a session, walk away, come back tomorrow. Runs, memory, history, exactly where you left them.</p>
       </div>
     </div>
   </section>
@@ -194,7 +194,7 @@ pantheon</code></pre>
     <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6 mt-10">
       <a href="product.html#authority" class="card reveal block">
         <h3 class="cmd text-chalk">Runtime authority</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">The model proposes; the runtime disposes. Capability checks, policy, and approvals are enforced in Rust — not suggested in a system prompt.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed">The model proposes; the runtime disposes. Capability checks, policy, and approvals are enforced in Rust, not suggested in a system prompt.</p>
       </a>
       <a href="product.html#ledger" class="card reveal block">
         <h3 class="cmd text-chalk">Event-sourced ledger</h3>
@@ -202,19 +202,19 @@ pantheon</code></pre>
       </a>
       <a href="product.html#recovery" class="card reveal block">
         <h3 class="cmd text-chalk">Crash recovery</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed"><code>kill -9</code> the process mid-run. The next turn resumes from committed state — finished calls skipped, interrupted ones re-executed. Nothing lost, nothing run twice.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed"><code>kill -9</code> the process mid-run. The next turn resumes from committed state, finished calls skipped, interrupted ones re-executed. Nothing lost, nothing run twice.</p>
       </a>
       <a href="product.html#approvals" class="card reveal block">
         <h3 class="cmd text-chalk">Durable approvals</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">A gated tool call parks the run instead of blocking it. Approve from the terminal, a script, or a chat button — the decision is a ledger entry either way.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed">A gated tool call parks the run instead of blocking it. Approve from the terminal, a script, or a chat button, the decision is a ledger entry either way.</p>
       </a>
       <a href="product.html#memory" class="card reveal block">
         <h3 class="cmd text-chalk">Memory with trust</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">Five memory layers, provenance on every record. The model can propose memories; only you — or your policy — can promote them.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed">Five memory layers, provenance on every record. The model can propose memories; only you, or your policy, can promote them.</p>
       </a>
       <a href="product.html#surfaces" class="card reveal block">
         <h3 class="cmd text-chalk">Every surface</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">Terminal, web, Discord, Telegram — one agent, one ledger, whichever screen is closest.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed">Terminal, web, Discord, Telegram, one agent, one ledger, whichever screen is closest.</p>
       </a>
     </div>
   </section>
@@ -239,9 +239,9 @@ pantheon</code></pre>
     <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">Questions</h2>
     <div class="mt-8 max-w-3xl space-y-3">
       <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Do I need Rust, Node, or Docker to install?</summary><p class="text-ash text-sm mt-3 leading-relaxed">No. The installer fetches a prebuilt binary and needs only <code>curl</code> and <code>tar</code>. Rust is only for building from source; SQLite is bundled, so there's no database to install or run.</p></details>
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Which models does it work with?</summary><p class="text-ash text-sm mt-3 leading-relaxed">Any OpenAI-compatible endpoint or Anthropic — plus custom URLs via <code>pantheon provider add</code>. The agent never chooses its own model: the runtime resolves a default, a failure-only fallback chain, and per-job helpers. See <a href="providers.html" class="underline decoration-brand underline-offset-4">Providers</a>.</p></details>
+      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Which models does it work with?</summary><p class="text-ash text-sm mt-3 leading-relaxed">Any OpenAI-compatible endpoint or Anthropic, plus custom URLs via <code>pantheon provider add</code>. The agent never chooses its own model: the runtime resolves a default, a failure-only fallback chain, and per-job helpers. See <a href="providers.html" class="underline decoration-brand underline-offset-4">Providers</a>.</p></details>
       <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Where does my data live?</summary><p class="text-ash text-sm mt-3 leading-relaxed">On your machine, full stop: <code>~/.pantheon</code> (or <code>$PANTHEON_DATA_DIR</code>) holds the config, key store, ledger, and memory. There is no hosted control plane, no account, nothing phoning home.</p></details>
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> What happens when a tool call needs permission?</summary><p class="text-ash text-sm mt-3 leading-relaxed">The run parks — durably, not blocked — and asks. Answer inline in the session, or from anywhere with <code>pantheon run --grant/--deny</code>, including chat buttons. A denial becomes transcript text, not a crash.</p></details>
+      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> What happens when a tool call needs permission?</summary><p class="text-ash text-sm mt-3 leading-relaxed">The run parks, durably, not blocked, and asks. Answer inline in the session, or from anywhere with <code>pantheon run --grant/--deny</code>, including chat buttons. A denial becomes transcript text, not a crash.</p></details>
       <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> How do I update?</summary><p class="text-ash text-sm mt-3 leading-relaxed"><code>pantheon update</code> fetches the latest GitHub release for your platform and swaps the binary, keeping a backup of the old one. <code>--check</code> reports what's available without changing anything.</p></details>
     </div>
   </section>

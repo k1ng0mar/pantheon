@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pantheon — Architecture</title>
+  <title>Pantheon: Rust Agent Runtime</title>
   <meta name="description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
-  <meta property="og:title" content="Pantheon — Rust Agent Runtime">
+  <meta property="og:title" content="Pantheon: Rust Agent Runtime">
   <meta property="og:description" content="A Rust agent runtime where the model is one replaceable component. Capability-gated execution, event-sourced ledger, crash recovery.">
   <meta property="og:type" content="website">
   <link rel="stylesheet" href="https://cdn.tailwindcss.com">
@@ -116,19 +116,19 @@
 <h2 id="agent-engine" class="text-xl font-bold tracking-tight mt-10 mb-3">Agent engine</h2>
 <p class="my-3 leading-relaxed"><code>receive → load state → build context → infer → interpret → execute → observe → update state → continue</code>, gated at every tool call (Allow / Deny / Approval). Denials and approvals are transcript outcomes, not crashes. Budgets bound turns and tool calls; swarms spawn under runtime caps.</p>
 <h2 id="capabilities" class="text-xl font-bold tracking-tight mt-10 mb-3">Capabilities</h2>
-<p class="my-3 leading-relaxed">The security backbone: granular capabilities (<code>filesystem.read</code>, <code>shell.execute</code>, <code>git.push</code>, <code>memory.write</code>, <code>agent.spawn</code>, …) mapped through per-agent policies. Knowledge never implies authority — skills, memories, and tool descriptions inform; only policy permits.</p>
+<p class="my-3 leading-relaxed">The security backbone: granular capabilities (<code>filesystem.read</code>, <code>shell.execute</code>, <code>git.push</code>, <code>memory.write</code>, <code>agent.spawn</code>, …) mapped through per-agent policies. Knowledge never implies authority, skills, memories, and tool descriptions inform; only policy permits.</p>
 <h2 id="execution" class="text-xl font-bold tracking-tight mt-10 mb-3">Execution</h2>
-<p class="my-3 leading-relaxed">Tools run under policy-chosen sandbox boundaries (process isolation up through container/VM). A boundary that can&#x27;t initialize fails closed — <code>SANDBOX_UNAVAILABLE</code> rather than running unconfined. File writes go through checkpointed, atomic apply with stale-check rejection and rollback.</p>
+<p class="my-3 leading-relaxed">Tools run under policy-chosen sandbox boundaries (process isolation up through container/VM). A boundary that can&#x27;t initialize fails closed, <code>SANDBOX_UNAVAILABLE</code> rather than running unconfined. File writes go through checkpointed, atomic apply with stale-check rejection and rollback.</p>
 <h2 id="memory-and-storage" class="text-xl font-bold tracking-tight mt-10 mb-3">Memory and storage</h2>
 <p class="my-3 leading-relaxed">Five memory layers (global → agent → project → task → ephemeral) behind one write path: propose → policy → provenance → validation → store. Storage is SQLite by default: event ledger, durable operation state machines, claim ledgers, and an FTS sidecar for session search. No database server, no external vector store.</p>
 <h2 id="secrets" class="text-xl font-bold tracking-tight mt-10 mb-3">Secrets</h2>
 <p class="my-3 leading-relaxed">Resolved at the execution boundary through a broker (OS keychain → encrypted file → env), never into prompts, logs, or the ledger. Config names variables; values stay outside it.</p>
 <h2 id="providers" class="text-xl font-bold tracking-tight mt-10 mb-3">Providers</h2>
-<p class="my-3 leading-relaxed">Transport adapters only — OpenAI-compatible and Anthropic behind one <code>ModelTurn</code> interface, no SDKs above the provider crate. Default model, failure-only fallback chain, per-capability auxiliaries. No routing; agents never choose models.</p>
+<p class="my-3 leading-relaxed">Transport adapters only, OpenAI-compatible and Anthropic behind one <code>ModelTurn</code> interface, no SDKs above the provider crate. Default model, failure-only fallback chain, per-capability auxiliaries. No routing; agents never choose models.</p>
 <h2 id="surfaces" class="text-xl font-bold tracking-tight mt-10 mb-3">Surfaces</h2>
 <p class="my-3 leading-relaxed">CLI, TUI, web (<code>serve</code>), and gateways (Discord, Telegram) all drive the same Session runtime off the same ledger. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default; foreign plugin formats load through a compat adapter that maps only real semantic matches.</p>
 <h2 id="migration" class="text-xl font-bold tracking-tight mt-10 mb-3">Migration</h2>
-<p class="my-3 leading-relaxed"><code>pantheon migrate hermes|openclaw|omp</code>: detect → plan → approve → backup → apply → validate. The apply itself is transactional (stage → validate → commit): everything detected is imported or archived with a reason — nothing silently dropped, credentials never written outside <code>&lt;data_dir&gt;/.env</code>.</p>
+<p class="my-3 leading-relaxed"><code>pantheon migrate hermes|openclaw|omp</code>: detect → plan → approve → backup → apply → validate. The apply itself is transactional (stage → validate → commit): everything detected is imported or archived with a reason, nothing silently dropped, credentials never written outside <code>&lt;data_dir&gt;/.env</code>.</p>
 <h2 id="locked-decisions" class="text-xl font-bold tracking-tight mt-10 mb-3">Locked decisions</h2>
 <p>1. Runtime owns lifecycle, state, policy, execution, capabilities, recovery, events.</p>
 <p>2. Model policy is default + failure-only fallback + auxiliaries. No routing.</p>
@@ -161,9 +161,9 @@
 </tbody></table>
 <h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><a href="contributing.html">Contributing</a> — boundaries and change mechanics</li>
-<li><a href="https://github.com/k1ng0mar/pantheon/tree/master/docs/developer/decisions">Decisions</a> — records behind the locks above</li>
-<li><a href="terminal.html">Terminal reference</a> — the surface this architecture serves</li>
+<li><a href="contributing.html">Contributing</a>, boundaries and change mechanics</li>
+<li><a href="https://github.com/k1ng0mar/pantheon/tree/master/docs/developer/decisions">Decisions</a>, records behind the locks above</li>
+<li><a href="terminal.html">Terminal reference</a>, the surface this architecture serves</li>
 </ul>
 </main>
 
