@@ -469,7 +469,7 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
         },
     );
 
-    // memory_confirm: the user-promotion path. Elevates an Untrusted
+    // memory_confirm: the user-promotion path. Promotes an Untrusted
     // record to Memory tier. It cannot exceed Memory tier: System and
     // User are reserved for harness and human authors.
     //
