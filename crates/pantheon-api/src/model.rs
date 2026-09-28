@@ -67,6 +67,42 @@ pub enum AuxiliaryKind {
     /// Host-orchestrated, fire-and-forget beside the first turn; never chat.
     /// Absent entry = `auto`: the runtime falls back to the default model.
     TitleGen,
+    /// Reflection-pass model (config `[reflect]`): the auxiliary model for
+    /// LLM-backed reflection steps (proposal enrichment, and any future
+    /// model-generated proposers). Host-orchestrated; never chat. Absent =
+    /// `auto`: the run's default model. Every reflection LLM call resolves
+    /// through this slot so background self-improvement stays cheap and
+    /// never borrows the interactive model's context directly.
+    Reflection,
+    /// Consolidation-pass model (config `[consolidation]`): the auxiliary
+    /// model for LLM-backed consolidation steps (candidate distillation —
+    /// merging near-duplicate staged candidates into single well-phrased
+    /// facts). Host-orchestrated; never chat. Absent = `auto`: the run's
+    /// default model. Every consolidation LLM call resolves through this
+    /// slot so nightly memory consolidation stays cheap and never borrows
+    /// the interactive model's context directly.
+    Consolidation,
+    /// Structured-extraction model (config `[extraction]`): pulls fields
+    /// and records out of prose and tool outputs (dates, amounts, names,
+    /// entities) into typed values the runtime can act on.
+    /// Host-orchestrated; never chat. Absent = `auto`: the run's default
+    /// model. No call sites yet — the slot exists so a model can be pinned
+    /// ahead of the extraction workload landing.
+    Extraction,
+    /// Rerank model (config `[rerank]`): scores and orders search and
+    /// memory-retrieval candidates before they enter context, so the best
+    /// evidence wins the window instead of the loudest keyword match.
+    /// Host-orchestrated; never chat. Absent = `auto`: the run's default
+    /// model. No call sites yet — the slot exists so a model can be pinned
+    /// ahead of the reranking workload landing.
+    Rerank,
+    /// Planner model (config `[planner]`): decomposes a goal into a task
+    /// plan for a future planner/worker split, where planning and execution
+    /// run on different models. Host-orchestrated; never chat. Absent =
+    /// `auto`: the run's default model. No call sites yet — the slot
+    /// exists so a model can be pinned ahead of the planner workload
+    /// landing.
+    Planner,
     Other(String),
 }
 

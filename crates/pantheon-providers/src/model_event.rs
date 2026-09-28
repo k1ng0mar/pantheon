@@ -118,9 +118,21 @@ impl ModelEvent {
                 run_id: run_id.to_string(),
                 detail: format!("provider chain exhausted: {code}"),
             }),
-            ModelEvent::ReasoningDelta { .. }
-            | ModelEvent::ToolCall { .. }
-            | ModelEvent::Usage { .. } => None,
+            ModelEvent::ReasoningDelta { .. } | ModelEvent::ToolCall { .. } => None,
+            // Persisted as `Event::UsageRecorded` so `pantheon stats` can
+            // aggregate historical spend from the ledger. Model/provider are
+            // empty here: the persisting sink fills them from the most recent
+            // `Attempt` it saw (this event shape is provider-facing and
+            // carries no model identity of its own).
+            ModelEvent::Usage { usage } => Some(Event::UsageRecorded {
+                run_id: run_id.to_string(),
+                model: String::new(),
+                provider: String::new(),
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                total_tokens: usage.total_tokens,
+                cost_usd: usage.cost_usd,
+            }),
         }
     }
 }

@@ -28,6 +28,12 @@ pantheon-agent = { path = "../pantheon-agent" }
 # Model/provider metadata rendered in pickers comes from the catalog.
 pantheon-providers = { path = "../pantheon-providers" }
 pantheon-storage = { path = "../pantheon-storage" }
+# Ledger-native self-improvement (reflection passes, proposals, audit).
+pantheon-reflect = { path = "../pantheon-reflect" }
+# Background memory consolidation (stage/weigh/promote over ledger events).
+pantheon-consolidate = { path = "../pantheon-consolidate" }
+# Web dashboard (std-only HTTP control plane). Driven by `pantheon dashboard`.
+pantheon-dashboard = { path = "../pantheon-dashboard" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 ratatui = "0.30"
@@ -35,6 +41,8 @@ crossterm = "0.29"
 toml = "0.8"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 ctrlc = "3.4"
+# Minimal PNG inflate for the Sixel preview path (already in the lock).
+flate2 = "1"
 
 [lints]
 workspace = true

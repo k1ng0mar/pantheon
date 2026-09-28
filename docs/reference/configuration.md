@@ -20,9 +20,41 @@ Env overrides: `PANTHEON_PROVIDER`, `PANTHEON_MODEL`, `PANTHEON_REASONING`, `PAN
 
 ## Auxiliaries
 
-One `[judge]`, `[compression]`, `[title_gen]`, `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]`, `[mcp_synthesis]` section each, same shape (`provider`, `model`, optional `api_key_env`). Absent means `auto` — the run's default model — except `[embeddings]`, which falls back to a local embedder. Env overrides: `PANTHEON_<AUX>_PROVIDER` / `PANTHEON_<AUX>_MODEL`.
+One `[judge]`, `[compression]`, `[title_gen]`, `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]`, `[mcp_synthesis]`, `[extraction]`, `[rerank]`, `[planner]` section each, same shape (`provider`, `model`, optional `api_key_env`). Absent means `auto` — the run's default model — except `[embeddings]`, which falls back to a local embedder. Env overrides: `PANTHEON_<AUX>_PROVIDER` / `PANTHEON_<AUX>_MODEL` (e.g. `PANTHEON_RERANK_MODEL`). `[extraction]`, `[rerank]`, and `[planner]` have no call sites yet — they exist so you can pin a cheap model ahead of those workloads landing.
+
+## Reflection
+
+```toml
+[reflect]
+enabled       = false   # LLM-backed reflection steps need explicit opt-in
+auto_turns    = 20      # automatic pass every N completed turns (0 = off)
+max_proposals = 5       # proposal cap per pass
+# provider    = "openai"   # optional: pin the reflection aux model (auto = default)
+# model       = "gpt-4o-mini"
+# api_key_env = "OPENAI_API_KEY"
+```
+
+Reflection is Pantheon's ledger-native self-improvement loop: each pass reads structured ledger signals (repeated tool sequences, user corrections, denied approvals, repeated failures), generates proposals with provenance (memory lessons, skill proposals, persona notes), eval-gates skill/persona proposals against bounded evals, and holds them for approval. Memory lessons auto-apply at the `Memory` trust tier; everything else needs `/reflect`'s y/n card (or `pantheon reflect --approve <id>`). Every LLM call the pipeline makes resolves through the `Reflection` auxiliary slot — never the chat model — so pin a small model here to keep background self-improvement cheap.
+
+- `/reflect` — manual one-shot pass (background); `/reflect on|off` toggles the loop (persisted here); `/reflect status` shows the toggle plus the last pass summary.
+- `pantheon reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]`
+- `pantheon schedule reflect --cron '0 2 * * *'` — nightly passes via the normal scheduler.
 
 ## Policy
+
+`policy = "reader" | "coder" | "coder_memory"`. Tools declare the capability they need; the policy decides allow/deny/approve per operation. `coder_memory` adds the `MemoryWrite` capability.
+
+## Temporal awareness
+
+```toml
+[temporal]
+enabled            = true    # master switch (default on — zero tokens, pure string injection)
+min_gap_secs       = 7200    # idle seconds before an elapsed-gap hint fires (0 = off)
+notify_date_change = true    # hint when the local date rolled over, even on a short gap
+# timezone         = "Africa/Lagos"  # IANA name; absent = system local timezone
+```
+
+Tacit temporal awareness: the model notices when a conversation has meaningfully aged, without timestamping every message. Before a turn's first model call the pipeline reads the last assistant turn's timestamp from the durable ledger (restart-safe) and, when the gap matters, appends one coarse hint to the outgoing user message — for the API call only, never written to the ledger or transcript, and never on the system prompt (prompt caching unaffected). Wording is coarse and gets coarser with the gap: `about 40 minutes`, `about 5 hours`, `about a day`, `about 3 days`. A date rollover across a short gap yields `[temporal: the previous exchange was yesterday]`; multi-day gaps already imply the date change, so wordings never stack. The conversation's standing system preamble tells the model to factor such hints in and never quote them.
 
 `policy = "reader" | "coder" | "coder_memory"`. Tools declare the capability they need; the policy decides allow/deny/approve per operation. `coder_memory` adds the `MemoryWrite` capability.
 

@@ -11,6 +11,7 @@ serde_json = "1"
 ureq = { version = "2", features = ["json"] }
 pantheon-api = { path = "../pantheon-api" }
 pantheon-storage = { path = "../pantheon-storage" }
+pantheon-scheduler = { path = "../pantheon-scheduler" }
 tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 
 [lints]

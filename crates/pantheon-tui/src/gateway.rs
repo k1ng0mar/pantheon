@@ -207,9 +207,16 @@ impl pantheon_gateway::EventSink for SurfaceSink<'_> {
     fn on_message(&self, thread_id: &str, sender: Option<&str>, text: &str) {
         self.inner.on_message(self.gateway, thread_id, sender, text);
     }
-    fn on_approval(&self, thread_id: &str, sender: Option<&str>, scope: &str, grant: bool) {
+    fn on_approval(
+        &self,
+        thread_id: &str,
+        sender: Option<&str>,
+        run_id: Option<&str>,
+        scope: &str,
+        grant: bool,
+    ) {
         self.inner
-            .on_approval(self.gateway, thread_id, sender, scope, grant);
+            .on_approval(self.gateway, thread_id, sender, run_id, scope, grant);
     }
 }
 
@@ -266,6 +273,7 @@ impl RuntimeSink {
         gateway: &str,
         thread_id: &str,
         sender: Option<&str>,
+        callback_run_id: Option<&str>,
         scope: &str,
         grant: bool,
     ) {
@@ -280,12 +288,18 @@ impl RuntimeSink {
                 return;
             }
         };
-        let run_id = self
-            .threads
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(thread_id)
-            .cloned();
+        // Phone notifications for locally-started runs carry the run id in
+        // the button callback (the daemon's thread map never saw those
+        // runs). Legacy buttons fall back to the thread map. Either way the
+        // supervisor validates the scope against actual pending approvals,
+        // so a forged run id grants nothing.
+        let run_id = callback_run_id.map(|s| s.to_string()).or_else(|| {
+            self.threads
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(thread_id)
+                .cloned()
+        });
         let Some(run_id) = run_id else {
             self.push_outbound(
                 gateway,
@@ -363,62 +377,23 @@ pub fn cmd_gateway(args: &[String]) {
     }
 }
 
-/// Env preflight, shared by `gateway run` and `gateway start`.
-///
-/// Returns `(discord_token, telegram_token, allowlist)`. Exits with the fix in
-/// the message when something is missing: a service that cannot possibly work
-/// should not be installed, and a foreground run should not die on the first
-/// thread with a bare `Option::unwrap`.
-///
-/// The allowlist is not optional. The gateway executes whatever a message asks
-/// for on this machine, so without a list any stranger who finds the bot owns
-/// the host.
-fn preflight_or_exit() -> (
-    Option<String>,
-    Option<String>,
-    std::collections::HashSet<String>,
-) {
-    let discord = std::env::var("PANTHEON_DISCORD_TOKEN").ok();
-    let telegram = std::env::var("PANTHEON_TELEGRAM_BOT_TOKEN").ok();
-    let has_token = discord.as_deref().is_some_and(|t| !t.trim().is_empty())
-        || telegram.as_deref().is_some_and(|t| !t.trim().is_empty());
-    if !has_token {
-        eprintln!(
-            "gateway: no bot token. Set one of:\n  \
-             PANTHEON_DISCORD_TOKEN   (Discord bot token)\n  \
-             PANTHEON_TELEGRAM_BOT_TOKEN  (from @BotFather)\n\
-             put it in <data_dir>/.env so the service can read it too"
-        );
-        std::process::exit(2);
-    }
-    // Comma-separated platform ids:
-    //   PANTHEON_GATEWAY_ALLOW=6123456789,223344556677889900
-    let allow: std::collections::HashSet<String> = std::env::var("PANTHEON_GATEWAY_ALLOW")
-        .ok()
-        .map(|raw| {
-            raw.split(',')
-                .map(|id| id.trim().to_string())
-                .filter(|id| !id.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-    if allow.is_empty() {
-        eprintln!(
-            "gateway: refusing to start without PANTHEON_GATEWAY_ALLOW\n\
-             set it to the comma-separated user ids allowed to talk to the bot\n\
-             (Telegram: message the bot, check @userinfobot; Discord: enable developer mode, right-click a user)"
-        );
-        std::process::exit(2);
-    }
-    (discord, telegram, allow)
-}
-
 fn run_gateway_foreground() {
-    // Same preflight the service path runs. Validating here, in the user's
-    // shell, is what turns a silent crash-loop into an error with a fix.
-    let (discord_token, telegram_token, allow) = preflight_or_exit();
-    let discord_token = discord_token.filter(|t| !t.trim().is_empty());
-    let telegram_token = telegram_token.filter(|t| !t.trim().is_empty());
+    // The scheduler loop starts unconditionally: a scheduler-only install
+    // (no bot tokens) is the main always-on use case, and a service that
+    // exits here would crash-loop under the service manager. Chat surfaces
+    // start only when their token and the allowlist are present; otherwise
+    // the process warns and keeps running.
+    let (discord_token, telegram_token, allow) = pantheon_gateway::read_channel_env();
+    let plan = pantheon_gateway::ChannelPlan::from_env(
+        discord_token.as_deref(),
+        telegram_token.as_deref(),
+        &allow,
+    );
+    if plan.is_empty() {
+        eprintln!("gateway: {}", pantheon_gateway::channels_disabled_note());
+    }
+    let discord_token = discord_token.filter(|_| plan.discord);
+    let telegram_token = telegram_token.filter(|_| plan.telegram);
     let data_dir = crate::terminal::data_dir();
     // One outbound queue per surface. The old single shared queue let the
     // Telegram daemon grab Discord replies (send fails → infinite requeue)
@@ -543,6 +518,15 @@ fn run_gateway_foreground() {
     }
 
     eprintln!("gateway running; Ctrl+C to stop");
+    // Scheduler loop: the gateway service is also the always-on scheduler.
+    // It ticks due jobs on the same claim ledger and job store as
+    // `pantheon schedule tick`, so the two can never double-fire an
+    // occurrence (the claim is an atomic first-wins INSERT). Detached: the
+    // loop never returns, and the process ends with the rest on Ctrl+C.
+    {
+        let dd = data_dir.clone();
+        std::thread::spawn(move || crate::schedule::run_scheduler_loop(&dd));
+    }
     for h in handles {
         let _ = h.join();
     }
@@ -573,48 +557,19 @@ pub(crate) struct GatewayStatus {
 
 pub(crate) fn gateway_status() -> GatewayStatus {
     let data_dir = crate::terminal::data_dir();
-    #[cfg(target_os = "linux")]
-    let installed = unit_path().exists();
-    #[cfg(target_os = "macos")]
-    let installed = plist_path().exists();
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let installed = false;
-    #[cfg(target_os = "linux")]
-    let active = which("systemctl")
-        .and_then(|_| {
-            std::process::Command::new("systemctl")
-                .args(["--user", "is-active", UNIT_NAME])
-                .output()
-                .ok()
-        })
-        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "active");
-    #[cfg(target_os = "macos")]
-    let active = {
-        let domain = format!("gui/{}", current_uid());
-        which("launchctl")
-            .and_then(|_| {
-                std::process::Command::new("launchctl")
-                    .args(["print", &format!("{domain}/{PLIST_LABEL}")])
-                    .output()
-                    .ok()
-            })
-            .is_some_and(|o| o.status.success())
-    };
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let active = false;
+    // Shared cross-platform inspection: the same code `gateway status`
+    // uses, so the TUI's `/gateway` line can never disagree with the CLI.
+    let st = pantheon_gateway::service_status();
     let outbox_pending = std::fs::read_to_string(outbox_path(&data_dir))
         .map(|t| t.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
     GatewayStatus {
-        installed,
-        active,
+        installed: st.installed.is_some(),
+        active: st.running,
         outbox_pending,
     }
 }
 
-/// Append a reply for the gateway to deliver. `gateway` names the owning
-/// surface ("telegram"/"discord") so the outbox drain files the reply
-/// into that surface's queue instead of a shared one.
 pub fn enqueue_outbound(
     data_dir: &Path,
     to_conversation: &str,
@@ -688,16 +643,11 @@ pub fn drain_outbound(data_dir: &Path) -> (Vec<pantheon_gateway::OutboundMessage
     }
     (msgs, bad)
 }
-
 // ── service supervision ────────────────────────────────────────────────────
-// `gateway start` has to survive a reboot, so it installs a real OS service
-// instead of backgrounding a process. systemd on Linux, launchd on macOS.
-// Anywhere else the command says so and points at `gateway run`, because a
-// silent no-op here would leave the user staring at a bot that never answers.
-
-const UNIT_NAME: &str = "pantheon-gateway";
-#[cfg(target_os = "macos")]
-const PLIST_LABEL: &str = "africa.exoseed.pantheon.gateway";
+// Thin over the cross-platform machinery in `pantheon_gateway::service` —
+// the same code `pantheon init` uses, so the two can never disagree about
+// how the service is installed. systemd on Linux (cron `@reboot`
+// fallback), launchd on macOS, Task Scheduler on Windows.
 
 #[derive(Clone, Copy)]
 enum ServiceAction {
@@ -707,367 +657,147 @@ enum ServiceAction {
     Status,
 }
 
-/// Absolute path to the running binary, resolved from argv[0] with a
-/// PATH lookup as fallback. systemd needs an absolute ExecStart; a bare
-/// `pantheon` would resolve against the unit's own PATH and can differ from
-/// the shell the user typed the command in, which is a classic "works
-/// foreground, dies as a service" bug.
-fn self_exe() -> Option<std::path::PathBuf> {
-    if let Ok(p) = std::env::current_exe() {
-        if p.is_absolute() && p.exists() {
-            return Some(p);
-        }
-    }
-    let name = std::env::args().next()?;
-    let path = std::env::var("PATH").ok()?;
-    for dir in path.split(':') {
-        if dir.is_empty() {
-            continue;
-        }
-        let cand = std::path::Path::new(dir).join(&name);
-        if cand.is_file() {
-            return Some(cand);
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "linux")]
-fn platform_name() -> &'static str {
-    "systemd (linux)"
-}
-#[cfg(target_os = "macos")]
-fn platform_name() -> &'static str {
-    "launchd (macos)"
-}
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn platform_name() -> &'static str {
-    "unsupported"
-}
-
-fn service_ctl(action: ServiceAction) {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        service_ctl_os(action)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = action;
-        eprintln!(
-            "gateway: no service manager on this platform\n\
-             run it under whatever supervises your host, or use:\n  \
-             pantheon gateway run"
-        );
-        std::process::exit(2);
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn systemd_dir() -> std::path::PathBuf {
-    // Honor a non-standard SYSTEMD_USER_CONFIG_DIR so this works in
-    // containers and test harnesses that relocate the unit search path.
-    std::env::var("SYSTEMD_USER_CONFIG_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            let base = std::env::var("XDG_CONFIG_HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| {
-                    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                        .join(".config")
-                });
-            base.join("systemd").join("user")
-        })
-}
-
-#[cfg(target_os = "linux")]
-fn unit_path() -> std::path::PathBuf {
-    systemd_dir().join(format!("{UNIT_NAME}.service"))
-}
-
-/// The unit body. `Restart=always` covers a crash; `WantedBy=default.target`
-/// is what makes it come back after a reboot. The env the gateway needs
-/// (tokens, allowlist) lives in the data dir's .env, which the binary loads
-/// itself — so the unit deliberately does not inline secrets, and the file
-/// it points at is never world-readable.
-#[cfg(target_os = "linux")]
-fn unit_body(exe: &std::path::Path, data_dir: &std::path::Path) -> String {
-    format!(
-        "[Unit]\n\
-         Description=Pantheon gateway (Discord / Telegram)\n\
-         After=network-online.target\n\
-         Wants=network-online.target\n\
-         \n\
-         [Service]\n\
-         Type=simple\n\
-         ExecStart={exe} gateway run\n\
-         Environment=PANTHEON_DATA_DIR={data_dir}\n\
-         Restart=always\n\
-         RestartSec=5\n\
-         # The gateway executes whatever a message asks for on this host.\n\
-         # The allowlist in .env is the real control; this is defence in depth.\n\
-         NoNewPrivileges=true\n\
-         \n\
-         [Install]\n\
-         WantedBy=default.target\n",
-        exe = exe.display(),
-        data_dir = data_dir.display(),
-    )
-}
-
-#[cfg(target_os = "linux")]
-fn service_ctl_os(action: ServiceAction) {
-    let data_dir = crate::terminal::data_dir();
-    let path = unit_path();
-    // Start/restart install a unit that will outlive this shell, so validate
-    // the env first. Installing a unit that crash-loops forever and reporting
-    // success is worse than refusing: the user gets a bot that silently
-    // answers nothing.
-    if matches!(
-        action,
-        ServiceAction::Start | ServiceAction::Restart | ServiceAction::Status
-    ) {
-        crate::config::init_env_and_catalog(&data_dir);
-        let _ = preflight_or_exit();
-    }
-    let have_systemctl = which("systemctl").is_some();
-    if !have_systemctl {
-        eprintln!(
-            "gateway: systemctl not found on PATH (expected {})\n\
-             start it yourself, or run in the foreground:\n  \
-             pantheon gateway run",
-            platform_name()
-        );
-        std::process::exit(2);
-    }
-    let verb = match action {
-        ServiceAction::Start => "start",
-        ServiceAction::Stop => "stop",
-        ServiceAction::Restart => "restart",
-        ServiceAction::Status => "status",
-    };
-    // Status never writes a unit: asking whether it is running must not
-    // have the side effect of installing it.
-    if matches!(action, ServiceAction::Status) {
-        // Never installs: asking whether it is running must not cause it to be.
-        std::process::exit(run_ctl(&[verb, UNIT_NAME]));
-    }
-    if matches!(action, ServiceAction::Start | ServiceAction::Restart) && !path.exists() {
-        let exe = match self_exe() {
-            Some(e) => e,
-            None => {
-                eprintln!("gateway: cannot resolve the pantheon binary path for ExecStart");
-                std::process::exit(1);
-            }
-        };
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("gateway: create {}: {e}", parent.display());
-                std::process::exit(1);
-            }
-        }
-        if let Err(e) = std::fs::write(&path, unit_body(&exe, &data_dir)) {
-            eprintln!("gateway: write {}: {e}", path.display());
+/// Install (or converge) the background service and confirm it settled.
+/// Shared by `start` and by `restart` when nothing is installed yet.
+fn service_start(data_dir: &std::path::Path) {
+    let exe = match pantheon_gateway::self_exe() {
+        Some(e) => e,
+        None => {
+            eprintln!("gateway: cannot resolve the pantheon binary path for ExecStart");
             std::process::exit(1);
         }
-        println!("wrote {}", path.display());
-        // daemon-reload picks up a unit that did not exist when the
-        // manager last read its directory. Without it, `start` fails
-        // with a bare "unit not found" that blames the user's command.
-        if which("systemctl").is_some() {
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "daemon-reload"])
-                .status();
+    };
+    match pantheon_gateway::install_service(data_dir, &exe) {
+        pantheon_gateway::InstallOutcome::Installed { mechanism, changed } => {
+            if changed {
+                println!("gateway: service installed via {}.", mechanism.as_str());
+            } else {
+                println!(
+                    "gateway: service already installed via {}; ensured running.",
+                    mechanism.as_str()
+                );
+            }
+            confirm_active(mechanism);
         }
-        if matches!(action, ServiceAction::Start) {
-            // Enable so it returns after a reboot; harmless if already on.
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "enable", UNIT_NAME])
-                .status();
+        pantheon_gateway::InstallOutcome::Unavailable { note } => {
+            // Fail open, like `pantheon init`: no manager is a manual setup.
+            println!("gateway: {note}");
         }
-    }
-    if matches!(action, ServiceAction::Stop) && !path.exists() {
-        eprintln!("gateway: no unit installed at {}", path.display());
-        std::process::exit(1);
-    }
-    let started = matches!(action, ServiceAction::Start | ServiceAction::Restart);
-    let code = run_ctl(&[verb, UNIT_NAME]);
-    if code != 0 {
-        std::process::exit(code);
-    }
-    if started {
-        // systemctl's exit code only says the start request was accepted.
-        // Confirm the unit actually settled, so a crash-loop is reported here
-        // instead of as a bot that never answers.
-        confirm_running();
+        pantheon_gateway::InstallOutcome::Failed { mechanism, error } => {
+            eprintln!(
+                "gateway: install via {} failed: {error}",
+                mechanism.as_str()
+            );
+            std::process::exit(1);
+        }
     }
 }
 
-/// Fail loudly if the unit did not reach a running state. Restart=always means
-/// a misconfigured unit is `activating (auto-restart)`, never `failed`, so
-/// `is-active` alone is not enough: it has to be active AND not flapping.
-#[cfg(target_os = "linux")]
-fn confirm_running() {
+/// The manager accepting the start request is not the process staying up:
+/// poll briefly so a crash-loop is reported here instead of as a bot that
+/// never answers. Mechanisms that only fire later (cron `@reboot`, logon
+/// tasks) are reported honestly instead of polled.
+fn confirm_active(mechanism: pantheon_gateway::ServiceMechanism) {
+    use pantheon_gateway::ServiceMechanism as M;
+    match mechanism {
+        M::Cron => {
+            println!("gateway: installed; the @reboot entry starts it at next boot.");
+            return;
+        }
+        M::TaskScheduler => {
+            println!("gateway: installed; it starts at next logon.");
+            println!("         run `pantheon gateway run` in the foreground for this session.");
+            return;
+        }
+        M::Systemd | M::Launchd => {}
+        M::None => return,
+    }
     for _ in 0..12 {
-        if let Ok(out) = std::process::Command::new("systemctl")
-            .args(["--user", "is-active", UNIT_NAME])
-            .output()
-        {
-            if String::from_utf8_lossy(&out.stdout).trim() == "active" {
-                println!("gateway: active (logs: journalctl --user -u {UNIT_NAME} -f)");
-                return;
-            }
+        if pantheon_gateway::service_status().running {
+            println!("gateway: active");
+            return;
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     eprintln!(
-        "gateway: unit did not reach 'active' — it is crash-looping.\n\
+        "gateway: installed but not reporting active — it may be crash-looping.\n\
          most common cause: the token or allowlist is not visible to the\n\
-         service. Check the journal:\n  \
-         journalctl --user -u {UNIT_NAME} -n 40"
+         service. Check the service logs."
     );
     std::process::exit(1);
 }
 
-#[cfg(target_os = "macos")]
-fn confirm_running() {
-    println!("gateway: bootstrapped (logs: launchctl print {PLIST_LABEL})");
-}
-
-#[cfg(target_os = "macos")]
-fn plist_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join("Library")
-        .join("LaunchAgents")
-        .join(format!("{PLIST_LABEL}.plist"))
-}
-
-#[cfg(target_os = "macos")]
-fn plist_body(exe: &std::path::Path, data_dir: &std::path::Path) -> String {
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \n\
-         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n\
-         <dict>\n\
-         \x20 <key>Label</key><string>{PLIST_LABEL}</string>\n\
-         \x20 <key>ProgramArguments</key>\n\
-         \x20 <array><string>{exe}</string><string>gateway</string><string>run</string></array>\n\
-         \x20 <key>EnvironmentVariables</key>\n\
-         \x20 <dict><key>PANTHEON_DATA_DIR</key><string>{data_dir}</string></dict>\n\
-         \x20 <key>RunAtLoad</key><true/>\n\
-         \x20 <key>KeepAlive</key><true/>\n\
-         </dict>\n\
-         </plist>\n",
-        exe = exe.display(),
-        data_dir = data_dir.display(),
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn service_ctl_os(action: ServiceAction) {
+fn service_ctl(action: ServiceAction) {
     let data_dir = crate::terminal::data_dir();
-    let path = plist_path();
-    let label = PLIST_LABEL;
-    let uid = std::process::id();
-    let _ = uid;
-    if which("launchctl").is_none() {
-        eprintln!("gateway: launchctl not found; run `pantheon gateway run` in the foreground");
-        std::process::exit(2);
-    }
-    let domain = format!("gui/{}", current_uid());
-    if matches!(action, ServiceAction::Status) {
-        let _ = std::process::Command::new("launchctl")
-            .args(["print", &format!("{domain}/{label}")])
-            .status();
-        return;
-    }
-    if matches!(action, ServiceAction::Start | ServiceAction::Restart) {
-        if matches!(action, ServiceAction::Stop) {
-            let _ = std::process::Command::new("launchctl")
-                .args(["bootout", &format!("{domain}/{label}")])
-                .status();
-        }
-        if !path.exists() {
-            let exe = match self_exe() {
-                Some(e) => e,
-                None => {
-                    eprintln!("gateway: cannot resolve the pantheon binary path");
-                    std::process::exit(1);
-                }
-            };
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+    match action {
+        ServiceAction::Start => service_start(&data_dir),
+        ServiceAction::Stop => match pantheon_gateway::stop_service() {
+            pantheon_gateway::StopOutcome::Stopped { mechanism } => {
+                println!("gateway: stopped ({}).", mechanism.as_str());
             }
-            if let Err(e) = std::fs::write(&path, plist_body(&exe, &data_dir)) {
-                eprintln!("gateway: write {}: {e}", path.display());
+            pantheon_gateway::StopOutcome::NotInstalled => {
+                eprintln!("gateway: no service installed");
                 std::process::exit(1);
             }
-            println!("wrote {}", path.display());
-        }
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &format!("{domain}/{label}")])
-            .status();
-        run_ctl(&["bootstrap", &domain, &path.to_string_lossy()]);
-    } else {
-        run_ctl(&["bootout", &format!("{domain}/{label}")]);
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn current_uid() -> u32 {
-    // launchd's gui domain is keyed by the numeric uid, and getuid is not in
-    // the stable std surface; reading proc-free via libc would add a dep for
-    // one number, so shell out once and tolerate failure.
-    which("id")
-        .and_then(|_| std::process::Command::new("id").arg("-u").output().ok())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(501)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-/// Run the service manager and return its exit code. Deliberately not `!`:
-/// `start` keeps going afterwards to confirm the unit actually came up, and
-/// `status` reports rather than exiting.
-fn run_ctl(args: &[&str]) -> i32 {
-    let bin = match which(if cfg!(target_os = "linux") {
-        "systemctl"
-    } else {
-        "launchctl"
-    }) {
-        Some(b) => b,
-        None => {
-            eprintln!("gateway: service manager not found on PATH");
-            return 127;
-        }
-    };
-    let mut full: Vec<String> = Vec::new();
-    if cfg!(target_os = "linux") {
-        full.push("--user".into());
-    }
-    full.extend(args.iter().map(|a| a.to_string()));
-    match std::process::Command::new(&bin).args(&full).status() {
-        Ok(s) => s.code().unwrap_or(1),
-        Err(e) => {
-            eprintln!("gateway: run {}: {e}", bin.display());
-            1
+            pantheon_gateway::StopOutcome::Noop { note, .. } => println!("gateway: {note}"),
+            pantheon_gateway::StopOutcome::Failed { mechanism, error } => {
+                eprintln!("gateway: stop via {} failed: {error}", mechanism.as_str());
+                std::process::exit(1);
+            }
+        },
+        // Restart used to install a missing unit too; keep that.
+        ServiceAction::Restart => match pantheon_gateway::restart_service() {
+            pantheon_gateway::RestartOutcome::Restarted { mechanism } => {
+                println!("gateway: restarted ({}).", mechanism.as_str());
+            }
+            pantheon_gateway::RestartOutcome::NotInstalled => service_start(&data_dir),
+            pantheon_gateway::RestartOutcome::Noop { note, .. } => println!("gateway: {note}"),
+            pantheon_gateway::RestartOutcome::Failed { mechanism, error } => {
+                eprintln!(
+                    "gateway: restart via {} failed: {error}",
+                    mechanism.as_str()
+                );
+                std::process::exit(1);
+            }
+        },
+        // Status never installs: asking whether it is running must not have
+        // the side effect of installing it. Nor does it need tokens: a
+        // scheduler-only install is a healthy install.
+        ServiceAction::Status => {
+            print_schedule_queue();
+            let st = pantheon_gateway::service_status();
+            match st.installed {
+                Some(m) => println!(
+                    "gateway: {} ({}).",
+                    if st.running {
+                        "active"
+                    } else {
+                        "installed, not active"
+                    },
+                    m.as_str()
+                ),
+                None => println!("gateway: not installed (pantheon gateway start)"),
+            }
         }
     }
 }
 
-/// Minimal PATH lookup. `which` is not worth a dependency for one call, and
-/// this keeps the check honest about the PATH the user actually has.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn which(bin: &str) -> Option<std::path::PathBuf> {
-    let path = std::env::var("PATH").ok()?;
-    for dir in path.split(':') {
-        if dir.is_empty() {
-            continue;
+/// Scheduler queue summary for `gateway status`: due jobs and next fire,
+/// loaded read-only from the same job store the tick loop uses. Never
+/// installs or mutates anything.
+fn print_schedule_queue() {
+    let data_dir = crate::terminal::data_dir();
+    match crate::schedule::load_schedulable(&data_dir) {
+        Ok(jobs) => {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            println!(
+                "schedule queue: {}",
+                pantheon_gateway::queue_summary(&jobs, now_ms)
+            );
         }
-        let cand = std::path::Path::new(dir).join(bin);
-        if cand.is_file() {
-            return Some(cand);
-        }
+        Err(e) => println!("schedule queue: unavailable ({e})"),
     }
-    None
 }

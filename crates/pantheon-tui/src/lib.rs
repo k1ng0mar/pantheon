@@ -45,6 +45,7 @@
 //! one is deleted.
 
 pub mod app;
+pub mod checkpoint;
 pub mod commands;
 pub mod render;
 pub mod session;
@@ -61,29 +62,40 @@ pub use widget::{
 // Private: the binary calls `terminal::run()`; nothing outside this crate
 // reaches past it.
 mod agui;
+pub mod approval_notify;
 mod args;
-mod config;
+pub mod config;
 mod config_schema;
+pub mod consolidate_cli;
+pub mod diffview;
 mod doctor;
-mod dotenv;
+pub use pantheon_api::dotenv;
 mod entry;
 mod fallback;
 mod gateway;
+mod init;
 mod logs;
-mod mcp;
+pub mod mcp;
+pub mod mentions;
 mod migrate;
 mod model;
+pub mod notify;
 mod pipeline;
 mod prompt;
 mod provider;
+pub mod reflect_cli;
 mod repair;
 mod reset;
-mod schedule;
+pub mod richtext;
+pub mod schedule;
 mod setup_wizard;
 mod skills;
+pub mod stats;
 mod swarm;
+pub mod swarm_view;
 pub mod terminal;
 mod update;
+pub mod yank;
 
 // TUI-A: session tab bar model + rendering (startup splash lives in terminal).
 mod tabs;

@@ -22,7 +22,14 @@ impl EventSink for RecordingSink {
             .unwrap()
             .push((thread.into(), text.into()));
     }
-    fn on_approval(&self, thread: &str, _sender: Option<&str>, scope: &str, grant: bool) {
+    fn on_approval(
+        &self,
+        thread: &str,
+        _sender: Option<&str>,
+        _run_id: Option<&str>,
+        scope: &str,
+        grant: bool,
+    ) {
         self.approvals
             .lock()
             .unwrap()

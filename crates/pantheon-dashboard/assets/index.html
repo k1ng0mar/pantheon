@@ -1,0 +1,64 @@
+<!doctype html>
+<!--
+  Pantheon dashboard shell. Vanilla SPA, no build step, embedded via
+  include_str! by pantheon-dashboard.
+
+  Design references, named exactly as briefed:
+  1. VibePrompt — metric row, sparklines, compact KPIs, delta tables.
+  2. Raycast via Refero Styles — "midnight command center": #040506,
+     hairlines, inset highlights, Inter/mono labels, neutral buttons,
+     mono footer.
+
+  Pantheon accent: restrained cyan #22d3ee; status colors only
+  green/amber/red. No gradients, no fake data: every view renders
+  loading, empty, and error states from the real API.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pantheon — control plane</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="gate" class="gate" hidden>
+  <div class="gate-card">
+    <div class="gate-title">pantheon</div>
+    <p class="gate-sub">Paste the per-instance token printed by <span class="mono">pantheon dashboard</span> at startup.</p>
+    <form id="gate-form">
+      <input id="gate-token" class="input" type="password" autocomplete="off" spellcheck="false"
+             placeholder="token" aria-label="dashboard token">
+      <button class="btn" type="submit">Enter</button>
+    </form>
+    <p class="gate-note">The token lives in this tab only (sessionStorage). It is sent as X-Pantheon-Token.</p>
+  </div>
+</div>
+
+<div id="app" class="app" hidden>
+  <aside class="sidebar" aria-label="views">
+    <div class="brand"><span class="brand-mark">◈</span> pantheon</div>
+    <nav id="nav" class="nav"></nav>
+    <div class="side-foot">
+      <div id="gateway-dot" class="gw-line"><span class="dot" data-state="unknown"></span><span id="gateway-label">gateway …</span></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div id="kpis" class="kpis" aria-label="key metrics"></div>
+    </header>
+    <section id="view" class="view" tabindex="-1"></section>
+    <footer class="footer mono">
+      <span>pantheon dashboard</span><span class="sep">·</span>
+      <span id="foot-status">token auth · localhost</span><span class="sep">·</span>
+      <span id="foot-clock"></span>
+    </footer>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

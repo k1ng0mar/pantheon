@@ -23,6 +23,68 @@ fn die(msg: &str) -> ! {
     eprintln!("pantheon: {msg}");
     std::process::exit(1);
 }
+
+/// `pantheon dashboard [--port 7171] [--bind 127.0.0.1] [--open]`.
+/// Starts the web control plane. The dashboard prints a tokenized URL at
+/// startup; that token is the dashboard's password. Binding a
+/// non-loopback address is allowed but warned about loudly at startup —
+/// public exposure belongs behind a reverse proxy with real
+/// authentication.
+fn cmd_dashboard(args: &[String]) {
+    let mut port: u16 = 7171;
+    let mut bind = "127.0.0.1".to_string();
+    let mut open = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" => {
+                i += 1;
+                port = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_else(|| die("--port needs a number"));
+            }
+            "--bind" => {
+                i += 1;
+                bind = args
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| die("--bind needs an address"));
+            }
+            "--open" => open = true,
+            "--help" | "-h" => {
+                println!(
+                    "pantheon dashboard [--port 7171] [--bind 127.0.0.1] [--open]\n\
+                     \n\
+                     Start the web control plane: runs, approvals, schedule,\n\
+                     usage stats, memory, config, keys, logs, skills/MCP, and\n\
+                     gateway — over a std-only HTTP server on localhost.\n\
+                     \n\
+                     Every /api/* request needs the per-instance token printed\n\
+                     at startup. Keep it on 127.0.0.1; exposing it publicly\n\
+                     requires a reverse proxy with real authentication."
+                );
+                return;
+            }
+            other => die(&format!("dashboard: unknown flag '{other}'")),
+        }
+        i += 1;
+    }
+    pantheon_dashboard::run(pantheon_dashboard::DashboardConfig {
+        data_dir: data_dir(),
+        bind,
+        port,
+        open_browser: open,
+        // In the CLI there is no live session to resume; surface the
+        // decision on stderr so the operator sees it.
+        on_approval: Some(std::sync::Arc::new(|run_id: &str, granted: bool| {
+            eprintln!(
+                "dashboard: approval {} for run {run_id}",
+                if granted { "granted" } else { "denied" }
+            );
+        })),
+    });
+}
 pub(crate) fn ext_dir() -> PathBuf {
     if let Ok(d) = std::env::var("PANTHEON_EXT_DIR") {
         return PathBuf::from(d);
@@ -158,10 +220,14 @@ fn usage() -> String {
     s.push_str("  runs                         list runs and their status\n");
     s.push_str("  runs <run_id>                full event trace for one run\n");
     s.push_str("  logs [agent|errors|gateway]  read the log files (-n, -f, --level)\n");
-    s.push_str("  audit <run_id> [OUT.jsonl]   sequence-validated JSONL trajectory\n\n");
+    s.push_str("  audit <run_id> [OUT.jsonl]   sequence-validated JSONL trajectory\n");
+    s.push_str("  stats [--week|--month|--from D|--to D] [--json]\n");
+    s.push_str("        usage by model, project, session, day\n\n");
 
     s.push_str("SET UP\n");
     s.push_str("  setup                         wizard: API key, default model, policy\n");
+    s.push_str("  init                          install the always-on gateway service\n");
+    s.push_str("                                (chat surfaces + scheduled tasks), idempotently\n");
     s.push_str("  update [--check] [--version TAG]  replace this binary with the latest release\n");
     s.push_str("  model [--list] [--auxiliary KIND]        provider picker, keys -> .env\n");
     s.push_str("  provider <add|list|remove>   custom-endpoint registry\n");
@@ -185,14 +251,22 @@ fn usage() -> String {
     s.push_str("           [--kind K] [--json] [--yes] [--merge-providers]\n\n");
 
     s.push_str("MEMORY\n");
-    s.push_str("  memory import|export|sync|recall|list|confirm|put|vault|backend\n\n");
+    s.push_str("  memory import|export|sync|recall|list|confirm|put|vault|backend\n");
+    s.push_str("  reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]\n");
+    s.push_str("        ledger-native self-improvement: propose, eval-gate, approve, apply\n");
+    s.push_str("  consolidate [--dry-run] [status]\n");
+    s.push_str("        stage/weigh/promote repeated facts into long-term memory\n\n");
 
     s.push_str("RUN UNATTENDED\n");
     s.push_str("  schedule <task> --30m | list|pause|resume|cancel|run <id>\n");
     s.push_str("  swarm status [<id>] | list   previously recorded swarms (spawn unsupported)\n");
-    s.push_str("  gateway start|restart|stop [discord|telegram]\n");
-    s.push_str("        start registers a background service (systemd / launchd)\n");
-    s.push_str("  serve [--port N] [--host H]   AG-UI SSE + RPC server\n\n");
+    s.push_str("  gateway [run|start|stop|restart|status]\n");
+    s.push_str("        always-on service: chat surfaces + scheduled tasks\n");
+    s.push_str("  serve [--port N] [--host H]   AG-UI SSE + RPC server\n");
+    s.push_str("  dashboard [--port 7171] [--bind 127.0.0.1] [--open]\n");
+    s.push_str("        web control plane: runs, approvals, schedule, config, keys,\n");
+    s.push_str("        logs, skills/MCP, gateway. Per-instance token auth; stays on\n");
+    s.push_str("        localhost unless you put a reverse proxy with real auth in front.\n\n");
 
     s.push_str("WORKFLOWS\n");
     s.push_str("  pipeline <sub>                durable 6-stage workflow with human gates\n\n");
@@ -210,11 +284,14 @@ fn usage() -> String {
 /// kept in sync with the `match args[1]` arms in `main`.
 const KNOWN_VERBS: &[&str] = &[
     "audit",
+    "consolidate",
+    "dashboard",
     "doctor",
     "extensions",
     "fallback",
     "gateway",
     "hook",
+    "init",
     "logs",
     "mcp",
     "memory",
@@ -224,6 +301,7 @@ const KNOWN_VERBS: &[&str] = &[
     "plugins",
     "provider",
     "providers",
+    "reflect",
     "repair",
     "reset",
     "run",
@@ -232,6 +310,7 @@ const KNOWN_VERBS: &[&str] = &[
     "serve",
     "setup",
     "skills",
+    "stats",
     "swarm",
     "update",
 ];
@@ -1147,6 +1226,12 @@ timeout_ms = 5000
         "schedule" => {
             crate::schedule::cmd_schedule(&args, &data_dir());
         }
+        "reflect" => {
+            crate::reflect_cli::cmd_reflect(&args, &data_dir());
+        }
+        "consolidate" => {
+            crate::consolidate_cli::cmd_consolidate(&args, &data_dir());
+        }
         "swarm" => {
             crate::swarm::cmd_swarm(&args, &data_dir());
         }
@@ -1303,8 +1388,14 @@ timeout_ms = 5000
         "serve" => {
             crate::agui::cmd_serve(&args);
         }
+        "dashboard" => {
+            cmd_dashboard(&args);
+        }
         "gateway" => {
             crate::gateway::cmd_gateway(&args);
+        }
+        "init" => {
+            crate::init::cmd_init(&args);
         }
         "setup" => {
             crate::setup::cmd_setup(&args);
@@ -1378,6 +1469,9 @@ timeout_ms = 5000
         }
         "fallback" => {
             crate::fallback::cmd_fallback(&args);
+        }
+        "stats" => {
+            crate::stats::cmd_stats(&args, &data_dir());
         }
         "repair" => {
             crate::repair::cmd_repair(&args);
@@ -1540,6 +1634,7 @@ mod verb_guard_tests {
             "providers",
             "skills",
             "migrate",
+            "reflect",
             "schedule",
             "swarm",
             "model",
@@ -1616,8 +1711,11 @@ fn splash_center(line: &str, width: usize) -> String {
 /// "PANTHEON" as styled normal text (bold, accent color) — deliberately not
 /// part of the ASCII art. Missing/empty art is skipped; the wordmark always
 /// renders.
-pub fn splash_lines(width: u16) -> Vec<ratatui::text::Line<'static>> {
-    use ratatui::style::{Color, Modifier, Style};
+pub fn splash_lines(
+    width: u16,
+    theme: &crate::session::theme::Theme,
+) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
     let width_usize = width.max(1) as usize;
     let mut lines: Vec<Line> = Vec::new();
@@ -1633,7 +1731,7 @@ pub fn splash_lines(width: u16) -> Vec<ratatui::text::Line<'static>> {
     lines.push(Line::from(Span::styled(
         splash_center("PANTHEON", width_usize),
         Style::default()
-            .fg(Color::Cyan)
+            .fg(theme.primary)
             .add_modifier(Modifier::BOLD),
     )));
     lines
@@ -1681,13 +1779,16 @@ mod splash_tests {
 
     #[test]
     fn splash_lines_end_with_styled_wordmark() {
-        let lines = splash_lines(80);
+        let lines = splash_lines(80, &crate::session::theme::Theme::pantheon());
         let last = lines.last().unwrap();
         let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text.trim(), "PANTHEON");
         let style = last.spans[0].style;
         assert!(style.add_modifier.contains(ratatui::style::Modifier::BOLD));
-        assert_eq!(style.fg, Some(ratatui::style::Color::Cyan));
+        assert_eq!(
+            style.fg,
+            Some(crate::session::theme::Theme::pantheon().primary)
+        );
     }
 
     #[test]

@@ -97,6 +97,7 @@ fn event_name(e: &pantheon_api::events::Event) -> &'static str {
         AgentSpawned { .. } => "AgentSpawned",
         AgentCompleted { .. } => "AgentCompleted",
         SessionTitled { .. } => "SessionTitled",
+        CheckpointCreated { .. } => "CheckpointCreated",
         _ => "Other",
     }
 }

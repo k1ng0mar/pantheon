@@ -145,6 +145,7 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::TurnCompleted { run_id, .. }
         | Event::TurnFailed { run_id, .. }
         | Event::TurnRewound { run_id, .. }
+        | Event::CheckpointCreated { run_id, .. }
         | Event::ModelRequested { run_id, .. }
         | Event::ModelDelta { run_id, .. }
         | Event::ModelCompleted { run_id }
@@ -166,7 +167,10 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::ContextCompressed { run_id, .. }
         | Event::SessionTitled { run_id, .. }
         | Event::AssistantMessage { run_id, .. }
-        | Event::ToolMessage { run_id, .. } => run_id,
+        | Event::ToolMessage { run_id, .. }
+        | Event::ImportedReasoning { run_id, .. }
+        | Event::UsageRecorded { run_id, .. }
+        | Event::SteeringProvided { run_id, .. } => run_id,
     }
 }
 
@@ -455,6 +459,53 @@ impl Ledger {
             out.push(r.map_err(|e| err("LEDGER_RECON", e.to_string()))?);
         }
         Ok(apply_rewinds(out))
+    }
+
+    /// Usage accounting rows in `[from_ms, to_ms)`, for `pantheon stats`.
+    /// Filters on the serialized variant tag in SQL so a month of events
+    /// doesn't need full deserialization; only `UsageRecorded` rows are
+    /// decoded. Rewind truncation is intentionally NOT applied: stats
+    /// reports tokens actually consumed, including rewound turns.
+    pub fn usage_between(
+        &self,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> Result<Vec<LedgerEntry>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, run_id, seq, ts_ms, event_json FROM events \
+                 WHERE ts_ms >= ?1 AND ts_ms < ?2 AND event_json LIKE '%\"UsageRecorded\"%' \
+                 ORDER BY ts_ms, id",
+            )
+            .map_err(|e| err("LEDGER_USAGE", e.to_string()))?;
+        let rows = stmt
+            .query_map(params![from_ms, to_ms], |row| {
+                let json: String = row.get(4)?;
+                let event: Event = serde_json::from_str(&json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Text,
+                        e.into(),
+                    )
+                })?;
+                Ok(LedgerEntry {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    seq: row.get(2)?,
+                    ts_ms: row.get(3)?,
+                    event,
+                })
+            })
+            .map_err(|e| err("LEDGER_USAGE", e.to_string()))?;
+        let mut out = vec![];
+        for r in rows {
+            out.push(r.map_err(|e| err("LEDGER_USAGE", e.to_string()))?);
+        }
+        Ok(out)
     }
 
     /// Idempotency claim for the scheduler (spec section 21): occurrence key,
@@ -764,6 +815,24 @@ impl Ledger {
         Ok(pruned)
     }
 
+    /// Delete a run and its events outright. Returns `(events_deleted,
+    /// run_row_deleted)`. Used by the dashboard's prune action; there is no
+    /// soft-delete — the caller confirms first. Deleting a run that does
+    /// not exist is `Ok((0, 0))`, not an error.
+    pub fn delete_run(&self, run_id: &str) -> Result<(usize, usize), PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let events = conn
+            .execute("DELETE FROM events WHERE run_id = ?1", params![run_id])
+            .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
+        let runs = conn
+            .execute("DELETE FROM runs WHERE run_id = ?1", params![run_id])
+            .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
+        Ok((events, runs))
+    }
+
     /// Retention-safe prune: like [`Self::prune_events_before`], but never
     /// deletes events of runs whose status is not terminal. The active run's
     /// transcript survives even when its oldest events predate the cutoff —
@@ -979,6 +1048,18 @@ fn describe(ev: &Event) -> String {
         } => format!("turn completed: {turn_id} ({outcome})"),
         Event::TurnFailed { turn_id, code, .. } => format!("turn failed: {turn_id} ({code})"),
         Event::TurnRewound { turn_id, .. } => format!("turn rewound: {turn_id}"),
+        Event::UsageRecorded {
+            model,
+            total_tokens,
+            cost_usd,
+            ..
+        } => match cost_usd {
+            Some(c) => format!("usage: {model} {total_tokens} tokens ${c:.4}"),
+            None => format!("usage: {model} {total_tokens} tokens"),
+        },
+        Event::CheckpointCreated { name, turn_id, .. } => {
+            format!("checkpoint \"{name}\" at turn {turn_id}")
+        }
         Event::ModelRequested { model, .. } => format!("model requested: {model}"),
         Event::ModelDelta { .. } => String::from("model streamed output"),
         Event::ModelCompleted { .. } => String::from("model turn done"),
@@ -1043,6 +1124,16 @@ fn describe(ev: &Event) -> String {
             format!(
                 "tool result: {}",
                 message.content.chars().take(120).collect::<String>()
+            )
+        }
+        Event::SteeringProvided { text, .. } => {
+            format!("steered: {}", text.chars().take(120).collect::<String>())
+        }
+        Event::ImportedReasoning { turn_id, text, .. } => {
+            format!(
+                "imported reasoning ({}): {}",
+                turn_id,
+                text.chars().take(120).collect::<String>()
             )
         }
     }

@@ -13,6 +13,7 @@ pub mod pipeline_runner;
 pub mod rpc;
 pub mod serve;
 pub mod session;
+pub mod temporal;
 pub mod transport;
 pub mod watchdog;
 
@@ -879,6 +880,89 @@ impl Supervisor {
         run_id: &str,
     ) -> Result<Vec<pantheon_storage::LedgerEntry>, PantheonError> {
         self.ledger().replay(run_id)
+    }
+    /// Fork run `src` at user turn `turn` into a brand-new run, returning
+    /// the new run id and the number of turns it contains.
+    ///
+    /// `turn` is 1-based; `None` forks at the latest turn. The fork copies
+    /// the durable event prefix — everything through the end of that turn —
+    /// verbatim into a fresh run, re-addressed via
+    /// [`Event::with_run_id`](pantheon_api::events::Event::with_run_id).
+    /// The source run is untouched. Replay already honors `TurnRewound`,
+    /// so forking a rewound session branches from the rewound history,
+    /// not from the hidden turns. The fork keeps the source title with a
+    /// ` (fork)` suffix and records its provenance in a `RunProgress`
+    /// marker, so the audit trail shows where the branch came from.
+    pub fn fork_run(
+        &self,
+        src: &str,
+        turn: Option<usize>,
+    ) -> Result<(String, usize), PantheonError> {
+        let entries = self.replay(src)?;
+        let mut user_at: Vec<usize> = Vec::new();
+        for (i, e) in entries.iter().enumerate() {
+            if let Event::AssistantMessage { message, .. } = &e.event {
+                if message.role == pantheon_api::message::Role::User {
+                    user_at.push(i);
+                }
+            }
+        }
+        if user_at.is_empty() {
+            return Err(rerr(
+                "RT_FORK_EMPTY",
+                format!("run {src} has no turns to fork"),
+            ));
+        }
+        let n = match turn {
+            None => user_at.len(),
+            Some(0) => {
+                return Err(rerr(
+                    "RT_FORK_RANGE",
+                    format!("turn 0 out of range (1..={})", user_at.len()),
+                ))
+            }
+            Some(t) if t > user_at.len() => {
+                return Err(rerr(
+                    "RT_FORK_RANGE",
+                    format!("turn {t} out of range (1..={})", user_at.len()),
+                ))
+            }
+            Some(t) => t,
+        };
+        // The turn's events run from its user message up to (excluding)
+        // the next turn's user message; the last turn owns the tail.
+        let cut = user_at.get(n).copied().unwrap_or(entries.len());
+        let new_id = new_run_id();
+        self.start_run(&new_id)?;
+        for e in &entries[..cut] {
+            // Skip the source's run boundary: start_run already emitted
+            // the fork's own RunStarted, and a boundary is per-run.
+            if matches!(e.event, Event::RunStarted { .. }) {
+                continue;
+            }
+            self.emit(e.event.with_run_id(&new_id))?;
+        }
+        if let Some(title) = self
+            .ledger_title(&new_id)
+            .ok()
+            .flatten()
+            .filter(|t| !t.is_empty())
+        {
+            self.emit(Event::SessionTitled {
+                run_id: new_id.clone(),
+                title: pantheon_api::model::bound_title(
+                    &format!("{title} (fork)"),
+                    pantheon_api::model::TITLE_MAX_CHARS,
+                ),
+                model: String::new(),
+                source: "fork".into(),
+            })?;
+        }
+        self.emit(Event::RunProgress {
+            run_id: new_id.clone(),
+            detail: format!("forked from {src} at turn {n}"),
+        })?;
+        Ok((new_id, n))
     }
     /// Per-run counters folded from the event log.
     pub fn run_metrics(&self, run_id: &str) -> Result<pantheon_storage::RunMetrics, PantheonError> {

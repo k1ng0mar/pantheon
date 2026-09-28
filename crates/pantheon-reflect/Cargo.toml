@@ -1,0 +1,15 @@
+[package]
+name = "pantheon-reflect"
+version = "0.1.0"
+edition = "2021"
+description = "Reflection: Pantheon's ledger-native self-improvement loop. Reads structured signals from the event ledger, proposes improvements (memory lessons, skills, persona tweaks), eval-gates and approval-gates them, and audits everything. LLM-backed steps are opt-in; the signal pipeline is deterministic."
+
+[dependencies]
+pantheon-api = { path = "../pantheon-api" }
+pantheon-storage = { path = "../pantheon-storage" }
+pantheon-memory = { path = "../pantheon-memory" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -435,6 +435,78 @@ pub fn discover_skills_ext(
     scan_skills_ext(data_dir, project_root, extra_roots).loaded
 }
 
+/// Disabled-skill registry: `<data_dir>/skills/disabled.json`, a JSON
+/// array of skill names. Shared by the dashboard toggle and the session
+/// loader — a disabled skill is not registered as a tool. Reads tolerate
+/// a missing or malformed file (nothing disabled) rather than failing
+/// discovery; a failed *write* is an error, because a toggle that did
+/// not persist would be a lie.
+pub fn disabled_skill_names(data_dir: &Path) -> Vec<String> {
+    let path = data_dir.join("skills").join("disabled.json");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    serde_json::from_str::<Vec<String>>(&text).unwrap_or_default()
+}
+
+/// Set (or clear) a skill's disabled flag. Atomic: temp file + rename in
+/// the same directory.
+pub fn set_skill_disabled(
+    data_dir: &Path,
+    name: &str,
+    disabled: bool,
+) -> Result<(), PantheonError> {
+    if name.trim().is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(serr("SKILL_NAME", format!("unsafe skill name: {name:?}")));
+    }
+    let dir = data_dir.join("skills");
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        serr(
+            "SKILL_DISABLED_IO",
+            format!("create {}: {e}", dir.display()),
+        )
+    })?;
+    let mut names = disabled_skill_names(data_dir);
+    if disabled {
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    } else {
+        names.retain(|n| n != name);
+    }
+    names.sort();
+    let tmp = dir.join("disabled.json.tmp");
+    let path = dir.join("disabled.json");
+    std::fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&names).unwrap_or_default(),
+    )
+    .map_err(|e| serr("SKILL_DISABLED_IO", format!("write {}: {e}", tmp.display())))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        serr(
+            "SKILL_DISABLED_IO",
+            format!("rename {}: {e}", path.display()),
+        )
+    })?;
+    Ok(())
+}
+
+/// Like `discover_skills_ext`, but skips skills in the disabled registry.
+/// Sessions load through this, so the dashboard toggle genuinely removes
+/// the skill from the model's toolset.
+pub fn discover_skills_enabled(
+    data_dir: &Path,
+    project_root: &Path,
+    extra_roots: &[PathBuf],
+) -> Vec<Skill> {
+    let disabled = disabled_skill_names(data_dir);
+    discover_skills_ext(data_dir, project_root, extra_roots)
+        .into_iter()
+        .filter(|s| !disabled.iter().any(|d| d == &s.meta.name))
+        .collect()
+}
+
 /// Like `discover_skills_ext`, but also reports what was skipped and why.
 ///
 /// `skills doctor` needs this: with only the `Vec<Skill>` return, a

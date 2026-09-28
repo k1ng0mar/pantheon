@@ -17,8 +17,8 @@
 use crate::terminal::data_dir;
 use pantheon_migration::{
     analyze, apply_with, backup, detect, ensure_sessions_indexed, plan, reconcile_keys, render,
-    validate, ItemKind, KeyMatch, MigrationCategory, MigrationFilter, MigrationPlan, SourceKind,
-    Targets,
+    validate, Action, ItemKind, KeyMatch, MigrationCategory, MigrationFilter, MigrationPlan,
+    SourceKind, Targets,
 };
 use std::path::{Path, PathBuf};
 
@@ -368,7 +368,85 @@ pub fn cmd_migrate_apply(args: &[String]) {
         selected.skipped()
     );
     print_key_reconciliation(&t);
+    import_session_runs(&t, &selected, kind);
     index_imported_sessions(&t, &root, kind);
+}
+
+/// Turn the selected session transcripts into real, resumable ledger runs.
+///
+/// Runs after the file apply so the quarantine copy lands first. Each
+/// transcript becomes one run with a deterministic
+/// `imported:<source>:<dir>:<session>` id — re-running converges instead of
+/// duplicating. The runs show up in `/resume` and continue like any native
+/// conversation; tool traffic is dropped with a note on the run.
+fn import_session_runs(t: &Targets, plan: &MigrationPlan, kind: SourceKind) {
+    use pantheon_migration::session_import::{import_session_dirs, ImportStatus};
+    let dirs: Vec<PathBuf> = plan
+        .items
+        .iter()
+        .filter(|i| i.kind == ItemKind::Session && matches!(i.action, Action::Import { .. }))
+        .map(|i| PathBuf::from(&i.path))
+        .collect();
+    if dirs.is_empty() {
+        return;
+    }
+    let ledger = match pantheon_storage::Ledger::open(&t.data_dir.join("ledger.db")) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("migrate: session import failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let batch = import_session_dirs(&ledger, kind.name(), &dirs, now_ms);
+    if !batch.failures.is_empty() {
+        for (path, cause) in &batch.failures {
+            eprintln!(
+                "migrate: session import failed for {}: {cause}",
+                path.display()
+            );
+        }
+        std::process::exit(1);
+    }
+    let imported: Vec<_> = batch
+        .reports
+        .iter()
+        .filter(|r| r.status == ImportStatus::Imported)
+        .collect();
+    let already: Vec<_> = batch
+        .reports
+        .iter()
+        .filter(|r| r.status == ImportStatus::SkippedExists)
+        .collect();
+    let empty = batch.reports.len() - imported.len() - already.len();
+    if imported.is_empty() && already.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "imported {} session(s) as resumable runs ({} already imported, {} empty)",
+        imported.len(),
+        already.len(),
+        empty
+    );
+    for r in &imported {
+        println!(
+            "  + {} — {} ({} turn(s), {} reasoning trace(s))",
+            r.run_id,
+            r.title,
+            r.turns(),
+            r.reasoning_traces
+        );
+        if r.dropped_tool_records > 0 {
+            println!(
+                "      ({} tool record(s) dropped: not replayable)",
+                r.dropped_tool_records
+            );
+        }
+    }
 }
 
 /// Make a migrated history actually searchable.

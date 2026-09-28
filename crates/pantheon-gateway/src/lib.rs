@@ -17,6 +17,10 @@ pub mod delivery;
 pub mod discord;
 pub mod discord_gateway;
 pub mod genui;
+pub mod notify;
+pub mod schedule_delivery;
+pub mod scheduler;
+pub mod service;
 pub mod sse;
 pub mod stream;
 pub mod telegram;
@@ -38,6 +42,12 @@ pub use discord::{
     DISCORD_CONTENT_LIMIT,
 };
 pub use genui::{valid_task_id, GenUiRef, GenUiSigner, SignedUrl};
+pub use notify::{
+    command_for, desktop_notify, detect_notifier, escape_applescript, escape_powershell, Notifier,
+};
+pub use schedule_delivery::{
+    build_summary, deliver_best_effort, deliver_summary, ChannelSender, Deliver, RestChannelSender,
+};
 pub use sse::{parse_last_event_id, SseEncoder};
 pub use stream::{frame_for_event, frames_for_entries, UiFrame, UiFrameKind};
 pub use telegram::{
@@ -98,3 +108,15 @@ impl OutboundMessage {
         }
     }
 }
+
+pub use scheduler::{
+    queue_summary, rel_time, ExecuteFn, FireOutcome, SchedulableJob, SchedulerLoop, TickReport,
+};
+pub use service::{
+    channels_disabled_note, cron_line, detect as detect_service_mechanism,
+    install as install_service, manual_cron_line, merge_crontab, read_channel_env,
+    render_launchd_plist, render_systemd_unit, render_task_xml, restart as restart_service,
+    self_exe, status as service_status, stop as stop_service, ChannelPlan, InstallEnv,
+    InstallOutcome, Mechanism as ServiceMechanism, RestartOutcome, ServiceStatus, StopOutcome,
+    CRON_MARKER, LAUNCHD_LABEL, TASK_NAME, UNIT_NAME,
+};

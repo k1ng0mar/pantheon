@@ -39,6 +39,40 @@ pub struct ChannelEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<String>,
 }
+
+/// Parse an approval button callback (`callback_data` / `custom_id`) into
+/// `(answer, run_id, scope)`.
+///
+/// Two formats are accepted:
+/// - `grant:{run_id}:{scope}` / `deny:{run_id}:{scope}` — sent by phone
+///   approval notifications for locally-started runs. The run id lets the
+///   daemon resolve the pending approval directly.
+/// - legacy `grant:{scope}` / `deny:{scope}` — no run id; the daemon
+///   falls back to its thread→run map.
+///
+/// The first segment after the verb is unambiguous: run ids always start
+/// with `run_`, call ids with `turn_`.
+pub fn parse_approval_callback(data: &str) -> Option<(ApprovalAnswer, Option<String>, String)> {
+    let (verb, rest) = data.split_once(':')?;
+    let answer = match verb {
+        "grant" => ApprovalAnswer::Grant,
+        "deny" => ApprovalAnswer::Deny,
+        _ => return None,
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    match rest.split_once(':') {
+        // `grant:{run_id}:{scope}`: the run id lets the daemon resolve the
+        // pending approval directly. Run ids always start with `run_`;
+        // legacy scopes (`call_id:tool:args`) never do.
+        Some((first, scope)) if first.starts_with("run_") && !scope.is_empty() => {
+            Some((answer, Some(first.to_string()), scope.to_string()))
+        }
+        // Legacy `grant:{scope}` (bare call id or full scope, no run id).
+        _ => Some((answer, None, rest.to_string())),
+    }
+}
 /// What the runtime hands a surface (one frame + routing).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelEnvelope {
