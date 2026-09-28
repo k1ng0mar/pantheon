@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://api.fontshare.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
+  <link href="https://api.fontshare.com/v2/css?f[]=array@400,500,600,700&f[]=alpino@400,500,600,700&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -26,7 +26,7 @@
           },
           fontFamily: {
             mono: ['JetBrains Mono', 'monospace'],
-            sans: ['General Sans', 'sans-serif']
+            sans: ['Alpino', 'sans-serif']
           }
         }
       }
@@ -35,9 +35,9 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #0b0c0e; color: #f2f1ee; font-family: 'General Sans', sans-serif; font-size: 16px; line-height: 1.6; }
+    body { background: #0b0c0e; color: #f2f1ee; font-family: 'Alpino', sans-serif; font-size: 16px; line-height: 1.6; }
     /* Type scale: display 40-64 / h2 28 / h3 20 / body 16 (each step >= 1.25x) */
-    .t-display { font-weight: 600; font-size: clamp(2.5rem, 1.5rem + 5vw, 4rem); line-height: 1.05; letter-spacing: -0.02em; }
+    .t-display { font-family: 'Array', sans-serif; font-weight: 600; font-size: clamp(2.5rem, 1.5rem + 5vw, 4rem); line-height: 1.05; letter-spacing: -0.02em; }
     .t-h3 { font-weight: 600; font-size: 1.25rem; line-height: 1.3; }
     :focus-visible { outline: 2px solid #a379ff; outline-offset: 3px; }
     .rule { height: 1px; background: #1e2024; }
