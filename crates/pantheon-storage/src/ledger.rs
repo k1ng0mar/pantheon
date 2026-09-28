@@ -108,6 +108,28 @@ fn err(code: &str, cause: String) -> PantheonError {
     )
 }
 
+/// Apply `TurnRewound` markers to an ordered event stream. The named turn
+/// and everything after it up to the marker is dropped; the marker itself
+/// is kept so the audit trail shows a rewind happened. Turns started after
+/// the marker replay normally. The `events` table is never rewritten — this
+/// is a read-time projection, so raw history survives for forensics while
+/// resume and transcript rebuilds see the rewound run as if those turns
+/// never happened.
+fn apply_rewinds(entries: Vec<LedgerEntry>) -> Vec<LedgerEntry> {
+    let mut out: Vec<LedgerEntry> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if let Event::TurnRewound { turn_id, .. } = &entry.event {
+            if let Some(pos) = out.iter().rposition(|e| {
+                matches!(&e.event, Event::TurnStarted { turn_id: t, .. } if t == turn_id)
+            }) {
+                out.truncate(pos);
+            }
+        }
+        out.push(entry);
+    }
+    out
+}
+
 /// Extract the run id from any event.
 pub fn run_id_of(event: &Event) -> &str {
     match event {
@@ -122,6 +144,7 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::TurnParked { run_id, .. }
         | Event::TurnCompleted { run_id, .. }
         | Event::TurnFailed { run_id, .. }
+        | Event::TurnRewound { run_id, .. }
         | Event::ModelRequested { run_id, .. }
         | Event::ModelDelta { run_id, .. }
         | Event::ModelCompleted { run_id }
@@ -394,6 +417,10 @@ impl Ledger {
         })
     }
 
+    /// Replay a run's events in append order, with `TurnRewound` markers
+    /// applied: rewound turns are excluded as if they never happened. Raw
+    /// history is preserved in the `events` table; this is the effective
+    /// projection used by resume, transcript rebuilds, and the run log.
     pub fn replay(&self, run_id: &str) -> Result<Vec<LedgerEntry>, PantheonError> {
         let conn = self
             .conn
@@ -427,7 +454,7 @@ impl Ledger {
         for r in rows {
             out.push(r.map_err(|e| err("LEDGER_RECON", e.to_string()))?);
         }
-        Ok(out)
+        Ok(apply_rewinds(out))
     }
 
     /// Idempotency claim for the scheduler (spec section 21): occurrence key,
@@ -929,6 +956,7 @@ fn describe(ev: &Event) -> String {
             turn_id, outcome, ..
         } => format!("turn completed: {turn_id} ({outcome})"),
         Event::TurnFailed { turn_id, code, .. } => format!("turn failed: {turn_id} ({code})"),
+        Event::TurnRewound { turn_id, .. } => format!("turn rewound: {turn_id}"),
         Event::ModelRequested { model, .. } => format!("model requested: {model}"),
         Event::ModelDelta { .. } => String::from("model streamed output"),
         Event::ModelCompleted { .. } => String::from("model turn done"),

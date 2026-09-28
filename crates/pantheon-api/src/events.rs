@@ -101,6 +101,15 @@ pub enum Event {
         turn_id: String,
         code: String,
     },
+    /// The operator rewound this turn (TUI double-Esc). History is never
+    /// rewritten: the marker is appended and `Ledger::replay` excludes the
+    /// named turn and everything after it up to this marker, so resume and
+    /// the transcript rebuild behave as if the rewound turns never happened.
+    /// Turns started after the marker replay normally.
+    TurnRewound {
+        run_id: String,
+        turn_id: String,
+    },
     ModelRequested {
         run_id: String,
         model: String,
