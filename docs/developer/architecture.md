@@ -46,7 +46,7 @@ Tools run under policy-chosen sandbox boundaries (process isolation up through c
 
 ## Memory and storage
 
-Five memory layers (global → agent → project → task → ephemeral) behind one write path: propose → policy → provenance → validation → store. Storage is SQLite by default: event ledger, durable operation state machines, claim ledgers, and an FTS sidecar for session search. No database server, no external vector store.
+Five memory layers (global → agent → project → task → ephemeral) behind one write path: propose → policy → provenance → validation → store. Storage is SQLite by default: event ledger, durable operation state machines, claim ledgers, and an FTS sidecar for session search. Everything runs inside the same SQLite file.
 
 ## Secrets
 
