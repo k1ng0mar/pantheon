@@ -126,13 +126,14 @@ pub fn cmd_schedule(args: &[String], data_dir: &Path) {
     if args.len() < 3 {
         eprintln!("usage: pantheon schedule <task> (--every 30m | --cron '0 9 * * *') [--agent nyx] [--timeout 10m] [--overlap skip|replace|queue]");
         eprintln!("       pantheon schedule list|pause|resume|cancel|run|tick <id>");
+        eprintln!("       pantheon schedule webhook sign|verify --body <text> [--secret <s>]");
         std::process::exit(2);
     }
 
     let subcommand = args[2].as_str();
     if matches!(
         subcommand,
-        "list" | "pause" | "resume" | "cancel" | "run" | "tick"
+        "list" | "pause" | "resume" | "cancel" | "run" | "tick" | "webhook"
     ) {
         handle_subcommand(&args[2..], data_dir);
         return;
@@ -434,12 +435,113 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                 std::thread::sleep(std::time::Duration::from_secs(30));
             }
         }
+        "webhook" => handle_webhook_command(&parts[1..]),
         _ => {
             // Guarded by cmd_schedule's subcommand allow-list; fail loud
             // (not unreachable) so a new subcommand can't silently no-op.
             eprintln!("usage: pantheon schedule list|pause|resume|cancel|run <id>");
             eprintln!("       pantheon schedule tick [--watch]");
+            eprintln!("       pantheon schedule webhook sign|verify --body <text> [--secret <s>]");
             std::process::exit(2);
+        }
+    }
+}
+
+/// `pantheon schedule webhook sign|verify` — HMAC-SHA256 signing for the
+/// webhook trigger contract (§21, `pantheon_scheduler::webhook`).
+///
+/// The signing primitive lived in the scheduler with no surface: an
+/// operator wiring an external sender (GitHub, Stripe, …) into a webhook
+/// job had no way to mint a valid `X-Pantheon-Signature` or to check that
+/// their sender's signatures verify against the shared secret. `sign`
+/// mints the header value for a body; `verify` checks one. Both go through
+/// the scheduler's primitives, so the contract cannot drift between here
+/// and the trigger path.
+///
+/// Secret precedence: `--secret` flag, then `PANTHEON_WEBHOOK_SECRET`.
+/// Missing or empty fails closed; the secret is never printed or logged.
+fn handle_webhook_command(parts: &[String]) {
+    let action = parts.first().map(String::as_str).unwrap_or("");
+    if !matches!(action, "sign" | "verify") {
+        eprintln!("usage: pantheon schedule webhook sign|verify --body <text> [--body-file <path>] [--secret <s>] [--signature <value>]");
+        eprintln!("       secret: --secret flag or PANTHEON_WEBHOOK_SECRET (never logged)");
+        std::process::exit(2);
+    }
+    let mut body: Option<String> = None;
+    let mut body_file: Option<String> = None;
+    let mut secret_flag: Option<String> = None;
+    let mut signature: Option<String> = None;
+    let mut it = parts[1..].iter().peekable();
+    while let Some(a) = it.next() {
+        let mut v = || {
+            it.next().map(|s| s.to_string()).unwrap_or_else(|| {
+                eprintln!("usage: {a} needs a value");
+                std::process::exit(2);
+            })
+        };
+        match a.as_str() {
+            "--body" => body = Some(v()),
+            "--body-file" => body_file = Some(v()),
+            "--secret" => secret_flag = Some(v()),
+            "--signature" => signature = Some(v()),
+            other => {
+                eprintln!("unknown flag: {other}");
+                std::process::exit(2);
+            }
+        }
+    }
+    // --secret wins over the environment; an empty secret authenticates
+    // nothing, so it fails closed exactly like WebhookAuth::new.
+    let secret = secret_flag
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var(pantheon_scheduler::webhook::SECRET_ENV_VAR)
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| {
+            eprintln!(
+                "webhook {action}: no secret — pass --secret or set {}",
+                pantheon_scheduler::webhook::SECRET_ENV_VAR
+            );
+            std::process::exit(2);
+        });
+    if body.is_some() && body_file.is_some() {
+        eprintln!("webhook {action}: --body and --body-file are mutually exclusive");
+        std::process::exit(2);
+    }
+    let body_bytes: Vec<u8> = match (body, body_file) {
+        (Some(t), _) => t.into_bytes(),
+        (None, Some(p)) => std::fs::read(&p).unwrap_or_else(|e| {
+            eprintln!("webhook {action}: cannot read {p}: {e}");
+            std::process::exit(1);
+        }),
+        (None, None) => Vec::new(),
+    };
+    match action {
+        "sign" => {
+            let header = pantheon_scheduler::webhook::sign(secret.as_bytes(), &body_bytes);
+            println!(
+                "{}: {header}",
+                pantheon_scheduler::webhook::SIGNATURE_HEADER
+            );
+        }
+        _ => {
+            let sig = signature.unwrap_or_else(|| {
+                eprintln!("usage: pantheon schedule webhook verify --signature <value> --body <text> [--secret <s>]");
+                std::process::exit(2);
+            });
+            match pantheon_scheduler::webhook::verify_signature(
+                secret.as_bytes(),
+                &body_bytes,
+                Some(&sig),
+            ) {
+                Ok(()) => println!("signature valid"),
+                Err(e) => {
+                    eprintln!("signature invalid: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }
