@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <defs>
+    <linearGradient id="pantheon-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#7223FF" />
+      <stop offset="45%" stop-color="#4B00CD" />
+      <stop offset="100%" stop-color="#0C0046" />
+    </linearGradient>
+  </defs>
+
+  <g fill="url(#pantheon-gradient)">
+    <!-- Top Roof Bar -->
+    <polygon points="250,85 370,145 370,167 250,107 130,167 130,145" />
+
+    <!-- Lower Roof Bar (Frieze) -->
+    <polygon points="250,125 356,178 356,200 250,147 144,200 144,178" />
+
+    <!-- Left Pillar -->
+    <polygon points="158,212 198,212 198,322 158,302 146,312 158,298" />
+
+    <!-- Center 'P' Pillar (Outer contour + Precise inner cutout) -->
+    <path fill-rule="evenodd" d="
+      M 250,165
+      L 292,186
+      L 292,270
+      L 248,292
+      L 248,335
+      L 230,358
+      L 208,335
+      L 208,186
+      Z
+      M 250,187
+      L 272,198
+      L 272,248
+      L 250,259
+      L 228,259
+      L 228,198
+      Z" />
+
+    <!-- Right Pillar -->
+    <polygon points="302,212 342,212 342,298 354,312 342,302 302,322" />
+  </g>
+</svg>
