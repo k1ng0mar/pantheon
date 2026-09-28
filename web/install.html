@@ -20,7 +20,7 @@
           colors: {
             ink: '#0b0c0e', panel: '#101216', rule: '#202329',
             chalk: '#eceae5', ash: '#8a9099',
-            brand: '#e3a84b', allow: '#7fa86f', deny: '#d2543f'
+            brand: '#7223FF', branddark: '#4B00CD', allow: '#7fa86f', deny: '#d2543f'
           },
           fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Instrument Sans', 'sans-serif'] }
         }
@@ -32,21 +32,21 @@
     html { scroll-behavior: smooth; }
     body { background: #0b0c0e; color: #eceae5; font-family: 'Instrument Sans', sans-serif; }
     h1, h2, h3 { font-family: 'JetBrains Mono', monospace; }
-    :focus-visible { outline: 2px solid #e3a84b; outline-offset: 3px; }
+    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
     .rule { height: 1px; background: #202329; }
-    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #e3a84b, transparent); }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
     .cmd { font-family: 'JetBrains Mono', monospace; }
     .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
     .logo-mark img { height: 26px; width: auto; }
     pre { background: #101216; border: 1px solid #202329; border-radius: 6px; padding: 1rem; overflow-x: auto; }
     pre code { font-family: 'JetBrains Mono', monospace; font-size: .82rem; color: #eceae5; }
-    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #e3a84b; background: rgba(227,168,75,.08); padding: .12em .3em; border-radius: 2px; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #7223FF; background: rgba(114,35,255,.08); padding: .12em .3em; border-radius: 2px; }
     .copy-btn { border: 1px solid #202329; color: #8a9099; border-radius: 4px; padding: .3rem .6rem; font-family: 'JetBrains Mono', monospace; font-size: .7rem; flex: none; }
     .copy-btn:hover { color: #eceae5; border-color: #8a9099; }
     .copy-btn[data-state="done"] { color: #7fa86f; border-color: #7fa86f; }
     .card { border: 1px solid #202329; border-radius: 8px; padding: 1.5rem; background: #101216; }
     .tab-btn { font-family: 'JetBrains Mono', monospace; font-size: .8rem; padding: .5rem 1rem; border: 1px solid #202329; border-radius: 6px 6px 0 0; color: #8a9099; border-bottom: none; }
-    .tab-btn[aria-selected="true"] { color: #eceae5; background: #101216; border-color: #e3a84b; border-bottom: 1px solid #101216; }
+    .tab-btn[aria-selected="true"] { color: #eceae5; background: #101216; border-color: #7223FF; border-bottom: 1px solid #101216; }
     .tab-panel { border: 1px solid #202329; border-radius: 0 6px 6px 6px; }
     section { scroll-margin-top: 4.5rem; }
     .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }
@@ -92,11 +92,11 @@
   <section class="max-w-6xl mx-auto px-5 md:px-8 pt-16 md:pt-20 pb-12">
     <p class="cmd text-xs text-brand tracking-wide reveal">INSTALL</p>
     <h1 class="cmd font-bold text-chalk text-3xl md:text-4xl tracking-tight mt-4 reveal">A minute to a working agent.</h1>
-    <p class="text-ash mt-5 max-w-2xl leading-relaxed reveal">A prebuilt binary from GitHub Releases. The installer needs only <code>curl</code> and <code>tar</code> — no Node, npm, Git, Python, Rust, or Cargo. Re-running never overwrites your config.</p>
+    <p class="text-ash mt-5 max-w-2xl leading-relaxed reveal">One prebuilt binary from GitHub Releases. The installer needs only <code>curl</code> and <code>tar</code> — no Node, npm, Git, Python, Rust, or Cargo. Re-running it never touches your config.</p>
   </section>
 
   <section id="os" class="max-w-6xl mx-auto px-5 md:px-8 pb-12">
-    <div class="reveal" role="tablist" aria-label="Install methods">
+    <div class="reveal flex flex-wrap" role="tablist" aria-label="Install methods">
       <button type="button" class="tab-btn" id="tab-unix" role="tab" aria-selected="true" aria-controls="panel-unix">Linux / macOS</button>
       <button type="button" class="tab-btn" id="tab-win" role="tab" aria-selected="false" aria-controls="panel-win">Windows</button>
       <button type="button" class="tab-btn" id="tab-src" role="tab" aria-selected="false" aria-controls="panel-src">Source</button>

@@ -20,7 +20,7 @@
           colors: {
             ink: '#0b0c0e', panel: '#101216', rule: '#202329',
             chalk: '#eceae5', ash: '#8a9099',
-            brand: '#e3a84b', allow: '#7fa86f', deny: '#d2543f'
+            brand: '#7223FF', branddark: '#4B00CD', allow: '#7fa86f', deny: '#d2543f'
           },
           fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Instrument Sans', 'sans-serif'] }
         }
@@ -32,20 +32,24 @@
     html { scroll-behavior: smooth; }
     body { background: #0b0c0e; color: #eceae5; font-family: 'Instrument Sans', sans-serif; }
     h1, h2, h3 { font-family: 'JetBrains Mono', monospace; }
-    :focus-visible { outline: 2px solid #e3a84b; outline-offset: 3px; }
+    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
     .rule { height: 1px; background: #202329; }
-    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #e3a84b, transparent); }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
     .cmd { font-family: 'JetBrains Mono', monospace; }
     .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
     .logo-mark img { height: 26px; width: auto; }
     pre { background: #101216; border: 1px solid #202329; border-radius: 6px; padding: 1rem; overflow-x: auto; }
     pre code { font-family: 'JetBrains Mono', monospace; font-size: .82rem; color: #eceae5; }
-    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #e3a84b; background: rgba(227,168,75,.08); padding: .12em .3em; border-radius: 2px; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #7223FF; background: rgba(114,35,255,.08); padding: .12em .3em; border-radius: 2px; }
     .copy-btn { border: 1px solid #202329; color: #8a9099; border-radius: 4px; padding: .3rem .6rem; font-family: 'JetBrains Mono', monospace; font-size: .7rem; flex: none; }
     .copy-btn:hover { color: #eceae5; border-color: #8a9099; }
     .copy-btn[data-state="done"] { color: #7fa86f; border-color: #7fa86f; }
     .model-col { border-left: 1px dashed #3a3f47; }
-    .runtime-col { border-left: 1px solid #e3a84b; }
+    .runtime-col { border-left: 1px solid #7223FF; }
+    @media (max-width: 767px) {
+      .model-col, .runtime-col { border-left: none; padding-top: 1.5rem; }
+      .runtime-col { border-top: 1px solid #7223FF; }
+    }
     table.grid { border-collapse: collapse; width: 100%; }
     table.grid th, table.grid td { border-bottom: 1px solid #202329; padding: .6rem .75rem; text-align: left; font-size: .85rem; vertical-align: top; }
     table.grid th { font-family: 'JetBrains Mono', monospace; color: #8a9099; font-weight: 500; font-size: .75rem; }
@@ -94,7 +98,7 @@
   <section class="max-w-6xl mx-auto px-5 md:px-8 pt-16 md:pt-20 pb-12">
     <p class="cmd text-xs text-brand tracking-wide reveal">PRODUCT TOUR</p>
     <h1 class="cmd font-bold text-chalk text-3xl md:text-4xl tracking-tight mt-4 reveal">Authority lives in the runtime.<br>Everything else is replaceable.</h1>
-    <p class="text-ash mt-5 max-w-2xl leading-relaxed reveal">Agent products lose trust when a good prompt turns into an accidental file write, an exposed credential, or a process that can't be resumed. Pantheon treats those as runtime behavior: a model may <em>request</em>, the runtime <em>decides</em>, and both halves get written down.</p>
+    <p class="text-ash mt-5 max-w-2xl leading-relaxed reveal">Most agent failures aren't model failures — they're runtime failures: a write that shouldn't have happened, a credential that leaked into context, a crashed process with no way back. Pantheon puts a runtime in charge. The model requests; the runtime decides; the ledger records both.</p>
   </section>
 
   <!-- Authority -->
@@ -107,7 +111,7 @@
           <li>Produces text and reasoning</li>
           <li>Requests tool calls</li>
           <li>Proposes memory records</li>
-          <li>Never selects its replacement, its permissions, or its budget</li>
+          <li>Never chooses its replacement, its permissions, or its budget</li>
         </ul>
         <p class="cmd text-xs text-ash mt-5">Dashed rule: this side is expected to change.</p>
       </div>
@@ -142,7 +146,7 @@
   <!-- Ledger -->
   <section id="ledger" class="max-w-6xl mx-auto px-5 md:px-8 py-12">
     <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">The record, and three ways to read it</h2>
-    <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">Runs are an append-only sequence of typed events in SQLite. Terminal states are guarded in the append path — a finished run can't quietly change its mind. Debugging, handoff, and review all read the same rows.</p>
+    <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">Every run is an append-only sequence of typed events in SQLite. Terminal states are guarded in the append path — a finished run can't quietly change its mind. Debugging, handoff, and review all read the same rows.</p>
     <div class="overflow-x-auto mt-8 reveal">
       <table class="grid">
         <thead><tr><th>Command</th><th>Question it answers</th></tr></thead>
@@ -161,7 +165,7 @@
   <!-- Approvals -->
   <section id="approvals" class="max-w-6xl mx-auto px-5 md:px-8 py-12">
     <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">When it needs you, it stops and asks</h2>
-    <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">A gated call parks the turn instead of dropping it. The decision is a durable ledger entry, so it outlives the process that asked — answer inline, or from anywhere:</p>
+    <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">A gated call parks the turn instead of dropping it. The decision becomes a durable ledger entry, so it outlives the process that asked — answer inline, or from anywhere:</p>
     <div class="grid md:grid-cols-2 gap-8 mt-8 items-start">
       <div class="reveal">
         <pre><code>pantheon run --taskID &lt;id&gt; --grant &lt;scope&gt;   # approve, then continue
@@ -194,7 +198,7 @@ pantheon run --taskID &lt;id&gt; --deny &lt;scope&gt;     # refuse; recorded, ru
 run run_1790414395478_1399: 2 events
   #66 started
   #67 FAILED (5)</code></pre>
-        <p class="text-ash text-sm mt-4 leading-relaxed">Because the failure is a row, "did it survive?" has an answer. Resume with the same run id: finished calls are skipped from recorded results, interrupted ones re-execute. <code>pantheon repair</code> settles anything stranded, backing up first.</p>
+        <p class="text-ash text-sm mt-4 leading-relaxed">Because the failure is a row, "did it survive?" always has an answer. Resume with the same run id: finished calls are skipped from recorded results, interrupted ones re-execute. <code>pantheon repair</code> settles anything stranded — backing up first.</p>
       </div>
       <div class="lg:col-span-6 reveal">
         <ul class="space-y-4 text-sm leading-relaxed">
@@ -232,12 +236,12 @@ run run_1790414395478_1399: 2 events
   <!-- Surfaces -->
   <section id="surfaces" class="max-w-6xl mx-auto px-5 md:px-8 py-12">
     <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">One runtime, several front doors</h2>
-    <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">Every surface drives the same Session runtime off the same ledger. Switching screens mid-conversation loses nothing.</p>
+    <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">Every surface drives the same Session runtime off the same ledger. Switch screens mid-conversation — nothing is lost.</p>
     <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6 mt-8 text-sm">
-      <div class="card reveal"><h3 class="cmd text-chalk">terminal</h3><p class="cmd text-xs text-ash mt-1">pantheon</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Interactive session with history, inline approvals, mid-conversation model switches.</p></div>
-      <div class="card reveal"><h3 class="cmd text-chalk">scripts</h3><p class="cmd text-xs text-ash mt-1">pantheon run</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">One-shot turns for CI and automation, delivered locally or to a channel.</p></div>
-      <div class="card reveal"><h3 class="cmd text-chalk">local web</h3><p class="cmd text-xs text-ash mt-1">pantheon serve</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">AG-UI client replaying the ledger stream. Minimal reference surface.</p></div>
-      <div class="card reveal"><h3 class="cmd text-chalk">messaging</h3><p class="cmd text-xs text-ash mt-1">pantheon gateway</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Discord and Telegram behind a required pairing allowlist; replies chunked to platform limits.</p></div>
+      <div class="card reveal"><h3 class="cmd text-chalk">terminal</h3><p class="cmd text-xs text-ash mt-1">pantheon</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">The interactive session: history, inline approvals, model switches mid-conversation.</p></div>
+      <div class="card reveal"><h3 class="cmd text-chalk">scripts</h3><p class="cmd text-xs text-ash mt-1">pantheon run</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Single turns for CI and automation, delivered locally or to a channel.</p></div>
+      <div class="card reveal"><h3 class="cmd text-chalk">local web</h3><p class="cmd text-xs text-ash mt-1">pantheon serve</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">A local web client on the ledger stream. Minimal reference surface.</p></div>
+      <div class="card reveal"><h3 class="cmd text-chalk">messaging</h3><p class="cmd text-xs text-ash mt-1">pantheon gateway</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Discord and Telegram behind a pairing allowlist; replies chunked to platform limits.</p></div>
     </div>
     <div class="mt-10 flex flex-wrap gap-3 reveal">
       <a href="install.html" class="cmd text-sm text-ink bg-brand px-5 py-2.5 rounded hover:bg-chalk">Install Pantheon</a>

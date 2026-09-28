@@ -21,7 +21,7 @@
           colors: {
             ink: '#0b0c0e', panel: '#101216', rule: '#202329',
             chalk: '#eceae5', ash: '#8a9099',
-            brand: '#e3a84b', allow: '#7fa86f', deny: '#d2543f'
+            brand: '#7223FF', branddark: '#4B00CD', allow: '#7fa86f', deny: '#d2543f'
           },
           fontFamily: {
             mono: ['JetBrains Mono', 'monospace'],
@@ -36,15 +36,15 @@
     html { scroll-behavior: smooth; }
     body { background: #0b0c0e; color: #eceae5; font-family: 'Instrument Sans', sans-serif; }
     h1, h2, h3 { font-family: 'JetBrains Mono', monospace; }
-    :focus-visible { outline: 2px solid #e3a84b; outline-offset: 3px; }
+    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
     .rule { height: 1px; background: #202329; }
-    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #e3a84b, transparent); }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
     .cmd { font-family: 'JetBrains Mono', monospace; }
     .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
     .logo-mark img { height: 26px; width: auto; }
     pre { background: #101216; border: 1px solid #202329; border-radius: 6px; padding: 1rem; overflow-x: auto; }
     pre code { font-family: 'JetBrains Mono', monospace; font-size: .82rem; color: #eceae5; }
-    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #e3a84b; background: rgba(227,168,75,.08); padding: .12em .3em; border-radius: 2px; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #7223FF; background: rgba(114,35,255,.08); padding: .12em .3em; border-radius: 2px; }
     .copy-btn { border: 1px solid #202329; color: #8a9099; border-radius: 4px; padding: .3rem .6rem; font-family: 'JetBrains Mono', monospace; font-size: .7rem; flex: none; }
     .copy-btn:hover { color: #eceae5; border-color: #8a9099; }
     .copy-btn[data-state="done"] { color: #7fa86f; border-color: #7fa86f; }
@@ -106,13 +106,13 @@
     <div class="grid lg:grid-cols-12 gap-10 lg:gap-14 items-start">
       <div class="lg:col-span-5">
         <p class="cmd text-xs text-brand tracking-wide">DURABLE AGENT RUNTIME · MIT · 19 CRATES</p>
-        <h1 class="cmd font-bold text-chalk text-4xl md:text-5xl leading-[1.12] tracking-tight mt-4">
+        <h1 class="cmd font-bold text-chalk text-3xl sm:text-4xl md:text-5xl leading-[1.12] tracking-tight mt-4">
           The model<br>is not<br>the runtime.
         </h1>
         <p class="text-ash mt-6 text-[1.05rem] leading-relaxed max-w-md">
-          Pantheon owns run state, capability policy, execution, and recovery.
-          Swap the model whenever you like — the agent, its memory, and its
-          history stay exactly where they were.
+          Models come and go. Pantheon is what remains: the runtime that owns
+          your agent's state, enforces its permissions, and records everything
+          it does. Swap the model — keep the agent.
         </p>
         <div class="mt-8 border border-rule rounded-md bg-panel p-3 flex items-start gap-3">
           <code class="cmd text-[.78rem] text-chalk break-all flex-1 leading-relaxed" id="install-cmd">curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash</code>
@@ -128,12 +128,12 @@
         </div>
       </div>
       <div class="lg:col-span-7">
-        <div class="ledger reveal">
-          <div class="flex items-center justify-between gap-4 px-3 py-2 border-b border-rule">
-            <span class="cmd text-xs text-ash">sqlite3 ~/.pantheon/ledger.db</span>
-            <span class="cmd text-xs text-ash">run_1790413737088_9031</span>
+        <div class="ledger reveal overflow-x-auto">
+          <div class="flex items-center justify-between gap-4 px-3 py-2 border-b border-rule min-w-[420px]">
+            <span class="cmd text-xs text-ash whitespace-nowrap">sqlite3 ~/.pantheon/ledger.db</span>
+            <span class="cmd text-xs text-ash whitespace-nowrap">run_1790413737088_9031</span>
           </div>
-          <table class="ledger w-full">
+          <table class="ledger w-full min-w-[420px]">
             <thead>
               <tr><th class="w-14">seq</th><th class="w-40">event</th><th>event_json</th></tr>
             </thead>
@@ -158,12 +158,12 @@
 
   <!-- Quickstart -->
   <section class="max-w-6xl mx-auto px-5 md:px-8 py-16 md:py-20">
-    <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">Running in three commands</h2>
+    <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">Three commands to a working agent</h2>
     <div class="grid md:grid-cols-3 gap-6 mt-10">
       <div class="card reveal">
         <p class="cmd text-brand text-sm">01</p>
         <h3 class="cmd text-chalk mt-2">Install</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">One script. Binary lands in <code>~/.local/bin</code>, data in <code>~/.pantheon</code>. Verified before it finishes.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed">One script, no toolchain. The binary lands in <code>~/.local/bin</code>, data in <code>~/.pantheon</code> — verified before the installer exits.</p>
       </div>
       <div class="card reveal">
         <p class="cmd text-brand text-sm">02</p>
@@ -178,7 +178,7 @@
         <h3 class="cmd text-chalk mt-2">Work</h3>
         <pre class="mt-3"><code>export OPENAI_API_KEY=sk-...
 pantheon</code></pre>
-        <p class="text-ash text-sm mt-3 leading-relaxed">Talk to it. Leave. Come back — the work remains.</p>
+        <p class="text-ash text-sm mt-3 leading-relaxed">Start a session, walk away, come back tomorrow. Runs, memory, history — exactly where you left them.</p>
       </div>
     </div>
   </section>
@@ -194,27 +194,27 @@ pantheon</code></pre>
     <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6 mt-10">
       <a href="product.html#authority" class="card reveal block">
         <h3 class="cmd text-chalk">Runtime authority</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">The model requests; the runtime decides. Capabilities, policy, and approvals are enforced in code — never in prompts.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed">The model proposes; the runtime disposes. Capability checks, policy, and approvals are enforced in Rust — not suggested in a system prompt.</p>
       </a>
       <a href="product.html#ledger" class="card reveal block">
         <h3 class="cmd text-chalk">Event-sourced ledger</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">Every turn, tool call, and approval is a SQLite row. Inspect it, replay it, audit it — offline.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed">Every turn, tool call, and approval lands as a typed row in SQLite. Query it, replay it, hand it to an auditor. No network required.</p>
       </a>
       <a href="product.html#recovery" class="card reveal block">
         <h3 class="cmd text-chalk">Crash recovery</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">Kill the process mid-run. The next turn resumes from committed state — finished calls skipped, interrupted ones re-driven.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed"><code>kill -9</code> the process mid-run. The next turn resumes from committed state — finished calls skipped, interrupted ones re-executed. Nothing lost, nothing run twice.</p>
       </a>
       <a href="product.html#approvals" class="card reveal block">
         <h3 class="cmd text-chalk">Durable approvals</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">Gated calls park the run safely. Answer inline, or out of band from another terminal, script, or chat app.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed">A gated tool call parks the run instead of blocking it. Approve from the terminal, a script, or a chat button — the decision is a ledger entry either way.</p>
       </a>
       <a href="product.html#memory" class="card reveal block">
         <h3 class="cmd text-chalk">Memory with trust</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">Layered, provenance-tracked memory behind a policy gate. The model can never promote its own guess.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed">Five memory layers, provenance on every record. The model can propose memories; only you — or your policy — can promote them.</p>
       </a>
       <a href="product.html#surfaces" class="card reveal block">
         <h3 class="cmd text-chalk">Every surface</h3>
-        <p class="text-ash text-sm mt-2 leading-relaxed">Terminal, local web, Discord, Telegram — one agent, one history, whichever screen is nearest.</p>
+        <p class="text-ash text-sm mt-2 leading-relaxed">Terminal, web, Discord, Telegram — one agent, one ledger, whichever screen is closest.</p>
       </a>
     </div>
   </section>
@@ -225,10 +225,10 @@ pantheon</code></pre>
   <section class="max-w-6xl mx-auto px-5 md:px-8 py-16 md:py-20">
     <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">Meets you where you are</h2>
     <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6 mt-10 text-sm">
-      <div class="card reveal"><h3 class="cmd text-chalk">terminal</h3><p class="cmd text-xs text-ash mt-1">pantheon</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Full session: history, approvals inline, model switching mid-conversation.</p></div>
-      <div class="card reveal"><h3 class="cmd text-chalk">scripts</h3><p class="cmd text-xs text-ash mt-1">pantheon run</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">One-shot turns for CI and automation, delivered here or to a channel.</p></div>
-      <div class="card reveal"><h3 class="cmd text-chalk">local web</h3><p class="cmd text-xs text-ash mt-1">pantheon serve</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">AG-UI client over the same runtime and ledger stream.</p></div>
-      <div class="card reveal"><h3 class="cmd text-chalk">messaging</h3><p class="cmd text-xs text-ash mt-1">pantheon gateway</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Discord and Telegram behind a required pairing allowlist.</p></div>
+      <div class="card reveal"><h3 class="cmd text-chalk">terminal</h3><p class="cmd text-xs text-ash mt-1">pantheon</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">The full session: history, inline approvals, model switching mid-conversation.</p></div>
+      <div class="card reveal"><h3 class="cmd text-chalk">scripts</h3><p class="cmd text-xs text-ash mt-1">pantheon run</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Single turns for CI and cron. Output here, or delivered to a channel.</p></div>
+      <div class="card reveal"><h3 class="cmd text-chalk">local web</h3><p class="cmd text-xs text-ash mt-1">pantheon serve</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">A local web client on the same runtime and ledger. Your data never leaves the machine.</p></div>
+      <div class="card reveal"><h3 class="cmd text-chalk">messaging</h3><p class="cmd text-xs text-ash mt-1">pantheon gateway</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Discord and Telegram, gated by a pairing allowlist you control.</p></div>
     </div>
   </section>
 
@@ -238,11 +238,11 @@ pantheon</code></pre>
   <section class="max-w-6xl mx-auto px-5 md:px-8 py-16 md:py-20">
     <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">Questions</h2>
     <div class="mt-8 max-w-3xl space-y-3">
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Do I need Rust, Node, or Docker to install?</summary><p class="text-ash text-sm mt-3 leading-relaxed">No. The installer downloads a prebuilt binary and needs only <code>curl</code> and <code>tar</code>. Rust is only required to build from source; SQLite is bundled, so there is no database to run.</p></details>
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Which models does it work with?</summary><p class="text-ash text-sm mt-3 leading-relaxed">Any OpenAI-compatible endpoint or Anthropic, plus custom URLs via <code>pantheon provider add</code>. The agent never picks models — the runtime resolves a default, a failure-only fallback chain, and per-job helpers. See <a href="providers.html" class="underline decoration-brand underline-offset-4">Providers</a>.</p></details>
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Where does my data live?</summary><p class="text-ash text-sm mt-3 leading-relaxed">On your machine: <code>~/.pantheon</code> (or <code>$PANTHEON_DATA_DIR</code>) holds the config, key store, ledger, and memory. No hosted control plane, no account, nothing phones home.</p></details>
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> What happens when a tool call needs permission?</summary><p class="text-ash text-sm mt-3 leading-relaxed">The run parks durably and asks — inline in the session, or via <code>pantheon run --grant/--deny</code> from anywhere, including chat buttons. Denials become transcript text, not crashes.</p></details>
-      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> How do I update?</summary><p class="text-ash text-sm mt-3 leading-relaxed"><code>pantheon update</code> fetches the latest GitHub release for your platform and swaps the binary, keeping a backup. <code>--check</code> reports without changing anything.</p></details>
+      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Do I need Rust, Node, or Docker to install?</summary><p class="text-ash text-sm mt-3 leading-relaxed">No. The installer fetches a prebuilt binary and needs only <code>curl</code> and <code>tar</code>. Rust is only for building from source; SQLite is bundled, so there's no database to install or run.</p></details>
+      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Which models does it work with?</summary><p class="text-ash text-sm mt-3 leading-relaxed">Any OpenAI-compatible endpoint or Anthropic — plus custom URLs via <code>pantheon provider add</code>. The agent never chooses its own model: the runtime resolves a default, a failure-only fallback chain, and per-job helpers. See <a href="providers.html" class="underline decoration-brand underline-offset-4">Providers</a>.</p></details>
+      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> Where does my data live?</summary><p class="text-ash text-sm mt-3 leading-relaxed">On your machine, full stop: <code>~/.pantheon</code> (or <code>$PANTHEON_DATA_DIR</code>) holds the config, key store, ledger, and memory. There is no hosted control plane, no account, nothing phoning home.</p></details>
+      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> What happens when a tool call needs permission?</summary><p class="text-ash text-sm mt-3 leading-relaxed">The run parks — durably, not blocked — and asks. Answer inline in the session, or from anywhere with <code>pantheon run --grant/--deny</code>, including chat buttons. A denial becomes transcript text, not a crash.</p></details>
+      <details class="card reveal"><summary class="cmd text-sm text-chalk"><span class="chevron">▸</span> How do I update?</summary><p class="text-ash text-sm mt-3 leading-relaxed"><code>pantheon update</code> fetches the latest GitHub release for your platform and swaps the binary, keeping a backup of the old one. <code>--check</code> reports what's available without changing anything.</p></details>
     </div>
   </section>
 
