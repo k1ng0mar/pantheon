@@ -119,7 +119,7 @@ pub fn put(app: &App, req: &Request) -> Response {
             "added": added,
             "changed": changed,
             "deleted": deletes,
-            "note": "key names only — values are write-only. resubmit with confirm=true to apply",
+            "note": "key names only. Values are write-only. Resubmit with confirm=true to apply",
         }));
     }
     if let Err(e) = apply_dotenv_batch(&app.data_dir, &upserts, &deletes) {

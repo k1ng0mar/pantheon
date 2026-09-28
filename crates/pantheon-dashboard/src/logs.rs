@@ -189,7 +189,7 @@ pub fn tail(app: &App, req: &Request) -> Response {
     if !path.exists() {
         return json_ok(serde_json::json!({
             "source": source, "lines": [],
-            "note": "log file not created yet — it appears on the first turn or warning",
+            "note": "log file not created yet. It appears on the first turn or warning",
         }));
     }
     match tail_lines(&path, &filter, tail_n) {
