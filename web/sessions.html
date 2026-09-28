@@ -17,7 +17,7 @@
       theme: {
         extend: {
           colors: {
-            bg: '#0d0d0d', fg: '#e8e6e1', muted: '#71717a', accent: '#7027c5',
+            bg: '#0d0d0d', fg: '#e8e6e1', muted: '#71717a', accent: '#7223FF', accentdark: '#4B00CD',
             card: '#1c1c1e', border: '#2e2e30',
           },
           fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Inter', 'sans-serif'] }
@@ -29,8 +29,8 @@
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
     body { background: #0d0d0d; color: #e8e6e1; font-family: 'Inter', sans-serif; }
-    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7027c5, transparent); }
-    .radial-core { background: radial-gradient(ellipse at center, rgba(112,39,197,0.06) 0%, transparent 70%); }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
+    .radial-core { background: radial-gradient(ellipse at center, rgba(114,35,255,0.06) 0%, transparent 70%); }
     .logo-mark { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
     .logo-mark img { height: 32px; width: auto; }
     .logo-mark-sm { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; }
@@ -38,30 +38,33 @@
     @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
     pre { background: #1c1c1e; border: 1px solid #2e2e30; border-radius: 8px; padding: 1rem; overflow-x: auto; }
     pre code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #e8e6e1; }
-    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: #7027c5; background: rgba(112,39,197,0.1); padding: 0.15em 0.3em; border-radius: 3px; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; color: #7223FF; background: rgba(114,35,255,0.1); padding: 0.15em 0.3em; border-radius: 3px; }
     h1, h2, h3, h4 { font-family: 'JetBrains Mono', monospace; }
     table { border-collapse: collapse; width: 100%; }
     th, td { border: 1px solid #2e2e30; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.85rem; }
     th { font-family: 'JetBrains Mono', monospace; color: #71717a; font-weight: 500; }
-    tr:hover td { background: rgba(112,39,197,0.05); }
-    blockquote { border-left: 2px solid #7027c5; padding-left: 1rem; margin: 1rem 0; color: #e8e6e1; font-style: italic; }
-    p a, li a, td a { color: #e8e6e1; text-decoration: underline; text-decoration-color: #7027c5; text-underline-offset: 3px; }
+    tr:hover td { background: rgba(114,35,255,0.05); }
+    blockquote { border-left: 2px solid #7223FF; padding-left: 1rem; margin: 1rem 0; color: #e8e6e1; font-style: italic; }
+    p a, li a, td a { color: #e8e6e1; text-decoration: underline; text-decoration-color: #7223FF; text-underline-offset: 3px; }
     details { cursor: pointer; }
     details summary { list-style: none; }
     details summary::-webkit-details-marker { display: none; }
     details[open] summary .chevron { transform: rotate(90deg); }
     .chevron { display: inline-block; transition: transform 0.15s; }
+    @media (max-width: 640px) {
+      table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    }
   </style>
 </head>
 <body class="antialiased">
 
   <nav class="fixed top-0 left-0 right-0 z-50 bg-bg/80 backdrop-blur border-b border-border">
-    <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+    <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between gap-6">
       <a href="index.html" class="flex items-center gap-3">
         <div class="logo-mark"><img src="logo.svg" alt="Pantheon" width="32" height="32"></div>
         <span class="font-mono font-bold text-fg text-lg tracking-tight">pantheon</span>
       </a>
-      <div class="flex items-center gap-6 text-sm">
+      <div class="hidden md:flex items-center gap-6 text-sm">
         <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
         <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
         <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
@@ -69,6 +72,15 @@
         <a href="terminal.html" class="text-muted hover:text-fg transition-colors">Terminal</a>
         <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
       </div>
+      <button type="button" id="menu-btn" class="md:hidden text-muted hover:text-fg font-mono text-sm px-2 py-1" aria-expanded="false" aria-controls="menu">menu</button>
+    </div>
+    <div id="menu" class="hidden md:hidden border-t border-border px-6 py-4 flex-col gap-4 text-sm">
+      <a href="index.html" class="text-muted hover:text-fg transition-colors">Home</a>
+      <a href="product.html" class="text-muted hover:text-fg transition-colors">Product</a>
+      <a href="install.html" class="text-muted hover:text-fg transition-colors">Install</a>
+      <a href="docs.html" class="text-muted hover:text-fg transition-colors">Docs</a>
+      <a href="terminal.html" class="text-muted hover:text-fg transition-colors">Terminal</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-muted hover:text-fg transition-colors">GitHub</a>
     </div>
   </nav>
 
@@ -142,6 +154,18 @@ pantheon logs [errors] [-f]   # process logs, including pre-run failures
       <p class="text-muted text-xs text-center">No hosted tier. No subscription. Your data stays on your machine.</p>
     </div>
   </footer>
+
+  <script>
+    var menuBtn = document.getElementById('menu-btn');
+    var menu = document.getElementById('menu');
+    if (menuBtn && menu) {
+      menuBtn.addEventListener('click', function () {
+        var isHidden = menu.classList.toggle('hidden');
+        menu.classList.toggle('flex', !isHidden);
+        menuBtn.setAttribute('aria-expanded', String(!isHidden));
+      });
+    }
+  </script>
 
 </body>
 </html>
