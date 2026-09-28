@@ -2,49 +2,7 @@
 use super::*;
 use tempfile::tempdir;
 
-fn write_plugin(dir: &Path, name: &str, runner: &str, caps: Vec<ToolCapability>) {
-    let p = dir.join(name);
-    std::fs::create_dir_all(&p).unwrap();
-    let manifest = PluginManifest {
-        name: name.to_string(),
-        description: "test".into(),
-        version: "0.1.0".into(),
-        sha: None,
-        maintainer: "".into(),
-        capabilities: caps,
-        env_vars: vec![],
-        runner: runner.into(),
-        enabled: false,
-    };
-    std::fs::write(
-        p.join("manifest.yaml"),
-        serde_yaml::to_string(&manifest).unwrap(),
-    )
-    .unwrap();
-    if !runner.is_empty() {
-        std::fs::write(p.join(runner), "#!/bin/sh\necho hi\n").unwrap();
-    }
-}
-
 // ---- manifest runner path traversal regression tests ----
-
-fn plugin_with_runner(root: &Path, runner: &str) -> DiscoveredPlugin {
-    DiscoveredPlugin {
-        manifest: PluginManifest {
-            name: "t".into(),
-            description: String::new(),
-            version: "0.1.0".into(),
-            sha: None,
-            maintainer: String::new(),
-            capabilities: vec![],
-            env_vars: vec![],
-            runner: runner.into(),
-            enabled: false,
-        },
-        location: PluginLocation::User,
-        root: root.to_path_buf(),
-    }
-}
 
 #[test]
 fn plugin_install_dir_rejects_bad_name() {

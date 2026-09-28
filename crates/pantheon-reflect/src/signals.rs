@@ -237,10 +237,9 @@ fn words(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn thresholds_sane() {
-        assert!(MIN_SEQUENCE_REPEATS >= 2);
-        assert!(MIN_SEQUENCE_LEN >= 2);
-        assert!(MIN_FAILURE_REPEATS >= 2);
-    }
+    // Thresholds are compile-time configuration: assert them at compile
+    // time rather than in a test so a bad value fails the build.
+    const _: () = assert!(MIN_SEQUENCE_REPEATS >= 2);
+    const _: () = assert!(MIN_SEQUENCE_LEN >= 2);
+    const _: () = assert!(MIN_FAILURE_REPEATS >= 2);
 }

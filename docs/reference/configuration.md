@@ -1,78 +1,90 @@
 # Configuration
 
-`config.toml` in the data dir is the single source of truth for persistent configuration. Setup writes it, the runtime reads it, every verb uses it. Secrets are never in it, config names env vars, the runtime resolves them at the execution boundary.
+`config.toml` lives in your data directory (`~/.pantheon` by default). `pantheon setup` writes it; everything reads it. One rule: **secrets never go in this file.** The config names environment variables; Pantheon reads the actual values from the environment when it needs them.
 
-## Model
+## Which AI to use
 
 ```toml
 [model]
 provider    = "openai"
 model       = "gpt-4o-mini"
-api_key_env = "OPENAI_API_KEY"   # name only, never the key
-reasoning   = "high"             # optional: off|minimal|low|medium|high|xhigh|max
+api_key_env = "OPENAI_API_KEY"   # the NAME of the env var, never the key itself
+reasoning   = "high"             # optional: how hard it thinks (off|minimal|low|medium|high|xhigh|max)
+```
 
+Environment variables that override this section: `PANTHEON_PROVIDER`, `PANTHEON_MODEL`, `PANTHEON_REASONING`, `PANTHEON_REASONING_BUDGET`.
+
+Backups, tried in order when the main model fails:
+
+```toml
 [[model.fallbacks]]
 provider = "anthropic"
 model    = "claude-sonnet-4-5"
 ```
 
-Env overrides: `PANTHEON_PROVIDER`, `PANTHEON_MODEL`, `PANTHEON_REASONING`, `PANTHEON_REASONING_BUDGET`. Fallbacks are ordered, failure-only, runtime-controlled. Reasoning maps per wire mode (`reasoning_effort`, including `minimal` and `xhigh`, on OpenAI; thinking budget on Anthropic: 1k/4k/10k/20k/32k for minimal/low/medium/high/xhigh, `max` fills the window). An exact `reasoning_budget` overrides the mapping on budget wires (`0` disables); aux turns always run without it. Unknown spellings resolve to off and `doctor` flags them.
+The `reasoning` setting is translated per provider (thinking budget on Anthropic, reasoning effort on OpenAI). An exact `reasoning_budget` number overrides the translation; `0` turns it off. Unknown spellings are treated as off, and `doctor` flags them.
 
-## Auxiliaries
+## Helper models
 
-One `[judge]`, `[compression]`, `[title_gen]`, `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]`, `[mcp_synthesis]`, `[extraction]`, `[rerank]`, `[planner]` section each, same shape (`provider`, `model`, optional `api_key_env`). Absent means `auto`, the run's default model, except `[embeddings]`, which falls back to a local embedder. Env overrides: `PANTHEON_<AUX>_PROVIDER` / `PANTHEON_<AUX>_MODEL` (e.g. `PANTHEON_RERANK_MODEL`). `[extraction]`, `[rerank]`, and `[planner]` have no call sites yet, they exist so you can pin a cheap model ahead of those workloads landing.
+Small models for specific background jobs. Each section has the same shape: `provider`, `model`, optional `api_key_env`. Available sections: `[judge]`, `[compression]`, `[title_gen]`, `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]`, `[mcp_synthesis]`, `[extraction]`, `[rerank]`, `[planner]`.
 
-## Reflection
+Leave one out and it uses your main model. `[embeddings]` defaults to a local embedder instead. Environment overrides look like `PANTHEON_RERANK_MODEL`.
+
+Note: `[extraction]`, `[rerank]`, and `[planner]` have no features using them yet. They exist so you can pin cheap models ahead of time.
+
+## Self-improvement
 
 ```toml
 [reflect]
-enabled       = false   # LLM-backed reflection steps need explicit opt-in
-auto_turns    = 20      # automatic pass every N completed turns (0 = off)
-max_proposals = 5       # proposal cap per pass
-# provider    = "openai"   # optional: pin the reflection aux model (auto = default)
+enabled       = false   # opt in explicitly; off by default
+auto_turns    = 20      # automatic review every N finished conversations (0 = off)
+max_proposals = 5       # how many suggestions per review
+# provider    = "openai"   # optional: pin a cheap model for reviews
 # model       = "gpt-4o-mini"
 # api_key_env = "OPENAI_API_KEY"
 ```
 
-Reflection is Pantheon's ledger-native self-improvement loop: each pass reads structured ledger signals (repeated tool sequences, user corrections, denied approvals, repeated failures), generates proposals with provenance (memory lessons, skill proposals, persona notes), eval-gates skill/persona proposals against bounded evals, and holds them for approval. Memory lessons auto-apply at the `Memory` trust tier; everything else needs `/reflect`'s y/n card (or `pantheon reflect --approve <id>`). Every LLM call the pipeline makes resolves through the `Reflection` auxiliary slot, never the chat model, so pin a small model here to keep background self-improvement cheap.
+When enabled, Pantheon periodically reviews its own history, spots patterns (repeated mistakes, your corrections, denied permissions), and suggests improvements: lessons for memory, new skills, notes about its personality. Memory lessons apply automatically once confirmed; everything else waits for your yes or no (`/reflect`, or `pantheon reflect --approve <id>`). Reviews always use the pinned model, never your main chat model, so keep it cheap.
 
-- `/reflect`, manual one-shot pass (background); `/reflect on|off` toggles the loop (persisted here); `/reflect status` shows the toggle plus the last pass summary.
-- `pantheon reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]`
-- `pantheon schedule reflect --cron '0 2 * * *'`, nightly passes via the normal scheduler.
+Commands: `/reflect` (run one review now), `/reflect on|off` (toggle), `/reflect status`. From the shell: `pantheon reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]`. To run it nightly: `pantheon schedule reflect --cron '0 2 * * *'`.
 
-## Policy
+## Permissions
 
-`policy = "reader" | "coder" | "coder_memory"`. Tools declare the capability they need; the policy decides allow/deny/approve per operation. `coder_memory` adds the `MemoryWrite` capability.
+`policy = "reader" | "coder" | "coder_memory"`.
 
-## Budgets
+- `reader`: can look, cannot change anything.
+- `coder`: can read and write files, run commands.
+- `coder_memory`: like `coder`, plus it may write memories.
+
+Every tool says what permission it needs; the policy answers allow, deny, or ask you.
+
+## Limits
 
 ```toml
 [budget]
-max_turns          = 16      # agent turns per run
-max_tool_calls     = 32      # tool calls per run
-max_delegate_depth = 2       # how deep /swarm delegation may nest
-max_iterations     = 3       # pipeline iterations (pantheon pipeline)
-# max_tokens       = 50000   # per-run token cap, strictly optional, absent = uncapped
+max_turns          = 16      # back-and-forth exchanges per run
+max_tool_calls     = 32      # tool uses per run
+max_delegate_depth = 2       # how deep agents can delegate to other agents
+max_iterations     = 3       # pipeline iterations
+# max_tokens       = 50000   # optional cap on tokens per run; unset = no cap
 
 [goal]
-max_iterations     = 10      # turns allowed per /goal before the TUI stops and asks
+max_iterations     = 10      # exchanges allowed per /goal before it stops and asks
 ```
 
-Every key is optional; a `0` is treated as unset. These are the session defaults, `/set <key> <value>` retunes them live for the current session (`max_turns`, `max_tool_calls`, `max_delegate_depth`, `max_tokens`; `0` clears the token cap), and `/tokens [n|off]` manages the token cap on its own. There is no cost cap: cost is tracked for `pantheon stats` / `/stats` only.
+Every key is optional; `0` counts as unset. These are the defaults for a session. `/set <key> <value>` changes them live for the current session, and `/tokens [n|off]` manages the token cap on its own. There is no spending cap: cost is tracked for statistics only.
 
-## Temporal awareness
+## Time awareness
 
 ```toml
 [temporal]
-enabled            = true    # master switch (default on, zero tokens, pure string injection)
-min_gap_secs       = 7200    # idle seconds before an elapsed-gap hint fires (0 = off)
-notify_date_change = true    # hint when the local date rolled over, even on a short gap
-# timezone         = "Africa/Lagos"  # IANA name; absent = system local timezone
+enabled            = true    # on by default, costs nothing
+min_gap_secs       = 7200    # remind the model after this much idle time (0 = off)
+notify_date_change = true    # mention when the date changed overnight
+# timezone         = "Africa/Lagos"  # IANA name; unset = your system timezone
 ```
 
-Tacit temporal awareness: the model notices when a conversation has meaningfully aged, without timestamping every message. Before a turn's first model call the pipeline reads the last assistant turn's timestamp from the durable ledger (restart-safe) and, when the gap matters, appends one coarse hint to the outgoing user message, for the API call only, never written to the ledger or transcript, and never on the system prompt (prompt caching unaffected). Wording is coarse and gets coarser with the gap: `about 40 minutes`, `about 5 hours`, `about a day`, `about 3 days`. A date rollover across a short gap yields `[temporal: the previous exchange was yesterday]`; multi-day gaps already imply the date change, so wordings never stack. The conversation's standing system preamble tells the model to factor such hints in and never quote them.
-
-`policy = "reader" | "coder" | "coder_memory"`. Tools declare the capability they need; the policy decides allow/deny/approve per operation. `coder_memory` adds the `MemoryWrite` capability.
+Pantheon quietly notices when a conversation has aged, and tells the model something like "about 5 hours" or "the previous exchange was yesterday". This hint is never saved into the conversation history; it just helps the model not act like no time passed. The wording stays coarse on purpose.
 
 ## Memory
 
@@ -81,7 +93,7 @@ Tacit temporal awareness: the model notices when a conversation has meaningfully
 backend = "native"
 ```
 
-Backend selection is mirrored in `memory-backend.toml`. See [Memory](../user-guide/memory.md).
+Which memory store to use. See [Memory](../user-guide/memory.md).
 
 ## Secrets
 
@@ -91,29 +103,29 @@ env_allowlist = ["MY_API_KEY", "PANTHEON_*"]
 plugin_env_allowlist = ["MY_PLUGIN_TOKEN"]
 ```
 
-The run's secrets-boundary policy. Both lists are empty by default (fail closed):
+Which environment variables the assistant is allowed to read, and which ones plugins may see. Both lists are empty by default, meaning nothing is shared unless you say so:
 
-- `env_allowlist`: env vars readable through the `env:` secret-name form. Entries are exact names or `PREFIX_*` wildcards; `"*"` alone allows all (explicit opt-out). Without an entry, `env:` lookups resolve nothing, secrets must come from `PANTHEON_SECRET_*` or a durable vault, so a name like `env:AWS_SECRET_ACCESS_KEY` can never exfiltrate an arbitrary host variable.
-- `plugin_env_allowlist`: manifest-declared env vars the plugin supervisor may copy from the host into plugin subprocesses (same entry syntax). A project-controlled manifest can declare any name it likes, so a declared name alone never crosses the boundary, only an entry here lets a host var reach plugin code. Extension (Python/JS) hook subprocesses always run with a cleared environment (PATH only) regardless of this list.
+- `env_allowlist`: variables readable through the `env:` name form. Entries are exact names or `PREFIX_*` wildcards; `"*"` alone allows everything (an explicit opt-out of the protection).
+- `plugin_env_allowlist`: variables that may be passed into plugin code. A plugin asking for a variable by name is never enough on its own; it must also be listed here.
 
 ## Agents
 
 ```toml
-profile = "default"   # informational label only; does NOT select an agent
+profile = "default"   # just a label; does NOT pick the agent
 
 [agents.default]
 display_name = "Default"
-agents_file  = "agents/default/AGENTS.md"
-soul_file    = "agents/default/SOUL.md"
+agents_file  = "agents/default/AGENTS.md"   # its instructions
+soul_file    = "agents/default/SOUL.md"     # its personality
 policy       = "coder_memory"
 
 [agents.zeus]
-inherits     = "default"
+inherits     = "default"                    # copies default's settings, then overrides
 display_name = "Zeus"
 soul_file    = "agents/zeus/SOUL.md"
 ```
 
-`agent = "zeus"` selects the profile this install runs as (must name a declared table). No `[agents]` table means anonymous runs. See [Agents](../user-guide/agents.md).
+`agent = "zeus"` picks which agent this install runs as (it must name a table above). No `[agents]` table means anonymous runs. See [Agents](../user-guide/agents.md).
 
 ## Custom providers
 
@@ -124,7 +136,7 @@ api_mode = "openai"          # or "anthropic"
 key_env  = "PANTHEON_KEY_MY_LLM"
 ```
 
-Written by `pantheon provider add` / `pantheon model`. `models` sub-rows hold only model ids you named by hand.
+Written for you by `pantheon provider add` / `pantheon model`. Only model names you typed by hand are kept here.
 
 ## Server and speech
 
@@ -134,26 +146,26 @@ port = 18789
 host = "127.0.0.1"
 ```
 
-`[stt]` / `[tts]` select speech backends (`command` with `cmd`, or `openai` with `provider`).
+`[stt]` / `[tts]` pick speech-to-text and text-to-speech backends (`command` with a `cmd`, or `openai` with a `provider`).
 
 ## Gateway
 
-Tokens live in `<data_dir>/.env`, never in config: `PANTHEON_DISCORD_TOKEN`, `PANTHEON_TELEGRAM_BOT_TOKEN`, plus required `PANTHEON_GATEWAY_ALLOW`. See [Channels](../user-guide/channels.md).
+Chat app tokens live in `<data_dir>/.env`, never in this file: `PANTHEON_DISCORD_TOKEN`, `PANTHEON_TELEGRAM_BOT_TOKEN`, plus the required `PANTHEON_GATEWAY_ALLOW` (who may talk to it). See [Channels](../user-guide/channels.md).
 
 ## Data directory
 
-`$PANTHEON_DATA_DIR` or `~/.pantheon/`:
+`$PANTHEON_DATA_DIR` or `~/.pantheon/`. Everything lives here, so backing up this folder backs up everything:
 
 | Path | What it is |
 |---|---|
-| `config.toml` | This file (setup writes it, doctor validates it) |
-| `.env` | Key store (`pantheon model` writes, imports merge here), `0600` |
-| `ledger.db` | Event ledger, operations, leases, artifacts |
-| `memory.db` | Five-layer memory store |
-| `memory-backend.toml` | Selected memory backend |
-| `extensions/` | Loaded plugins |
+| `config.toml` | This file (setup writes it, doctor checks it) |
+| `.env` | Your keys (`pantheon model` writes here), readable only by you |
+| `ledger.db` | The record of everything that happened |
+| `memory.db` | What it remembers |
+| `memory-backend.toml` | Chosen memory backend |
+| `extensions/` | Installed plugins |
 | `skills/` | Imported skills |
-| `agents/` | Agent identity files (`AGENTS.md`, `SOUL.md`) |
-| `gateway/` | Channel cursors and outbox |
+| `agents/` | Agent personality files (`AGENTS.md`, `SOUL.md`) |
+| `gateway/` | Chat app state and outgoing messages |
 | `logs/` | `agent.log`, `errors.log`, `gateway.log` |
-| `safewrite/` | File-edit checkpoints and write journal |
+| `safewrite/` | File-edit checkpoints, for undoing changes |

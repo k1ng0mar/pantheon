@@ -1,6 +1,5 @@
 //! Tests for `pantheon_exec::memory_tools::tests` — sibling file so sources stay test-free.
 use super::*;
-use pantheon_memory::MemoryStore;
 
 fn writer_policy() -> pantheon_api::capability::Policy {
     use pantheon_api::capability::Capability as C;
@@ -10,40 +9,6 @@ fn writer_policy() -> pantheon_api::capability::Policy {
     pantheon_api::capability::Policy::coder()
         .allow(C::MemoryWrite)
         .allow(C::MemoryConfirm)
-}
-
-fn read_policy() -> pantheon_api::capability::Policy {
-    pantheon_api::capability::Policy::coder()
-}
-
-fn fresh(name: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "pantheon-memtools-{}-{}-{}",
-        name,
-        std::process::id(),
-        n
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn opts_with(policy: pantheon_api::capability::Policy) -> (MemoryToolOptions, VecMemorySink) {
-    let dir = fresh("opt");
-    let store = Arc::new(MemoryStore::open(&dir.join("memory.db")).unwrap());
-    let sink = VecMemorySink::new();
-    let opts = MemoryToolOptions {
-        store,
-        policy: Arc::new(policy),
-        namespace: "nyx".into(),
-        max_bytes: 4096,
-        sink: Arc::new(sink.clone()),
-        backend_label: "native".into(),
-    };
-    (opts, sink)
 }
 
 fn build_registry(opts: MemoryToolOptions) -> ToolRegistry {

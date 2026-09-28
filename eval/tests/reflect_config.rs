@@ -42,31 +42,32 @@ fn absent_sections_resolve_to_run_default() {
 
 #[test]
 fn section_pins_override_default() {
-    let mut cfg = Config::default();
-    cfg.reflect = Some(ReflectSection {
+    let cfg = Config {
+        reflect: Some(ReflectSection {
         enabled: true,
         auto_turns: 20,
         max_proposals: 5,
         provider: Some("aux-provider".into()),
         model: Some("aux-model".into()),
         api_key_env: None,
-    });
-    cfg.extraction = Some(AuxSection {
+    }),
+    extraction: Some(AuxSection {
         provider: "ex-provider".into(),
         model: "ex-model".into(),
         api_key_env: None,
-    });
-    cfg.rerank = Some(AuxSection {
+    }),
+    rerank: Some(AuxSection {
         provider: "rr-provider".into(),
         model: "rr-model".into(),
         api_key_env: None,
-    });
-    cfg.planner = Some(AuxSection {
+    }),
+    planner: Some(AuxSection {
         provider: "pl-provider".into(),
         model: "pl-model".into(),
         api_key_env: None,
-    });
-
+    }),
+    ..Default::default()
+};
     let aux = config::auxiliaries(Some(&cfg), &default_model());
     let cases = [
         (AuxiliaryKind::Reflection, "aux-provider", "aux-model"),
@@ -88,15 +89,17 @@ fn env_override_beats_section_pin() {
         std::env::set_var("PANTHEON_REFLECTION_PROVIDER", "env-provider");
         std::env::set_var("PANTHEON_REFLECTION_MODEL", "env-model");
     }
-    let mut cfg = Config::default();
-    cfg.reflect = Some(ReflectSection {
-        enabled: true,
-        auto_turns: 20,
-        max_proposals: 5,
-        provider: Some("cfg-provider".into()),
-        model: Some("cfg-model".into()),
-        api_key_env: None,
-    });
+    let cfg = Config {
+        reflect: Some(ReflectSection {
+            enabled: true,
+            auto_turns: 20,
+            max_proposals: 5,
+            provider: Some("cfg-provider".into()),
+            model: Some("cfg-model".into()),
+            api_key_env: None,
+        }),
+        ..Default::default()
+    };
 
     let aux = config::auxiliaries(Some(&cfg), &default_model());
     let m = find(&aux, &AuxiliaryKind::Reflection);

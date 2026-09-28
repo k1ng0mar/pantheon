@@ -10,8 +10,11 @@ use serde_json::json;
 
 struct RecordingSink {
     messages: Mutex<Vec<(String, String)>>,
-    approvals: Mutex<Vec<(String, Option<String>, String, bool)>>,
+    approvals: Mutex<Vec<ApprovalEvent>>,
 }
+
+/// One recorded approval event: (thread, run_id, scope, granted).
+type ApprovalEvent = (String, Option<String>, String, bool);
 impl EventSink for RecordingSink {
     fn on_message(&self, thread: &str, _sender: Option<&str>, text: &str) {
         self.messages

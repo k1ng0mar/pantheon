@@ -72,7 +72,7 @@ fn day_label(ts_ms: i64) -> String {
 
 /// `GET /api/stats?days=30`: usage report for the trailing window.
 pub fn stats(app: &App, req: &Request) -> Response {
-    let days = query_usize(&req.query, "days", 30).min(365).max(1) as i64;
+    let days = query_usize(&req.query, "days", 30).clamp(1, 365) as i64;
     let to_ms = now_ms();
     let from_ms = to_ms - days * DAY_MS;
     let ledger = match Ledger::open(&app.data_dir.join("ledger.db")) {

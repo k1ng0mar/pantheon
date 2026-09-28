@@ -20,9 +20,8 @@
       theme: {
         extend: {
           colors: {
-            ink: '#0b0c0e', panel: '#111316', rule: '#1e2024',
-            chalk: '#f2f1ee', ash: '#9a9aa3',
-            brand: '#7223FF', branddark: '#5e1fe8'
+            paper: '#fafaf9', ink: '#141417', grey: '#6f6f76', line: '#e9e6e1',
+            codebg: '#f1efeb', brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
             mono: ['JetBrains Mono', 'monospace'],
@@ -35,26 +34,27 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #0b0c0e; color: #f2f1ee; font-family: 'Alpino', sans-serif; font-size: 16px; line-height: 1.65; }
-    :focus-visible { outline: 2px solid #a379ff; outline-offset: 3px; }
-    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
+    body { background: #fafaf9; color: #141417; font-family: 'Alpino', sans-serif; font-size: 1.0625rem; line-height: 1.7; }
+    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
+    .hairline { height: 1px; background: #e9e6e1; }
     .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
     .logo-mark img { height: 26px; width: auto; }
     /* Doc content type scale: h1 30 / h2 22 / h3 20 / body 16 (each step >= 1.25x) */
-    .doc h1 { font-size: 1.875rem; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
+    .doc h1 { font-family: 'Array', sans-serif; font-size: 1.875rem; font-weight: 600; line-height: 1.2; letter-spacing: -0.02em; }
     .doc h2 { font-size: 1.375rem; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
     .doc h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.3; }
-    .doc p, .doc li { color: #c9c9cf; }
-    .doc h1, .doc h2, .doc h3 { color: #f2f1ee; }
-    .doc pre { background: #111316; border: 1px solid #1e2024; border-radius: 8px; padding: 1.25rem; overflow-x: auto; margin: 1.5rem 0; }
-    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #f2f1ee; background: none; padding: 0; }
-    .doc code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #b18cff; }
+    .doc p, .doc li { color: #3f3f46; }
+    .doc h1, .doc h2, .doc h3 { color: #141417; }
+    .doc strong { color: #141417; }
+    .doc pre { background: #f1efeb; border: 1px solid #e9e6e1; border-radius: 10px; padding: 1.25rem; overflow-x: auto; margin: 1.5rem 0; }
+    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #141417; background: none; padding: 0; }
+    .doc code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
     .doc table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }
-    .doc th, .doc td { border-bottom: 1px solid #1e2024; padding: .65rem .8rem; text-align: left; font-size: .9rem; vertical-align: top; }
-    .doc th { font-size: .75rem; font-weight: 600; color: #9a9aa3; text-transform: uppercase; letter-spacing: .04em; }
+    .doc th, .doc td { border-bottom: 1px solid #e9e6e1; padding: .65rem .8rem; text-align: left; font-size: .9rem; vertical-align: top; }
+    .doc th { font-size: .75rem; font-weight: 600; color: #6f6f76; text-transform: uppercase; letter-spacing: .04em; }
     .doc tr:hover td { background: rgba(114,35,255,.04); }
-    .doc blockquote { border-left: 2px solid #7223FF; padding-left: 1.25rem; margin: 1.5rem 0; color: #c9c9cf; }
-    .doc p a, .doc li a, .doc td a { color: #a379ff; text-decoration: underline; text-underline-offset: 3px; }
+    .doc blockquote { border-left: 2px solid #7223FF; padding-left: 1.25rem; margin: 1.5rem 0; color: #3f3f46; }
+    .doc p a, .doc li a, .doc td a { color: #7223FF; text-decoration: underline; text-underline-offset: 3px; }
     .doc ul { list-style: disc; padding-left: 1.5rem; }
     .doc ol { list-style: decimal; padding-left: 1.5rem; }
     @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
@@ -65,31 +65,29 @@
 </head>
 <body class="antialiased">
 
-  <nav class="sticky top-0 z-40 bg-ink/90 backdrop-blur border-b border-rule">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between gap-6">
-      <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
-        <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-        <span class="font-semibold text-chalk text-lg tracking-tight">pantheon</span>
-      </a>
-      <div class="hidden md:flex items-center gap-7 text-[15px]">
-        <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-        <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-        <a href="docs.html" class="text-chalk">Docs</a>
-        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
-      </div>
-      <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
-    </div>
-    <div id="menu" class="hidden md:hidden border-t border-rule px-5 py-4 flex-col gap-1 text-[15px]">
-      <a href="product.html" class="text-ash hover:text-chalk py-2.5 block">Product</a>
-      <a href="install.html" class="text-ash hover:text-chalk py-2.5 block">Install</a>
-      <a href="docs.html" class="text-chalk py-2.5 block">Docs</a>
-      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk py-2.5 block">GitHub</a>
-    </div>
-  </nav>
+  <header class="max-w-6xl mx-auto px-6 md:px-10 pt-8 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
+      <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+      <span class="font-semibold text-ink text-lg tracking-tight">pantheon</span>
+    </a>
+    <nav class="flex items-center gap-6 md:gap-8 text-[15px]" aria-label="Main">
+      <a href="product.html" class="hidden sm:inline text-grey hover:text-ink">Product</a>
+      <a href="install.html" class="hidden sm:inline text-grey hover:text-ink">Install</a>
+      <a href="docs.html" class="hidden sm:inline text-ink">Docs</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="hidden sm:inline text-grey hover:text-ink">GitHub</a>
+      <button type="button" id="menu-btn" class="sm:hidden text-grey hover:text-ink text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
+    </nav>
+  </header>
+  <div id="menu" class="hidden sm:hidden max-w-6xl mx-auto px-6 py-4 flex-col gap-1 text-[15px] border-b border-line">
+    <a href="product.html" class="text-grey hover:text-ink py-2.5 block">Product</a>
+    <a href="install.html" class="text-grey hover:text-ink py-2.5 block">Install</a>
+    <a href="docs.html" class="text-ink py-2.5 block">Docs</a>
+    <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink py-2.5 block">GitHub</a>
+  </div>
 
   <main class="doc max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 id="getting-started" class="text-3xl font-bold tracking-tight mb-2">Getting started</h1><div class="glow-line my-6"></div>
-<p class="my-3 leading-relaxed">Install Pantheon, point it at a model, start working.</p>
+<h1 id="getting-started" class="text-3xl font-bold tracking-tight mb-2">Getting started</h1><div class="hairline my-6"></div>
+<p class="my-3 leading-relaxed">Install Pantheon, tell it which AI to use, start talking.</p>
 <h2 id="install" class="text-xl font-bold tracking-tight mt-10 mb-3">Install</h2>
 <p class="my-3 leading-relaxed">Linux or macOS:</p>
 <pre><code>
@@ -99,57 +97,60 @@ curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh
 <pre><code>
 iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb | iex
 </code></pre>
-<p class="my-3 leading-relaxed">A prebuilt binary from GitHub Releases, linked into <code>~/.local/bin</code>. Needs only <code>curl</code> and <code>tar</code>. Re-running never overwrites your config. Pin a release with <code>PANTHEON_VERSION=v0.1.0</code>.</p>
-<p class="my-3 leading-relaxed">Prefer source? <code>git clone</code> + <code>cargo build --release</code> (Rust edition 2021). SQLite is bundled; nothing else to run.</p>
+<p class="my-3 leading-relaxed">That downloads the program and puts it in <code>~/.local/bin</code>. Running it again later never wipes your settings.</p>
+<p class="my-3 leading-relaxed">Want to build it yourself? Clone the repo and run <code>cargo build --release</code>. It needs Rust, nothing else.</p>
 <h2 id="set-up" class="text-xl font-bold tracking-tight mt-10 mb-3">Set up</h2>
 <pre><code>
 pantheon setup
 </code></pre>
-<p class="my-3 leading-relaxed">Answer five questions, profile, provider, model, API key location, policy, and you get <code>~/.pantheon/config.toml</code>. Scripted setups pass flags instead of answering:</p>
+<p class="my-3 leading-relaxed">It asks a few questions: which AI provider, which model, where your API key lives, and how strict you want permissions to be. That creates <code>~/.pantheon/config.toml</code>.</p>
+<p class="my-3 leading-relaxed">If you are scripting the install (CI, a fresh machine), you can answer the questions with flags instead:</p>
 <pre><code>
 pantheon setup --yes --provider openai --model gpt-4o-mini \
   --api-key-env OPENAI_API_KEY --policy coder
 </code></pre>
-<p class="my-3 leading-relaxed">Only the key&#x27;s *name* goes in the config; the value stays in your environment.</p>
-<h2 id="run-it" class="text-xl font-bold tracking-tight mt-10 mb-3">Run it</h2>
+<p class="my-3 leading-relaxed">Your API key itself is never stored in the config file. Only the *name* of the environment variable holding it. Set that variable before you run Pantheon:</p>
 <pre><code>
 export OPENAI_API_KEY=sk-...
+</code></pre>
+<h2 id="run-it" class="text-xl font-bold tracking-tight mt-10 mb-3">Run it</h2>
+<pre><code>
 pantheon
 </code></pre>
-<p class="my-3 leading-relaxed">Talk to it. Leave. Come back, the work remains, with its history. <code>/help</code> lists session commands.</p>
-<p class="my-3 leading-relaxed">No terminal? No session. For scripts and CI:</p>
+<p class="my-3 leading-relaxed">Talk to it. Close it. Come back tomorrow and it remembers. Type <code>/help</code> inside to see what it can do.</p>
+<p class="my-3 leading-relaxed">Want it to do one thing and exit, for scripts or automation?</p>
 <pre><code>
 pantheon run --taskID t1 --say &quot;summarize these logs&quot; --deliver session
 </code></pre>
-<h2 id="check-health" class="text-xl font-bold tracking-tight mt-10 mb-3">Check health</h2>
+<h2 id="check-that-it-works" class="text-xl font-bold tracking-tight mt-10 mb-3">Check that it works</h2>
 <pre><code>
 pantheon doctor
 </code></pre>
-<p class="my-3 leading-relaxed">Exit 0 means config, key, ledger, memory, and plugins are healthy. Anything else names its fix.</p>
+<p class="my-3 leading-relaxed">It checks your config, your API key, its files, and its memory. If something is wrong, it tells you how to fix it.</p>
 <h2 id="next-steps" class="text-xl font-bold tracking-tight mt-10 mb-3">Next steps</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><a href="sessions.html">Sessions</a>, the interface, approvals, inspecting runs</li>
-<li><a href="agents.html">Agents</a>, identities that persist</li>
-<li><a href="runs.html">Runs</a>, lifecycle, recovery, pipelines, scheduling</li>
-<li><a href="configuration.html">Configuration</a>, every <code>config.toml</code> field</li>
+<li><a href="sessions.html">Sessions</a>: the terminal app, permissions, looking back at conversations</li>
+<li><a href="agents.html">Agents</a>: assistants with their own name and memory</li>
+<li><a href="runs.html">Runs</a>: how work happens and survives crashes</li>
+<li><a href="configuration.html">Configuration</a>: every setting in <code>config.toml</code></li>
 </ul>
 </main>
 
-  <footer class="border-t border-rule mt-8">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 py-12">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+  <footer class="border-t border-line mt-8">
+    <div class="max-w-6xl mx-auto px-6 md:px-10 py-14">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-8">
         <div class="flex items-center gap-2.5">
           <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-          <span class="font-semibold text-chalk">pantheon</span>
+          <span class="font-semibold text-ink">pantheon</span>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
-          <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-          <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-          <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
+          <a href="product.html" class="text-grey hover:text-ink">Product</a>
+          <a href="install.html" class="text-grey hover:text-ink">Install</a>
+          <a href="docs.html" class="text-grey hover:text-ink">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink">GitHub</a>
         </div>
       </div>
-      <p class="text-ash text-sm mt-8">An AI assistant that remembers. MIT licensed.</p>
+      <p class="text-grey text-sm mt-10">An assistant that does everything. MIT licensed.</p>
     </div>
   </footer>
 

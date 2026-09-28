@@ -1,6 +1,6 @@
 # Providers
 
-Agents don't pick models. The runtime resolves a default, a failure-only fallback chain, and per-capability auxiliaries, swap anything without touching the agent.
+Your agent never picks its own model. You set a default, a backup list for when the first one fails, and optionally small specialist models for specific jobs. Swap any of them without touching the agent.
 
 ## Default model
 
@@ -9,12 +9,12 @@ Agents don't pick models. The runtime resolves a default, a failure-only fallbac
 provider    = "openai"
 model       = "gpt-4o-mini"
 api_key_env = "OPENAI_API_KEY"
-reasoning   = "high"   # optional: off|minimal|low|medium|high|xhigh|max (default off)
+reasoning   = "high"   # optional: off|minimal|low|medium|high|xhigh|max
 ```
 
-`pantheon model` picks from 39+ builtins and writes keys to `<data_dir>/.env` (config holds names, never values). `pantheon providers` lists the catalog. Switch mid-conversation with `/model <provider> <model>`, identity and context carry over.
+`pantheon model` shows the built-in catalog (39+ models) and saves keys into `<data_dir>/.env`. The config file holds names, never the keys themselves. `pantheon providers` lists everything available. Switch mid-conversation with `/model <provider> <model>`; your conversation and memory carry over.
 
-## Fallbacks and helpers
+## Backups and helpers
 
 ```toml
 [[model.fallbacks]]
@@ -22,24 +22,24 @@ provider = "anthropic"
 model    = "claude-sonnet-4-5"
 ```
 
-Fallbacks fire on failure only, in order, under runtime control. Helper slots (`[judge]`, `[compression]`, `[title_gen]`, `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]`, `[mcp_synthesis]`) pin small models per job; unconfigured means `auto`, the run's own model, except embeddings, which default to a local embedder.
+Backups kick in only when the main model fails, in order. You can also pin small models for specific jobs (`[judge]`, `[compression]`, `[title_gen]`, `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]`, `[mcp_synthesis]`). Leave one unset and it just uses the main model, except embeddings, which default to a local one.
 
 ## Custom endpoints
 
-Any OpenAI-compatible URL is a provider:
+Any OpenAI-compatible URL works as a provider:
 
 ```sh
 pantheon provider add --name my-llm --base-url http://127.0.0.1:8015/v1
 pantheon provider models my-llm
 ```
 
-Only model ids you name by hand are recorded in config. Live endpoint listings are fetched on demand, never baked in, a third party's list goes stale, and config shouldn't bless snapshots.
+Only model names you type by hand are saved in the config. Live model lists are fetched fresh each time, never baked in.
 
 ## Reliability
 
-The provider HTTP layer honors `Retry-After` on 429s (parsed from delta-seconds or an HTTP date, capped at 60s) with backoff, and provider errors stay structured, code, layer, and retryability survive the trip. Structured output is opt-in: requests that carry a JSON Schema ask for a conforming response, on both the OpenAI and Anthropic wires.
+If a provider says "slow down" (429), Pantheon waits as long as asked (up to a minute) and retries. Errors stay structured, so scripts can tell a rate limit from a bad key. Asking for structured JSON output works on both the OpenAI and Anthropic connections.
 
 ## See also
 
-- [Agents](agents.md), per-agent provider settings
-- [Configuration](../reference/configuration.md), every provider field
+- [Agents](agents.md): per-agent model settings
+- [Configuration](../reference/configuration.md): every provider field

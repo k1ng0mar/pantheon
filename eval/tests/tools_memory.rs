@@ -1,8 +1,7 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
 use pantheon_api::capability::Capability;
-use pantheon_api::error::PantheonError;
-use pantheon_memory::{LayerKind, MemoryBackend, MemoryStore, Proposal};
+use pantheon_memory::{LayerKind, MemoryStore};
 use pantheon_tools::memory_tools::{
     register_memory_tools, resolve_namespace, MemoryToolEvent, MemoryToolOptions, VecMemorySink,
 };
@@ -301,62 +300,6 @@ fn recall_flags_untrusted_records() {
     assert!(out2.contains("[trust:memory]"), "{out2}");
     assert!(!out2.contains("[untrusted:"), "{out2}");
 }
-
-/// Stands in for GalaxyMem/Honcho/Hindsight-style external backends:
-/// receives proposals already gated by write_via, never sees ungated
-/// material, and does not implement confirm (trust tiers are native).
-#[derive(Debug, Default)]
-struct RecordingBackend {
-    seen: std::sync::Mutex<Vec<Proposal>>,
-}
-impl pantheon_memory::MemoryBackend for RecordingBackend {
-    fn recall(
-        &self,
-        _policy: &pantheon_api::capability::Policy,
-        _namespaces: &[&str],
-        _layers: &[LayerKind],
-        _query: &str,
-        _limit: usize,
-    ) -> Result<Vec<pantheon_memory::Recalled>, PantheonError> {
-        Ok(vec![])
-    }
-    fn write(
-        &self,
-        _policy: &pantheon_api::capability::Policy,
-        proposal: Proposal,
-        _max_bytes: usize,
-    ) -> Result<pantheon_memory::MemoryRecord, PantheonError> {
-        let rec = pantheon_memory::MemoryRecord {
-            layer: proposal.layer,
-            namespace: proposal.namespace.clone(),
-            key: proposal.key.clone(),
-            value: proposal.value.clone(),
-            provenance: proposal.provenance.clone(),
-        };
-        self.seen.lock().unwrap().push(proposal);
-        Ok(rec)
-    }
-    fn list_agent(&self, _namespace: &str) -> Result<Vec<(String, String)>, PantheonError> {
-        Ok(vec![])
-    }
-}
-
-fn opts_with_backend(
-    policy: pantheon_api::capability::Policy,
-    backend: Arc<dyn pantheon_memory::MemoryBackend>,
-) -> MemoryToolOptions {
-    MemoryToolOptions {
-        store: backend,
-        policy: Arc::new(policy),
-        namespace: "nyx".into(),
-        max_bytes: 4096,
-        sink: Arc::new(VecMemorySink::new()),
-        backend_label: "external".into(),
-    }
-}
-
-/// The gate runs before the boundary: what a plugin backend receives
-/// is already validated + trust-clamped (model origin => Untrusted).
 
 /// Regression (P0): `memory_confirm` is gated on the dedicated
 /// `MemoryConfirm` capability, which `coder_with_memory` marks as

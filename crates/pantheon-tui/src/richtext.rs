@@ -1345,7 +1345,7 @@ impl ImagePaintState {
     pub fn reserve(&mut self, img: &ImageRef, line_idx: usize, term_width: u16) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        let cols = term_width.saturating_sub(12).min(48).max(16);
+        let cols = term_width.saturating_sub(12).clamp(16, 48);
         // Thumbnail rows at ~2:1 cell aspect + one label row.
         let rows = match (img.width, img.height) {
             (Some(w), Some(h)) if w > 0 && h > 0 => {

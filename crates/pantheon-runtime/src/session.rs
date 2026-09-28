@@ -31,7 +31,7 @@ use pantheon_tools::session_search_tools::{register_session_search, SessionSearc
 use pantheon_tools::tools::ToolRegistry;
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -494,7 +494,7 @@ fn policy_for_preset(preset: &str) -> Result<Policy, PantheonError> {
 fn build_delegate_session(
     agent: &AgentRuntime,
     model_policy: &ModelPolicy,
-    data_dir: &PathBuf,
+    data_dir: &Path,
     parent_depth: u32,
     profile: &str,
 ) -> Result<Session, PantheonError> {
@@ -515,7 +515,7 @@ fn build_delegate_session(
     // of the parent's resolution state.
     let child_secrets = SecretsBroker::from_system_env();
     let mut child_session = Session::new(
-        data_dir.clone(),
+        data_dir.to_path_buf(),
         child_policy,
         model_policy.clone(),
         child_secrets,

@@ -20,9 +20,8 @@
       theme: {
         extend: {
           colors: {
-            ink: '#0b0c0e', panel: '#111316', rule: '#1e2024',
-            chalk: '#f2f1ee', ash: '#9a9aa3',
-            brand: '#7223FF', branddark: '#5e1fe8'
+            paper: '#fafaf9', ink: '#141417', grey: '#6f6f76', line: '#e9e6e1',
+            codebg: '#f1efeb', brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
             mono: ['JetBrains Mono', 'monospace'],
@@ -35,26 +34,27 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #0b0c0e; color: #f2f1ee; font-family: 'Alpino', sans-serif; font-size: 16px; line-height: 1.65; }
-    :focus-visible { outline: 2px solid #a379ff; outline-offset: 3px; }
-    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
+    body { background: #fafaf9; color: #141417; font-family: 'Alpino', sans-serif; font-size: 1.0625rem; line-height: 1.7; }
+    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
+    .hairline { height: 1px; background: #e9e6e1; }
     .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
     .logo-mark img { height: 26px; width: auto; }
     /* Doc content type scale: h1 30 / h2 22 / h3 20 / body 16 (each step >= 1.25x) */
-    .doc h1 { font-size: 1.875rem; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
+    .doc h1 { font-family: 'Array', sans-serif; font-size: 1.875rem; font-weight: 600; line-height: 1.2; letter-spacing: -0.02em; }
     .doc h2 { font-size: 1.375rem; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
     .doc h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.3; }
-    .doc p, .doc li { color: #c9c9cf; }
-    .doc h1, .doc h2, .doc h3 { color: #f2f1ee; }
-    .doc pre { background: #111316; border: 1px solid #1e2024; border-radius: 8px; padding: 1.25rem; overflow-x: auto; margin: 1.5rem 0; }
-    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #f2f1ee; background: none; padding: 0; }
-    .doc code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #b18cff; }
+    .doc p, .doc li { color: #3f3f46; }
+    .doc h1, .doc h2, .doc h3 { color: #141417; }
+    .doc strong { color: #141417; }
+    .doc pre { background: #f1efeb; border: 1px solid #e9e6e1; border-radius: 10px; padding: 1.25rem; overflow-x: auto; margin: 1.5rem 0; }
+    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #141417; background: none; padding: 0; }
+    .doc code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
     .doc table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }
-    .doc th, .doc td { border-bottom: 1px solid #1e2024; padding: .65rem .8rem; text-align: left; font-size: .9rem; vertical-align: top; }
-    .doc th { font-size: .75rem; font-weight: 600; color: #9a9aa3; text-transform: uppercase; letter-spacing: .04em; }
+    .doc th, .doc td { border-bottom: 1px solid #e9e6e1; padding: .65rem .8rem; text-align: left; font-size: .9rem; vertical-align: top; }
+    .doc th { font-size: .75rem; font-weight: 600; color: #6f6f76; text-transform: uppercase; letter-spacing: .04em; }
     .doc tr:hover td { background: rgba(114,35,255,.04); }
-    .doc blockquote { border-left: 2px solid #7223FF; padding-left: 1.25rem; margin: 1.5rem 0; color: #c9c9cf; }
-    .doc p a, .doc li a, .doc td a { color: #a379ff; text-decoration: underline; text-underline-offset: 3px; }
+    .doc blockquote { border-left: 2px solid #7223FF; padding-left: 1.25rem; margin: 1.5rem 0; color: #3f3f46; }
+    .doc p a, .doc li a, .doc td a { color: #7223FF; text-decoration: underline; text-underline-offset: 3px; }
     .doc ul { list-style: disc; padding-left: 1.5rem; }
     .doc ol { list-style: decimal; padding-left: 1.5rem; }
     @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
@@ -65,120 +65,124 @@
 </head>
 <body class="antialiased">
 
-  <nav class="sticky top-0 z-40 bg-ink/90 backdrop-blur border-b border-rule">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between gap-6">
-      <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
-        <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-        <span class="font-semibold text-chalk text-lg tracking-tight">pantheon</span>
-      </a>
-      <div class="hidden md:flex items-center gap-7 text-[15px]">
-        <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-        <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-        <a href="docs.html" class="text-chalk">Docs</a>
-        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
-      </div>
-      <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
-    </div>
-    <div id="menu" class="hidden md:hidden border-t border-rule px-5 py-4 flex-col gap-1 text-[15px]">
-      <a href="product.html" class="text-ash hover:text-chalk py-2.5 block">Product</a>
-      <a href="install.html" class="text-ash hover:text-chalk py-2.5 block">Install</a>
-      <a href="docs.html" class="text-chalk py-2.5 block">Docs</a>
-      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk py-2.5 block">GitHub</a>
-    </div>
-  </nav>
+  <header class="max-w-6xl mx-auto px-6 md:px-10 pt-8 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
+      <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+      <span class="font-semibold text-ink text-lg tracking-tight">pantheon</span>
+    </a>
+    <nav class="flex items-center gap-6 md:gap-8 text-[15px]" aria-label="Main">
+      <a href="product.html" class="hidden sm:inline text-grey hover:text-ink">Product</a>
+      <a href="install.html" class="hidden sm:inline text-grey hover:text-ink">Install</a>
+      <a href="docs.html" class="hidden sm:inline text-ink">Docs</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="hidden sm:inline text-grey hover:text-ink">GitHub</a>
+      <button type="button" id="menu-btn" class="sm:hidden text-grey hover:text-ink text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
+    </nav>
+  </header>
+  <div id="menu" class="hidden sm:hidden max-w-6xl mx-auto px-6 py-4 flex-col gap-1 text-[15px] border-b border-line">
+    <a href="product.html" class="text-grey hover:text-ink py-2.5 block">Product</a>
+    <a href="install.html" class="text-grey hover:text-ink py-2.5 block">Install</a>
+    <a href="docs.html" class="text-ink py-2.5 block">Docs</a>
+    <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink py-2.5 block">GitHub</a>
+  </div>
 
   <main class="doc max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 id="configuration" class="text-3xl font-bold tracking-tight mb-2">Configuration</h1><div class="glow-line my-6"></div>
-<p class="my-3 leading-relaxed"><code>config.toml</code> in the data dir is the single source of truth for persistent configuration. Setup writes it, the runtime reads it, every verb uses it. Secrets are never in it, config names env vars, the runtime resolves them at the execution boundary.</p>
-<h2 id="model" class="text-xl font-bold tracking-tight mt-10 mb-3">Model</h2>
+<h1 id="configuration" class="text-3xl font-bold tracking-tight mb-2">Configuration</h1><div class="hairline my-6"></div>
+<p class="my-3 leading-relaxed"><code>config.toml</code> lives in your data directory (<code>~/.pantheon</code> by default). <code>pantheon setup</code> writes it; everything reads it. One rule: <strong>secrets never go in this file.</strong> The config names environment variables; Pantheon reads the actual values from the environment when it needs them.</p>
+<h2 id="which-ai-to-use" class="text-xl font-bold tracking-tight mt-10 mb-3">Which AI to use</h2>
 <pre><code>
 [model]
 provider    = &quot;openai&quot;
 model       = &quot;gpt-4o-mini&quot;
-api_key_env = &quot;OPENAI_API_KEY&quot;   # name only, never the key
-reasoning   = &quot;high&quot;             # optional: off|minimal|low|medium|high|xhigh|max
-
+api_key_env = &quot;OPENAI_API_KEY&quot;   # the NAME of the env var, never the key itself
+reasoning   = &quot;high&quot;             # optional: how hard it thinks (off|minimal|low|medium|high|xhigh|max)
+</code></pre>
+<p class="my-3 leading-relaxed">Environment variables that override this section: <code>PANTHEON_PROVIDER</code>, <code>PANTHEON_MODEL</code>, <code>PANTHEON_REASONING</code>, <code>PANTHEON_REASONING_BUDGET</code>.</p>
+<p class="my-3 leading-relaxed">Backups, tried in order when the main model fails:</p>
+<pre><code>
 [[model.fallbacks]]
 provider = &quot;anthropic&quot;
 model    = &quot;claude-sonnet-4-5&quot;
 </code></pre>
-<p class="my-3 leading-relaxed">Env overrides: <code>PANTHEON_PROVIDER</code>, <code>PANTHEON_MODEL</code>, <code>PANTHEON_REASONING</code>, <code>PANTHEON_REASONING_BUDGET</code>. Fallbacks are ordered, failure-only, runtime-controlled. Reasoning maps per wire mode (<code>reasoning_effort</code>, including <code>minimal</code> and <code>xhigh</code>, on OpenAI; thinking budget on Anthropic: 1k/4k/10k/20k/32k for minimal/low/medium/high/xhigh, <code>max</code> fills the window). An exact <code>reasoning_budget</code> overrides the mapping on budget wires (<code>0</code> disables); aux turns always run without it. Unknown spellings resolve to off and <code>doctor</code> flags them.</p>
-<h2 id="auxiliaries" class="text-xl font-bold tracking-tight mt-10 mb-3">Auxiliaries</h2>
-<p class="my-3 leading-relaxed">One <code>[judge]</code>, <code>[compression]</code>, <code>[title_gen]</code>, <code>[embeddings]</code>, <code>[search_synthesis]</code>, <code>[vision]</code>, <code>[scheduled]</code>, <code>[mcp_synthesis]</code>, <code>[extraction]</code>, <code>[rerank]</code>, <code>[planner]</code> section each, same shape (<code>provider</code>, <code>model</code>, optional <code>api_key_env</code>). Absent means <code>auto</code>, the run&#x27;s default model, except <code>[embeddings]</code>, which falls back to a local embedder. Env overrides: <code>PANTHEON_&lt;AUX&gt;_PROVIDER</code> / <code>PANTHEON_&lt;AUX&gt;_MODEL</code> (e.g. <code>PANTHEON_RERANK_MODEL</code>). <code>[extraction]</code>, <code>[rerank]</code>, and <code>[planner]</code> have no call sites yet, they exist so you can pin a cheap model ahead of those workloads landing.</p>
-<h2 id="reflection" class="text-xl font-bold tracking-tight mt-10 mb-3">Reflection</h2>
+<p class="my-3 leading-relaxed">The <code>reasoning</code> setting is translated per provider (thinking budget on Anthropic, reasoning effort on OpenAI). An exact <code>reasoning_budget</code> number overrides the translation; <code>0</code> turns it off. Unknown spellings are treated as off, and <code>doctor</code> flags them.</p>
+<h2 id="helper-models" class="text-xl font-bold tracking-tight mt-10 mb-3">Helper models</h2>
+<p class="my-3 leading-relaxed">Small models for specific background jobs. Each section has the same shape: <code>provider</code>, <code>model</code>, optional <code>api_key_env</code>. Available sections: <code>[judge]</code>, <code>[compression]</code>, <code>[title_gen]</code>, <code>[embeddings]</code>, <code>[search_synthesis]</code>, <code>[vision]</code>, <code>[scheduled]</code>, <code>[mcp_synthesis]</code>, <code>[extraction]</code>, <code>[rerank]</code>, <code>[planner]</code>.</p>
+<p class="my-3 leading-relaxed">Leave one out and it uses your main model. <code>[embeddings]</code> defaults to a local embedder instead. Environment overrides look like <code>PANTHEON_RERANK_MODEL</code>.</p>
+<p class="my-3 leading-relaxed">Note: <code>[extraction]</code>, <code>[rerank]</code>, and <code>[planner]</code> have no features using them yet. They exist so you can pin cheap models ahead of time.</p>
+<h2 id="self-improvement" class="text-xl font-bold tracking-tight mt-10 mb-3">Self-improvement</h2>
 <pre><code>
 [reflect]
-enabled       = false   # LLM-backed reflection steps need explicit opt-in
-auto_turns    = 20      # automatic pass every N completed turns (0 = off)
-max_proposals = 5       # proposal cap per pass
-# provider    = &quot;openai&quot;   # optional: pin the reflection aux model (auto = default)
+enabled       = false   # opt in explicitly; off by default
+auto_turns    = 20      # automatic review every N finished conversations (0 = off)
+max_proposals = 5       # how many suggestions per review
+# provider    = &quot;openai&quot;   # optional: pin a cheap model for reviews
 # model       = &quot;gpt-4o-mini&quot;
 # api_key_env = &quot;OPENAI_API_KEY&quot;
 </code></pre>
-<p class="my-3 leading-relaxed">Reflection is Pantheon&#x27;s ledger-native self-improvement loop: each pass reads structured ledger signals (repeated tool sequences, user corrections, denied approvals, repeated failures), generates proposals with provenance (memory lessons, skill proposals, persona notes), eval-gates skill/persona proposals against bounded evals, and holds them for approval. Memory lessons auto-apply at the <code>Memory</code> trust tier; everything else needs <code>/reflect</code>&#x27;s y/n card (or <code>pantheon reflect --approve &lt;id&gt;</code>). Every LLM call the pipeline makes resolves through the <code>Reflection</code> auxiliary slot, never the chat model, so pin a small model here to keep background self-improvement cheap.</p>
+<p class="my-3 leading-relaxed">When enabled, Pantheon periodically reviews its own history, spots patterns (repeated mistakes, your corrections, denied permissions), and suggests improvements: lessons for memory, new skills, notes about its personality. Memory lessons apply automatically once confirmed; everything else waits for your yes or no (<code>/reflect</code>, or <code>pantheon reflect --approve &lt;id&gt;</code>). Reviews always use the pinned model, never your main chat model, so keep it cheap.</p>
+<p class="my-3 leading-relaxed">Commands: <code>/reflect</code> (run one review now), <code>/reflect on|off</code> (toggle), <code>/reflect status</code>. From the shell: <code>pantheon reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]</code>. To run it nightly: <code>pantheon schedule reflect --cron &#x27;0 2 * * *&#x27;</code>.</p>
+<h2 id="permissions" class="text-xl font-bold tracking-tight mt-10 mb-3">Permissions</h2>
+<p class="my-3 leading-relaxed"><code>policy = &quot;reader&quot; | &quot;coder&quot; | &quot;coder_memory&quot;</code>.</p>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><code>/reflect</code>, manual one-shot pass (background); <code>/reflect on|off</code> toggles the loop (persisted here); <code>/reflect status</code> shows the toggle plus the last pass summary.</li>
-<li><code>pantheon reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]</code></li>
-<li><code>pantheon schedule reflect --cron &#x27;0 2 * * *&#x27;</code>, nightly passes via the normal scheduler.</li>
+<li><code>reader</code>: can look, cannot change anything.</li>
+<li><code>coder</code>: can read and write files, run commands.</li>
+<li><code>coder_memory</code>: like <code>coder</code>, plus it may write memories.</li>
 </ul>
-<h2 id="policy" class="text-xl font-bold tracking-tight mt-10 mb-3">Policy</h2>
-<p class="my-3 leading-relaxed"><code>policy = &quot;reader&quot; | &quot;coder&quot; | &quot;coder_memory&quot;</code>. Tools declare the capability they need; the policy decides allow/deny/approve per operation. <code>coder_memory</code> adds the <code>MemoryWrite</code> capability.</p>
-<h2 id="budgets" class="text-xl font-bold tracking-tight mt-10 mb-3">Budgets</h2>
+<p class="my-3 leading-relaxed">Every tool says what permission it needs; the policy answers allow, deny, or ask you.</p>
+<h2 id="limits" class="text-xl font-bold tracking-tight mt-10 mb-3">Limits</h2>
 <pre><code>
 [budget]
-max_turns          = 16      # agent turns per run
-max_tool_calls     = 32      # tool calls per run
-max_delegate_depth = 2       # how deep /swarm delegation may nest
-max_iterations     = 3       # pipeline iterations (pantheon pipeline)
-# max_tokens       = 50000   # per-run token cap, strictly optional, absent = uncapped
+max_turns          = 16      # back-and-forth exchanges per run
+max_tool_calls     = 32      # tool uses per run
+max_delegate_depth = 2       # how deep agents can delegate to other agents
+max_iterations     = 3       # pipeline iterations
+# max_tokens       = 50000   # optional cap on tokens per run; unset = no cap
 
 [goal]
-max_iterations     = 10      # turns allowed per /goal before the TUI stops and asks
+max_iterations     = 10      # exchanges allowed per /goal before it stops and asks
 </code></pre>
-<p class="my-3 leading-relaxed">Every key is optional; a <code>0</code> is treated as unset. These are the session defaults, <code>/set &lt;key&gt; &lt;value&gt;</code> retunes them live for the current session (<code>max_turns</code>, <code>max_tool_calls</code>, <code>max_delegate_depth</code>, <code>max_tokens</code>; <code>0</code> clears the token cap), and <code>/tokens [n|off]</code> manages the token cap on its own. There is no cost cap: cost is tracked for <code>pantheon stats</code> / <code>/stats</code> only.</p>
-<h2 id="temporal-awareness" class="text-xl font-bold tracking-tight mt-10 mb-3">Temporal awareness</h2>
+<p class="my-3 leading-relaxed">Every key is optional; <code>0</code> counts as unset. These are the defaults for a session. <code>/set &lt;key&gt; &lt;value&gt;</code> changes them live for the current session, and <code>/tokens [n|off]</code> manages the token cap on its own. There is no spending cap: cost is tracked for statistics only.</p>
+<h2 id="time-awareness" class="text-xl font-bold tracking-tight mt-10 mb-3">Time awareness</h2>
 <pre><code>
 [temporal]
-enabled            = true    # master switch (default on, zero tokens, pure string injection)
-min_gap_secs       = 7200    # idle seconds before an elapsed-gap hint fires (0 = off)
-notify_date_change = true    # hint when the local date rolled over, even on a short gap
-# timezone         = &quot;Africa/Lagos&quot;  # IANA name; absent = system local timezone
+enabled            = true    # on by default, costs nothing
+min_gap_secs       = 7200    # remind the model after this much idle time (0 = off)
+notify_date_change = true    # mention when the date changed overnight
+# timezone         = &quot;Africa/Lagos&quot;  # IANA name; unset = your system timezone
 </code></pre>
-<p class="my-3 leading-relaxed">Tacit temporal awareness: the model notices when a conversation has meaningfully aged, without timestamping every message. Before a turn&#x27;s first model call the pipeline reads the last assistant turn&#x27;s timestamp from the durable ledger (restart-safe) and, when the gap matters, appends one coarse hint to the outgoing user message, for the API call only, never written to the ledger or transcript, and never on the system prompt (prompt caching unaffected). Wording is coarse and gets coarser with the gap: <code>about 40 minutes</code>, <code>about 5 hours</code>, <code>about a day</code>, <code>about 3 days</code>. A date rollover across a short gap yields <code>[temporal: the previous exchange was yesterday]</code>; multi-day gaps already imply the date change, so wordings never stack. The conversation&#x27;s standing system preamble tells the model to factor such hints in and never quote them.</p>
-<p class="my-3 leading-relaxed"><code>policy = &quot;reader&quot; | &quot;coder&quot; | &quot;coder_memory&quot;</code>. Tools declare the capability they need; the policy decides allow/deny/approve per operation. <code>coder_memory</code> adds the <code>MemoryWrite</code> capability.</p>
+<p class="my-3 leading-relaxed">Pantheon quietly notices when a conversation has aged, and tells the model something like &quot;about 5 hours&quot; or &quot;the previous exchange was yesterday&quot;. This hint is never saved into the conversation history; it just helps the model not act like no time passed. The wording stays coarse on purpose.</p>
 <h2 id="memory" class="text-xl font-bold tracking-tight mt-10 mb-3">Memory</h2>
 <pre><code>
 [memory]
 backend = &quot;native&quot;
 </code></pre>
-<p class="my-3 leading-relaxed">Backend selection is mirrored in <code>memory-backend.toml</code>. See <a href="memory.html">Memory</a>.</p>
+<p class="my-3 leading-relaxed">Which memory store to use. See <a href="memory.html">Memory</a>.</p>
 <h2 id="secrets" class="text-xl font-bold tracking-tight mt-10 mb-3">Secrets</h2>
 <pre><code>
 [secrets]
 env_allowlist = [&quot;MY_API_KEY&quot;, &quot;PANTHEON_*&quot;]
 plugin_env_allowlist = [&quot;MY_PLUGIN_TOKEN&quot;]
 </code></pre>
-<p class="my-3 leading-relaxed">The run&#x27;s secrets-boundary policy. Both lists are empty by default (fail closed):</p>
+<p class="my-3 leading-relaxed">Which environment variables the assistant is allowed to read, and which ones plugins may see. Both lists are empty by default, meaning nothing is shared unless you say so:</p>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><code>env_allowlist</code>: env vars readable through the <code>env:</code> secret-name form. Entries are exact names or <code>PREFIX_*</code> wildcards; <code>&quot;*&quot;</code> alone allows all (explicit opt-out). Without an entry, <code>env:</code> lookups resolve nothing, secrets must come from <code>PANTHEON_SECRET_*</code> or a durable vault, so a name like <code>env:AWS_SECRET_ACCESS_KEY</code> can never exfiltrate an arbitrary host variable.</li>
-<li><code>plugin_env_allowlist</code>: manifest-declared env vars the plugin supervisor may copy from the host into plugin subprocesses (same entry syntax). A project-controlled manifest can declare any name it likes, so a declared name alone never crosses the boundary, only an entry here lets a host var reach plugin code. Extension (Python/JS) hook subprocesses always run with a cleared environment (PATH only) regardless of this list.</li>
+<li><code>env_allowlist</code>: variables readable through the <code>env:</code> name form. Entries are exact names or <code>PREFIX_*</code> wildcards; <code>&quot;*&quot;</code> alone allows everything (an explicit opt-out of the protection).</li>
+<li><code>plugin_env_allowlist</code>: variables that may be passed into plugin code. A plugin asking for a variable by name is never enough on its own; it must also be listed here.</li>
 </ul>
 <h2 id="agents" class="text-xl font-bold tracking-tight mt-10 mb-3">Agents</h2>
 <pre><code>
-profile = &quot;default&quot;   # informational label only; does NOT select an agent
+profile = &quot;default&quot;   # just a label; does NOT pick the agent
 
 [agents.default]
 display_name = &quot;Default&quot;
-agents_file  = &quot;agents/default/AGENTS.md&quot;
-soul_file    = &quot;agents/default/SOUL.md&quot;
+agents_file  = &quot;agents/default/AGENTS.md&quot;   # its instructions
+soul_file    = &quot;agents/default/SOUL.md&quot;     # its personality
 policy       = &quot;coder_memory&quot;
 
 [agents.zeus]
-inherits     = &quot;default&quot;
+inherits     = &quot;default&quot;                    # copies default&#x27;s settings, then overrides
 display_name = &quot;Zeus&quot;
 soul_file    = &quot;agents/zeus/SOUL.md&quot;
 </code></pre>
-<p class="my-3 leading-relaxed"><code>agent = &quot;zeus&quot;</code> selects the profile this install runs as (must name a declared table). No <code>[agents]</code> table means anonymous runs. See <a href="agents.html">Agents</a>.</p>
+<p class="my-3 leading-relaxed"><code>agent = &quot;zeus&quot;</code> picks which agent this install runs as (it must name a table above). No <code>[agents]</code> table means anonymous runs. See <a href="agents.html">Agents</a>.</p>
 <h2 id="custom-providers" class="text-xl font-bold tracking-tight mt-10 mb-3">Custom providers</h2>
 <pre><code>
 [custom_providers.my-llm]
@@ -186,48 +190,48 @@ base_url = &quot;http://127.0.0.1:8015/v1&quot;
 api_mode = &quot;openai&quot;          # or &quot;anthropic&quot;
 key_env  = &quot;PANTHEON_KEY_MY_LLM&quot;
 </code></pre>
-<p class="my-3 leading-relaxed">Written by <code>pantheon provider add</code> / <code>pantheon model</code>. <code>models</code> sub-rows hold only model ids you named by hand.</p>
+<p class="my-3 leading-relaxed">Written for you by <code>pantheon provider add</code> / <code>pantheon model</code>. Only model names you typed by hand are kept here.</p>
 <h2 id="server-and-speech" class="text-xl font-bold tracking-tight mt-10 mb-3">Server and speech</h2>
 <pre><code>
 [server]
 port = 18789
 host = &quot;127.0.0.1&quot;
 </code></pre>
-<p class="my-3 leading-relaxed"><code>[stt]</code> / <code>[tts]</code> select speech backends (<code>command</code> with <code>cmd</code>, or <code>openai</code> with <code>provider</code>).</p>
+<p class="my-3 leading-relaxed"><code>[stt]</code> / <code>[tts]</code> pick speech-to-text and text-to-speech backends (<code>command</code> with a <code>cmd</code>, or <code>openai</code> with a <code>provider</code>).</p>
 <h2 id="gateway" class="text-xl font-bold tracking-tight mt-10 mb-3">Gateway</h2>
-<p class="my-3 leading-relaxed">Tokens live in <code>&lt;data_dir&gt;/.env</code>, never in config: <code>PANTHEON_DISCORD_TOKEN</code>, <code>PANTHEON_TELEGRAM_BOT_TOKEN</code>, plus required <code>PANTHEON_GATEWAY_ALLOW</code>. See <a href="channels.html">Channels</a>.</p>
+<p class="my-3 leading-relaxed">Chat app tokens live in <code>&lt;data_dir&gt;/.env</code>, never in this file: <code>PANTHEON_DISCORD_TOKEN</code>, <code>PANTHEON_TELEGRAM_BOT_TOKEN</code>, plus the required <code>PANTHEON_GATEWAY_ALLOW</code> (who may talk to it). See <a href="channels.html">Channels</a>.</p>
 <h2 id="data-directory" class="text-xl font-bold tracking-tight mt-10 mb-3">Data directory</h2>
-<p class="my-3 leading-relaxed"><code>$PANTHEON_DATA_DIR</code> or <code>~/.pantheon/</code>:</p>
+<p class="my-3 leading-relaxed"><code>$PANTHEON_DATA_DIR</code> or <code>~/.pantheon/</code>. Everything lives here, so backing up this folder backs up everything:</p>
 <table class="my-6"><thead><tr><th>Path</th><th>What it is</th></tr></thead><tbody>
-<tr><td><code>config.toml</code></td><td>This file (setup writes it, doctor validates it)</td></tr>
-<tr><td><code>.env</code></td><td>Key store (<code>pantheon model</code> writes, imports merge here), <code>0600</code></td></tr>
-<tr><td><code>ledger.db</code></td><td>Event ledger, operations, leases, artifacts</td></tr>
-<tr><td><code>memory.db</code></td><td>Five-layer memory store</td></tr>
-<tr><td><code>memory-backend.toml</code></td><td>Selected memory backend</td></tr>
-<tr><td><code>extensions/</code></td><td>Loaded plugins</td></tr>
+<tr><td><code>config.toml</code></td><td>This file (setup writes it, doctor checks it)</td></tr>
+<tr><td><code>.env</code></td><td>Your keys (<code>pantheon model</code> writes here), readable only by you</td></tr>
+<tr><td><code>ledger.db</code></td><td>The record of everything that happened</td></tr>
+<tr><td><code>memory.db</code></td><td>What it remembers</td></tr>
+<tr><td><code>memory-backend.toml</code></td><td>Chosen memory backend</td></tr>
+<tr><td><code>extensions/</code></td><td>Installed plugins</td></tr>
 <tr><td><code>skills/</code></td><td>Imported skills</td></tr>
-<tr><td><code>agents/</code></td><td>Agent identity files (<code>AGENTS.md</code>, <code>SOUL.md</code>)</td></tr>
-<tr><td><code>gateway/</code></td><td>Channel cursors and outbox</td></tr>
+<tr><td><code>agents/</code></td><td>Agent personality files (<code>AGENTS.md</code>, <code>SOUL.md</code>)</td></tr>
+<tr><td><code>gateway/</code></td><td>Chat app state and outgoing messages</td></tr>
 <tr><td><code>logs/</code></td><td><code>agent.log</code>, <code>errors.log</code>, <code>gateway.log</code></td></tr>
-<tr><td><code>safewrite/</code></td><td>File-edit checkpoints and write journal</td></tr>
+<tr><td><code>safewrite/</code></td><td>File-edit checkpoints, for undoing changes</td></tr>
 </tbody></table>
 </main>
 
-  <footer class="border-t border-rule mt-8">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 py-12">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+  <footer class="border-t border-line mt-8">
+    <div class="max-w-6xl mx-auto px-6 md:px-10 py-14">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-8">
         <div class="flex items-center gap-2.5">
           <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-          <span class="font-semibold text-chalk">pantheon</span>
+          <span class="font-semibold text-ink">pantheon</span>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
-          <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-          <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-          <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
+          <a href="product.html" class="text-grey hover:text-ink">Product</a>
+          <a href="install.html" class="text-grey hover:text-ink">Install</a>
+          <a href="docs.html" class="text-grey hover:text-ink">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink">GitHub</a>
         </div>
       </div>
-      <p class="text-ash text-sm mt-8">An AI assistant that remembers. MIT licensed.</p>
+      <p class="text-grey text-sm mt-10">An assistant that does everything. MIT licensed.</p>
     </div>
   </footer>
 

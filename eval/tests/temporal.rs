@@ -50,7 +50,7 @@ fn assistant_entry(ts_ms: i64, text: &str) -> LedgerEntry {
 #[test]
 fn gap_below_threshold_stays_silent() {
     let now = Utc::now().timestamp_millis();
-    let one_hour_ago = now - 3600_000;
+    let one_hour_ago = now - 3_600_000;
     assert_eq!(
         temporal_hint(Some(one_hour_ago), now, &Tz::UTC, &cfg()),
         None
@@ -139,7 +139,7 @@ fn disabled_stays_silent() {
         enabled: false,
         ..cfg()
     };
-    let last = now - 30 * 86400_000; // a month — would otherwise fire
+    let last = now - 30 * 86_400_000; // a month — would otherwise fire
     assert_eq!(temporal_hint(Some(last), now, &Tz::UTC, &c), None);
 }
 
@@ -185,7 +185,7 @@ fn rollover_opt_out_stays_silent() {
 fn multi_day_gap_does_not_stack_wordings() {
     // Three days implies the date changed; only the elapsed wording fires.
     let now = Utc::now().timestamp_millis();
-    let last = now - 3 * 86400_000;
+    let last = now - 3 * 86_400_000;
     let hint = temporal_hint(Some(last), now, &Tz::UTC, &cfg()).unwrap();
     assert_eq!(
         hint,
@@ -295,7 +295,7 @@ fn session_seam_computes_the_hint_from_replayed_entries() {
 
     // An assistant turn three days ago -> a hint fires through the seam.
     let now = Utc::now().timestamp_millis();
-    let entries = vec![assistant_entry(now - 3 * 86400_000, "done")];
+    let entries = vec![assistant_entry(now - 3 * 86_400_000, "done")];
     let hint = session.temporal_hint_for_entries(&entries).unwrap();
     assert_eq!(
         hint,
@@ -311,6 +311,6 @@ fn session_seam_computes_the_hint_from_replayed_entries() {
         enabled: false,
         ..TemporalConfig::default()
     });
-    let entries = vec![assistant_entry(now - 3 * 86400_000, "done")];
+    let entries = vec![assistant_entry(now - 3 * 86_400_000, "done")];
     assert_eq!(session.temporal_hint_for_entries(&entries), None);
 }

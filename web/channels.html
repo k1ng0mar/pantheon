@@ -20,9 +20,8 @@
       theme: {
         extend: {
           colors: {
-            ink: '#0b0c0e', panel: '#111316', rule: '#1e2024',
-            chalk: '#f2f1ee', ash: '#9a9aa3',
-            brand: '#7223FF', branddark: '#5e1fe8'
+            paper: '#fafaf9', ink: '#141417', grey: '#6f6f76', line: '#e9e6e1',
+            codebg: '#f1efeb', brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
             mono: ['JetBrains Mono', 'monospace'],
@@ -35,26 +34,27 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #0b0c0e; color: #f2f1ee; font-family: 'Alpino', sans-serif; font-size: 16px; line-height: 1.65; }
-    :focus-visible { outline: 2px solid #a379ff; outline-offset: 3px; }
-    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
+    body { background: #fafaf9; color: #141417; font-family: 'Alpino', sans-serif; font-size: 1.0625rem; line-height: 1.7; }
+    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
+    .hairline { height: 1px; background: #e9e6e1; }
     .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
     .logo-mark img { height: 26px; width: auto; }
     /* Doc content type scale: h1 30 / h2 22 / h3 20 / body 16 (each step >= 1.25x) */
-    .doc h1 { font-size: 1.875rem; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
+    .doc h1 { font-family: 'Array', sans-serif; font-size: 1.875rem; font-weight: 600; line-height: 1.2; letter-spacing: -0.02em; }
     .doc h2 { font-size: 1.375rem; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
     .doc h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.3; }
-    .doc p, .doc li { color: #c9c9cf; }
-    .doc h1, .doc h2, .doc h3 { color: #f2f1ee; }
-    .doc pre { background: #111316; border: 1px solid #1e2024; border-radius: 8px; padding: 1.25rem; overflow-x: auto; margin: 1.5rem 0; }
-    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #f2f1ee; background: none; padding: 0; }
-    .doc code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #b18cff; }
+    .doc p, .doc li { color: #3f3f46; }
+    .doc h1, .doc h2, .doc h3 { color: #141417; }
+    .doc strong { color: #141417; }
+    .doc pre { background: #f1efeb; border: 1px solid #e9e6e1; border-radius: 10px; padding: 1.25rem; overflow-x: auto; margin: 1.5rem 0; }
+    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #141417; background: none; padding: 0; }
+    .doc code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
     .doc table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }
-    .doc th, .doc td { border-bottom: 1px solid #1e2024; padding: .65rem .8rem; text-align: left; font-size: .9rem; vertical-align: top; }
-    .doc th { font-size: .75rem; font-weight: 600; color: #9a9aa3; text-transform: uppercase; letter-spacing: .04em; }
+    .doc th, .doc td { border-bottom: 1px solid #e9e6e1; padding: .65rem .8rem; text-align: left; font-size: .9rem; vertical-align: top; }
+    .doc th { font-size: .75rem; font-weight: 600; color: #6f6f76; text-transform: uppercase; letter-spacing: .04em; }
     .doc tr:hover td { background: rgba(114,35,255,.04); }
-    .doc blockquote { border-left: 2px solid #7223FF; padding-left: 1.25rem; margin: 1.5rem 0; color: #c9c9cf; }
-    .doc p a, .doc li a, .doc td a { color: #a379ff; text-decoration: underline; text-underline-offset: 3px; }
+    .doc blockquote { border-left: 2px solid #7223FF; padding-left: 1.25rem; margin: 1.5rem 0; color: #3f3f46; }
+    .doc p a, .doc li a, .doc td a { color: #7223FF; text-decoration: underline; text-underline-offset: 3px; }
     .doc ul { list-style: disc; padding-left: 1.5rem; }
     .doc ol { list-style: decimal; padding-left: 1.5rem; }
     @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
@@ -65,69 +65,67 @@
 </head>
 <body class="antialiased">
 
-  <nav class="sticky top-0 z-40 bg-ink/90 backdrop-blur border-b border-rule">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between gap-6">
-      <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
-        <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-        <span class="font-semibold text-chalk text-lg tracking-tight">pantheon</span>
-      </a>
-      <div class="hidden md:flex items-center gap-7 text-[15px]">
-        <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-        <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-        <a href="docs.html" class="text-chalk">Docs</a>
-        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
-      </div>
-      <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
-    </div>
-    <div id="menu" class="hidden md:hidden border-t border-rule px-5 py-4 flex-col gap-1 text-[15px]">
-      <a href="product.html" class="text-ash hover:text-chalk py-2.5 block">Product</a>
-      <a href="install.html" class="text-ash hover:text-chalk py-2.5 block">Install</a>
-      <a href="docs.html" class="text-chalk py-2.5 block">Docs</a>
-      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk py-2.5 block">GitHub</a>
-    </div>
-  </nav>
+  <header class="max-w-6xl mx-auto px-6 md:px-10 pt-8 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
+      <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+      <span class="font-semibold text-ink text-lg tracking-tight">pantheon</span>
+    </a>
+    <nav class="flex items-center gap-6 md:gap-8 text-[15px]" aria-label="Main">
+      <a href="product.html" class="hidden sm:inline text-grey hover:text-ink">Product</a>
+      <a href="install.html" class="hidden sm:inline text-grey hover:text-ink">Install</a>
+      <a href="docs.html" class="hidden sm:inline text-ink">Docs</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="hidden sm:inline text-grey hover:text-ink">GitHub</a>
+      <button type="button" id="menu-btn" class="sm:hidden text-grey hover:text-ink text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
+    </nav>
+  </header>
+  <div id="menu" class="hidden sm:hidden max-w-6xl mx-auto px-6 py-4 flex-col gap-1 text-[15px] border-b border-line">
+    <a href="product.html" class="text-grey hover:text-ink py-2.5 block">Product</a>
+    <a href="install.html" class="text-grey hover:text-ink py-2.5 block">Install</a>
+    <a href="docs.html" class="text-ink py-2.5 block">Docs</a>
+    <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink py-2.5 block">GitHub</a>
+  </div>
 
   <main class="doc max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 id="channels" class="text-3xl font-bold tracking-tight mb-2">Channels</h1><div class="glow-line my-6"></div>
-<p class="my-3 leading-relaxed">One agent, every surface. Identity, memory, and history follow you from the terminal to your phone to the browser, the interface presents, the runtime remembers.</p>
+<h1 id="channels" class="text-3xl font-bold tracking-tight mb-2">Channels</h1><div class="hairline my-6"></div>
+<p class="my-3 leading-relaxed">One assistant, every screen. Your identity, memory, and history follow you from the terminal to your phone to the browser. The interface changes; the assistant does not.</p>
 <h2 id="terminal" class="text-xl font-bold tracking-tight mt-10 mb-3">Terminal</h2>
-<p class="my-3 leading-relaxed"><code>pantheon</code> opens the interactive interface; <code>pantheon run</code> serves scripts and automation. See <a href="sessions.html">Sessions</a>.</p>
+<p class="my-3 leading-relaxed"><code>pantheon</code> opens the app; <code>pantheon run</code> handles scripts and automation. See <a href="sessions.html">Sessions</a>.</p>
 <h2 id="web" class="text-xl font-bold tracking-tight mt-10 mb-3">Web</h2>
 <pre><code>
 pantheon serve [--port N] [--host H]
 </code></pre>
-<p class="my-3 leading-relaxed">A local AG-UI server: web client at <code>/</code>, RPC at <code>/agui/rpc</code>, everything else gated by <code>PANTHEON_SERVE_TOKEN</code>. It runs the same Session runtime as the terminal and replays the ledger stream, a minimal reference surface, not a second product.</p>
+<p class="my-3 leading-relaxed">A local web page on your machine, plus an API other apps can talk to. It runs the same assistant as the terminal and shows the same conversations. Access is locked behind a token (<code>PANTHEON_SERVE_TOKEN</code>).</p>
 <h2 id="messaging" class="text-xl font-bold tracking-tight mt-10 mb-3">Messaging</h2>
 <p class="my-3 leading-relaxed">Discord and Telegram connect through the gateway:</p>
 <pre><code>
-pantheon gateway start    # supervised service (systemd/launchd), verified active
+pantheon gateway start    # start the background service
 pantheon gateway restart|stop|status|run
 </code></pre>
-<p class="my-3 leading-relaxed">Two requirements, both non-negotiable: channel tokens (<code>PANTHEON_DISCORD_TOKEN</code>, <code>PANTHEON_TELEGRAM_BOT_TOKEN</code> in <code>&lt;data_dir&gt;/.env</code>, never in config) and the pairing allowlist (<code>PANTHEON_GATEWAY_ALLOW</code>). Unknown senders are refused before anything reaches the runtime.</p>
-<p class="my-3 leading-relaxed">Replies route back with <code>pantheon run --say ... --deliver telegram|discord</code>, a durable outbox, so delivery survives gateway downtime.</p>
+<p class="my-3 leading-relaxed">Two things are required, no exceptions: your chat app tokens (put them in <code>&lt;data_dir&gt;/.env</code>, never in the config file) and a list of who is allowed to talk to it (<code>PANTHEON_GATEWAY_ALLOW</code>). Strangers are turned away before anything reaches the assistant.</p>
+<p class="my-3 leading-relaxed">Replies go out with <code>pantheon run --say ... --deliver telegram|discord</code>. Outgoing messages are saved first, so they get delivered even if the gateway was down when they were queued.</p>
 <h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><a href="sessions.html">Sessions</a>, the terminal interface</li>
-<li><a href="configuration.html#gateway">Configuration</a>, tokens and allowlist</li>
-<li><a href="troubleshooting.html">Troubleshooting</a>, connection issues</li>
+<li><a href="sessions.html">Sessions</a>: the terminal app</li>
+<li><a href="configuration.html#gateway">Configuration</a>: tokens and the allowlist</li>
+<li><a href="troubleshooting.html">Troubleshooting</a>: connection problems</li>
 </ul>
 </main>
 
-  <footer class="border-t border-rule mt-8">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 py-12">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+  <footer class="border-t border-line mt-8">
+    <div class="max-w-6xl mx-auto px-6 md:px-10 py-14">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-8">
         <div class="flex items-center gap-2.5">
           <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-          <span class="font-semibold text-chalk">pantheon</span>
+          <span class="font-semibold text-ink">pantheon</span>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
-          <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-          <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-          <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
+          <a href="product.html" class="text-grey hover:text-ink">Product</a>
+          <a href="install.html" class="text-grey hover:text-ink">Install</a>
+          <a href="docs.html" class="text-grey hover:text-ink">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink">GitHub</a>
         </div>
       </div>
-      <p class="text-ash text-sm mt-8">An AI assistant that remembers. MIT licensed.</p>
+      <p class="text-grey text-sm mt-10">An assistant that does everything. MIT licensed.</p>
     </div>
   </footer>
 

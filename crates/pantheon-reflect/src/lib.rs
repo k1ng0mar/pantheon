@@ -1,5 +1,13 @@
 //! Reflection — Pantheon's answer to the self-improvement loop.
 //!
+//! Note on `clippy::result_large_err`: every public function here returns
+//! `Result<_, PantheonError>`, and `PantheonError` is the shared workspace
+//! error type — a struct of five `String`s plus enums that callers clone,
+//! match on, and serialize. Boxing it per function would churn the public
+//! API of every crate without changing any behavior, so the lint is
+//! silenced crate-wide rather than worked around function by function.
+#![allow(clippy::result_large_err)]
+//!
 //! The concept, deliberately not a copy: instead of forking the agent to
 //! re-read raw transcripts and edit markdown files, Reflection reads
 //! **structured signals from the SQLite event ledger** (completed turns,

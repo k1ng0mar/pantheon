@@ -7,7 +7,7 @@
 //!
 //! - Linux + systemd → user unit `~/.config/systemd/user/pantheon-gateway.service`
 //!   + `systemctl --user enable --now` (falls back to cron when the user
-//!   bus is unavailable, e.g. containers)
+//!     bus is unavailable, e.g. containers)
 //! - Linux without systemd → `crontab` `@reboot` entry, merged idempotently
 //! - macOS → LaunchAgent plist under `~/Library/LaunchAgents` + `launchctl bootstrap`
 //! - Windows → Task Scheduler logon task via `schtasks /Create` (user

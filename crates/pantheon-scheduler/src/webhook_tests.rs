@@ -133,9 +133,7 @@ fn malformed_signatures_are_rejected() {
     }
     // Uppercase hex is still hex: it must verify like lowercase.
     let mut ledger = ClaimLedger::new();
-    let upper = sign(SECRET, b"{}")
-        .replace("sha256=", "sha256=")
-        .to_ascii_uppercase();
+    let upper = sign(SECRET, b"{}").to_ascii_uppercase();
     let upper = upper.replacen("SHA256=", "sha256=", 1);
     assert!(
         accept(

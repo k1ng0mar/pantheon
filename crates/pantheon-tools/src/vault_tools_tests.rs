@@ -22,7 +22,6 @@ fn a_symlink_inside_the_vault_cannot_escape_it() {
 
 /// The same protection for a link that targets a file rather than a
 /// directory, which is the shape actually used to read one known file.
-
 #[cfg(unix)]
 #[test]
 fn a_symlink_to_a_single_outside_file_is_refused() {

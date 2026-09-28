@@ -1,34 +1,39 @@
 # Scheduling
 
-Scheduled tasks are not managed by the system crontab. Hermes-style, Pantheon runs its own internal scheduler inside the background gateway service: `pantheon schedule` registers jobs, the gateway's scheduler loop fires them, and `pantheon schedule tick [--watch]` remains the manual/CI primitive that fires due jobs directly.
+Pantheon can do things on its own, on a timer. Jobs are registered with `pantheon schedule`; the background service fires them; each firing runs as your agent, with its memory, tools, and permissions.
 
 ## Background service
 
-`pantheon init` installs and starts the user-scope gateway silently, never prompts, always safe to call. The mechanism is picked per platform:
+`pantheon init` installs and starts the background service for your user account. It picks the right mechanism for your machine:
 
-| Platform | Mechanism |
+| Platform | How it stays running |
 |---|---|
-| Linux + systemd | user unit in `~/.config/systemd/user`, `systemctl --user enable --now` |
-| Linux without systemd | `@reboot pantheon gateway run` merged idempotently into the user crontab |
-| macOS | LaunchAgent in `~/Library/LaunchAgents`, `launchctl bootstrap gui/<uid>` |
-| Windows | user-scope Task Scheduler logon task via `schtasks` (no admin) |
-| None available | fails open with a one-line manual `pantheon schedule tick` cron hint |
+| Linux with systemd | a user service, started automatically |
+| Linux without systemd | a `@reboot` entry in your crontab |
+| macOS | a LaunchAgent |
+| Windows | a Task Scheduler logon task (no admin needed) |
 
-`pantheon gateway status` reports which mechanism is in use, plus the scheduler queue (active jobs, due now, next fire). The scheduler loop starts unconditionally: a scheduler-only install with no channel tokens is a working always-on service. Chat surfaces are the allowlist-guarded front door and simply stay disabled until `PANTHEON_TELEGRAM_BOT_TOKEN`/`PANTHEON_DISCORD_TOKEN` and `PANTHEON_GATEWAY_ALLOW` are set, `gateway run` prints a one-line warning and keeps ticking. `pantheon gateway restart` on a cron `@reboot` install is an honest no-op (the entry only fires at boot); run `pantheon gateway run` in the foreground to pick up changes immediately.
+It never asks questions and is always safe to run again. `pantheon gateway status` tells you which mechanism is in use and what jobs are queued. The scheduler keeps ticking even with no chat apps connected; messaging just stays off until you add tokens and the allowlist.
 
-## Delivery
+You can also fire due jobs by hand, which is what CI and manual setups use:
 
-A fired job's result goes somewhere user-facing via `--deliver`:
+```sh
+pantheon schedule tick [--watch]   # --watch keeps it running in the foreground
+```
+
+## Where results go
+
+A finished job sends its result somewhere you will see it, with `--deliver`:
 
 ```sh
 pantheon schedule "summarize inbox" --every 2h --deliver telegram
 ```
 
-Targets: `log` (default, result stays in the ledger), `telegram`, `discord`, `notify` (desktop notification: notify-send on Linux, osascript on macOS, PowerShell toast on Windows), `file:<path>` (appended). The summary is the run's final assistant message, redacted and truncated to ~2000 chars, sent through the gateway's existing channel senders. Telegram needs `PANTHEON_TELEGRAM_BOT_TOKEN` + `PANTHEON_DELIVER_TELEGRAM_TO` (chat id); Discord needs `PANTHEON_DISCORD_TOKEN` + `PANTHEON_DELIVER_DISCORD_TO` (channel id). Delivery failure never fails the job, it's a log line.
+Targets: `log` (default, the result just stays in the conversation history), `telegram`, `discord`, `notify` (a desktop notification), `file:<path>` (appended to a file). The summary is the job's final message, trimmed to about 2000 characters. Telegram needs a bot token and a chat id; Discord needs a bot token and a channel id. If delivery fails, the job still counts as done; the failure is logged.
 
 ## Templates
 
-Built-in blueprints, `pantheon schedule template list`:
+Ready-made job blueprints, `pantheon schedule template list`:
 
 `morning-briefing` · `inbox-triage` · `repo-watch` · `dep-audit` · `weekly-review` · `cost-report` · `gmail-monitor` · `cost-watch`
 
@@ -36,17 +41,17 @@ Built-in blueprints, `pantheon schedule template list`:
 pantheon schedule create --template morning-briefing --var topic="AI agents" --deliver telegram
 ```
 
-Each template has a default schedule, a prompt with `{{variable}}` placeholders, and the questions to fill them. Missing vars are prompted interactively on a TTY, otherwise an error. `--var model=<id>` (and `--var provider=<p>`) on any template pins that job's model instead of substituting into the prompt. Add your own in `<data_dir>/templates/*.toml`, same name as a built-in replaces it.
+Each template has a default schedule and a prompt with `{{variable}}` placeholders. Missing values are asked for interactively, or error out without a terminal. You can add your own templates as TOML files in `<data_dir>/templates/`; same name as a built-in replaces it.
 
-## Model rule
+## Which model runs jobs
 
-Scheduled work is background work and burns cheap tokens by default. Model resolution, in order:
+Background work uses cheap models by default. The order Pantheon checks:
 
-1. **Explicit pin**, `--model`/`--provider` on `schedule create`, or the template's `model` var. Always wins.
-2. **`[scheduled]` auxiliary**, the `[scheduled]` config section (or `PANTHEON_SCHEDULED_PROVIDER` / `PANTHEON_SCHEDULED_MODEL`). The default for unpinned jobs.
-3. **Never the interactive default**, unless the `[scheduled]` slot itself resolves to it (`auto` with nothing configured).
+1. **Explicit pin**: `--model`/`--provider` on `schedule create`, or the template's `model` var. Always wins.
+2. **`[scheduled]` setting**: the `[scheduled]` section in your config, or the `PANTHEON_SCHEDULED_PROVIDER` / `PANTHEON_SCHEDULED_MODEL` env vars. The default for unpinned jobs.
+3. **Never your main chat model**, unless you set it explicitly in step 1 or 2.
 
 ## See also
 
-- [Runs](runs.md), scheduling basics, ticks, atomic claims
-- [Providers](providers.md), auxiliary model slots
+- [Runs](runs.md): scheduling basics
+- [Providers](providers.md): model settings

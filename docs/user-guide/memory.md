@@ -1,63 +1,63 @@
 # Memory
 
-Durable memory scoped to an environment, an agent, a project, or a task, with provenance and trust on every record, so recalled content is never mistaken for instructions.
+Pantheon remembers things for you: your name, your preferences, facts from past conversations. Every memory says where it came from and how much to trust it, so something the model guessed is never treated like something you said.
 
 ## Layers
 
-```
-GLOBAL → AGENT → PROJECT → TASK/SESSION → EPHEMERAL (this turn only)
-```
-
-Recall searches all layers, narrowest first, each hit carrying where it came from and when it was written.
-
-## Budgets
-
-Every layer has a byte budget. A write that would exceed it evicts lowest-trust, oldest-first records until the write fits, recall stays fast and bounded no matter how much the agent remembers. A write that can't fit even after eviction fails with `MEM_BUDGET_EXCEEDED` instead of growing the store.
-
-## Writes go through the gate
-
-One path for the model, the CLI, and imports alike:
+Memories live at different scopes, from broad to narrow:
 
 ```
-propose → policy check → provenance attach → validation → store
+GLOBAL → AGENT → PROJECT → TASK → EPHEMERAL (this conversation only)
 ```
 
-Writing needs the `MemoryWrite` capability (`coder_memory` policy or an explicit grant). Nothing the model wants remembered bypasses it, no silent prompt-injection writes, ever.
+When Pantheon looks something up, it searches all layers, most specific first. Every hit shows where it was written and when.
+
+## Limits
+
+Each layer has a size limit. When a write would go over, the oldest, least-trusted memories are dropped until it fits. Recall stays fast no matter how much it remembers. If a write cannot fit at all, it fails loudly instead of silently growing.
+
+## How a memory gets written
+
+One path, whoever asks: you, the model, or an import:
+
+```
+suggest → permission check → label the source → validate → store
+```
+
+Writing needs permission (`coder_memory` policy, or an explicit grant). The model can never quietly write a memory for itself. Nothing from a web page or a document can tell it to "forget its instructions": that text is data, not an order.
 
 ## Trust
 
-| Tier | Meaning |
+| Level | Meaning |
 |---|---|
-| `system` | Harness-authored, authoritative |
+| `system` | Written by Pantheon itself, authoritative |
 | `user` | You wrote it (`put`, `/remember`, edited `MEMORY.md`) |
-| `memory` | User-confirmed (`memory confirm`) |
-| `untrusted` | Model-proposed or tool/web-derived |
+| `memory` | You confirmed it (`memory confirm`) |
+| `untrusted` | Suggested by the model or pulled from a tool or web page |
 
-Trust never transfers by copying. A proposal lands `untrusted` no matter what it claims; only your explicit action promotes it. A document telling the agent to "ignore previous instructions" is data, not an order.
+Trust never transfers by copying. A suggestion lands as `untrusted` no matter what it claims to be. Only you can promote it.
 
 ## Commands
 
 ```sh
 pantheon memory put KEY VALUE
-pantheon memory recall QUERY [--ns NAME]   # search; another agent's namespace on request
+pantheon memory recall QUERY [--ns NAME]   # search; another agent's memories on request
 pantheon memory confirm KEY
 pantheon memory list
-pantheon memory import|export|sync [FILE]  # markdown round-trip; sync refuses on conflict
+pantheon memory import|export|sync [FILE]  # plain markdown round-trip
 pantheon memory backend list|select NAME
 ```
 
-## Learning into skills
+## Turning experience into skills
 
-Recurring experience shouldn't be re-solved every time. When an agent discovers a reliable procedure, it becomes an inspectable artifact, documented, versioned, reusable:
+When Pantheon discovers a procedure that works reliably, it can be saved as a skill: a documented, reusable how-to. Skills explain how to do something; they never grant permission to do it. That decision still belongs to you and your policy.
 
+```sh
+pantheon skills list|import|doctor
 ```
-Work → discovery → documentation → reuse → refinement
-```
-
-Skills are portable knowledge (instructions, workflows, examples). They explain how; they never authorize, the runtime still decides whether the agent may act. Manage them with `pantheon skills list|import|doctor`.
 
 ## See also
 
-- [Agents](agents.md), memory scoping per identity
-- [Extensions](extensions.md), hooks and executable plugins
-- [Terminal reference](../reference/terminal.md#memory), full flags
+- [Agents](agents.md): whose memory is whose
+- [Extensions](extensions.md): plugins, the other half of extensibility
+- [Terminal reference](../reference/terminal.md#memory): full flags

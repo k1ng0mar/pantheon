@@ -20,9 +20,8 @@
       theme: {
         extend: {
           colors: {
-            ink: '#0b0c0e', panel: '#111316', rule: '#1e2024',
-            chalk: '#f2f1ee', ash: '#9a9aa3',
-            brand: '#7223FF', branddark: '#5e1fe8'
+            paper: '#fafaf9', ink: '#141417', grey: '#6f6f76', line: '#e9e6e1',
+            codebg: '#f1efeb', brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
             mono: ['JetBrains Mono', 'monospace'],
@@ -35,26 +34,27 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #0b0c0e; color: #f2f1ee; font-family: 'Alpino', sans-serif; font-size: 16px; line-height: 1.65; }
-    :focus-visible { outline: 2px solid #a379ff; outline-offset: 3px; }
-    .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
+    body { background: #fafaf9; color: #141417; font-family: 'Alpino', sans-serif; font-size: 1.0625rem; line-height: 1.7; }
+    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
+    .hairline { height: 1px; background: #e9e6e1; }
     .logo-mark { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; flex: none; }
     .logo-mark img { height: 26px; width: auto; }
     /* Doc content type scale: h1 30 / h2 22 / h3 20 / body 16 (each step >= 1.25x) */
-    .doc h1 { font-size: 1.875rem; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
+    .doc h1 { font-family: 'Array', sans-serif; font-size: 1.875rem; font-weight: 600; line-height: 1.2; letter-spacing: -0.02em; }
     .doc h2 { font-size: 1.375rem; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
     .doc h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.3; }
-    .doc p, .doc li { color: #c9c9cf; }
-    .doc h1, .doc h2, .doc h3 { color: #f2f1ee; }
-    .doc pre { background: #111316; border: 1px solid #1e2024; border-radius: 8px; padding: 1.25rem; overflow-x: auto; margin: 1.5rem 0; }
-    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #f2f1ee; background: none; padding: 0; }
-    .doc code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #b18cff; }
+    .doc p, .doc li { color: #3f3f46; }
+    .doc h1, .doc h2, .doc h3 { color: #141417; }
+    .doc strong { color: #141417; }
+    .doc pre { background: #f1efeb; border: 1px solid #e9e6e1; border-radius: 10px; padding: 1.25rem; overflow-x: auto; margin: 1.5rem 0; }
+    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #141417; background: none; padding: 0; }
+    .doc code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
     .doc table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }
-    .doc th, .doc td { border-bottom: 1px solid #1e2024; padding: .65rem .8rem; text-align: left; font-size: .9rem; vertical-align: top; }
-    .doc th { font-size: .75rem; font-weight: 600; color: #9a9aa3; text-transform: uppercase; letter-spacing: .04em; }
+    .doc th, .doc td { border-bottom: 1px solid #e9e6e1; padding: .65rem .8rem; text-align: left; font-size: .9rem; vertical-align: top; }
+    .doc th { font-size: .75rem; font-weight: 600; color: #6f6f76; text-transform: uppercase; letter-spacing: .04em; }
     .doc tr:hover td { background: rgba(114,35,255,.04); }
-    .doc blockquote { border-left: 2px solid #7223FF; padding-left: 1.25rem; margin: 1.5rem 0; color: #c9c9cf; }
-    .doc p a, .doc li a, .doc td a { color: #a379ff; text-decoration: underline; text-underline-offset: 3px; }
+    .doc blockquote { border-left: 2px solid #7223FF; padding-left: 1.25rem; margin: 1.5rem 0; color: #3f3f46; }
+    .doc p a, .doc li a, .doc td a { color: #7223FF; text-decoration: underline; text-underline-offset: 3px; }
     .doc ul { list-style: disc; padding-left: 1.5rem; }
     .doc ol { list-style: decimal; padding-left: 1.5rem; }
     @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
@@ -65,90 +65,88 @@
 </head>
 <body class="antialiased">
 
-  <nav class="sticky top-0 z-40 bg-ink/90 backdrop-blur border-b border-rule">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between gap-6">
-      <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
-        <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-        <span class="font-semibold text-chalk text-lg tracking-tight">pantheon</span>
-      </a>
-      <div class="hidden md:flex items-center gap-7 text-[15px]">
-        <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-        <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-        <a href="docs.html" class="text-chalk">Docs</a>
-        <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
-      </div>
-      <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
-    </div>
-    <div id="menu" class="hidden md:hidden border-t border-rule px-5 py-4 flex-col gap-1 text-[15px]">
-      <a href="product.html" class="text-ash hover:text-chalk py-2.5 block">Product</a>
-      <a href="install.html" class="text-ash hover:text-chalk py-2.5 block">Install</a>
-      <a href="docs.html" class="text-chalk py-2.5 block">Docs</a>
-      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk py-2.5 block">GitHub</a>
-    </div>
-  </nav>
+  <header class="max-w-6xl mx-auto px-6 md:px-10 pt-8 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
+      <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
+      <span class="font-semibold text-ink text-lg tracking-tight">pantheon</span>
+    </a>
+    <nav class="flex items-center gap-6 md:gap-8 text-[15px]" aria-label="Main">
+      <a href="product.html" class="hidden sm:inline text-grey hover:text-ink">Product</a>
+      <a href="install.html" class="hidden sm:inline text-grey hover:text-ink">Install</a>
+      <a href="docs.html" class="hidden sm:inline text-ink">Docs</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="hidden sm:inline text-grey hover:text-ink">GitHub</a>
+      <button type="button" id="menu-btn" class="sm:hidden text-grey hover:text-ink text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
+    </nav>
+  </header>
+  <div id="menu" class="hidden sm:hidden max-w-6xl mx-auto px-6 py-4 flex-col gap-1 text-[15px] border-b border-line">
+    <a href="product.html" class="text-grey hover:text-ink py-2.5 block">Product</a>
+    <a href="install.html" class="text-grey hover:text-ink py-2.5 block">Install</a>
+    <a href="docs.html" class="text-ink py-2.5 block">Docs</a>
+    <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink py-2.5 block">GitHub</a>
+  </div>
 
   <main class="doc max-w-3xl mx-auto px-6 pt-24 pb-16">
-<h1 id="memory" class="text-3xl font-bold tracking-tight mb-2">Memory</h1><div class="glow-line my-6"></div>
-<p class="my-3 leading-relaxed">Durable memory scoped to an environment, an agent, a project, or a task, with provenance and trust on every record, so recalled content is never mistaken for instructions.</p>
+<h1 id="memory" class="text-3xl font-bold tracking-tight mb-2">Memory</h1><div class="hairline my-6"></div>
+<p class="my-3 leading-relaxed">Pantheon remembers things for you: your name, your preferences, facts from past conversations. Every memory says where it came from and how much to trust it, so something the model guessed is never treated like something you said.</p>
 <h2 id="layers" class="text-xl font-bold tracking-tight mt-10 mb-3">Layers</h2>
+<p class="my-3 leading-relaxed">Memories live at different scopes, from broad to narrow:</p>
 <pre><code>
-GLOBAL → AGENT → PROJECT → TASK/SESSION → EPHEMERAL (this turn only)
+GLOBAL → AGENT → PROJECT → TASK → EPHEMERAL (this conversation only)
 </code></pre>
-<p class="my-3 leading-relaxed">Recall searches all layers, narrowest first, each hit carrying where it came from and when it was written.</p>
-<h2 id="budgets" class="text-xl font-bold tracking-tight mt-10 mb-3">Budgets</h2>
-<p class="my-3 leading-relaxed">Every layer has a byte budget. A write that would exceed it evicts lowest-trust, oldest-first records until the write fits, recall stays fast and bounded no matter how much the agent remembers. A write that can&#x27;t fit even after eviction fails with <code>MEM_BUDGET_EXCEEDED</code> instead of growing the store.</p>
-<h2 id="writes-go-through-the-gate" class="text-xl font-bold tracking-tight mt-10 mb-3">Writes go through the gate</h2>
-<p class="my-3 leading-relaxed">One path for the model, the CLI, and imports alike:</p>
+<p class="my-3 leading-relaxed">When Pantheon looks something up, it searches all layers, most specific first. Every hit shows where it was written and when.</p>
+<h2 id="limits" class="text-xl font-bold tracking-tight mt-10 mb-3">Limits</h2>
+<p class="my-3 leading-relaxed">Each layer has a size limit. When a write would go over, the oldest, least-trusted memories are dropped until it fits. Recall stays fast no matter how much it remembers. If a write cannot fit at all, it fails loudly instead of silently growing.</p>
+<h2 id="how-a-memory-gets-written" class="text-xl font-bold tracking-tight mt-10 mb-3">How a memory gets written</h2>
+<p class="my-3 leading-relaxed">One path, whoever asks: you, the model, or an import:</p>
 <pre><code>
-propose → policy check → provenance attach → validation → store
+suggest → permission check → label the source → validate → store
 </code></pre>
-<p class="my-3 leading-relaxed">Writing needs the <code>MemoryWrite</code> capability (<code>coder_memory</code> policy or an explicit grant). Nothing the model wants remembered bypasses it, no silent prompt-injection writes, ever.</p>
+<p class="my-3 leading-relaxed">Writing needs permission (<code>coder_memory</code> policy, or an explicit grant). The model can never quietly write a memory for itself. Nothing from a web page or a document can tell it to &quot;forget its instructions&quot;: that text is data, not an order.</p>
 <h2 id="trust" class="text-xl font-bold tracking-tight mt-10 mb-3">Trust</h2>
-<table class="my-6"><thead><tr><th>Tier</th><th>Meaning</th></tr></thead><tbody>
-<tr><td><code>system</code></td><td>Harness-authored, authoritative</td></tr>
+<table class="my-6"><thead><tr><th>Level</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>system</code></td><td>Written by Pantheon itself, authoritative</td></tr>
 <tr><td><code>user</code></td><td>You wrote it (<code>put</code>, <code>/remember</code>, edited <code>MEMORY.md</code>)</td></tr>
-<tr><td><code>memory</code></td><td>User-confirmed (<code>memory confirm</code>)</td></tr>
-<tr><td><code>untrusted</code></td><td>Model-proposed or tool/web-derived</td></tr>
+<tr><td><code>memory</code></td><td>You confirmed it (<code>memory confirm</code>)</td></tr>
+<tr><td><code>untrusted</code></td><td>Suggested by the model or pulled from a tool or web page</td></tr>
 </tbody></table>
-<p class="my-3 leading-relaxed">Trust never transfers by copying. A proposal lands <code>untrusted</code> no matter what it claims; only your explicit action promotes it. A document telling the agent to &quot;ignore previous instructions&quot; is data, not an order.</p>
+<p class="my-3 leading-relaxed">Trust never transfers by copying. A suggestion lands as <code>untrusted</code> no matter what it claims to be. Only you can promote it.</p>
 <h2 id="commands" class="text-xl font-bold tracking-tight mt-10 mb-3">Commands</h2>
 <pre><code>
 pantheon memory put KEY VALUE
-pantheon memory recall QUERY [--ns NAME]   # search; another agent&#x27;s namespace on request
+pantheon memory recall QUERY [--ns NAME]   # search; another agent&#x27;s memories on request
 pantheon memory confirm KEY
 pantheon memory list
-pantheon memory import|export|sync [FILE]  # markdown round-trip; sync refuses on conflict
+pantheon memory import|export|sync [FILE]  # plain markdown round-trip
 pantheon memory backend list|select NAME
 </code></pre>
-<h2 id="learning-into-skills" class="text-xl font-bold tracking-tight mt-10 mb-3">Learning into skills</h2>
-<p class="my-3 leading-relaxed">Recurring experience shouldn&#x27;t be re-solved every time. When an agent discovers a reliable procedure, it becomes an inspectable artifact, documented, versioned, reusable:</p>
+<h2 id="turning-experience-into-skills" class="text-xl font-bold tracking-tight mt-10 mb-3">Turning experience into skills</h2>
+<p class="my-3 leading-relaxed">When Pantheon discovers a procedure that works reliably, it can be saved as a skill: a documented, reusable how-to. Skills explain how to do something; they never grant permission to do it. That decision still belongs to you and your policy.</p>
 <pre><code>
-Work → discovery → documentation → reuse → refinement
+pantheon skills list|import|doctor
 </code></pre>
-<p class="my-3 leading-relaxed">Skills are portable knowledge (instructions, workflows, examples). They explain how; they never authorize, the runtime still decides whether the agent may act. Manage them with <code>pantheon skills list|import|doctor</code>.</p>
 <h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><a href="agents.html">Agents</a>, memory scoping per identity</li>
-<li><a href="extensions.html">Extensions</a>, hooks and executable plugins</li>
-<li><a href="terminal.html#memory">Terminal reference</a>, full flags</li>
+<li><a href="agents.html">Agents</a>: whose memory is whose</li>
+<li><a href="extensions.html">Extensions</a>: plugins, the other half of extensibility</li>
+<li><a href="terminal.html#memory">Terminal reference</a>: full flags</li>
 </ul>
 </main>
 
-  <footer class="border-t border-rule mt-8">
-    <div class="max-w-5xl mx-auto px-5 md:px-8 py-12">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+  <footer class="border-t border-line mt-8">
+    <div class="max-w-6xl mx-auto px-6 md:px-10 py-14">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-8">
         <div class="flex items-center gap-2.5">
           <span class="logo-mark"><img src="logo.svg" alt="" width="26" height="26"></span>
-          <span class="font-semibold text-chalk">pantheon</span>
+          <span class="font-semibold text-ink">pantheon</span>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
-          <a href="product.html" class="text-ash hover:text-chalk">Product</a>
-          <a href="install.html" class="text-ash hover:text-chalk">Install</a>
-          <a href="docs.html" class="text-ash hover:text-chalk">Docs</a>
-          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
+          <a href="product.html" class="text-grey hover:text-ink">Product</a>
+          <a href="install.html" class="text-grey hover:text-ink">Install</a>
+          <a href="docs.html" class="text-grey hover:text-ink">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink">GitHub</a>
         </div>
       </div>
-      <p class="text-ash text-sm mt-8">An AI assistant that remembers. MIT licensed.</p>
+      <p class="text-grey text-sm mt-10">An assistant that does everything. MIT licensed.</p>
     </div>
   </footer>
 

@@ -963,6 +963,14 @@ pub fn write_session_import_with_budget(
 
 /// Depth-limited recursive transcript collection. Bounded so a runaway or
 /// symlinked source tree cannot turn one import into an unbounded copy.
+///
+/// Eight parameters is over clippy's default limit, but this is a private
+/// recursive helper where every parameter is recursion state threaded
+/// through each level (`files`/`formats` accumulate, `depth` bounds,
+/// `budgets`/`usage` account). Grouping them into a struct would obscure
+/// the recursion without removing any complexity, so the lint is silenced
+/// here with justification.
+#[allow(clippy::too_many_arguments)]
 fn collect_transcripts(
     from: &Path,
     into: &Path,

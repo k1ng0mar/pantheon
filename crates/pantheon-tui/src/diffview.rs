@@ -164,8 +164,8 @@ pub fn unified_diff(old: &str, new: &str) -> Vec<DiffLine> {
     for (s, hunk_ops) in hunks {
         // Hunk header with old/new line ranges.
         let (mut ao, mut bo) = (0usize, 0usize);
-        for k in 0..s {
-            match ops[k] {
+        for op in ops.iter().take(s) {
+            match op {
                 Op::Same(_) => {
                     ao += 1;
                     bo += 1;
