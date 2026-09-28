@@ -119,9 +119,9 @@ fn apply_rewinds(entries: Vec<LedgerEntry>) -> Vec<LedgerEntry> {
     let mut out: Vec<LedgerEntry> = Vec::with_capacity(entries.len());
     for entry in entries {
         if let Event::TurnRewound { turn_id, .. } = &entry.event {
-            if let Some(pos) = out.iter().rposition(|e| {
-                matches!(&e.event, Event::TurnStarted { turn_id: t, .. } if t == turn_id)
-            }) {
+            if let Some(pos) = out.iter().rposition(
+                |e| matches!(&e.event, Event::TurnStarted { turn_id: t, .. } if t == turn_id),
+            ) {
                 out.truncate(pos);
             }
         }
@@ -759,10 +759,7 @@ impl Ledger {
             .lock()
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         let pruned = conn
-            .execute(
-                "DELETE FROM events WHERE ts_ms < ?1",
-                params![cutoff_ts_ms],
-            )
+            .execute("DELETE FROM events WHERE ts_ms < ?1", params![cutoff_ts_ms])
             .map_err(|e| err("LEDGER_PRUNE", e.to_string()))?;
         Ok(pruned)
     }

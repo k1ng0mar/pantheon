@@ -30,11 +30,11 @@ use pantheon_api::events::Event as RuntimeErrorEvent;
 use pantheon_providers::model_event::ModelEvent;
 use pantheon_runtime::session::Session;
 
+mod editor;
 /// TUI-B feature modules. Declared here (not in lib.rs) so a sibling
 /// worker editing lib.rs cannot conflict with this branch.
 mod statusbar;
 mod timeline;
-mod editor;
 
 /// A single block in the conversation transcript.
 #[derive(Debug, Clone)]
@@ -670,7 +670,11 @@ impl TuiState {
     /// turn runs; `None` before the first turn so the bar shows `—`.
     pub fn display_turn_no(&self) -> Option<u32> {
         let n = self.turns_completed + if self.ready { 0 } else { 1 };
-        if n == 0 { None } else { Some(n) }
+        if n == 0 {
+            None
+        } else {
+            Some(n)
+        }
     }
 
     pub fn add_user_message(&mut self, text: String) {
@@ -1014,7 +1018,10 @@ fn render_timeline(f: &mut Frame, area: Rect, state: &TuiState) {
         let row = format!(
             "  {:>3}  {}",
             turn.turn_no,
-            turn.preview.chars().take(inner.saturating_sub(8)).collect::<String>(),
+            turn.preview
+                .chars()
+                .take(inner.saturating_sub(8))
+                .collect::<String>(),
         );
         let style = if i == sel {
             Style::default()
@@ -1062,9 +1069,17 @@ fn render_editor(f: &mut Frame, area: Rect, state: &TuiState) {
             // Draw the block cursor inside the current line.
             let chars: Vec<char> = line.chars().collect();
             let c = ccol.min(chars.len());
-            let (head, tail) = (chars[..c].iter().collect::<String>(), chars[c..].iter().collect::<String>());
+            let (head, tail) = (
+                chars[..c].iter().collect::<String>(),
+                chars[c..].iter().collect::<String>(),
+            );
             spans.push(Span::raw(head));
-            spans.push(Span::styled("▌", Style::default().fg(color::PRIMARY).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(
+                "▌",
+                Style::default()
+                    .fg(color::PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            ));
             spans.push(Span::raw(tail));
             lines.push(Line::from(spans).style(Style::default().add_modifier(Modifier::REVERSED)));
         } else {
@@ -1604,14 +1619,7 @@ pub fn run_tui_session_with(
     // start as the run the loop opens on — not the throwaway id new() made.
     state.session_id = run_id.clone();
 
-    let result = tui_loop(
-        &mut terminal,
-        &mut state,
-        session,
-        &tx,
-        &rx,
-        &running,
-    );
+    let result = tui_loop(&mut terminal, &mut state, session, &tx, &rx, &running);
 
     disable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -2072,12 +2080,8 @@ fn tui_loop(
                 // the Char handler (Alt+1 arrives as Char('1')+ALT).
                 if let Some(action) = crate::tabs::tab_key_action(key.code, key.modifiers) {
                     let target: Option<String> = match action {
-                        crate::tabs::TabAction::Next => {
-                            state.tabs.cycle_next().map(str::to_string)
-                        }
-                        crate::tabs::TabAction::Prev => {
-                            state.tabs.cycle_prev().map(str::to_string)
-                        }
+                        crate::tabs::TabAction::Next => state.tabs.cycle_next().map(str::to_string),
+                        crate::tabs::TabAction::Prev => state.tabs.cycle_prev().map(str::to_string),
                         crate::tabs::TabAction::Jump(n) => {
                             if state.tabs.jump(n) {
                                 state.tabs.active_run_id().map(str::to_string)
@@ -2626,7 +2630,9 @@ fn handle_slash(
         state.add_status("  /doctor            diagnose this install".into());
         state.add_status("  /sessions          live sessions holding a lease".into());
         state.add_status("  /new               start a fresh conversation".into());
-        state.add_status("  /rewind            roll back the last turn (confirm; ledger kept)".into());
+        state.add_status(
+            "  /rewind            roll back the last turn (confirm; ledger kept)".into(),
+        );
         state.add_status("  /compress         compress this conversation to the window now".into());
         state.add_status("  /export [md|json]  save this conversation to exports/".into());
         state.add_status("  /runs [N]          recent runs (default 10)".into());

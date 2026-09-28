@@ -573,7 +573,6 @@ fn task_err(e: TaskMutationError) -> PantheonError {
     aerr(code, cause, "reload the task state and retry")
 }
 
-
 /// Turn a profile resolution error into a runtime error, preserving the
 /// distinction between "no such profile" and "that profile is broken".
 pub fn profile_err(e: ProfileError) -> PantheonError {

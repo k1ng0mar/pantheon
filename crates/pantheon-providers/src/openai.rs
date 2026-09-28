@@ -158,10 +158,7 @@ fn usage_of(v: &serde_json::Value) -> Option<ModelUsage> {
             .pointer("/prompt_tokens_details/cached_tokens")
             .and_then(|x| x.as_u64())
             .unwrap_or(0);
-        let prompt = u
-            .get("prompt_tokens")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(0);
+        let prompt = u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
         return Some(ModelUsage {
             input_tokens: prompt + cached,
             output_tokens: u

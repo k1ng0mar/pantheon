@@ -54,7 +54,10 @@ fn plugin_install_dir_rejects_bad_name() {
         let err = plugin_install_dir(d.path(), bad).unwrap_err();
         assert_eq!(err.code, "PLUGIN_BAD_NAME", "{bad:?}");
     }
-    assert!(!d.path().join("evil").exists(), "rejection must precede any write");
+    assert!(
+        !d.path().join("evil").exists(),
+        "rejection must precede any write"
+    );
 }
 
 #[test]

@@ -9,7 +9,11 @@ fn rate_err(cause: &str) -> PantheonError {
 #[test]
 fn retry_after_delta_seconds_parses_and_caps() {
     assert_eq!(parse_retry_after("5"), Some(5));
-    assert_eq!(parse_retry_after("  7  "), Some(7), "surrounding whitespace");
+    assert_eq!(
+        parse_retry_after("  7  "),
+        Some(7),
+        "surrounding whitespace"
+    );
     assert_eq!(parse_retry_after("0"), Some(0));
     // The cap: a provider asking for two minutes gets sixty seconds.
     assert_eq!(parse_retry_after("120"), Some(MAX_RETRY_AFTER_SECS));
@@ -29,10 +33,7 @@ fn retry_after_rejects_garbage() {
 #[test]
 fn retry_after_http_date_parses() {
     // Long past: no wait.
-    assert_eq!(
-        parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT"),
-        Some(0)
-    );
+    assert_eq!(parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT"), Some(0));
     // Far future: capped, not a multi-year sleep.
     assert_eq!(
         parse_retry_after("Wed, 01 Jan 2099 00:00:00 GMT"),

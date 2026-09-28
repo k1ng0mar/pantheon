@@ -33,8 +33,7 @@ pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 /// Protocol versions the client understands. The server's answered version
 /// must be one of these, otherwise the handshake fails rather than guessing
 /// at compatibility.
-pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
-    &["2025-06-18", "2025-03-26", "2024-11-05"];
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
 /// Default per-request timeout: every request must complete within this.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -90,25 +89,18 @@ pub enum McpError {
     Io(String),
     /// No matching response within the request timeout. The child has been
     /// killed; the client is dead.
-    Timeout {
-        method: String,
-    },
+    Timeout { method: String },
     /// The transport is dead (timeout, EOF, or framing failure killed it).
     Closed,
     /// A message exceeded the configured cap. The child has been killed.
-    Oversized {
-        bytes: usize,
-    },
+    Oversized { bytes: usize },
     /// The server sent bytes that are not a valid framed message.
     Framing(String),
     /// JSON-RPC shape violation: missing `jsonrpc: "2.0"`, unexpected
     /// message kind, or a protocol version we do not speak.
     Protocol(String),
     /// The server answered with a JSON-RPC error object.
-    Rpc {
-        code: i64,
-        message: String,
-    },
+    Rpc { code: i64, message: String },
     /// `tools/call` returned `isError: true`. Carries the server's text.
     ServerToolError(String),
     /// The capability gate denied the call. The server never saw it.
@@ -125,7 +117,10 @@ impl fmt::Display for McpError {
             }
             McpError::Closed => write!(f, "mcp: transport closed"),
             McpError::Oversized { bytes } => {
-                write!(f, "mcp: message of {bytes} bytes exceeds the cap; server killed")
+                write!(
+                    f,
+                    "mcp: message of {bytes} bytes exceeds the cap; server killed"
+                )
             }
             McpError::Framing(e) => write!(f, "mcp: bad frame from server: {e}"),
             McpError::Protocol(e) => write!(f, "mcp: protocol violation: {e}"),
@@ -226,7 +221,10 @@ impl McpClient {
             .spawn()
             .map_err(|e| McpError::Spawn(format!("{}: {e}", config.command)))?;
         let stdin = child.stdin.take().ok_or(McpError::Io("no stdin".into()))?;
-        let stdout = child.stdout.take().ok_or(McpError::Io("no stdout".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or(McpError::Io("no stdout".into()))?;
 
         let (tx, rx) = mpsc::channel();
         let max_bytes = config.max_message_bytes;
@@ -465,7 +463,9 @@ impl Drop for McpClient {
 
 /// Classify one decoded JSON-RPC value.
 enum Wire {
-    Request { id: Value },
+    Request {
+        id: Value,
+    },
     Response {
         id: Value,
         result: Option<Value>,

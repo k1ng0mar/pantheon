@@ -3,7 +3,7 @@
 //! Behavioral / integration tests per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
 use pantheon_scheduler::webhook::{
-    sign, verify_signature, WebhookAuth, SignatureError, SIGNATURE_HEADER,
+    sign, verify_signature, SignatureError, WebhookAuth, SIGNATURE_HEADER,
 };
 
 const SECRET: &[u8] = b"test-shared-secret";

@@ -473,10 +473,7 @@ mod tests {
             Ok(true)
         );
         // Case-insensitive.
-        assert_eq!(
-            checksum_line_matches(&hex.to_uppercase(), hex),
-            Ok(true)
-        );
+        assert_eq!(checksum_line_matches(&hex.to_uppercase(), hex), Ok(true));
     }
 
     #[test]
@@ -491,6 +488,9 @@ mod tests {
     fn checksum_line_without_digest_is_not_verified() {
         let hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
         assert_eq!(checksum_line_matches("", hex), Ok(false));
-        assert_eq!(checksum_line_matches("not a checksum file\n", hex), Ok(false));
+        assert_eq!(
+            checksum_line_matches("not a checksum file\n", hex),
+            Ok(false)
+        );
     }
 }

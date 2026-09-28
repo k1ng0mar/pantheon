@@ -27,8 +27,7 @@ struct RateLimitStub {
 }
 impl ChatTransport for RateLimitStub {
     fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
-        self.calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Err(PantheonError::new(
             "PROVIDER_HTTP",
             pantheon_api::error::Layer::Provider,

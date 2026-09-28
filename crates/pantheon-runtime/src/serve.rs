@@ -117,8 +117,7 @@ struct ConnGuard {
 }
 impl Drop for ConnGuard {
     fn drop(&mut self) {
-        self.n
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.n.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -144,8 +143,7 @@ fn generate_token() -> String {
         (bytes.as_ptr() as usize).hash(&mut h);
         bytes[..8].copy_from_slice(&h.finish().to_le_bytes());
     }
-    const ALPH: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPH: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(32);
     let mut acc: u32 = 0;
     let mut bits = 0u32;

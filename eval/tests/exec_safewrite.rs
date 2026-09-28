@@ -158,7 +158,9 @@ fn safewriter_confines_target_paths() {
     let work = base.join("work");
     std::fs::create_dir_all(&work).unwrap();
     let state = base.join("state");
-    let w = SafeWriter::new(state).unwrap().with_workspace_root(work.clone());
+    let w = SafeWriter::new(state)
+        .unwrap()
+        .with_workspace_root(work.clone());
 
     // apply_edits outside the workspace is rejected before any write.
     let outside = base.join("evil.txt");

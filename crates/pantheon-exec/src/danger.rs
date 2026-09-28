@@ -188,17 +188,14 @@ const PATTERNS: &[Pattern] = &[
                 let has_f = rest.iter().any(|t| t.starts_with('-') && t.contains('f'));
                 has_r
                     && has_f
-                    && rest
-                        .iter()
-                        .filter(|t| !t.starts_with('-'))
-                        .any(|t| {
-                            *t == "/"
-                                || *t == "/*"
-                                || *t == "~"
-                                || t.starts_with("~/")
-                                || *t == "$home"
-                                || t.starts_with("$home/")
-                        })
+                    && rest.iter().filter(|t| !t.starts_with('-')).any(|t| {
+                        *t == "/"
+                            || *t == "/*"
+                            || *t == "~"
+                            || t.starts_with("~/")
+                            || *t == "$home"
+                            || t.starts_with("$home/")
+                    })
             }
             segments(c).any(is_root_rm)
         },
@@ -218,16 +215,12 @@ const PATTERNS: &[Pattern] = &[
     (
         "eval_builtin",
         "eval re-parses its arguments as shell code",
-        |c: &str| {
-            segments(c).any(|seg| cmd_name(first_word(strip_wrappers(seg))) == "eval")
-        },
+        |c: &str| segments(c).any(|seg| cmd_name(first_word(strip_wrappers(seg))) == "eval"),
     ),
     (
         "exec_builtin",
         "exec replaces the shell process or rewrites redirections",
-        |c: &str| {
-            segments(c).any(|seg| cmd_name(first_word(strip_wrappers(seg))) == "exec")
-        },
+        |c: &str| segments(c).any(|seg| cmd_name(first_word(strip_wrappers(seg))) == "exec"),
     ),
     (
         "command_subst",
@@ -404,7 +397,11 @@ pub fn gate(command: &str) -> Result<(), PantheonError> {
     let a = assess(command);
     if a.level == RiskLevel::Critical {
         let rules: Vec<&str> = a.matches.iter().map(|m| m.rule).collect();
-        let digest = a.matches.first().map(|m| m.snippet.clone()).unwrap_or_default();
+        let digest = a
+            .matches
+            .first()
+            .map(|m| m.snippet.clone())
+            .unwrap_or_default();
         return Err(eerr(
             "DANGER_BLOCKED",
             format!(

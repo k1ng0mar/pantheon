@@ -284,4 +284,3 @@ pub fn confine(path: &Path, workspace_root: &Path) -> Result<PathBuf, PantheonEr
     }
     Ok(canon)
 }
-

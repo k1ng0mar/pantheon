@@ -12,4 +12,3 @@ fn an_id_needing_toml_quoting_is_quoted() {
     assert_eq!(toml_key("has space"), "\"has space\"");
     assert_eq!(toml_key(""), "\"\"");
 }
-

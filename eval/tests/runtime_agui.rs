@@ -9,7 +9,6 @@ use pantheon_runtime::agui::*;
 use pantheon_runtime::rpc::{Dispatcher, Id, Request};
 use serde_json::{json, Value};
 
-
 #[test]
 fn send_grant_deny_frames_round_trip() {
     let dir = std::env::temp_dir().join(format!("pantheon-agui-{}", std::process::id()));
@@ -40,7 +39,6 @@ fn send_grant_deny_frames_round_trip() {
     );
     assert_eq!(after["frames"].as_array().unwrap().len(), 1);
 }
-
 
 #[test]
 fn parked_run_refuses_send_until_grant() {
@@ -122,7 +120,6 @@ fn scoped_denial_keeps_other_approval_pending() {
     );
 }
 
-
 #[test]
 fn artifact_put_returns_a_signed_reference() {
     let dir = std::env::temp_dir().join(format!("pantheon-artifact-{}", std::process::id()));
@@ -161,4 +158,3 @@ fn call(d: &Dispatcher, method: &str, params: Value) -> Value {
     assert!(resp.is_success(), "{resp:?}");
     resp.result.unwrap()
 }
-

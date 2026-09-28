@@ -355,7 +355,14 @@ fn copy_tree_skips_symlinks_and_records_them() {
     std::os::unix::fs::symlink(&outside, src.join("link.md")).unwrap();
 
     let mut skipped = Vec::new();
-    copy_tree(&src, &d.join("dst"), &mut skipped, &StageBudgets::unlimited(), &mut BudgetUsage::default()).unwrap();
+    copy_tree(
+        &src,
+        &d.join("dst"),
+        &mut skipped,
+        &StageBudgets::unlimited(),
+        &mut BudgetUsage::default(),
+    )
+    .unwrap();
     assert!(d.join("dst/real.md").is_file());
     assert!(
         !d.join("dst/link.md").exists(),
@@ -560,7 +567,14 @@ fn copy_tree_is_depth_bounded() {
     std::fs::write(p.join("leaf.txt"), "bottom\n").unwrap();
 
     let mut skipped = Vec::new();
-    copy_tree(&src, &d.join("dst"), &mut skipped, &StageBudgets::unlimited(), &mut BudgetUsage::default()).unwrap();
+    copy_tree(
+        &src,
+        &d.join("dst"),
+        &mut skipped,
+        &StageBudgets::unlimited(),
+        &mut BudgetUsage::default(),
+    )
+    .unwrap();
     assert!(
         skipped.iter().any(|s| s.contains("deeper than")),
         "the depth bound should have been reported: {skipped:?}"
@@ -578,7 +592,14 @@ fn copy_tree_still_copies_normal_depths() {
     std::fs::create_dir_all(src.join("a/b/c")).unwrap();
     std::fs::write(src.join("a/b/c/deep.txt"), "kept\n").unwrap();
     let mut skipped = Vec::new();
-    copy_tree(&src, &d.join("out"), &mut skipped, &StageBudgets::unlimited(), &mut BudgetUsage::default()).unwrap();
+    copy_tree(
+        &src,
+        &d.join("out"),
+        &mut skipped,
+        &StageBudgets::unlimited(),
+        &mut BudgetUsage::default(),
+    )
+    .unwrap();
     assert!(skipped.is_empty(), "{skipped:?}");
     assert_eq!(
         std::fs::read_to_string(d.join("out/a/b/c/deep.txt")).unwrap(),
@@ -609,11 +630,7 @@ fn a_staging_failure_commits_nothing() {
         kind: ItemKind::Skill,
         path: d.join("skills/gone").to_string_lossy().to_string(),
         action: Action::Import {
-            target: t
-                .data_dir
-                .join("skills/gone")
-                .to_string_lossy()
-                .to_string(),
+            target: t.data_dir.join("skills/gone").to_string_lossy().to_string(),
         },
         note: String::new(),
     });
@@ -794,11 +811,7 @@ fn backup_breach_leaves_no_partial_backup() {
     fixture(&d);
     let t = targets(&d);
     fs::create_dir_all(t.data_dir.join("skills/demo")).unwrap();
-    fs::write(
-        t.data_dir.join("skills/demo/SKILL.md"),
-        vec![b'y'; 1024],
-    )
-    .unwrap();
+    fs::write(t.data_dir.join("skills/demo/SKILL.md"), vec![b'y'; 1024]).unwrap();
     let p = plan(&d, SourceKind::Hermes, &t);
 
     let before: usize = fs::read_dir(t.backup_root())

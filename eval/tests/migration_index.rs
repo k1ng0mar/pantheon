@@ -145,4 +145,3 @@ fn the_quarantine_path_is_the_one_apply_writes() {
 // ---------------------------------------------------------------------------
 // ensure_sessions_indexed: index failure is import failure
 // ---------------------------------------------------------------------------
-

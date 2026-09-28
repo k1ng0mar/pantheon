@@ -116,4 +116,3 @@ impl super::operation::ToolOperationAdapter for StageAdapter<'_> {
         Ok(result.clone())
     }
 }
-

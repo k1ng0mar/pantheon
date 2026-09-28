@@ -31,8 +31,14 @@ fn signed(
 fn a_valid_signature_is_accepted() {
     let job = hook("deploy-hook", "hook/deploy");
     let mut ledger = ClaimLedger::new();
-    let fire = signed(&job, "hook/deploy", "req-1", b"{\"ref\":\"main\"}", &mut ledger)
-        .expect("valid signature");
+    let fire = signed(
+        &job,
+        "hook/deploy",
+        "req-1",
+        b"{\"ref\":\"main\"}",
+        &mut ledger,
+    )
+    .expect("valid signature");
     assert_eq!(fire.job_id, "deploy-hook");
     assert_eq!(fire.target_agent, "nyx");
     assert_eq!(fire.occurrence_key, "job:deploy-hook:req-1");
@@ -42,11 +48,22 @@ fn a_valid_signature_is_accepted() {
 fn a_missing_signature_is_rejected_with_401() {
     let job = hook("deploy-hook", "hook/deploy");
     let mut ledger = ClaimLedger::new();
-    let err = accept(&job, "hook/deploy", "req-1", b"{}", None, &auth(), &mut ledger)
-        .expect_err("missing signature must not trigger");
+    let err = accept(
+        &job,
+        "hook/deploy",
+        "req-1",
+        b"{}",
+        None,
+        &auth(),
+        &mut ledger,
+    )
+    .expect_err("missing signature must not trigger");
     assert_eq!(err, WebhookReject::Unauthorized(SignatureError::Missing));
     assert_eq!(err.http_status(), 401);
-    assert!(ledger.is_empty(), "a rejected request must not consume an occurrence");
+    assert!(
+        ledger.is_empty(),
+        "a rejected request must not consume an occurrence"
+    );
 }
 
 #[test]
@@ -54,8 +71,16 @@ fn a_wrong_secret_is_rejected() {
     let job = hook("deploy-hook", "hook/deploy");
     let mut ledger = ClaimLedger::new();
     let sig = sign(b"some-other-secret", b"{}");
-    let err = accept(&job, "hook/deploy", "req-1", b"{}", Some(&sig), &auth(), &mut ledger)
-        .expect_err("wrong secret must not trigger");
+    let err = accept(
+        &job,
+        "hook/deploy",
+        "req-1",
+        b"{}",
+        Some(&sig),
+        &auth(),
+        &mut ledger,
+    )
+    .expect_err("wrong secret must not trigger");
     assert_eq!(err, WebhookReject::Unauthorized(SignatureError::Mismatch));
     assert_eq!(err.http_status(), 401);
 }
@@ -90,8 +115,16 @@ fn malformed_signatures_are_rejected() {
         &"sha256=".to_string() as &str,
     ] {
         let mut ledger = ClaimLedger::new();
-        let err = accept(&job, "hook/deploy", "req-1", b"{}", Some(bad), &auth(), &mut ledger)
-            .expect_err("malformed signature must not trigger");
+        let err = accept(
+            &job,
+            "hook/deploy",
+            "req-1",
+            b"{}",
+            Some(bad),
+            &auth(),
+            &mut ledger,
+        )
+        .expect_err("malformed signature must not trigger");
         assert_eq!(
             err,
             WebhookReject::Unauthorized(SignatureError::Malformed),
@@ -100,10 +133,21 @@ fn malformed_signatures_are_rejected() {
     }
     // Uppercase hex is still hex: it must verify like lowercase.
     let mut ledger = ClaimLedger::new();
-    let upper = sign(SECRET, b"{}").replace("sha256=", "sha256=").to_ascii_uppercase();
+    let upper = sign(SECRET, b"{}")
+        .replace("sha256=", "sha256=")
+        .to_ascii_uppercase();
     let upper = upper.replacen("SHA256=", "sha256=", 1);
     assert!(
-        accept(&job, "hook/deploy", "req-9", b"{}", Some(&upper), &auth(), &mut ledger).is_ok(),
+        accept(
+            &job,
+            "hook/deploy",
+            "req-9",
+            b"{}",
+            Some(&upper),
+            &auth(),
+            &mut ledger
+        )
+        .is_ok(),
         "uppercase hex digest must verify"
     );
 }

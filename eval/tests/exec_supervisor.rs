@@ -5,12 +5,10 @@
 //! threads, sockets, subprocesses, timing, filesystem — lives here and
 //! runs via `cargo test -p pantheon-eval`.
 
-use pantheon_exec::supervisor::*;
-use pantheon_exec::plugins::{EnvVarDecl, PluginManifest, ToolCapability};
 use pantheon_api::capability::Capability;
+use pantheon_exec::plugins::{EnvVarDecl, PluginManifest, ToolCapability};
+use pantheon_exec::supervisor::*;
 use std::time::{Duration, Instant};
-
-
 
 /// Spawn a fake plugin (a shell loop that answers one canned response)
 /// and drive a full call through the supervisor.
@@ -63,7 +61,6 @@ fn live_call_round_trip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// A plugin that never answers must time out and die, not hang the test.
 #[test]
 fn timeout_kills_wedged_plugin() {
@@ -110,7 +107,6 @@ fn timeout_kills_wedged_plugin() {
     sup.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 /// A manifest-declared env var reaches the plugin ONLY on an allowlist hit.
 /// The host holds two vars, the manifest declares both, the operator
@@ -203,4 +199,3 @@ fn manifest_env_needs_allowlist_hit() {
     std::env::remove_var("PANTHEON_SUP_TEST_DENIED");
     let _ = std::fs::remove_dir_all(&dir);
 }
-

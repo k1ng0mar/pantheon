@@ -27,13 +27,7 @@ pub fn build_turns(blocks: &[TranscriptBlock]) -> Vec<TimelineTurn> {
     let mut turns = Vec::new();
     for (i, block) in blocks.iter().enumerate() {
         if let BlockKind::UserMessage(text) = &block.kind {
-            let preview: String = text
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(48)
-                .collect();
+            let preview: String = text.lines().next().unwrap_or("").chars().take(48).collect();
             turns.push(TimelineTurn {
                 turn_no: turns.len() + 1,
                 block_start: i,

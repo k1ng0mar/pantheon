@@ -61,7 +61,12 @@ fn outcome_carries_catalog_cost_so_cost_ceiling_trips() {
         },
     })
     .to_string();
-    let chain = ProviderChain::new(policy, StubTransport { body }, vec![], SecretValue::new("k"));
+    let chain = ProviderChain::new(
+        policy,
+        StubTransport { body },
+        vec![],
+        SecretValue::new("k"),
+    );
     let out = chain
         .turn_messages(&[Message::user("hi")])
         .expect("stubbed turn should succeed");

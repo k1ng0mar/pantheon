@@ -6,8 +6,8 @@
 //! runs via `cargo test -p pantheon-eval`.
 
 //! Tests for `pantheon_exec::confine` — sibling file so sources stay test-free.
-use pantheon_exec::confine::*;
 use pantheon_api::error::PantheonError;
+use pantheon_exec::confine::*;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -190,7 +190,10 @@ fn in_workspace_paths_allowed() {
 
     // Non-existent file in a non-existent subdir -> parent canonicalized.
     let got = confine(&work.join("newdir/b.txt"), &work).unwrap();
-    assert_eq!(got, std::fs::canonicalize(&work).unwrap().join("newdir/b.txt"));
+    assert_eq!(
+        got,
+        std::fs::canonicalize(&work).unwrap().join("newdir/b.txt")
+    );
 
     // `..` that stays inside is fine.
     let got = confine(&work.join("sub/../c.txt"), &work).unwrap();

@@ -106,7 +106,9 @@ fn run_delivered_task(task_id: &Option<String>, say: &Option<String>, target: &s
             let answer = outcome_text(&outcome);
             if target == "session" {
                 println!("{answer}");
-            } else if let Err(e) = crate::gateway::enqueue_outbound(&data_dir(), target, &answer, target) {
+            } else if let Err(e) =
+                crate::gateway::enqueue_outbound(&data_dir(), target, &answer, target)
+            {
                 eprintln!("queue for {target}: {e}");
                 std::process::exit(1);
             } else {
@@ -1596,12 +1598,7 @@ pub fn choose_splash_logo<'a>(
 /// empty string when nothing is embedded. A missing asset never breaks
 /// startup; the wordmark below still renders.
 pub fn splash_logo(width: u16) -> &'static str {
-    choose_splash_logo(
-        Some(SPLASH_LOGO_WIDE),
-        Some(SPLASH_LOGO_NARROW),
-        width,
-    )
-    .unwrap_or("")
+    choose_splash_logo(Some(SPLASH_LOGO_WIDE), Some(SPLASH_LOGO_NARROW), width).unwrap_or("")
 }
 
 /// Center `line` in `width` columns (left-pad only; overlong lines pass
@@ -1686,11 +1683,7 @@ mod splash_tests {
     fn splash_lines_end_with_styled_wordmark() {
         let lines = splash_lines(80);
         let last = lines.last().unwrap();
-        let text: String = last
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
+        let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text.trim(), "PANTHEON");
         let style = last.spans[0].style;
         assert!(style.add_modifier.contains(ratatui::style::Modifier::BOLD));
@@ -1703,7 +1696,11 @@ mod splash_tests {
         // the way splash_lines does, with no art.
         let lines: Vec<ratatui::text::Line<'static>> = {
             let mut v = Vec::new();
-            if !choose_splash_logo(None, None, 80).unwrap_or("").trim().is_empty() {
+            if !choose_splash_logo(None, None, 80)
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+            {
                 unreachable!();
             }
             v.push(ratatui::text::Line::from("PANTHEON"));

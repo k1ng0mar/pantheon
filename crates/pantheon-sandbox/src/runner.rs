@@ -568,7 +568,11 @@ pub fn run_sandboxed(
         let digest = cmd_digest(&args.join(" "));
         return Err(berr(
             "SANDBOX_TIMEOUT",
-            format!("command exceeded {}s: {} ({digest})", timeout_ms / 1000, program),
+            format!(
+                "command exceeded {}s: {} ({digest})",
+                timeout_ms / 1000,
+                program
+            ),
             true,
         ));
     }

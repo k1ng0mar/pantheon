@@ -191,8 +191,7 @@ fn remote_embed_uses_catalog_key_header_not_hardcoded_bearer() {
         req.headers
     );
     assert!(
-        !req
-            .headers
+        !req.headers
             .iter()
             .any(|(k, _)| k.eq_ignore_ascii_case("authorization")),
         "no Authorization header when the catalog says otherwise: {:?}",

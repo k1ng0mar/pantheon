@@ -113,9 +113,7 @@ impl TabList {
         // The selected session may hold no lease yet (fresh /new) and thus
         // be absent from the live listing; pin it so the bar always shows
         // where the user is.
-        if !active_run_id.is_empty()
-            && !self.tabs.iter().any(|t| t.run_id == active_run_id)
-        {
+        if !active_run_id.is_empty() && !self.tabs.iter().any(|t| t.run_id == active_run_id) {
             self.tabs.insert(
                 0,
                 Tab {
@@ -279,7 +277,11 @@ pub fn render_tab_bar(f: &mut Frame, area: Rect, tabs: &TabList) {
         .iter()
         .enumerate()
         .map(|(i, tab)| {
-            let busy = if tab.busy { format!(" {BUSY_GLYPH}") } else { String::new() };
+            let busy = if tab.busy {
+                format!(" {BUSY_GLYPH}")
+            } else {
+                String::new()
+            };
             format!(" {} {}{}", i + 1, tab.label(), busy)
         })
         .collect();
@@ -314,10 +316,7 @@ pub fn render_tab_bar(f: &mut Frame, area: Rect, tabs: &TabList) {
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        line_spans.push(Span::styled(
-            format!(" {} {}", i + 1, tab.label()),
-            style,
-        ));
+        line_spans.push(Span::styled(format!(" {} {}", i + 1, tab.label()), style));
         if tab.busy {
             line_spans.push(Span::styled(
                 format!(" {BUSY_GLYPH}"),

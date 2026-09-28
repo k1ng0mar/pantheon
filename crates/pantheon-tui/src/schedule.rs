@@ -4,7 +4,9 @@
 //! (§21) is handled by the scheduler's DurableClaimLedger over the
 //! ClaimStore.
 
-use pantheon_scheduler::{DurableClaimLedger, Job, MissedPolicy, OverlapPolicy, ScheduleKind, TickDecision, TickDriver};
+use pantheon_scheduler::{
+    DurableClaimLedger, Job, MissedPolicy, OverlapPolicy, ScheduleKind, TickDecision, TickDriver,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -391,18 +393,12 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                             fired.push(j.id.clone());
                         }
                         TickDecision::Queued => {
-                            println!(
-                                "tick {now}: {} still running, queued (overlap=queue)",
-                                j.id
-                            );
+                            println!("tick {now}: {} still running, queued (overlap=queue)", j.id);
                             fired.push(j.id.clone());
                         }
                         TickDecision::NotDue => {}
                         TickDecision::SkippedClaimLost => {
-                            println!(
-                                "tick {now}: {} already claimed, skipping (replay)",
-                                j.id
-                            );
+                            println!("tick {now}: {} already claimed, skipping (replay)", j.id);
                         }
                         TickDecision::SkippedOverlap => {
                             println!(

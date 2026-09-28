@@ -71,4 +71,3 @@ impl DurableClaimLedger {
         self.store.names()
     }
 }
-

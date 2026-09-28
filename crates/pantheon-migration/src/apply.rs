@@ -128,10 +128,7 @@ impl StageBudgets {
         if usage.files > self.max_files {
             return Err(merr(
                 "MIGRATE_BUDGET_FILES",
-                format!(
-                    "{what}: file count budget of {} exceeded",
-                    self.max_files
-                ),
+                format!("{what}: file count budget of {} exceeded", self.max_files),
                 "raise PANTHEON_MIGRATE_MAX_FILES or migrate fewer categories",
             ));
         }
@@ -273,9 +270,7 @@ pub fn backup_with_budgets(
         entries,
     };
     if !manifest.is_empty() {
-        let mpath = targets
-            .backup_root()
-            .join(format!("{}.json", manifest.id));
+        let mpath = targets.backup_root().join(format!("{}.json", manifest.id));
         std::fs::write(
             &mpath,
             serde_json::to_string_pretty(&manifest).unwrap_or_default(),
@@ -597,7 +592,10 @@ fn stage_slot(
     } else {
         return Err(merr(
             "MIGRATE_TARGET_OUTSIDE",
-            format!("{} is under neither the data dir nor the extensions dir", live.display()),
+            format!(
+                "{} is under neither the data dir nor the extensions dir",
+                live.display()
+            ),
             "the plan target is inconsistent with the targets; re-plan",
         ));
     };
@@ -749,7 +747,16 @@ pub(crate) fn stage(
             }
         }
 
-        stage_bridges(plan, targets, &stage_id, &mut roots, &mut staged, budgets, &mut usage, merge_providers)?;
+        stage_bridges(
+            plan,
+            targets,
+            &stage_id,
+            &mut roots,
+            &mut staged,
+            budgets,
+            &mut usage,
+            merge_providers,
+        )?;
 
         // Staged validation: prove the staged tree has the shape `validate`
         // will demand of the live tree, before anything is committed.
@@ -797,9 +804,11 @@ fn stage_bridges(
     usage: &mut BudgetUsage,
     merge_providers: bool,
 ) -> Result<(), PantheonError> {
-    if !plan.items.iter().any(|i| {
-        is_bridged(i.kind) && matches!(i.action, Action::Import { .. })
-    }) {
+    if !plan
+        .items
+        .iter()
+        .any(|i| is_bridged(i.kind) && matches!(i.action, Action::Import { .. }))
+    {
         return Ok(());
     }
     let stage_data = targets.data_dir.join(".migrate-stage").join(stage_id);
@@ -815,31 +824,34 @@ fn stage_bridges(
         live: PathBuf,
     }
     let mut preseeds: Vec<Preseed> = Vec::new();
-    let mut seed = |kind: ItemKind, live: PathBuf, preseeds: &mut Vec<Preseed>| -> Result<(), PantheonError> {
-        if !live.is_file() {
-            return Ok(());
-        }
-        let rel = live
-            .strip_prefix(&targets.data_dir)
-            .map_err(|_| {
-                merr(
-                    "MIGRATE_TARGET_OUTSIDE",
-                    format!("{} is not under the data dir", live.display()),
-                    "re-plan with consistent targets",
-                )
-            })?
-            .to_path_buf();
-        let dest = stage_data.join(&rel);
-        let size = std::fs::metadata(&live).map(|m| m.len()).unwrap_or(0);
-        budgets.charge(usage, size, &live.display().to_string())?;
-        std::fs::copy(&live, &dest)
-            .map_err(|e| io("MIGRATE_STAGE_SEED", e, live.display().to_string()))?;
-        preseeds.push(Preseed { kind, rel, live });
-        Ok(())
-    };
-    if plan.items.iter().any(|i| {
-        i.kind == ItemKind::Credentials && matches!(i.action, Action::Import { .. })
-    }) {
+    let mut seed =
+        |kind: ItemKind, live: PathBuf, preseeds: &mut Vec<Preseed>| -> Result<(), PantheonError> {
+            if !live.is_file() {
+                return Ok(());
+            }
+            let rel = live
+                .strip_prefix(&targets.data_dir)
+                .map_err(|_| {
+                    merr(
+                        "MIGRATE_TARGET_OUTSIDE",
+                        format!("{} is not under the data dir", live.display()),
+                        "re-plan with consistent targets",
+                    )
+                })?
+                .to_path_buf();
+            let dest = stage_data.join(&rel);
+            let size = std::fs::metadata(&live).map(|m| m.len()).unwrap_or(0);
+            budgets.charge(usage, size, &live.display().to_string())?;
+            std::fs::copy(&live, &dest)
+                .map_err(|e| io("MIGRATE_STAGE_SEED", e, live.display().to_string()))?;
+            preseeds.push(Preseed { kind, rel, live });
+            Ok(())
+        };
+    if plan
+        .items
+        .iter()
+        .any(|i| i.kind == ItemKind::Credentials && matches!(i.action, Action::Import { .. }))
+    {
         seed(
             ItemKind::Credentials,
             crate::carry::pantheon_env_path(&targets.data_dir),
@@ -847,9 +859,10 @@ fn stage_bridges(
         )?;
     }
     if merge_providers
-        && plan.items.iter().any(|i| {
-            i.kind == ItemKind::Provider && matches!(i.action, Action::Import { .. })
-        })
+        && plan
+            .items
+            .iter()
+            .any(|i| i.kind == ItemKind::Provider && matches!(i.action, Action::Import { .. }))
     {
         seed(
             ItemKind::Provider,
@@ -1098,23 +1111,29 @@ pub(crate) fn commit_staged(staged: &Staged) -> Result<ApplyReport, PantheonErro
 
 /// Undo one staged item after a failed commit: remove what the commit
 /// placed, then restore the pre-image when the target previously existed.
-fn rollback_staged_item(
-    item: &StagedItem,
-    manifest: &BackupManifest,
-) -> Result<(), PantheonError> {
+fn rollback_staged_item(item: &StagedItem, manifest: &BackupManifest) -> Result<(), PantheonError> {
     if path_exists(&item.live) {
-        remove_path(&item.live)
-            .map_err(|e| io("MIGRATE_ROLLBACK_REMOVE", e, item.live.display().to_string()))?;
+        remove_path(&item.live).map_err(|e| {
+            io(
+                "MIGRATE_ROLLBACK_REMOVE",
+                e,
+                item.live.display().to_string(),
+            )
+        })?;
     }
     if item.existed {
         let want = item.live.to_string_lossy().to_string();
-        let entry = manifest.entries.iter().find(|e| e.target == want).ok_or_else(|| {
-            merr(
-                "MIGRATE_ROLLBACK_NO_PREIMAGE",
-                format!("no backup pre-image for {}", item.live.display()),
-                "the backup manifest is incomplete; restore by hand from migrate-backups/",
-            )
-        })?;
+        let entry = manifest
+            .entries
+            .iter()
+            .find(|e| e.target == want)
+            .ok_or_else(|| {
+                merr(
+                    "MIGRATE_ROLLBACK_NO_PREIMAGE",
+                    format!("no backup pre-image for {}", item.live.display()),
+                    "the backup manifest is incomplete; restore by hand from migrate-backups/",
+                )
+            })?;
         restore_backup_entry(entry)?;
     }
     Ok(())

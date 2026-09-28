@@ -6,8 +6,8 @@
 //! runs via `cargo test -p pantheon-eval`.
 
 //! Tests for `pantheon_runtime::tests` — sibling file so sources stay test-free.
-use pantheon_runtime::*;
 use pantheon_api::events::Event;
+use pantheon_runtime::*;
 use pantheon_storage::OperationStatus;
 /// Session search indexes message events as they are emitted, and the
 /// FTS5 query finds the exact chunk back. This is the tool\'s contract.
@@ -45,7 +45,10 @@ fn session_search_indexes_and_finds() {
     assert_eq!(hits[0].chunk.kind, "title");
 
     // Plain terms across a message chunk.
-    let hits = sup.shared_search().search("TUI session creation", 8).unwrap();
+    let hits = sup
+        .shared_search()
+        .search("TUI session creation", 8)
+        .unwrap();
     assert!(!hits.is_empty(), "message chunk matches");
     assert!(hits.iter().any(|h| h.chunk.text.contains("culprit")));
 

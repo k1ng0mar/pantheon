@@ -275,7 +275,10 @@ fn response_schema_adds_json_schema_format() {
     );
     let v: serde_json::Value = serde_json::from_str(&req.body).unwrap();
     assert_eq!(v["response_format"]["type"], "json_schema");
-    assert_eq!(v["response_format"]["json_schema"]["name"], "pantheon_structured");
+    assert_eq!(
+        v["response_format"]["json_schema"]["name"],
+        "pantheon_structured"
+    );
     assert_eq!(v["response_format"]["json_schema"]["schema"], schema);
 }
 

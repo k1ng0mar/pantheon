@@ -109,10 +109,7 @@ fn timeout_kills_hanging_server() {
     let err = client
         .call_tool("echo", &Value::Null, &allow_all)
         .expect_err("hang must time out");
-    assert!(
-        matches!(err, McpError::Timeout { .. }),
-        "got {err:?}"
-    );
+    assert!(matches!(err, McpError::Timeout { .. }), "got {err:?}");
     // The child was killed, not left hanging.
     assert!(!client.alive());
     // And the client is dead: no further requests.
