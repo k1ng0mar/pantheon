@@ -544,7 +544,15 @@ pub struct Session {
     /// the API key is resolved through `SecretsBroker::inject` at the
     /// execution boundary and never lives in memory as a plain String.
     pub secrets: SecretsBroker,
-    pub budget: Budget,
+    /// Run budget (turns, tool calls, token cap, delegate depth).
+    /// Interior-mutable so `/set` and `/tokens` can retune it live: the
+    /// loop snapshots it when a turn starts, so a turn already in flight
+    /// keeps the budget it started with.
+    pub budget: Mutex<Budget>,
+    /// Active `/goal` text, mirrored here from the TUI. Appended to the
+    /// system prompt at turn assembly so the model keeps pursuing it
+    /// across turns until `/goal clear`. `None` = no active goal.
+    pub goal: Mutex<Option<String>>,
     /// Delegation depth of this session's agent loop (0 = primary agent).
     ///
     /// Threaded through delegation: when this session's loop delegates,
@@ -675,7 +683,8 @@ impl Session {
             policy,
             model_policy: Mutex::new(model_policy),
             secrets,
-            budget: Budget::default(),
+            budget: Mutex::new(Budget::default()),
+            goal: Mutex::new(None),
             depth: 0,
             system_prompt: String::new(),
             memory,
@@ -876,6 +885,29 @@ impl Session {
         })?;
         policy.reasoning_budget = budget;
         Ok(())
+    }
+
+    /// Replace the run budget live (`/set`, `/tokens`, `[budget]`
+    /// config). Takes effect on the next turn; a turn already in flight
+    /// keeps the budget it started with.
+    pub fn set_budget(&self, budget: Budget) {
+        if let Ok(mut b) = self.budget.lock() {
+            *b = budget;
+        }
+    }
+
+    /// Snapshot the current run budget (for `/set`, `/tokens` display).
+    pub fn budget_snapshot(&self) -> Budget {
+        self.budget.lock().map(|b| b.clone()).unwrap_or_default()
+    }
+
+    /// Set the session's active goal (`/goal`). `None` clears it. The
+    /// text is appended to the system prompt at turn assembly so the
+    /// model keeps pursuing it across turns.
+    pub fn set_goal(&self, goal: Option<String>) {
+        if let Ok(mut g) = self.goal.lock() {
+            *g = goal;
+        }
     }
 
     /// The current budget override, for display (`None` = level mapping).
@@ -1414,9 +1446,19 @@ impl Session {
                 hook_ctx = ctx;
             }
         }
+        // An active `/goal` rides along in the system prompt so the model
+        // keeps pursuing it across turns until `/goal clear`. Built here
+        // (not stored) so set/clear takes effect on the very next turn.
+        let system_prompt = match self.goal.lock().ok().and_then(|g| g.clone()) {
+            Some(goal) if !goal.trim().is_empty() => format!(
+                "{}\n\nActive session goal: {goal}\nKeep pursuing this goal across turns until it is done or the user changes it.",
+                self.system_prompt
+            ),
+            _ => self.system_prompt.clone(),
+        };
         messages = assemble_turn(
             messages,
-            &self.system_prompt,
+            &system_prompt,
             &recall_block,
             &hook_ctx,
             &outgoing_user_message(&temporal_hint, user_message),
@@ -1707,7 +1749,7 @@ impl Session {
         let loop_ = AgentLoop {
             run_id: run_id.into(),
             policy: self.policy.clone(),
-            budget: self.budget.clone(),
+            budget: self.budget_snapshot(),
             sink: &sink,
             tools: &runner,
             spawner: spawner.as_deref(),

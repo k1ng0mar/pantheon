@@ -18,7 +18,7 @@ Bare `pantheon` opens the interface. It requires a terminal; without one it exit
 - **Rewind** (double-`Esc`, then confirm): rolls the session view back one turn. The ledger stays append-only — rewind writes a marker, never rewrites history.
 - **Editor** (`Ctrl+E`): a fullscreen draft editor for long prompts.
 
-Useful commands: `/models` (browse providers and models, Enter switches), `/model [provider id]` (show or switch the live model), `/reasoning [off|minimal|low|medium|high|xhigh|max]` (effort for chat turns), `/runs` (browse conversations), `/resume <id>` (jump to one), `/history`, `/status`, `/name <title>`, `/agent [name]`, `/agents`, `/remember KEY TEXT` (store agent memory), `/skills [filter]`, `/settings`, `/gateway`, `/doctor`, `/sessions` (live sessions), `/new`, `/compress`, `/export [markdown|json]`, `/clear`, `/exit`.
+Useful commands: `/models` (browse providers and models, Enter switches), `/model [provider id]` (show or switch the live model), `/reasoning [off|minimal|low|medium|high|xhigh|max]` (effort for chat turns), `/runs` (browse conversations), `/resume <id>` (jump to one), `/history`, `/status`, `/name <title>`, `/agent [name]`, `/agents`, `/remember KEY TEXT` (store agent memory), `/skills [filter]`, `/settings`, `/gateway`, `/doctor`, `/sessions` (live sessions), `/new`, `/compress`, `/export [markdown|json]`, `/clear`, `/exit`, `/goal [text]` (session objective, iteration-limited), `/tokens [n|off]` (per-run token cap), `/set [key value]` (live budget tuning).
 
 Start on a specific run from the shell: `pantheon --resume [id]`.
 

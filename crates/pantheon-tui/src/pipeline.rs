@@ -236,7 +236,8 @@ fn drive(sup: &Supervisor, data_dir: &std::path::Path, run_id: &str, spec: &str)
         run_id: run_id.to_string(),
         executor: &exec,
         evaluator: if eval_enabled { &strict } else { &noop },
-        max_iterations: 3,
+        // `[budget] max_iterations` in config.toml; absent = 3.
+        max_iterations: cfg.as_ref().map(|c| c.pipeline_iterations()).unwrap_or(3),
     };
     match runner.run(spec) {
         Ok(outcome) => {

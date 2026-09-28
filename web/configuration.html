@@ -89,8 +89,47 @@ model    = &quot;claude-sonnet-4-5&quot;
 </code></pre>
 <p class="my-3 leading-relaxed">Env overrides: <code>PANTHEON_PROVIDER</code>, <code>PANTHEON_MODEL</code>, <code>PANTHEON_REASONING</code>, <code>PANTHEON_REASONING_BUDGET</code>. Fallbacks are ordered, failure-only, runtime-controlled. Reasoning maps per wire mode (<code>reasoning_effort</code>, including <code>minimal</code> and <code>xhigh</code>, on OpenAI; thinking budget on Anthropic: 1k/4k/10k/20k/32k for minimal/low/medium/high/xhigh, <code>max</code> fills the window). An exact <code>reasoning_budget</code> overrides the mapping on budget wires (<code>0</code> disables); aux turns always run without it. Unknown spellings resolve to off and <code>doctor</code> flags them.</p>
 <h2 id="auxiliaries" class="text-xl font-bold tracking-tight mt-10 mb-3">Auxiliaries</h2>
-<p class="my-3 leading-relaxed">One <code>[judge]</code>, <code>[compression]</code>, <code>[title_gen]</code>, <code>[embeddings]</code>, <code>[search_synthesis]</code>, <code>[vision]</code>, <code>[scheduled]</code>, <code>[mcp_synthesis]</code> section each, same shape (<code>provider</code>, <code>model</code>, optional <code>api_key_env</code>). Absent means <code>auto</code> — the run&#x27;s default model — except <code>[embeddings]</code>, which falls back to a local embedder. Env overrides: <code>PANTHEON_&lt;AUX&gt;_PROVIDER</code> / <code>PANTHEON_&lt;AUX&gt;_MODEL</code>.</p>
+<p class="my-3 leading-relaxed">One <code>[judge]</code>, <code>[compression]</code>, <code>[title_gen]</code>, <code>[embeddings]</code>, <code>[search_synthesis]</code>, <code>[vision]</code>, <code>[scheduled]</code>, <code>[mcp_synthesis]</code>, <code>[extraction]</code>, <code>[rerank]</code>, <code>[planner]</code> section each, same shape (<code>provider</code>, <code>model</code>, optional <code>api_key_env</code>). Absent means <code>auto</code> — the run&#x27;s default model — except <code>[embeddings]</code>, which falls back to a local embedder. Env overrides: <code>PANTHEON_&lt;AUX&gt;_PROVIDER</code> / <code>PANTHEON_&lt;AUX&gt;_MODEL</code> (e.g. <code>PANTHEON_RERANK_MODEL</code>). <code>[extraction]</code>, <code>[rerank]</code>, and <code>[planner]</code> have no call sites yet — they exist so you can pin a cheap model ahead of those workloads landing.</p>
+<h2 id="reflection" class="text-xl font-bold tracking-tight mt-10 mb-3">Reflection</h2>
+<pre><code>
+[reflect]
+enabled       = false   # LLM-backed reflection steps need explicit opt-in
+auto_turns    = 20      # automatic pass every N completed turns (0 = off)
+max_proposals = 5       # proposal cap per pass
+# provider    = &quot;openai&quot;   # optional: pin the reflection aux model (auto = default)
+# model       = &quot;gpt-4o-mini&quot;
+# api_key_env = &quot;OPENAI_API_KEY&quot;
+</code></pre>
+<p class="my-3 leading-relaxed">Reflection is Pantheon&#x27;s ledger-native self-improvement loop: each pass reads structured ledger signals (repeated tool sequences, user corrections, denied approvals, repeated failures), generates proposals with provenance (memory lessons, skill proposals, persona notes), eval-gates skill/persona proposals against bounded evals, and holds them for approval. Memory lessons auto-apply at the <code>Memory</code> trust tier; everything else needs <code>/reflect</code>&#x27;s y/n card (or <code>pantheon reflect --approve &lt;id&gt;</code>). Every LLM call the pipeline makes resolves through the <code>Reflection</code> auxiliary slot — never the chat model — so pin a small model here to keep background self-improvement cheap.</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><code>/reflect</code> — manual one-shot pass (background); <code>/reflect on|off</code> toggles the loop (persisted here); <code>/reflect status</code> shows the toggle plus the last pass summary.</li>
+<li><code>pantheon reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]</code></li>
+<li><code>pantheon schedule reflect --cron &#x27;0 2 * * *&#x27;</code> — nightly passes via the normal scheduler.</li>
+</ul>
 <h2 id="policy" class="text-xl font-bold tracking-tight mt-10 mb-3">Policy</h2>
+<p class="my-3 leading-relaxed"><code>policy = &quot;reader&quot; | &quot;coder&quot; | &quot;coder_memory&quot;</code>. Tools declare the capability they need; the policy decides allow/deny/approve per operation. <code>coder_memory</code> adds the <code>MemoryWrite</code> capability.</p>
+<h2 id="budgets" class="text-xl font-bold tracking-tight mt-10 mb-3">Budgets</h2>
+<pre><code>
+[budget]
+max_turns          = 16      # agent turns per run
+max_tool_calls     = 32      # tool calls per run
+max_delegate_depth = 2       # how deep /swarm delegation may nest
+max_iterations     = 3       # pipeline iterations (pantheon pipeline)
+# max_tokens       = 50000   # per-run token cap — strictly optional, absent = uncapped
+
+[goal]
+max_iterations     = 10      # turns allowed per /goal before the TUI stops and asks
+</code></pre>
+<p class="my-3 leading-relaxed">Every key is optional; a <code>0</code> is treated as unset. These are the session defaults — <code>/set &lt;key&gt; &lt;value&gt;</code> retunes them live for the current session (<code>max_turns</code>, <code>max_tool_calls</code>, <code>max_delegate_depth</code>, <code>max_tokens</code>; <code>0</code> clears the token cap), and <code>/tokens [n|off]</code> manages the token cap on its own. There is no cost cap: cost is tracked for <code>pantheon stats</code> / <code>/stats</code> only.</p>
+<h2 id="temporal-awareness" class="text-xl font-bold tracking-tight mt-10 mb-3">Temporal awareness</h2>
+<pre><code>
+[temporal]
+enabled            = true    # master switch (default on — zero tokens, pure string injection)
+min_gap_secs       = 7200    # idle seconds before an elapsed-gap hint fires (0 = off)
+notify_date_change = true    # hint when the local date rolled over, even on a short gap
+# timezone         = &quot;Africa/Lagos&quot;  # IANA name; absent = system local timezone
+</code></pre>
+<p class="my-3 leading-relaxed">Tacit temporal awareness: the model notices when a conversation has meaningfully aged, without timestamping every message. Before a turn&#x27;s first model call the pipeline reads the last assistant turn&#x27;s timestamp from the durable ledger (restart-safe) and, when the gap matters, appends one coarse hint to the outgoing user message — for the API call only, never written to the ledger or transcript, and never on the system prompt (prompt caching unaffected). Wording is coarse and gets coarser with the gap: <code>about 40 minutes</code>, <code>about 5 hours</code>, <code>about a day</code>, <code>about 3 days</code>. A date rollover across a short gap yields <code>[temporal: the previous exchange was yesterday]</code>; multi-day gaps already imply the date change, so wordings never stack. The conversation&#x27;s standing system preamble tells the model to factor such hints in and never quote them.</p>
 <p class="my-3 leading-relaxed"><code>policy = &quot;reader&quot; | &quot;coder&quot; | &quot;coder_memory&quot;</code>. Tools declare the capability they need; the policy decides allow/deny/approve per operation. <code>coder_memory</code> adds the <code>MemoryWrite</code> capability.</p>
 <h2 id="memory" class="text-xl font-bold tracking-tight mt-10 mb-3">Memory</h2>
 <pre><code>
