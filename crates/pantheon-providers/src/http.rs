@@ -238,8 +238,7 @@ fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, Panthe
             // it on the cause so the chain can sleep before rotating keys
             // or falling back instead of hammering a rate-limited endpoint.
             let retry_after = if code == 429 {
-                resp.header("retry-after")
-                    .and_then(parse_retry_after)
+                resp.header("retry-after").and_then(parse_retry_after)
             } else {
                 None
             };

@@ -370,7 +370,10 @@ fn notifier_detection_from_explicit_path() {
 
     // notify-send present and executable: selected with its path.
     let stub = write_stub(&bins, "notify-send", "#!/bin/sh\nexit 0\n");
-    assert_eq!(detect_notifier(std::slice::from_ref(&bins)), Notifier::NotifySend(stub));
+    assert_eq!(
+        detect_notifier(std::slice::from_ref(&bins)),
+        Notifier::NotifySend(stub)
+    );
 }
 
 #[test]

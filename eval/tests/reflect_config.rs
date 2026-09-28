@@ -44,30 +44,30 @@ fn absent_sections_resolve_to_run_default() {
 fn section_pins_override_default() {
     let cfg = Config {
         reflect: Some(ReflectSection {
-        enabled: true,
-        auto_turns: 20,
-        max_proposals: 5,
-        provider: Some("aux-provider".into()),
-        model: Some("aux-model".into()),
-        api_key_env: None,
-    }),
-    extraction: Some(AuxSection {
-        provider: "ex-provider".into(),
-        model: "ex-model".into(),
-        api_key_env: None,
-    }),
-    rerank: Some(AuxSection {
-        provider: "rr-provider".into(),
-        model: "rr-model".into(),
-        api_key_env: None,
-    }),
-    planner: Some(AuxSection {
-        provider: "pl-provider".into(),
-        model: "pl-model".into(),
-        api_key_env: None,
-    }),
-    ..Default::default()
-};
+            enabled: true,
+            auto_turns: 20,
+            max_proposals: 5,
+            provider: Some("aux-provider".into()),
+            model: Some("aux-model".into()),
+            api_key_env: None,
+        }),
+        extraction: Some(AuxSection {
+            provider: "ex-provider".into(),
+            model: "ex-model".into(),
+            api_key_env: None,
+        }),
+        rerank: Some(AuxSection {
+            provider: "rr-provider".into(),
+            model: "rr-model".into(),
+            api_key_env: None,
+        }),
+        planner: Some(AuxSection {
+            provider: "pl-provider".into(),
+            model: "pl-model".into(),
+            api_key_env: None,
+        }),
+        ..Default::default()
+    };
     let aux = config::auxiliaries(Some(&cfg), &default_model());
     let cases = [
         (AuxiliaryKind::Reflection, "aux-provider", "aux-model"),

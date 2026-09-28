@@ -142,7 +142,10 @@ fn goal(text: &str, used: u32, max: u32) -> ActiveGoal {
 
 #[test]
 fn goal_gate_refuses_at_cap() {
-    let state = TuiState { goal: Some(goal("ship it", 10, 10)), ..Default::default() };
+    let state = TuiState {
+        goal: Some(goal("ship it", 10, 10)),
+        ..Default::default()
+    };
     let refusal = state.goal_refusal().expect("must refuse at cap");
     assert!(
         refusal.contains("10/10"),
@@ -153,7 +156,10 @@ fn goal_gate_refuses_at_cap() {
 
 #[test]
 fn goal_gate_allows_below_cap_and_consumes() {
-    let mut state = TuiState { goal: Some(goal("ship it", 9, 10)), ..Default::default() };
+    let mut state = TuiState {
+        goal: Some(goal("ship it", 9, 10)),
+        ..Default::default()
+    };
     assert!(state.goal_refusal().is_none(), "one iteration left");
     state.consume_goal_iteration();
     assert_eq!(state.goal.as_ref().unwrap().iterations_used, 10);
@@ -173,7 +179,10 @@ fn goal_gate_is_inert_without_a_goal() {
 
 #[test]
 fn goal_consume_saturates_instead_of_wrapping() {
-    let mut state = TuiState { goal: Some(goal("ship it", u32::MAX, u32::MAX)), ..Default::default() };
+    let mut state = TuiState {
+        goal: Some(goal("ship it", u32::MAX, u32::MAX)),
+        ..Default::default()
+    };
     state.consume_goal_iteration();
     assert_eq!(state.goal.as_ref().unwrap().iterations_used, u32::MAX);
 }

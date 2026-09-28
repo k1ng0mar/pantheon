@@ -58,6 +58,9 @@
     details[open] summary .plus { transform: rotate(45deg); }
     a.link { color: #7223FF; }
     a.link:hover { text-decoration: underline; text-underline-offset: 3px; }
+    #touch-glow { position: fixed; width: 400px; height: 400px; border-radius: 50%; pointer-events: none; z-index: 1;
+      background: radial-gradient(circle, rgba(114,35,255,0.08) 0%, rgba(114,35,255,0) 70%);
+      transform: translate(-50%, -50%); opacity: 0; transition: opacity .3s; }
     .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }
     .reveal.in { opacity: 1; transform: none; }
     @media (prefers-reduced-motion: reduce) {
