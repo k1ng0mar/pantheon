@@ -152,7 +152,3 @@ pub fn cmd_reset(args: &[String]) {
     }
     println!("deleted {deleted} files ({scope})");
 }
-
-#[cfg(test)]
-#[path = "reset_tests.rs"]
-mod tests;

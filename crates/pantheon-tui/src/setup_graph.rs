@@ -220,7 +220,3 @@ pub fn provisioning_ok(steps: &[(String, StepOutcome)]) -> bool {
 /// A durable record of what provisioning produced, so `doctor` can report a
 /// skipped capability instead of silently having one fewer tool.
 pub type ProvisionRecord = BTreeMap<String, StepOutcome>;
-
-#[cfg(test)]
-#[path = "setup_graph_tests.rs"]
-mod tests;

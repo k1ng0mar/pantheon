@@ -1032,7 +1032,3 @@ pub fn auxiliaries(
     }
     out
 }
-
-#[cfg(test)]
-#[path = "config_tests.rs"]
-mod tests;

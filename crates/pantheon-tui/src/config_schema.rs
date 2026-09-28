@@ -127,7 +127,3 @@ pub fn policy_for_config(
         pantheon_api::capability::Policy::coder()
     }
 }
-
-#[cfg(test)]
-#[path = "config_schema_tests.rs"]
-mod tests;

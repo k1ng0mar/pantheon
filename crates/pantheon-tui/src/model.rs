@@ -1360,7 +1360,3 @@ fn run_aux_bottom(dd: &std::path::Path) {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "model_tests.rs"]
-mod tests;

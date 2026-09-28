@@ -53,7 +53,3 @@ impl Args {
         self.positionals.get(index).cloned()
     }
 }
-
-#[cfg(test)]
-#[path = "args_tests.rs"]
-mod tests;

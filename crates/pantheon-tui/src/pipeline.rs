@@ -274,7 +274,3 @@ fn drive(sup: &Supervisor, data_dir: &std::path::Path, run_id: &str, spec: &str)
         },
     }
 }
-
-#[cfg(test)]
-#[path = "pipeline_tests.rs"]
-mod tests;

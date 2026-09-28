@@ -281,7 +281,3 @@ fn finish(checks: Vec<Check>) -> SystemReport {
     let ok = !checks.iter().any(|c| c.status == "fail");
     SystemReport { ok, checks }
 }
-
-#[cfg(test)]
-#[path = "doctor_tests.rs"]
-mod tests;

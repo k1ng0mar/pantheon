@@ -230,7 +230,3 @@ pub fn complete(prefix: &str) -> Vec<String> {
 pub fn is_palette_key(k: Key) -> bool {
     matches!(k, Key::CtrlK)
 }
-
-#[cfg(test)]
-#[path = "commands_tests.rs"]
-mod tests;

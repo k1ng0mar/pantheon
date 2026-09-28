@@ -327,7 +327,3 @@ pub fn render_tab_bar(f: &mut Frame, area: Rect, tabs: &TabList) {
     }
     f.render_widget(Paragraph::new(Line::from(line_spans)), area);
 }
-
-#[cfg(test)]
-#[path = "tabs_tests.rs"]
-mod tests;

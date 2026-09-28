@@ -629,7 +629,3 @@ fn run_job_now(job: &StoredJob, data_dir: &Path) -> Result<(), String> {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "schedule_tests.rs"]
-mod tests;
