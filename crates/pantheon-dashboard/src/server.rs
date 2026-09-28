@@ -73,6 +73,10 @@ impl Response {
             body.as_bytes().to_vec(),
         )
     }
+    /// Arbitrary static bytes with an explicit content type (manifest, icons).
+    pub fn ok_bytes(content_type: &'static str, body: &'static [u8]) -> Self {
+        Self::buffered(200, content_type, body.to_vec())
+    }
     /// A file download: sets `Content-Disposition: attachment`.
     pub fn download(filename: &str, content_type: &'static str, body: Vec<u8>) -> Self {
         Self::Buffered {
