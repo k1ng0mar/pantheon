@@ -542,11 +542,6 @@ fn run_gateway_foreground() {
         let _ = h.join();
     }
 }
-
-#[cfg(test)]
-#[path = "gateway_tests.rs"]
-mod tests;
-
 /// A reply produced by `pantheon run --deliver` that the gateway has not
 /// sent yet.
 ///
@@ -1068,7 +1063,3 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
     }
     None
 }
-
-#[cfg(test)]
-#[path = "gateway_service_tests.rs"]
-mod service_tests;

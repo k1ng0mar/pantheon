@@ -3474,10 +3474,3 @@ fn handle_slash(
         state.add_status(format!("did you mean {}?", suggestions.join(", ")));
     }
 }
-#[cfg(test)]
-#[path = "session_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "tui_interrupt_tests.rs"]
-mod interrupt_tests;

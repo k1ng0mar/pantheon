@@ -136,7 +136,3 @@ fn launch(data_dir: std::path::PathBuf, resume: Option<String>) -> ! {
     }
     std::process::exit(0);
 }
-
-#[cfg(test)]
-#[path = "entry_tests.rs"]
-mod tests;

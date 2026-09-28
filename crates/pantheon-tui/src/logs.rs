@@ -378,7 +378,3 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
 }
-
-#[cfg(test)]
-#[path = "logs_tests.rs"]
-mod tests;

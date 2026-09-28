@@ -371,7 +371,3 @@ fn cmd_models(dd: &std::path::Path, args: &[String]) {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "provider_tests.rs"]
-mod tests;

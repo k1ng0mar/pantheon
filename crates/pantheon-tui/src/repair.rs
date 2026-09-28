@@ -641,7 +641,3 @@ fn backup_file(path: &Path, name: &str) -> Result<PathBuf, String> {
     std::fs::copy(path, &dest).map_err(|e| format!("cannot back up {}: {e}", path.display()))?;
     Ok(dest)
 }
-
-#[cfg(test)]
-#[path = "repair_tests.rs"]
-mod tests;

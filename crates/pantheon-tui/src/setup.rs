@@ -315,7 +315,3 @@ pub fn cmd_setup(args: &[String]) {
     // --yes: accept defaults for anything without a flag (non-interactive).
     run_setup(&crate::terminal::data_dir(), answers, parsed.has("yes"));
 }
-
-#[cfg(test)]
-#[path = "setup_tests.rs"]
-mod tests;

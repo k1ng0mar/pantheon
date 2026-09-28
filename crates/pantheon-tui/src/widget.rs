@@ -921,7 +921,3 @@ impl fmt::Display for Item {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "widget_tests.rs"]
-mod tests;

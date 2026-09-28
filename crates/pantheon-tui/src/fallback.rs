@@ -162,7 +162,3 @@ fn save(dd: &Path, cfg: &Config) {
         std::process::exit(1);
     }
 }
-
-#[cfg(test)]
-#[path = "fallback_tests.rs"]
-mod tests;

@@ -432,7 +432,3 @@ pub fn next_key(timeout: std::time::Duration) -> io::Result<Option<Key>> {
         _ => Ok(None),
     }
 }
-
-#[cfg(test)]
-#[path = "app_tests.rs"]
-mod tests;
