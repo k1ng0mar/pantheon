@@ -94,6 +94,46 @@ function spark(values, w, h) {
     '<polyline points="' + pts.join(" ") + '"/></svg>';
 }
 
+/* ---------------- theme ---------------- */
+function initTheme() {
+  const saved = localStorage.getItem("pantheon_theme");
+  document.documentElement.dataset.theme = saved === "light" ? "light" : "dark";
+}
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("pantheon_theme", next);
+}
+
+/* ---------------- icons (inline SVG, stroke) ---------------- */
+function icon(name, size) {
+  const s = size || 16;
+  const paths = {
+    home: '<path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
+    runs: '<polygon points="6 3 20 12 6 21 6 3"/>',
+    approvals: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
+    schedule: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+    stats: '<path d="M3 3v18h18"/><path d="M7 15v3M12 10v8M17 6v12"/>',
+    memory: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>',
+    config: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/>',
+    keys: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="m11 12 10-10M15 8l3 3"/>',
+    logs: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/>',
+    skills: '<path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
+    mcp: '<path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0z"/><path d="M12 18v4"/>',
+    system: '<rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 6.5h.01M6 17.5h.01"/>',
+    zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+    arrow: '<path d="M5 12h14m-6-6 6 6-6 6"/>',
+    wrench: '<path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3z"/>',
+    bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
+  };
+  return '<svg width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    (paths[name] || paths.home) + "</svg>";
+}
+
 /* ---------------- view chrome ---------------- */
 const view = $("#view");
 function setView(html) { view.innerHTML = html; view.focus({ preventScroll: true }); }
@@ -155,26 +195,27 @@ async function previewThenApply({ title, intro, names, apply }) {
 
 /* ---------------- nav & routing ---------------- */
 const VIEWS = [
-  ["overview", "Overview"],
-  ["runs", "Runs"],
-  ["approvals", "Approvals", () => state.pendingApprovals],
-  ["schedule", "Schedule"],
-  ["stats", "Stats"],
-  ["memory", "Memory"],
-  ["config", "Config"],
-  ["keys", "Keys"],
-  ["logs", "Logs"],
-  ["skills", "Skills"],
-  ["mcp", "MCP"],
-  ["system", "System"],
+  ["overview", "Overview", "home"],
+  ["runs", "Runs", "runs"],
+  ["approvals", "Approvals", "approvals", () => state.pendingApprovals],
+  ["schedule", "Schedule", "schedule"],
+  ["stats", "Stats", "stats"],
+  ["memory", "Memory", "memory"],
+  ["config", "Config", "config"],
+  ["keys", "Keys", "keys"],
+  ["logs", "Logs", "logs"],
+  ["skills", "Skills", "skills"],
+  ["mcp", "MCP", "mcp"],
+  ["system", "System", "system"],
 ];
 const state = { pendingApprovals: 0, route: "overview", param: null };
 const renderers = {};
 
 function buildNav() {
-  $("#nav").innerHTML = VIEWS.map(([id, label, badge]) =>
-    '<button data-view="' + id + '" aria-current="' + (state.route === id ? "page" : "false") + '">' +
-    esc(label) + (badge ? '<span class="count" data-badge="' + id + '"></span>' : "") + "</button>"
+  $("#nav").innerHTML = VIEWS.map(([id, label, ic, badge]) =>
+    '<button data-view="' + id + '" aria-current="' + (state.route === id ? "page" : "false") + '" title="' + esc(label) + '">' +
+    icon(ic, 16) + '<span class="nav-label">' + esc(label) + "</span>" +
+    (badge ? '<span class="count" data-badge="' + id + '"></span>' : "") + "</button>"
   ).join("");
   $$("#nav button").forEach((b) => {
     b.onclick = () => { location.hash = "#/" + b.dataset.view; };
@@ -198,102 +239,212 @@ function navigate() {
 }
 window.addEventListener("hashchange", navigate);
 
-/* ---------------- KPI row ---------------- */
-async function refreshKpis() {
-  const el = $("#kpis");
+/* ---------------- status (badges + gateway line) ---------------- */
+async function refreshStatus() {
   try {
-    const [ov, stats] = await Promise.all([
-      api("GET", "/api/overview"),
-      api("GET", "/api/stats?days=14").catch(() => null),
-    ]);
+    const ov = await api("GET", "/api/overview");
     state.pendingApprovals = ov.approvals_pending || 0;
     updateBadges();
-    const byDay = stats ? stats.by_day.map((d) => d.totals.total_tokens) : [];
-    const cost = ov.last_24h.cost_usd || 0;
-    el.innerHTML = [
-      ["Runs", fmtNum(ov.runs.total), Object.entries(ov.runs.by_status || {}).map(([k, v]) => k + " " + v).join(" · ")],
-      ["Approvals", fmtNum(ov.approvals_pending), "pending"],
-      ["Cost 24h", fmtCost(cost), ""],
-      ["Tokens 24h", fmtNum(ov.last_24h.tokens), spark(byDay)],
-      ["Schedule", fmtNum(ov.schedule.total), (ov.schedule.active || 0) + " active"],
-      ["Gateway", "", ""], // filled below
-    ].map(([label, value, sub]) =>
-      '<div class="kpi"><div class="k-label">' + label + '</div><div class="k-value">' + value + '</div>' +
-      (sub ? '<div class="k-sub">' + sub + "</div>" : "") + "</div>"
-    ).join("");
-    // gateway cell
     try {
       const gw = await api("GET", "/api/gateway/status");
-      const cells = $$(".kpi", el);
-      const last = cells[cells.length - 1];
-      last.querySelector(".k-value").innerHTML =
-        '<span class="dot" data-state="' + (gw.running ? "running" : "warn") + '"></span>';
-      last.querySelector(".k-value").style.fontSize = "14px";
-      const sub = last.querySelector(".k-sub");
-      if (sub) sub.textContent = (gw.installed || "not installed") + (gw.running ? " · running" : " · stopped");
       const gl = $("#gateway-label");
       if (gl) {
         gl.textContent = "gateway " + (gw.running ? "running" : "stopped");
-        $("#gateway-dot .dot").dataset.state = gw.running ? "running" : "warn";
+        const dot = $("#gateway-dot .dot");
+        if (dot) dot.dataset.state = gw.running ? "running" : "warn";
       }
     } catch (e) { /* gateway status is best-effort */ }
-  } catch (e) {
-    el.innerHTML = '<div class="kpi"><div class="k-label">Status</div><div class="k-value state-error" style="font-size:13px">offline</div></div>';
-  }
+  } catch (e) { /* offline: badges stay as-is */ }
 }
 
-setInterval(() => { $("#foot-clock").textContent = new Date().toLocaleTimeString(); }, 1000);
+/* Pending run search from the topbar. Consumed by renderers.runs. */
+let pendingSearch = "";
 
 /* ---------------- overview ---------------- */
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning";
+  if (h < 18) return "Good afternoon";
+  return "Good evening";
+}
+
 renderers.overview = async function () {
-  setView(viewHead("Overview", "last 24 hours and recent activity") + loading("overview"));
+  setView(
+    '<div class="ov-greet"><h1>' + greeting() + ", Umar</h1>" +
+    '<p>The system is ready. What would you like to work on today?</p></div>' +
+    '<div class="ov-cards">' +
+    '<a class="ov-card" href="#/schedule"><span class="ov-card-icon">' + icon("schedule", 18) + '</span>' +
+    '<span class="ov-card-title">Schedule a job</span><span class="ov-card-sub">Run prompts on a cadence</span>' +
+    '<span class="ov-card-arrow">' + icon("arrow", 14) + "</span></a>" +
+    '<a class="ov-card" href="#/runs"><span class="ov-card-icon">' + icon("runs", 18) + '</span>' +
+    '<span class="ov-card-title">Browse runs</span><span class="ov-card-sub">Search, export, and prune</span>' +
+    '<span class="ov-card-arrow">' + icon("arrow", 14) + "</span></a>" +
+    '<a class="ov-card" href="#/memory"><span class="ov-card-icon">' + icon("memory", 18) + '</span>' +
+    '<span class="ov-card-title">Memory</span><span class="ov-card-sub">Agent records with provenance</span>' +
+    '<span class="ov-card-arrow">' + icon("arrow", 14) + "</span></a>" +
+    '<a class="ov-card" href="#/skills"><span class="ov-card-icon">' + icon("wrench", 18) + '</span>' +
+    '<span class="ov-card-title">Skills &amp; tools</span><span class="ov-card-sub">Discover, toggle, import</span>' +
+    '<span class="ov-card-arrow">' + icon("arrow", 14) + "</span></a>" +
+    "</div>" +
+    '<div class="ov-grid"><div class="ov-main">' +
+    '<div class="card"><div class="card-head"><span class="card-title">Recent runs</span>' +
+    '<a class="card-link" href="#/runs">all runs</a></div><div id="ov-runs">' + loading("runs") + "</div></div>" +
+    '<div class="card"><div class="card-head"><span class="card-title">Pending approvals</span>' +
+    '<a class="card-link" href="#/approvals">review</a></div><div id="ov-approvals">' + loading("approvals") + "</div></div>" +
+    '</div><div class="ov-side">' +
+    '<div class="card"><div class="card-head"><span class="card-title">System overview</span>' +
+    '<a class="card-link" href="#/system">details</a></div><div class="card-body" id="ov-system">' + loading("system") + "</div></div>" +
+    '<div class="card"><div class="card-head"><span class="card-title">Quick actions</span></div>' +
+    '<div class="card-body"><div class="qa-grid">' +
+    '<a class="qa" href="#/schedule"><span class="qa-title">' + icon("plus", 14) + "New job</span><span class='qa-sub'>Create a schedule</span></a>" +
+    '<a class="qa" href="#/stats"><span class="qa-title">' + icon("stats", 14) + "Usage</span><span class='qa-sub'>Tokens and cost</span></a>" +
+    '<a class="qa" href="#/logs"><span class="qa-title">' + icon("logs", 14) + "Logs</span><span class='qa-sub'>Tail and follow</span></a>" +
+    '<a class="qa" href="#/mcp"><span class="qa-title">' + icon("mcp", 14) + "MCP</span><span class='qa-sub'>Declared servers</span></a>" +
+    '<a class="qa" href="#/keys"><span class="qa-title">' + icon("keys", 14) + "Keys</span><span class='qa-sub'>Manage .env secrets</span></a>" +
+    '<a class="qa" href="#/config"><span class="qa-title">' + icon("config", 14) + "Config</span><span class='qa-sub'>Edit config.toml</span></a>" +
+    "</div></div></div>" +
+    '<div class="card"><div class="tabs" role="tablist">' +
+    '<button role="tab" aria-selected="true" data-tab="recent">Recent activity</button>' +
+    '<button role="tab" aria-selected="false" data-tab="upcoming">Upcoming</button></div>' +
+    '<div id="ov-activity">' + loading("activity") + "</div></div>" +
+    "</div></div>"
+  );
+
+  // Tabs
+  let activityData = { recent: "", upcoming: "" };
+  const paintActivity = (which) => {
+    $$('.tabs [data-tab]').forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === which)));
+    $("#ov-activity").innerHTML = activityData[which] ||
+      emptyState(which === "recent" ? "No recent activity" : "Nothing scheduled", "");
+  };
+  $$('.tabs [data-tab]').forEach((b) => { b.onclick = () => paintActivity(b.dataset.tab); });
+
   try {
     const [ov, runs, appr] = await Promise.all([
       api("GET", "/api/overview"),
       api("GET", "/api/runs?limit=8"),
       api("GET", "/api/approvals"),
     ]);
+    state.pendingApprovals = appr.approvals.length;
+    updateBadges();
+
+    // ---- recent runs table ----
     const recent = runs.runs.map((r) =>
       "<tr class='rowlink' data-run='" + esc(r.id) + "' tabindex='0'>" +
-      "<td class='mono'>" + esc(r.id.slice(0, 12)) + "</td>" +
-      "<td>" + esc(r.title || "—") + "</td><td>" + statusPill(r.status) + "</td>" +
+      "<td><span class='agent-id'><span class='agent-avatar'>" + esc((r.title || r.id).trim().charAt(0).toUpperCase() || "R") + "</span>" +
+      "<span><span class='agent-name'>" + esc(r.title || ("Run " + r.id.slice(0, 8))) + "</span><br>" +
+      "<span class='agent-sub'>" + esc(r.id.slice(0, 12)) + "</span></span></span></td>" +
+      "<td>" + statusPill(r.status) + "</td>" +
       "<td class='mono'>" + esc(r.model || "—") + "</td>" +
       "<td class='mono' style='text-align:right'>" + fmtNum(r.input_tokens + r.output_tokens) + "</td>" +
       "<td class='mono' style='text-align:right'>" + fmtCost(r.cost_usd) + "</td>" +
       "<td class='mono'>" + relTime(r.created_ms) + "</td></tr>"
     ).join("");
-    const approvals = appr.approvals.map((a) =>
-      "<tr><td class='mono'>" + esc(a.run_id.slice(0, 12)) + "</td>" +
-      "<td class='mono'>" + esc(a.tool) + "</td>" +
-      "<td class='mono' style='max-width:420px;overflow:hidden;text-overflow:ellipsis'>" + esc(a.args) + "</td>" +
-      "<td><span class='btn-row'><button class='btn small' data-grant='" + esc(a.id) + "'>Grant</button>" +
-      "<button class='btn small danger' data-deny='" + esc(a.id) + "'>Deny</button></span></td></tr>"
-    ).join("");
-    setView(
-      viewHead("Overview", "last 24 hours and recent activity",
-        '<button class="btn small" id="ov-refresh">Refresh</button>') +
-      '<div class="grid-2">' +
-      '<div class="panel"><div class="panel-head"><span class="panel-title">Recent runs</span><span class="spacer"></span>' +
-      '<a href="#/runs" class="mono" style="font-size:11px">all runs</a></div>' +
-      (recent ? '<div class="panel-body flush"><table class="grid"><thead><tr><th>Run</th><th>Title</th><th>Status</th><th>Model</th><th style="text-align:right">Tokens</th><th style="text-align:right">Cost</th><th>Created</th></tr></thead><tbody>' + recent + "</tbody></table></div>"
-        : emptyState("No runs yet", "Runs appear here once the agent completes work.")) +
-      "</div>" +
-      '<div class="panel"><div class="panel-head"><span class="panel-title">Pending approvals</span><span class="spacer"></span>' +
-      '<a href="#/approvals" class="mono" style="font-size:11px">review</a></div>' +
-      (approvals ? '<div class="panel-body flush"><table class="grid"><thead><tr><th>Run</th><th>Tool</th><th>Arguments</th><th></th></tr></thead><tbody>' + approvals + "</tbody></table></div>"
-        : emptyState("Nothing waiting", "Approval requests from running agents land here.")) +
-      "</div></div>"
-    );
-    $("#ov-refresh").onclick = () => { renderers.overview(); refreshKpis(); };
-    $$("[data-run]").forEach((tr) => {
+    $("#ov-runs").innerHTML = recent
+      ? '<div class="card-body flush"><table class="agent-table"><thead><tr><th>Run</th><th>Status</th><th>Model</th>' +
+        '<th style="text-align:right">Tokens</th><th style="text-align:right">Cost</th><th>Age</th></tr></thead><tbody>' +
+        recent + "</tbody></table></div>"
+      : emptyState("No runs yet", "Runs appear here once the agent completes work.");
+    $$("#ov-runs [data-run]").forEach((tr) => {
       const go = () => { location.hash = "#/runs/" + encodeURIComponent(tr.dataset.run); };
       tr.onclick = go;
       tr.onkeydown = (e) => { if (e.key === "Enter") go(); };
     });
-    wireApprovalButtons();
+
+    // ---- pending approvals ----
+    const approvals = appr.approvals.map((a) =>
+      "<tr><td><span class='agent-id'><span class='agent-avatar'>" + esc((a.tool || "?").charAt(0).toUpperCase()) + "</span>" +
+      "<span><span class='agent-name'>" + esc(a.tool) + "</span><br>" +
+      "<span class='agent-sub'>" + esc(a.run_id.slice(0, 12)) + "</span></span></span></td>" +
+      "<td class='mono' style='max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='" + esc(a.args) + "'>" + esc(a.args) + "</td>" +
+      "<td><span class='btn-row'><button class='btn small' data-grant='" + esc(a.id) + "'>Grant</button>" +
+      "<button class='btn small danger' data-deny='" + esc(a.id) + "'>Deny</button></span></td></tr>"
+    ).join("");
+    $("#ov-approvals").innerHTML = approvals
+      ? '<div class="card-body flush"><table class="agent-table"><thead><tr><th>Tool</th><th>Arguments</th><th></th></tr></thead><tbody>' +
+        approvals + "</tbody></table></div>"
+      : emptyState("Nothing waiting", "Approval requests from running agents land here.");
+    wireApprovalButtons($("#ov-approvals"));
+
+    // ---- system overview (real metrics only) ----
+    const sysParts = [];
+    try {
+      const [stats, jobs, gw] = await Promise.all([
+        api("GET", "/api/stats?days=14").catch(() => null),
+        api("GET", "/api/schedule/jobs").catch(() => null),
+        api("GET", "/api/gateway/status").catch(() => null),
+      ]);
+      const byDay = stats ? stats.by_day.map((d) => d.totals.total_tokens) : [];
+      const schedTotal = (jobs && jobs.jobs.length) || 0;
+      const schedActive = jobs ? jobs.jobs.filter((j) => !j.paused).length : 0;
+      const schedPct = schedTotal ? Math.round((schedActive / schedTotal) * 100) : 0;
+      sysParts.push(
+        '<div class="metric"><div class="metric-top"><span class="metric-label">Runs</span>' +
+        '<span class="metric-value">' + fmtNum(ov.runs.total) + '</span></div>' +
+        '<div class="metric-value dim">' + Object.entries(ov.runs.by_status || {}).map(([k, v]) => esc(k) + " " + fmtNum(v)).join(" · ") + "</div></div>",
+        '<div class="metric"><div class="metric-top"><span class="metric-label">Pending approvals</span>' +
+        '<span class="metric-value">' + fmtNum(ov.approvals_pending) + '</span></div></div>',
+        '<div class="metric"><div class="metric-top"><span class="metric-label">Cost · 24h</span>' +
+        '<span class="metric-value">' + fmtCost(ov.last_24h.cost_usd || 0) + '</span></div></div>',
+        '<div class="metric"><div class="metric-top"><span class="metric-label">Tokens · 24h</span>' +
+        '<span class="metric-value">' + fmtNum(ov.last_24h.tokens) + '</span></div>' +
+        (byDay.length > 1 ? '<div style="margin-top:6px">' + spark(byDay, 220, 30) + "</div>" : "") + "</div>",
+        '<div class="metric"><div class="metric-top"><span class="metric-label">Scheduled jobs</span>' +
+        '<span class="metric-value">' + schedActive + " / " + schedTotal + ' active</span></div>' +
+        (schedTotal ? '<div class="bar"><i style="width:' + schedPct + '%"></i></div>' : "") + "</div>",
+        '<div class="metric"><div class="metric-top"><span class="metric-label">Gateway</span>' +
+        (gw ? (gw.running
+          ? '<span class="pill" data-s="ok">running</span>'
+          : '<span class="pill" data-s="warn">stopped</span>')
+          : '<span class="metric-value dim">—</span>') + "</div></div>"
+      );
+      // ---- activity tabs ----
+      const items = [];
+      runs.runs.slice(0, 6).forEach((r) => {
+        items.push({
+          ts: r.created_ms,
+          ic: "runs",
+          cls: r.status === "failed" ? "amber" : "",
+          title: (r.status === "completed" ? "Run completed" : r.status === "failed" ? "Run failed" : r.status === "running" ? "Run started" : "Run " + r.status),
+          sub: r.title || r.id.slice(0, 12),
+        });
+      });
+      appr.approvals.slice(0, 6).forEach((a) => {
+        items.push({
+          ts: a.requested_ms || Date.now(),
+          ic: "approvals",
+          cls: "amber",
+          title: "Approval requested",
+          sub: a.tool + " · " + a.run_id.slice(0, 12),
+        });
+      });
+      items.sort((x, y) => (y.ts || 0) - (x.ts || 0));
+      activityData.recent = items.length
+        ? '<ul class="activity">' + items.slice(0, 8).map((it) =>
+          '<li><span class="act-icon ' + it.cls + '">' + icon(it.ic, 14) + '</span>' +
+          '<span class="act-body"><span class="act-title">' + esc(it.title) + "</span><br>" +
+          '<span class="act-sub">' + esc(it.sub) + "</span></span>" +
+          '<span class="act-time">' + relTime(it.ts) + "</span></li>"
+        ).join("") + "</ul>"
+        : "";
+      const upcoming = jobs ? jobs.jobs.filter((j) => !j.paused && j.next_fire_ms).sort((a, b) => a.next_fire_ms - b.next_fire_ms).slice(0, 8) : [];
+      activityData.upcoming = upcoming.length
+        ? '<ul class="activity">' + upcoming.map((j) =>
+          '<li><span class="act-icon">' + icon("schedule", 14) + '</span>' +
+          '<span class="act-body"><span class="act-title">' + esc(j.task.slice(0, 80)) + (j.task.length > 80 ? "…" : "") + "</span><br>" +
+          '<span class="act-sub">' + esc(kindLabel(j.kind)) + "</span></span>" +
+          '<span class="act-time">in ' + esc(fmtDur(j.next_fire_ms - Date.now())) + "</span></li>"
+        ).join("") + "</ul>"
+        : "";
+      paintActivity("recent");
+    } catch (e) {
+      sysParts.push(emptyState("Couldn't load system status", e.message));
+    }
+    $("#ov-system").innerHTML = sysParts.join("");
   } catch (e) {
     setView(viewHead("Overview", "") + errorState(e.message, true));
-    $("[data-retry]").onclick = () => renderers.overview();
+    const rb = $("[data-retry]");
+    if (rb) rb.onclick = () => renderers.overview();
   }
 };
 
@@ -341,6 +492,7 @@ renderers.runs = async function () {
   $("#rgo").onclick = load;
   $("#rq").onkeydown = (e) => { if (e.key === "Enter") load(); };
   $("#rstatus").onchange = load;
+  if (pendingSearch) { $("#rq").value = pendingSearch; pendingSearch = ""; }
   load();
 };
 
@@ -414,7 +566,7 @@ function wireApprovalButtons(root) {
         await api("POST", "/api/approvals/" + encodeURIComponent(id) + (granted ? "/grant" : "/deny"));
         toast(granted ? "Granted" : "Denied", "ok");
         renderers[state.route]();
-        refreshKpis();
+        refreshStatus();
       } catch (e) { toast("Decision failed: " + e.message, "err"); }
     };
   });
@@ -1205,6 +1357,7 @@ renderers.system = async function () {
 
 /* ---------------- boot ---------------- */
 (function boot() {
+  initTheme();
   if (!TOKEN) {
     $("#gate").hidden = false;
     $("#gate-form").addEventListener("submit", (e) => {
@@ -1221,9 +1374,26 @@ renderers.system = async function () {
   start();
   async function start() {
     $("#app").hidden = false;
-    refreshKpis();
-    setInterval(refreshKpis, 30000);
+    $("#theme-toggle").onclick = toggleTheme;
+    // Topbar search: jump straight into the runs view with the query.
+    $("#topsearch-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const q = $("#topsearch").value.trim();
+      pendingSearch = q;
+      if ((location.hash || "") !== "#/runs") location.hash = "#/runs";
+      else renderers.runs();
+      $("#topsearch").value = "";
+      $("#topsearch").blur();
+    });
+    document.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        $("#topsearch").focus();
+        $("#topsearch").select();
+      }
+    });
+    refreshStatus();
+    setInterval(refreshStatus, 30000);
     navigate();
-    $("#foot-clock").textContent = new Date().toLocaleTimeString();
   }
 })();
