@@ -11,7 +11,7 @@
   <link rel="icon" href="logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -22,7 +22,7 @@
             chalk: '#eceae5', ash: '#8a9099',
             brand: '#7223FF', branddark: '#4B00CD', allow: '#7fa86f', deny: '#d2543f'
           },
-          fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['Instrument Sans', 'sans-serif'] }
+          fontFamily: { mono: ['JetBrains Mono', 'monospace'], sans: ['IBM Plex Sans', 'sans-serif'] }
         }
       }
     }
@@ -30,8 +30,11 @@
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #0b0c0e; color: #eceae5; font-family: 'Instrument Sans', sans-serif; }
-    h1, h2, h3 { font-family: 'JetBrains Mono', monospace; }
+    body { background: #0b0c0e; color: #eceae5; font-family: 'IBM Plex Sans', sans-serif; font-size: 16px; }
+    /* Explicit type scale: display 40-60 / h2 28 / h3 20 / body 16 (each step >= 1.25x) */
+    .t-display { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: clamp(2.5rem, 1.6rem + 4vw, 3.75rem); line-height: 1.08; letter-spacing: -0.02em; }
+    .t-h2 { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: clamp(1.5rem, 1.3rem + 1vw, 1.75rem); line-height: 1.2; letter-spacing: -0.01em; }
+    .t-h3 { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 1.25rem; line-height: 1.3; }
     :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
     .rule { height: 1px; background: #202329; }
     .glow-line { height: 1px; background: linear-gradient(90deg, transparent, #7223FF, transparent); }
@@ -40,14 +43,18 @@
     .logo-mark img { height: 26px; width: auto; }
     pre { background: #101216; border: 1px solid #202329; border-radius: 6px; padding: 1rem; overflow-x: auto; }
     pre code { font-family: 'JetBrains Mono', monospace; font-size: .82rem; color: #eceae5; }
-    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #7223FF; background: rgba(114,35,255,.08); padding: .12em .3em; border-radius: 2px; }
+    code:not(pre code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #a379ff; background: rgba(114,35,255,.1); padding: .12em .3em; border-radius: 2px; }
     .copy-btn { border: 1px solid #202329; color: #8a9099; border-radius: 4px; padding: .3rem .6rem; font-family: 'JetBrains Mono', monospace; font-size: .7rem; flex: none; }
     .copy-btn:hover { color: #eceae5; border-color: #8a9099; }
     .copy-btn[data-state="done"] { color: #7fa86f; border-color: #7fa86f; }
+    .model-col, .runtime-col { padding: 1.5rem; }
     .model-col { border-left: 1px dashed #3a3f47; }
     .runtime-col { border-left: 1px solid #7223FF; }
+    @media (min-width: 768px) {
+      .model-col, .runtime-col { padding: 2rem; }
+    }
     @media (max-width: 767px) {
-      .model-col, .runtime-col { border-left: none; padding-top: 1.5rem; }
+      .model-col, .runtime-col { border-left: none; }
       .runtime-col { border-top: 1px solid #7223FF; }
     }
     table.grid { border-collapse: collapse; width: 100%; }
@@ -81,7 +88,7 @@
         <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-ash hover:text-chalk">GitHub</a>
       </div>
       <div class="flex items-center gap-3">
-        <a href="install.html" class="cmd text-xs text-ink bg-brand px-3 py-1.5 rounded hover:bg-chalk">Install</a>
+        <a href="install.html" class="cmd text-xs text-white bg-brand px-3 py-1.5 rounded hover:bg-branddark">Install</a>
         <button type="button" id="menu-btn" class="md:hidden text-ash hover:text-chalk cmd text-sm px-2 py-1" aria-expanded="false" aria-controls="menu">menu</button>
       </div>
     </div>
@@ -97,16 +104,16 @@
   <main id="main">
   <section class="max-w-6xl mx-auto px-5 md:px-8 pt-16 md:pt-20 pb-12">
     <p class="cmd text-xs text-brand tracking-wide reveal">PRODUCT TOUR</p>
-    <h1 class="cmd font-bold text-chalk text-3xl md:text-4xl tracking-tight mt-4 reveal">Authority lives in the runtime.<br>Everything else is replaceable.</h1>
+    <h1 class="t-display text-chalk mt-5 reveal">Authority lives in the runtime.<br>Everything else is replaceable.</h1>
     <p class="text-ash mt-5 max-w-2xl leading-relaxed reveal">Most agent failures aren't model failures, they're runtime failures: a write that shouldn't have happened, a credential that leaked into context, a crashed process with no way back. Pantheon puts a runtime in charge. The model requests; the runtime decides; the ledger records both.</p>
   </section>
 
   <!-- Authority -->
   <section id="authority" class="max-w-6xl mx-auto px-5 md:px-8 py-12">
-    <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">Where the authority sits</h2>
+    <h2 class="t-h2 text-chalk reveal">Where the authority sits</h2>
     <div class="grid md:grid-cols-2 gap-0 mt-8">
-      <div class="model-col md:pl-6 pr-4 py-6 reveal">
-        <h3 class="cmd text-ash text-sm font-semibold">The model, swappable</h3>
+      <div class="model-col reveal">
+        <h3 class="t-h3 text-ash">The model, swappable</h3>
         <ul class="mt-4 space-y-3 text-ash text-sm leading-relaxed">
           <li>Produces text and reasoning</li>
           <li>Requests tool calls</li>
@@ -115,8 +122,8 @@
         </ul>
         <p class="cmd text-xs text-ash mt-5">Dashed rule: this side is expected to change.</p>
       </div>
-      <div class="runtime-col md:pl-6 pr-4 py-6 reveal">
-        <h3 class="cmd text-chalk text-sm font-semibold">The runtime, load-bearing</h3>
+      <div class="runtime-col reveal">
+        <h3 class="t-h3 text-chalk">The runtime, load-bearing</h3>
         <ul class="mt-4 space-y-3 text-sm leading-relaxed text-chalk">
           <li>Run state, leases, and cancellation</li>
           <li>Capability and policy decisions, before tools run</li>
@@ -145,7 +152,7 @@
 
   <!-- Ledger -->
   <section id="ledger" class="max-w-6xl mx-auto px-5 md:px-8 py-12">
-    <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">The record, and three ways to read it</h2>
+    <h2 class="t-h2 text-chalk reveal">The record, and three ways to read it</h2>
     <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">Every run is an append-only sequence of typed events in SQLite. Terminal states are guarded in the append path, a finished run can't quietly change its mind. Debugging, handoff, and review all read the same rows.</p>
     <div class="overflow-x-auto mt-8 reveal">
       <table class="grid">
@@ -164,7 +171,7 @@
 
   <!-- Approvals -->
   <section id="approvals" class="max-w-6xl mx-auto px-5 md:px-8 py-12">
-    <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">When it needs you, it stops and asks</h2>
+    <h2 class="t-h2 text-chalk reveal">When it needs you, it stops and asks</h2>
     <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">A gated call parks the turn instead of dropping it. The decision becomes a durable ledger entry, so it outlives the process that asked. Answer inline, or from anywhere:</p>
     <div class="grid md:grid-cols-2 gap-8 mt-8 items-start">
       <div class="reveal">
@@ -191,7 +198,7 @@ pantheon run --taskID &lt;id&gt; --deny &lt;scope&gt;     # refuse; recorded, ru
 
   <!-- Recovery -->
   <section id="recovery" class="max-w-6xl mx-auto px-5 md:px-8 py-12">
-    <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">A failed process is not a lost task</h2>
+    <h2 class="t-h2 text-chalk reveal">A failed process is not a lost task</h2>
     <div class="grid lg:grid-cols-12 gap-10 mt-6">
       <div class="lg:col-span-6 reveal">
         <pre><code>$ pantheon runs run_1790414395478_1399
@@ -215,7 +222,7 @@ run run_1790414395478_1399: 2 events
 
   <!-- Memory -->
   <section id="memory" class="max-w-6xl mx-auto px-5 md:px-8 py-12">
-    <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">Memory with trust, not just scores</h2>
+    <h2 class="t-h2 text-chalk reveal">Memory with trust, not just scores</h2>
     <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">Five layers, global, agent, project, task, ephemeral, behind one gated write path: propose → policy → provenance → validation → store. Retrieval blends full-text search with embedding similarity, then ranks with trust awareness:</p>
     <div class="overflow-x-auto mt-8 reveal">
       <table class="grid">
@@ -235,16 +242,16 @@ run run_1790414395478_1399: 2 events
 
   <!-- Surfaces -->
   <section id="surfaces" class="max-w-6xl mx-auto px-5 md:px-8 py-12">
-    <h2 class="cmd text-chalk text-xl md:text-2xl font-semibold reveal">One runtime, several front doors</h2>
+    <h2 class="t-h2 text-chalk reveal">One runtime, several front doors</h2>
     <p class="text-ash mt-3 max-w-2xl leading-relaxed reveal">Every surface drives the same Session runtime off the same ledger. Switch screens mid-conversation, nothing is lost.</p>
     <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6 mt-8 text-sm">
-      <div class="card reveal"><h3 class="cmd text-chalk">terminal</h3><p class="cmd text-xs text-ash mt-1">pantheon</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">The interactive session: history, inline approvals, model switches mid-conversation.</p></div>
-      <div class="card reveal"><h3 class="cmd text-chalk">scripts</h3><p class="cmd text-xs text-ash mt-1">pantheon run</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Single turns for CI and automation, delivered locally or to a channel.</p></div>
-      <div class="card reveal"><h3 class="cmd text-chalk">local web</h3><p class="cmd text-xs text-ash mt-1">pantheon serve</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">A local web client on the ledger stream. Minimal reference surface.</p></div>
-      <div class="card reveal"><h3 class="cmd text-chalk">messaging</h3><p class="cmd text-xs text-ash mt-1">pantheon gateway</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Discord and Telegram behind a pairing allowlist; replies chunked to platform limits.</p></div>
+      <div class="card reveal"><h3 class="t-h3 text-chalk">terminal</h3><p class="cmd text-xs text-ash mt-1">pantheon</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">The interactive session: history, inline approvals, model switches mid-conversation.</p></div>
+      <div class="card reveal"><h3 class="t-h3 text-chalk">scripts</h3><p class="cmd text-xs text-ash mt-1">pantheon run</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Single turns for CI and automation, delivered locally or to a channel.</p></div>
+      <div class="card reveal"><h3 class="t-h3 text-chalk">local web</h3><p class="cmd text-xs text-ash mt-1">pantheon serve</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">A local web client on the ledger stream. Minimal reference surface.</p></div>
+      <div class="card reveal"><h3 class="t-h3 text-chalk">messaging</h3><p class="cmd text-xs text-ash mt-1">pantheon gateway</p><p class="text-ash text-[.85rem] mt-3 leading-relaxed">Discord and Telegram behind a pairing allowlist; replies chunked to platform limits.</p></div>
     </div>
     <div class="mt-10 flex flex-wrap gap-3 reveal">
-      <a href="install.html" class="cmd text-sm text-ink bg-brand px-5 py-2.5 rounded hover:bg-chalk">Install Pantheon</a>
+      <a href="install.html" class="cmd text-sm text-white bg-brand px-5 py-2.5 rounded hover:bg-branddark">Install Pantheon</a>
       <a href="architecture.html" class="cmd text-sm border border-rule px-5 py-2.5 rounded text-chalk hover:border-ash">System architecture</a>
     </div>
   </section>

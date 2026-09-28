@@ -258,7 +258,7 @@ fn apply_changes(app: &App, changes: &BTreeMap<String, Value>, confirm: bool) ->
         return json_ok(serde_json::json!({
             "preview": true,
             "changes": names,
-            "note": "names only — resubmit with confirm=true to apply",
+            "note": "names only. Resubmit with confirm=true to apply",
         }));
     }
     for (path, new) in changes {
@@ -360,7 +360,7 @@ pub fn import(app: &App, req: &Request) -> Response {
         return json_ok(serde_json::json!({
             "preview": true,
             "changes": changed,
-            "note": "names only — resubmit with confirm=true to apply",
+            "note": "names only. Resubmit with confirm=true to apply",
         }));
     }
     let out = toml::to_string_pretty(&new_doc).unwrap_or_else(|_| text.to_string());

@@ -1,4 +1,4 @@
-/* Pantheon dashboard SPA — vanilla JS, no build step.
+/* Pantheon dashboard SPA. Vanilla JS, no build step.
    Every view: loading / empty / error states. Every mutation: confirm.
    Design: VibePrompt metric row + sparklines + delta tables; Raycast via
    Refero "midnight command center" (#040506, hairlines, inset highlights,
@@ -26,7 +26,7 @@ async function api(method, path, body) {
     ),
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401) throw { status: 401, message: "unauthorized — bad or missing token" };
+  if (res.status === 401) throw { status: 401, message: "unauthorized: bad or missing token" };
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
     const data = await res.json();
@@ -186,7 +186,7 @@ async function previewThenApply({ title, intro, names, apply }) {
     : '<p class="view-sub">No changes.</p>';
   const ok = await confirmDialog({
     title,
-    body: '<p class="m-sub">' + esc(intro) + " — names only:</p>" + namesHtml,
+    body: '<p class="m-sub">' + esc(intro) + ": names only:</p>" + namesHtml,
     confirmLabel: "Apply",
   });
   if (!ok) return false;
@@ -271,8 +271,7 @@ function greeting() {
 
 renderers.overview = async function () {
   setView(
-    '<div class="ov-greet"><h1>' + greeting() + ", Umar</h1>" +
-    '<p>The system is ready. What would you like to work on today?</p></div>' +
+    '<div class="ov-greet"><h1>' + greeting() + "</h1></div>" +
     '<div class="ov-cards">' +
     '<a class="ov-card" href="#/schedule"><span class="ov-card-icon">' + icon("schedule", 18) + '</span>' +
     '<span class="ov-card-title">Schedule a job</span><span class="ov-card-sub">Run prompts on a cadence</span>' +
@@ -782,7 +781,7 @@ async function showJobForm(editId) {
     "<h3>" + (job ? "Edit job" : "New job") + "</h3>" +
     (job ? "" :
       '<div class="field"><label>Template</label><select id="jf-tpl" class="select"><option value="">— none (raw task) —</option>' +
-      templates.map((t) => '<option value="' + esc(t.name) + '">' + esc(t.name) + " — " + esc(t.description || "") + "</option>").join("") +
+      templates.map((t) => '<option value="' + esc(t.name) + '">' + esc(t.name) + ": " + esc(t.description || "") + "</option>").join("") +
       "</select></div><div id='jf-vars'></div>") +
     '<div class="field"><label>Task / prompt</label><textarea id="jf-task" class="input" rows="4">' + esc(job ? job.task : "") + "</textarea></div>" +
     '<div class="form-grid">' +
@@ -936,7 +935,7 @@ function configInput(f) {
     const name = val && val.name ? val.name : "";
     return '<div class="form-grid"><div class="field"><label>source</label><input class="input mono" data-path="' + esc(f.path) + '.source" value="' + esc(src) + '"></div>' +
       '<div class="field"><label>env var name</label><input class="input mono" data-path="' + esc(f.path) + '.name" value="' + esc(name) + '"></div></div>' +
-      '<div class="hint">Values are never stored here — only the env var <em>name</em>. Manage values under Keys.</div>';
+      '<div class="hint">Values are never stored here, only the env var <em>name</em>. Manage values under Keys.</div>';
   }
   if (f.type === "integer" || f.type === "float") {
     return '<input class="input mono" id="' + id + '" data-path="' + esc(f.path) + '" data-type="' + f.type + '" value="' + esc(val == null ? "" : val) + '" inputmode="numeric">';
@@ -949,7 +948,7 @@ function configInput(f) {
 }
 
 renderers.config = async function () {
-  setView(viewHead("Config", "config.toml — validated, atomic writes") +
+  setView(viewHead("Config", "config.toml: validated, atomic writes") +
     '<div class="toolbar"><button class="btn primary" id="cf-save">Review changes</button>' +
     '<button class="btn" id="cf-export">Export</button><button class="btn" id="cf-import">Import</button>' +
     '<span class="view-sub" id="cf-dirty"></span></div><div id="cf-body">' + loading("config schema") + "</div>");
@@ -1067,7 +1066,7 @@ renderers.config = async function () {
 
 /* ---------------- keys (.env) ---------------- */
 renderers.keys = async function () {
-  setView(viewHead("Keys", ".env — values are write-only, never shown") +
+  setView(viewHead("Keys", ".env: values are write-only, never shown") +
     '<div class="toolbar"><button class="btn primary" id="ek-add">Add key</button>' +
     '<button class="btn small" id="ek-refresh">Refresh</button></div><div id="ek-body">' + loading("keys") + "</div>");
   $("#ek-refresh").onclick = () => renderers.keys();
@@ -1076,7 +1075,7 @@ renderers.keys = async function () {
     try {
       const data = await api("GET", "/api/env");
       if (!data.keys.length) {
-        $("#ek-body").innerHTML = emptyState("No keys in .env", "Add one — values are write-only and never displayed.");
+        $("#ek-body").innerHTML = emptyState("No keys in .env", "Add one. Values are write-only and never displayed.");
         return;
       }
       $("#ek-body").innerHTML = '<div class="panel"><div class="panel-body flush"><table class="grid"><thead><tr>' +
@@ -1290,7 +1289,7 @@ function skillImportForm() {
 
 /* ---------------- MCP ---------------- */
 renderers.mcp = async function () {
-  setView(viewHead("MCP", "declared servers — ready means prepared, not attached") +
+  setView(viewHead("MCP", "declared servers. Ready means prepared, not attached") +
     '<div class="toolbar"><button class="btn primary" id="mcp-add">Add server</button>' +
     '<button class="btn" id="mcp-reload">Reload</button></div><div id="mcp-body">' + loading("mcp servers") + "</div>");
   $("#mcp-add").onclick = mcpAddForm;
@@ -1331,7 +1330,7 @@ renderers.mcp = async function () {
         b.disabled = true;
         try {
           const res = await api("POST", "/api/mcp/servers/" + encodeURIComponent(b.dataset.mtest) + "/test");
-          toast(res.name + ": " + (res.ok ? "OK" : "FAIL") + " — " + res.detail, res.ok ? "ok" : "err");
+          toast(res.name + " (" + (res.ok ? "OK" : "FAIL") + "): " + res.detail, res.ok ? "ok" : "err");
         } catch (e) { toast(e.message, "err"); }
         b.disabled = false;
       });

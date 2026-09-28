@@ -1,6 +1,6 @@
 /* Pantheon dashboard — clean product UI.
    Light and dark themes via [data-theme] on <html> (dark default).
-   Accent: purple #7c6cf0. Status colors only green/amber/red.
+   Accent: brand purple #7223FF. Status colors only green/amber/red.
    No gradients, no fake data. */
 
 :root, [data-theme="dark"] {
@@ -13,11 +13,12 @@
   --border-soft: rgba(255, 255, 255, 0.05);
   --text: #e8eaf0;
   --text-dim: #a0a8b8;
-  --text-faint: #626b7d;
-  --accent: #7c6cf0;
-  --accent-strong: #8f81f5;
-  --accent-soft: rgba(124, 108, 240, 0.12);
-  --accent-border: rgba(124, 108, 240, 0.35);
+  --text-faint: #828da3;
+  --accent: #7223ff;
+  --accent-strong: #a58bff;
+  --accent-hover: #5e1fe8;
+  --accent-soft: rgba(114, 35, 255, 0.14);
+  --accent-border: rgba(114, 35, 255, 0.38);
   --green: #3ecf8e;
   --green-soft: rgba(62, 207, 142, 0.12);
   --green-border: rgba(62, 207, 142, 0.3);
@@ -46,11 +47,12 @@
   --border-soft: #edf0f4;
   --text: #16191f;
   --text-dim: #5b6472;
-  --text-faint: #98a1b0;
-  --accent: #6a5ae0;
-  --accent-strong: #7c6cf0;
-  --accent-soft: rgba(106, 90, 224, 0.09);
-  --accent-border: rgba(106, 90, 224, 0.3);
+  --text-faint: #6b7484;
+  --accent: #7223ff;
+  --accent-strong: #5f1fd6;
+  --accent-hover: #5e1fe8;
+  --accent-soft: rgba(114, 35, 255, 0.1);
+  --accent-border: rgba(114, 35, 255, 0.32);
   --green: #1f9d63;
   --green-soft: rgba(31, 157, 99, 0.1);
   --green-border: rgba(31, 157, 99, 0.28);
@@ -596,7 +598,7 @@ table.grid tr.rowlink { cursor: pointer; }
 .btn:hover { background: var(--hover); border-color: var(--text-faint); }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn.danger { color: var(--red); border-color: var(--red-border); }
 .btn.danger:hover { background: var(--red-soft); }
 .btn.small { font-size: 12px; padding: 5px 10px; border-radius: 7px; }
@@ -666,9 +668,8 @@ textarea.input { font-family: var(--mono); font-size: 12px; resize: vertical; li
   border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
   font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap;
 }
-.msg { border-left: 2px solid var(--border); padding: 7px 14px; margin: 10px 0; }
-.msg[data-role="user"] { border-left-color: var(--accent); }
-.msg[data-role="assistant"] { border-left-color: var(--text-faint); }
+.msg { padding: 7px 14px; margin: 10px 0; background: var(--bg-soft); border-radius: var(--radius-sm); }
+.msg[data-role="user"] { background: var(--accent-soft); }
 .msg .m-role { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-faint); margin-bottom: 4px; font-weight: 600; }
 .msg .m-body { white-space: pre-wrap; word-break: break-word; font-size: 13px; }
 
