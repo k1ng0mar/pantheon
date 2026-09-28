@@ -766,6 +766,31 @@ impl Ledger {
             .map_err(|e| err("LEDGER_PRUNE", e.to_string()))?;
         Ok(pruned)
     }
+
+    /// Retention-safe prune: like [`Self::prune_events_before`], but never
+    /// deletes events of runs whose status is not terminal. The active run's
+    /// transcript survives even when its oldest events predate the cutoff —
+    /// a run that stays open for months must not lose the history a resume
+    /// rebuilds from. Only finished runs (`completed`, `failed`,
+    /// `canceled`) lose old history. Returns the number of event rows
+    /// pruned.
+    pub fn prune_events_before_active_safe(
+        &self,
+        cutoff_ts_ms: i64,
+    ) -> Result<usize, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let pruned = conn
+            .execute(
+                "DELETE FROM events WHERE ts_ms < ?1 \
+                 AND run_id NOT IN (SELECT run_id FROM runs WHERE status NOT IN ('completed','failed','canceled'))",
+                params![cutoff_ts_ms],
+            )
+            .map_err(|e| err("LEDGER_PRUNE", e.to_string()))?;
+        Ok(pruned)
+    }
     /// A run whose persisted status says it is still live.
     ///
     /// `running` and `awaiting_approval` are the two non-terminal states, and

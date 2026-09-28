@@ -133,7 +133,7 @@ pub fn cmd_schedule(args: &[String], data_dir: &Path) {
     let subcommand = args[2].as_str();
     if matches!(
         subcommand,
-        "list" | "pause" | "resume" | "cancel" | "run" | "tick" | "webhook"
+        "list" | "pause" | "resume" | "cancel" | "run" | "tick" | "webhook" | "prune"
     ) {
         handle_subcommand(&args[2..], data_dir);
         return;
@@ -367,6 +367,9 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
             };
             let driver = Arc::new(TickDriver::new(ledger));
             loop {
+                // Automatic retention: at most one prune pass per day,
+                // so --watch daemons keep the ledger bounded on their own.
+                maybe_run_retention(data_dir);
                 let jobs = load_or_exit(data_dir);
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -436,14 +439,165 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
             }
         }
         "webhook" => handle_webhook_command(&parts[1..]),
+        "prune" => {
+            // Manual trigger for the retention pass (the tick loop runs it
+            // automatically at most once per day). `--days N` overrides the
+            // configured `[retention] keep_days` for this run only.
+            let mut days: Option<u32> = None;
+            let mut it = parts[1..].iter();
+            while let Some(a) = it.next() {
+                if a == "--days" {
+                    let v = it.next().unwrap_or_else(|| {
+                        eprintln!("usage: pantheon schedule prune [--days N]");
+                        std::process::exit(2);
+                    });
+                    days = Some(v.parse().unwrap_or_else(|_| {
+                        eprintln!("prune: bad --days {v:?}");
+                        std::process::exit(2);
+                    }));
+                } else {
+                    eprintln!("unknown flag: {a}");
+                    std::process::exit(2);
+                }
+            }
+            let keep_days = days.unwrap_or_else(|| {
+                crate::config::Config::load_or_report(data_dir)
+                    .map(|c| c.retention_days())
+                    .unwrap_or(crate::config::DEFAULT_RETENTION_DAYS)
+            });
+            if keep_days == 0 {
+                println!("retention disabled (keep_days = 0); nothing pruned");
+                return;
+            }
+            match run_retention(data_dir, keep_days) {
+                Ok(r) => {
+                    record_retention_pass(data_dir);
+                    println!(
+                        "retention: pruned {} events, {} search chunks, {} claims older than {}d (active runs kept)",
+                        r.events_pruned,
+                        r.search_chunks_pruned,
+                        r.claims_pruned,
+                        r.keep_days
+                    );
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             // Guarded by cmd_schedule's subcommand allow-list; fail loud
             // (not unreachable) so a new subcommand can't silently no-op.
             eprintln!("usage: pantheon schedule list|pause|resume|cancel|run <id>");
             eprintln!("       pantheon schedule tick [--watch]");
+            eprintln!("       pantheon schedule prune [--days N]");
             eprintln!("       pantheon schedule webhook sign|verify --body <text> [--secret <s>]");
             std::process::exit(2);
         }
+    }
+}
+
+/// How often the automatic retention pass may run. The tick loop calls
+/// `maybe_run_retention` every iteration (every 30s in `--watch` mode);
+/// the gate below keeps a long-running daemon to one pass per day.
+const RETENTION_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// What one retention pass removed. Returned so the caller can log it —
+/// pruning must be visible, never silent.
+#[derive(Debug, Default)]
+pub struct RetentionReport {
+    pub keep_days: u32,
+    pub events_pruned: usize,
+    pub search_chunks_pruned: usize,
+    pub claims_pruned: usize,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Run the retention pass now: prune ledger events, the FTS search sidecar,
+/// and idempotency claims older than `keep_days`. Runs whose status is not
+/// terminal are never pruned, however old their events — the active run's
+/// transcript is what a resume rebuilds from.
+pub fn run_retention(data_dir: &Path, keep_days: u32) -> Result<RetentionReport, String> {
+    let cutoff = now_ms() - keep_days as i64 * 86_400_000;
+    let mut report = RetentionReport {
+        keep_days,
+        ..Default::default()
+    };
+
+    let ledger_path = data_dir.join("ledger.db");
+    if ledger_path.exists() {
+        let ledger = pantheon_storage::ledger::Ledger::open(&ledger_path)
+            .map_err(|e| format!("retention: cannot open ledger: {e}"))?;
+        report.events_pruned = ledger
+            .prune_events_before_active_safe(cutoff)
+            .map_err(|e| format!("retention: prune events: {e}"))?;
+        // The FTS sidecar lives in the same database file.
+        match pantheon_storage::search::SessionSearch::open(&ledger_path) {
+            Ok(search) => {
+                report.search_chunks_pruned = search
+                    .prune_before(cutoff)
+                    .map_err(|e| format!("retention: prune search index: {e}"))?;
+            }
+            Err(e) => eprintln!("retention: search index unavailable, skipping: {e}"),
+        }
+    }
+    let claims_path = data_dir.join("claims.db");
+    if claims_path.exists() {
+        let claims = DurableClaimLedger::open(&claims_path)
+            .map_err(|e| format!("retention: cannot open claim ledger: {e}"))?;
+        report.claims_pruned = claims
+            .prune_before(cutoff)
+            .map_err(|e| format!("retention: prune claims: {e}"))?;
+    }
+    Ok(report)
+}
+
+fn retention_state_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("retention.json")
+}
+
+/// True when a retention pass is due: never ran, or the last pass is older
+/// than `RETENTION_INTERVAL_MS`.
+fn retention_due(data_dir: &Path) -> bool {
+    let last: i64 = std::fs::read_to_string(retention_state_path(data_dir))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("last_prune_ms")?.as_i64())
+        .unwrap_or(0);
+    now_ms() - last >= RETENTION_INTERVAL_MS
+}
+
+fn record_retention_pass(data_dir: &Path) {
+    let state = serde_json::json!({ "last_prune_ms": now_ms() });
+    let _ = std::fs::write(retention_state_path(data_dir), state.to_string());
+}
+
+/// The automatic pass, called from the tick loop. No-op when retention is
+/// disabled (`keep_days = 0`) or the last pass is still fresh. Logs what
+/// was pruned.
+fn maybe_run_retention(data_dir: &Path) {
+    let keep_days = crate::config::Config::load_or_report(data_dir)
+        .map(|c| c.retention_days())
+        .unwrap_or(crate::config::DEFAULT_RETENTION_DAYS);
+    if keep_days == 0 || !retention_due(data_dir) {
+        return;
+    }
+    match run_retention(data_dir, keep_days) {
+        Ok(r) => {
+            record_retention_pass(data_dir);
+            println!(
+                "retention: pruned {} events, {} search chunks, {} claims older than {}d (active runs kept)",
+                r.events_pruned, r.search_chunks_pruned, r.claims_pruned, r.keep_days
+            );
+        }
+        Err(e) => eprintln!("{e}"),
     }
 }
 

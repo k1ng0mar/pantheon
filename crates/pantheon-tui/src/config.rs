@@ -149,6 +149,33 @@ pub type VisionSection = AuxSection;
 /// interactive chat.
 pub type ScheduledSection = AuxSection;
 
+/// Default event-history retention when `[retention]` is absent.
+pub const DEFAULT_RETENTION_DAYS: u32 = 90;
+
+fn default_retention_days() -> u32 {
+    DEFAULT_RETENTION_DAYS
+}
+
+/// `[retention]`: how long the event ledger keeps transcripts.
+/// The ledger is append-only and grows forever; the scheduled maintenance
+/// pass prunes it. `keep_days = 0` disables pruning (unbounded growth).
+/// Finished runs keep their status/title rows and lose only old events;
+/// runs that are still open are never pruned, however old their events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetentionSection {
+    /// Days of event history to keep. Default 90. `0` = disabled.
+    #[serde(default = "default_retention_days")]
+    pub keep_days: u32,
+}
+
+impl Default for RetentionSection {
+    fn default() -> Self {
+        Self {
+            keep_days: DEFAULT_RETENTION_DAYS,
+        }
+    }
+}
+
 /// `[mcp_synthesis]`: the model that bounds large MCP tool results into
 /// a short note before they enter context (compression's pattern,
 /// scoped to MCP results). Absent = `auto`: the run's default model
@@ -294,6 +321,10 @@ pub struct Config {
     /// Absent = both allowlists empty (fail closed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<SecretsSection>,
+    /// Event-ledger retention (`[retention]`). Absent = 90-day default;
+    /// `keep_days = 0` disables pruning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<RetentionSection>,
     /// User-defined providers (`pantheon model` → Custom provider).
     /// Empty for configs written before this existed (back-compat).
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -307,6 +338,14 @@ pub struct Config {
 impl Config {
     pub fn path(data_dir: &Path) -> std::path::PathBuf {
         data_dir.join("config.toml")
+    }
+    /// Effective event-retention window in days. Absent `[retention]` =
+    /// the 90-day default; `keep_days = 0` disables pruning.
+    pub fn retention_days(&self) -> u32 {
+        self.retention
+            .as_ref()
+            .map(|r| r.keep_days)
+            .unwrap_or(DEFAULT_RETENTION_DAYS)
     }
     /// Load the config, or explain why it could not be read.
     ///
