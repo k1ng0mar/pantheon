@@ -55,12 +55,18 @@ fn contained_skill_dir(root: &Path, name: &str) -> Result<PathBuf, PantheonError
     let dir = root.join(name);
     std::fs::create_dir_all(&dir)
         .map_err(|e| serr("SKILL_IMPORT_IO", format!("create {}: {e}", dir.display())))?;
-    let canon_root = root
-        .canonicalize()
-        .map_err(|e| serr("SKILL_IMPORT_IO", format!("canonicalize {}: {e}", root.display())))?;
-    let canon_dir = dir
-        .canonicalize()
-        .map_err(|e| serr("SKILL_IMPORT_IO", format!("canonicalize {}: {e}", dir.display())))?;
+    let canon_root = root.canonicalize().map_err(|e| {
+        serr(
+            "SKILL_IMPORT_IO",
+            format!("canonicalize {}: {e}", root.display()),
+        )
+    })?;
+    let canon_dir = dir.canonicalize().map_err(|e| {
+        serr(
+            "SKILL_IMPORT_IO",
+            format!("canonicalize {}: {e}", dir.display()),
+        )
+    })?;
     if !canon_dir.starts_with(&canon_root) {
         return Err(serr(
             "SKILL_BAD_NAME",
@@ -79,11 +85,7 @@ pub const MAX_ZIP_ENTRIES: usize = 1000;
 
 /// Read at most `cap` bytes from `r`; error if the stream is longer.
 /// Guards against unbounded HTTP bodies.
-fn read_capped<R: std::io::Read>(
-    r: R,
-    cap: u64,
-    what: &str,
-) -> Result<Vec<u8>, PantheonError> {
+fn read_capped<R: std::io::Read>(r: R, cap: u64, what: &str) -> Result<Vec<u8>, PantheonError> {
     let mut buf = Vec::new();
     r.take(cap + 1)
         .read_to_end(&mut buf)
@@ -128,9 +130,12 @@ fn resolve_repo_subpath(tmp: &Path, subpath: Option<&str>) -> Result<PathBuf, Pa
         ));
     }
     let root = tmp.join(p);
-    let canon_tmp = tmp
-        .canonicalize()
-        .map_err(|e| serr("SKILL_REPO_TMP", format!("canonicalize {}: {e}", tmp.display())))?;
+    let canon_tmp = tmp.canonicalize().map_err(|e| {
+        serr(
+            "SKILL_REPO_TMP",
+            format!("canonicalize {}: {e}", tmp.display()),
+        )
+    })?;
     let canon_root = root.canonicalize().map_err(|_| {
         serr(
             "SKILL_BAD_SUBPATH",

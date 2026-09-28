@@ -50,11 +50,7 @@ impl DiscordRestTransport {
     /// value, body)`. Pure: unit tests assert the wire shape
     /// (`POST {api_base}/channels/{id}/messages`, `Authorization: Bot
     /// <token>`, `{"content": ...}`) without touching the network.
-    pub fn build_send_request(
-        &self,
-        channel_id: &str,
-        payload: &Value,
-    ) -> (String, String, Value) {
+    pub fn build_send_request(&self, channel_id: &str, payload: &Value) -> (String, String, Value) {
         let url = format!("{}/channels/{}/messages", self.api_base, channel_id);
         let auth = format!("Bot {}", self.token);
         (url, auth, payload.clone())

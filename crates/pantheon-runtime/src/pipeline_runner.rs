@@ -217,4 +217,3 @@ fn extract_output(op: &Operation) -> Result<String, PantheonError> {
 pub struct PipelineOutcome {
     pub outputs: std::collections::BTreeMap<String, String>,
 }
-

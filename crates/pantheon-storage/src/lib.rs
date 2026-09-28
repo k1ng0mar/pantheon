@@ -39,10 +39,8 @@ pub(crate) fn configure_durability(conn: &Connection, code: &str) -> Result<(), 
         .map_err(|e| err("BUSY_TIMEOUT", e.to_string()))?;
     // `PRAGMA journal_mode = WAL` returns the resulting mode as a row;
     // ignore it — on :memory: connections it reports "memory" (a no-op).
-    conn.query_row("PRAGMA journal_mode = WAL", [], |r| {
-        r.get::<_, String>(0)
-    })
-    .map_err(|e| err("WAL", e.to_string()))?;
+    conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get::<_, String>(0))
+        .map_err(|e| err("WAL", e.to_string()))?;
     conn.execute_batch("PRAGMA synchronous = NORMAL")
         .map_err(|e| err("SYNCHRONOUS", e.to_string()))?;
     Ok(())

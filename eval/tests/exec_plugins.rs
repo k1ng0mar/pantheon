@@ -5,12 +5,10 @@
 //! threads, sockets, subprocesses, timing, filesystem — lives here and
 //! runs via `cargo test -p pantheon-eval`.
 
-use pantheon_exec::plugins::*;
 use pantheon_api::capability::Capability;
+use pantheon_exec::plugins::*;
 use std::path::Path;
 use tempfile::tempdir;
-
-
 
 #[test]
 fn discover_finds_user_plugin() {
@@ -35,7 +33,6 @@ fn discover_finds_user_plugin() {
     assert_eq!(found[0].location, PluginLocation::User);
 }
 
-
 #[test]
 fn discover_ignores_dirs_without_manifest() {
     let d = tempdir().unwrap();
@@ -44,7 +41,6 @@ fn discover_ignores_dirs_without_manifest() {
     std::fs::create_dir_all(plugins.join("no-manifest")).unwrap();
     assert!(discover_plugins(&plugins, d.path()).is_empty());
 }
-
 
 #[test]
 fn verify_rejects_missing_runner() {
@@ -60,7 +56,6 @@ fn verify_rejects_missing_runner() {
     assert_eq!(err.code, "PLUGIN_NO_RUNNER");
 }
 
-
 #[test]
 fn verify_rejects_missing_shebang() {
     let d = tempdir().unwrap();
@@ -75,7 +70,6 @@ fn verify_rejects_missing_shebang() {
     let err = verify_plugin(&found[0]).unwrap_err();
     assert_eq!(err.code, "PLUGIN_NO_SHEBANG");
 }
-
 
 #[test]
 fn verify_rejects_missing_required_env() {
@@ -97,7 +91,6 @@ fn verify_rejects_missing_required_env() {
     let err = verify_plugin(&found[0]).unwrap_err();
     assert_eq!(err.code, "PLUGIN_MISSING_ENV");
 }
-
 
 #[test]
 fn tool_allowed_filters_by_capability() {
@@ -125,7 +118,6 @@ fn tool_allowed_filters_by_capability() {
     assert!(tool_allowed(plugin, "safe_read", &coder));
 }
 
-
 #[test]
 fn verify_rejects_dotdot_runner() {
     let d = tempdir().unwrap();
@@ -134,7 +126,6 @@ fn verify_rejects_dotdot_runner() {
         assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER", "{bad:?}");
     }
 }
-
 
 #[cfg(windows)]
 #[test]
@@ -145,14 +136,12 @@ fn verify_rejects_dotdot_runner_windows_separator() {
     assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER");
 }
 
-
 #[test]
 fn verify_rejects_absolute_runner() {
     let d = tempdir().unwrap();
     let err = verify_plugin(&plugin_with_runner(d.path(), "/bin/sh")).unwrap_err();
     assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER");
 }
-
 
 #[test]
 fn verify_rejects_empty_runner() {
@@ -162,7 +151,6 @@ fn verify_rejects_empty_runner() {
         assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER", "{bad:?}");
     }
 }
-
 
 #[cfg(unix)]
 #[test]
@@ -175,7 +163,6 @@ fn verify_rejects_symlinked_runner_escape() {
     assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER");
 }
 
-
 #[test]
 fn verify_accepts_nested_relative_runner() {
     let d = tempdir().unwrap();
@@ -185,7 +172,6 @@ fn verify_accepts_nested_relative_runner() {
     let out = verify_plugin(&plugin_with_runner(root, "bin/run.sh")).unwrap();
     assert_eq!(out, root.join("bin").join("run.sh"));
 }
-
 
 fn write_plugin(dir: &Path, name: &str, runner: &str, caps: Vec<ToolCapability>) {
     let p = dir.join(name);
@@ -211,7 +197,6 @@ fn write_plugin(dir: &Path, name: &str, runner: &str, caps: Vec<ToolCapability>)
     }
 }
 
-
 fn plugin_with_runner(root: &Path, runner: &str) -> DiscoveredPlugin {
     DiscoveredPlugin {
         manifest: PluginManifest {
@@ -229,4 +214,3 @@ fn plugin_with_runner(root: &Path, runner: &str) -> DiscoveredPlugin {
         root: root.to_path_buf(),
     }
 }
-

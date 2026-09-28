@@ -5,13 +5,11 @@
 //! threads, sockets, subprocesses, timing, filesystem — lives here and
 //! runs via `cargo test -p pantheon-eval`.
 
-use pantheon_runtime::session::*;
-use pantheon_runtime::Supervisor;
 use pantheon_api::capability::Policy;
 use pantheon_api::events::Event;
+use pantheon_runtime::session::*;
+use pantheon_runtime::Supervisor;
 use pantheon_tools::tools::ToolRegistry;
-
-
 
 /// Phase 5: three 400ms tool calls in one turn must finish in well under
 /// a second if they run concurrently (sequential would be >=1.2s).
@@ -74,7 +72,6 @@ fn parallel_tool_calls_overlap_in_wall_time() {
     );
 }
 
-
 #[test]
 fn denied_scope_settles_instead_of_reparking_on_resume() {
     // A denied call must not leave the run stuck: on resume the denial
@@ -107,7 +104,6 @@ fn denied_scope_settles_instead_of_reparking_on_resume() {
     );
 }
 
-
 #[test]
 fn switch_model_rejects_empty_and_trims() {
     let s = switch_test_session("reject");
@@ -126,7 +122,6 @@ fn switch_model_rejects_empty_and_trims() {
     );
 }
 
-
 #[test]
 fn compress_now_reports_cleanly_on_an_empty_run() {
     let s = switch_test_session("compress-empty");
@@ -144,7 +139,6 @@ fn compress_now_reports_cleanly_on_an_empty_run() {
     assert_eq!((rep.before, rep.after), (0, 0));
 }
 
-
 #[test]
 fn compress_now_refuses_without_a_known_window() {
     let s = switch_test_session("compress-unknown");
@@ -159,7 +153,6 @@ fn compress_now_refuses_without_a_known_window() {
     );
 }
 
-
 #[test]
 fn new_session_starts_at_depth_zero() {
     // The top-level loop must report depth 0: `chat_turn` builds the
@@ -168,7 +161,6 @@ fn new_session_starts_at_depth_zero() {
     assert_eq!(s.depth, 0);
     let _ = std::fs::remove_dir_all(s.supervisor.data_dir());
 }
-
 
 fn switch_test_session(tag: &str) -> Session {
     let dir = std::env::temp_dir().join(format!("pantheon-switch-{tag}-{}", std::process::id()));
@@ -193,7 +185,6 @@ fn switch_test_session(tag: &str) -> Session {
     Session::new(dir, policy, model_policy, secrets).unwrap()
 }
 
-
 fn drive_test_session(tag: &str) -> Session {
     let dir = std::env::temp_dir().join(format!("pantheon-rt-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -205,7 +196,6 @@ fn drive_test_session(tag: &str) -> Session {
     )
     .unwrap()
 }
-
 
 fn drive_test_policy() -> pantheon_api::model::ModelPolicy {
     pantheon_api::model::ModelPolicy {
@@ -221,4 +211,3 @@ fn drive_test_policy() -> pantheon_api::model::ModelPolicy {
         reasoning_budget: None,
     }
 }
-

@@ -6,11 +6,11 @@
 //! runs via `cargo test -p pantheon-eval`.
 
 //! Tests for `pantheon_runtime::pipeline_runner::tests` — sibling file so sources stay test-free.
-use pantheon_runtime::pipeline::{AcceptAllEvaluator, StageEvaluator, StageExecutor};
+use pantheon_api::error::PantheonError;
 use pantheon_runtime::pipeline::GATES_AFTER;
+use pantheon_runtime::pipeline::{AcceptAllEvaluator, StageEvaluator, StageExecutor};
 use pantheon_runtime::pipeline_runner::*;
 use pantheon_storage::{OperationStatus, OperationStore};
-use pantheon_api::error::PantheonError;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

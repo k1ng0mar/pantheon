@@ -41,7 +41,8 @@ impl DraftEditor {
     }
 
     pub fn char_count(&self) -> usize {
-        self.lines.iter().map(|l| l.chars().count()).sum::<usize>() + self.lines.len().saturating_sub(1)
+        self.lines.iter().map(|l| l.chars().count()).sum::<usize>()
+            + self.lines.len().saturating_sub(1)
     }
 
     pub fn lines(&self) -> &[String] {
@@ -68,8 +69,7 @@ impl DraftEditor {
     pub fn newline(&mut self) {
         let chars = self.line_chars();
         let col = self.col.min(chars.len());
-        let (head, tail): (Vec<char>, Vec<char>) =
-            (chars[..col].to_vec(), chars[col..].to_vec());
+        let (head, tail): (Vec<char>, Vec<char>) = (chars[..col].to_vec(), chars[col..].to_vec());
         self.lines[self.row] = head.iter().collect();
         self.lines.insert(self.row + 1, tail.iter().collect());
         self.row += 1;

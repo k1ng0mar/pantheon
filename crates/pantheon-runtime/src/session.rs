@@ -1315,7 +1315,9 @@ impl Session {
                             Err(e) => {
                                 // Name squat or malformed manifest: don't register
                                 // anything from this plugin, stop the spawned supervisor.
-                                eprintln!("plugin '{label}': tool registration rejected, skipping: {e}");
+                                eprintln!(
+                                    "plugin '{label}': tool registration rejected, skipping: {e}"
+                                );
                                 if let Ok(mut guard) = sup_arc.lock() {
                                     guard.stop();
                                 }
@@ -1422,8 +1424,7 @@ impl Session {
                         depth,
                         agent,
                     )?;
-                    let outcome =
-                        child_session.chat(&child_session.current_run_id(), task)?;
+                    let outcome = child_session.chat(&child_session.current_run_id(), task)?;
                     match outcome {
                         pantheon_agent::LoopOutcome::Answered { text, .. } => Ok(text),
                         pantheon_agent::LoopOutcome::Denied { capability } => {
@@ -1633,7 +1634,10 @@ impl Session {
                 // Name every scope awaiting a decision, not just the first.
                 // A batch can park several calls at once, and a scope with no
                 // ApprovalRequested row is one the operator can never grant.
-                let mut scopes = self.supervisor.pending_approvals(run_id).unwrap_or_default();
+                let mut scopes = self
+                    .supervisor
+                    .pending_approvals(run_id)
+                    .unwrap_or_default();
                 if scopes.is_empty() && !scope.is_empty() {
                     scopes.push(scope.clone());
                 }

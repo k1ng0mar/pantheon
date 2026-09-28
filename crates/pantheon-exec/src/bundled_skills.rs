@@ -170,4 +170,3 @@ pub fn seed_bundled_skills(data_dir: &Path) -> Vec<(String, SeedOutcome)> {
         })
         .collect()
 }
-

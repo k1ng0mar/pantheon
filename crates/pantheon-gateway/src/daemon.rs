@@ -310,12 +310,10 @@ impl ChannelDaemon {
                                 rate_limited = true;
                                 // Honor the platform's own wait hint, not
                                 // just our backoff guess.
-                                rate_wait_ms = rate_wait_ms
-                                    .max(crate::delivery::retry_delay_ms(&e, backoff));
+                                rate_wait_ms =
+                                    rate_wait_ms.max(crate::delivery::retry_delay_ms(&e, backoff));
                             }
-                            if let Some(retry) =
-                                retry_or_dead_letter(msg, channel.name(), &e)
-                            {
+                            if let Some(retry) = retry_or_dead_letter(msg, channel.name(), &e) {
                                 pending.push(retry);
                             }
                         }

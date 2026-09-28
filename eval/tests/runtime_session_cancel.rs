@@ -5,10 +5,8 @@
 //! threads, sockets, subprocesses, timing, filesystem — lives here and
 //! runs via `cargo test -p pantheon-eval`.
 
-use pantheon_runtime::session::*;
 use pantheon_api::events::Event;
-
-
+use pantheon_runtime::session::*;
 
 /// Cancelling a running run records the intent durably and leaves the
 /// run in `canceled` — not `failed` — so replay can tell the difference
@@ -48,7 +46,6 @@ fn cancel_marks_run_canceled_and_recoverable() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// A cancel that arrives after the run already finished is rejected
 /// rather than clobbering a terminal state.
 #[test]
@@ -66,7 +63,6 @@ fn cancel_after_completion_is_rejected() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 fn test_session(tag: &str) -> (Session, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("pantheon-cancel-{tag}-{}", std::process::id()));
@@ -88,4 +84,3 @@ fn test_session(tag: &str) -> (Session, std::path::PathBuf) {
     let s = Session::new(dir.clone(), policy, model_policy, secrets).unwrap();
     (s, dir)
 }
-

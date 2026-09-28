@@ -54,7 +54,9 @@ pub enum TickDecision {
     /// The claim was won and the run started. The receiver yields one
     /// [`RunOutcome`] per run this fire produces (a queue drain can
     /// produce a second one).
-    Fired { completion: mpsc::Receiver<RunOutcome> },
+    Fired {
+        completion: mpsc::Receiver<RunOutcome>,
+    },
     /// The fire was deferred: the job was still running and its overlap
     /// policy is [`OverlapPolicy::Queue`]. It runs once more after the
     /// in-flight run finishes.
@@ -200,8 +202,7 @@ impl TickDriver {
             let (done_tx, done_rx) = mpsc::channel();
             let ex = Arc::clone(&execute);
             std::thread::spawn(move || {
-                let ok =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ex())).is_ok();
+                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ex())).is_ok();
                 let _ = done_tx.send(ok);
             });
             let outcome = match done_rx.recv_timeout(timeout) {

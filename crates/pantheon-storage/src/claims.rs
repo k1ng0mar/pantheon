@@ -148,11 +148,9 @@ impl ClaimStore {
             .conn
             .lock()
             .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
-        conn.query_row(
-            "SELECT 1 FROM claims WHERE key = ?1",
-            params![key],
-            |_| Ok(()),
-        )
+        conn.query_row("SELECT 1 FROM claims WHERE key = ?1", params![key], |_| {
+            Ok(())
+        })
         .optional()
         .map(|row| row.is_some())
         .map_err(|e| err("CLAIM_QUERY", e.to_string()))
@@ -186,10 +184,7 @@ impl ClaimStore {
             .lock()
             .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
         let pruned = conn
-            .execute(
-                "DELETE FROM claims WHERE ts_ms < ?1",
-                params![cutoff_ms],
-            )
+            .execute("DELETE FROM claims WHERE ts_ms < ?1", params![cutoff_ms])
             .map_err(|e| err("CLAIM_DELETE", e.to_string()))?;
         Ok(pruned)
     }

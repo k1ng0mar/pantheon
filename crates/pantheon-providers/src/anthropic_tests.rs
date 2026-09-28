@@ -452,7 +452,10 @@ fn no_schema_sends_no_output_config() {
 fn tool_choice_maps_to_anthropic_shapes() {
     // `none` disables, `any` is the closest to OpenAI's `required`,
     // a named tool uses the `tool` variant.
-    assert_eq!(anth_req(ToolChoice::None, None)["tool_choice"]["type"], "none");
+    assert_eq!(
+        anth_req(ToolChoice::None, None)["tool_choice"]["type"],
+        "none"
+    );
     assert_eq!(
         anth_req(ToolChoice::Required, None)["tool_choice"]["type"],
         "any"
@@ -461,7 +464,9 @@ fn tool_choice_maps_to_anthropic_shapes() {
     assert_eq!(named["type"], "tool");
     assert_eq!(named["name"], "shell");
     // Auto omits the field entirely.
-    assert!(anth_req(ToolChoice::Auto, None).get("tool_choice").is_none());
+    assert!(anth_req(ToolChoice::Auto, None)
+        .get("tool_choice")
+        .is_none());
 }
 
 #[test]

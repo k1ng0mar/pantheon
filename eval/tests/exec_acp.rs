@@ -9,8 +9,6 @@ use pantheon_exec::acp::*;
 use std::io::Write;
 use std::time::Duration;
 
-
-
 #[test]
 fn handshake_with_fake_server_succeeds() {
     let py = fake_server_py();
@@ -20,7 +18,6 @@ fn handshake_with_fake_server_succeeds() {
     assert_eq!(b.server_capabilities, vec!["prompt".to_string()]);
     assert_eq!(b.status()["session_prompt"], "unbuilt");
 }
-
 
 #[test]
 fn spawn_failure_names_the_missing_harness() {
@@ -87,4 +84,3 @@ main()
     .unwrap();
     path
 }
-

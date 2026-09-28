@@ -196,7 +196,6 @@ pub fn run_tool_operation(
     }
 }
 
-
 /// Convenience adapter for the common case where translation is identity and
 /// the result is a JSON-safe copy.  This is useful for builtins and tests;
 /// network/process adapters can implement the full trait.

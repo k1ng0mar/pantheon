@@ -7,8 +7,6 @@
 
 use pantheon_exec::skills::*;
 
-
-
 #[test]
 fn import_skill_dir_rejects_traversal_name() {
     let dir = std::env::temp_dir().join(format!("skimp-{}", std::process::id()));
@@ -27,7 +25,6 @@ fn import_skill_dir_rejects_traversal_name() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 #[test]
 fn import_skill_rejects_bad_meta_name() {
     let dir = std::env::temp_dir().join(format!("skimp2-{}", std::process::id()));
@@ -45,4 +42,3 @@ fn import_skill_rejects_bad_meta_name() {
     assert!(!dir.join("evil").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
-

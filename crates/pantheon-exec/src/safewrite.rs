@@ -300,7 +300,10 @@ impl SafeWriter {
         if ok {
             Ok(())
         } else {
-            Err(serr("SAFE_BAD_ID", format!("invalid stage/checkpoint id {id:?}")))
+            Err(serr(
+                "SAFE_BAD_ID",
+                format!("invalid stage/checkpoint id {id:?}"),
+            ))
         }
     }
     fn checkpoint_path(&self, id: &str) -> PathBuf {
@@ -508,8 +511,13 @@ impl SafeWriter {
     ) -> Result<ApplyReceipt, PantheonError> {
         let (mut batch, dir) = self.read_staged(stage_id)?;
         // Staged paths come back off disk; re-confine defensively.
-        let confined =
-            self.confine_all(&batch.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>())?;
+        let confined = self.confine_all(
+            &batch
+                .files
+                .iter()
+                .map(|f| f.path.clone())
+                .collect::<Vec<_>>(),
+        )?;
         for (f, p) in batch.files.iter_mut().zip(confined) {
             f.path = p;
         }

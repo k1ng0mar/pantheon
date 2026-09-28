@@ -16,9 +16,9 @@
 //! 2. **Everything is attributable.** Every task, message, and run carries
 //!    the agent that caused it, and that survives a restart.
 
+use pantheon_agent::agent_profile::{AgentProfile, ProfileError, ProfileRegistry};
 use pantheon_runtime::agent_runtime::*;
 use pantheon_runtime::Supervisor;
-use pantheon_agent::agent_profile::{AgentProfile, ProfileError, ProfileRegistry};
 use std::path::{Path, PathBuf};
 
 fn registry() -> ProfileRegistry {

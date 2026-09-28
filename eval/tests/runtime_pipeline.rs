@@ -6,9 +6,9 @@
 //! runs via `cargo test -p pantheon-eval`.
 
 //! Tests for `pantheon_runtime::pipeline::tests` — sibling file so sources stay test-free.
+use pantheon_api::error::PantheonError;
 use pantheon_runtime::pipeline::*;
 use pantheon_storage::{OperationStatus, OperationStore};
-use pantheon_api::error::PantheonError;
 use serde_json::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

@@ -209,9 +209,7 @@ fn tool_choice_value(choice: &ToolChoice) -> Option<serde_json::Value> {
         ToolChoice::Auto => None,
         ToolChoice::Required => Some(serde_json::json!({"type": "any"})),
         ToolChoice::None => Some(serde_json::json!({"type": "none"})),
-        ToolChoice::Named(name) => {
-            Some(serde_json::json!({"type": "tool", "name": name}))
-        }
+        ToolChoice::Named(name) => Some(serde_json::json!({"type": "tool", "name": name})),
     }
 }
 

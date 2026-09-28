@@ -30,7 +30,7 @@ fn turn_locks_are_per_run_and_released() {
         assert!(Arc::ptr_eq(&a1, &a2), "same run shares one lock");
         assert!(!Arc::ptr_eq(&a1, &b), "different runs get different locks");
     } // a2 dropped: only the map + a1/b hold the locks now
-    // Nobody holds or waits on them: both entries are pruned.
+      // Nobody holds or waits on them: both entries are pruned.
     super::release_turn_lock("run-a", &a1);
     super::release_turn_lock("run-b", &b);
     let map = super::TURN_LOCKS.lock().unwrap();

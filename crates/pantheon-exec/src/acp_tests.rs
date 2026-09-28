@@ -91,4 +91,3 @@ fn framed_and_bare_messages_both_decode() {
     let mut cur5 = std::io::Cursor::new(b"Content-Length: nope\r\n\r\n".to_vec());
     assert!(decode_one(&mut cur5, Duration::from_secs(2)).is_err());
 }
-

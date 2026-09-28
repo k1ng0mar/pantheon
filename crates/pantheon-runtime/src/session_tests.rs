@@ -613,8 +613,7 @@ fn tool_call_ids_are_unique_across_chat_turns() {
         .iter()
         .flat_map(|tid| (0..2).map(move |i| tool_call_id(tid, 0, i)))
         .collect();
-    let uniq: std::collections::BTreeSet<&str> =
-        ids.iter().map(String::as_str).collect();
+    let uniq: std::collections::BTreeSet<&str> = ids.iter().map(String::as_str).collect();
     assert_eq!(uniq.len(), 4, "collision across turns: {ids:?}");
     // The nonce never breaks scope parsing (no ':').
     for id in &ids {
@@ -700,12 +699,8 @@ struct ScriptTransport {
 }
 
 impl pantheon_providers::ChatTransport for ScriptTransport {
-    fn post(
-        &self,
-        _req: &pantheon_providers::http::WireRequest,
-    ) -> Result<String, PantheonError> {
-        self.hits
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    fn post(&self, _req: &pantheon_providers::http::WireRequest) -> Result<String, PantheonError> {
+        self.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(self.body.clone())
     }
     fn post_stream(
@@ -781,8 +776,7 @@ fn drive_test_chain(
 ) -> pantheon_providers::ProviderChain<Box<dyn pantheon_providers::ChatTransport>> {
     pantheon_providers::ProviderChain::new(
         drive_test_policy(),
-        Box::new(ScriptTransport { body, hits })
-            as Box<dyn pantheon_providers::ChatTransport>,
+        Box::new(ScriptTransport { body, hits }) as Box<dyn pantheon_providers::ChatTransport>,
         Vec::new(),
         pantheon_secrets::SecretValue::new(""),
     )
@@ -1033,10 +1027,7 @@ fn batch_with_two_approval_calls_parks_and_settles_both() {
             matches!(&e.event, Event::ToolMessage { message, .. } if message.content.contains("recovery error"))
         })
         .count();
-    assert_eq!(
-        fabrications, 0,
-        "resume must not fabricate recovery errors"
-    );
+    assert_eq!(fabrications, 0, "resume must not fabricate recovery errors");
     let completed: Vec<&str> = entries
         .iter()
         .filter_map(|e| match &e.event {

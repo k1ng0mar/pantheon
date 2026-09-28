@@ -10,9 +10,8 @@ pub mod client;
 pub mod framed;
 
 pub use client::{
-    CapabilityGate, McpClient, McpError, McpServerConfig, McpToolDef,
-    DEFAULT_MAX_MESSAGE_BYTES, DEFAULT_REQUEST_TIMEOUT, MCP_PROTOCOL_VERSION,
-    SUPPORTED_PROTOCOL_VERSIONS,
+    CapabilityGate, McpClient, McpError, McpServerConfig, McpToolDef, DEFAULT_MAX_MESSAGE_BYTES,
+    DEFAULT_REQUEST_TIMEOUT, MCP_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS,
 };
 
 use pantheon_api::capability::{Capability, Policy};

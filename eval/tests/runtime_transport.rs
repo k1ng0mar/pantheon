@@ -6,11 +6,11 @@
 //! runs via `cargo test -p pantheon-eval`.
 
 //! Tests for `pantheon_api::transport::tests` — sibling file so sources stay test-free.
+use pantheon_runtime::rpc::{Dispatcher, Id, Response};
 use pantheon_runtime::transport::*;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use pantheon_runtime::rpc::{Dispatcher, Id, Response};
 use tempfile::tempdir;
 
 /// Open a client, send `request`, read exactly one response line, return it.
@@ -61,7 +61,10 @@ fn unknown_method_errors_over_the_socket() {
     );
     assert_eq!(resp.id, Id::Number(1));
     assert!(!resp.is_success());
-    assert_eq!(resp.error.unwrap().code, pantheon_runtime::rpc::METHOD_NOT_FOUND_CODE);
+    assert_eq!(
+        resp.error.unwrap().code,
+        pantheon_runtime::rpc::METHOD_NOT_FOUND_CODE
+    );
     assert!(server.join().is_ok(), "server thread panicked");
 }
 

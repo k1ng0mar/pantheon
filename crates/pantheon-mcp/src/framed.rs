@@ -64,8 +64,7 @@ pub fn read_message<R: BufRead>(
         return Ok(Some(v));
     }
     // Bare JSON line.
-    let v: Value =
-        serde_json::from_str(&first).map_err(|e| FrameError::BadJson(e.to_string()))?;
+    let v: Value = serde_json::from_str(&first).map_err(|e| FrameError::BadJson(e.to_string()))?;
     Ok(Some(v))
 }
 
@@ -104,13 +103,16 @@ fn read_line_capped<R: BufRead>(reader: &mut R, cap: usize) -> Result<Option<Str
             }
         }
     }
-    let s =
-        String::from_utf8(buf).map_err(|e| FrameError::BadJson(format!("not UTF-8: {e}")))?;
+    let s = String::from_utf8(buf).map_err(|e| FrameError::BadJson(format!("not UTF-8: {e}")))?;
     Ok(Some(s))
 }
 
 /// Read one line into `out` (used for the short header block).
-fn read_line_into<R: BufRead>(reader: &mut R, out: &mut String, cap: usize) -> Result<(), FrameError> {
+fn read_line_into<R: BufRead>(
+    reader: &mut R,
+    out: &mut String,
+    cap: usize,
+) -> Result<(), FrameError> {
     match read_line_capped(reader, cap)? {
         Some(l) => {
             *out = l;
@@ -122,8 +124,7 @@ fn read_line_into<R: BufRead>(reader: &mut R, out: &mut String, cap: usize) -> R
 
 /// Encode one message as newline-delimited JSON for the wire.
 pub fn encode(body: &Value, max_bytes: usize) -> Result<Vec<u8>, FrameError> {
-    let mut bytes =
-        serde_json::to_vec(body).map_err(|e| FrameError::BadJson(e.to_string()))?;
+    let mut bytes = serde_json::to_vec(body).map_err(|e| FrameError::BadJson(e.to_string()))?;
     if bytes.len() + 1 > max_bytes {
         return Err(FrameError::Oversized(bytes.len() + 1));
     }

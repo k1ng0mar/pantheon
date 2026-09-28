@@ -115,8 +115,9 @@ pub fn set_session_factory(f: crate::serve::SessionFactory) {
 /// same run_id must not interleave their `chat_turn`s. Entries are removed
 /// once no thread holds or waits on them, so the map does not grow
 /// unboundedly across runs.
-static TURN_LOCKS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+static TURN_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 fn turn_lock_for(run_id: &str) -> Arc<std::sync::Mutex<()>> {
     let mut map = TURN_LOCKS.lock().unwrap();

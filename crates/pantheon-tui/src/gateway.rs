@@ -75,9 +75,13 @@ fn resume_parked_run(data_dir: &Path, run_id: &str) -> Result<String, String> {
         pantheon_api::capability::Policy::coder()
     };
     let secrets = config::chat_secrets(file_cfg.as_ref());
-    let session =
-        pantheon_runtime::session::Session::new(data_dir.to_path_buf(), policy, model_policy, secrets)
-            .map_err(|e| e.to_string())?;
+    let session = pantheon_runtime::session::Session::new(
+        data_dir.to_path_buf(),
+        policy,
+        model_policy,
+        secrets,
+    )
+    .map_err(|e| e.to_string())?;
     // An empty turn rebuilds the transcript from the ledger and settles
     // the granted call; never resend the user message (duplicate turn).
     session
@@ -95,15 +99,16 @@ fn push_to_queue(
     text: String,
 ) {
     match queues.get(gateway) {
-        Some(q) => q
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(pantheon_gateway::OutboundMessage {
-                to_conversation: thread.to_string(),
-                text,
-                gateway: gateway.to_string(),
-                attempts: 0,
-            }),
+        Some(q) => {
+            q.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(pantheon_gateway::OutboundMessage {
+                    to_conversation: thread.to_string(),
+                    text,
+                    gateway: gateway.to_string(),
+                    attempts: 0,
+                })
+        }
         None => eprintln!(
             "gateway: no outbound queue for surface '{gateway}'; dropping reply to {thread}"
         ),
@@ -658,7 +663,10 @@ pub fn drain_outbound(data_dir: &Path) -> (Vec<pantheon_gateway::OutboundMessage
             Ok(v) => {
                 let to = v.get("to").and_then(|x| x.as_str()).unwrap_or_default();
                 let text = v.get("text").and_then(|x| x.as_str()).unwrap_or_default();
-                let gateway = v.get("gateway").and_then(|x| x.as_str()).unwrap_or_default();
+                let gateway = v
+                    .get("gateway")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default();
                 if to.is_empty() || text.is_empty() {
                     bad.push(format!("line {}: missing to/text", i + 1));
                     continue;

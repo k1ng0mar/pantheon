@@ -209,7 +209,10 @@ fn valid_slug_rejects_traversal_and_junk() {
     ] {
         assert!(!valid_slug(bad), "{bad:?} must be rejected");
     }
-    assert!(!valid_slug(&"x".repeat(65)), "over 64 chars must be rejected");
+    assert!(
+        !valid_slug(&"x".repeat(65)),
+        "over 64 chars must be rejected"
+    );
 }
 
 #[test]
@@ -277,10 +280,7 @@ fn unzip_rejects_dotdot_and_absolute_entries() {
     for evil in ["../evil.txt", "sub/../../evil.txt", "/abs.txt"] {
         let bytes = make_zip(&[(evil, b"evil")]);
         let err = unzip_skill(&bytes).unwrap_err();
-        assert!(
-            err.contains("unsafe entry path"),
-            "{evil:?}: got {err}"
-        );
+        assert!(err.contains("unsafe entry path"), "{evil:?}: got {err}");
     }
     // A benign nested entry still inflates fine.
     let bytes = make_zip(&[("refs/guide.md", b"hello")]);
@@ -291,8 +291,9 @@ fn unzip_rejects_dotdot_and_absolute_entries() {
 
 #[test]
 fn unzip_rejects_too_many_entries() {
-    let entries: Vec<(String, Vec<u8>)> =
-        (0..5).map(|i| (format!("f{i}.txt"), b"x".to_vec())).collect();
+    let entries: Vec<(String, Vec<u8>)> = (0..5)
+        .map(|i| (format!("f{i}.txt"), b"x".to_vec()))
+        .collect();
     let refs: Vec<(&str, &[u8])> = entries
         .iter()
         .map(|(n, d)| (n.as_str(), d.as_slice()))

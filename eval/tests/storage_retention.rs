@@ -37,9 +37,7 @@ fn backdate_events(db: &std::path::Path, run_id: &str, ts_ms: i64) {
 
 fn append_completed_run(ledger: &Ledger, run: &str) {
     ledger
-        .append(&Event::RunStarted {
-            run_id: run.into(),
-        })
+        .append(&Event::RunStarted { run_id: run.into() })
         .unwrap();
     ledger
         .append(&Event::TurnStarted {
@@ -55,9 +53,7 @@ fn append_completed_run(ledger: &Ledger, run: &str) {
         })
         .unwrap();
     ledger
-        .append(&Event::RunCompleted {
-            run_id: run.into(),
-        })
+        .append(&Event::RunCompleted { run_id: run.into() })
         .unwrap();
 }
 
@@ -73,7 +69,9 @@ fn old_finished_run_events_are_pruned_but_status_row_survives() {
     backdate_events(&db, "old", now_ms() - 100 * DAY_MS);
 
     let ledger = Ledger::open(&db).unwrap();
-    let pruned = ledger.prune_events_before_active_safe(cutoff_90d()).unwrap();
+    let pruned = ledger
+        .prune_events_before_active_safe(cutoff_90d())
+        .unwrap();
     assert_eq!(pruned, 4, "the old run's four events");
 
     assert!(ledger.replay("old").unwrap().is_empty());
@@ -104,7 +102,9 @@ fn active_run_events_survive_despite_age() {
     backdate_events(&db, "active", now_ms() - 100 * DAY_MS);
 
     let ledger = Ledger::open(&db).unwrap();
-    let pruned = ledger.prune_events_before_active_safe(cutoff_90d()).unwrap();
+    let pruned = ledger
+        .prune_events_before_active_safe(cutoff_90d())
+        .unwrap();
     assert_eq!(pruned, 0, "an open run is never pruned");
     assert_eq!(ledger.replay("active").unwrap().len(), 2);
 }
@@ -134,7 +134,9 @@ fn awaiting_approval_run_survives() {
         ledger.status("appr").unwrap().as_deref(),
         Some("awaiting_approval")
     );
-    let pruned = ledger.prune_events_before_active_safe(cutoff_90d()).unwrap();
+    let pruned = ledger
+        .prune_events_before_active_safe(cutoff_90d())
+        .unwrap();
     assert_eq!(pruned, 0, "a run parked on approval is never pruned");
     assert_eq!(ledger.replay("appr").unwrap().len(), 2);
 }

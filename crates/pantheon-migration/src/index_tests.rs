@@ -144,8 +144,7 @@ fn index_failure_is_reported_as_failure_never_success() {
             .unwrap();
     }
     let t = crate::Targets::new(d.join("data"), d.join("ext"));
-    let err =
-        ensure_sessions_indexed(&t, "hermes", &index).expect_err("the index write must fail");
+    let err = ensure_sessions_indexed(&t, "hermes", &index).expect_err("the index write must fail");
     let msg = err.to_string();
     assert!(
         msg.contains("MIGRATE_SESS_INDEX_FAILED"),

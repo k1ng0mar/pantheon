@@ -73,4 +73,3 @@ fn unknown_option_paths_default_safely() {
         Duration::from_secs(DEFAULT_COMMAND_TIMEOUT_SECS)
     );
 }
-

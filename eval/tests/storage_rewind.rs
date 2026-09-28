@@ -44,9 +44,7 @@ fn assistant_texts(ledger: &Ledger, run: &str) -> Vec<String> {
 fn rewound_turn_is_excluded_from_replay() {
     let ledger = Ledger::open_in_memory().unwrap();
     ledger
-        .append(&Event::RunStarted {
-            run_id: "r".into(),
-        })
+        .append(&Event::RunStarted { run_id: "r".into() })
         .unwrap();
     append_turn(&ledger, "r", "t1", "first answer");
     append_turn(&ledger, "r", "t2", "second answer");
@@ -90,9 +88,7 @@ fn rewound_turn_is_excluded_from_replay() {
 fn turns_started_after_rewind_replay_normally() {
     let ledger = Ledger::open_in_memory().unwrap();
     ledger
-        .append(&Event::RunStarted {
-            run_id: "r".into(),
-        })
+        .append(&Event::RunStarted { run_id: "r".into() })
         .unwrap();
     append_turn(&ledger, "r", "t1", "first answer");
     append_turn(&ledger, "r", "t2", "bad answer");
@@ -106,16 +102,17 @@ fn turns_started_after_rewind_replay_normally() {
     append_turn(&ledger, "r", "t3", "better answer");
 
     let texts = assistant_texts(&ledger, "r");
-    assert_eq!(texts, vec!["first answer".to_string(), "better answer".to_string()]);
+    assert_eq!(
+        texts,
+        vec!["first answer".to_string(), "better answer".to_string()]
+    );
 }
 
 #[test]
 fn rewind_marker_for_unknown_turn_keeps_history() {
     let ledger = Ledger::open_in_memory().unwrap();
     ledger
-        .append(&Event::RunStarted {
-            run_id: "r".into(),
-        })
+        .append(&Event::RunStarted { run_id: "r".into() })
         .unwrap();
     append_turn(&ledger, "r", "t1", "first answer");
     // Defensive: a marker naming a turn with no TurnStarted must not
@@ -140,9 +137,7 @@ fn rewind_marker_for_unknown_turn_keeps_history() {
 fn double_rewind_rolls_back_two_turns() {
     let ledger = Ledger::open_in_memory().unwrap();
     ledger
-        .append(&Event::RunStarted {
-            run_id: "r".into(),
-        })
+        .append(&Event::RunStarted { run_id: "r".into() })
         .unwrap();
     append_turn(&ledger, "r", "t1", "first");
     append_turn(&ledger, "r", "t2", "second");
@@ -168,9 +163,7 @@ fn double_rewind_rolls_back_two_turns() {
 fn run_log_shows_rewind_marker_not_rewound_turns() {
     let ledger = Ledger::open_in_memory().unwrap();
     ledger
-        .append(&Event::RunStarted {
-            run_id: "r".into(),
-        })
+        .append(&Event::RunStarted { run_id: "r".into() })
         .unwrap();
     append_turn(&ledger, "r", "t1", "kept");
     append_turn(&ledger, "r", "t2", "discarded");

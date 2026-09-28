@@ -6,14 +6,13 @@ use pantheon_scheduler::{
     DurableClaimLedger, Job, OverlapPolicy, RunOutcome, ScheduleKind, TickDecision, TickDriver,
 };
 use pantheon_storage::ClaimStore;
-use std::sync::{mpsc, Arc};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Barrier;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 fn driver() -> Arc<TickDriver> {
-    let ledger =
-        DurableClaimLedger::new(ClaimStore::open_in_memory().expect("in-memory claims"));
+    let ledger = DurableClaimLedger::new(ClaimStore::open_in_memory().expect("in-memory claims"));
     Arc::new(TickDriver::new(ledger))
 }
 
@@ -59,14 +58,23 @@ fn racing_ticks_execute_exactly_once() {
 
     let handles: Vec<_> = (0..2)
         .map(|_| {
-            let (driver, job, runs, barrier) =
-                (Arc::clone(&driver), job.clone(), Arc::clone(&runs), Arc::clone(&barrier));
+            let (driver, job, runs, barrier) = (
+                Arc::clone(&driver),
+                job.clone(),
+                Arc::clone(&runs),
+                Arc::clone(&barrier),
+            );
             std::thread::spawn(move || {
                 barrier.wait(); // line the racers up
                 let r = Arc::clone(&runs);
-                driver.tick_job(&job, NOW, None, Arc::new(move || {
-                    r.fetch_add(1, Ordering::SeqCst);
-                }))
+                driver.tick_job(
+                    &job,
+                    NOW,
+                    None,
+                    Arc::new(move || {
+                        r.fetch_add(1, Ordering::SeqCst);
+                    }),
+                )
             })
         })
         .collect();
@@ -107,8 +115,7 @@ fn racing_ticks_execute_exactly_once() {
 fn claim_first_wins_across_threads() {
     // The raw guarantee the race test above rests on: concurrent claims
     // for one key agree on exactly one winner.
-    let ledger =
-        DurableClaimLedger::new(ClaimStore::open_in_memory().expect("in-memory claims"));
+    let ledger = DurableClaimLedger::new(ClaimStore::open_in_memory().expect("in-memory claims"));
     let ledger = Arc::new(ledger);
     let wins = Arc::new(AtomicUsize::new(0));
     let barrier = Arc::new(Barrier::new(8));
@@ -267,7 +274,10 @@ fn run_past_timeout_is_abandoned() {
 fn wait_for_bool(flag: &AtomicBool) {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while !flag.load(Ordering::SeqCst) {
-        assert!(std::time::Instant::now() < deadline, "executor never started");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "executor never started"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -279,8 +289,12 @@ fn not_due_never_claims_or_runs() {
     let ran = Arc::new(AtomicBool::new(false));
     let r = Arc::clone(&ran);
     // last_fire inside the same minute: not due.
-    match driver.tick_job(&job, NOW, Some(NOW), Arc::new(move || r.store(true, Ordering::SeqCst)))
-    {
+    match driver.tick_job(
+        &job,
+        NOW,
+        Some(NOW),
+        Arc::new(move || r.store(true, Ordering::SeqCst)),
+    ) {
         TickDecision::NotDue => {}
         other => panic!("expected NotDue, got {other:?}"),
     }
@@ -310,12 +324,7 @@ fn invalid_cron_never_fires_and_never_claims() {
 fn panicking_executor_is_reported_not_lost() {
     let driver = driver();
     let job = every_minute("panics");
-    let rx = fired_outcome(driver.tick_job(
-        &job,
-        NOW,
-        None,
-        Arc::new(|| panic!("boom")),
-    ));
+    let rx = fired_outcome(driver.tick_job(&job, NOW, None, Arc::new(|| panic!("boom"))));
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(5)).unwrap(),
         RunOutcome::Panicked
