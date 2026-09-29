@@ -236,6 +236,34 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             Ok(names.join("\n"))
         },
     );
+    // `ask_user` never executes: the agent engine intercepts the call
+    // before gating and parks the turn for operator input (the clarify
+    // card). It is registered so the model sees it in the tool list and
+    // so direct `execute("ask_user", …)` callers get a structured refusal
+    // instead of TOOL_UNKNOWN.
+    reg.register(
+        ToolSchema {
+            name: "ask_user".into(),
+            description: "Ask the operator a question and wait for their answer. Use when you genuinely cannot proceed without input — a genuine fork in the road, not a guess you could make. `question` is required; `options` (max 9) offers quick-pick choices but the operator can always type free text."
+                .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "The question to ask" },
+                    "options": { "type": "array", "items": { "type": "string" }, "description": "Optional quick-pick choices" }
+                },
+                "required": ["question"]
+            }),
+        },
+        Capability::Other("ask_user".into()),
+        |_args| {
+            Err(berr(
+                "TOOL_HOST_MEDIATED",
+                "ask_user is host-mediated: call it through the agent loop, which parks for operator input".to_string(),
+                false,
+            ))
+        },
+    );
 }
 
 fn run_shell(args: &str) -> Result<String, PantheonError> {

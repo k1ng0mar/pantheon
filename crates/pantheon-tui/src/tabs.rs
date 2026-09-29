@@ -39,6 +39,9 @@ pub struct Tab {
     pub title: Option<String>,
     /// True when this session has a turn running somewhere (a lease on it).
     pub busy: bool,
+    /// True when this session is parked on an approval (or a clarify
+    /// question). Renders the amber dot — the "look at me" state.
+    pub approval: bool,
 }
 
 impl Tab {
@@ -108,6 +111,7 @@ impl TabList {
                 run_id: run_id.clone(),
                 title: title.clone(),
                 busy: busy(run_id),
+                approval: false,
             })
             .collect();
         // The selected session may hold no lease yet (fresh /new) and thus
@@ -120,6 +124,7 @@ impl TabList {
                     run_id: active_run_id.to_string(),
                     title: None,
                     busy: false,
+                    approval: false,
                 },
             );
         }
@@ -139,6 +144,29 @@ impl TabList {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.run_id == run_id) {
             tab.busy = busy;
         }
+    }
+
+    /// Update the approval indicator for one run without rebuilding.
+    pub fn set_approval(&mut self, run_id: &str, approval: bool) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.run_id == run_id) {
+            tab.approval = approval;
+        }
+    }
+
+    /// Remove the tab for `run_id`. The run itself is untouched — runs are
+    /// durable, so closing a tab parks the session; it stays reopenable
+    /// from /sessions or the overview nav.
+    pub fn remove(&mut self, run_id: &str) -> bool {
+        let Some(pos) = self.tabs.iter().position(|t| t.run_id == run_id) else {
+            return false;
+        };
+        self.tabs.remove(pos);
+        if self.active >= self.tabs.len() {
+            self.active = self.tabs.len().saturating_sub(1);
+        } else if pos < self.active {
+            self.active -= 1;
+        }
+        true
     }
 
     pub fn len(&self) -> usize {
@@ -215,29 +243,37 @@ impl TabList {
 /// existing session-selection path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabAction {
-    /// Ctrl+Tab: next tab.
+    /// Ctrl+Tab, or `]`: next tab.
     Next,
-    /// Ctrl+Shift+Tab (or Shift+Tab): previous tab.
+    /// Ctrl+Shift+Tab (or Shift+Tab), or `[`: previous tab.
     Prev,
     /// Alt+1..9: jump to tab N (1-based).
     Jump(usize),
+    /// Ctrl+T: open a new session tab (same as `/new`).
+    NewTab,
+    /// Ctrl+W: close the active tab. Parks the run — never kills it.
+    CloseTab,
 }
 
 /// Map a crossterm key event to a tab action. Pure — no terminal needed.
 ///
 /// Notes on real terminals:
 /// * Ctrl+Tab arrives as `Tab` + CONTROL on most terminals; some send it as
-///   plain Tab or swallow it — those users still have Alt+1..9.
+///   plain Tab or swallow it — those users still have `[`/`]` and Alt+1..9.
 /// * Ctrl+Shift+Tab usually arrives as `BackTab` + CONTROL; plain Shift+Tab
 ///   arrives as `BackTab` + SHIFT and is mapped to Prev as a fallback.
 /// * Alt+digit arrives as `Char` + ALT on most setups. A few terminals send
 ///   ESC followed by the digit instead; the driver can add an ESC-prefix
 ///   peek if it wants that path — this mapper only handles the ALT form.
+/// * `[`/`]` are also the image-preview cyclers, but the preview overlay
+///   owns the keyboard while open, so there is no conflict.
 pub fn tab_key_action(code: KeyCode, mods: KeyModifiers) -> Option<TabAction> {
     if mods.contains(KeyModifiers::CONTROL) {
         return match code {
             KeyCode::Tab => Some(TabAction::Next),
             KeyCode::BackTab => Some(TabAction::Prev),
+            KeyCode::Char('t') | KeyCode::Char('T') => Some(TabAction::NewTab),
+            KeyCode::Char('w') | KeyCode::Char('W') => Some(TabAction::CloseTab),
             _ => None,
         };
     }
@@ -250,13 +286,25 @@ pub fn tab_key_action(code: KeyCode, mods: KeyModifiers) -> Option<TabAction> {
     if code == KeyCode::BackTab && mods == KeyModifiers::SHIFT {
         return Some(TabAction::Prev);
     }
+    if mods.is_empty() {
+        // `[` steps left (previous), `]` steps right (next) — the same
+        // direction as the image-preview cyclers.
+        match code {
+            KeyCode::Char('[') => return Some(TabAction::Prev),
+            KeyCode::Char(']') => return Some(TabAction::Next),
+            _ => {}
+        }
+    }
     None
 }
 
 /// Separator glyph between tabs.
 const TAB_SEP: &str = " │ ";
-/// Busy glyph shown while the session has a running turn.
-const BUSY_GLYPH: &str = "●";
+/// Status dot: every tab carries one. Green = turn running, amber =
+/// parked on approval/input (the look-at-me state), grey = idle.
+const DOT_BUSY: &str = "●";
+const DOT_APPROVAL: &str = "●";
+const DOT_IDLE: &str = "○";
 
 /// Render the tab bar into `area` (expects a single row).
 ///
@@ -282,12 +330,14 @@ pub fn render_tab_bar(
         .iter()
         .enumerate()
         .map(|(i, tab)| {
-            let busy = if tab.busy {
-                format!(" {BUSY_GLYPH}")
+            let dot = if tab.approval {
+                DOT_APPROVAL
+            } else if tab.busy {
+                DOT_BUSY
             } else {
-                String::new()
+                DOT_IDLE
             };
-            format!(" {} {}{}", i + 1, tab.label(), busy)
+            format!(" {} {} {dot}", i + 1, tab.label())
         })
         .collect();
     let widths: Vec<usize> = segments.iter().map(|s| s.chars().count()).collect();
@@ -306,8 +356,9 @@ pub fn render_tab_bar(
     }
 
     // Build the line: dim separators, bold active tab, dim inactive
-    // tabs, and a yellow busy glyph as its own span so it reads as a
-    // status rather than part of the name.
+    // tabs, and the status dot as its own span so it reads as a state
+    // rather than part of the name. Amber is approval-only: the dot is
+    // the one place outside the approval card that may use it.
     let mut line_spans: Vec<Span> = Vec::new();
     for i in start..=end {
         if i > start {
@@ -322,12 +373,17 @@ pub fn render_tab_bar(
             Style::default().fg(theme.tab_idle)
         };
         line_spans.push(Span::styled(format!(" {} {}", i + 1, tab.label()), style));
-        if tab.busy {
-            line_spans.push(Span::styled(
-                format!(" {BUSY_GLYPH}"),
-                Style::default().fg(theme.running),
-            ));
-        }
+        let (dot, dot_color) = if tab.approval {
+            (DOT_APPROVAL, theme.warning)
+        } else if tab.busy {
+            (DOT_BUSY, theme.success)
+        } else {
+            (DOT_IDLE, theme.dim)
+        };
+        line_spans.push(Span::styled(
+            format!(" {dot}"),
+            Style::default().fg(dot_color),
+        ));
     }
     f.render_widget(Paragraph::new(Line::from(line_spans)), area);
 }

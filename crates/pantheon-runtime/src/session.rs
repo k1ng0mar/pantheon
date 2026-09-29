@@ -6,6 +6,7 @@
 
 use crate::agent_runtime::AgentRuntime;
 use crate::operation::{run_tool_operation, ToolOperationAdapter};
+use crate::tool_config::{BrowserToolConfig, WebsearchToolConfig};
 use crate::watchdog::TurnWatchdog;
 use crate::{ObserverGuard, RunLeaseGuard, Supervisor};
 use pantheon_agent::{AgentLoop, Budget, LoopOutcome};
@@ -482,6 +483,120 @@ fn policy_for_preset(preset: &str) -> Result<Policy, PantheonError> {
     }
 }
 
+/// Assemble the child session's system prompt: everything the child needs
+/// that it cannot inherit from the parent's context.
+///
+/// A delegated child runs in-process as a fresh `Session`: it never sees
+/// the parent's transcript, memory recall, or assembled prompt. Anything
+/// the child must know is inlined here verbatim at spawn time —
+/// persona file, layered instruction files, and the machine-parseable
+/// result-envelope contract. (The parent's active goal travels separately
+/// via the child's `goal` field, which the turn assembler appends.)
+///
+/// Unreadable files are skipped with an explicit note, never silently
+/// and never by failing the delegation: a missing SOUL.md must not
+/// block a spawn, but the child must know it is missing.
+fn assemble_child_system_prompt(child: &AgentRuntime) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "You are {}, a Pantheon sub-agent working on one delegated task. \
+         You run in an isolated session: you cannot see the parent's \
+         conversation. Everything you need is in this prompt and the task \
+         message that follows.\n\n",
+        child.identity()
+    ));
+    // Persona: the profile's soul file, verbatim.
+    if let Some(path) = child.soul_file() {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                out.push_str("## Persona (");
+                out.push_str(path);
+                out.push_str(")\n\n");
+                out.push_str(content.trim());
+                out.push_str("\n\n");
+            }
+            Err(_) => {
+                out.push_str("## Persona\n\n(persona file ");
+                out.push_str(path);
+                out.push_str(" is declared but unreadable; skipped)\n\n");
+            }
+        }
+    }
+    // Layered instruction files, parent first then child, verbatim.
+    for (profile, path) in child.instruction_files() {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                out.push_str("## Instructions from profile ");
+                out.push_str(profile);
+                out.push_str(" (");
+                out.push_str(path);
+                out.push_str(")\n\n");
+                out.push_str(content.trim());
+                out.push_str("\n\n");
+            }
+            Err(_) => {
+                out.push_str("## Instructions from profile ");
+                out.push_str(profile);
+                out.push_str("\n\n(instruction file ");
+                out.push_str(path);
+                out.push_str(" is declared but unreadable; skipped)\n\n");
+            }
+        }
+    }
+    out.push_str("## Result contract\n\n");
+    out.push_str(pantheon_swarm::result_contract());
+    out.push('\n');
+    out
+}
+
+/// Post-delegation adversarial verification (the `Verify` auxiliary).
+///
+/// Takes the delegated task's goal plus the child's claimed result and
+/// tries to falsify the claim from the evidence the child reported.
+/// Returns the verdict, or `None` when the `[verify]` slot is
+/// unconfigured — verification is OFF by default and only runs when the
+/// operator explicitly pins a cheap model for it.
+///
+/// Fail-closed: a transport error becomes `Inconclusive` (unverified),
+/// never `Holds`. The caller turns `Falsified` into a delegation error
+/// and marks `Inconclusive` on the result; only `Holds` counts as done.
+fn verify_delegation(
+    model_policy: &ModelPolicy,
+    goal: &str,
+    result: &pantheon_swarm::ChildResult,
+) -> Option<pantheon_providers::VerifyVerdict> {
+    use pantheon_providers::{VerifyClient, VerifyRequest, VerifyVerdict};
+    let client = VerifyClient::from_policy(model_policy, None)?;
+    let mut evidence = String::new();
+    if !result.files_changed.is_empty() {
+        evidence.push_str("files_changed:\n");
+        for f in &result.files_changed {
+            evidence.push_str("- ");
+            evidence.push_str(f);
+            evidence.push('\n');
+        }
+    }
+    if !result.decisions.is_empty() {
+        evidence.push_str("decisions:\n");
+        for d in &result.decisions {
+            evidence.push_str("- ");
+            evidence.push_str(d);
+            evidence.push('\n');
+        }
+    }
+    let req = VerifyRequest {
+        goal: goal.to_string(),
+        claim: result.summary.clone(),
+        evidence,
+    };
+    Some(match client.verify(&req) {
+        Ok(v) => v,
+        Err(e) => VerifyVerdict::Inconclusive {
+            reason: format!("verifier call failed: {}", e.cause),
+        },
+    })
+}
+
 /// Build the child session for one delegation request.
 ///
 /// `parent_depth` is the depth of the delegating loop — the engine passes
@@ -491,12 +606,18 @@ fn policy_for_preset(preset: &str) -> Result<Policy, PantheonError> {
 /// depth 0 would never hit the cap, so delegation could recurse without
 /// bound. The turn bound stays the default `Budget` (16 turns / 32 calls)
 /// at every level — depth limits nesting, never the work a level may do.
+///
+/// `parent_goal` is the delegating session's active `/goal`, if any. The
+/// child cannot see the parent's context, so a delegation like "finish
+/// the remaining items" would otherwise lose the objective; the child
+/// pursues it through the normal goal-append path.
 fn build_delegate_session(
     agent: &AgentRuntime,
     model_policy: &ModelPolicy,
     data_dir: &Path,
     parent_depth: u32,
     profile: &str,
+    parent_goal: Option<String>,
 ) -> Result<Session, PantheonError> {
     let child = agent.for_profile(profile)?;
     // The child runs under its OWN profile's policy preset,
@@ -521,6 +642,18 @@ fn build_delegate_session(
         child_secrets,
     )?;
     child_session.with_agent(child)?;
+    // Self-contained spawn prompt: the child gets its persona, its
+    // instruction files, and the result-envelope contract verbatim,
+    // because none of the parent's context survives the spawn.
+    let child_agent = child_session.agent().expect("agent just attached above");
+    child_session.system_prompt = assemble_child_system_prompt(&child_agent);
+    // The parent's active goal travels with the delegation so the child
+    // can pursue it through the normal goal-append path.
+    if let Some(goal) = parent_goal.filter(|g| !g.trim().is_empty()) {
+        if let Ok(mut slot) = child_session.goal.lock() {
+            *slot = Some(goal);
+        }
+    }
     // Depth threading: the engine's depth cap sees the child's loop
     // depth, so the child must run at parent_depth + 1, not 0.
     child_session.depth = parent_depth + 1;
@@ -616,6 +749,17 @@ pub struct Session {
     /// startup and on resume, so `/agent` can ask the ledger who owns the
     /// conversation without the caller passing an id in.
     pub current_run: Mutex<String>,
+    /// Browser automation knobs (`[browser]` in config.toml). Read at
+    /// registration time; secrets resolve then, so a resolved key never
+    /// sits in session state.
+    pub browser_config: Mutex<BrowserToolConfig>,
+    /// Web-search knobs (`[websearch]` in config.toml). Same
+    /// resolve-at-registration rule as browser_config.
+    pub websearch_config: Mutex<WebsearchToolConfig>,
+    /// Run id mirror for the browser tools: `set_current_run` keeps this
+    /// in step with `current_run`. A separate Arc because the tool
+    /// closures are 'static and borrow nothing from the session.
+    browser_run_id: std::sync::Arc<Mutex<String>>,
 }
 
 /// How many tools each registration phase of
@@ -630,15 +774,24 @@ pub struct ToolCounts {
     pub skills: usize,
     /// `session_search`.
     pub session_search: usize,
+    /// `browser_*` automation tools (0 when `[browser]` is disabled).
+    pub browser: usize,
+    /// `web_search` (0 when disabled or no API key resolves).
+    pub websearch: usize,
 }
 
 impl ToolCounts {
     /// Total tools across all phases.
     pub fn total(&self) -> usize {
-        self.builtin + self.skills + self.session_search
+        self.builtin + self.skills + self.session_search + self.browser + self.websearch
     }
 }
 
+/// Browser automation and web-search knobs live in
+/// [`crate::tool_config`] (`BrowserToolConfig` / `WebsearchToolConfig`):
+/// plain data resolved from `[browser]` / `[websearch]` in config.toml.
+/// Secrets resolve at registration time via the session's broker, so a
+/// resolved key never sits in long-lived session state.
 /// What `Session::compress_now` found and did, for display.
 pub struct CompressReport {
     /// Estimated tokens before the fit.
@@ -697,6 +850,9 @@ impl Session {
             agent: Mutex::new(None),
             temporal: Mutex::new(pantheon_api::temporal::TemporalConfig::default()),
             current_run: Mutex::new(String::new()),
+            browser_config: Mutex::new(BrowserToolConfig::default()),
+            websearch_config: Mutex::new(WebsearchToolConfig::default()),
+            browser_run_id: std::sync::Arc::new(Mutex::new(String::new())),
         })
     }
 
@@ -993,6 +1149,28 @@ impl Session {
         if let Ok(mut cur) = self.current_run.lock() {
             *cur = run_id.to_string();
         }
+        // The browser tools read the run id through this mirror (their
+        // closures are 'static and borrow nothing from the session).
+        if let Ok(mut mirror) = self.browser_run_id.lock() {
+            *mirror = run_id.to_string();
+        }
+    }
+
+    /// Browser automation knobs (`[browser]` in config.toml). The TUI
+    /// calls this from the config file at startup; env-driven defaults
+    /// apply until then.
+    pub fn set_browser_config(&self, cfg: BrowserToolConfig) {
+        if let Ok(mut b) = self.browser_config.lock() {
+            *b = cfg;
+        }
+    }
+
+    /// Web-search knobs (`[websearch]` in config.toml). Same call pattern
+    /// as [`Session::set_browser_config`].
+    pub fn set_websearch_config(&self, cfg: WebsearchToolConfig) {
+        if let Ok(mut w) = self.websearch_config.lock() {
+            *w = cfg;
+        }
     }
 
     /// The memory namespace this turn runs in: the agent's, or the legacy
@@ -1011,6 +1189,29 @@ impl Session {
     /// The agent profile this session runs as, if one is attached.
     pub fn agent(&self) -> Option<AgentRuntime> {
         self.agent.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Approved nightly persona notes, formatted for the system prompt.
+    ///
+    /// Persona proposals never auto-apply: they pass eval-gating and
+    /// replay-gating, then wait for explicit human approval, and only
+    /// approval writes them to the memory store's `persona` namespace —
+    /// so everything read here earned its place. Empty when memory is
+    /// absent, when the capability policy denies memory reads, or when
+    /// no approved persona exists; read failures degrade to empty
+    /// (fail-open, like recall).
+    fn persona_overlay_block(&self) -> String {
+        let Some(mem) = self.memory.as_ref() else {
+            return String::new();
+        };
+        if !matches!(
+            self.policy
+                .check(&pantheon_api::capability::Capability::MemoryRead),
+            pantheon_api::capability::Decision::Allow
+        ) {
+            return String::new();
+        }
+        pantheon_nightly::overlay_block(&pantheon_nightly::approved_notes(mem))
     }
 
     /// Per-call timeout for plugin tool calls. Overridable via env.
@@ -1241,10 +1442,92 @@ impl Session {
             },
         );
         let n_search = reg.names().len();
+        // Browser automation: gsd-browser subprocess wrapper. The vault
+        // key resolves here, at registration, so it lives only in the
+        // tool closures — never in session state, never in the ledger.
+        let n_browser = {
+            let bcfg = self
+                .browser_config
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            if !bcfg.enabled {
+                0
+            } else {
+                let vault_key = bcfg
+                    .vault_key_secret
+                    .as_deref()
+                    .and_then(|name| self.secrets.resolve(name).ok().flatten())
+                    .map(|v| v.expose().to_owned());
+                let run_id_src = std::sync::Arc::clone(&self.browser_run_id);
+                let before = reg.names().len();
+                match pantheon_browser::tools::register_browser_tools(
+                    &mut reg,
+                    pantheon_browser::tools::BrowserOptions {
+                        enabled: true,
+                        binary: bcfg.binary,
+                        act_require_approval: bcfg.act_require_approval,
+                        idle_timeout_secs: bcfg.idle_timeout_secs,
+                        run_id: std::sync::Arc::new(move || {
+                            run_id_src.lock().map(|g| g.clone()).unwrap_or_default()
+                        })
+                            as std::sync::Arc<dyn Fn() -> String + Send + Sync>,
+                        vault_key,
+                    },
+                ) {
+                    Ok(()) => reg.names().len() - before,
+                    Err(e) => {
+                        eprintln!("browser tools registration failed: {e}");
+                        0
+                    }
+                }
+            }
+        };
+        // Web search: query -> snippets. Only registers when a key
+        // resolves; a keyless web_search would be a dead tool in the
+        // model's list, so it stays out.
+        let n_websearch = {
+            let wcfg = self
+                .websearch_config
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            if !wcfg.enabled {
+                0
+            } else if wcfg.provider != "tavily" {
+                eprintln!(
+                    "web_search: unknown provider '{}', only 'tavily' is implemented; skipping",
+                    wcfg.provider
+                );
+                0
+            } else {
+                let api_key = wcfg
+                    .api_key_secret
+                    .as_deref()
+                    .and_then(|name| self.secrets.resolve(name).ok().flatten())
+                    .map(|v| v.expose().to_owned());
+                match pantheon_websearch::tools::register_websearch_tools(
+                    &mut reg,
+                    pantheon_websearch::tools::WebsearchOptions {
+                        enabled: true,
+                        max_results: wcfg.max_results,
+                        api_key,
+                    },
+                ) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("web_search registration failed: {e}");
+                        0
+                    }
+                }
+            }
+        };
         let counts = ToolCounts {
             builtin: n_builtin,
             skills: n_skills - n_builtin,
             session_search: n_search - n_skills,
+            browser: n_browser,
+            websearch: n_websearch,
         };
         (reg, counts)
     }
@@ -1456,6 +1739,19 @@ impl Session {
             ),
             _ => self.system_prompt.clone(),
         };
+        // Nightly persona overlay: approved persona proposals (evals +
+        // replay + explicit human approval — `decide(approve = true)` is
+        // the only writer to the persona namespace) shape the preamble
+        // of fresh runs, the same way the base persona does. Fail-open:
+        // a broken read leaves the turn untouched.
+        let system_prompt = {
+            let overlay = self.persona_overlay_block();
+            if overlay.is_empty() {
+                system_prompt
+            } else {
+                format!("{system_prompt}\n\n{overlay}")
+            }
+        };
         messages = assemble_turn(
             messages,
             &system_prompt,
@@ -1666,6 +1962,7 @@ impl Session {
                 agent: AgentRuntime,
                 model_policy: ModelPolicy,
                 data_dir: PathBuf,
+                goal: Option<String>,
             }
             impl pantheon_agent::AgentSpawner for SessionSpawner {
                 fn spawn(
@@ -1683,10 +1980,60 @@ impl Session {
                         &self.data_dir,
                         depth,
                         agent,
+                        self.goal.clone(),
                     )?;
                     let outcome = child_session.chat(&child_session.current_run_id(), task)?;
                     match outcome {
-                        pantheon_agent::LoopOutcome::Answered { text, .. } => Ok(text),
+                        pantheon_agent::LoopOutcome::Answered { text, .. } => {
+                            // Parse the child's result envelope in Rust, not
+                            // by LLM. Non-conforming text degrades to
+                            // `status: unknown` — never an error, never a
+                            // silent pass.
+                            let result = pantheon_swarm::parse_child_result(&text);
+                            // Adversarial verification, when the `[verify]`
+                            // slot is configured (OFF by default). A child
+                            // that reports failure has nothing to verify.
+                            let verdict = if result.status == pantheon_swarm::ChildStatus::Failed {
+                                None
+                            } else {
+                                verify_delegation(&self.model_policy, task, &result)
+                            };
+                            let mut out = result.to_json();
+                            if let Some(v) = verdict {
+                                use pantheon_providers::VerifyVerdict;
+                                match v {
+                                    VerifyVerdict::Falsified { reason } => {
+                                        // Fail-closed: a falsified claim is
+                                        // not a completed delegation.
+                                        return Err(PantheonError::new(
+                                            "SWARM_CHILD_FALSIFIED",
+                                            pantheon_api::error::Layer::Agent,
+                                            false,
+                                            format!(
+                                                "child agent {agent} claimed completion, \
+                                                 verifier falsified it: {reason}"
+                                            ),
+                                            "re-delegate with tighter evidence requirements, \
+                                             or fix the underlying task",
+                                            "",
+                                        ));
+                                    }
+                                    VerifyVerdict::Holds { .. } => {
+                                        out.push_str("\n[verification: holds]");
+                                    }
+                                    VerifyVerdict::Inconclusive { reason } => {
+                                        // Unverified is not done: the mark
+                                        // travels with the result so the
+                                        // parent cannot mistake it for a
+                                        // verified completion.
+                                        out.push_str("\n[verification: inconclusive — ");
+                                        out.push_str(&reason);
+                                        out.push(']');
+                                    }
+                                }
+                            }
+                            Ok(out)
+                        }
                         pantheon_agent::LoopOutcome::Denied { capability } => {
                             Err(PantheonError::new(
                                 "SWARM_CHILD_DENIED",
@@ -1727,6 +2074,16 @@ impl Session {
                                 "",
                             ))
                         }
+                        pantheon_agent::LoopOutcome::AwaitingInput { question, .. } => {
+                            Err(PantheonError::new(
+                                "SWARM_CHILD_INPUT",
+                                pantheon_api::error::Layer::Agent,
+                                false,
+                                format!("child agent {agent} asked: {question}"),
+                                "answer the child's question and retry",
+                                "",
+                            ))
+                        }
                         pantheon_agent::LoopOutcome::Delegated { agent: sub } => {
                             Err(PantheonError::new(
                                 "SWARM_CHILD_DELEGATED",
@@ -1744,6 +2101,7 @@ impl Session {
                 agent,
                 model_policy,
                 data_dir,
+                goal: self.goal.lock().ok().and_then(|g| g.clone()),
             }) as Box<dyn pantheon_agent::AgentSpawner>
         });
         let loop_ = AgentLoop {
@@ -1920,6 +2278,23 @@ impl Session {
                 })?;
                 // Parked, not failed.
             }
+            LoopOutcome::AwaitingInput {
+                question, options, ..
+            } => {
+                // Parked for operator input, exactly like an approval park:
+                // the UserInputRequested event (emitted by the engine)
+                // carries the question; this records the human-readable
+                // park note. The run resumes when the host answers.
+                let mut next = format!("run {run_id} is awaiting operator input: {question}");
+                if !options.is_empty() {
+                    next.push_str(&format!(" [{}]", options.join(" / ")));
+                }
+                self.supervisor.emit(Event::RunProgress {
+                    run_id: run_id.into(),
+                    detail: next,
+                })?;
+                // Parked, not failed.
+            }
             LoopOutcome::Delegated { agent } => {
                 self.supervisor.emit(Event::AgentCompleted {
                     run_id: run_id.into(),
@@ -1948,14 +2323,15 @@ impl Session {
         if prompt.trim().is_empty() {
             return None;
         }
-        let target = self
-            .policy_snapshot()
-            .auxiliary(&pantheon_api::model::AuxiliaryKind::TitleGen)
+        let policy = self.policy_snapshot();
+        let aux = policy.auxiliary(&pantheon_api::model::AuxiliaryKind::TitleGen);
+        let timeout_secs = aux.map(|a| a.timeout_secs).unwrap_or(10);
+        let target = aux
             .map(|a| pantheon_api::model::DefaultModel {
                 provider: a.provider.clone(),
                 model: a.model.clone(),
             })
-            .unwrap_or_else(|| self.policy_snapshot().default.clone());
+            .unwrap_or_else(|| policy.default.clone());
         let model_label = target.model.clone();
         // Title-specific key first; in `auto` mode the default model shares
         // the chat key. Both resolve through the broker at the boundary.
@@ -1971,7 +2347,7 @@ impl Session {
         Some(std::thread::spawn(move || {
             let fallback = pantheon_api::model::fallback_title(&prompt);
             let client = pantheon_providers::TitleGenClient::new(target, key)
-                .with_transport(title_transport());
+                .with_transport(title_transport(timeout_secs));
             let req = pantheon_api::model::TitleRequest {
                 run_id: run_id.clone(),
                 prompt,
@@ -2071,7 +2447,8 @@ impl Session {
                     model: aux.model.clone(),
                 },
                 key,
-            );
+            )
+            .with_timeout_secs(aux.timeout_secs);
             match compress_oldest(messages, &client, budget, run_id) {
                 Ok(Some((fitted, report))) => {
                     *messages = fitted;
@@ -2733,11 +3110,11 @@ fn load_mgr() -> pantheon_extensions::ExtensionManager {
     mgr
 }
 
-/// Transport for one title-gen call: a short-timeout HTTP transport —
-/// titles must never hold the turn.
-fn title_transport() -> Box<dyn pantheon_providers::ChatTransport> {
+/// Transport for one title-gen call: titles must never hold the turn.
+/// Timeout comes from the resolved `[title_gen]` aux entry.
+fn title_transport(timeout_secs: u64) -> Box<dyn pantheon_providers::ChatTransport> {
     Box::new(pantheon_providers::HttpTransport {
-        timeout: std::time::Duration::from_secs(pantheon_providers::TITLEGEN_TIMEOUT_SECS),
+        timeout: std::time::Duration::from_secs(timeout_secs.max(1)),
     })
 }
 

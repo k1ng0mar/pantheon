@@ -20,7 +20,7 @@ use crossterm::{
 };
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
     DefaultTerminal, Frame,
@@ -36,6 +36,7 @@ use std::path::PathBuf;
 pub mod bg;
 mod editor;
 pub mod git;
+pub mod overview;
 pub mod statusbar;
 pub mod theme;
 mod timeline;
@@ -73,6 +74,36 @@ pub enum BlockKind {
     /// pre-tool snapshots at ToolCompleted. Rendered red/green; never
     /// affects the ledger.
     Diff(Vec<crate::diffview::DiffLine>),
+    /// Approval decision card. The tool intent renders calmly above it;
+    /// the card itself is the amber decision point. `decision` collapses
+    /// the card to a dim one-line marker once resolved.
+    Approval {
+        tool: String,
+        sentence: String,
+        target: String,
+        decision: Option<bool>,
+    },
+    /// Clarify question card (`ask_user`). Cyan `?`, never amber.
+    /// `answered` collapses the card once the operator replies.
+    Clarify {
+        question: String,
+        options: Vec<String>,
+        answered: Option<String>,
+    },
+    /// Rendered output of one slash command: the echo plus a titled
+    /// result block. `/help` renders as a two-column table.
+    Command {
+        cmd: String,
+        lines: Vec<String>,
+        failed: bool,
+    },
+    /// Destructive slash command awaiting confirmation (`/clear`).
+    /// Amber decision card like Approval; `decided` collapses it.
+    Confirm {
+        label: String,
+        sentence: String,
+        decided: Option<bool>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +148,27 @@ pub struct ActiveGoal {
     pub max_iterations: u32,
 }
 
+/// An `ask_user` question parked on a run: what the clarify card shows
+/// and what the answer keys resolve.
+#[derive(Debug, Clone)]
+pub struct ClarifyRequest {
+    pub call_id: String,
+    pub question: String,
+    pub options: Vec<String>,
+}
+
+/// A parked approval: (scope, tool name, tool args). The scope is
+/// `call_id:tool:args`; the name/args are parsed out of it so a
+/// re-entered session can render the card without the live `last_tool`.
+pub type ApprovalInfo = (String, String, String);
+
+/// A destructive slash command awaiting confirmation (`/clear`).
+/// Reuses the approval decision-card pattern: amber card, `[a]`/`[d]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmAction {
+    ClearTranscript,
+}
+
 /// Runtime state for the TUI session.
 pub struct TuiState {
     pub session_id: String,
@@ -140,15 +192,12 @@ pub struct TuiState {
     /// Set when a run parks on approval: (run_id, scope/call_id).
     /// Drives the permission card; cleared by grant/deny.
     pub pending_approval: Option<(String, String)>,
-    /// Set when a reflection pass finishes with proposals awaiting
+    /// Set when a nightly pass finishes with proposals awaiting
     /// approval. Drives the reflection card; y approves all, n denies all.
-    pub pending_reflect: Option<Vec<pantheon_reflect::PendingProposal>>,
-    /// A reflection pass is running on its worker thread. Guards against
+    pub pending_reflect: Option<Vec<pantheon_nightly::Proposal>>,
+    /// A nightly pass is running on its worker thread. Guards against
     /// overlapping passes clobbering the pending-proposals file.
     pub reflect_running: bool,
-    /// A consolidation pass is running on its worker thread. Guards
-    /// against overlapping passes promoting the same candidates twice.
-    pub consolidate_running: bool,
     /// Opt-in phone approval notifications from `[approvals]`:
     /// (channel, chat_id). None = disabled (the default).
     pub approval_notify: Option<(String, String)>,
@@ -226,6 +275,40 @@ pub struct TuiState {
     /// `ledger_list_runs`; refreshed on /new, resume, tab switch and turn
     /// completion so titles and busy badges stay current.
     pub tabs: crate::tabs::TabList,
+    /// Per-tab unsent input drafts, keyed by run id. Stashed on every
+    /// tab switch and restored on return — switching tabs never eats a
+    /// draft.
+    pub drafts: std::collections::HashMap<String, String>,
+    /// Run ids whose tabs the user closed (`^w`). `refresh_tabs` filters
+    /// them out of the bar; the runs themselves are untouched (durable)
+    /// and reopen via /sessions or the overview nav.
+    pub closed_tabs: std::collections::HashSet<String>,
+    /// Overview mode (`^b`): the three-pane mission-control layout.
+    /// Same session underneath — a view toggle, never a state split.
+    pub overview: bool,
+    /// Selected nav row in overview mode.
+    pub overview_sel: usize,
+    /// Every run currently parked on an approval, keyed by run id.
+    /// The decision card renders for the active session; other runs get
+    /// the amber tab dot.
+    pub approvals: std::collections::HashMap<String, ApprovalInfo>,
+    /// Every run currently parked on a clarify question, keyed by run id.
+    pub clarifies: std::collections::HashMap<String, ClarifyRequest>,
+    /// The clarify question the keyboard is answering (the active
+    /// session's). Digits pick an option, Enter sends free text.
+    pub pending_clarify: Option<ClarifyRequest>,
+    /// While `Some`, `add_status` lines are captured into the buffer
+    /// instead of the transcript; `handle_slash` flushes them as one
+    /// `Command` block when the command finishes.
+    pub cmd_capture: Option<(String, Vec<String>)>,
+    /// Destructive slash command awaiting confirmation. Renders the
+    /// amber decision card; `a` runs it, `d`/Esc dismisses.
+    pub pending_confirm: Option<ConfirmAction>,
+    /// Tool calls completed this session. Feeds the status bar and the
+    /// session sidebar's activity section.
+    pub tools_used: u32,
+    /// Frame counter for the working spinner. Bumped by `tick()`.
+    pub spinner_tick: u64,
     /// Shortcuts overlay (`?`). Fullscreen; owns the keyboard while open.
     pub show_shortcuts: bool,
     /// Modal vim editing state for the composer (`/vim` to toggle).
@@ -274,7 +357,6 @@ impl Default for TuiState {
             pending_approval: None,
             pending_reflect: None,
             reflect_running: false,
-            consolidate_running: false,
             approval_notify: None,
             last_tool: None,
             interrupt_armed_at: None,
@@ -302,6 +384,17 @@ impl Default for TuiState {
             editor: None,
             rewind_offer: None,
             tabs: crate::tabs::TabList::default(),
+            drafts: std::collections::HashMap::new(),
+            closed_tabs: std::collections::HashSet::new(),
+            overview: false,
+            overview_sel: 0,
+            approvals: std::collections::HashMap::new(),
+            clarifies: std::collections::HashMap::new(),
+            pending_clarify: None,
+            cmd_capture: None,
+            pending_confirm: None,
+            tools_used: 0,
+            spinner_tick: 0,
             theme: theme::Theme::pantheon(),
             show_shortcuts: false,
             vim: vim::VimState::new(),
@@ -310,6 +403,70 @@ impl Default for TuiState {
             bg_tasks: Vec::new(),
             bg_seq: 0,
             img: crate::richtext::ImagePaintState::new(),
+        }
+    }
+}
+
+/// Split an approval scope of the form `call_id:tool:args` into its
+/// parts. Returns `None` when the scope doesn't carry all three.
+fn parse_scope(scope: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = scope.splitn(3, ':');
+    let call_id = parts.next()?;
+    let tool = parts.next()?;
+    let args = parts.next()?;
+    Some((call_id, tool, args))
+}
+
+/// Plain-language rendering of a pending tool call for the approval
+/// card. Returns `(action sentence, concrete target)`:
+/// "shell wants to delete:" / "~/notes/old.md". The tool details stay
+/// visually calm — the amber card, not the text, carries the urgency.
+fn describe_tool_action(tool: &str, args: &str) -> (String, String) {
+    // Best-effort JSON field extraction without pulling serde in here;
+    // args is a JSON-encoded string.
+    fn field(args: &str, key: &str) -> Option<String> {
+        let needle = format!("\"{key}\"");
+        let start = args.find(&needle)?;
+        let rest = &args[start + needle.len()..];
+        let rest = rest.trim_start_matches(|c: char| c == ':' || c.is_whitespace());
+        let rest = rest.strip_prefix('"')?;
+        let end = rest.find('"')?;
+        Some(rest[..end].to_string())
+    }
+    match tool {
+        "shell" => {
+            let cmd = field(args, "command").unwrap_or_else(|| args.to_string());
+            let short: String = cmd.chars().take(72).collect();
+            let verb = cmd.trim_start();
+            if verb.starts_with("rm ") {
+                (
+                    "shell wants to delete:".to_string(),
+                    verb.trim_start_matches("rm ").trim().to_string(),
+                )
+            } else if verb.starts_with("mkdir") {
+                (
+                    "shell wants to create a directory:".to_string(),
+                    short
+                        .trim_start_matches("mkdir")
+                        .trim_start_matches(" -p")
+                        .trim()
+                        .to_string(),
+                )
+            } else {
+                ("shell wants to run:".to_string(), short)
+            }
+        }
+        "write_file" => (
+            "write_file wants to write:".to_string(),
+            field(args, "path").unwrap_or_else(|| args.to_string()),
+        ),
+        "read_file" => (
+            "read_file wants to read:".to_string(),
+            field(args, "path").unwrap_or_else(|| args.to_string()),
+        ),
+        _ => {
+            let detail: String = args.chars().take(96).collect();
+            (format!("{tool} wants to run:"), detail)
         }
     }
 }
@@ -335,7 +492,6 @@ impl TuiState {
             pending_approval: None,
             pending_reflect: None,
             reflect_running: false,
-            consolidate_running: false,
             approval_notify: None,
             last_tool: None,
             interrupt_armed_at: None,
@@ -363,6 +519,17 @@ impl TuiState {
             editor: None,
             rewind_offer: None,
             tabs: crate::tabs::TabList::default(),
+            drafts: std::collections::HashMap::new(),
+            closed_tabs: std::collections::HashSet::new(),
+            overview: false,
+            overview_sel: 0,
+            approvals: std::collections::HashMap::new(),
+            clarifies: std::collections::HashMap::new(),
+            pending_clarify: None,
+            cmd_capture: None,
+            pending_confirm: None,
+            tools_used: 0,
+            spinner_tick: 0,
             theme: theme::Theme::pantheon(),
             show_shortcuts: false,
             vim: vim::VimState::new(),
@@ -540,6 +707,11 @@ impl TuiState {
     }
 
     /// Process a runtime event into a transcript block.
+    ///
+    /// Background-run safety: events for a run that is not the visible
+    /// session only ever update that run's tab dot / parked decision —
+    /// the visible transcript, input, and status belong to the active
+    /// session alone.
     pub fn handle_runtime_event(&mut self, ev: &RuntimeErrorEvent) {
         match ev {
             RuntimeErrorEvent::ToolStarted {
@@ -574,6 +746,7 @@ impl TuiState {
             }
             RuntimeErrorEvent::ToolCompleted { tool, call_id, .. } => {
                 // Flip the most recent still-running card for this tool.
+                self.tools_used = self.tools_used.saturating_add(1);
                 if let Some(block) = self
                     .blocks
                     .iter_mut()
@@ -606,8 +779,37 @@ impl TuiState {
                 // the card itself flips on ToolCompleted.
             }
             RuntimeErrorEvent::ApprovalRequested { run_id, scope } => {
-                self.pending_approval = Some((run_id.clone(), scope.clone()));
-                self.status_line = "permission required".into();
+                // Parse tool identity out of the scope so the card renders
+                // even when the live `last_tool` belongs to another run.
+                let (tool, args) = parse_scope(scope)
+                    .map(|(_, t, a)| (t.to_string(), a.to_string()))
+                    .unwrap_or_else(|| {
+                        self.last_tool
+                            .clone()
+                            .unwrap_or_else(|| ("tool".to_string(), String::new()))
+                    });
+                let (sentence, target) = describe_tool_action(&tool, &args);
+                self.approvals
+                    .insert(run_id.clone(), (scope.clone(), tool.clone(), args.clone()));
+                if *run_id == self.session_id {
+                    // Visible session: render the decision point inline in
+                    // the transcript and hand the keyboard to it.
+                    self.blocks.push(TranscriptBlock {
+                        kind: BlockKind::Approval {
+                            tool: tool.clone(),
+                            sentence,
+                            target,
+                            decision: None,
+                        },
+                    });
+                    self.scroll_to_bottom();
+                    self.pending_approval = Some((run_id.clone(), scope.clone()));
+                    self.status_line = "permission required".into();
+                } else {
+                    // Background run: the amber tab dot is the signal; the
+                    // card renders when the user switches to that tab.
+                    self.tabs.set_approval(run_id, true);
+                }
                 // Opt-in phone notification. Best-effort on a background
                 // thread: the TUI must never block on network I/O.
                 if let Some((channel, chat_id)) = self.approval_notify.clone() {
@@ -627,6 +829,64 @@ impl TuiState {
                             eprintln!("approval notify: {e}");
                         }
                     });
+                }
+            }
+            // A sibling decision, resolved elsewhere (another client, a
+            // re-entered session): collapse the card instead of leaving it
+            // pending.
+            RuntimeErrorEvent::ApprovalGranted { run_id, .. } => {
+                self.approvals.remove(run_id);
+                self.tabs.set_approval(run_id, false);
+                if *run_id == self.session_id {
+                    self.resolve_approval_block(Some(true));
+                    self.pending_approval = None;
+                }
+            }
+            RuntimeErrorEvent::ApprovalDenied { run_id, .. } => {
+                self.approvals.remove(run_id);
+                self.tabs.set_approval(run_id, false);
+                if *run_id == self.session_id {
+                    self.resolve_approval_block(Some(false));
+                    self.pending_approval = None;
+                }
+            }
+            // ask_user parked the run: same decision pattern as approval,
+            // but cyan and with numbered options plus free text.
+            RuntimeErrorEvent::UserInputRequested {
+                run_id,
+                call_id,
+                question,
+                options,
+            } => {
+                let req = ClarifyRequest {
+                    call_id: call_id.clone(),
+                    question: question.clone(),
+                    options: options.clone(),
+                };
+                self.clarifies.insert(run_id.clone(), req.clone());
+                if *run_id == self.session_id {
+                    self.blocks.push(TranscriptBlock {
+                        kind: BlockKind::Clarify {
+                            question: question.clone(),
+                            options: options.clone(),
+                            answered: None,
+                        },
+                    });
+                    self.scroll_to_bottom();
+                    self.pending_clarify = Some(req);
+                    self.status_line = "input requested".into();
+                } else {
+                    self.tabs.set_approval(run_id, true);
+                }
+            }
+            RuntimeErrorEvent::UserInputProvided {
+                run_id, call_id, ..
+            } => {
+                let _ = call_id;
+                self.clarifies.remove(run_id);
+                self.tabs.set_approval(run_id, false);
+                if *run_id == self.session_id {
+                    self.pending_clarify = None;
                 }
             }
             RuntimeErrorEvent::RunProgress { detail, .. } => {
@@ -655,6 +915,55 @@ impl TuiState {
             }
             _ => {}
         }
+    }
+
+    /// Collapse the newest still-pending approval card to its resolved
+    /// marker (`● approved` / `● denied`).
+    fn resolve_approval_block(&mut self, decision: Option<bool>) {
+        if let Some(block) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find(|b| matches!(&b.kind, BlockKind::Approval { decision: None, .. }))
+        {
+            if let BlockKind::Approval { decision: d, .. } = &mut block.kind {
+                *d = decision;
+            }
+        }
+    }
+
+    /// Collapse the newest still-pending clarify card to its answered
+    /// marker (`● answered: …`).
+    fn resolve_clarify_block(&mut self, answer: &str) {
+        if let Some(block) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find(|b| matches!(&b.kind, BlockKind::Clarify { answered: None, .. }))
+        {
+            if let BlockKind::Clarify { answered, .. } = &mut block.kind {
+                *answered = Some(answer.to_string());
+            }
+        }
+    }
+
+    /// Collapse the newest still-pending confirm card.
+    fn resolve_confirm_block(&mut self, decided: bool) {
+        if let Some(block) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find(|b| matches!(&b.kind, BlockKind::Confirm { decided: None, .. }))
+        {
+            if let BlockKind::Confirm { decided: d, .. } = &mut block.kind {
+                *d = Some(decided);
+            }
+        }
+    }
+
+    /// Nav selection clamped to the overview rows.
+    fn sel_clamped(&self) -> usize {
+        self.overview_sel.min(overview::NAV_ROWS - 1)
     }
 
     /// How long the first Esc stays armed. The second Esc inside this
@@ -905,6 +1214,13 @@ impl TuiState {
     }
 
     pub fn add_status(&mut self, text: String) {
+        // While a slash command is running, its output lines are captured
+        // into the command buffer instead; `handle_slash` flushes them as
+        // one `Command` block when the command finishes.
+        if let Some((_, buf)) = self.cmd_capture.as_mut() {
+            buf.push(text);
+            return;
+        }
         self.blocks.push(TranscriptBlock {
             kind: BlockKind::Status(text),
         });
@@ -928,6 +1244,7 @@ impl TuiState {
 
     pub fn tick(&mut self) {
         self.elapsed = self.start_time.elapsed();
+        self.spinner_tick = self.spinner_tick.wrapping_add(1);
         // Coarse git refresh: `git status` never runs per frame.
         if self.git_checked_at.elapsed() >= GIT_REFRESH {
             self.refresh_git();
@@ -960,7 +1277,6 @@ mod icon {
     pub const PANTHEON: &str = "◈";
     pub const RUNNING: &str = "●";
     pub const SUCCESS: &str = "✓";
-    pub const WARNING: &str = "!";
     pub const FAILURE: &str = "×";
     pub const THINKING: &str = "◇";
     pub const TOOL: &str = "⚙";
@@ -983,6 +1299,67 @@ fn refresh_tabs(state: &mut TuiState, session: &Arc<Session>) {
             |id| session.supervisor.has_active_lease(id).unwrap_or(false),
             &active,
         );
+        // Closed tabs stay closed: the runs are durable, the bar is not.
+        // A closed run reopens via /sessions or the overview nav, which
+        // clear it from `closed_tabs` through `switch_to_run`.
+        for closed in &state.closed_tabs {
+            state.tabs.remove(closed);
+        }
+        // Re-apply the parked-decision dots: a refresh rebuilds the list
+        // from the ledger and would otherwise drop them.
+        for run in state.approvals.keys().chain(state.clarifies.keys()) {
+            state.tabs.set_approval(run, true);
+        }
+    }
+}
+
+/// Open a fresh session tab: a new run id with an empty transcript.
+/// No ledger row until the first turn, so abandoned tabs leave nothing
+/// behind. Stashes the current tab's draft first — switching never eats
+/// one. Never forces `ready`: a turn may still run for the previous run.
+fn new_tab(state: &mut TuiState, session: &Arc<Session>, status: &str) {
+    let old = state.session_id.clone();
+    if !state.input.is_empty() {
+        state.drafts.insert(old, std::mem::take(&mut state.input));
+    }
+    state.session_id = pantheon_runtime::new_run_id();
+    state.blocks.clear();
+    state.title = None;
+    state.scroll_offset = 0;
+    state.pending_approval = None;
+    state.pending_clarify = None;
+    // A new conversation is a new objective: the /goal iteration gate
+    // belongs to the old work and must not block the new session.
+    state.goal = None;
+    session.set_goal(None);
+    state.add_status(status.into());
+}
+
+/// Close the active tab. Parks the run — never kills it: the draft is
+/// stashed, the tab leaves the bar, and the run stays reopenable via
+/// /sessions or the overview nav. Never strands the session: with no
+/// tabs left, a fresh one opens.
+fn close_active_tab(state: &mut TuiState, session: &Arc<Session>) {
+    let run = state.session_id.clone();
+    if !state.input.is_empty() {
+        state
+            .drafts
+            .insert(run.clone(), std::mem::take(&mut state.input));
+    }
+    state.closed_tabs.insert(run.clone());
+    state.tabs.remove(&run);
+    match state.tabs.active_run_id().map(str::to_string) {
+        Some(next) => {
+            state.add_status(format!(
+                "closed tab {run} (run parked, reopen via /sessions)"
+            ));
+            switch_to_run(state, session, &next, "resumed");
+        }
+        None => new_tab(
+            state,
+            session,
+            "closed last tab; new tab (unsaved until the first turn)",
+        ),
     }
 }
 
@@ -996,6 +1373,16 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
         state.attention_clear();
         return;
     }
+    // Stash the draft of the tab we're leaving; the target's restores
+    // below. Switching tabs never eats a draft.
+    let old = state.session_id.clone();
+    if !state.input.is_empty() {
+        state.drafts.insert(old, std::mem::take(&mut state.input));
+    } else {
+        state.input.clear();
+    }
+    // A visible run is an open tab by definition.
+    state.closed_tabs.remove(id);
     let _ = session.supervisor.ledger_reopen_run(id);
     if let Ok(entries) = session.supervisor.replay(id) {
         state.blocks.clear();
@@ -1014,8 +1401,41 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
             };
             state.blocks.push(TranscriptBlock { kind });
         }
+        // Durable decisions: a re-entered session re-renders any still
+        // pending approval or clarify card, so the decision point is
+        // visible instead of a dead transcript. The keyboard follows the
+        // visible session.
+        match state.approvals.get(id) {
+            Some((scope, tool, args)) => {
+                let (sentence, target) = describe_tool_action(tool, args);
+                state.blocks.push(TranscriptBlock {
+                    kind: BlockKind::Approval {
+                        tool: tool.clone(),
+                        sentence,
+                        target,
+                        decision: None,
+                    },
+                });
+                state.pending_approval = Some((id.to_string(), scope.clone()));
+            }
+            None => state.pending_approval = None,
+        }
+        match state.clarifies.get(id).cloned() {
+            Some(req) => {
+                state.blocks.push(TranscriptBlock {
+                    kind: BlockKind::Clarify {
+                        question: req.question.clone(),
+                        options: req.options.clone(),
+                        answered: None,
+                    },
+                });
+                state.pending_clarify = Some(req);
+            }
+            None => state.pending_clarify = None,
+        }
         state.scroll_to_bottom();
     }
+    state.input = state.drafts.remove(id).unwrap_or_default();
     state.attention_clear();
     state.blocks.push(TranscriptBlock {
         kind: BlockKind::Status(format!("{verb} {id}")),
@@ -1044,15 +1464,6 @@ pub fn render(state: &mut TuiState, f: &mut Frame) {
 }
 
 fn render_main(state: &mut TuiState, f: &mut Frame) {
-    let outer = Layout::vertical([
-        Constraint::Length(1), // session tabs
-        Constraint::Length(3), // header
-        Constraint::Min(1),    // transcript
-        Constraint::Length(3), // input
-        Constraint::Length(1), // status bar
-    ]);
-    let [tab_area, header_area, chat_area, input_area, status_area] = outer.areas(f.area());
-
     if state.img.preview.is_some() {
         render_image_preview(f, f.area(), state);
         return;
@@ -1073,24 +1484,287 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
         render_shortcuts(f, f.area(), state);
         return;
     }
-    if state.pending_approval.is_some() {
-        // Steal the input row: permission card replaces it until resolved.
-        render_permission(f, input_area, state);
-    } else if state.pending_reflect.is_some() {
-        // Reflection card: eval-gated proposals awaiting approval.
+
+    let outer = Layout::vertical([
+        Constraint::Length(1), // session tabs
+        Constraint::Length(1), // header (one line)
+        Constraint::Min(1),    // chat / overview
+        Constraint::Length(3), // input
+        Constraint::Length(1), // status bar
+    ]);
+    let [tab_area, header_area, chat_area, input_area, status_area] = outer.areas(f.area());
+
+    crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+    render_header(f, header_area, state);
+    if state.overview {
+        render_overview_frame(state, f, chat_area);
+    } else {
+        render_chat(state, f, chat_area);
+    }
+    // Approval no longer steals the input row: the decision card lives
+    // in the transcript. The reflect card still owns the row while open.
+    if state.pending_reflect.is_some() {
         render_reflect_card(f, input_area, state);
     } else {
         render_input(f, input_area, state);
     }
-    render_header(f, header_area, state);
-    render_transcript(f, chat_area, state);
     render_status(f, status_area, state);
-    crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
     if state.timeline.is_some() {
         render_timeline(f, f.area(), state);
     }
     if state.mention.is_some() {
         render_mention_picker(f, f.area(), state);
+    }
+}
+
+/// Chat layout: transcript beside the session sidebar. The sidebar
+/// takes the right third on wide terminals, collapses to a narrow
+/// strip on medium ones, and hides on narrow ones. Chat and overview
+/// share transcript/input/status rendering.
+fn render_chat(state: &mut TuiState, f: &mut Frame, area: Rect) {
+    let w = area.width;
+    if w >= 120 {
+        let cols = Layout::horizontal([Constraint::Percentage(67), Constraint::Percentage(33)]);
+        let [transcript_area, sidebar_area] = cols.areas(area);
+        render_transcript(f, transcript_area, state);
+        render_sidebar(f, sidebar_area, state, false);
+    } else if w >= 100 {
+        let cols = Layout::horizontal([Constraint::Min(1), Constraint::Length(14)]);
+        let [transcript_area, sidebar_area] = cols.areas(area);
+        render_transcript(f, transcript_area, state);
+        render_sidebar(f, sidebar_area, state, true);
+    } else {
+        render_transcript(f, area, state);
+    }
+}
+
+/// Overview layout: frame + nav + live transcript + detail. The center
+/// pane reuses the shared transcript renderer — one transcript, two
+/// views.
+fn render_overview_frame(state: &mut TuiState, f: &mut Frame, area: Rect) {
+    let model = build_overview_model(state);
+    let center = overview::render_frame(f, area, &model, &state.theme);
+    render_transcript(f, center, state);
+}
+
+/// Assemble the overview model from live state. Counts are truthful:
+/// sessions from the tab bar, approvals/clarifies from the parked maps,
+/// jobs from the scheduler store; MCP/memory show "—" (no live count is
+/// wired) rather than a fabricated number.
+fn build_overview_model(state: &TuiState) -> overview::OverviewModel {
+    use overview::*;
+    let th = &state.theme;
+    let dim = Style::default().fg(th.dim);
+
+    let status = if state.pending_approval.is_some() {
+        "APPROVAL"
+    } else if state.pending_clarify.is_some() {
+        "INPUT"
+    } else if state.interrupted {
+        "INTERRUPTED"
+    } else if !state.ready {
+        "RUNNING"
+    } else {
+        "IDLE"
+    };
+    let top_left = format!(
+        "{status} {:03} · {}",
+        state.display_turn_no().unwrap_or(0),
+        state.model
+    );
+
+    let session_count = state.tabs.tabs().len();
+    let approval_count = state.approvals.len() + state.clarifies.len();
+    let data_dir = crate::terminal::data_dir();
+    let job_count = pantheon_scheduler::load_jobs(&data_dir)
+        .map(|jobs| jobs.len())
+        .unwrap_or(0);
+    let top_right =
+        format!("{session_count} sessions · {approval_count} approvals · {job_count} jobs");
+
+    let agent_tasks: Vec<String> = state
+        .blocks
+        .iter()
+        .rev()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Swarm { task, .. } => Some(task.clone()),
+            _ => None,
+        })
+        .take(5)
+        .collect();
+
+    let nav = vec![
+        ("Current".to_string(), "●".to_string()),
+        ("Sessions".to_string(), format!("{session_count}")),
+        ("Agents".to_string(), format!("{}", agent_tasks.len())),
+        ("Schedule".to_string(), format!("{job_count}")),
+        ("Approvals".to_string(), format!("{approval_count}")),
+        ("MCP".to_string(), "—".to_string()),
+        ("Memory".to_string(), "—".to_string()),
+    ];
+
+    let (detail_title, detail) = match state.sel_clamped() {
+        NAV_CURRENT => {
+            let pct = if state.tokens_max > 0 {
+                format!(
+                    "{:.0}%",
+                    100.0 * state.tokens_used as f64 / state.tokens_max as f64
+                )
+            } else {
+                "—".to_string()
+            };
+            let name = state
+                .title
+                .clone()
+                .unwrap_or_else(|| state.session_id.clone());
+            (
+                "Current".to_string(),
+                vec![
+                    Line::from(Span::styled(
+                        name,
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(Span::styled(
+                        format!(
+                            "run {}",
+                            &state.session_id[..state.session_id.len().min(12)]
+                        ),
+                        dim,
+                    )),
+                    Line::from(""),
+                    Line::from(format!("model   {}", state.model)),
+                    Line::from(format!("ctx     {pct}")),
+                    Line::from(format!("cost    ${:.2}", state.cost_cents as f64 / 100.0)),
+                    Line::from(format!("turns   {}", state.turns_completed)),
+                    Line::from(format!("tools   {}", state.tools_used)),
+                ],
+            )
+        }
+        NAV_SESSIONS => {
+            let mut lines = Vec::new();
+            for (i, tab) in state.tabs.tabs().iter().enumerate() {
+                let active = i == state.tabs.active_index();
+                let (dot, dot_color) = if tab.approval {
+                    ("●", th.warning)
+                } else if tab.busy {
+                    ("●", th.success)
+                } else {
+                    ("○", th.dim)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{} {} ", i + 1, tab.label()),
+                        if active {
+                            Style::default().fg(th.primary).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        },
+                    ),
+                    Span::styled(dot.to_string(), Style::default().fg(dot_color)),
+                ]));
+            }
+            if lines.is_empty() {
+                lines.push(Line::from(Span::styled("(no sessions)", dim)));
+            }
+            ("Sessions".to_string(), lines)
+        }
+        NAV_AGENTS => {
+            let lines = if agent_tasks.is_empty() {
+                vec![Line::from(Span::styled("(no subagents this session)", dim))]
+            } else {
+                agent_tasks
+                    .iter()
+                    .map(|t| {
+                        let short: String = t.chars().take(40).collect();
+                        Line::from(format!("◈ {short}"))
+                    })
+                    .collect()
+            };
+            ("Agents".to_string(), lines)
+        }
+        NAV_SCHEDULE => (
+            "Schedule".to_string(),
+            vec![
+                Line::from(format!("{job_count} jobs")),
+                Line::from(""),
+                Line::from(Span::styled("manage with /schedule", dim)),
+            ],
+        ),
+        NAV_APPROVALS => {
+            let mut lines = Vec::new();
+            for (run, (_scope, tool, _args)) in &state.approvals {
+                let stem: String = run.chars().take(8).collect();
+                lines.push(Line::from(vec![
+                    Span::styled("● ", Style::default().fg(th.warning)),
+                    Span::styled(format!("{stem} · approval · {tool}"), Style::default()),
+                ]));
+            }
+            for (run, req) in &state.clarifies {
+                let stem: String = run.chars().take(8).collect();
+                let q: String = req.question.chars().take(28).collect();
+                lines.push(Line::from(vec![
+                    Span::styled("? ", Style::default().fg(th.primary)),
+                    Span::styled(format!("{stem} · clarify · {q}"), Style::default()),
+                ]));
+            }
+            if lines.is_empty() {
+                lines.push(Line::from(Span::styled("(none pending)", dim)));
+            } else {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled("enter jumps to the first", dim)));
+            }
+            ("Approvals".to_string(), lines)
+        }
+        NAV_MCP => (
+            "MCP".to_string(),
+            vec![
+                Line::from(Span::styled("no live count wired", dim)),
+                Line::from(""),
+                Line::from(Span::styled("server list: /mcp", dim)),
+            ],
+        ),
+        _ => (
+            "Memory".to_string(),
+            vec![
+                Line::from(Span::styled("no live count wired", dim)),
+                Line::from(""),
+                Line::from(Span::styled("memory lives in config", dim)),
+            ],
+        ),
+    };
+
+    OverviewModel {
+        top_left,
+        top_right,
+        nav,
+        sel: state.sel_clamped(),
+        detail_title,
+        detail,
+    }
+}
+
+/// Enter on a nav row: Sessions cycles to the next tab, Approvals jumps
+/// to the first run parked on a decision. Other rows have no target.
+fn overview_enter(state: &mut TuiState, session: &Arc<Session>) {
+    match state.overview_sel {
+        overview::NAV_SESSIONS => {
+            if let Some(id) = state.tabs.cycle_next().map(str::to_string) {
+                switch_to_run(state, session, &id, "resumed");
+            }
+        }
+        overview::NAV_APPROVALS => {
+            let target = state
+                .approvals
+                .keys()
+                .chain(state.clarifies.keys())
+                .next()
+                .cloned();
+            if let Some(id) = target {
+                switch_to_run(state, session, &id, "resumed");
+                state.overview = false;
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1235,8 +1909,7 @@ fn render_reflect_card(f: &mut Frame, area: Rect, state: &TuiState) {
         )),
     ];
     if let Some(pending) = &state.pending_reflect {
-        for pp in pending.iter().take(5) {
-            let p = &pp.proposal;
+        for p in pending.iter().take(5) {
             let first_line = p.body.lines().next().unwrap_or("");
             text.push(Line::from(format!(
                 "  [{}] {} ({})",
@@ -1521,12 +2194,18 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
         ("Esc x2", "interrupt run / offer rewind"),
         ("PgUp PgDn", "scroll transcript"),
         ("F2 / Ctrl+O", "turn timeline"),
-        ("Ctrl+E", "fullscreen editor"),
+        ("Ctrl+B", "mission-control overview"),
+        ("Ctrl+T / Ctrl+W", "new tab / close tab (parked)"),
+        ("[ / ]", "previous / next tab"),
         ("Ctrl+Tab", "next session"),
         ("Ctrl+Shift+Tab", "previous session"),
         ("Alt+1..9", "jump to session"),
-        ("Up / Down", "move in lists"),
-        ("y / n", "allow / deny approval"),
+        ("Up / Down", "move in lists / overview nav"),
+        ("Enter (overview)", "open nav row"),
+        ("digit (overview)", "jump to tab"),
+        ("a / d", "approve / deny approval"),
+        ("y / n", "allow / deny (alias)"),
+        ("digit (clarify)", "answer pending question"),
         ("Ctrl+Enter", "send from editor"),
         ("Ctrl+S", "send from editor"),
         ("/steer <text>", "steer the running turn mid-flight"),
@@ -1552,54 +2231,6 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
     lines.push(Line::from(""));
     lines.push(footer);
     f.render_widget(Paragraph::new(lines), inner);
-}
-
-fn render_permission(f: &mut Frame, area: Rect, state: &TuiState) {
-    let th = &state.theme;
-    let (_, scope) = state
-        .pending_approval
-        .as_ref()
-        .map(|(r, s)| (r.as_str(), s.as_str()))
-        .unwrap_or(("", ""));
-    let (tool_name, tool_args) = state
-        .last_tool
-        .as_ref()
-        .map(|(n, a)| (n.as_str(), a.as_str()))
-        .unwrap_or(("unknown tool", ""));
-    let mut text = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Pantheon wants to run a gated operation.",
-            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            format!("  tool: {tool_name}"),
-            Style::default().fg(th.warning),
-        )),
-    ];
-    if !tool_args.is_empty() {
-        for line in tool_args.lines().take(3) {
-            text.push(Line::from(format!("  args: {line}")));
-        }
-    }
-    text.extend([
-        Line::from(format!("  scope: {scope}")),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  [y] Allow    [n] Deny",
-            Style::default().fg(th.success),
-        )),
-    ]);
-    let card = Paragraph::new(text).block(
-        Block::bordered()
-            .border_type(BorderType::Double)
-            .border_style(Style::default().fg(th.warning))
-            .title(Span::styled(
-                " \u{26a0} Permission required ",
-                Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
-            )),
-    );
-    f.render_widget(card, area);
 }
 
 /// Draw the input box at the bottom.
@@ -1649,6 +2280,10 @@ fn render_input(f: &mut Frame, area: Rect, state: &TuiState) {
 /// anything the runtime did not expose renders as `—` (see `statusbar`).
 /// A pending rewind confirmation takes over the bar so the question is
 /// impossible to miss.
+/// One-line status bar: `{icon} {state} │ turn {n} │ tools {n} │ ctx {pct} · {cost} │ {hints}`.
+/// The state word is the only colored state signal: green working/ready,
+/// amber approval, cyan input, dim everything else. Amber appears here
+/// only for the approval state.
 fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
     if let Some(offer) = &state.rewind_offer {
@@ -1659,123 +2294,235 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
         );
         let bar = Paragraph::new(Line::from(Span::styled(
             text,
-            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
+            Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
         )));
         f.render_widget(bar, area);
         return;
     }
-    // Interrupt state takes over the status word: an armed interrupt is a
-    // call to action, a settled one reports the truth.
-    let (icon, bar_color, status_word) = if state.interrupted {
-        (icon::WARNING, th.warning, "interrupted")
+    // Braille spinner for the working state, advanced by tick().
+    const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let (icon, color, word): (String, Color, String) = if state.pending_approval.is_some() {
+        ("●".to_string(), th.warning, "awaiting approval".to_string())
+    } else if state.pending_clarify.is_some() {
+        ("?".to_string(), th.primary, "awaiting input".to_string())
+    } else if state.interrupted {
+        ("✕".to_string(), th.dim, "interrupted".to_string())
     } else if !state.ready && state.interrupt_armed_at.is_some() {
-        (icon::WARNING, th.warning, "esc to interrupt")
+        ("!".to_string(), th.primary, "esc to interrupt".to_string())
     } else if state.ready
         && state.interrupt_armed_at.is_some()
         && state.rewind_candidate().is_some()
     {
-        // Double-Esc is armed while idle: make the rewind discoverable.
-        (icon::WARNING, th.warning, "esc again: rewind?")
+        (
+            "↩".to_string(),
+            th.primary,
+            "esc again: rewind?".to_string(),
+        )
     } else if state.ready {
-        (icon::SUCCESS, th.success, "ready")
+        ("✓".to_string(), th.success, "ready".to_string())
     } else {
-        (icon::RUNNING, th.running, "working")
+        let frame = SPINNER[(state.spinner_tick as usize) % SPINNER.len()];
+        (frame.to_string(), th.success, "working".to_string())
     };
-    // Vim mode rides along in the status word (`-- NORMAL --` /
-    // `-- INSERT --`); absent when vim is off so non-users see no change.
-    let status_word = match state.vim.status_label() {
-        Some(mode) => format!("{mode} · {status_word}"),
-        None => status_word.to_string(),
+    // Vim mode rides along in the status word; absent when vim is off.
+    let word = match state.vim.status_label() {
+        Some(mode) => format!("{mode} · {word}"),
+        None => word,
     };
     let live_tokens = state.tokens_used + state.turn_estimate;
-    let (context_frac, context_label) = if state.tokens_max > 0 {
-        (
-            Some(live_tokens as f64 / state.tokens_max as f64),
-            Some(format!(
-                "{:.1}k/{}k",
-                live_tokens as f64 / 1000.0,
-                state.tokens_max / 1000
-            )),
+    let ctx = if state.tokens_max > 0 {
+        format!(
+            "{:.0}%",
+            100.0 * live_tokens as f64 / state.tokens_max as f64
         )
     } else {
-        // No declared window is not a zero-sized window: the fraction is
-        // unknown, and the label says so rather than inventing a budget.
-        (
-            None,
-            Some(format!("{:.1}k/unknown", live_tokens as f64 / 1000.0)),
-        )
+        "—".to_string()
     };
-    let data = statusbar::StatusBarData {
-        status_word,
-        icon: icon.to_string(),
-        model: state.model.clone(),
-        context_frac,
-        context_label,
-        turn_in: state.turn_in,
-        turn_out: state.turn_out,
-        tokens_per_sec: state.turn_rate(),
-        // The runtime's ModelUsage carries no cache counters; `None`
-        // renders as `—` rather than a fabricated hit rate.
-        cache_hit_rate: None,
-        turn_no: state.display_turn_no(),
-        session_prefix: state.session_id.chars().take(6).collect(),
-        cost_usd: if state.cost_cents > 0 {
-            Some(state.cost_cents as f64 / 100.0)
-        } else {
-            None
-        },
-        git: state.git_label.clone(),
-        // Background tasks alive, e.g. `bg 2 ⠋`; None hides the segment.
-        bg: bg::status_segment(&state.bg_tasks),
+    let cost = format!("${:.2}", state.cost_cents as f64 / 100.0);
+    let hints = if state.pending_approval.is_some() {
+        "a approve · d deny · esc cancel"
+    } else if state.pending_clarify.is_some() {
+        "1-9 answer · enter send · esc cancel"
+    } else if state.pending_confirm.is_some() {
+        "a confirm · d dismiss"
+    } else if state.overview {
+        "↑↓ nav · enter open · ^b chat · ^q quit"
+    } else {
+        "esc cancel · ^b overview · ^q quit"
     };
-    let text = statusbar::render(&data, area.width as usize);
-    let bar = Paragraph::new(Line::from(Span::styled(
-        text,
-        Style::default().fg(bar_color),
-    )));
+    let turn = state
+        .display_turn_no()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "–".to_string());
+    let mut text = format!(
+        "{icon} {word} │ turn {turn} │ tools {} │ ctx {ctx} · {cost} │ {hints}",
+        state.tools_used,
+    );
+    // Shed the hints first on narrow terminals; the state always fits.
+    let max = area.width as usize;
+    if max > 0 && text.chars().count() > max {
+        text = format!(
+            "{icon} {word} │ turn {turn} │ tools {} │ ctx {ctx} · {cost}",
+            state.tools_used,
+        );
+    }
+    if max > 0 && text.chars().count() > max {
+        text = text.chars().take(max.saturating_sub(1)).collect();
+    }
+    let prefix = format!("{icon} {word}");
+    let bar = Paragraph::new(Line::from(vec![
+        Span::styled(
+            prefix.clone(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            text[prefix.len()..].to_string(),
+            Style::default().fg(th.dim),
+        ),
+    ]));
     f.render_widget(bar, area);
 }
 
 /// Draw the persistent top header bar.
+/// One-line header: identity, not telemetry. Telemetry lives in the
+/// status bar and the sidebar; the header just says where you are.
 fn render_header(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
-    let tokens_display = if state.tokens_max > 0 {
+    // Session name: the generated title when the run has one, else the
+    // run id stem. Never an empty string.
+    let session_name = state
+        .title
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| {
+            state
+                .session_id
+                .rsplit('/')
+                .next()
+                .unwrap_or(&state.session_id)
+                .to_string()
+        });
+    let provider = state.model.split('/').next().unwrap_or(&state.model);
+    let model = state.model.rsplit('/').next().unwrap_or(&state.model);
+    let elapsed = state.elapsed;
+    let ctx = if state.tokens_max > 0 {
         format!(
-            "{:.1}k/{}k",
-            state.tokens_used as f64 / 1000.0,
-            state.tokens_max / 1000
+            "{:.0}%",
+            100.0 * state.tokens_used as f64 / state.tokens_max as f64
         )
     } else {
-        format!("{:.1}k/unknown", state.tokens_used as f64 / 1000.0)
+        "?".to_string()
     };
-    let session_label = match state.title.as_deref().filter(|t| !t.is_empty()) {
-        Some(t) => format!(
-            "{} \u{2022} {}",
-            &state.session_id[..state.session_id.len().min(6)],
-            t.chars().take(40).collect::<String>()
-        ),
-        None => state.session_id[..state.session_id.len().min(6)].to_string(),
-    };
-    let title = format!(
-        "◈ PANTHEON  {}  {}  {:02}:{:02}:{:02}  {}  ${:.2}",
-        session_label,
-        state.model,
-        state.elapsed.as_secs() / 3600,
-        (state.elapsed.as_secs() % 3600) / 60,
-        state.elapsed.as_secs() % 60,
-        tokens_display,
-        state.cost_cents as f64 / 100.0,
+    let mut title = format!(
+        "◈ PANTHEON · {session_name} · {provider} · {model} · {:02}:{:02}:{:02} · {ctx}",
+        elapsed.as_secs() / 3600,
+        (elapsed.as_secs() % 3600) / 60,
+        elapsed.as_secs() % 60,
     );
+    // Truncate the middle on narrow terminals so the PANTHEON mark and
+    // the context readout survive.
+    let max = area.width as usize;
+    if max > 24 && title.chars().count() > max {
+        let keep = max.saturating_sub(24);
+        let head: String = title.chars().take(keep).collect();
+        let tail: String = title
+            .chars()
+            .rev()
+            .take(20)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        title = format!("{head}…{tail}");
+    }
     let header = Paragraph::new(Line::from(Span::styled(
         title,
         Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
-    )))
-    .block(
+    )));
+    f.render_widget(header, area);
+}
+
+/// Session sidebar (chat view, wide terminals): model, context bar,
+/// usage, and activity. `mini` collapses it to counts on medium
+/// terminals; it hides entirely below that.
+fn render_sidebar(f: &mut Frame, area: Rect, state: &TuiState, mini: bool) {
+    let th = &state.theme;
+    let dim = Style::default().fg(th.dim);
+    let pct = if state.tokens_max > 0 {
+        (100.0 * state.tokens_used as f64 / state.tokens_max as f64).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let over = pct >= 80.0;
+    let mut lines: Vec<Line> = Vec::new();
+    if mini {
+        lines.push(Line::from(Span::styled("ctx", dim)));
+        lines.push(Line::from(Span::styled(
+            format!("{pct:.0}%"),
+            Style::default().fg(if over { th.failure } else { Color::Reset }),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("cost", dim)));
+        lines.push(Line::from(format!(
+            "${:.2}",
+            state.cost_cents as f64 / 100.0
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("tools", dim)));
+        lines.push(Line::from(format!("{}", state.tools_used)));
+    } else {
+        lines.push(Line::from(Span::styled("model", dim)));
+        lines.push(Line::from(Span::styled(
+            state.model.clone(),
+            Style::default().fg(Color::Reset),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("context", dim)));
+        // 20-cell bar; red past 80%.
+        let cells = 20usize;
+        let filled = ((pct / 100.0) * cells as f64).round() as usize;
+        let mut bar: Vec<Span> = Vec::with_capacity(cells);
+        for i in 0..cells {
+            let (ch, color) = if i < filled {
+                ('█', if over { th.failure } else { th.success })
+            } else {
+                ('░', th.dim)
+            };
+            bar.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+        }
+        lines.push(Line::from(bar));
+        lines.push(Line::from(Span::styled(
+            format!("{pct:.0}%"),
+            Style::default().fg(if over { th.failure } else { th.dim }),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("usage", dim)));
+        let in_s = state
+            .turn_in
+            .map(|n| format!("{n}"))
+            .unwrap_or_else(|| "—".to_string());
+        let out_s = state
+            .turn_out
+            .map(|n| format!("{n}"))
+            .unwrap_or_else(|| "—".to_string());
+        lines.push(Line::from(format!("in   {in_s}")));
+        lines.push(Line::from(format!("out  {out_s}")));
+        lines.push(Line::from(format!(
+            "cost ${:.4}",
+            state.cost_cents as f64 / 100.0
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("activity", dim)));
+        lines.push(Line::from(format!("turns {}", state.turns_completed)));
+        lines.push(Line::from(format!("tools {}", state.tools_used)));
+    }
+    let para = Paragraph::new(lines).block(
         Block::bordered()
             .border_type(BorderType::Rounded)
-            .title(" PANTHEON "),
+            .title(Span::styled(" Session ", dim)),
     );
-    f.render_widget(header, area);
+    f.render_widget(para, area);
 }
 
 /// Draw the conversation transcript with visual blocks per event type.
@@ -2050,9 +2797,10 @@ fn render_block(
         BlockKind::ToolCall { name, args, ok } => {
             let (glyph, col) = match ok {
                 // A tool still marked running after an interrupt was stopped
-                // from the outside: show that honestly instead of spinning.
-                None if interrupted => ("■", th.warning),
-                None => (icon::RUNNING, th.running),
+                // from the outside: show that honestly, in dim, instead of
+                // spinning or going amber (amber is reserved for approvals).
+                None if interrupted => ("■", th.dim),
+                None => (icon::RUNNING, th.success),
                 Some(true) => (icon::SUCCESS, th.success),
                 Some(false) => (icon::FAILURE, th.failure),
             };
@@ -2076,12 +2824,227 @@ fn render_block(
         BlockKind::Status(text) => {
             lines.push(Line::from(Span::styled(
                 format!("… {text}"),
-                Style::default().fg(th.warning),
+                Style::default().fg(th.dim),
             )));
         }
         BlockKind::Diff(diff_lines) => {
             lines.extend(crate::diffview::render_diff_lines(diff_lines, th));
         }
+        BlockKind::Approval {
+            tool,
+            sentence,
+            target,
+            decision,
+        } => {
+            // Decision point: resolved cards collapse to a dim one-line
+            // marker; the pending card is the amber surface. The tool
+            // intent above it stays visually calm.
+            match decision {
+                Some(true) => lines.push(Line::from(Span::styled(
+                    "● approved",
+                    Style::default().fg(th.dim),
+                ))),
+                Some(false) => lines.push(Line::from(Span::styled(
+                    "● denied",
+                    Style::default().fg(th.dim),
+                ))),
+                None => {
+                    lines.push(Line::from(Span::styled(
+                        format!("┌─ ⚠ Permission required · {tool} ──"),
+                        Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
+                    )));
+                    lines.push(Line::from(format!("│  {sentence}")));
+                    if !target.is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            format!("│  {target}"),
+                            Style::default().fg(th.primary),
+                        )));
+                    }
+                    lines.push(Line::from("│"));
+                    lines.push(Line::from(vec![
+                        Span::styled("│  ", Style::default().fg(th.dim)),
+                        Span::styled(
+                            "[a]",
+                            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" Approve   ", Style::default().fg(th.dim)),
+                        Span::styled(
+                            "[d]",
+                            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" Deny   ", Style::default().fg(th.dim)),
+                        Span::styled("[esc]", Style::default().fg(th.dim)),
+                        Span::styled(" cancel", Style::default().fg(th.dim)),
+                    ]));
+                }
+            }
+        }
+        BlockKind::Clarify {
+            question,
+            options,
+            answered,
+        } => {
+            // Cyan `?`, never amber. Answered cards collapse; pending
+            // ones list numbered options plus free text.
+            match answered {
+                Some(answer) => {
+                    let short: String = answer.chars().take(72).collect();
+                    lines.push(Line::from(Span::styled(
+                        format!("● answered: {short}"),
+                        Style::default().fg(th.dim),
+                    )))
+                }
+                None => {
+                    lines.push(Line::from(Span::styled(
+                        "┌─ ? Clarify ──",
+                        Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+                    )));
+                    for qline in question.lines().take(6) {
+                        lines.push(Line::from(format!("│  {qline}")));
+                    }
+                    for (i, opt) in options.iter().enumerate().take(9) {
+                        let short: String = opt.chars().take(64).collect();
+                        lines.push(Line::from(vec![
+                            Span::styled("│  ", Style::default().fg(th.dim)),
+                            Span::styled(
+                                format!("{}", i + 1),
+                                Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(format!("  {short}"), Style::default()),
+                        ]));
+                    }
+                    lines.push(Line::from("│"));
+                    lines.push(Line::from(Span::styled(
+                        "│  1-9 answer · type + enter for free text · esc cancel",
+                        Style::default().fg(th.dim),
+                    )));
+                }
+            }
+        }
+        BlockKind::Command {
+            cmd,
+            lines: cmd_lines,
+            failed,
+        } => {
+            // Every slash command echoes, then renders one titled result
+            // block. `/help` renders as a two-column table; error lines
+            // inside any block render red.
+            lines.push(Line::from(vec![
+                Span::styled("❯ ", Style::default().fg(th.dim)),
+                Span::styled(
+                    cmd.clone(),
+                    Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            if *cmd == "/help" {
+                render_help_table(lines, cmd_lines, th);
+            } else {
+                let title_color = if *failed { th.failure } else { th.primary };
+                lines.push(Line::from(Span::styled(
+                    format!("┌─ {cmd} ──"),
+                    Style::default()
+                        .fg(title_color)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                for l in cmd_lines.iter().take(60) {
+                    let t = l.trim_start();
+                    let is_err = t.starts_with('✗')
+                        || t.starts_with("error:")
+                        || t.starts_with("Error:")
+                        || t.starts_with("failed");
+                    if is_err {
+                        lines.push(Line::from(vec![
+                            Span::styled("│  ", Style::default().fg(th.dim)),
+                            Span::styled(l.clone(), Style::default().fg(th.failure)),
+                        ]));
+                    } else {
+                        lines.push(Line::from(format!("│  {l}")));
+                    }
+                }
+            }
+            lines.push(Line::from(""));
+        }
+        BlockKind::Confirm {
+            label,
+            sentence,
+            decided,
+        } => {
+            // Same decision pattern as the approval card, for
+            // destructive slash commands.
+            match decided {
+                Some(true) => lines.push(Line::from(Span::styled(
+                    "● confirmed",
+                    Style::default().fg(th.dim),
+                ))),
+                Some(false) => lines.push(Line::from(Span::styled(
+                    "● dismissed",
+                    Style::default().fg(th.dim),
+                ))),
+                None => {
+                    lines.push(Line::from(Span::styled(
+                        format!("┌─ ⚠ {label} ──"),
+                        Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
+                    )));
+                    lines.push(Line::from(format!("│  {sentence}")));
+                    lines.push(Line::from("│"));
+                    lines.push(Line::from(vec![
+                        Span::styled("│  ", Style::default().fg(th.dim)),
+                        Span::styled(
+                            "[a]",
+                            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" Confirm   ", Style::default().fg(th.dim)),
+                        Span::styled(
+                            "[d]",
+                            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" Dismiss   ", Style::default().fg(th.dim)),
+                        Span::styled("[esc]", Style::default().fg(th.dim)),
+                        Span::styled(" dismiss", Style::default().fg(th.dim)),
+                    ]));
+                }
+            }
+        }
+    }
+}
+
+/// Two-column rendering of `/help` output: `  /cmd args   description`
+/// rows become `cmd` (cyan) + `description` (dim). Non-command lines
+/// render dim as-is.
+fn render_help_table(lines: &mut Vec<Line>, cmd_lines: &[String], th: &theme::Theme) {
+    let dim = Style::default().fg(th.dim);
+    for raw in cmd_lines {
+        let t = raw.trim_start();
+        if !t.starts_with('/') {
+            if !t.is_empty() {
+                lines.push(Line::from(Span::styled(format!("  {t}"), dim)));
+            }
+            continue;
+        }
+        // Split command from description at the first run of 2+ spaces.
+        let bytes = t.as_bytes();
+        let mut split = t.len();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b' ' {
+                let mut j = i;
+                while j < bytes.len() && bytes[j] == b' ' {
+                    j += 1;
+                }
+                if j - i >= 2 {
+                    split = i;
+                    break;
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        let (cmd_part, desc_part) = t.split_at(split);
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {cmd_part:<22}"), Style::default().fg(th.primary)),
+            Span::styled(desc_part.trim_start().to_string(), dim),
+        ]));
     }
 }
 
@@ -2116,13 +3079,7 @@ enum TuiEvent {
     /// card appears. Never touches the main turn's state.
     ReflectDone {
         summary: String,
-        pending: Vec<pantheon_reflect::PendingProposal>,
-    },
-    /// A consolidation pass finished on its worker thread (manual
-    /// `/consolidate` or scheduled). Carries the human summary; the loop
-    /// just renders it. Never touches the main turn's state.
-    ConsolidateDone {
-        summary: String,
+        pending: Vec<pantheon_nightly::Proposal>,
     },
 }
 
@@ -2183,6 +3140,24 @@ pub fn run_tui_session_with(
     if let Some(t) = file_cfg.as_ref().and_then(|c| c.temporal.clone()) {
         session.set_temporal_config(pantheon_api::temporal::TemporalConfig::from(&t));
     }
+
+    // Web access (`[browser]` / `[websearch]` in config.toml). Absent
+    // sections = the runtime defaults (both enabled; web_search only
+    // registers when an API key resolves via the secrets broker).
+    session.set_browser_config(
+        file_cfg
+            .as_ref()
+            .and_then(|c| c.browser.clone())
+            .unwrap_or_default()
+            .resolve(),
+    );
+    session.set_websearch_config(
+        file_cfg
+            .as_ref()
+            .and_then(|c| c.websearch.clone())
+            .unwrap_or_default()
+            .resolve(),
+    );
 
     // Attach the configured agent profile, if the config declares any. A
     // config with no `[agents]` table is not an error: those runs stay
@@ -2414,6 +3389,10 @@ fn spawn_bg_task(
             Ok(pantheon_agent::LoopOutcome::AwaitingApproval { scope, .. }) => Err(format!(
                 "parked on approval '{scope}'; grant with \
                  `pantheon run --taskID {run_id} --grant '{scope}'`"
+            )),
+            Ok(pantheon_agent::LoopOutcome::AwaitingInput { question, .. }) => Err(format!(
+                "parked on user input: '{question}'; answer with \
+                 `pantheon run --taskID {run_id} --input '<answer>'`"
             )),
             Ok(pantheon_agent::LoopOutcome::Canceled { .. }) => Err("canceled".to_string()),
             Ok(pantheon_agent::LoopOutcome::Denied { capability }) => {
@@ -2657,120 +3636,79 @@ fn do_set(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
     state.add_status(format!("{label} = {shown} (this session)"));
 }
 
-/// `/reflect [on|off|status]` — the reflection toggle, OpenClaw-`/dreaming`
-/// style. Bare `/reflect` runs a manual one-shot pass on a worker thread
-/// (eval-gating can take minutes; the TUI never blocks). `on`/`off`
-/// persist `[reflect] enabled` to config.toml; `status` shows the toggle
-/// state plus the last pass summary.
-fn do_reflect(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEvent>, cmd: &str) {
-    let data_dir = crate::terminal::data_dir();
-    let arg = cmd.strip_prefix("/reflect").map(str::trim).unwrap_or("");
-    match arg {
-        "on" => match crate::reflect_cli::persist_reflect_enabled(&data_dir, true) {
-            Ok(()) => state.add_status("reflection loop: on (persisted to [reflect])".into()),
-            Err(e) => state.add_status(format!("reflection: {e}")),
-        },
-        "off" => match crate::reflect_cli::persist_reflect_enabled(&data_dir, false) {
-            Ok(()) => state.add_status("reflection loop: off (persisted to [reflect])".into()),
-            Err(e) => state.add_status(format!("reflection: {e}")),
-        },
-        "status" => {
-            for line in crate::reflect_cli::status_line(&data_dir).lines() {
-                state.add_status(line.to_string());
-            }
-        }
-        "" => {
-            if state.reflect_running {
-                state.add_status("reflection pass already running".into());
-                return;
-            }
-            state.reflect_running = true;
-            state.add_status("reflection pass started (background)".into());
-            let tx2 = tx.clone();
-            let dd = data_dir;
-            std::thread::spawn(move || match crate::reflect_cli::run_one_pass(&dd, false) {
-                Ok(out) => {
-                    let summary = crate::reflect_cli::summarize_pass(&out);
-                    let _ = tx2.send(TuiEvent::ReflectDone {
-                        summary,
-                        pending: out.pending,
-                    });
-                }
-                Err(e) => {
-                    // Route failures through ReflectDone, not the generic
-                    // error event: the ReflectDone arm resets
-                    // `reflect_running`, so a failed pass never wedges the
-                    // trigger permanently on.
-                    let _ = tx2.send(TuiEvent::ReflectDone {
-                        summary: format!("reflection pass failed: {e}"),
-                        pending: Vec::new(),
-                    });
-                }
-            });
-        }
-        other => state.add_status(format!(
-            "usage: /reflect [on|off|status] — unknown: {other}"
-        )),
-    }
-}
-
-/// `/consolidate [status|--dry-run]` — the nightly consolidation loop,
-/// run by hand. Bare `/consolidate` runs a real pass on a worker thread
-/// (a pass scans the ledger and can take a while; the TUI never blocks).
-/// `--dry-run` stages and weighs but promotes nothing; `status` shows
-/// the toggle state plus the last pass summary.
-fn do_consolidate(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEvent>, cmd: &str) {
+/// `/nightly [on|off|status]` — the unified self-improvement pass,
+/// OpenClaw-`/dreaming` style. Bare `/nightly` runs a manual one-shot
+/// pass on a worker thread (eval-gating and replay can take minutes; the
+/// TUI never blocks). `on`/`off` persist `[nightly] enabled` to
+/// config.toml; `status` shows the toggle state plus the last pass
+/// summary. `/reflect` and `/consolidate` are kept as aliases: both run
+/// the same unified pass.
+fn do_nightly(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEvent>, cmd: &str) {
     let data_dir = crate::terminal::data_dir();
     let arg = cmd
-        .strip_prefix("/consolidate")
+        .strip_prefix("/nightly")
+        .or_else(|| cmd.strip_prefix("/reflect"))
+        .or_else(|| cmd.strip_prefix("/consolidate"))
         .map(str::trim)
         .unwrap_or("");
     match arg {
+        "on" => match crate::nightly_cli::persist_nightly_enabled(&data_dir, true) {
+            Ok(()) => state.add_status("nightly LLM steps: on (persisted to [nightly])".into()),
+            Err(e) => state.add_status(format!("nightly: {e}")),
+        },
+        "off" => match crate::nightly_cli::persist_nightly_enabled(&data_dir, false) {
+            Ok(()) => state.add_status("nightly LLM steps: off (persisted to [nightly])".into()),
+            Err(e) => state.add_status(format!("nightly: {e}")),
+        },
         "status" => {
-            for line in crate::consolidate_cli::status_line(&data_dir).lines() {
+            for line in crate::nightly_cli::status_line(&data_dir).lines() {
                 state.add_status(line.to_string());
             }
         }
         "" | "--dry-run" | "-n" => {
             let dry_run = !arg.is_empty();
-            if state.consolidate_running {
-                state.add_status("consolidation pass already running".into());
+            if state.reflect_running {
+                state.add_status("nightly pass already running".into());
                 return;
             }
-            state.consolidate_running = true;
+            state.reflect_running = true;
             state.add_status(if dry_run {
-                "consolidation dry run started (background)".into()
+                "nightly dry run started (background)".into()
             } else {
-                "consolidation pass started (background)".into()
+                "nightly pass started (background)".into()
             });
             let tx2 = tx.clone();
             let dd = data_dir;
             std::thread::spawn(
-                move || match crate::consolidate_cli::run_one_pass(&dd, dry_run) {
-                    Ok(report) => {
-                        let summary = crate::consolidate_cli::summarize_pass(&report, dry_run);
-                        let _ = tx2.send(TuiEvent::ConsolidateDone { summary });
+                move || match crate::nightly_cli::run_one_pass(&dd, dry_run) {
+                    Ok(out) => {
+                        let summary = crate::nightly_cli::summarize_pass(&out);
+                        let pending = pantheon_nightly::load_pending(&dd).unwrap_or_default();
+                        let _ = tx2.send(TuiEvent::ReflectDone { summary, pending });
                     }
                     Err(e) => {
-                        // Send ConsolidateDone (not TuiEvent::Error) so the
-                        // consolidate_running guard is always reset.
-                        let _ = tx2.send(TuiEvent::ConsolidateDone {
-                            summary: format!("consolidation failed: {e}"),
+                        // Route failures through ReflectDone, not the generic
+                        // error event: the ReflectDone arm resets
+                        // `reflect_running`, so a failed pass never wedges the
+                        // trigger permanently on.
+                        let _ = tx2.send(TuiEvent::ReflectDone {
+                            summary: format!("nightly pass failed: {e}"),
+                            pending: Vec::new(),
                         });
                     }
                 },
             );
         }
         other => state.add_status(format!(
-            "usage: /consolidate [status|--dry-run] — unknown: {other}"
+            "usage: /nightly [on|off|status|--dry-run] — unknown: {other}"
         )),
     }
 }
 
-/// Trigger rule for automatic reflection: fire on every `auto_turns`-th
-/// completed turn, only when the loop is on and no pass is already
-/// running. Pure over its inputs so the rule is unit-testable without a
-/// TUI (`auto_turns = 0` disables the trigger entirely).
+/// Trigger rule for an automatic nightly pass: fire on every
+/// `auto_turns`-th completed turn, only when the loop is on and no pass
+/// is already running. Pure over its inputs so the rule is unit-testable
+/// without a TUI (`auto_turns = 0` disables the trigger entirely).
 fn auto_reflect_due(turns_completed: u32, enabled: bool, auto_turns: u32, running: bool) -> bool {
     enabled
         && !running
@@ -2779,13 +3717,13 @@ fn auto_reflect_due(turns_completed: u32, enabled: bool, auto_turns: u32, runnin
         && turns_completed.is_multiple_of(auto_turns)
 }
 
-/// Maybe fire an automatic reflection pass after a completed turn. Reads
-/// fresh config so a mid-session `/reflect on` takes effect without a
+/// Maybe fire an automatic nightly pass after a completed turn. Reads
+/// fresh config so a mid-session `/nightly on` takes effect without a
 /// restart. The pass runs on a worker thread; results arrive as
 /// `ReflectDone` and never touch the turn machinery.
 fn maybe_auto_reflect(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEvent>) {
     let data_dir = crate::terminal::data_dir();
-    let (enabled, auto_turns) = crate::reflect_cli::reflect_state(&data_dir);
+    let (enabled, auto_turns) = crate::nightly_cli::nightly_state(&data_dir);
     if !auto_reflect_due(
         state.turns_completed,
         enabled,
@@ -2795,20 +3733,18 @@ fn maybe_auto_reflect(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEven
         return;
     }
     state.reflect_running = true;
-    state.add_status("automatic reflection pass started (background)".into());
+    state.add_status("automatic nightly pass started (background)".into());
     let tx2 = tx.clone();
     std::thread::spawn(
-        move || match crate::reflect_cli::run_one_pass(&data_dir, false) {
+        move || match crate::nightly_cli::run_one_pass(&data_dir, false) {
             Ok(out) => {
-                let summary = format!("automatic {}", crate::reflect_cli::summarize_pass(&out));
-                let _ = tx2.send(TuiEvent::ReflectDone {
-                    summary,
-                    pending: out.pending,
-                });
+                let summary = format!("automatic {}", crate::nightly_cli::summarize_pass(&out));
+                let pending = pantheon_nightly::load_pending(&data_dir).unwrap_or_default();
+                let _ = tx2.send(TuiEvent::ReflectDone { summary, pending });
             }
             Err(e) => {
                 let _ = tx2.send(TuiEvent::ReflectDone {
-                    summary: format!("automatic reflection pass failed: {e}"),
+                    summary: format!("automatic nightly pass failed: {e}"),
                     pending: Vec::new(),
                 });
             }
@@ -2893,6 +3829,89 @@ fn drain_queued_message(
     if let Some(msg) = state.take_queued() {
         let _ = start_turn(state, session, tx, msg);
     }
+}
+
+/// Resume a parked run after a decision (approval granted / clarify
+/// answered): `chat_turn` with an empty message rebuilds from the ledger
+/// and continues the loop on a worker thread. Shared by the approval and
+/// clarify resolve paths so both resume identically.
+fn resume_parked_turn(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+    run: &str,
+) {
+    state.ready = false;
+    state.active_run = Some(run.to_string());
+    let tx3 = tx.clone();
+    let run3 = run.to_string();
+    let sess3 = session.clone();
+    std::thread::spawn(move || {
+        match sess3.chat_turn(&run3, "", "") {
+            Ok(outcome) => {
+                // Carry the answer through the same event the normal
+                // worker path uses, so a resumed turn renders its result
+                // instead of going silent once the decision clears.
+                let text = match outcome {
+                    pantheon_agent::LoopOutcome::Answered { text, .. } => text,
+                    _ => String::new(),
+                };
+                let _ = tx3.send(TuiEvent::Answered(text));
+                let _ = tx3.send(TuiEvent::TurnComplete {
+                    run_id: run3.clone(),
+                });
+            }
+            Err(e) => {
+                let _ = tx3.send(TuiEvent::Error(e.to_string()));
+            }
+        }
+    });
+}
+
+/// Answer the active session's clarify question and resume the parked
+/// turn. The answer is recorded durably (supervisor.answer_input) and
+/// rides a ToolMessage into the resumed loop.
+fn answer_clarify(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+    answer: &str,
+) {
+    let Some(req) = state.pending_clarify.take() else {
+        return;
+    };
+    let run = state.session_id.clone();
+    match session.supervisor.answer_input(&run, &req.call_id, answer) {
+        Ok(()) => {
+            state.clarifies.remove(&run);
+            state.tabs.set_approval(&run, false);
+            state.resolve_clarify_block(answer);
+            state.status_line = "answered; resuming".into();
+            resume_parked_turn(state, session, tx, &run);
+        }
+        Err(e) => {
+            state.pending_clarify = Some(req);
+            state.status_line = format!("answer failed: {e}");
+        }
+    }
+}
+
+/// Run a destructive slash command the user confirmed on the amber card.
+fn run_confirmed_action(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+    action: ConfirmAction,
+) {
+    let _ = tx;
+    match action {
+        ConfirmAction::ClearTranscript => {
+            state.blocks.clear();
+            state.scroll_offset = 0;
+            state.add_status("transcript cleared".into());
+        }
+    }
+    let _ = session;
 }
 
 /// Send raw text as a message: slash commands dispatch, anything else
@@ -3213,16 +4232,6 @@ fn tui_loop(
                         );
                     }
                 }
-                TuiEvent::ConsolidateDone { summary } => {
-                    // A consolidation pass finished on its worker thread.
-                    // The main turn — if one is running — is untouched:
-                    // this arm never writes active_run, ready, or the
-                    // input line.
-                    state.consolidate_running = false;
-                    for line in summary.lines() {
-                        state.add_status(line.to_string());
-                    }
-                }
                 TuiEvent::BgDone { task_id, result } => {
                     // A background task finished: record the terminal state,
                     // hand the result back into the transcript as a labeled
@@ -3503,6 +4512,20 @@ fn tui_loop(
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     match key.code {
                         KeyCode::Char('o') | KeyCode::Char('O') => state.toggle_timeline(),
+                        KeyCode::Char('b') | KeyCode::Char('B') => {
+                            // Mission-control overview: same session, view
+                            // toggle — never a state split.
+                            state.overview = !state.overview;
+                            state.overview_sel = 0;
+                        }
+                        KeyCode::Char('t') | KeyCode::Char('T') => {
+                            new_tab(state, &session, "new tab (unsaved until the first turn)");
+                            refresh_tabs(state, &session);
+                        }
+                        KeyCode::Char('w') | KeyCode::Char('W') => {
+                            close_active_tab(state, &session);
+                            refresh_tabs(state, &session);
+                        }
                         KeyCode::Char('e') | KeyCode::Char('E') => {
                             if state.pending_approval.is_none() {
                                 state.open_editor();
@@ -3525,74 +4548,83 @@ fn tui_loop(
                 // Session tabs: Ctrl+Tab cycle, Alt+1..9 jump. Checked before
                 // the Char handler (Alt+1 arrives as Char('1')+ALT).
                 if let Some(action) = crate::tabs::tab_key_action(key.code, key.modifiers) {
-                    let target: Option<String> = match action {
-                        crate::tabs::TabAction::Next => state.tabs.cycle_next().map(str::to_string),
-                        crate::tabs::TabAction::Prev => state.tabs.cycle_prev().map(str::to_string),
-                        crate::tabs::TabAction::Jump(n) => {
-                            if state.tabs.jump(n) {
-                                state.tabs.active_run_id().map(str::to_string)
-                            } else {
-                                None
+                    match action {
+                        crate::tabs::TabAction::Next => {
+                            if let Some(id) = state.tabs.cycle_next().map(str::to_string) {
+                                switch_to_run(state, &session, &id, "resumed");
                             }
                         }
-                    };
-                    if let Some(id) = target {
-                        switch_to_run(state, &session, &id, "resumed");
-                        refresh_tabs(state, &session);
+                        crate::tabs::TabAction::Prev => {
+                            if let Some(id) = state.tabs.cycle_prev().map(str::to_string) {
+                                switch_to_run(state, &session, &id, "resumed");
+                            }
+                        }
+                        crate::tabs::TabAction::Jump(n) => {
+                            if state.tabs.jump(n) {
+                                if let Some(id) = state.tabs.active_run_id().map(str::to_string) {
+                                    switch_to_run(state, &session, &id, "resumed");
+                                }
+                            }
+                        }
+                        crate::tabs::TabAction::NewTab => {
+                            new_tab(state, &session, "new tab (unsaved until the first turn)");
+                        }
+                        crate::tabs::TabAction::CloseTab => {
+                            close_active_tab(state, &session);
+                        }
                     }
+                    refresh_tabs(state, &session);
                     state.tick();
                     terminal.draw(|f| render(state, f))?;
                     continue;
                 }
                 match key.code {
+                    // Overview nav: Up/Down moves, Enter opens. The
+                    // composer still types normally in overview.
+                    KeyCode::Up if state.overview => {
+                        state.overview_sel =
+                            (state.overview_sel + overview::NAV_ROWS - 1) % overview::NAV_ROWS;
+                    }
+                    KeyCode::Down if state.overview => {
+                        state.overview_sel = (state.overview_sel + 1) % overview::NAV_ROWS;
+                    }
+                    KeyCode::Enter if state.overview && !state.is_inputting => {
+                        overview_enter(state, &session);
+                    }
                     KeyCode::Char(c) => {
+                        // A lone digit answers the pending clarify question
+                        // directly; anything else (or a non-empty input)
+                        // types normally into the composer.
+                        let clarify_digit: Option<String> = match (&state.pending_clarify, c) {
+                            (Some(req), _) if state.input.is_empty() => c
+                                .to_digit(10)
+                                .filter(|d| *d >= 1 && (*d as usize) <= req.options.len())
+                                .map(|d| req.options[d as usize - 1].clone()),
+                            _ => None,
+                        };
                         if state.pending_approval.is_some() {
-                            // Permission card: y allow, n deny, Esc deny.
+                            // Approval card: a approve, d deny, Esc deny.
+                            // (y/n kept as aliases.)
                             match c {
-                                'y' | 'Y' => {
+                                'a' | 'A' | 'y' | 'Y' => {
                                     if let Some((run, scope)) = state.pending_approval.take() {
                                         let _ = session.supervisor.grant(&run, &scope);
+                                        state.approvals.remove(&run);
+                                        state.tabs.set_approval(&run, false);
+                                        state.resolve_approval_block(Some(true));
                                         state.status_line = "granted; resuming".into();
-                                        state.ready = false;
-                                        // Resume: chat_turn with empty message rebuilds
-                                        // from the ledger and continues the loop.
-                                        let tx3 = tx.clone();
-                                        let run3 = run.clone();
-                                        let sess3 = session.clone();
-                                        state.active_run = Some(run3.clone());
-                                        std::thread::spawn(move || {
-                                            match sess3.chat_turn(&run3, "", "") {
-                                                Ok(outcome) => {
-                                                    // Carry the answer through the
-                                                    // same event the normal
-                                                    // worker path uses, so a
-                                                    // resumed turn renders its
-                                                    // result instead of going
-                                                    // silent once the approval
-                                                    // clears.
-                                                    let text = match outcome {
-                                                        pantheon_agent::LoopOutcome::Answered {
-                                                            text,
-                                                            ..
-                                                        } => text,
-                                                        _ => String::new(),
-                                                    };
-                                                    let _ = tx3.send(TuiEvent::Answered(text));
-                                                    let _ = tx3.send(TuiEvent::TurnComplete {
-                                                        run_id: run3.clone(),
-                                                    });
-                                                }
-                                                Err(e) => {
-                                                    let _ =
-                                                        tx3.send(TuiEvent::Error(e.to_string()));
-                                                }
-                                            }
-                                        });
+                                        // Resume: chat_turn with empty
+                                        // message rebuilds from the ledger
+                                        // and continues the loop.
+                                        resume_parked_turn(state, &session, tx, &run);
                                     }
                                 }
-                                'n' | 'N' => {
+                                'd' | 'D' | 'n' | 'N' => {
                                     if let Some((run, scope)) = state.pending_approval.take() {
                                         let _ = session.supervisor.deny(&run, &scope);
+                                        state.approvals.remove(&run);
+                                        state.tabs.set_approval(&run, false);
+                                        state.resolve_approval_block(Some(false));
                                         state.status_line = "denied".into();
                                         state.ready = true;
                                         state.active_run = None;
@@ -3600,6 +4632,25 @@ fn tui_loop(
                                         // TurnComplete event, so drain here.
                                         drain_queued_message(state, &session, tx);
                                     }
+                                }
+                                _ => {}
+                            }
+                        } else if let Some(answer) = clarify_digit {
+                            answer_clarify(state, &session, tx, &answer);
+                        } else if state.pending_confirm.is_some() {
+                            // Destructive-command confirm card: a runs it,
+                            // d dismisses. Same decision pattern as the
+                            // approval card.
+                            match c {
+                                'a' | 'A' | 'y' | 'Y' => {
+                                    if let Some(action) = state.pending_confirm.take() {
+                                        run_confirmed_action(state, &session, tx, action);
+                                    }
+                                }
+                                'd' | 'D' | 'n' | 'N' => {
+                                    state.pending_confirm = None;
+                                    state.resolve_confirm_block(false);
+                                    state.status_line = "dismissed".into();
                                 }
                                 _ => {}
                             }
@@ -3612,46 +4663,37 @@ fn tui_loop(
                                     if let Some(pending) = state.pending_reflect.take() {
                                         let dd = crate::terminal::data_dir();
                                         let mut approved = 0;
-                                        for pp in &pending {
-                                            match pantheon_reflect::approve_pending(
-                                                &dd,
-                                                &pp.proposal.id,
-                                                "tui",
-                                            ) {
-                                                Ok(outcome) => {
+                                        for p in &pending {
+                                            match crate::nightly_cli::decide(&dd, &p.id, true) {
+                                                Ok(true) => {
                                                     approved += 1;
-                                                    state.add_status(format!(
-                                                        "approved {}: {}",
-                                                        pp.proposal.id,
-                                                        outcome.describe()
-                                                    ));
+                                                    state.add_status(format!("approved {}", p.id));
                                                 }
+                                                Ok(false) => state.add_status(format!(
+                                                    "approve {}: no longer pending",
+                                                    p.id
+                                                )),
                                                 Err(e) => state.add_status(format!(
                                                     "approve {} failed: {e}",
-                                                    pp.proposal.id
+                                                    p.id
                                                 )),
                                             }
                                         }
-                                        state.status_line =
-                                            format!("reflection: {approved} approved");
+                                        state.status_line = format!("nightly: {approved} approved");
                                     }
                                 }
                                 'n' | 'N' => {
                                     if let Some(pending) = state.pending_reflect.take() {
                                         let dd = crate::terminal::data_dir();
                                         let mut denied = 0;
-                                        for pp in &pending {
-                                            if pantheon_reflect::deny_pending(
-                                                &dd,
-                                                &pp.proposal.id,
-                                                "tui",
-                                            )
-                                            .is_ok()
+                                        for p in &pending {
+                                            if crate::nightly_cli::decide(&dd, &p.id, false)
+                                                .unwrap_or(false)
                                             {
                                                 denied += 1;
                                             }
                                         }
-                                        state.status_line = format!("reflection: {denied} denied");
+                                        state.status_line = format!("nightly: {denied} denied");
                                     }
                                 }
                                 _ => {}
@@ -3751,10 +4793,23 @@ fn tui_loop(
                                 // Start typing into the input box on the first
                                 // printable char. Without this the box never
                                 // becomes active, so slash commands never
-                                // reached the handler.
+                                // reached the handler. In overview mode a
+                                // lone digit jumps to that tab instead.
                                 _ => {
-                                    state.is_inputting = true;
-                                    state.input.push(c);
+                                    let digit_jump = state.overview
+                                        && c.to_digit(10).is_some_and(|d| d >= 1)
+                                        && state.tabs.jump(c.to_digit(10).unwrap() as usize);
+                                    if digit_jump {
+                                        if let Some(id) =
+                                            state.tabs.active_run_id().map(str::to_string)
+                                        {
+                                            switch_to_run(state, &session, &id, "resumed");
+                                            refresh_tabs(state, &session);
+                                        }
+                                    } else {
+                                        state.is_inputting = true;
+                                        state.input.push(c);
+                                    }
                                 }
                             }
                         }
@@ -3784,7 +4839,13 @@ fn tui_loop(
                             // Submit in both modes: Normal+Enter sends, the
                             // same muscle memory as Insert.
                             let raw = state.input.clone();
-                            submit_text(state, &session, tx, &raw);
+                            if state.pending_clarify.is_some() && !raw.trim().is_empty() {
+                                // Free-text answer to the clarify card.
+                                state.input.clear();
+                                answer_clarify(state, &session, tx, raw.trim());
+                            } else {
+                                submit_text(state, &session, tx, &raw);
+                            }
                         } else {
                             state.is_inputting = true;
                             if state.vim.enabled {
@@ -3793,7 +4854,39 @@ fn tui_loop(
                         }
                     }
                     KeyCode::Esc => {
-                        if state.vim.enabled
+                        // Decision cards own Esc: a single press resolves.
+                        // Approval: deny + cancel the turn (the pending
+                        // call never runs). Clarify: cancel the turn.
+                        // Confirm: dismiss.
+                        if state.pending_confirm.is_some() {
+                            state.pending_confirm = None;
+                            state.resolve_confirm_block(false);
+                            state.status_line = "dismissed".into();
+                        } else if state.pending_approval.is_some() {
+                            if let Some((run, scope)) = state.pending_approval.take() {
+                                let _ = session.supervisor.deny(&run, &scope);
+                                state.approvals.remove(&run);
+                                state.tabs.set_approval(&run, false);
+                                state.resolve_approval_block(Some(false));
+                                session
+                                    .cancel_current_run(&run, "user pressed esc during approval");
+                                state.status_line = "denied; turn cancelled".into();
+                                state.ready = true;
+                                state.active_run = None;
+                                drain_queued_message(state, &session, tx);
+                            }
+                        } else if state.pending_clarify.is_some() {
+                            let run = state.session_id.clone();
+                            state.pending_clarify.take();
+                            state.clarifies.remove(&run);
+                            state.tabs.set_approval(&run, false);
+                            state.resolve_clarify_block("cancelled");
+                            session.cancel_current_run(&run, "user pressed esc during clarify");
+                            state.status_line = "cancelled".into();
+                            state.ready = true;
+                            state.active_run = None;
+                            drain_queued_message(state, &session, tx);
+                        } else if state.vim.enabled
                             && state.pending_approval.is_none()
                             && state.pending_reflect.is_none()
                         {
@@ -4163,6 +5256,54 @@ fn export_transcript(blocks: &[TranscriptBlock], session_id: &str, format: &str)
                     .collect::<Vec<_>>()
                     .join("\n"),
             ),
+            BlockKind::Approval {
+                tool,
+                sentence,
+                decision,
+                ..
+            } => (
+                "approval",
+                format!(
+                    "{tool}: {sentence} [{}]",
+                    match decision {
+                        None => "pending",
+                        Some(true) => "approved",
+                        Some(false) => "denied",
+                    }
+                ),
+            ),
+            BlockKind::Clarify {
+                question, answered, ..
+            } => (
+                "clarify",
+                match answered {
+                    None => format!("{question} [unanswered]"),
+                    Some(a) => format!("{question} → {a}"),
+                },
+            ),
+            BlockKind::Command { cmd, lines, failed } => (
+                "command",
+                format!(
+                    "/{cmd} [{}]\n{}",
+                    if *failed { "failed" } else { "ok" },
+                    lines.join("\n")
+                ),
+            ),
+            BlockKind::Confirm {
+                label,
+                sentence,
+                decided,
+            } => (
+                "confirm",
+                format!(
+                    "{label}: {sentence} [{}]",
+                    match decided {
+                        None => "pending",
+                        Some(true) => "confirmed",
+                        Some(false) => "dismissed",
+                    }
+                ),
+            ),
         }
     }
     if format == "json" {
@@ -4286,7 +5427,46 @@ fn do_yank(state: &mut TuiState, arg: &str) {
     }
 }
 
+/// Slash command entry: every command echoes, and its status output is
+/// captured into one `Command` transcript block (titled result; `/help`
+/// as a two-column table). Commands that open an overlay (/history,
+/// /models, the editor) or push their own decision card skip the block.
 fn handle_slash(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    cmd: &str,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+) {
+    state.cmd_capture = Some((cmd.to_string(), Vec::new()));
+    handle_slash_inner(state, session, cmd, tx);
+    let Some((cmd, lines)) = state.cmd_capture.take() else {
+        return;
+    };
+    // Overlays and decision cards own the UI: no transcript block.
+    if state.history.is_some()
+        || state.models.is_some()
+        || state.editor.is_some()
+        || state.pending_confirm.is_some()
+    {
+        return;
+    }
+    if lines.is_empty() {
+        return;
+    }
+    let failed = lines.iter().any(|l| {
+        let t = l.trim_start();
+        t.starts_with('✗')
+            || t.starts_with("error:")
+            || t.starts_with("Error:")
+            || t.starts_with("failed")
+    });
+    state.blocks.push(TranscriptBlock {
+        kind: BlockKind::Command { cmd, lines, failed },
+    });
+    state.scroll_to_bottom();
+}
+
+fn handle_slash_inner(
     state: &mut TuiState,
     session: &Arc<Session>,
     cmd: &str,
@@ -4370,16 +5550,17 @@ fn handle_slash(
         do_bg(state, cmd);
         return;
     }
-    // Reflection: bare /reflect runs a manual pass; on/off/status manage
-    // the loop (persisted to [reflect]).
-    if cmd == "/reflect" || cmd.starts_with("/reflect ") {
-        do_reflect(state, tx, cmd);
-        return;
-    }
-    // Consolidation: bare /consolidate runs a pass; status/--dry-run are
-    // the read-only views (dry run changes nothing, status runs nothing).
-    if cmd == "/consolidate" || cmd.starts_with("/consolidate ") {
-        do_consolidate(state, tx, cmd);
+    // Nightly: bare /nightly runs a manual pass; on/off/status manage
+    // the loop (persisted to [nightly]). /reflect and /consolidate are
+    // kept as aliases for the same unified pass.
+    if cmd == "/nightly"
+        || cmd.starts_with("/nightly ")
+        || cmd == "/reflect"
+        || cmd.starts_with("/reflect ")
+        || cmd == "/consolidate"
+        || cmd.starts_with("/consolidate ")
+    {
+        do_nightly(state, tx, cmd);
         return;
     }
     // Session objective with an iteration budget: /goal <text> sets it,
@@ -4516,7 +5697,18 @@ fn handle_slash(
         return;
     }
     if cmd == "/clear" {
-        state.blocks.clear();
+        // Destructive: reuses the approval decision-card pattern. The
+        // card renders in the transcript; `a` clears, `d`/Esc dismisses.
+        state.blocks.push(TranscriptBlock {
+            kind: BlockKind::Confirm {
+                label: "/clear".to_string(),
+                sentence: "wants to clear the visible transcript. The ledger keeps everything."
+                    .to_string(),
+                decided: None,
+            },
+        });
+        state.scroll_to_bottom();
+        state.pending_confirm = Some(ConfirmAction::ClearTranscript);
         return;
     }
     if cmd == "/reset" {
@@ -4843,17 +6035,11 @@ fn handle_slash(
         // A fresh conversation is a fresh run id with an empty transcript.
         // No ledger row is created until the first turn, so abandoned
         // /news leave nothing behind.
-        state.session_id = pantheon_runtime::new_run_id();
-        state.blocks.clear();
-        state.title = None;
-        state.scroll_offset = 0;
-        // A new conversation is a new objective: the /goal iteration gate
-        // belongs to the old work and must not block the new session.
-        state.goal = None;
-        session.set_goal(None);
-        // Do not force ready here: a turn may still be running for the
-        // previous run, and the Enter guard must keep applying to it.
-        state.add_status("new conversation (unsaved until the first turn)".into());
+        new_tab(
+            state,
+            session,
+            "new conversation (unsaved until the first turn)",
+        );
         refresh_tabs(state, session);
         return;
     }
@@ -5330,12 +6516,13 @@ fn handle_slash(
         } else {
             state.add_status(format!("{} scheduled job(s):", jobs.len()));
             for j in &jobs {
-                let status = if j.paused { "paused" } else { "active" };
+                let job = &j.job;
+                let status = if job.paused { "paused" } else { "active" };
                 state.add_status(format!(
                     "  {} [{}] {}",
-                    j.id,
+                    job.id,
                     status,
-                    j.task.chars().take(60).collect::<String>()
+                    job.task.chars().take(60).collect::<String>()
                 ));
             }
         }
@@ -5455,11 +6642,13 @@ fn handle_slash(
         let (reg, counts) = session.build_tool_registry();
         debug_assert_eq!(counts.total(), reg.names().len());
         state.add_status(format!(
-            "{} tools available ({} built-in, {} skill, {} session-search, 0 MCP — no launcher yet)",
+            "{} tools available ({} built-in, {} skill, {} session-search, {} browser, {} web-search, 0 MCP — no launcher yet)",
             counts.total(),
             counts.builtin,
             counts.skills,
-            counts.session_search
+            counts.session_search,
+            counts.browser,
+            counts.websearch
         ));
         return;
     }
