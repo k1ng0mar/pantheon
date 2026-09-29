@@ -104,10 +104,27 @@ impl TabList {
         busy: impl Fn(&str) -> bool,
         active_run_id: &str,
     ) {
+        let explicit: Vec<(String, Option<String>)> = runs
+            .iter()
+            .map(|(run_id, _status, _ts, title)| (run_id.clone(), title.clone()))
+            .collect();
+        self.refresh_from_explicit(&explicit, &busy, active_run_id);
+    }
+
+    /// Rebuild from an explicit open-tab list: (run id, title) pairs in
+    /// display order. This is the true open-tab model — the driver owns
+    /// the list; the ledger is only consulted for titles, never for
+    /// membership.
+    pub fn refresh_from_explicit(
+        &mut self,
+        runs: &[(String, Option<String>)],
+        busy: impl Fn(&str) -> bool,
+        active_run_id: &str,
+    ) {
         let prev_active = self.active_run_id().map(str::to_string);
         self.tabs = runs
             .iter()
-            .map(|(run_id, _status, _ts, title)| Tab {
+            .map(|(run_id, title)| Tab {
                 run_id: run_id.clone(),
                 title: title.clone(),
                 busy: busy(run_id),
@@ -267,6 +284,11 @@ pub enum TabAction {
 ///   peek if it wants that path — this mapper only handles the ALT form.
 /// * `[`/`]` are also the image-preview cyclers, but the preview overlay
 ///   owns the keyboard while open, so there is no conflict.
+/// Map a key event to a tab action. Ctrl+Tab/BackTab cycle, Ctrl+T/W
+/// open/close, Alt+1..9 jump. Plain `[`/`]` step prev/next — but the
+/// caller gates those to overview-with-empty-composer so a typed bracket
+/// in chat input never switches tabs (see the tab-key site in
+/// session.rs).
 pub fn tab_key_action(code: KeyCode, mods: KeyModifiers) -> Option<TabAction> {
     if mods.contains(KeyModifiers::CONTROL) {
         return match code {
