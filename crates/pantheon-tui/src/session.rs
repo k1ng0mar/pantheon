@@ -42,6 +42,130 @@ pub mod theme;
 mod timeline;
 pub mod vim;
 
+/// The slash-command registry: (command, one-line description). This is
+/// the single source of truth — `/help`, the `/` command palette, and
+/// completion all read from here, so a command can never be listed twice
+/// or drift out of sync. Entries with `<...>` placeholders (e.g.
+/// `/<skill>`) are documentation-only and are skipped by the palette.
+const COMMANDS: &[(&str, &str)] = &[
+    ("/help", "this list"),
+    ("/models [FILTER]", "browse providers and models, Enter switches"),
+    ("/model [P M]", "show the current model, or switch to one"),
+    ("/reasoning [LVL]", "reasoning effort: off|minimal|low|medium|high|xhigh|max"),
+    ("/remember KEY TEXT", "remember this (agent memory, user trust)"),
+    ("/goal [TEXT]", "set/show the session goal (iteration-limited)"),
+    ("/goal clear", "drop the session goal"),
+    ("/goal iterations N", "retune the goal's iteration budget"),
+    ("/tokens [N|off]", "show/set the per-run token cap (default: uncapped)"),
+    ("/set [KEY VAL]", "show/set session budget (max_turns, max_tool_calls, max_delegate_depth, max_tokens)"),
+    ("/learn LESSON", "save a behavioral lesson for future sessions"),
+    ("/skills [FILTER]", "installed skills"),
+    ("/<skill> [input]", "invoke an installed skill by name"),
+    ("/tools [reload]", "rebuild the tool registry in place"),
+    ("/settings", "data dir, model, policy, memory, server, agents"),
+    ("/gateway", "service state and queued outbound"),
+    ("/doctor", "diagnose this install"),
+    ("/sessions", "reopen a parked session (searchable)"),
+    ("/new", "start a fresh conversation"),
+    ("/rewind", "roll back the last turn (confirm; ledger kept)"),
+    ("/checkpoint [NAME]", "save a named snapshot of the current turn"),
+    ("/checkpoints", "list saved checkpoints"),
+    ("/restore NAME", "rewind back to a checkpoint (ledger kept)"),
+    ("/swarm", "this session's delegation tree"),
+    ("/btw PROMPT", "run a task in the background (result lands here)"),
+    ("/bg [ID]", "list background tasks, or show one's output"),
+    ("/fork [TURN]", "branch this conversation at a turn into a new run"),
+    ("/theme [name]", "switch theme (pantheon, dark, light)"),
+    ("/vim [on|off|status]", "modal vim editing for the composer (v1: Normal/Insert only)"),
+    ("/reflect [on|off|status]", "run a reflection pass now, or toggle the self-improvement loop"),
+    ("/consolidate [status|--dry-run]", "run a memory consolidation pass (dry run changes nothing)"),
+    ("/compress", "compress this conversation to the window now"),
+    ("/export [md|json]", "save this conversation to exports/"),
+    ("/yank [N]", "copy last answer (or its Nth code block) to clipboard"),
+    ("/steer <text>", "redirect the running turn mid-flight (normal message when idle)"),
+    ("/runs [N]", "recent runs (default 10)"),
+    ("/history", "interactive searchable history (pick + resume)"),
+    ("/resume [ID]", "resume a run by id"),
+    ("/title [TITLE]", "show this conversation's title, or rename it"),
+    ("/status [run_id]", "this run's status, or another by id"),
+    ("/agent [name]", "current agent profile, or switch to one"),
+    ("/agents", "declared agent profiles"),
+    ("/collab", "active collaborations and their tasks"),
+    ("/tasks <agent>", "that agent's open tasks"),
+    ("/inbox", "messages sent to this agent"),
+    ("/approvals", "pending approvals for this run"),
+    ("/schedule", "scheduled jobs"),
+    ("/mcp [reload]", "MCP server declarations (reload re-scans them)"),
+    ("/migrate", "import from other harnesses (hermes, openclaw, omp, claude)"),
+    ("/env", "secret names and status (never values)"),
+    ("/clear", "clear visible transcript"),
+    ("/reset", "reset turn state: clear transcript, cancel turn, drop queue (session, title, ledger kept; /clear is display-only, /new starts a new session)"),
+];
+
+/// Key hints shown at the end of `/help`. Not commands: kept separate so
+/// the palette never offers them.
+const KEY_HINTS: &[(&str, &str)] = &[
+    ("PgUp/PgDn", "scroll the transcript"),
+    ("Ctrl+O / F2", "turn timeline: arrows move, Enter jumps"),
+    ("Ctrl+E", "fullscreen draft editor (Ctrl+Enter sends)"),
+    ("Ctrl+B", "mission-control overview"),
+    ("/", "command palette (type to filter, Enter runs)"),
+    ("Esc Esc (idle)", "offer to rewind the last turn"),
+    ("/exit, /quit", "leave pantheon"),
+];
+
+/// One `/help` line per registry entry, in the two-space-separated format
+/// `render_help_table` parses.
+fn help_lines() -> Vec<String> {
+    let mut out = Vec::with_capacity(COMMANDS.len() + KEY_HINTS.len() + 1);
+    out.push("commands:".to_string());
+    for (name, desc) in COMMANDS {
+        out.push(format!("  {name:<22} {desc}"));
+    }
+    out.push("keys:".to_string());
+    for (keys, desc) in KEY_HINTS {
+        out.push(format!("  {keys:<22} {desc}"));
+    }
+    out
+}
+
+/// The `/` command palette: type to filter the registry by name or
+/// description, Up/Down to move, Enter to run, Esc to dismiss. While open
+/// it owns the keyboard — exactly like the `@` mention picker.
+#[derive(Debug, Default)]
+pub struct PaletteState {
+    /// Raw filter text (without the leading `/`).
+    pub input: String,
+    /// Selected index into the *filtered* list.
+    pub sel: usize,
+}
+
+impl PaletteState {
+    /// Registry entries matching the filter, in registry order. Entries
+    /// with `<...>` placeholders are documentation-only and never offered.
+    pub fn filtered(&self) -> Vec<(&'static str, &'static str)> {
+        let f = self.input.to_lowercase();
+        COMMANDS
+            .iter()
+            .copied()
+            .filter(|(name, _desc)| !name.contains('<'))
+            .filter(|(name, desc)| {
+                f.is_empty() || name.to_lowercase().contains(&f) || desc.to_lowercase().contains(&f)
+            })
+            .collect()
+    }
+
+    pub fn move_sel(&mut self, n: isize) {
+        let len = self.filtered().len();
+        if len == 0 {
+            self.sel = 0;
+            return;
+        }
+        let sel = self.sel as isize + n;
+        self.sel = sel.clamp(0, len as isize - 1) as usize;
+    }
+}
+
 /// A single block in the conversation transcript.
 #[derive(Debug, Clone)]
 pub enum BlockKind {
@@ -49,11 +173,17 @@ pub enum BlockKind {
     AssistantMessage(String),
     Thinking(String),
     /// Tool card: running until the matching runtime completion event
-    /// sets `ok`. Args are shown inline.
+    /// sets `ok`. Args are shown inline; the call id disambiguates repeat
+    /// calls of the same tool, `started`/`duration` give the timing, and
+    /// `error` carries the failure detail when the call failed.
     ToolCall {
         name: String,
         args: String,
         ok: Option<bool>,
+        call_id: String,
+        started: Option<std::time::Instant>,
+        duration: Option<std::time::Duration>,
+        error: Option<String>,
     },
     Swarm {
         agents: u32,
@@ -212,6 +342,11 @@ pub struct TuiState {
     /// Open session-history overlay: Some(runs) while /history is open.
     /// runs: (run_id, status, created_ms, title), newest first.
     pub history: Option<Vec<pantheon_storage::RunListing>>,
+    /// Cached ledger runs for the mission-control Sessions pane: open
+    /// tabs first, parked (closed but resumable) runs after. Refreshed
+    /// with the tab bar so the overview never queries the DB per frame.
+    /// (run_id, status, created_ms, title), newest first.
+    pub parked_runs: Vec<pantheon_storage::RunListing>,
     /// Live filter typed into the history overlay.
     pub history_input: String,
     /// Selected index into the filtered history list.
@@ -225,6 +360,10 @@ pub struct TuiState {
     /// Open `@` file-mention picker: while set, keystrokes filter and
     /// navigate the file list instead of reaching the composer.
     pub mention: Option<crate::mentions::MentionPicker>,
+    /// Open `/` command palette: type to filter the command list,
+    /// Up/Down to move, Enter to run, Esc to dismiss. While open it owns
+    /// the keyboard like the mention picker.
+    pub palette: Option<PaletteState>,
     /// Pre-tool file snapshots keyed by tool call id, for inline diffs.
     /// Snapshots are taken at ToolStarted and consumed at ToolCompleted.
     pub pending_snaps: std::collections::HashMap<String, Vec<crate::diffview::FileSnapshot>>,
@@ -279,10 +418,11 @@ pub struct TuiState {
     /// tab switch and restored on return — switching tabs never eats a
     /// draft.
     pub drafts: std::collections::HashMap<String, String>,
-    /// Run ids whose tabs the user closed (`^w`). `refresh_tabs` filters
-    /// them out of the bar; the runs themselves are untouched (durable)
-    /// and reopen via /sessions or the overview nav.
-    pub closed_tabs: std::collections::HashSet<String>,
+    /// Explicit open-tab list (true open-tab model): run ids in display
+    /// order. Opening a tab = opening a session; the ledger is consulted
+    /// for titles only, never for membership. Closing a tab parks the
+    /// run — it stays reopenable via /sessions or the overview nav.
+    pub open_tabs: Vec<String>,
     /// Overview mode (`^b`): the three-pane mission-control layout.
     /// Same session underneath — a view toggle, never a state split.
     pub overview: bool,
@@ -364,10 +504,12 @@ impl Default for TuiState {
             history: None,
             history_input: String::new(),
             history_sel: 0,
+            parked_runs: Vec::new(),
             models: None,
             models_input: String::new(),
             models_sel: 0,
             mention: None,
+            palette: None,
             pending_snaps: std::collections::HashMap::new(),
             title: None,
             queued_message: None,
@@ -385,7 +527,7 @@ impl Default for TuiState {
             rewind_offer: None,
             tabs: crate::tabs::TabList::default(),
             drafts: std::collections::HashMap::new(),
-            closed_tabs: std::collections::HashSet::new(),
+            open_tabs: Vec::new(),
             overview: false,
             overview_sel: 0,
             approvals: std::collections::HashMap::new(),
@@ -499,10 +641,12 @@ impl TuiState {
             history: None,
             history_input: String::new(),
             history_sel: 0,
+            parked_runs: Vec::new(),
             models: None,
             models_input: String::new(),
             models_sel: 0,
             mention: None,
+            palette: None,
             pending_snaps: std::collections::HashMap::new(),
             title: None,
             queued_message: None,
@@ -520,7 +664,7 @@ impl TuiState {
             rewind_offer: None,
             tabs: crate::tabs::TabList::default(),
             drafts: std::collections::HashMap::new(),
-            closed_tabs: std::collections::HashSet::new(),
+            open_tabs: Vec::new(),
             overview: false,
             overview_sel: 0,
             approvals: std::collections::HashMap::new(),
@@ -679,13 +823,20 @@ impl TuiState {
                 }
             }
             ModelEvent::ToolCall {
-                name, arguments, ..
+                id,
+                name,
+                arguments,
+                ..
             } => {
                 self.blocks.push(TranscriptBlock {
                     kind: BlockKind::ToolCall {
                         name,
                         args: arguments,
                         ok: None,
+                        call_id: id,
+                        started: Some(std::time::Instant::now()),
+                        duration: None,
+                        error: None,
                     },
                 });
             }
@@ -705,6 +856,139 @@ impl TuiState {
             _ => {}
         }
     }
+}
+
+/// The run an event belongs to. Every ledger event carries one; `None`
+/// is defensive only (no such variant exists today).
+fn event_run_id(ev: &RuntimeErrorEvent) -> Option<&str> {
+    use RuntimeErrorEvent as E;
+    match ev {
+        E::RunStarted { run_id }
+        | E::RunProgress { run_id, .. }
+        | E::RunCompleted { run_id }
+        | E::RunFailed { run_id, .. }
+        | E::RunCanceled { run_id, .. }
+        | E::RunRecovered { run_id }
+        | E::AgentBound { run_id, .. }
+        | E::TurnStarted { run_id, .. }
+        | E::TurnParked { run_id, .. }
+        | E::TurnCompleted { run_id, .. }
+        | E::TurnFailed { run_id, .. }
+        | E::TurnRewound { run_id, .. }
+        | E::CheckpointCreated { run_id, .. }
+        | E::SteeringProvided { run_id, .. }
+        | E::ModelRequested { run_id, .. }
+        | E::ModelDelta { run_id, .. }
+        | E::ModelCompleted { run_id }
+        | E::ToolRequested { run_id, .. }
+        | E::ToolStarted { run_id, .. }
+        | E::ToolOutput { run_id, .. }
+        | E::ToolCompleted { run_id, .. }
+        | E::AssistantMessage { run_id, .. }
+        | E::ToolMessage { run_id, .. }
+        | E::ImportedReasoning { run_id, .. }
+        | E::AgentSpawned { run_id, .. }
+        | E::AgentMessage { run_id, .. }
+        | E::AgentCompleted { run_id, .. }
+        | E::MemoryProposed { run_id, .. }
+        | E::ApprovalRequested { run_id, .. }
+        | E::ApprovalGranted { run_id, .. }
+        | E::ApprovalDenied { run_id, .. }
+        | E::UserInputRequested { run_id, .. }
+        | E::UserInputProvided { run_id, .. }
+        | E::DecisionRequested { run_id, .. }
+        | E::DecisionMade { run_id, .. }
+        | E::DecisionRecorded { run_id, .. }
+        | E::ContextTrimmed { run_id, .. }
+        | E::ContextCompressed { run_id, .. }
+        | E::SessionTitled { run_id, .. }
+        | E::UsageRecorded { run_id, .. } => Some(run_id),
+    }
+}
+
+impl TuiState {
+    /// Park an approval decision for `run_id`: parse the tool identity
+    /// out of the scope, record it, and raise the amber tab dot. Shared
+    /// by the visible path (which also renders the card) and background
+    /// runs (dot only). Returns the card's (tool, sentence, target).
+    fn park_approval(&mut self, run_id: &str, scope: &str) -> (String, String, String) {
+        // Parse tool identity out of the scope so the card renders even
+        // when the live `last_tool` belongs to another run.
+        let (tool, args) = parse_scope(scope)
+            .map(|(_, t, a)| (t.to_string(), a.to_string()))
+            .unwrap_or_else(|| {
+                self.last_tool
+                    .clone()
+                    .unwrap_or_else(|| ("tool".to_string(), String::new()))
+            });
+        let (sentence, target) = describe_tool_action(&tool, &args);
+        self.approvals.insert(
+            run_id.to_string(),
+            (scope.to_string(), tool.clone(), args.clone()),
+        );
+        self.tabs.set_approval(run_id, true);
+        (tool, sentence, target)
+    }
+
+    /// Park a clarify (`ask_user`) question for `run_id`. Same pattern as
+    /// [`TuiState::park_approval`]: the map holds the truth, the tab dot
+    /// is the background signal.
+    fn park_clarify(&mut self, run_id: &str, req: ClarifyRequest) {
+        self.clarifies.insert(run_id.to_string(), req);
+        self.tabs.set_approval(run_id, true);
+    }
+
+    /// Background-run events: the run is not the visible session, so the
+    /// visible transcript, input, and status are untouched. Only the
+    /// run's tab dot and its parked decision state may change.
+    fn handle_background_event(&mut self, ev: &RuntimeErrorEvent, run_id: &str) {
+        match ev {
+            // Liveness: the tab dot tracks work the user can't see.
+            RuntimeErrorEvent::ToolStarted { .. }
+            | RuntimeErrorEvent::TurnStarted { .. }
+            | RuntimeErrorEvent::RunStarted { .. } => {
+                self.tabs.set_busy(run_id, true);
+            }
+            RuntimeErrorEvent::RunCompleted { .. }
+            | RuntimeErrorEvent::RunFailed { .. }
+            | RuntimeErrorEvent::RunCanceled { .. }
+            | RuntimeErrorEvent::TurnCompleted { .. }
+            | RuntimeErrorEvent::TurnFailed { .. } => {
+                self.tabs.set_busy(run_id, false);
+            }
+            // Decisions park durably; the card renders on tab switch.
+            RuntimeErrorEvent::ApprovalRequested { scope, .. } => {
+                self.park_approval(run_id, scope);
+            }
+            RuntimeErrorEvent::ApprovalGranted { .. }
+            | RuntimeErrorEvent::ApprovalDenied { .. } => {
+                self.approvals.remove(run_id);
+                self.tabs.set_approval(run_id, false);
+            }
+            RuntimeErrorEvent::UserInputRequested {
+                call_id,
+                question,
+                options,
+                ..
+            } => {
+                self.park_clarify(
+                    run_id,
+                    ClarifyRequest {
+                        call_id: call_id.clone(),
+                        question: question.clone(),
+                        options: options.clone(),
+                    },
+                );
+            }
+            RuntimeErrorEvent::UserInputProvided { .. } => {
+                self.clarifies.remove(run_id);
+                self.tabs.set_approval(run_id, false);
+            }
+            // Everything else is visible-session UI; a background run has
+            // no business touching it.
+            _ => {}
+        }
+    }
 
     /// Process a runtime event into a transcript block.
     ///
@@ -713,6 +997,12 @@ impl TuiState {
     /// the visible transcript, input, and status belong to the active
     /// session alone.
     pub fn handle_runtime_event(&mut self, ev: &RuntimeErrorEvent) {
+        if let Some(rid) = event_run_id(ev) {
+            if rid != self.session_id {
+                self.handle_background_event(ev, rid);
+                return;
+            }
+        }
         match ev {
             RuntimeErrorEvent::ToolStarted {
                 tool,
@@ -741,20 +1031,39 @@ impl TuiState {
                         name: tool.clone(),
                         args: args.clone(),
                         ok: None,
+                        call_id: call_id.clone(),
+                        started: Some(std::time::Instant::now()),
+                        duration: None,
+                        error: None,
                     },
                 });
             }
             RuntimeErrorEvent::ToolCompleted { tool, call_id, .. } => {
-                // Flip the most recent still-running card for this tool.
+                // Flip the matching still-running card. Prefer the exact
+                // call id; fall back to the newest still-running card for
+                // this tool when the start event carried no card.
                 self.tools_used = self.tools_used.saturating_add(1);
-                if let Some(block) = self
-                    .blocks
-                    .iter_mut()
-                    .rev()
-                    .find(|b| matches!(&b.kind, BlockKind::ToolCall { name, ok: None, .. } if name == tool))
-                {
-                    if let BlockKind::ToolCall { ok, .. } = &mut block.kind {
+                let by_id = self.blocks.iter_mut().rev().find(|b| {
+                    matches!(&b.kind, BlockKind::ToolCall { call_id: c, ok: None, .. } if c == call_id)
+                });
+                let target = match by_id {
+                    Some(b) => Some(b),
+                    None => self.blocks.iter_mut().rev().find(|b| {
+                        matches!(&b.kind, BlockKind::ToolCall { name: n, ok: None, .. } if n == tool)
+                    }),
+                };
+                if let Some(block) = target {
+                    if let BlockKind::ToolCall {
+                        ok,
+                        started,
+                        duration,
+                        ..
+                    } = &mut block.kind
+                    {
                         *ok = Some(true);
+                        if let Some(s) = started.take() {
+                            *duration = Some(s.elapsed());
+                        }
                     }
                 }
                 // Inline diff: compare the pre-tool snapshots with the
@@ -779,37 +1088,21 @@ impl TuiState {
                 // the card itself flips on ToolCompleted.
             }
             RuntimeErrorEvent::ApprovalRequested { run_id, scope } => {
-                // Parse tool identity out of the scope so the card renders
-                // even when the live `last_tool` belongs to another run.
-                let (tool, args) = parse_scope(scope)
-                    .map(|(_, t, a)| (t.to_string(), a.to_string()))
-                    .unwrap_or_else(|| {
-                        self.last_tool
-                            .clone()
-                            .unwrap_or_else(|| ("tool".to_string(), String::new()))
-                    });
-                let (sentence, target) = describe_tool_action(&tool, &args);
-                self.approvals
-                    .insert(run_id.clone(), (scope.clone(), tool.clone(), args.clone()));
-                if *run_id == self.session_id {
-                    // Visible session: render the decision point inline in
-                    // the transcript and hand the keyboard to it.
-                    self.blocks.push(TranscriptBlock {
-                        kind: BlockKind::Approval {
-                            tool: tool.clone(),
-                            sentence,
-                            target,
-                            decision: None,
-                        },
-                    });
-                    self.scroll_to_bottom();
-                    self.pending_approval = Some((run_id.clone(), scope.clone()));
-                    self.status_line = "permission required".into();
-                } else {
-                    // Background run: the amber tab dot is the signal; the
-                    // card renders when the user switches to that tab.
-                    self.tabs.set_approval(run_id, true);
-                }
+                // Park first (map + tab dot), then render the visible card.
+                // The background run_id was filtered above, so this is
+                // always the visible session here.
+                let (tool, sentence, target) = self.park_approval(run_id, scope);
+                self.blocks.push(TranscriptBlock {
+                    kind: BlockKind::Approval {
+                        tool,
+                        sentence,
+                        target,
+                        decision: None,
+                    },
+                });
+                self.scroll_to_bottom();
+                self.pending_approval = Some((run_id.clone(), scope.clone()));
+                self.status_line = "permission required".into();
                 // Opt-in phone notification. Best-effort on a background
                 // thread: the TUI must never block on network I/O.
                 if let Some((channel, chat_id)) = self.approval_notify.clone() {
@@ -837,18 +1130,14 @@ impl TuiState {
             RuntimeErrorEvent::ApprovalGranted { run_id, .. } => {
                 self.approvals.remove(run_id);
                 self.tabs.set_approval(run_id, false);
-                if *run_id == self.session_id {
-                    self.resolve_approval_block(Some(true));
-                    self.pending_approval = None;
-                }
+                self.resolve_approval_block(Some(true));
+                self.pending_approval = None;
             }
             RuntimeErrorEvent::ApprovalDenied { run_id, .. } => {
                 self.approvals.remove(run_id);
                 self.tabs.set_approval(run_id, false);
-                if *run_id == self.session_id {
-                    self.resolve_approval_block(Some(false));
-                    self.pending_approval = None;
-                }
+                self.resolve_approval_block(Some(false));
+                self.pending_approval = None;
             }
             // ask_user parked the run: same decision pattern as approval,
             // but cyan and with numbered options plus free text.
@@ -863,21 +1152,17 @@ impl TuiState {
                     question: question.clone(),
                     options: options.clone(),
                 };
-                self.clarifies.insert(run_id.clone(), req.clone());
-                if *run_id == self.session_id {
-                    self.blocks.push(TranscriptBlock {
-                        kind: BlockKind::Clarify {
-                            question: question.clone(),
-                            options: options.clone(),
-                            answered: None,
-                        },
-                    });
-                    self.scroll_to_bottom();
-                    self.pending_clarify = Some(req);
-                    self.status_line = "input requested".into();
-                } else {
-                    self.tabs.set_approval(run_id, true);
-                }
+                self.park_clarify(run_id, req.clone());
+                self.blocks.push(TranscriptBlock {
+                    kind: BlockKind::Clarify {
+                        question: question.clone(),
+                        options: options.clone(),
+                        answered: None,
+                    },
+                });
+                self.scroll_to_bottom();
+                self.pending_clarify = Some(req);
+                self.status_line = "input requested".into();
             }
             RuntimeErrorEvent::UserInputProvided {
                 run_id, call_id, ..
@@ -885,9 +1170,7 @@ impl TuiState {
                 let _ = call_id;
                 self.clarifies.remove(run_id);
                 self.tabs.set_approval(run_id, false);
-                if *run_id == self.session_id {
-                    self.pending_clarify = None;
-                }
+                self.pending_clarify = None;
             }
             RuntimeErrorEvent::RunProgress { detail, .. } => {
                 self.status_line = detail.clone();
@@ -1130,6 +1413,16 @@ impl TuiState {
         }
     }
 
+    /// A background run finished: only its tab dot and the notification
+    /// badge may change. The visible session's `ready`, status line,
+    /// active run, timing, and turn count belong to the active tab and
+    /// are never touched here.
+    pub fn on_background_turn_complete(&mut self, run_id: &str) {
+        self.tabs.set_busy(run_id, false);
+        self.attention = true;
+        self.attention_note = Some("a background turn finished".to_string());
+    }
+
     /// Clear the background-completion badge: the tab is focused again.
     pub fn attention_clear(&mut self) {
         self.attention = false;
@@ -1291,24 +1584,80 @@ mod icon {
 /// Rebuild the session tab bar from the run ledger. Cheap local query;
 /// called on loop start, /new, resume, tab switch and turn completion so
 /// titles and busy badges stay current.
+/// Rebuild the tab bar from the explicit open-tab list. The ledger is
+/// consulted for titles only, never for membership: opening a tab opens
+/// a session, closing parks it. Parked runs stay reopenable via
+/// /sessions or the overview nav.
 fn refresh_tabs(state: &mut TuiState, session: &Arc<Session>) {
-    if let Ok(runs) = session.supervisor.ledger_list_runs(50) {
-        let active = state.session_id.clone();
-        state.tabs.refresh_from_runs(
-            &runs,
-            |id| session.supervisor.has_active_lease(id).unwrap_or(false),
-            &active,
-        );
-        // Closed tabs stay closed: the runs are durable, the bar is not.
-        // A closed run reopens via /sessions or the overview nav, which
-        // clear it from `closed_tabs` through `switch_to_run`.
-        for closed in &state.closed_tabs {
-            state.tabs.remove(closed);
+    let active = state.session_id.clone();
+    // A visible run is an open tab by definition: pin it even if the
+    // seed hasn't caught up yet (fresh /new has no ledger row).
+    if !state.open_tabs.contains(&active) {
+        state.open_tabs.push(active.clone());
+    }
+    let mut titles: Vec<(String, Option<String>)> = Vec::with_capacity(state.open_tabs.len());
+    for id in &state.open_tabs {
+        let title = session.supervisor.ledger_title(id).ok().flatten();
+        titles.push((id.clone(), title));
+    }
+    state.tabs.refresh_from_explicit(
+        &titles,
+        |id| session.supervisor.has_active_lease(id).unwrap_or(false),
+        &active,
+    );
+    // Re-apply the parked-decision dots: a refresh rebuilds the list
+    // and would otherwise drop them.
+    for run in state.approvals.keys().chain(state.clarifies.keys()) {
+        state.tabs.set_approval(run, true);
+    }
+    // Cache the full ledger list for the mission-control Sessions pane:
+    // open tabs come from the tab bar, parked runs from here.
+    state.parked_runs = session.supervisor.ledger_list_runs(50).unwrap_or_default();
+}
+
+/// Seed the open-tab list at startup: the run the loop opens on is the
+/// first tab. `/new` adds; closing parks. The ledger is never the source
+/// of truth for membership.
+fn seed_open_tabs(state: &mut TuiState) {
+    state.open_tabs.clear();
+    state.open_tabs.push(state.session_id.clone());
+}
+
+/// Hydrate a run's pending decisions from the ledger-backed supervisor
+/// into the TUI's in-memory maps. Called at startup for the opening
+/// session and on every tab switch, so a re-entered session re-renders
+/// its approval/clarify cards from durable state rather than from
+/// whatever happened to be in memory.
+fn hydrate_decisions(state: &mut TuiState, session: &Arc<Session>, run_id: &str) {
+    // Approvals: the newest unresolved scope wins (the card shows one
+    // decision point; older scopes are superseded by design).
+    if let Ok(scopes) = session.supervisor.pending_approvals(run_id) {
+        if let Some(scope) = scopes.into_iter().last() {
+            let (tool, args) = parse_scope(&scope)
+                .map(|(_, t, a)| (t.to_string(), a.to_string()))
+                .unwrap_or_else(|| ("tool".to_string(), String::new()));
+            state
+                .approvals
+                .insert(run_id.to_string(), (scope, tool, args));
+            state.tabs.set_approval(run_id, true);
+        } else {
+            state.approvals.remove(run_id);
         }
-        // Re-apply the parked-decision dots: a refresh rebuilds the list
-        // from the ledger and would otherwise drop them.
-        for run in state.approvals.keys().chain(state.clarifies.keys()) {
-            state.tabs.set_approval(run, true);
+    }
+    // Clarify questions: the newest unresolved one wins.
+    if let Ok(pending) = session.supervisor.pending_input(run_id) {
+        if let Some((call_id, question, options)) = pending.into_iter().last() {
+            state.clarifies.insert(
+                run_id.to_string(),
+                ClarifyRequest {
+                    call_id,
+                    question,
+                    options,
+                },
+            );
+            state.tabs.set_approval(run_id, true);
+        } else {
+            state.clarifies.remove(run_id);
         }
     }
 }
@@ -1323,6 +1672,11 @@ fn new_tab(state: &mut TuiState, session: &Arc<Session>, status: &str) {
         state.drafts.insert(old, std::mem::take(&mut state.input));
     }
     state.session_id = pantheon_runtime::new_run_id();
+    // Opening a tab is explicit membership: the new run joins the
+    // open-tab list immediately, ledger row or not.
+    if !state.open_tabs.contains(&state.session_id) {
+        state.open_tabs.push(state.session_id.clone());
+    }
     state.blocks.clear();
     state.title = None;
     state.scroll_offset = 0;
@@ -1346,7 +1700,9 @@ fn close_active_tab(state: &mut TuiState, session: &Arc<Session>) {
             .drafts
             .insert(run.clone(), std::mem::take(&mut state.input));
     }
-    state.closed_tabs.insert(run.clone());
+    // Park: leave the open-tab list, keep the run. It reopens via
+    // /sessions or the overview nav.
+    state.open_tabs.retain(|id| id != &run);
     state.tabs.remove(&run);
     match state.tabs.active_run_id().map(str::to_string) {
         Some(next) => {
@@ -1381,9 +1737,14 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
     } else {
         state.input.clear();
     }
-    // A visible run is an open tab by definition.
-    state.closed_tabs.remove(id);
+    // A visible run is an open tab by definition: reopening a parked
+    // run re-adds it. Decisions hydrate from the ledger first so the
+    // card renders from durable state, not stale memory.
+    if !state.open_tabs.contains(&id.to_string()) {
+        state.open_tabs.push(id.to_string());
+    }
     let _ = session.supervisor.ledger_reopen_run(id);
+    hydrate_decisions(state, session, id);
     if let Ok(entries) = session.supervisor.replay(id) {
         state.blocks.clear();
         state.session_id = id.to_string();
@@ -1515,6 +1876,97 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
     if state.mention.is_some() {
         render_mention_picker(f, f.area(), state);
     }
+    if state.palette.is_some() {
+        render_palette(f, f.area(), state);
+    }
+}
+
+/// The `/` command palette: a centered popup listing the filtered
+/// registry entries with their descriptions. The selected row is
+/// highlighted; the footer names the keys.
+fn render_palette(f: &mut Frame, area: Rect, state: &TuiState) {
+    let Some(p) = state.palette.as_ref() else {
+        return;
+    };
+    let th = &state.theme;
+    let items = p.filtered();
+    let rows = items.len().min(10);
+    // Width: longest "name  desc" row, clamped to the terminal.
+    let mut inner_w = format!("/{}_", p.input).len();
+    for (name, desc) in items.iter().take(rows) {
+        inner_w = inner_w.max(format!("  {name:<22} {desc}").len());
+    }
+    let inner_w = (inner_w as u16 + 4).clamp(30, area.width.saturating_sub(4).max(30));
+    let height = (rows as u16 + 4).min(area.height.saturating_sub(4).max(6));
+    let x = area.x + (area.width.saturating_sub(inner_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 3;
+    let popup = Rect::new(x, y, inner_w, height);
+    f.render_widget(Clear, popup);
+    let mut lines: Vec<Line> = Vec::with_capacity(rows + 2);
+    lines.push(Line::from(vec![
+        Span::styled(
+            "/ ",
+            Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(p.input.clone(), Style::default().fg(th.primary)),
+        Span::styled("▌", Style::default().fg(th.primary)),
+    ]));
+    lines.push(Line::from(""));
+    for (i, (name, desc)) in items.iter().take(rows).enumerate() {
+        let row = format!("  {name:<22} {desc}");
+        // Middle-ellipsis the description when the popup is narrower
+        // than the row: the command name stays readable.
+        let row = if row.len() > inner_w as usize - 2 {
+            let keep = inner_w as usize - 5;
+            format!("{}…", row.chars().take(keep).collect::<String>())
+        } else {
+            row
+        };
+        // The name column is 24 chars wide ("  " + 22 padded): split the
+        // row there so the command name keeps its primary color. The
+        // selected row renders reversed, like every other picker.
+        let split = row
+            .char_indices()
+            .nth(24)
+            .map(|(b, _)| b)
+            .unwrap_or(row.len());
+        let (head, tail) = row.split_at(split);
+        let row_style = if i == p.sel {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        let head_style = if i == p.sel {
+            row_style.fg(th.primary).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(th.primary)
+        };
+        let tail_style = if i == p.sel {
+            row_style.fg(th.dim)
+        } else {
+            Style::default().fg(th.dim)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(head.to_string(), head_style),
+            Span::styled(tail.to_string(), tail_style),
+        ]));
+    }
+    if items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no matching command",
+            Style::default().fg(th.dim),
+        )));
+    }
+    let body = Paragraph::new(lines).block(
+        Block::bordered()
+            .title(format!(
+                " commands ({}/{} · Enter run · Esc dismiss) ",
+                (p.sel + 1).min(items.len().max(1)),
+                items.len()
+            ))
+            .border_style(Style::default().fg(th.primary)),
+    );
+    f.render_widget(body, popup);
 }
 
 /// Chat layout: transcript beside the session sidebar. The sidebar
@@ -1663,6 +2115,22 @@ fn build_overview_model(state: &TuiState) -> overview::OverviewModel {
                     Span::styled(dot.to_string(), Style::default().fg(dot_color)),
                 ]));
             }
+            let parked: Vec<_> = state
+                .parked_runs
+                .iter()
+                .filter(|(id, _, _, _)| !state.open_tabs.contains(id))
+                .take(10)
+                .collect();
+            if !parked.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(" parked", dim)));
+                for (id, _status, _created, title) in parked {
+                    let label = title
+                        .clone()
+                        .unwrap_or_else(|| id.chars().take(12).collect::<String>());
+                    lines.push(Line::from(Span::styled(format!("  ○ {label}"), dim)));
+                }
+            }
             if lines.is_empty() {
                 lines.push(Line::from(Span::styled("(no sessions)", dim)));
             }
@@ -1748,8 +2216,15 @@ fn build_overview_model(state: &TuiState) -> overview::OverviewModel {
 fn overview_enter(state: &mut TuiState, session: &Arc<Session>) {
     match state.overview_sel {
         overview::NAV_SESSIONS => {
-            if let Some(id) = state.tabs.cycle_next().map(str::to_string) {
-                switch_to_run(state, session, &id, "resumed");
+            // The searchable picker lists parked ledger runs too;
+            // picking one reopens it as a tab.
+            match session.supervisor.ledger_list_runs(50) {
+                Ok(runs) => {
+                    state.history = Some(runs);
+                    state.history_input.clear();
+                    state.history_sel = 0;
+                }
+                Err(e) => state.add_status(format!("sessions: {e}")),
             }
         }
         overview::NAV_APPROVALS => {
@@ -2421,20 +2896,26 @@ fn render_header(f: &mut Frame, area: Rect, state: &TuiState) {
         elapsed.as_secs() % 60,
     );
     // Truncate the middle on narrow terminals so the PANTHEON mark and
-    // the context readout survive.
+    // the context readout survive. Applies at every width: the header is
+    // one line and must never wrap or hard-clip, even at tiny widths.
     let max = area.width as usize;
-    if max > 24 && title.chars().count() > max {
-        let keep = max.saturating_sub(24);
-        let head: String = title.chars().take(keep).collect();
-        let tail: String = title
-            .chars()
-            .rev()
-            .take(20)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-        title = format!("{head}…{tail}");
+    if max > 0 && title.chars().count() > max {
+        title = if max > 24 {
+            let keep = max.saturating_sub(24);
+            let head: String = title.chars().take(keep).collect();
+            let tail: String = title
+                .chars()
+                .rev()
+                .take(20)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            format!("{head}…{tail}")
+        } else {
+            // Tiny terminal: keep the mark and the context readout.
+            overview::middle_ellipsis(&format!("◈ PANTHEON · {ctx}"), max)
+        };
     }
     let header = Paragraph::new(Line::from(Span::styled(
         title,
@@ -2794,7 +3275,15 @@ fn render_block(
                 )));
             }
         }
-        BlockKind::ToolCall { name, args, ok } => {
+        BlockKind::ToolCall {
+            name,
+            args,
+            ok,
+            call_id,
+            started,
+            duration,
+            error,
+        } => {
             let (glyph, col) = match ok {
                 // A tool still marked running after an interrupt was stopped
                 // from the outside: show that honestly, in dim, instead of
@@ -2804,13 +3293,43 @@ fn render_block(
                 Some(true) => (icon::SUCCESS, th.success),
                 Some(false) => (icon::FAILURE, th.failure),
             };
+            // Short call id (last 6 chars) disambiguates repeat calls of the
+            // same tool; the full id is one `y` yank away via /history.
+            let short_id: String = call_id
+                .chars()
+                .rev()
+                .take(6)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            let timing = match duration {
+                Some(d) => format!(" · {:.1}s", d.as_secs_f64()),
+                None => match started {
+                    Some(_) => " · …".to_string(),
+                    None => String::new(),
+                },
+            };
             lines.push(Line::from(Span::styled(
-                format!("┌─ {} {name} ── {glyph}", icon::TOOL),
+                format!("┌─ {} {name} ── {glyph}{timing}#{short_id}", icon::TOOL),
                 Style::default().fg(col),
             )));
             if !args.is_empty() {
                 for line in args.lines().take(6) {
                     lines.push(Line::from(format!("│  {line}")));
+                }
+            }
+            // Failure detail: the worker records the error text on the
+            // card; the card renders it calmly under the header (tools
+            // stay calm — only approvals go amber).
+            if let Some(err) = error {
+                if !err.is_empty() {
+                    for line in err.lines().take(10) {
+                        lines.push(Line::from(Span::styled(
+                            format!("│  ✕ {line}"),
+                            Style::default().fg(th.failure),
+                        )));
+                    }
                 }
             }
         }
@@ -3048,9 +3567,36 @@ fn render_help_table(lines: &mut Vec<Line>, cmd_lines: &[String], th: &theme::Th
     }
 }
 
+// The run id owning the model stream on the current worker thread.
+// `spawn_turn` sets it when the thread starts; the `on_event` closure
+// stamps every streaming event with it so the loop can route background
+// streams away from the visible transcript.
+std::thread_local! {
+    static STREAM_RUN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Record the run id owning this worker thread's model stream. Called
+/// once at the top of `spawn_turn`'s thread body.
+fn set_stream_run(run_id: &str) {
+    STREAM_RUN.with(|c| *c.borrow_mut() = Some(run_id.to_string()));
+}
+
+/// The run id owning this thread's model stream, if one was recorded.
+fn stream_run() -> Option<String> {
+    STREAM_RUN.with(|c| c.borrow().clone())
+}
+
 /// Internal event types that flow from the worker thread to the TUI loop.
 enum TuiEvent {
-    Model(pantheon_providers::model_event::ModelEvent),
+    /// A model streaming event. `run_id` is the stream's owner, tagged by
+    /// the worker thread at send time (via `set_stream_run`), so a model
+    /// event from a background tab can never land in the visible session's
+    /// transcript. `None` means "no stream owner recorded" — the loop
+    /// treats it as visible only when it also started on the visible run.
+    Model {
+        run_id: Option<String>,
+        ev: pantheon_providers::model_event::ModelEvent,
+    },
     Runtime(pantheon_api::events::Event),
     /// A turn finished for `run_id`. The id lets the loop tell a
     /// background-tab completion apart from the visible session's, so only
@@ -3059,10 +3605,23 @@ enum TuiEvent {
         run_id: String,
     },
     /// The assistant's final text for a turn, rendered into the transcript.
-    Answered(String),
-    Error(String),
+    /// Tagged with the owning run so a background tab's answer never lands
+    /// in the visible transcript.
+    Answered {
+        run_id: String,
+        text: String,
+    },
+    /// A turn failed. Tagged with the owning run so a background failure
+    /// badges its tab instead of clobbering the visible session.
+    Error {
+        run_id: String,
+        msg: String,
+    },
     /// The run stopped because the user interrupted it (not a failure).
-    Canceled,
+    /// Tagged so an interrupt racing a tab switch lands on the right tab.
+    Canceled {
+        run_id: String,
+    },
     /// A `/btw` background task finished on its worker thread. Carries the
     /// task id (not the run id) so the loop can update the right task even
     /// if the visible session changed since it was fired. `Ok` is the
@@ -3076,10 +3635,14 @@ enum TuiEvent {
     /// automatic after N turns, or scheduled). Carries the human summary
     /// and any proposals awaiting approval; the loop sets
     /// `pending_reflect` when the latter is non-empty so the reflection
-    /// card appears. Never touches the main turn's state.
+    /// card appears. `from_command` routes the summary into the
+    /// originating command's result block instead of bare status lines,
+    /// so late async output is never orphaned. Never touches the main
+    /// turn's state.
     ReflectDone {
         summary: String,
         pending: Vec<pantheon_nightly::Proposal>,
+        from_command: bool,
     },
 }
 
@@ -3133,7 +3696,12 @@ pub fn run_tui_session_with(
     // Run budgets from `[budget]` in config.toml (max turns, tool calls,
     // delegate depth, token cap). Absent = the runtime defaults; `/set`
     // and `/tokens` retune them live for this session.
-    session.set_budget(file_cfg.as_ref().map(|c| c.budget()).unwrap_or_default());
+    session.set_budget(
+        file_cfg
+            .as_ref()
+            .map(config::config_budget)
+            .unwrap_or_default(),
+    );
 
     // Tacit temporal awareness (`[temporal]` in config.toml). Absent
     // section = the runtime defaults (enabled, 2h gap, system timezone).
@@ -3148,15 +3716,15 @@ pub fn run_tui_session_with(
         file_cfg
             .as_ref()
             .and_then(|c| c.browser.clone())
-            .unwrap_or_default()
-            .resolve(),
+            .map(|s| config::resolve_browser_section(&s))
+            .unwrap_or_default(),
     );
     session.set_websearch_config(
         file_cfg
             .as_ref()
             .and_then(|c| c.websearch.clone())
-            .unwrap_or_default()
-            .resolve(),
+            .map(|s| config::resolve_websearch_section(&s))
+            .unwrap_or_default(),
     );
 
     // Attach the configured agent profile, if the config declares any. A
@@ -3218,7 +3786,12 @@ pub fn run_tui_session_with(
     session.on_event = Some(Box::new({
         let tx = tx.clone();
         move |ev| {
-            let _ = tx.send(TuiEvent::Model(ev));
+            // Stamp the owning run at send time: model events can only
+            // belong to the visible session when the stream does.
+            let _ = tx.send(TuiEvent::Model {
+                run_id: stream_run(),
+                ev,
+            });
         }
     }));
 
@@ -3273,6 +3846,12 @@ pub fn run_tui_session_with(
     // The send path resolves state.session_id at send time, so it must
     // start as the run the loop opens on — not the throwaway id new() made.
     state.session_id = run_id.clone();
+    // The opening run is the first open tab, and any decisions it parked
+    // (e.g. a previous TUI died mid-approval) hydrate from the ledger so
+    // the card renders on the first frame.
+    seed_open_tabs(&mut state);
+    hydrate_decisions(&mut state, &session, &run_id);
+    refresh_tabs(&mut state, &session);
 
     let result = tui_loop(&mut terminal, &mut state, session, &tx, &rx, &running);
 
@@ -3308,6 +3887,11 @@ fn spawn_turn(
     let msg_owned = msg.to_string();
     let session_owned = session.clone();
     std::thread::spawn(move || {
+        // Tag this thread's model stream with the owning run before any
+        // event can flow: the `on_event` closure stamps every streaming
+        // event with it so the loop can route background streams away
+        // from the visible transcript.
+        set_stream_run(&run_id_owned);
         match session_owned.chat(&run_id_owned, &msg_owned) {
             Ok(outcome) => match outcome {
                 pantheon_agent::LoopOutcome::AwaitingApproval { .. } => {
@@ -3318,7 +3902,9 @@ fn spawn_turn(
                     });
                 }
                 pantheon_agent::LoopOutcome::Canceled { .. } => {
-                    let _ = tx2.send(TuiEvent::Canceled);
+                    let _ = tx2.send(TuiEvent::Canceled {
+                        run_id: run_id_owned.clone(),
+                    });
                 }
                 _ => {
                     let _ = tx2.send(TuiEvent::TurnComplete {
@@ -3327,7 +3913,10 @@ fn spawn_turn(
                 }
             },
             Err(e) => {
-                let _ = tx2.send(TuiEvent::Error(e.to_string()));
+                let _ = tx2.send(TuiEvent::Error {
+                    run_id: run_id_owned.clone(),
+                    msg: e.to_string(),
+                });
             }
         }
     });
@@ -3379,6 +3968,9 @@ fn spawn_bg_task(
     let cancel = task.cancel.clone();
     let turn_id = pantheon_runtime::new_turn_id();
     std::thread::spawn(move || {
+        // Tag the stream: bg-task model events belong to the task's run,
+        // never to the visible transcript.
+        set_stream_run(&run_id);
         let outcome =
             session_owned.chat_turn_with_cancel(&run_id, &turn_id, &prompt_owned, &cancel);
         let result = match outcome {
@@ -3684,7 +4276,11 @@ fn do_nightly(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEvent>, cmd:
                     Ok(out) => {
                         let summary = crate::nightly_cli::summarize_pass(&out);
                         let pending = pantheon_nightly::load_pending(&dd).unwrap_or_default();
-                        let _ = tx2.send(TuiEvent::ReflectDone { summary, pending });
+                        let _ = tx2.send(TuiEvent::ReflectDone {
+                            summary,
+                            pending,
+                            from_command: true,
+                        });
                     }
                     Err(e) => {
                         // Route failures through ReflectDone, not the generic
@@ -3694,6 +4290,7 @@ fn do_nightly(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEvent>, cmd:
                         let _ = tx2.send(TuiEvent::ReflectDone {
                             summary: format!("nightly pass failed: {e}"),
                             pending: Vec::new(),
+                            from_command: true,
                         });
                     }
                 },
@@ -3740,12 +4337,17 @@ fn maybe_auto_reflect(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEven
             Ok(out) => {
                 let summary = format!("automatic {}", crate::nightly_cli::summarize_pass(&out));
                 let pending = pantheon_nightly::load_pending(&data_dir).unwrap_or_default();
-                let _ = tx2.send(TuiEvent::ReflectDone { summary, pending });
+                let _ = tx2.send(TuiEvent::ReflectDone {
+                    summary,
+                    pending,
+                    from_command: false,
+                });
             }
             Err(e) => {
                 let _ = tx2.send(TuiEvent::ReflectDone {
                     summary: format!("automatic nightly pass failed: {e}"),
                     pending: Vec::new(),
+                    from_command: false,
                 });
             }
         },
@@ -3847,6 +4449,7 @@ fn resume_parked_turn(
     let run3 = run.to_string();
     let sess3 = session.clone();
     std::thread::spawn(move || {
+        set_stream_run(&run3);
         match sess3.chat_turn(&run3, "", "") {
             Ok(outcome) => {
                 // Carry the answer through the same event the normal
@@ -3856,13 +4459,19 @@ fn resume_parked_turn(
                     pantheon_agent::LoopOutcome::Answered { text, .. } => text,
                     _ => String::new(),
                 };
-                let _ = tx3.send(TuiEvent::Answered(text));
+                let _ = tx3.send(TuiEvent::Answered {
+                    run_id: run3.clone(),
+                    text,
+                });
                 let _ = tx3.send(TuiEvent::TurnComplete {
                     run_id: run3.clone(),
                 });
             }
             Err(e) => {
-                let _ = tx3.send(TuiEvent::Error(e.to_string()));
+                let _ = tx3.send(TuiEvent::Error {
+                    run_id: run3.clone(),
+                    msg: e.to_string(),
+                });
             }
         }
     });
@@ -4162,9 +4771,29 @@ fn tui_loop(
 
         while let Ok(ev) = rx.try_recv() {
             match ev {
-                TuiEvent::Model(me) => state.handle_model_event(me),
+                TuiEvent::Model { run_id, ev: me } => {
+                    // A model stream belongs to exactly one run. Events
+                    // from a background tab never touch the visible
+                    // transcript: the stream tag proves ownership, and an
+                    // untagged event is only accepted when it arrived on
+                    // the visible run's own thread.
+                    let owned = match run_id {
+                        Some(rid) => rid == state.session_id,
+                        None => false,
+                    };
+                    if owned {
+                        state.handle_model_event(me);
+                    }
+                }
                 TuiEvent::Runtime(re) => state.handle_runtime_event(&re),
-                TuiEvent::Answered(text) => {
+                TuiEvent::Answered { run_id, text } => {
+                    if run_id != state.session_id {
+                        // A background tab's final answer: badge, don't
+                        // render. The turn lands in that tab's transcript
+                        // when the user switches to it.
+                        state.on_background_turn_complete(&run_id);
+                        continue;
+                    }
                     if !text.trim().is_empty() {
                         state.blocks.push(TranscriptBlock {
                             kind: BlockKind::AssistantMessage(text),
@@ -4185,7 +4814,7 @@ fn tui_loop(
                     // for any other run belongs to a background tab: badge
                     // it and notify instead of touching the visible input.
                     if crate::notify::should_notify(&run_id, &state.session_id) {
-                        state.on_turn_complete(false);
+                        state.on_background_turn_complete(&run_id);
                         let summary = crate::notify::summarize_turn(
                             state.blocks.iter().rev().find_map(|b| match &b.kind {
                                 BlockKind::AssistantMessage(t) => Some(t.as_str()),
@@ -4216,20 +4845,37 @@ fn tui_loop(
                         maybe_auto_reflect(state, tx);
                     }
                 }
-                TuiEvent::ReflectDone { summary, pending } => {
+                TuiEvent::ReflectDone {
+                    summary,
+                    pending,
+                    from_command,
+                } => {
                     // A reflection pass finished on its worker thread. The
                     // main turn — if one is running — is untouched: this arm
                     // never writes active_run, ready, or the input line.
                     state.reflect_running = false;
+                    // Command-originated passes report into the originating
+                    // command's result block, so the late async output is
+                    // preserved as the command's result instead of bare
+                    // status lines. Automatic passes keep the old
+                    // status-line behavior.
+                    let mut cmd_lines: Vec<String> = Vec::new();
                     for line in summary.lines() {
-                        state.add_status(line.to_string());
+                        cmd_lines.push(line.to_string());
                     }
                     if !pending.is_empty() {
                         state.pending_reflect = Some(pending);
-                        state.add_status(
+                        cmd_lines.push(
                             "reflection proposals await approval: [y] approve all  [n] deny all"
-                                .into(),
+                                .to_string(),
                         );
+                    }
+                    if from_command {
+                        append_cmd_output(state, "/reflect", cmd_lines);
+                    } else {
+                        for line in cmd_lines {
+                            state.add_status(line);
+                        }
                     }
                 }
                 TuiEvent::BgDone { task_id, result } => {
@@ -4276,15 +4922,44 @@ fn tui_loop(
                         );
                     }
                 }
-                TuiEvent::Error(msg) => {
+                TuiEvent::Error { run_id, msg } => {
+                    if run_id != state.session_id {
+                        // A background run failed: badge its tab and move
+                        // on. The visible session's error state is its own.
+                        state.on_background_turn_complete(&run_id);
+                        state.attention_note = Some(format!("background run failed: {msg}"));
+                        continue;
+                    }
                     state.blocks.push(TranscriptBlock {
                         kind: BlockKind::Status(format!("error: {msg}")),
                     });
+                    // Mark the in-flight tool card failed with the error
+                    // text so the failure detail lives on the card, not
+                    // just in a status line.
+                    if let Some(block) = state
+                        .blocks
+                        .iter_mut()
+                        .rev()
+                        .find(|b| matches!(&b.kind, BlockKind::ToolCall { ok: None, .. }))
+                    {
+                        if let BlockKind::ToolCall { ok, error, .. } = &mut block.kind {
+                            *ok = Some(false);
+                            *error = Some(msg.clone());
+                        }
+                    }
                     state.ready = true;
                     state.active_run = None;
                     drain_queued_message(state, &session, tx);
                 }
-                TuiEvent::Canceled => {
+                TuiEvent::Canceled { run_id } => {
+                    if run_id != state.session_id {
+                        // An interrupt racing a tab switch: the cancel
+                        // belongs to the background tab, not the visible
+                        // one.
+                        state.on_background_turn_complete(&run_id);
+                        state.attention_note = Some("background run interrupted".to_string());
+                        continue;
+                    }
                     // Honest report: the run was stopped by the user, and the
                     // ledger holds the partial transcript so it can be resumed.
                     state.ready = true;
@@ -4372,6 +5047,10 @@ fn tui_loop(
                                 // the run the loop opened on.
                                 switch_to_run(state, &session, &id, "resumed");
                                 refresh_tabs(state, &session);
+                                // The picker can be launched from the
+                                // mission-control overview: a pick lands in
+                                // chat, not back in the overview.
+                                state.overview = false;
                             }
                         }
                         _ => {}
@@ -4464,6 +5143,45 @@ fn tui_loop(
                     terminal.draw(|f| render(state, f))?;
                     continue;
                 }
+                if state.palette.is_some() {
+                    // The `/` command palette owns the keyboard while
+                    // open: type to filter, Up/Down to move, Enter to run
+                    // the selected command, Esc to dismiss.
+                    let mut run_cmd: Option<String> = None;
+                    if let Some(p) = state.palette.as_mut() {
+                        match key.code {
+                            KeyCode::Esc => state.palette = None,
+                            KeyCode::Enter => {
+                                run_cmd = p.filtered().get(p.sel).map(|(name, _)| {
+                                    // Strip the `[ARGS]` usage suffix so the
+                                    // command runs in its bare form.
+                                    name.split_whitespace().next().unwrap_or(name).to_string()
+                                });
+                                state.palette = None;
+                            }
+                            KeyCode::Up => p.move_sel(-1),
+                            KeyCode::Down => p.move_sel(1),
+                            KeyCode::Backspace => {
+                                p.input.pop();
+                                p.sel = 0;
+                            }
+                            KeyCode::Char(c) => {
+                                p.input.push(c);
+                                p.sel = 0;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(cmd) = run_cmd {
+                        // A palette pick runs exactly like a typed slash
+                        // command: same capture, same result block.
+                        handle_slash(state, &session, &cmd, tx);
+                        refresh_tabs(state, &session);
+                    }
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
                 if state.img.preview.is_some() {
                     // The image preview owns the keyboard while open:
                     // arrows pan, +/- zoom, [/] cycle images, q/Esc closes.
@@ -4514,9 +5232,13 @@ fn tui_loop(
                         KeyCode::Char('o') | KeyCode::Char('O') => state.toggle_timeline(),
                         KeyCode::Char('b') | KeyCode::Char('B') => {
                             // Mission-control overview: same session, view
-                            // toggle — never a state split.
+                            // toggle — never a state split. Refresh on open
+                            // so the Sessions pane sees parked runs.
                             state.overview = !state.overview;
                             state.overview_sel = 0;
+                            if state.overview {
+                                refresh_tabs(state, &session);
+                            }
                         }
                         KeyCode::Char('t') | KeyCode::Char('T') => {
                             new_tab(state, &session, "new tab (unsaved until the first turn)");
@@ -4545,9 +5267,34 @@ fn tui_loop(
                     terminal.draw(|f| render(state, f))?;
                     continue;
                 }
+                // `/` with an empty composer opens the command palette
+                // instead of typing. With text present, `/` types
+                // normally (paths, regex); the palette is one Backspace
+                // away when the composer is empty.
+                if key.code == KeyCode::Char('/')
+                    && key.modifiers.is_empty()
+                    && state.input.is_empty()
+                    && !state.is_inputting
+                {
+                    state.palette = Some(PaletteState::default());
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
                 // Session tabs: Ctrl+Tab cycle, Alt+1..9 jump. Checked before
                 // the Char handler (Alt+1 arrives as Char('1')+ALT).
-                if let Some(action) = crate::tabs::tab_key_action(key.code, key.modifiers) {
+                // Plain `[`/`]` cycle tabs only in mission-control
+                // overview with an empty composer: anywhere else the
+                // bracket must type into the chat input. Ctrl+Tab and
+                // Alt+digits stay global.
+                let bracket_key = matches!(key.code, KeyCode::Char('[') | KeyCode::Char(']'))
+                    && key.modifiers.is_empty();
+                let tab_action = if bracket_key && !(state.overview && state.input.is_empty()) {
+                    None
+                } else {
+                    crate::tabs::tab_key_action(key.code, key.modifiers)
+                };
+                if let Some(action) = tab_action {
                     match action {
                         crate::tabs::TabAction::Next => {
                             if let Some(id) = state.tabs.cycle_next().map(str::to_string) {
@@ -5219,13 +5966,30 @@ fn export_transcript(blocks: &[TranscriptBlock], session_id: &str, format: &str)
             BlockKind::UserMessage(t) => ("user", t.clone()),
             BlockKind::AssistantMessage(t) => ("agent", t.clone()),
             BlockKind::Thinking(t) => ("thinking", t.lines().next().unwrap_or("").to_string()),
-            BlockKind::ToolCall { name, args, ok } => {
+            BlockKind::ToolCall {
+                name,
+                args,
+                ok,
+                call_id,
+                duration,
+                error,
+                ..
+            } => {
                 let st = match ok {
                     None => "running",
                     Some(true) => "done",
                     Some(false) => "failed",
                 };
-                ("tool", format!("{name} [{st}] {args}"))
+                let mut s = format!("{name} [{st}] #{call_id} {args}");
+                if let Some(d) = duration {
+                    s.push_str(&format!(" ({:.1}s)", d.as_secs_f64()));
+                }
+                if let Some(e) = error {
+                    if !e.is_empty() {
+                        s.push_str(&format!(" — {e}"));
+                    }
+                }
+                ("tool", s)
             }
             BlockKind::Swarm { agents, task } => ("swarm", format!("×{agents} {task}")),
             BlockKind::BgResult {
@@ -5431,6 +6195,49 @@ fn do_yank(state: &mut TuiState, arg: &str) {
 /// captured into one `Command` transcript block (titled result; `/help`
 /// as a two-column table). Commands that open an overlay (/history,
 /// /models, the editor) or push their own decision card skip the block.
+/// Append late async output to a slash command's result block. Finds the
+/// most recent `Command` block whose command starts with `cmd_prefix`
+/// (`/reflect` covers `/reflect`, `/consolidate`, `/nightly`) and
+/// extends its lines; when the block is gone (e.g. `/clear` ran while
+/// the worker was out), a fresh result block is pushed so the output is
+/// never silently dropped.
+fn append_cmd_output(state: &mut TuiState, cmd_prefix: &str, lines: Vec<String>) {
+    if lines.is_empty() {
+        return;
+    }
+    let failed = lines.iter().any(|l| {
+        let t = l.trim_start();
+        t.starts_with('✗') || t.starts_with("error:") || t.starts_with("failed")
+    });
+    let target =
+        state.blocks.iter_mut().rev().find(
+            |b| matches!(&b.kind, BlockKind::Command { cmd, .. } if cmd.starts_with(cmd_prefix)),
+        );
+    match target {
+        Some(block) => {
+            if let BlockKind::Command {
+                lines: existing,
+                failed: f,
+                ..
+            } = &mut block.kind
+            {
+                existing.extend(lines);
+                *f = *f || failed;
+            }
+        }
+        None => {
+            state.blocks.push(TranscriptBlock {
+                kind: BlockKind::Command {
+                    cmd: cmd_prefix.to_string(),
+                    lines,
+                    failed,
+                },
+            });
+        }
+    }
+    state.scroll_to_bottom();
+}
+
 fn handle_slash(
     state: &mut TuiState,
     session: &Arc<Session>,
@@ -5583,113 +6390,11 @@ fn handle_slash_inner(
         return;
     }
     if cmd == "/help" {
-        state.add_status("commands:".into());
-        state.add_status("  /help              this list".into());
-        state.add_status("  /models [FILTER]   browse providers and models, Enter switches".into());
-        state.add_status("  /model [P M]       show the current model, or switch to one".into());
-        state.add_status(
-            "  /reasoning [LVL]   reasoning effort: off|minimal|low|medium|high|xhigh|max".into(),
-        );
-        state.add_status("  /remember KEY TEXT remember this (agent memory, user trust)".into());
-        state.add_status(
-            "  /goal [TEXT]        set/show the session goal (iteration-limited)".into(),
-        );
-        state.add_status("  /goal clear         drop the session goal".into());
-        state.add_status("  /goal iterations N  retune the goal's iteration budget".into());
-        state.add_status(
-            "  /tokens [N|off]     show/set the per-run token cap (default: uncapped)".into(),
-        );
-        state.add_status(
-            "  /set [KEY VAL]      show/set session budget (max_turns, max_tool_calls, max_delegate_depth, max_tokens)"
-                .into(),
-        );
-        state
-            .add_status("  /learn LESSON      save a behavioral lesson for future sessions".into());
-        state.add_status("  /skills [FILTER]   installed skills".into());
-        state.add_status("  /<skill> [input]   invoke an installed skill by name".into());
-        state.add_status("  /tools [reload]    rebuild the tool registry in place".into());
-        state.add_status(
-            "  /settings          data dir, model, policy, memory, server, agents".into(),
-        );
-        state.add_status("  /gateway           service state and queued outbound".into());
-        state.add_status("  /doctor            diagnose this install".into());
-        state.add_status("  /sessions          live sessions holding a lease".into());
-        state.add_status("  /new               start a fresh conversation".into());
-        state.add_status(
-            "  /rewind            roll back the last turn (confirm; ledger kept)".into(),
-        );
-        state.add_status("  /checkpoint [NAME] save a named snapshot of the current turn".into());
-        state.add_status("  /checkpoints       list saved checkpoints".into());
-        state.add_status("  /restore NAME      rewind back to a checkpoint (ledger kept)".into());
-        state.add_status("  /swarm             this session's delegation tree".into());
-        state.add_status(
-            "  /btw PROMPT        run a task in the background (result lands here)".into(),
-        );
-        state.add_status("  /bg [ID]          list background tasks, or show one's output".into());
-        state.add_status(
-            "  /fork [TURN]       branch this conversation at a turn into a new run".into(),
-        );
-        state.add_status("  /theme [name]      switch theme (pantheon, dark, light)".into());
-        state.add_status(
-            "  /vim [on|off|status] modal vim editing for the composer (v1: Normal/Insert only)"
-                .into(),
-        );
-        state.add_status(
-            "  /reflect [on|off|status] run a reflection pass now, or toggle the self-improvement loop".into(),
-        );
-        state.add_status(
-            "  /consolidate [status|--dry-run] run a memory consolidation pass (dry run changes nothing)".into(),
-        );
-        state.add_status("  /compress         compress this conversation to the window now".into());
-        state.add_status("  /export [md|json]  save this conversation to exports/".into());
-        state.add_status(
-            "  /yank [N]          copy last answer (or its Nth code block) to clipboard".into(),
-        );
-        state.add_status(
-            "  /steer <text>      redirect the running turn mid-flight (normal message when idle)"
-                .into(),
-        );
-        state.add_status("  /runs [N]          recent runs (default 10)".into());
-        state.add_status(
-            "  /history           interactive searchable history (pick + resume)".into(),
-        );
-        state.add_status("  /resume [ID]       resume a run by id".into());
-        state.add_status(
-            "  /title [TITLE]      show this conversation's title, or rename it".into(),
-        );
-        state.add_status("  /status [run_id]   this run's status, or another by id".into());
-        state.add_status("  /agent [name]     current agent profile, or switch to one".into());
-        state.add_status("  /agents           declared agent profiles".into());
-        state.add_status("  /collab           active collaborations and their tasks".into());
-        state.add_status("  /tasks <agent>    that agent's open tasks".into());
-        state.add_status("  /inbox            messages sent to this agent".into());
-        state.add_status("  /approvals         pending approvals for this run".into());
-        state.add_status("  /schedule          scheduled jobs".into());
-        state.add_status(
-            "  /mcp [reload]        MCP server declarations (reload re-scans them)".into(),
-        );
-        state.add_status(
-            "  /migrate           import from other harnesses (hermes, openclaw, omp, claude)"
-                .into(),
-        );
-        state.add_status(
-            "  /migrate           import from other harnesses (hermes, openclaw, omp, claude)"
-                .into(),
-        );
-        state.add_status(
-            "  /migrate           import from other harnesses (hermes, openclaw, omp, claude)"
-                .into(),
-        );
-        state.add_status("  /env               secret names and status (never values)".into());
-        state.add_status("  /clear             clear visible transcript".into());
-        state.add_status(
-            "  /reset             reset turn state: clear transcript, cancel turn, drop queue (session, title, ledger kept; /clear is display-only, /new starts a new session)".into(),
-        );
-        state.add_status("  PgUp/PgDn          scroll the transcript".into());
-        state.add_status("  Ctrl+O / F2        turn timeline: arrows move, Enter jumps".into());
-        state.add_status("  Ctrl+E             fullscreen draft editor (Ctrl+Enter sends)".into());
-        state.add_status("  Esc Esc (idle)     offer to rewind the last turn".into());
-        state.add_status("  /exit, /quit       leave pantheon".into());
+        // Generated from the COMMANDS registry: one entry per command,
+        // never duplicated, never drifting out of sync with the palette.
+        for line in help_lines() {
+            state.add_status(line);
+        }
         return;
     }
     if cmd == "/exit" || cmd == "/quit" {
@@ -5774,23 +6479,7 @@ fn handle_slash_inner(
         }
         return;
     }
-    if cmd == "/history" {
-        // Open the interactive history overlay; key handling lives in
-        // tui_loop while state.history is Some.
-        match supervisor.ledger_list_runs(50) {
-            Ok(runs) => {
-                if runs.is_empty() {
-                    state.add_status("no runs yet".into());
-                } else {
-                    state.history = Some(runs);
-                    state.history_input.clear();
-                    state.history_sel = 0;
-                }
-            }
-            Err(e) => state.add_status(format!("runs: {e}")),
-        }
-        return;
-    }
+
     if let Some(id) = cmd.strip_prefix("/resume ") {
         let id = id.trim();
         // Prove the run exists before switching; reopen a terminal run.
@@ -6334,30 +7023,19 @@ fn handle_slash_inner(
         });
         return;
     }
-    if cmd == "/sessions" {
+    if cmd == "/sessions" || cmd == "/history" {
+        // Interactive searchable picker: Enter reopens the picked run as
+        // a tab (parked sessions included). Shared by /sessions (the
+        // reopen-UI) and /history (the resume-UI); both route through
+        // switch_to_run, which now maintains the explicit open-tab list.
         match supervisor.ledger_list_runs(50) {
             Ok(runs) => {
-                let mut live = 0;
-                for (run_id, status, _ts, title) in &runs {
-                    let active = supervisor.has_active_lease(run_id).unwrap_or(false);
-                    if !active {
-                        continue;
-                    }
-                    live += 1;
-                    let label = title
-                        .as_deref()
-                        .filter(|t| !t.is_empty())
-                        .map(|t| t.chars().take(30).collect::<String>())
-                        .unwrap_or_else(|| run_id.chars().skip(4).take(8).collect());
-                    let here = if *run_id == state.session_id {
-                        " (this session)"
-                    } else {
-                        ""
-                    };
-                    state.add_status(format!("\u{25cf} {label}  {status}{here}"));
-                }
-                if live == 0 {
-                    state.add_status("no live sessions (this one holds no lease yet)".into());
+                if runs.is_empty() {
+                    state.add_status("no runs yet".into());
+                } else {
+                    state.history = Some(runs);
+                    state.history_input.clear();
+                    state.history_sel = 0;
                 }
             }
             Err(e) => state.add_status(format!("sessions: {e}")),
@@ -6460,19 +7138,28 @@ fn handle_slash_inner(
                 let run4 = state.session_id.clone();
                 let sess4 = session.clone();
                 state.active_run = Some(run4.clone());
-                std::thread::spawn(move || match sess4.chat_turn(&run4, "", "") {
-                    Ok(outcome) => {
-                        let text = match outcome {
-                            pantheon_agent::LoopOutcome::Answered { text, .. } => text,
-                            _ => String::new(),
-                        };
-                        let _ = tx4.send(TuiEvent::Answered(text));
-                        let _ = tx4.send(TuiEvent::TurnComplete {
-                            run_id: run4.clone(),
-                        });
-                    }
-                    Err(e) => {
-                        let _ = tx4.send(TuiEvent::Error(e.to_string()));
+                std::thread::spawn(move || {
+                    set_stream_run(&run4);
+                    match sess4.chat_turn(&run4, "", "") {
+                        Ok(outcome) => {
+                            let text = match outcome {
+                                pantheon_agent::LoopOutcome::Answered { text, .. } => text,
+                                _ => String::new(),
+                            };
+                            let _ = tx4.send(TuiEvent::Answered {
+                                run_id: run4.clone(),
+                                text,
+                            });
+                            let _ = tx4.send(TuiEvent::TurnComplete {
+                                run_id: run4.clone(),
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx4.send(TuiEvent::Error {
+                                run_id: run4.clone(),
+                                msg: e.to_string(),
+                            });
+                        }
                     }
                 });
             }
@@ -6526,37 +7213,6 @@ fn handle_slash_inner(
                 ));
             }
         }
-        return;
-    }
-    // --- migrate ----------------------------------------------------------
-    if cmd == "/migrate" {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let sources = [
-            ("hermes", format!("{home}/.hermes")),
-            ("openclaw", format!("{home}/.openclaw")),
-            ("omp", format!("{home}/.omp")),
-            ("claude", format!("{home}/.claude")),
-        ];
-        let mut found = Vec::new();
-        for (name, path) in &sources {
-            if std::path::Path::new(path).is_dir() {
-                found.push(*name);
-            }
-        }
-        if found.is_empty() {
-            state.add_status("no migration sources detected".into());
-        } else {
-            state.add_status(format!("detected sources: {}", found.join(", ")));
-        }
-        state.add_status("categories: sessions, skills, identity, memory, plugins, config, credentials, mcp, schedules, agents, rules, commands, prompts".into());
-        state.add_status("plan:    pantheon migrate plan <source> [--categories <list>]".into());
-        state.add_status(
-            "apply:   pantheon migrate apply <source> [--categories <list>] [--yes]".into(),
-        );
-        state.add_status(
-            "example: pantheon migrate apply claude --categories sessions,skills,memory --yes"
-                .into(),
-        );
         return;
     }
     // --- migrate ----------------------------------------------------------
@@ -6872,6 +7528,7 @@ pub fn learn_lesson(
 #[cfg(test)]
 mod tests {
     use super::auto_reflect_due;
+    use super::{render, BlockKind, PaletteState, TranscriptBlock, TuiState};
 
     #[test]
     fn auto_reflect_due_fires_on_configured_multiples() {
@@ -6883,5 +7540,155 @@ mod tests {
         assert!(!auto_reflect_due(20, false, 20, false));
         assert!(!auto_reflect_due(20, true, 20, true));
         assert!(!auto_reflect_due(0, true, 20, false));
+    }
+
+    /// Representative session: long title, mixed blocks, open tabs with
+    /// decisions pending — the content most likely to overflow narrow
+    /// terminals.
+    fn responsive_state() -> TuiState {
+        let mut s = TuiState::new(
+            "run_test123456789".to_string(),
+            "openai/gpt-4o-mini".to_string(),
+            200_000,
+        );
+        s.title = Some(
+            "a very long session title that will definitely overflow narrow terminals".to_string(),
+        );
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::UserMessage("hello [brackets] should type".to_string()),
+        });
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::AssistantMessage("hi there".to_string()),
+        });
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::ToolCall {
+                name: "exec".to_string(),
+                args: "cargo check -p pantheon-tui --all-features".to_string(),
+                ok: Some(false),
+                call_id: "call_abc123xyz".to_string(),
+                started: None,
+                duration: Some(std::time::Duration::from_secs_f64(12.3)),
+                error: Some("error: could not compile".to_string()),
+            },
+        });
+        s.tokens_used = 42_000;
+        s.cost_cents = 137;
+        let id = s.session_id.clone();
+        s.open_tabs.push(id.clone());
+        s.open_tabs.push("run_other987654321".to_string());
+        s.tabs.refresh_from_explicit(
+            &[
+                (id.clone(), s.title.clone()),
+                ("run_other987654321".to_string(), None),
+            ],
+            |_| false,
+            &id,
+        );
+        s
+    }
+
+    /// Render into a TestBackend and return the screen as text rows.
+    fn render_rows(width: u16, height: u16, state: &mut TuiState) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(state, f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// No row exceeds `width` cells: nothing wrapped or overflowed the
+    /// frame. (Cell count, not char count: one cell can hold a
+    /// multi-char grapheme.)
+    fn assert_fits(rows: &[String], width: u16) {
+        for (i, row) in rows.iter().enumerate() {
+            let cells = row.chars().count();
+            assert!(
+                cells <= width as usize,
+                "row {i} exceeds width {width}: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn responsive_chat_widths_render_cleanly() {
+        // Wide (full sidebar), medium (compact sidebar), narrow
+        // (transcript only), and very narrow.
+        for (w, h) in [(140u16, 40u16), (110, 40), (90, 30), (60, 24), (40, 20)] {
+            let mut s = responsive_state();
+            let rows = render_rows(w, h, &mut s);
+            assert_fits(&rows, w);
+            // Header (row 1) keeps the mark at every width; the status
+            // bar (last row) always shows the state word.
+            assert!(
+                rows[1].contains("PANTHEON"),
+                "width {w}: header lost the mark: {:?}",
+                rows[1]
+            );
+            let status = rows.last().unwrap();
+            assert!(
+                status.contains("ready") || status.contains("working"),
+                "width {w}: status bar lost the state word: {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_overview_stacks_vertically() {
+        let mut s = responsive_state();
+        s.overview = true;
+        // Below the 100-column breakpoint the three panes stack.
+        let rows = render_rows(80, 30, &mut s);
+        assert_fits(&rows, 80);
+        let screen = rows.join("\n");
+        assert!(screen.contains("nav"), "stacked overview lost the nav pane");
+        assert!(
+            screen.contains("detail"),
+            "stacked overview lost the detail pane"
+        );
+        assert!(
+            screen.contains("Live"),
+            "stacked overview lost the transcript pane"
+        );
+        // Wide overview keeps the side-by-side panes.
+        let rows = render_rows(140, 40, &mut s);
+        assert_fits(&rows, 140);
+        assert!(rows.join("\n").contains("WORKSPACE"));
+    }
+
+    #[test]
+    fn palette_renders_within_narrow_popup() {
+        let mut s = responsive_state();
+        s.palette = Some(PaletteState::default());
+        for (w, h) in [(140u16, 40u16), (80, 24), (50, 20)] {
+            let rows = render_rows(w, h, &mut s);
+            assert_fits(&rows, w);
+            let screen = rows.join("\n");
+            assert!(
+                screen.contains("commands"),
+                "width {w}: palette popup missing"
+            );
+        }
+        // Filtering narrows the list; a selection still renders.
+        let mut s = responsive_state();
+        let mut p = PaletteState::default();
+        p.input = "reflect".to_string();
+        assert!(!p.filtered().is_empty());
+        s.palette = Some(p);
+        let rows = render_rows(80, 24, &mut s);
+        assert!(rows.join("\n").contains("/reflect"));
+    }
+
+    #[test]
+    fn tiny_terminal_header_never_overflows() {
+        let mut s = responsive_state();
+        let rows = render_rows(24, 12, &mut s);
+        assert_fits(&rows, 24);
+        assert!(rows[1].contains("PANTHEON"), "tiny header: {:?}", rows[1]);
     }
 }
