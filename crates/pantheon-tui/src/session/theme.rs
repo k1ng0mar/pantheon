@@ -16,11 +16,9 @@ pub struct Theme {
     pub name: &'static str,
     /// Headers, message labels, accents, links.
     pub primary: Color,
-    /// "Working" spinner and in-progress glyphs.
-    pub running: Color,
     /// Ready state and success glyphs.
     pub success: Color,
-    /// Warnings, status text, rewind prompts.
+    /// Approval states only: pending approvals, decision cards, rewind prompts.
     pub warning: Color,
     /// Errors and failure glyphs.
     pub failure: Color,
@@ -41,7 +39,6 @@ impl Theme {
         Self {
             name: "pantheon",
             primary: Color::Cyan,
-            running: Color::Yellow,
             success: Color::Green,
             warning: Color::Yellow,
             failure: Color::Red,
@@ -56,7 +53,6 @@ impl Theme {
         Self {
             name: "dark",
             primary: Color::White,
-            running: Color::Yellow,
             success: Color::LightGreen,
             warning: Color::LightYellow,
             failure: Color::LightRed,
@@ -71,7 +67,6 @@ impl Theme {
         Self {
             name: "light",
             primary: Color::Blue,
-            running: Color::Magenta,
             success: Color::Green,
             warning: Color::Magenta,
             failure: Color::Red,

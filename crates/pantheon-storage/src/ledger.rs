@@ -170,7 +170,9 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::ToolMessage { run_id, .. }
         | Event::ImportedReasoning { run_id, .. }
         | Event::UsageRecorded { run_id, .. }
-        | Event::SteeringProvided { run_id, .. } => run_id,
+        | Event::SteeringProvided { run_id, .. }
+        | Event::UserInputRequested { run_id, .. }
+        | Event::UserInputProvided { run_id, .. } => run_id,
     }
 }
 
@@ -1077,6 +1079,8 @@ fn describe(ev: &Event) -> String {
         Event::AgentCompleted { agent, .. } => format!("sub-agent done: {agent}"),
         Event::MemoryProposed { .. } => String::from("memory write proposed"),
         Event::ApprovalRequested { scope, .. } => format!("approval requested: {scope}"),
+        Event::UserInputRequested { question, .. } => format!("user input requested: {question}"),
+        Event::UserInputProvided { answer, .. } => format!("user input provided: {answer}"),
         Event::ApprovalGranted { scope, .. } => format!("approval granted: {scope}"),
         Event::ApprovalDenied { scope, .. } => format!("approval denied: {scope}"),
         Event::DecisionRequested { point, .. } => {

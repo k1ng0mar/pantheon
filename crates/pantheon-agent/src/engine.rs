@@ -132,6 +132,15 @@ pub enum LoopOutcome {
     },
     /// A budget cap stopped the run.
     BudgetExhausted { cap: &'static str },
+    /// The agent asked the operator a question via the `ask_user` tool.
+    /// The turn parks; the host answers through the supervisor and the
+    /// resumed turn sees the answer as the tool result. `call_id` ties
+    /// the answer back to the exact call.
+    AwaitingInput {
+        call_id: String,
+        question: String,
+        options: Vec<String>,
+    },
     /// The user interrupted the run. Distinct from Denied and from a
     /// provider error: the work was abandoned on purpose, and the run
     /// stays resumable. `reason` is the short human cause.
@@ -163,6 +172,37 @@ fn sberr(msg: String) -> PantheonError {
         "reduce delegation depth or raise the swarm cap",
         "",
     )
+}
+
+/// Parse `ask_user` tool arguments: `{question, options?}`.
+/// Malformed args degrade to the raw text as the question rather than
+/// failing the turn — a confused question is still answerable, a crashed
+/// turn is not.
+fn parse_ask_user_args(args: &str) -> (String, Vec<String>) {
+    let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+    let question = v
+        .get("question")
+        .and_then(|q| q.as_str())
+        .filter(|q| !q.trim().is_empty())
+        .unwrap_or("")
+        .to_string();
+    let question = if question.is_empty() {
+        args.trim().to_string()
+    } else {
+        question
+    };
+    let options = v
+        .get("options")
+        .and_then(|o| o.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| o.as_str())
+                .map(str::to_string)
+                .take(9)
+                .collect()
+        })
+        .unwrap_or_default();
+    (question, options)
 }
 
 fn berr(cap: &'static str) -> PantheonError {
@@ -285,6 +325,24 @@ impl<'a> AgentLoop<'a> {
                     // gate first, count only on Allow.
                     for (i, call) in tool_calls.into_iter().enumerate() {
                         let call_id = format!("call_{}_{}", turns, i);
+                        // `ask_user` is a host-mediated question, not a tool
+                        // execution: it parks the turn for operator input
+                        // before any gate runs, so asking can never itself
+                        // require approval, consume budget, or execute.
+                        if call.name == "ask_user" {
+                            let (question, options) = parse_ask_user_args(&call.args);
+                            self.sink.emit(Event::UserInputRequested {
+                                run_id: self.run_id.clone(),
+                                call_id: call_id.clone(),
+                                question: question.clone(),
+                                options: options.clone(),
+                            });
+                            return Ok(LoopOutcome::AwaitingInput {
+                                call_id,
+                                question,
+                                options,
+                            });
+                        }
                         // Tool gating (escalate-only): the classifier may raise
                         // Allow -> Approval/Deny but never lower Deny -> Allow.
                         // The deterministic host policy is the floor.

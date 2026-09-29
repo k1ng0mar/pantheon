@@ -219,6 +219,25 @@ pub enum Event {
         run_id: String,
         scope: String,
     },
+    /// The agent asked the operator a question via the `ask_user` tool.
+    /// Parks the turn exactly like an approval: the run waits for
+    /// [`Event::UserInputProvided`] and resumes with the answer available
+    /// as the tool result. Rendered as the clarify card (cyan `?`, never
+    /// amber) — visually distinct from approvals.
+    UserInputRequested {
+        run_id: String,
+        call_id: String,
+        question: String,
+        options: Vec<String>,
+    },
+    /// The operator's answer to a [`Event::UserInputRequested`]. The host
+    /// also appends the answer as the `ask_user` tool result so the
+    /// resumed turn sees it in the ledger like any completed tool call.
+    UserInputProvided {
+        run_id: String,
+        call_id: String,
+        answer: String,
+    },
     /// A decision-layer model was consulted at a specific insertion point.
     DecisionRequested {
         run_id: String,
@@ -489,6 +508,26 @@ impl Event {
             Event::ApprovalDenied { run_id: _, scope } => Event::ApprovalDenied {
                 run_id: run_id.to_string(),
                 scope,
+            },
+            Event::UserInputRequested {
+                run_id: _,
+                call_id,
+                question,
+                options,
+            } => Event::UserInputRequested {
+                run_id: run_id.to_string(),
+                call_id,
+                question,
+                options,
+            },
+            Event::UserInputProvided {
+                run_id: _,
+                call_id,
+                answer,
+            } => Event::UserInputProvided {
+                run_id: run_id.to_string(),
+                call_id,
+                answer,
             },
             Event::DecisionRequested {
                 run_id: _,

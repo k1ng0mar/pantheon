@@ -14,6 +14,7 @@ pub mod rpc;
 pub mod serve;
 pub mod session;
 pub mod temporal;
+pub mod tool_config;
 pub mod transport;
 pub mod watchdog;
 
@@ -39,6 +40,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+pub use tool_config::{BrowserToolConfig, WebsearchToolConfig};
 pub use transport::{ApiTransport, UnixSocketTransport};
 
 /// A subscriber to the run's event stream. Cheap to clone, shared across threads.
@@ -662,6 +664,78 @@ impl Supervisor {
             detail: format!("approval denied for {scope}; run remains active"),
         })?;
         Ok(())
+    }
+
+    /// Answer a parked `ask_user` question. Records the answer durably,
+    /// appends it as the `ask_user` tool result (so the resumed turn sees
+    /// it in the ledger like any completed tool call), and leaves the run
+    /// resumable. Mirrors [`Supervisor::grant`].
+    pub fn answer_input(
+        &self,
+        run_id: &str,
+        call_id: &str,
+        answer: &str,
+    ) -> Result<(), PantheonError> {
+        let entries = self.ledger().replay(run_id)?;
+        let requested = entries.iter().any(
+            |e| matches!(&e.event, Event::UserInputRequested { call_id: c, .. } if c == call_id),
+        );
+        if !requested {
+            return Err(rerr(
+                "RT_INPUT_UNKNOWN",
+                format!("run {run_id} has no pending question for call {call_id}"),
+            ));
+        }
+        if entries.iter().any(
+            |e| matches!(&e.event, Event::UserInputProvided { call_id: c, .. } if c == call_id),
+        ) {
+            return Err(rerr(
+                "RT_INPUT_RESOLVED",
+                format!("question {call_id} was already answered"),
+            ));
+        }
+        self.ledger().append(&Event::UserInputProvided {
+            run_id: run_id.into(),
+            call_id: call_id.into(),
+            answer: answer.into(),
+        })?;
+        // The answer rides a ToolMessage so `rebuild_messages` feeds it to
+        // the model as the ask_user result on resume.
+        self.ledger().append(&Event::ToolMessage {
+            run_id: run_id.into(),
+            message: pantheon_api::message::Message::tool(call_id, answer),
+        })?;
+        self.ledger().append(&Event::RunProgress {
+            run_id: run_id.into(),
+            detail: format!("operator answered {call_id}; run resumable"),
+        })?;
+        Ok(())
+    }
+
+    /// Questions still awaiting an operator answer, in request order.
+    /// Exists so a re-entered session re-renders the clarify card —
+    /// the approval equivalent is [`Supervisor::pending_approvals`].
+    pub fn pending_input(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<(String, String, Vec<String>)>, PantheonError> {
+        let entries = self.ledger().replay(run_id)?;
+        let mut answered: Vec<&str> = Vec::new();
+        let mut out: Vec<(String, String, Vec<String>)> = Vec::new();
+        for e in &entries {
+            match &e.event {
+                Event::UserInputRequested {
+                    call_id,
+                    question,
+                    options,
+                    ..
+                } => out.push((call_id.clone(), question.clone(), options.clone())),
+                Event::UserInputProvided { call_id, .. } => answered.push(call_id),
+                _ => {}
+            }
+        }
+        out.retain(|(c, _, _)| !answered.contains(&c.as_str()));
+        Ok(out)
     }
 
     pub fn register_process_group(&self, run_id: &str, pgid: i32) -> Result<(), PantheonError> {
