@@ -424,6 +424,10 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("POST", "runs", id, "fork", "") => runs::fork(app, id, req),
         ("PUT", "runs", id, "title", "") => runs::set_title(app, id, req),
         ("POST", "runs", id, "mode", "") => runs::set_mode(app, id, req),
+        ("POST", "runs", id, "pin", "") => runs::set_pin(app, id, req),
+        ("POST", "runs", id, "archive", "") => runs::set_archive(app, id, req),
+        ("POST", "runs", id, "project", "") => runs::set_project(app, id, req),
+        ("GET", "projects", "", "", "") => runs::projects(app),
         ("POST", "runs", id, "input", "") => runs::answer_input(app, id, req),
         // No catch-all here: only the exact run path prunes. Any other
         // DELETE under /api/runs/:id (e.g. a typoed sub-resource) falls
@@ -1225,6 +1229,161 @@ mod route_tests {
             tool["duration_ms"].as_i64().unwrap_or(-1) >= 0,
             "tool-result rows carry the call duration at the top level"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// List helper: fetch `GET /api/runs<query>` and return the parsed
+    /// `runs` array.
+    fn run_list(app: &App, query: &str) -> serde_json::Value {
+        let req = Request {
+            method: "GET".to_string(),
+            path: "/api/runs".to_string(),
+            query: if query.is_empty() {
+                HashMap::new()
+            } else {
+                query
+                    .split('&')
+                    .filter_map(|pair| {
+                        let (k, v) = pair.split_once('=')?;
+                        Some((k.to_string(), v.to_string()))
+                    })
+                    .collect()
+            },
+            headers: HashMap::new(),
+            body: Vec::new(),
+        };
+        let resp = dispatch(app, &req);
+        assert_eq!(status_of(&resp), 200, "run list must load");
+        let body = match &resp {
+            Response::Buffered { body, .. } => body.clone(),
+            _ => panic!("expected a buffered response"),
+        };
+        serde_json::from_slice::<serde_json::Value>(&body).expect("json body")
+    }
+
+    fn listed_run(list: &serde_json::Value, id: &str) -> Option<serde_json::Value> {
+        list["runs"]
+            .as_array()
+            .expect("runs array")
+            .iter()
+            .find(|r| r["id"] == id)
+            .cloned()
+    }
+
+    /// `POST /api/runs/:id/pin` flips the pinned flag and the run list
+    /// reflects it. Pinning never hides the run.
+    #[test]
+    fn pin_route_sets_flag_on_list() {
+        let (app, dir) = test_app();
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/pin", r#"{"pinned": true}"#),
+        );
+        assert_eq!(status_of(&resp), 200, "pin must succeed");
+        let run = listed_run(&run_list(&app, ""), "run-1").expect("run-1 listed");
+        assert_eq!(run["pinned"], true, "pinned flag must be set");
+        assert_eq!(run["archived"], false, "archived flag must be unset");
+        assert!(
+            run["project"].is_null(),
+            "project must be null when unassigned"
+        );
+        // Unpin again.
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/pin", r#"{"pinned": false}"#),
+        );
+        assert_eq!(status_of(&resp), 200, "unpin must succeed");
+        let run = listed_run(&run_list(&app, ""), "run-1").expect("run-1 listed");
+        assert_eq!(run["pinned"], false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `POST /api/runs/:id/archive` hides the run from the list unless
+    /// `?include_archived=1` is passed; unarchiving restores it.
+    #[test]
+    fn archive_route_hides_run_from_list() {
+        let (app, dir) = test_app();
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/archive", r#"{"archived": true}"#),
+        );
+        assert_eq!(status_of(&resp), 200, "archive must succeed");
+        assert!(
+            listed_run(&run_list(&app, ""), "run-1").is_none(),
+            "archived runs are hidden from the default list"
+        );
+        let run = listed_run(&run_list(&app, "include_archived=1"), "run-1")
+            .expect("archived run listed with ?include_archived=1");
+        assert_eq!(run["archived"], true);
+        // Restore.
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/archive", r#"{"archived": false}"#),
+        );
+        assert_eq!(status_of(&resp), 200, "unarchive must succeed");
+        assert!(
+            listed_run(&run_list(&app, ""), "run-1").is_some(),
+            "restored runs come back in the default list"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `POST /api/runs/:id/project` assigns and unassigns; `GET
+    /// /api/projects` derives `[{name, runs}]` from the runs table.
+    #[test]
+    fn project_route_assigns_and_lists() {
+        let (app, dir) = test_app();
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/project", r#"{"project": "alpha"}"#),
+        );
+        assert_eq!(status_of(&resp), 200, "project assign must succeed");
+        let run = listed_run(&run_list(&app, ""), "run-1").expect("run-1 listed");
+        assert_eq!(run["project"], "alpha");
+        let resp = dispatch(&app, &plain_req("GET", "/api/projects"));
+        assert_eq!(status_of(&resp), 200, "projects must load");
+        let body = match &resp {
+            Response::Buffered { body, .. } => body.clone(),
+            _ => panic!("expected a buffered response"),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        let projects = v["projects"].as_array().expect("projects array");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0]["name"], "alpha");
+        assert_eq!(projects[0]["runs"].as_array().expect("runs array").len(), 1);
+        assert_eq!(projects[0]["runs"][0], "run-1");
+        // Unassign with null.
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/project", r#"{"project": null}"#),
+        );
+        assert_eq!(status_of(&resp), 200, "project unassign must succeed");
+        let resp = dispatch(&app, &plain_req("GET", "/api/projects"));
+        let body = match &resp {
+            Response::Buffered { body, .. } => body.clone(),
+            _ => panic!("expected a buffered response"),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert!(
+            v["projects"].as_array().expect("projects array").is_empty(),
+            "unassigning the only run drops the project"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pin/archive/project on an unknown run 404s like the other
+    /// run-scoped POSTs.
+    #[test]
+    fn pin_archive_project_unknown_run_404s() {
+        let (app, dir) = test_app();
+        for (path, body) in [
+            ("/api/runs/nope/pin", r#"{"pinned": true}"#),
+            ("/api/runs/nope/archive", r#"{"archived": true}"#),
+            ("/api/runs/nope/project", r#"{"project": "alpha"}"#),
+        ] {
+            let resp = dispatch(&app, &json_req("POST", path, body));
+            assert_eq!(status_of(&resp), 404, "{path} must 404");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

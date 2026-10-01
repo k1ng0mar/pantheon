@@ -147,6 +147,9 @@ fn run_json(
     created_ms: i64,
     title: Option<&str>,
     r: &Rollup,
+    project: Option<&str>,
+    pinned: bool,
+    archived: bool,
 ) -> serde_json::Value {
     serde_json::json!({
         "id": run_id,
@@ -165,6 +168,9 @@ fn run_json(
         "approvals_pending": r.approvals_pending,
         "updated_ms": r.updated_ms,
         "last_activity": r.last_activity,
+        "project": project,
+        "pinned": pinned,
+        "archived": archived,
     })
 }
 
@@ -183,7 +189,7 @@ pub fn overview(app: &App) -> Response {
     let mut cost_24h = 0.0f64;
     let mut tokens_24h = 0u64;
     let mut pending_approvals = 0u64;
-    for (id, status, created_ms, _title, _project) in &runs {
+    for (id, status, created_ms, ..) in &runs {
         total += 1;
         *by_status.entry(status.clone()).or_insert(0) += 1;
         let entries = ledger.replay(id).unwrap_or_default();
@@ -223,9 +229,15 @@ pub fn list(app: &App, req: &Request) -> Response {
     let limit = query_usize(&req.query, "limit", 100).min(1000);
     let q = req.query.get("q").map(|s| s.to_lowercase());
     let status_filter = req.query.get("status").cloned();
+    // Archived runs are hidden from the list by default; `?include_archived=1`
+    // brings them back (the dashboard restores or prunes them from there).
+    let include_archived = req.query.get("include_archived").map(String::as_str) == Some("1");
     let mut out = Vec::new();
     let rows = Ledger::pin_home_first(ledger.list_runs(limit * 4).unwrap_or_default());
-    for (id, status, created_ms, title, _project) in rows {
+    for (id, status, created_ms, title, project, pinned, archived) in rows {
+        if archived && !include_archived {
+            continue;
+        }
         if let Some(sf) = &status_filter {
             if &status != sf {
                 continue;
@@ -239,7 +251,16 @@ pub fn list(app: &App, req: &Request) -> Response {
         }
         let entries = ledger.replay(&id).unwrap_or_default();
         let r = rollup(&entries);
-        out.push(run_json(&id, &status, created_ms, title.as_deref(), &r));
+        out.push(run_json(
+            &id,
+            &status,
+            created_ms,
+            title.as_deref(),
+            &r,
+            project.as_deref(),
+            pinned,
+            archived,
+        ));
         if out.len() >= limit {
             break;
         }
@@ -478,12 +499,21 @@ fn detail_value(app: &App, run_id: &str) -> Result<serde_json::Value, Response> 
         .list_runs(MAX_RUNS_SCAN)
         .unwrap_or_default()
         .into_iter()
-        .find(|(id, _, _, _, _)| id == run_id);
-    let (status, created_ms, title) = match header {
-        Some((_, s, c, t, _)) => (s, c, t.unwrap_or_default()),
-        None => ("unknown".to_string(), 0, String::new()),
+        .find(|(id, _, _, _, _, _, _)| id == run_id);
+    let (status, created_ms, title, project, pinned, archived) = match header {
+        Some((_, s, c, t, p, pin, arch)) => (s, c, t.unwrap_or_default(), p, pin, arch),
+        None => ("unknown".to_string(), 0, String::new(), None, false, false),
     };
-    let mut v = run_json(run_id, &status, created_ms, Some(&title), &r);
+    let mut v = run_json(
+        run_id,
+        &status,
+        created_ms,
+        Some(&title),
+        &r,
+        project.as_deref(),
+        pinned,
+        archived,
+    );
     v["transcript"] = serde_json::Value::Array(transcript);
     v["timeline"] = serde_json::Value::Array(timeline);
     // Richer run state the mobile app and dashboard need for a fully
@@ -1462,6 +1492,116 @@ pub fn set_mode(app: &App, run_id: &str, req: &Request) -> Response {
         Ok(()) => json_ok(serde_json::json!({"ok": true, "mode": mode})),
         Err(e) => err_json(500, "LEDGER", &format!("set mode: {e}")),
     }
+}
+
+/// `POST /api/runs/:id/pin`: set the operator-pinned flag.
+/// Body: `{"pinned": true|false}`. Pinning is a visual convenience for
+/// keeping an important run at hand; unlike archiving it never hides
+/// the run from the list.
+pub fn set_pin(app: &App, run_id: &str, req: &Request) -> Response {
+    let body = match body_json(req) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let pinned = match body.get("pinned").and_then(|v| v.as_bool()) {
+        Some(p) => p,
+        None => return bad_json("field \"pinned\" must be a boolean"),
+    };
+    if let Err(r) = known_run(app, run_id) {
+        return r;
+    }
+    let ledger = match ledger(app) {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    match ledger.set_run_pinned(run_id, pinned) {
+        Ok(()) => json_ok(serde_json::json!({"ok": true, "pinned": pinned})),
+        Err(e) => err_json(500, "LEDGER", &format!("pin run: {e}")),
+    }
+}
+
+/// `POST /api/runs/:id/archive`: archive (`{"archived": true}`) or
+/// restore (`{"archived": false}`) a run. Archived runs stay in the
+/// ledger and the detail view; they are just excluded from the run
+/// list unless `?include_archived=1` is passed. Pruning still deletes
+/// them permanently.
+pub fn set_archive(app: &App, run_id: &str, req: &Request) -> Response {
+    let body = match body_json(req) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let archived = match body.get("archived").and_then(|v| v.as_bool()) {
+        Some(a) => a,
+        None => return bad_json("field \"archived\" must be a boolean"),
+    };
+    if let Err(r) = known_run(app, run_id) {
+        return r;
+    }
+    let ledger = match ledger(app) {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    match ledger.set_run_archived(run_id, archived) {
+        Ok(()) => json_ok(serde_json::json!({"ok": true, "archived": archived})),
+        Err(e) => err_json(500, "LEDGER", &format!("archive run: {e}")),
+    }
+}
+
+/// `POST /api/runs/:id/project`: assign the run to a named project
+/// (`{"project": "name"}`), or unassign it (`{"project": null}` or
+/// `{"project": ""}`). Projects are operator-created buckets — a run
+/// belongs to at most one.
+pub fn set_project(app: &App, run_id: &str, req: &Request) -> Response {
+    let body = match body_json(req) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let project = match body.get("project") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => match v.as_str().map(str::trim) {
+            Some(s) if !s.is_empty() => Some(s),
+            _ => return bad_json("field \"project\" must be a string or null"),
+        },
+    };
+    if let Err(r) = known_run(app, run_id) {
+        return r;
+    }
+    let ledger = match ledger(app) {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    match ledger.set_run_project(run_id, project) {
+        Ok(()) => json_ok(serde_json::json!({"ok": true, "project": project})),
+        Err(e) => err_json(500, "LEDGER", &format!("set project: {e}")),
+    }
+}
+
+/// `GET /api/projects`: every named project in use, most-recently-active
+/// first, each with the run ids currently assigned to it. Derived from
+/// the runs table, like everything else.
+pub fn projects(app: &App) -> Response {
+    let ledger = match ledger(app) {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    let names = match ledger.list_projects() {
+        Ok(n) => n,
+        Err(e) => return err_json(500, "LEDGER", &format!("list projects: {e}")),
+    };
+    let mut members: HashMap<String, Vec<String>> = HashMap::new();
+    for (id, _, _, _, project, _, _) in ledger.list_runs(MAX_RUNS_SCAN).unwrap_or_default() {
+        if let Some(p) = project {
+            members.entry(p).or_default().push(id);
+        }
+    }
+    let out: Vec<serde_json::Value> = names
+        .into_iter()
+        .map(|name| {
+            let runs = members.remove(&name).unwrap_or_default();
+            serde_json::json!({"name": name, "runs": runs})
+        })
+        .collect();
+    json_ok(serde_json::json!({"projects": out}))
 }
 
 /// `POST /api/runs/:id/input`: answer an `ask_user` question. Body:

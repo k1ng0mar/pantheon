@@ -1402,7 +1402,7 @@ timeout_ms = 5000
                     Ok(rows) if rows.is_empty() => println!("no runs yet"),
                     Ok(rows) => {
                         println!("{:<34} {:<18} TITLE", "RUN", "STATUS");
-                        for (run_id, status, _ts, title, _project) in rows {
+                        for (run_id, status, _ts, title, ..) in rows {
                             // Same status vocabulary as the TUI `/runs` view,
                             // so the two never disagree about a run.
                             println!("{run_id:<34} {status:<18} {}", title.unwrap_or_default());

@@ -201,7 +201,9 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS runs (
   title TEXT,
   agent_id TEXT,
   project TEXT,
-  cancel_intent INTEGER NOT NULL DEFAULT 0
+  cancel_intent INTEGER NOT NULL DEFAULT 0,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  archived INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -240,10 +242,21 @@ CREATE TABLE IF NOT EXISTS browser_activity (
   ts_ms INTEGER NOT NULL
 );";
 
-/// One row of [`Ledger::list_runs`]: `(run_id, status, created_ms, title, project)`.
+/// One row of [`Ledger::list_runs`]:
+/// `(run_id, status, created_ms, title, project, pinned, archived)`.
 /// `title` is `None` when the run has never been titled; `project` is
-/// `None` when the run was never assigned to a named project.
-pub type RunListing = (String, String, i64, Option<String>, Option<String>);
+/// `None` when the run was never assigned to a named project; `pinned`
+/// and `archived` are operator flags (see `set_run_pinned` /
+/// `set_run_archived`).
+pub type RunListing = (
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    bool,
+    bool,
+);
 
 /// Well-known id of the permanent home session: the pinned, never-deleted
 /// session that is the default delivery target for scheduled jobs and the
@@ -305,6 +318,12 @@ fn migrate(conn: &Connection) -> Result<(), PantheonError> {
     // 1 = wind down. `reopen_run` clears it so a continued run never
     // inherits a stale flag.
     add("ALTER TABLE runs ADD COLUMN cancel_intent INTEGER NOT NULL DEFAULT 0")?;
+    // Operator session metadata: `pinned` keeps a run visually pinned
+    // in the session picker; `archived` hides it from the run list
+    // unless explicitly included. Direct writes like `project`: operator
+    // metadata, not agent events.
+    add("ALTER TABLE runs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")?;
+    add("ALTER TABLE runs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")?;
     Ok(())
 }
 
@@ -889,7 +908,7 @@ impl Ledger {
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT run_id, status, created_ms, title, project FROM runs ORDER BY created_ms DESC, rowid DESC LIMIT ?1",
+                "SELECT run_id, status, created_ms, title, project, pinned, archived FROM runs ORDER BY created_ms DESC, rowid DESC LIMIT ?1",
             )
             .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
         let rows = stmt
@@ -900,6 +919,8 @@ impl Ledger {
                     r.get::<_, i64>(2)?,
                     r.get::<_, Option<String>>(3)?,
                     r.get::<_, Option<String>>(4)?,
+                    r.get::<_, i64>(5)? != 0,
+                    r.get::<_, i64>(6)? != 0,
                 ))
             })
             .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
@@ -944,7 +965,7 @@ impl Ledger {
     pub fn pin_home_first(mut listings: Vec<RunListing>) -> Vec<RunListing> {
         if let Some(pos) = listings
             .iter()
-            .position(|(id, _, _, _, _)| id == HOME_SESSION_ID)
+            .position(|(id, _, _, _, _, _, _)| id == HOME_SESSION_ID)
         {
             let home = listings.remove(pos);
             listings.insert(0, home);
@@ -1242,6 +1263,71 @@ impl Ledger {
         Ok(())
     }
 
+    /// Whether the run is operator-pinned. A missing row or an unset
+    /// flag reads as `false`.
+    pub fn run_pinned(&self, run_id: &str) -> Result<bool, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.query_row(
+            "SELECT pinned FROM runs WHERE run_id=?1",
+            params![run_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| err("LEDGER_STATUS", e.to_string()))
+        .map(|o| o.map(|v| v != 0).unwrap_or(false))
+    }
+
+    /// Whether the run is archived. A missing row or an unset flag reads
+    /// as `false`.
+    pub fn run_archived(&self, run_id: &str) -> Result<bool, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.query_row(
+            "SELECT archived FROM runs WHERE run_id=?1",
+            params![run_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| err("LEDGER_STATUS", e.to_string()))
+        .map(|o| o.map(|v| v != 0).unwrap_or(false))
+    }
+
+    /// Set the operator-pinned flag on a run. Direct write like
+    /// `set_run_mode`: operator metadata, not an agent event.
+    pub fn set_run_pinned(&self, run_id: &str, pinned: bool) -> Result<(), PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.execute(
+            "UPDATE runs SET pinned=?2 WHERE run_id=?1",
+            params![run_id, i64::from(pinned)],
+        )
+        .map_err(|e| err("LEDGER_STATUS", e.to_string()))?;
+        Ok(())
+    }
+
+    /// Set the archived flag on a run: `true` hides it from the run list
+    /// unless explicitly included, `false` restores it. Direct write
+    /// like `set_run_mode`: operator metadata, not an agent event.
+    pub fn set_run_archived(&self, run_id: &str, archived: bool) -> Result<(), PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.execute(
+            "UPDATE runs SET archived=?2 WHERE run_id=?1",
+            params![run_id, i64::from(archived)],
+        )
+        .map_err(|e| err("LEDGER_STATUS", e.to_string()))?;
+        Ok(())
+    }
+
     /// Reopen a terminal run for continued conversation. Only terminal
     /// statuses flip back to running; a running/awaiting run is untouched
     /// (the caller then follows the normal path). Returns whether a
@@ -1436,7 +1522,7 @@ impl Ledger {
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT run_id, status, created_ms, title, project FROM runs \
+                "SELECT run_id, status, created_ms, title, project, pinned, archived FROM runs \
                  WHERE status IN ('running','awaiting_approval') \
                  ORDER BY created_ms ASC",
             )
@@ -1449,6 +1535,8 @@ impl Ledger {
                     r.get::<_, i64>(2)?,
                     r.get::<_, Option<String>>(3)?,
                     r.get::<_, Option<String>>(4)?,
+                    r.get::<_, i64>(5)? != 0,
+                    r.get::<_, i64>(6)? != 0,
                 ))
             })
             .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
@@ -1578,7 +1666,7 @@ impl Ledger {
     /// first.
     pub fn settle_expired_runs(&self) -> Result<Vec<String>, PantheonError> {
         let mut settled = Vec::new();
-        for (run_id, status, _, _, _) in self.stuck_runs()? {
+        for (run_id, status, _, _, _, _, _) in self.stuck_runs()? {
             if status != "running" {
                 continue;
             }
@@ -1877,9 +1965,38 @@ mod project_tests {
         l.set_run_project("r1", Some("alpha")).unwrap();
         let runs = l.list_runs(10).unwrap();
         assert_eq!(runs.len(), 1);
-        let (id, _status, _ts, _title, project) = &runs[0];
+        let (id, _status, _ts, _title, project, pinned, archived) = &runs[0];
         assert_eq!(id, "r1");
         assert_eq!(project.as_deref(), Some("alpha"));
+        assert!(!pinned, "new runs are not pinned");
+        assert!(!archived, "new runs are not archived");
+    }
+
+    #[test]
+    fn pinned_archived_roundtrip() {
+        let l = mem();
+        start(&l, "r1");
+        assert!(!l.run_pinned("r1").unwrap());
+        assert!(!l.run_archived("r1").unwrap());
+        l.set_run_pinned("r1", true).unwrap();
+        l.set_run_archived("r1", true).unwrap();
+        assert!(l.run_pinned("r1").unwrap());
+        assert!(l.run_archived("r1").unwrap());
+        let (id, _status, _ts, _title, _project, pinned, archived) = &l.list_runs(10).unwrap()[0];
+        assert_eq!(id, "r1");
+        assert!(*pinned);
+        assert!(*archived);
+        l.set_run_pinned("r1", false).unwrap();
+        l.set_run_archived("r1", false).unwrap();
+        assert!(!l.run_pinned("r1").unwrap());
+        assert!(!l.run_archived("r1").unwrap());
+    }
+
+    #[test]
+    fn pinned_archived_unknown_run_is_false() {
+        let l = mem();
+        assert!(!l.run_pinned("nope").unwrap());
+        assert!(!l.run_archived("nope").unwrap());
     }
 }
 
