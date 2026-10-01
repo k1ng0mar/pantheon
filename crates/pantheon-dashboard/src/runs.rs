@@ -350,6 +350,63 @@ fn timeline_item(
     serde_json::json!({"seq": e.seq, "ts_ms": e.ts_ms, "kind": kind, "detail": detail})
 }
 
+/// Duration of a tool call from the ledger's own timestamps:
+/// ToolCompleted minus ToolStarted by call_id. `None` when either row is
+/// missing — a call that never started (plan-mode refusal) or never
+/// completed (killed mid-call, crash).
+fn tool_duration_ms(
+    call_id: &str,
+    tool_starts: &HashMap<String, i64>,
+    tool_ends: &HashMap<String, i64>,
+) -> Option<i64> {
+    match (tool_starts.get(call_id), tool_ends.get(call_id)) {
+        (Some(s), Some(e)) => Some(e.saturating_sub(*s)),
+        _ => None,
+    }
+}
+
+/// One transcript message item: the wire fields (`type`, `role`,
+/// `content`) plus the metadata the ledger already persists but the
+/// old serialization dropped — `ts_ms`, the model's tool requests
+/// (`tool_calls`), and the matching tool-result id (`tool_call_id`).
+/// Tool arguments go through the same [`redact`] pass as message
+/// content, so a secret pasted into a tool arg never reaches the
+/// browser.
+fn transcript_message(
+    m: &pantheon_api::message::Message,
+    tool_starts: &HashMap<String, i64>,
+    tool_ends: &HashMap<String, i64>,
+) -> serde_json::Value {
+    let tool_calls: Vec<serde_json::Value> = m
+        .tool_calls
+        .iter()
+        .map(|tc| {
+            serde_json::json!({
+                "id": tc.id,
+                "name": tc.name,
+                "arguments": redact(&tc.arguments),
+                "started_ms": tool_starts.get(&tc.id).copied(),
+                "duration_ms": tool_duration_ms(&tc.id, tool_starts, tool_ends),
+            })
+        })
+        .collect();
+    let mut item = serde_json::json!({
+        "type": "message",
+        "role": format!("{:?}", m.role).to_lowercase(),
+        "content": redact(&m.content),
+        "ts_ms": m.ts_ms,
+        "tool_calls": tool_calls,
+        "tool_call_id": m.tool_call_id,
+    });
+    // Tool-result rows carry the call duration at the top level too: the
+    // assistant row above holds the request, the timing belongs to the
+    // pair and shouldn't need a second lookup to find.
+    if let Some(id) = &m.tool_call_id {
+        item["duration_ms"] = serde_json::json!(tool_duration_ms(id, tool_starts, tool_ends));
+    }
+    item
+}
+
 /// Compact duration for tool timeline rows: `42ms`, `3.2s`.
 fn fmt_tool_ms(ms: i64) -> String {
     if ms < 1000 {
@@ -385,27 +442,32 @@ fn detail_value(app: &App, run_id: &str) -> Result<serde_json::Value, Response> 
         Err(e) => return Err(err_json(500, "LEDGER", &format!("replay: {e}"))),
     };
     let r = rollup(&entries);
-    let transcript: Vec<serde_json::Value> = rebuild_transcript(entries.clone())
-        .into_iter()
-        .map(|item| match item {
-            TranscriptItem::Message(m) => serde_json::json!({
-                "type": "message",
-                "role": format!("{:?}", m.role).to_lowercase(),
-                "content": redact(&m.content),
-            }),
-            TranscriptItem::Reasoning(t) => serde_json::json!({
-                "type": "reasoning",
-                "content": redact(&t),
-            }),
-        })
-        .collect();
-    // Tool call durations come from the ledger's own timestamps:
-    // match each ToolCompleted to its ToolStarted by call_id.
-    let tool_starts: std::collections::HashMap<String, i64> = entries
+    // Tool call timing comes from the ledger's own timestamps: match
+    // each ToolCompleted to its ToolStarted by call_id. The transcript
+    // carries the timing per tool call so clients don't have to walk the
+    // timeline to find it; the timeline below reuses the same maps.
+    let tool_starts: HashMap<String, i64> = entries
         .iter()
         .filter_map(|e| match &e.event {
             Event::ToolStarted { call_id, .. } => Some((call_id.clone(), e.ts_ms)),
             _ => None,
+        })
+        .collect();
+    let tool_ends: HashMap<String, i64> = entries
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::ToolCompleted { call_id, .. } => Some((call_id.clone(), e.ts_ms)),
+            _ => None,
+        })
+        .collect();
+    let transcript: Vec<serde_json::Value> = rebuild_transcript(entries.clone())
+        .into_iter()
+        .map(|item| match item {
+            TranscriptItem::Message(m) => transcript_message(&m, &tool_starts, &tool_ends),
+            TranscriptItem::Reasoning(t) => serde_json::json!({
+                "type": "reasoning",
+                "content": redact(&t),
+            }),
         })
         .collect();
     let timeline: Vec<serde_json::Value> = entries
