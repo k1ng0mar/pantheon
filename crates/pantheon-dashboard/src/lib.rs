@@ -741,6 +741,8 @@ fn open_browser(url: &str) {
 mod route_tests {
     use super::*;
     use pantheon_api::events::Event;
+    use pantheon_api::message::{Message, ToolCallRef};
+    use pantheon_api::provenance::Provenance;
     use pantheon_storage::Ledger;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1138,6 +1140,91 @@ mod route_tests {
                 _ => panic!("{method}: expected a buffered response"),
             }
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The run detail transcript carries the message metadata the ledger
+    /// already persists: `ts_ms`, per-request `tool_calls` with
+    /// ledger-derived `started_ms`/`duration_ms`, and `tool_call_id` /
+    /// top-level `duration_ms` on tool-result rows. Arguments stay on the
+    /// redaction pass.
+    #[test]
+    fn run_detail_transcript_carries_tool_timing() {
+        let (app, dir) = test_app();
+        let ledger = Ledger::open(&dir.join("ledger.db")).expect("open ledger");
+        let mut assistant = Message::assistant_tool_calls(vec![ToolCallRef {
+            id: "call_1_0".to_string(),
+            name: "shell".to_string(),
+            arguments: "{\"cmd\": \"ls\"}".to_string(),
+        }]);
+        assistant.ts_ms = Some(1000);
+        ledger
+            .append(&Event::AssistantMessage {
+                run_id: "run-1".to_string(),
+                message: assistant,
+            })
+            .expect("append AssistantMessage");
+        ledger
+            .append(&Event::ToolStarted {
+                run_id: "run-1".to_string(),
+                call_id: "call_1_0".to_string(),
+                tool: "shell".to_string(),
+                args: "{\"cmd\": \"ls\"}".to_string(),
+                provenance: Provenance::system("test"),
+            })
+            .expect("append ToolStarted");
+        ledger
+            .append(&Event::ToolCompleted {
+                run_id: "run-1".to_string(),
+                call_id: "call_1_0".to_string(),
+                tool: "shell".to_string(),
+                provenance: Provenance::system("test"),
+            })
+            .expect("append ToolCompleted");
+        let mut tool = Message::tool("call_1_0", "total 0");
+        tool.ts_ms = Some(2000);
+        ledger
+            .append(&Event::ToolMessage {
+                run_id: "run-1".to_string(),
+                message: tool,
+            })
+            .expect("append ToolMessage");
+        drop(ledger);
+        let resp = dispatch(&app, &plain_req("GET", "/api/runs/run-1"));
+        assert_eq!(status_of(&resp), 200, "detail must load");
+        let body = match &resp {
+            Response::Buffered { body, .. } => body.clone(),
+            _ => panic!("expected a buffered response"),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        let transcript = v["transcript"].as_array().expect("transcript array");
+        assert_eq!(transcript.len(), 2, "assistant + tool rows");
+        let assistant = &transcript[0];
+        assert_eq!(assistant["type"], "message");
+        assert_eq!(assistant["role"], "assistant");
+        assert_eq!(assistant["ts_ms"], 1000);
+        let calls = assistant["tool_calls"]
+            .as_array()
+            .expect("tool_calls array");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "call_1_0");
+        assert_eq!(calls[0]["name"], "shell");
+        assert!(
+            calls[0]["started_ms"].is_number(),
+            "started_ms must come from the ToolStarted row"
+        );
+        assert!(
+            calls[0]["duration_ms"].as_i64().unwrap_or(-1) >= 0,
+            "duration_ms must come from ToolStarted -> ToolCompleted"
+        );
+        let tool = &transcript[1];
+        assert_eq!(tool["role"], "tool");
+        assert_eq!(tool["tool_call_id"], "call_1_0");
+        assert_eq!(tool["ts_ms"], 2000);
+        assert!(
+            tool["duration_ms"].as_i64().unwrap_or(-1) >= 0,
+            "tool-result rows carry the call duration at the top level"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
