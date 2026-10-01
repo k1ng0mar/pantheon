@@ -1578,7 +1578,8 @@ pub fn set_project(app: &App, run_id: &str, req: &Request) -> Response {
 
 /// `GET /api/projects`: every named project in use, most-recently-active
 /// first, each with the run ids currently assigned to it. Derived from
-/// the runs table, like everything else.
+/// the runs table, like everything else. Archived runs don't count (see
+/// the membership loop below).
 pub fn projects(app: &App) -> Response {
     let ledger = match ledger(app) {
         Ok(l) => l,
@@ -1589,16 +1590,23 @@ pub fn projects(app: &App) -> Response {
         Err(e) => return err_json(500, "LEDGER", &format!("list projects: {e}")),
     };
     let mut members: HashMap<String, Vec<String>> = HashMap::new();
-    for (id, _, _, _, project, _, _) in ledger.list_runs(MAX_RUNS_SCAN).unwrap_or_default() {
+    for (id, _, _, _, project, _, archived) in ledger.list_runs(MAX_RUNS_SCAN).unwrap_or_default() {
+        // Archived runs are hidden work: they neither keep a project
+        // listed nor count toward its membership. Archiving a project's
+        // last visible run drops the project until a run is restored.
+        if archived {
+            continue;
+        }
         if let Some(p) = project {
             members.entry(p).or_default().push(id);
         }
     }
     let out: Vec<serde_json::Value> = names
         .into_iter()
-        .map(|name| {
-            let runs = members.remove(&name).unwrap_or_default();
-            serde_json::json!({"name": name, "runs": runs})
+        .filter_map(|name| {
+            members
+                .remove(&name)
+                .map(|runs| serde_json::json!({"name": name, "runs": runs}))
         })
         .collect();
     json_ok(serde_json::json!({"projects": out}))

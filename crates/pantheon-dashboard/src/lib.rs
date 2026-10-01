@@ -1371,6 +1371,52 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Archived runs don't keep a project listed: archiving a project's
+    /// last visible run drops it from `GET /api/projects` until a run is
+    /// restored.
+    #[test]
+    fn projects_exclude_archived_runs() {
+        let (app, dir) = test_app();
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/project", r#"{"project": "alpha"}"#),
+        );
+        assert_eq!(status_of(&resp), 200, "project assign must succeed");
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/archive", r#"{"archived": true}"#),
+        );
+        assert_eq!(status_of(&resp), 200, "archive must succeed");
+        let resp = dispatch(&app, &plain_req("GET", "/api/projects"));
+        assert_eq!(status_of(&resp), 200, "projects must load");
+        let body = match &resp {
+            Response::Buffered { body, .. } => body.clone(),
+            _ => panic!("expected a buffered response"),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert!(
+            v["projects"].as_array().expect("projects array").is_empty(),
+            "a project whose only run is archived must not be listed"
+        );
+        // Restoring the run brings the project back.
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/archive", r#"{"archived": false}"#),
+        );
+        assert_eq!(status_of(&resp), 200, "unarchive must succeed");
+        let resp = dispatch(&app, &plain_req("GET", "/api/projects"));
+        let body = match &resp {
+            Response::Buffered { body, .. } => body.clone(),
+            _ => panic!("expected a buffered response"),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        let projects = v["projects"].as_array().expect("projects array");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0]["name"], "alpha");
+        assert_eq!(projects[0]["runs"][0], "run-1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Pin/archive/project on an unknown run 404s like the other
     /// run-scoped POSTs.
     #[test]
