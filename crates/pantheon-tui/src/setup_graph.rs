@@ -10,22 +10,27 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Section {
     Entry,
-    Profile,
     Provider,
     Model,
     Reasoning,
     Workspace,
     Execution,
     DockerNetwork,
-    Permissions,
     Gateways,
     Tools,
+    /// The skill-dependencies screen: every third-party package the
+    /// skill library needs, detected with install-or-skip per missing
+    /// item. Skills are mode-independent, so this screen runs in both
+    /// Recommended and Full.
+    SkillDeps,
     Browser,
     WebSearch,
     Tts,
     Memory,
+    ComputerUse,
     Extensions,
     Fallback,
+    ServiceInstall,
     Review,
     Provision,
     Done,
@@ -36,22 +41,23 @@ impl Section {
     pub fn label(self) -> &'static str {
         match self {
             Section::Entry => "entry",
-            Section::Profile => "profile",
             Section::Provider => "model",
             Section::Model => "model",
             Section::Reasoning => "reasoning",
             Section::Workspace => "workspace",
             Section::Execution => "execution",
             Section::DockerNetwork => "network",
-            Section::Permissions => "permissions",
             Section::Gateways => "gateways",
             Section::Tools => "tools",
+            Section::SkillDeps => "skill-deps",
             Section::Browser => "browser",
             Section::WebSearch => "search",
             Section::Tts => "speech",
             Section::Memory => "memory",
+            Section::ComputerUse => "computer",
             Section::Extensions => "extensions",
             Section::Fallback => "fallback",
+            Section::ServiceInstall => "service",
             Section::Review => "review",
             Section::Provision => "install",
             Section::Done => "ready",
@@ -62,8 +68,9 @@ impl Section {
 /// Which entry mode the user chose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Minimum decisions to get a usable agent.
-    Quick,
+    /// Minimum decisions: pick provider+model, everything else gets
+    /// recommended defaults.
+    Recommended,
     /// Complete runtime, skipping irrelevant sections automatically.
     Full,
     /// Create the runtime without configuring agent/model/tooling.
@@ -80,8 +87,8 @@ pub struct Answers {
     pub browser_enabled: bool,
     pub web_search_enabled: bool,
     pub tts_enabled: bool,
-    pub tools_enabled: bool,
     pub memory_enabled: bool,
+    pub computer_use_enabled: bool,
     pub gateways_enabled: bool,
     pub extensions_enabled: bool,
     pub fallback_enabled: bool,
@@ -97,7 +104,7 @@ pub struct Answers {
 /// not exist yet is omitted, so setup can never offer a choice the runtime
 /// cannot honor.
 pub fn sections(a: &Answers) -> Vec<Section> {
-    let mode = a.mode.unwrap_or(Mode::Quick);
+    let mode = a.mode.unwrap_or(Mode::Recommended);
     let mut out = vec![Section::Entry];
 
     match mode {
@@ -111,24 +118,34 @@ pub fn sections(a: &Answers) -> Vec<Section> {
             ]);
             return out;
         }
-        Mode::Quick => {
+        Mode::Recommended => {
+            // Fixed provider screens, no Tools screen: the recommended
+            // toolset is every group except Voice (STT/TTS are skipped
+            // entirely), and the provider screens are driven by it, not
+            // by tool answers. Memory native is keyless, so its screen
+            // records silently.
             out.extend([
-                Section::Profile,
                 Section::Provider,
                 Section::Model,
-                Section::Permissions,
+                Section::WebSearch,
+                Section::Browser,
                 Section::Memory,
+                Section::ComputerUse,
+                // Skills work the same in every mode, so their
+                // third-party packages are resolved here too.
+                Section::SkillDeps,
+                // The service-install permission screen: one question,
+                // after every other screen, in both agent modes.
+                Section::ServiceInstall,
+                Section::Review,
+                Section::Provision,
+                Section::Done,
             ]);
-            if a.fallback_enabled {
-                out.push(Section::Fallback);
-            }
-            out.extend([Section::Review, Section::Provision, Section::Done]);
             return out;
         }
         Mode::Full => {}
     }
 
-    out.push(Section::Profile);
     out.push(Section::Provider);
     out.push(Section::Model);
     // Reasoning is offered only for a model that declares it, so the screen
@@ -141,13 +158,18 @@ pub fn sections(a: &Answers) -> Vec<Section> {
     if a.execution_is_docker {
         out.push(Section::DockerNetwork);
     }
-    out.push(Section::Permissions);
     if a.gateways_enabled {
         out.push(Section::Gateways);
     }
-    if a.tools_enabled {
-        out.push(Section::Tools);
-    }
+    // The Tools screen always runs in Full: it is the one place the user
+    // sees every capability, and its answers gate the provider screens
+    // below. Policy stays the default coder preset — there is no
+    // permissions screen anymore.
+    out.push(Section::Tools);
+    // Skill dependencies come right after the Tools screen: the skills
+    // are part of the toolset, so their third-party packages are
+    // resolved before the provider screens.
+    out.push(Section::SkillDeps);
     if a.browser_enabled {
         out.push(Section::Browser);
     }
@@ -160,12 +182,18 @@ pub fn sections(a: &Answers) -> Vec<Section> {
     if a.memory_enabled {
         out.push(Section::Memory);
     }
+    if a.computer_use_enabled {
+        out.push(Section::ComputerUse);
+    }
     if a.extensions_enabled {
         out.push(Section::Extensions);
     }
     if a.fallback_enabled {
         out.push(Section::Fallback);
     }
+    // The service-install permission screen: the last real screen in
+    // Full, after every provider screen.
+    out.push(Section::ServiceInstall);
     out.extend([Section::Review, Section::Provision, Section::Done]);
     out
 }

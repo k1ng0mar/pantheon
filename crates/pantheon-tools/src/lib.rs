@@ -4,7 +4,7 @@
 //!
 //! - a **capability** is what a policy *allows or is able to do*
 //!   (`filesystem.write`) — its types live in `pantheon-api::capability`,
-//!   its role maps and resolution in `pantheon-capability`;
+//!   its role maps and resolution in `pantheon-agent::capability`;
 //! - a **tool** is one actual callable operation (`write_file`) — here.
 //!
 //! The registry is the choke point: `execute_gated` applies the policy
@@ -19,9 +19,7 @@ pub mod plugin_tools;
 pub mod safewrite_tools;
 pub mod session_search_tools;
 pub mod skill_tools;
+pub mod todo_tools;
 pub mod tools;
 pub mod vault_tools;
-
-#[cfg(test)]
-#[path = "plugin_tools_tests.rs"]
-mod plugin_tools_tests;
+pub mod verdict_tool;

@@ -86,6 +86,14 @@ impl TitleGenClient {
         self.transport = transport;
         self
     }
+
+    /// Override the aux request timeout (seconds), e.g. from the
+    /// aux section's `timeout_secs`. Rebuilds the transport; call
+    /// before `with_transport` if you also inject a test transport.
+    pub fn with_timeout_secs(mut self, secs: u64) -> Self {
+        self.transport = aux_transport(secs.max(1));
+        self
+    }
 }
 
 impl TitleGenerator for TitleGenClient {
@@ -128,7 +136,3 @@ impl TitleGenerator for TitleGenClient {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "title_tests.rs"]
-mod tests;

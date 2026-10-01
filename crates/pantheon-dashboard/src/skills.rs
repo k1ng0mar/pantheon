@@ -8,17 +8,14 @@
 //! skills (under `<data_dir>/skills`); foreign scopes (hermes, claude,
 //! …) can be disabled but never deleted by the dashboard.
 
-use crate::server::{Request, Response};
 use crate::{bad_json, body_json, err_json, json_ok, App};
 use pantheon_exec::skills::{
     disabled_skill_names, discover_skills_ext, import_skill_from_url, import_skills_from_repo,
     set_skill_disabled,
 };
-use std::path::PathBuf;
+use pantheon_gateway::http::{Request, Response};
 
-fn project_root() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-}
+use crate::util::project_root;
 
 /// `GET /api/skills?scope=pantheon|external`
 pub fn list(app: &App, req: &Request) -> Response {

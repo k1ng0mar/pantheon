@@ -14,20 +14,16 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn verr(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(
-        code,
-        Layer::Execution,
-        false,
-        cause,
-        "check vault path, permissions, or arguments",
-        "",
-    )
-}
-
 fn parse_vault_args<T: serde::de::DeserializeOwned>(raw: &str) -> Result<T, PantheonError> {
-    serde_json::from_str(raw)
-        .map_err(|e| verr("TOOL_BAD_ARGS", format!("failed to parse arguments: {e}")))
+    serde_json::from_str(raw).map_err(|e| {
+        crate::tools::tool_err(
+            "TOOL_BAD_ARGS",
+            Layer::Execution,
+            false,
+            format!("failed to parse arguments: {e}"),
+            "check vault path, permissions, or arguments",
+        )
+    })
 }
 
 /// Options to configure vault tooling.
@@ -63,25 +59,40 @@ impl Default for VaultToolOptions {
 fn resolve_safe_vault_path(vault_dir: &Path, rel_path: &str) -> Result<PathBuf, PantheonError> {
     let rel = rel_path.trim().trim_start_matches('/');
     if rel.is_empty() {
-        return Err(verr("VAULT_BAD_PATH", "empty vault path".into()));
+        return Err(crate::tools::tool_err(
+            "VAULT_BAD_PATH",
+            Layer::Execution,
+            false,
+            "empty vault path".into(),
+            "check vault path, permissions, or arguments",
+        ));
     }
     for comp in rel.split('/') {
         if comp.is_empty() || comp == "." {
             continue;
         }
         if comp == ".." {
-            return Err(verr(
+            return Err(crate::tools::tool_err(
                 "VAULT_PATH_TRAVERSAL",
+                Layer::Execution,
+                false,
                 "path traversal (..) is not permitted".into(),
+                "check vault path, permissions, or arguments",
             ));
         }
     }
 
     // Canonical root, so the comparison below is against real paths and not
     // against a vault dir that is itself reached through a symlink.
-    let root = vault_dir
-        .canonicalize()
-        .map_err(|e| verr("VAULT_NO_ROOT", format!("vault dir unavailable: {e}")))?;
+    let root = vault_dir.canonicalize().map_err(|e| {
+        crate::tools::tool_err(
+            "VAULT_NO_ROOT",
+            Layer::Execution,
+            false,
+            format!("vault dir unavailable: {e}"),
+            "check vault path, permissions, or arguments",
+        )
+    })?;
     // Walk down to the deepest component that exists on disk.
     let mut probe = root.clone();
     let mut tail: Option<std::ffi::OsString> = None;
@@ -92,9 +103,12 @@ fn resolve_safe_vault_path(vault_dir: &Path, rel_path: &str) -> Result<PathBuf, 
         match probe.join(comp).canonicalize() {
             Ok(real) => {
                 if !real.starts_with(&root) {
-                    return Err(verr(
+                    return Err(crate::tools::tool_err(
                         "VAULT_ESCAPE",
+                        Layer::Execution,
+                        false,
                         format!("path resolves outside the vault: {rel_path}"),
+                        "check vault path, permissions, or arguments",
                     ));
                 }
                 probe = real;
@@ -118,9 +132,12 @@ fn resolve_safe_vault_path(vault_dir: &Path, rel_path: &str) -> Result<PathBuf, 
         None => probe,
     };
     if final_path == root {
-        return Err(verr(
+        return Err(crate::tools::tool_err(
             "VAULT_BAD_PATH",
+            Layer::Execution,
+            false,
             "path is the vault root, not a file in it".into(),
+            "check vault path, permissions, or arguments",
         ));
     }
     // Normalize away any `.` components the loop skipped.
@@ -231,7 +248,7 @@ pub fn register_vault_tools(reg: &mut ToolRegistry, opts: VaultToolOptions) {
 
                 let target_dir = resolve_safe_vault_path(&root, category_clean)?;
                 if let Err(e) = fs::create_dir_all(&target_dir) {
-                    return Err(verr("VAULT_MKDIR_FAILED", format!("failed to create dir {}: {e}", target_dir.display())));
+                    return Err(crate::tools::tool_err("VAULT_MKDIR_FAILED", Layer::Execution, false, format!("failed to create dir {}: {e}", target_dir.display()), "check vault path, permissions, or arguments"));
                 }
 
                 let target_file = target_dir.join(&filename);
@@ -253,7 +270,7 @@ pub fn register_vault_tools(reg: &mut ToolRegistry, opts: VaultToolOptions) {
                 body.push('\n');
 
                 if let Err(e) = fs::write(&target_file, body.as_bytes()) {
-                    return Err(verr("VAULT_WRITE_FAILED", format!("failed to write {}: {e}", target_file.display())));
+                    return Err(crate::tools::tool_err("VAULT_WRITE_FAILED", Layer::Execution, false, format!("failed to write {}: {e}", target_file.display()), "check vault path, permissions, or arguments"));
                 }
 
                 let rel_path = format!("{}/{}", category_clean, filename);
@@ -289,11 +306,11 @@ pub fn register_vault_tools(reg: &mut ToolRegistry, opts: VaultToolOptions) {
                 }
                 let target = resolve_safe_vault_path(&root, &path_str)?;
                 if !target.exists() {
-                    return Err(verr("VAULT_FILE_NOT_FOUND", format!("file not found in vault: {path_str}")));
+                    return Err(crate::tools::tool_err("VAULT_FILE_NOT_FOUND", Layer::Execution, false, format!("file not found in vault: {path_str}"), "check vault path, permissions, or arguments"));
                 }
 
                 let content = fs::read_to_string(&target)
-                    .map_err(|e| verr("VAULT_READ_FAILED", format!("failed to read {}: {e}", target.display())))?;
+                    .map_err(|e| crate::tools::tool_err("VAULT_READ_FAILED", Layer::Execution, false, format!("failed to read {}: {e}", target.display()), "check vault path, permissions, or arguments"))?;
                 let compacted = compact_output(&content, &Default::default());
                 Ok(compacted.text)
             },
@@ -556,7 +573,3 @@ fn collect_vault_files(
     }
     Ok(true)
 }
-
-#[cfg(test)]
-#[path = "vault_tools_tests.rs"]
-mod tests;

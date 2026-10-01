@@ -1,0 +1,10 @@
+name: hookify
+version: "1.0.0"
+description: User-defined rules for tool calls. Write rules as markdown files in rules/ (block dangerous actions, warn on sensitive ones); a deterministic session-end suggester drafts new disabled rules from patterns it saw. Adapted from anthropics/claude-plugins-official hookify (Apache-2.0). No network, no model calls.
+author: "Pantheon (adapted from anthropics/claude-plugins-official)"
+license: "Apache-2.0"
+enabled: false
+provides_hooks:
+  - pre_tool_call
+  - transform_tool_result
+  - on_session_end

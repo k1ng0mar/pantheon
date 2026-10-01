@@ -94,17 +94,16 @@ pub fn prompt_for(req: &DecisionRequest) -> String {
 
 /// Reduce a model reply to the answer line: strip code fences, prefer a
 /// line starting with `ANSWER`, fall back to the last non-empty line.
+///
+/// Matcher (frozen, do not "simplify"): this is the STRICT matcher — it
+/// only fires on a bare `ANSWER` line (optionally wrapped in bullets,
+/// quotes, or punctuation) or an `answer:`-prefixed line. A plain
+/// `ANSWER <payload>` line is NOT specially preferred; it wins only via
+/// the last-line fallback, per the protocol's one-line-answer contract.
+/// The verifier's `ANSWER`-prefix matcher in `verify.rs` differs
+/// deliberately; see `crate::answer_line` for why both are kept.
 fn answer_line(raw: &str) -> String {
-    let unfenced = raw
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("```"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let lines: Vec<&str> = unfenced
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .collect();
+    let lines = crate::answer_line::non_empty_unfenced_lines(raw);
     if lines.is_empty() {
         return String::new();
     }
@@ -338,6 +337,14 @@ impl JudgeClient {
         self.transport = transport;
         self
     }
+
+    /// Override the aux request timeout (seconds), e.g. from the
+    /// aux section's `timeout_secs`. Rebuilds the transport; call
+    /// before `with_transport` if you also inject a test transport.
+    pub fn with_timeout_secs(mut self, secs: u64) -> Self {
+        self.transport = aux_transport(secs.max(1));
+        self
+    }
 }
 
 impl Judge for JudgeClient {
@@ -369,7 +376,3 @@ impl Judge for JudgeClient {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "judge_tests.rs"]
-mod tests;

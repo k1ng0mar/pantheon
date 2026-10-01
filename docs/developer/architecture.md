@@ -42,7 +42,7 @@ The security backbone: fine-grained capabilities (`filesystem.read`, `shell.exec
 
 ## Execution
 
-Tools run inside sandbox boundaries chosen by the policy (process isolation up to containers/VMs). A boundary that cannot start fails closed: the tool reports `SANDBOX_UNAVAILABLE` instead of running unconfined. File writes go through atomic apply with checkpoints and rollback.
+Tools run inside sandbox boundaries chosen by the policy (process isolation up to containers and strict namespace jails — there is no VM backend). A boundary that cannot start fails closed: the tool reports `SANDBOX_UNAVAILABLE` instead of running unconfined. File writes go through atomic apply with checkpoints and rollback.
 
 ## Memory and storage
 
@@ -58,11 +58,11 @@ Transport adapters only: OpenAI-compatible and Anthropic behind one `ModelTurn` 
 
 ## Surfaces
 
-Terminal app, terminal commands, web (`serve`), and chat gateways (Discord, Telegram) all drive the same assistant off the same record. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default; foreign plugin formats load through a compat adapter that only maps real matches.
+Terminal app, terminal commands, web (`serve`), and chat gateways (Discord, Telegram) all drive the same assistant off the same record. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default (gates fail closed); foreign plugin formats load through a compat adapter in `pantheon-migration` that only maps real matches. Plugins are not sandboxed: secrets are scrubbed from their environment, but they run with the operator's full user privileges, so enabling a third-party plugin requires explicit recorded approval.
 
 ## Migration
 
-`pantheon migrate hermes|openclaw|omp`: detect → plan → approve → backup → apply → validate. The apply is transactional (stage → validate → commit): everything found is imported or archived with a reason, nothing silently dropped, credentials never written outside `<data_dir>/.env`.
+`pantheon migrate hermes|openclaw|omp|claude`: detect → plan → approve → backup → apply → validate. The apply is transactional (stage → validate → commit): everything found is imported or archived with a reason, nothing silently dropped, credentials never written outside `<data_dir>/.env`.
 
 ## Locked decisions
 
@@ -79,23 +79,22 @@ Terminal app, terminal commands, web (`serve`), and chat gateways (Discord, Tele
 
 | Crate | Role |
 |---|---|
-| `pantheon-api` | Events, errors, capabilities, model policy, identifiers (bottom leaf) |
+| `pantheon-api` | Events, errors, capabilities, model policy, identifiers, config document, plugin approval, agent profiles, nightly protocol (bottom leaf) |
 | `pantheon-storage` | The record, claims, leases, session search |
-| `pantheon-runtime` | Supervisor, recovery, sessions, Runtime API (`serve`/`rpc`) |
-| `pantheon-agent` | Agent loop, permission gate, budgets |
-| `pantheon-exec` | Process/file execution engine, skills, plugins, supervision |
+| `pantheon-runtime` | Supervisor, recovery, sessions, Runtime API (`serve`/`rpc`), swarm coordination |
+| `pantheon-agent` | Agent loop, permission gate, budgets, capability policy/role maps |
+| `pantheon-exec` | Process/file execution engine, skills, plugins, supervision, sandbox levels + enforcement |
 | `pantheon-tools` | Callable tools + registry (builtins, memory/vault/session-search/skill tools) |
-| `pantheon-capability` | Policy/role maps |
-| `pantheon-sandbox` | Levels, profiles, enforcement |
+| `pantheon-web` | Browser automation + web search |
 | `pantheon-memory` | Layers, write path, backends |
 | `pantheon-secrets` | Vaults, broker |
 | `pantheon-providers` | Adapters, catalog, backup chain |
-| `pantheon-extensions` | Hooks, manifests, runners, compat |
+| `pantheon-extensions` | Hooks, manifests, runners |
 | `pantheon-scheduler` | Triggers, durable claims |
 | `pantheon-gateway` | Channels, allowlist, delivery |
-| `pantheon-swarm` | Spawn caps |
 | `pantheon-mcp` | Token → capability projection |
-| `pantheon-migration` | Source importers |
+| `pantheon-migration` | Source importers, foreign-plugin compat adapter |
+| `pantheon-dashboard` | Web control plane (config editor, schedules, logs) |
 | `pantheon-tui` | Terminal application: interactive session + non-interactive commands |
 
 ## See also

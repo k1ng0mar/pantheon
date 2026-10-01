@@ -526,6 +526,94 @@
         ]
       ],
       "skip": "needs binary"
+    },
+    {
+      "id": "send-home-posts-to-home-session",
+      "title": "pantheon send --to home writes the message into the home session ledger",
+      "origin": "send: /send + CLI push a message to a gateway surface",
+      "commands": [
+        [
+          "send",
+          "--to",
+          "home",
+          "hello from eval"
+        ]
+      ],
+      "expect": {
+        "send-home-posts-to-home-session": [
+          "posted to the home session"
+        ]
+      },
+      "post": [
+        [
+          "runs",
+          "home",
+          "contains:hello from eval"
+        ]
+      ],
+      "skip": "needs binary"
+    },
+    {
+      "id": "send-mobile-posts-to-home-session",
+      "title": "pantheon send --to mobile uses the home session as the conversation context",
+      "origin": "send: /send + CLI push a message to a gateway surface",
+      "commands": [
+        [
+          "send",
+          "--to",
+          "mobile",
+          "ping the phone"
+        ]
+      ],
+      "expect": {
+        "send-mobile-posts-to-home-session": [
+          "for mobile delivery"
+        ]
+      },
+      "post": [
+        [
+          "runs",
+          "home",
+          "contains:ping the phone"
+        ]
+      ],
+      "skip": "needs binary"
+    },
+    {
+      "id": "send-rejects-unknown-target",
+      "title": "pantheon send --to bogus fails loudly instead of vanishing",
+      "origin": "send: unknown targets are loud errors, never silent",
+      "commands": [
+        [
+          "send",
+          "--to",
+          "carrier-pigeon",
+          "hi"
+        ]
+      ],
+      "expect": {},
+      "expect_fail": [
+        0
+      ],
+      "skip": "needs binary"
+    },
+    {
+      "id": "send-telegram-loud-without-token",
+      "title": "pantheon send --to telegram fails loudly when no token is configured",
+      "origin": "send: missing tokens are loud errors, never silent",
+      "commands": [
+        [
+          "send",
+          "--to",
+          "telegram",
+          "hi"
+        ]
+      ],
+      "expect": {},
+      "expect_fail": [
+        0
+      ],
+      "skip": "needs binary"
     }
   ]
 }

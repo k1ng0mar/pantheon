@@ -1,10 +1,10 @@
 //! Tool execution boundary: capability gate, then runner. The gate runs
 //! before the runner, always — there is no path that executes an ungranted
 //! capability.
+use crate::capability::{enforce, Verdict};
 use pantheon_api::capability::{Capability, Policy};
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::events::Event;
-use pantheon_capability::{enforce, Verdict};
 
 /// Where events go. Implemented by the runtime supervisor; tests use a Vec.
 pub trait EventSink {
@@ -44,7 +44,7 @@ pub fn gate(policy: &Policy, cap: &Capability) -> Result<GateOutcome, PantheonEr
         Err(_e) => {
             // enforce() folds both Deny and Approval into errors; re-check to
             // distinguish so approval does not look like a hard denial.
-            match pantheon_capability::check(policy, cap) {
+            match crate::capability::check(policy, cap) {
                 Verdict::NeedsApproval { capability } => {
                     Ok(GateOutcome::NeedsApproval { capability })
                 }

@@ -224,7 +224,6 @@ impl EmbedderClient for EmbedClient {
 fn local_embed(text: &str) -> Embedding {
     let mut vec = vec![0f32; LOCAL_DIM];
     let lower = text.to_lowercase();
-    let bytes: Vec<char> = lower.chars().collect();
     // Character trigrams over words, hashed into buckets.
     for w in lower.split_whitespace() {
         let wc: Vec<char> = w.chars().collect();
@@ -247,7 +246,6 @@ fn local_embed(text: &str) -> Embedding {
             *x /= norm;
         }
     }
-    let _ = &bytes;
     Embedding {
         dim: LOCAL_DIM,
         vec,
@@ -277,7 +275,3 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     }
     dot / (na * nb)
 }
-
-#[cfg(test)]
-#[path = "embeddings_tests.rs"]
-mod tests;

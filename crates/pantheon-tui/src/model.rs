@@ -12,18 +12,27 @@
 //!      The chain rotates stacked keys on 401/403/429.
 //!   4. models are fetched live from `{base}/models`; pick one (or type an
 //!      id manually when the endpoint has no `/models`).
-//!   5. bottom step: optionally pin judge/compression/title/other auxiliaries.
+//!   5. bottom step: a deliberate bottom row — `Set auxiliary` opens the
+//!      slot list, `Done` (or Esc) finishes.
 //!
 //! Bare `pantheon model` configures the default chat model;
-//! `pantheon model --auxiliary judge|compression|title_gen|...` pins one
-//! auxiliary instead. `pantheon model --list` shows the current setup.
+//! `pantheon model --auxiliary KIND` pins one auxiliary instead, where
+//! KIND is one of the 14 `AUX_SLOTS` slots (judge, compression, title_gen,
+//! embeddings, search_synthesis, vision, video, scheduled, mcp_synthesis,
+//! extraction, rerank, planner, repair, verify) plus `reflect`,
+//! `consolidation`, and `nightly` (the `[nightly.model]` pin).
+//! `pantheon model --list` shows the current setup.
+//!
+//! In the auxiliary flow the provider list is key-aware: providers with
+//! a key already on file (process env or `<data_dir>/.env`) sort first,
+//! tagged `key on file`, and picking one offers to reuse the stored key
+//! instead of re-prompting.
 //!
 //! Non-interactive (scripts): pass `--provider` + `--model` (and `--key`,
 //! `--base-url`, `--api-mode`, `--api-key-env`, `--remove` as needed).
 
 use super::config::{
-    self, CompressionSection, Config, EmbeddingsSection, JudgeSection, McpSynthesisSection,
-    ScheduledSection, SearchSynthesisSection, TitleGenSection, VisionSection,
+    self, AuxSection, Config, ConsolidationSection, NightlySection, ReflectSection,
 };
 use pantheon_providers::catalog::{self, ApiMode};
 use std::io::IsTerminal;
@@ -320,6 +329,266 @@ pub fn mask_key(key: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// auxiliary slot registry
+// ---------------------------------------------------------------------------
+
+/// Canonical auxiliary-slot names pinnable via `--auxiliary` and the
+/// bottom step, in presentation order. Driven from [`AUX_SLOTS`] — the
+/// single source of truth in `pantheon_api::config` — plus the three
+/// model pins that live outside it, so the list cannot drift again.
+///
+/// * `reflect` — the model pin inside the `[reflect]` table;
+/// * `consolidation` — the model pin inside the `[consolidation]` table;
+/// * `nightly` — the `[nightly.model]` pin (pinning it enables the
+///   nightly pass unless `enabled = false`).
+pub(crate) fn aux_slot_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = config::AUX_SLOTS.iter().map(|s| s.name).collect();
+    names.extend(["reflect", "consolidation", "nightly"]);
+    names
+}
+
+/// One-line description per slot, from the `AuxiliaryKind` docs. Every
+/// name from [`aux_slot_names`] has an explicit arm; an unknown name
+/// panics loudly naming the valid set — never a silent wrong label.
+pub(crate) fn aux_slot_desc(name: &str) -> &'static str {
+    match name {
+        "judge" => "auxiliary judge model (route select + tool gates)",
+        "compression" => "auxiliary compression model (transcript overflow)",
+        "title_gen" => "auxiliary session-title model",
+        "embeddings" => "auxiliary embeddings model (vector search)",
+        "search_synthesis" => "auxiliary search-synthesis model (cited web briefs)",
+        "vision" => "auxiliary vision model (attached-image descriptions)",
+        "video" => "auxiliary video-analysis model (native video input, keyframe fallback)",
+        "scheduled" => "auxiliary model for scheduled runs",
+        "mcp_synthesis" => "auxiliary MCP tool-result synthesis model",
+        "extraction" => "auxiliary structured-extraction model",
+        "rerank" => "auxiliary rerank model (search + memory candidates)",
+        "planner" => "auxiliary planner model (goal decomposition)",
+        "repair" => "auxiliary repair model (nightly fix loop)",
+        "verify" => "auxiliary adversarial verifier (delegation claims)",
+        "reflect" => "reflection-pass model pin ([reflect])",
+        "consolidation" => "consolidation model pin ([consolidation])",
+        "nightly" => "nightly-pass model ([nightly.model]; pin enables the pass)",
+        other => panic!(
+            "no description for aux slot {other:?} (valid: {})",
+            aux_slot_names().join("|")
+        ),
+    }
+}
+
+/// Scope label for the interactive flow's titles. Explicit arms for
+/// every slot; unknown names panic loudly naming the valid set.
+pub(crate) fn aux_scope_label(kind: &str) -> &'static str {
+    match kind {
+        "judge" => "judge auxiliary",
+        "compression" => "compression auxiliary",
+        "title_gen" => "title auxiliary",
+        "embeddings" => "embeddings auxiliary",
+        "search_synthesis" => "search-synthesis auxiliary",
+        "vision" => "vision auxiliary",
+        "video" => "video auxiliary",
+        "scheduled" => "scheduled-run auxiliary",
+        "mcp_synthesis" => "MCP-synthesis auxiliary",
+        "extraction" => "extraction auxiliary",
+        "rerank" => "rerank auxiliary",
+        "planner" => "planner auxiliary",
+        "repair" => "repair auxiliary",
+        "verify" => "verify auxiliary",
+        "reflect" => "reflection auxiliary",
+        "consolidation" => "consolidation auxiliary",
+        "nightly" => "nightly-pass auxiliary",
+        other => panic!(
+            "unknown auxiliary slot {other:?} (valid: {})",
+            aux_slot_names().join("|")
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// key-aware provider ordering (auxiliary flow)
+// ---------------------------------------------------------------------------
+
+/// One provider row in the aux picker: `stored_key_env` is `Some` when
+/// a key is already on file for this provider (process env or
+/// `<data_dir>/.env`), naming the env var that holds it.
+pub(crate) struct ProviderRow {
+    pub meta: catalog::ProviderMeta,
+    pub stored_key_env: Option<String>,
+}
+
+/// Candidate env vars that could hold `provider_id`'s key: the provider
+/// row's own `key_env` first (`PANTHEON_KEY_<NAME>` when the row names
+/// none — mirroring the interactive flow's default), then any
+/// `api_key_env` already recorded in config (`[model]`, an aux section,
+/// or `[custom_providers.*]`) for that provider. Order is stable and
+/// duplicates are dropped.
+pub(crate) fn provider_key_candidates(
+    cfg: &Config,
+    provider_id: &str,
+    meta_key_env: &str,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |e: &str| {
+        let e = e.trim();
+        if !e.is_empty() && !out.iter().any(|x| x == e) {
+            out.push(e.to_string());
+        }
+    };
+    if meta_key_env.trim().is_empty() {
+        push(&format!(
+            "PANTHEON_KEY_{}",
+            config::sanitize_env_suffix(provider_id)
+        ));
+    } else {
+        push(meta_key_env);
+    }
+    let mut consider = |provider: &str, env: Option<&str>| {
+        if provider == provider_id {
+            if let Some(e) = env {
+                push(e);
+            }
+        }
+    };
+    if let Some(m) = &cfg.model {
+        consider(&m.provider, m.api_key_env.as_deref());
+    }
+    for slot in config::AUX_SLOTS {
+        if let Some(s) = (slot.section)(cfg) {
+            consider(&s.provider, s.api_key_env.as_deref());
+        }
+    }
+    if let Some(r) = &cfg.reflect {
+        if let Some(p) = r.provider.as_deref() {
+            consider(p, r.api_key_env.as_deref());
+        }
+    }
+    if let Some(c) = &cfg.consolidation {
+        if let Some(p) = c.provider.as_deref() {
+            consider(p, c.api_key_env.as_deref());
+        }
+    }
+    if let Some(m) = cfg.nightly.as_ref().and_then(|n| n.model.as_ref()) {
+        consider(&m.provider, m.api_key_env.as_deref());
+    }
+    if let Some(cp) = cfg.custom_providers.get(provider_id) {
+        if let Some(e) = cp.key_env.as_deref() {
+            push(e);
+        }
+    }
+    out
+}
+
+/// First candidate env var that actually has a key stored — process
+/// environment or `<data_dir>/.env`. `None` = no key on file.
+pub(crate) fn stored_key_env(data_dir: &std::path::Path, candidates: &[String]) -> Option<String> {
+    candidates
+        .iter()
+        .find(|e| {
+            std::env::var(e)
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false)
+                || super::dotenv::read_dotenv_value(data_dir, e)
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false)
+        })
+        .cloned()
+}
+
+/// Read the stored key itself (env first, then `.env`); `None` when the
+/// var is unset or blank. Values are never written to config — only the
+/// var name is saved as `api_key_env`.
+fn read_stored_key(data_dir: &std::path::Path, env: &str) -> Option<String> {
+    std::env::var(env)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            super::dotenv::read_dotenv_value(data_dir, env).filter(|v| !v.trim().is_empty())
+        })
+}
+
+/// Order provider rows for the aux picker: providers with a key on
+/// file first (tagged `key on file`), then the rest in catalog order
+/// (recommended first — `all_providers` already yields that order).
+pub(crate) fn order_providers_key_first(
+    data_dir: &std::path::Path,
+    cfg: &Config,
+    providers: Vec<catalog::ProviderMeta>,
+) -> Vec<ProviderRow> {
+    let mut with_key = Vec::new();
+    let mut rest = Vec::new();
+    for meta in providers {
+        let stored = stored_key_env(
+            data_dir,
+            &provider_key_candidates(cfg, &meta.id, &meta.key_env),
+        );
+        let row = ProviderRow {
+            meta,
+            stored_key_env: stored,
+        };
+        if row.stored_key_env.is_some() {
+            with_key.push(row);
+        } else {
+            rest.push(row);
+        }
+    }
+    with_key.extend(rest);
+    with_key
+}
+
+/// The outcome of the interactive key step.
+pub(crate) struct KeySelection {
+    /// Env var that will hold (or already holds) the key — the value
+    /// saved as `api_key_env`, never the key itself.
+    pub key_env: String,
+    /// Freshly entered keys to persist to `.env` (`None` = keep stored).
+    pub raw_keys: Option<String>,
+    /// Currently stored keys, for the live `/models` fetch.
+    pub existing: Option<String>,
+}
+
+/// Step 3 of the interactive flow, factored for tests. When a key is
+/// already on file for the provider, offer `use the stored key (ENV)?`
+/// first; "no" (or no stored key) runs the normal key prompts.
+/// `prompt` is injectable so tests can stub it.
+fn select_keys(
+    prompt: &dyn Fn(&str, &str) -> String,
+    dd: &std::path::Path,
+    key_env_default: &str,
+    stored: Option<&str>,
+) -> KeySelection {
+    if let Some(env) = stored {
+        let answer = prompt(&format!("use the stored key ({env})?"), "y");
+        if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            return KeySelection {
+                key_env: env.to_string(),
+                raw_keys: None,
+                existing: read_stored_key(dd, env),
+            };
+        }
+    }
+    let key_env = prompt("Key env var", key_env_default);
+    let existing = super::dotenv::read_dotenv_value(dd, &key_env).filter(|v| !v.trim().is_empty());
+    if let Some(cur) = &existing {
+        println!("  current: {} (empty keeps)", mask_key(cur));
+    }
+    let keys = prompt("API key(s), comma-separated to stack", "");
+    // Empty input keeps an existing key, or means keyless when none exists.
+    if keys.trim().is_empty() && existing.is_none() {
+        println!("  no key stored — keyless endpoints only");
+    }
+    let raw_keys = if keys.trim().is_empty() {
+        None
+    } else {
+        Some(keys.trim().to_string())
+    };
+    KeySelection {
+        key_env,
+        raw_keys,
+        existing,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // live model fetch
 // ---------------------------------------------------------------------------
 
@@ -487,6 +756,104 @@ pub(crate) fn ensure_template_vars(
     }
     catalog::resolve_template(provider_id, base)
 }
+/// Pin an auxiliary slot to the chosen provider/model. Every slot has
+/// an explicit arm; an unknown name is a loud error naming the valid
+/// set — never a silent write to the wrong section.
+///
+/// The 14 [`AUX_SLOTS`] slots are plain `[section]` tables and are
+/// replaced wholesale (like before). `reflect` / `consolidation` mix
+/// behavior knobs with the model pin, so the pin fields are updated in
+/// place and the knobs (`enabled`, `auto_turns`, `cron`, …) survive.
+/// `nightly` writes the `[nightly.model]` sub-table; a fresh `[nightly]`
+/// comes from its `Default` impl (off unless the pin is present).
+fn pin_aux_slot(cfg: &mut Config, kind: &str, choice: &ModelChoice) -> Result<(), String> {
+    let pin = || AuxSection {
+        provider: choice.provider.clone(),
+        model: choice.model.clone(),
+        api_key_env: Some(choice.key_env.clone()),
+        timeout: None,
+    };
+    match kind {
+        "judge" => cfg.judge = Some(pin()),
+        "compression" => {
+            // Pinning replaces the model pin; a previously configured
+            // target_percent survives the re-pin.
+            let target_percent = cfg.compression.as_ref().and_then(|s| s.target_percent);
+            cfg.compression = Some(config::CompressionSection {
+                aux: pin(),
+                target_percent,
+            })
+        }
+        "title_gen" => cfg.title_gen = Some(pin()),
+        "embeddings" => cfg.embeddings = Some(pin()),
+        "search_synthesis" => cfg.search_synthesis = Some(pin()),
+        "vision" => cfg.vision = Some(pin()),
+        "video" => cfg.video = Some(pin()),
+        "scheduled" => cfg.scheduled = Some(pin()),
+        "mcp_synthesis" => cfg.mcp_synthesis = Some(pin()),
+        "extraction" => cfg.extraction = Some(pin()),
+        "rerank" => cfg.rerank = Some(pin()),
+        "planner" => cfg.planner = Some(pin()),
+        "repair" => {
+            // Pinning replaces the model pin; a previously configured
+            // max_repairs_per_task_per_day survives the re-pin.
+            let mut r = cfg.repair.clone().unwrap_or_default();
+            r.aux = pin();
+            cfg.repair = Some(r);
+        }
+        "verify" => cfg.verify = Some(pin()),
+        "reflect" => {
+            let mut r = cfg.reflect.clone().unwrap_or(ReflectSection {
+                // Documented serde defaults (config.rs); doctor.rs uses
+                // the same values. Only used when no [reflect] table
+                // exists yet — an existing table is updated in place.
+                enabled: false,
+                auto_turns: 20,
+                max_proposals: 5,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                timeout: None,
+            });
+            r.provider = Some(choice.provider.clone());
+            r.model = Some(choice.model.clone());
+            r.api_key_env = Some(choice.key_env.clone());
+            r.timeout = None;
+            cfg.reflect = Some(r);
+        }
+        "consolidation" => {
+            let mut c = cfg.consolidation.clone().unwrap_or(ConsolidationSection {
+                enabled: false,
+                half_life_days: 14.0,
+                min_sessions: 3,
+                min_score: 2.0,
+                cron: "0 3 * * *".to_string(),
+                provider: None,
+                model: None,
+                api_key_env: None,
+                timeout: None,
+            });
+            c.provider = Some(choice.provider.clone());
+            c.model = Some(choice.model.clone());
+            c.api_key_env = Some(choice.key_env.clone());
+            c.timeout = None;
+            cfg.consolidation = Some(c);
+        }
+        "nightly" => {
+            cfg.nightly
+                .get_or_insert_with(NightlySection::default)
+                .model = Some(pin());
+        }
+        other => {
+            return Err(format!(
+                "unknown auxiliary slot {other:?} (valid: {})",
+                aux_slot_names().join("|")
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Persist the choice: `.env` keys, `[custom_providers.*]` row for custom
 /// endpoints, and the `[model]` / aux section. Registers customs in-memory.
 pub fn save_choice(data_dir: &std::path::Path, choice: &ModelChoice) -> Result<(), String> {
@@ -523,64 +890,7 @@ pub fn save_choice(data_dir: &std::path::Path, choice: &ModelChoice) -> Result<(
                 reasoning: cfg.model.as_ref().and_then(|m| m.reasoning.clone()),
             });
         }
-        Target::Auxiliary(kind) => match kind.as_str() {
-            "judge" => {
-                cfg.judge = Some(JudgeSection {
-                    provider: choice.provider.clone(),
-                    model: choice.model.clone(),
-                    api_key_env: Some(choice.key_env.clone()),
-                });
-            }
-            "compression" => {
-                cfg.compression = Some(CompressionSection {
-                    provider: choice.provider.clone(),
-                    model: choice.model.clone(),
-                    api_key_env: Some(choice.key_env.clone()),
-                });
-            }
-            "embeddings" => {
-                cfg.embeddings = Some(EmbeddingsSection {
-                    provider: choice.provider.clone(),
-                    model: choice.model.clone(),
-                    api_key_env: Some(choice.key_env.clone()),
-                });
-            }
-            "search_synthesis" => {
-                cfg.search_synthesis = Some(SearchSynthesisSection {
-                    provider: choice.provider.clone(),
-                    model: choice.model.clone(),
-                    api_key_env: Some(choice.key_env.clone()),
-                });
-            }
-            "vision" => {
-                cfg.vision = Some(VisionSection {
-                    provider: choice.provider.clone(),
-                    model: choice.model.clone(),
-                    api_key_env: Some(choice.key_env.clone()),
-                });
-            }
-            "scheduled" => {
-                cfg.scheduled = Some(ScheduledSection {
-                    provider: choice.provider.clone(),
-                    model: choice.model.clone(),
-                    api_key_env: Some(choice.key_env.clone()),
-                });
-            }
-            "mcp_synthesis" => {
-                cfg.mcp_synthesis = Some(McpSynthesisSection {
-                    provider: choice.provider.clone(),
-                    model: choice.model.clone(),
-                    api_key_env: Some(choice.key_env.clone()),
-                });
-            }
-            _ => {
-                cfg.title_gen = Some(TitleGenSection {
-                    provider: choice.provider.clone(),
-                    model: choice.model.clone(),
-                    api_key_env: Some(choice.key_env.clone()),
-                });
-            }
-        },
+        Target::Auxiliary(kind) => pin_aux_slot(&mut cfg, kind.as_str(), choice)?,
     }
     cfg.save(data_dir).map_err(|e| e.to_string())?;
     config::register_custom_providers(&cfg);
@@ -609,6 +919,23 @@ pub(crate) fn key_status(env: Option<&str>) -> String {
     }
 }
 
+/// Display triple for an optional model pin (`[reflect]`,
+/// `[consolidation]`, `[nightly.model]`): `None` when nothing is pinned
+/// (reads as "auto"), otherwise provider/model/key-env.
+fn pin_triple(
+    provider: Option<String>,
+    model: Option<String>,
+    key_env: Option<String>,
+) -> Option<(String, String, Option<String>)> {
+    let p = provider.unwrap_or_default();
+    let m = model.unwrap_or_default();
+    if p.trim().is_empty() && m.trim().is_empty() {
+        None
+    } else {
+        Some((p, m, key_env))
+    }
+}
+
 fn cmd_list() {
     let cfg = Config::load(&data_dir()).unwrap_or_default();
     match &cfg.model {
@@ -621,56 +948,45 @@ fn cmd_list() {
         None => println!("default:   (unset — run `pantheon model`)"),
     }
     let aux = |name: &str, sec: Option<(String, String, Option<String>)>| match sec {
-        Some((p, m, k)) => println!("{name:<10} {p} / {m}  [{}]", key_status(k.as_deref())),
-        None => println!("{name:<10} auto (default model)"),
+        Some((p, m, k)) => println!("{name:<16} {p} / {m}  [{}]", key_status(k.as_deref())),
+        None => println!("{name:<16} auto (default model)"),
     };
+    // Every AUX_SLOTS section, read through the slot table so the list
+    // cannot drift from the registry.
+    for slot in config::AUX_SLOTS {
+        let sec = (slot.section)(&cfg);
+        aux(
+            slot.name,
+            sec.map(|s| (s.provider.clone(), s.model.clone(), s.api_key_env.clone())),
+        );
+    }
+    // The three pins that live outside AUX_SLOTS. `[reflect]` /
+    // `[consolidation]` pins are optional fields (absent = auto);
+    // `[nightly.model]` is a sub-table.
     aux(
-        "judge",
-        cfg.judge
-            .clone()
-            .map(|d| (d.provider, d.model, d.api_key_env)),
+        "reflect",
+        cfg.reflect
+            .as_ref()
+            .and_then(|r| pin_triple(r.provider.clone(), r.model.clone(), r.api_key_env.clone())),
     );
     aux(
-        "compression",
-        cfg.compression
-            .clone()
-            .map(|c| (c.provider, c.model, c.api_key_env)),
+        "consolidation",
+        cfg.consolidation
+            .as_ref()
+            .and_then(|c| pin_triple(c.provider.clone(), c.model.clone(), c.api_key_env.clone())),
     );
     aux(
-        "title_gen",
-        cfg.title_gen
-            .clone()
-            .map(|t| (t.provider, t.model, t.api_key_env)),
-    );
-    aux(
-        "embeddings",
-        cfg.embeddings
-            .clone()
-            .map(|e| (e.provider, e.model, e.api_key_env)),
-    );
-    aux(
-        "search_syn",
-        cfg.search_synthesis
-            .clone()
-            .map(|s| (s.provider, s.model, s.api_key_env)),
-    );
-    aux(
-        "vision",
-        cfg.vision
-            .clone()
-            .map(|v| (v.provider, v.model, v.api_key_env)),
-    );
-    aux(
-        "scheduled",
-        cfg.scheduled
-            .clone()
-            .map(|s| (s.provider, s.model, s.api_key_env)),
-    );
-    aux(
-        "mcp_synth",
-        cfg.mcp_synthesis
-            .clone()
-            .map(|s| (s.provider, s.model, s.api_key_env)),
+        "nightly",
+        cfg.nightly
+            .as_ref()
+            .and_then(|n| n.model.as_ref())
+            .and_then(|m| {
+                pin_triple(
+                    Some(m.provider.clone()),
+                    Some(m.model.clone()),
+                    m.api_key_env.clone(),
+                )
+            }),
     );
     if cfg.custom_providers.is_empty() {
         println!("custom providers: none");
@@ -760,46 +1076,64 @@ pub(crate) fn wire_mode_items() -> Vec<PickItem> {
     ]
 }
 
-fn interactive(target: Target) -> Option<ModelChoice> {
+/// The full interactive flow for one scope: provider → base URL + wire
+/// mode → API key → live `/models` fetch → model pick. The auxiliary
+/// flow reuses this exact path (never a degraded variant); only the
+/// provider list differs — it is key-aware for auxiliaries (providers
+/// with a key on file sort first, tagged `key on file`, and offer to
+/// reuse the stored key instead of re-prompting).
+///
+/// `prompt` is the line prompter (`prompt_line` in production, a stub in
+/// tests).
+fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<ModelChoice> {
     let scope = match &target {
         Target::Default => "default model",
-        Target::Auxiliary(k) => match k.as_str() {
-            "judge" => "judge auxiliary",
-            "compression" => "compression auxiliary",
-            "embeddings" => "embeddings auxiliary",
-            "search_synthesis" => "search-synthesis auxiliary",
-            "vision" => "vision auxiliary",
-            "scheduled" => "scheduled-run auxiliary",
-            "mcp_synthesis" => "MCP-synthesis auxiliary",
-            _ => "title auxiliary",
-        },
+        Target::Auxiliary(k) => aux_scope_label(k),
     };
+    let dd = data_dir();
 
     // 1. provider: pure selection. Endpoint management (add/remove)
     // lives in `pantheon provider`; customs created there appear here.
-    // Returns the catalog entry and whether the id already has a custom
-    // row. URL edits that diverge from a builtin are upgraded to an
-    // explicit override row in step 2, so they stay visible + removable.
-    let (known, was_custom): (Option<pantheon_providers::catalog::ProviderMeta>, bool) = {
-        let all = catalog::all_providers();
-        let customs: Vec<String> = Config::load(&data_dir())
-            .map(|c| {
-                let mut n: Vec<String> = c.custom_providers.keys().cloned().collect();
-                n.sort();
-                n
-            })
-            .unwrap_or_default();
-        let items: Vec<PickItem> = all
+    // Returns the catalog entry, whether the id already has a custom
+    // row, and (aux flow) the stored-key env var when one is on file.
+    let (known, was_custom, stored_key_env): (
+        Option<pantheon_providers::catalog::ProviderMeta>,
+        bool,
+        Option<String>,
+    ) = {
+        let cfg = Config::load(&dd).unwrap_or_default();
+        let rows: Vec<ProviderRow> = match &target {
+            Target::Auxiliary(_) => order_providers_key_first(&dd, &cfg, catalog::all_providers()),
+            Target::Default => catalog::all_providers()
+                .into_iter()
+                .map(|meta| ProviderRow {
+                    meta,
+                    stored_key_env: None,
+                })
+                .collect(),
+        };
+        let customs: Vec<String> = {
+            let mut n: Vec<String> = cfg.custom_providers.keys().cloned().collect();
+            n.sort();
+            n
+        };
+        let items: Vec<PickItem> = rows
             .iter()
-            .map(|p| {
+            .map(|row| {
+                let p = &row.meta;
                 let n = if p.models.is_empty() {
                     "any model id".into()
                 } else {
                     format!("{} models", p.models.len())
                 };
+                let key_tag = if row.stored_key_env.is_some() {
+                    " · key on file"
+                } else {
+                    ""
+                };
                 PickItem {
                     label: format!("{} ({})", p.label, p.id),
-                    desc: format!("{} · {} · {n}", p.base_url, p.tag),
+                    desc: format!("{} · {} · {n}{key_tag}", p.base_url, p.tag),
                 }
             })
             .collect();
@@ -807,13 +1141,17 @@ fn interactive(target: Target) -> Option<ModelChoice> {
             &format!("pantheon model — {scope}: pick a provider"),
             &items,
         )?;
-        if prov_idx >= all.len() {
+        if prov_idx >= rows.len() {
             // Defensive: rows are exactly the providers today.
             return None;
         }
-        let p = all[prov_idx].clone();
-        let was_custom = customs.iter().any(|c| c == &p.id);
-        (Some(p), was_custom)
+        let row = &rows[prov_idx];
+        let was_custom = customs.iter().any(|c| c == &row.meta.id);
+        (
+            Some(row.meta.clone()),
+            was_custom,
+            row.stored_key_env.clone(),
+        )
     };
 
     // 2. base URL + wire mode + provider id. New endpoints are created
@@ -824,7 +1162,7 @@ fn interactive(target: Target) -> Option<ModelChoice> {
         return None;
     };
     let (provider_id, base_url, api_mode, key_env_default, is_custom) = {
-        let url = normalize_base_url(&prompt_line("Base URL or :port", &p.base_url));
+        let url = normalize_base_url(&prompt("Base URL or :port", &p.base_url));
         let mode_items = wire_mode_items();
         let default_mode = match p.api_mode {
             ApiMode::OpenAi => 0,
@@ -864,24 +1202,17 @@ fn interactive(target: Target) -> Option<ModelChoice> {
         )
     };
 
-    // 3. keys → .env.
-    let key_env = prompt_line("Key env var", &key_env_default);
-    let existing =
-        super::dotenv::read_dotenv_value(&data_dir(), &key_env).filter(|v| !v.trim().is_empty());
-    if let Some(cur) = &existing {
-        println!("  current: {} (empty keeps)", mask_key(cur));
-    }
-    let keys = prompt_line("API key(s), comma-separated to stack", "");
-    // Empty input keeps an existing key, or means keyless when none exists.
-    if keys.trim().is_empty() && existing.is_none() {
-        println!("  no key stored — keyless endpoints only");
-    }
-    let raw_keys = if keys.trim().is_empty() {
-        None
-    } else {
-        Some(keys.trim().to_string())
+    // 3. keys → .env. In the aux flow a provider with a key on file
+    // offers to reuse the stored key instead of re-prompting; "no"
+    // falls through to the normal prompts and overwrites.
+    let stored = match &target {
+        Target::Auxiliary(_) => stored_key_env.as_deref(),
+        Target::Default => None,
     };
-    let effective_keys = raw_keys.clone().or(existing).unwrap_or_default();
+    let ks = select_keys(prompt, &dd, &key_env_default, stored);
+    let key_env = ks.key_env;
+    let raw_keys = ks.raw_keys;
+    let effective_keys = raw_keys.clone().or(ks.existing).unwrap_or_default();
 
     // 3b. endpoint template values (azure resource, bedrock region, ...).
     // Resolves the URL the model fetch below calls; the stored row keeps
@@ -932,7 +1263,7 @@ fn interactive(target: Target) -> Option<ModelChoice> {
     let manual_typed = model_ids[model_idx] == manual;
     let model = if manual_typed {
         loop {
-            let m = prompt_line("Model id", "");
+            let m = prompt("Model id", "");
             if !m.is_empty() {
                 break m;
             }
@@ -978,7 +1309,7 @@ fn dependents_of(cfg: &Config, name: &str) -> Vec<String> {
         ("judge", cfg.judge.as_ref().map(|d| d.provider.as_str())),
         (
             "compression",
-            cfg.compression.as_ref().map(|c| c.provider.as_str()),
+            cfg.compression.as_ref().map(|c| c.aux.provider.as_str()),
         ),
         (
             "title_gen",
@@ -993,6 +1324,7 @@ fn dependents_of(cfg: &Config, name: &str) -> Vec<String> {
             cfg.search_synthesis.as_ref().map(|s| s.provider.as_str()),
         ),
         ("vision", cfg.vision.as_ref().map(|v| v.provider.as_str())),
+        ("video", cfg.video.as_ref().map(|v| v.provider.as_str())),
         (
             "scheduled",
             cfg.scheduled.as_ref().map(|s| s.provider.as_str()),
@@ -1000,6 +1332,31 @@ fn dependents_of(cfg: &Config, name: &str) -> Vec<String> {
         (
             "mcp_synthesis",
             cfg.mcp_synthesis.as_ref().map(|s| s.provider.as_str()),
+        ),
+        (
+            "extraction",
+            cfg.extraction.as_ref().map(|e| e.provider.as_str()),
+        ),
+        ("rerank", cfg.rerank.as_ref().map(|r| r.provider.as_str())),
+        ("planner", cfg.planner.as_ref().map(|p| p.provider.as_str())),
+        ("repair", cfg.repair.as_ref().map(|r| r.provider.as_str())),
+        ("verify", cfg.verify.as_ref().map(|v| v.provider.as_str())),
+        (
+            "reflect",
+            cfg.reflect.as_ref().and_then(|r| r.provider.as_deref()),
+        ),
+        (
+            "consolidation",
+            cfg.consolidation
+                .as_ref()
+                .and_then(|c| c.provider.as_deref()),
+        ),
+        (
+            "nightly.model",
+            cfg.nightly
+                .as_ref()
+                .and_then(|n| n.model.as_ref())
+                .map(|m| m.provider.as_str()),
         ),
     ] {
         if sec == Some(name) {
@@ -1028,7 +1385,7 @@ fn key_envs_in_use(cfg: &Config, except_provider: &str) -> Vec<String> {
         push(&d.provider, d.api_key_env.as_deref());
     }
     if let Some(c) = &cfg.compression {
-        push(&c.provider, c.api_key_env.as_deref());
+        push(&c.aux.provider, c.aux.api_key_env.as_deref());
     }
     if let Some(t) = &cfg.title_gen {
         push(&t.provider, t.api_key_env.as_deref());
@@ -1036,17 +1393,47 @@ fn key_envs_in_use(cfg: &Config, except_provider: &str) -> Vec<String> {
     for sec in [
         cfg.embeddings
             .as_ref()
-            .map(|s| (&s.provider, &s.api_key_env)),
+            .map(|s| (s.provider.as_str(), &s.api_key_env)),
         cfg.search_synthesis
             .as_ref()
-            .map(|s| (&s.provider, &s.api_key_env)),
-        cfg.vision.as_ref().map(|s| (&s.provider, &s.api_key_env)),
+            .map(|s| (s.provider.as_str(), &s.api_key_env)),
+        cfg.vision
+            .as_ref()
+            .map(|s| (s.provider.as_str(), &s.api_key_env)),
+        cfg.video
+            .as_ref()
+            .map(|s| (s.provider.as_str(), &s.api_key_env)),
         cfg.scheduled
             .as_ref()
-            .map(|s| (&s.provider, &s.api_key_env)),
+            .map(|s| (s.provider.as_str(), &s.api_key_env)),
         cfg.mcp_synthesis
             .as_ref()
-            .map(|s| (&s.provider, &s.api_key_env)),
+            .map(|s| (s.provider.as_str(), &s.api_key_env)),
+        cfg.extraction
+            .as_ref()
+            .map(|s| (s.provider.as_str(), &s.api_key_env)),
+        cfg.rerank
+            .as_ref()
+            .map(|s| (s.provider.as_str(), &s.api_key_env)),
+        cfg.planner
+            .as_ref()
+            .map(|s| (s.provider.as_str(), &s.api_key_env)),
+        cfg.repair
+            .as_ref()
+            .map(|s| (s.provider.as_str(), &s.api_key_env)),
+        cfg.verify
+            .as_ref()
+            .map(|s| (s.provider.as_str(), &s.api_key_env)),
+        cfg.reflect
+            .as_ref()
+            .map(|r| (r.provider.as_deref().unwrap_or(""), &r.api_key_env)),
+        cfg.consolidation
+            .as_ref()
+            .map(|c| (c.provider.as_deref().unwrap_or(""), &c.api_key_env)),
+        cfg.nightly
+            .as_ref()
+            .and_then(|n| n.model.as_ref())
+            .map(|m| (m.provider.as_str(), &m.api_key_env)),
     ]
     .into_iter()
     .flatten()
@@ -1119,9 +1506,10 @@ pub(crate) fn remove_custom_provider(
 // entry
 // ---------------------------------------------------------------------------
 
-fn usage() -> ! {
+fn print_usage() {
     eprintln!(
-        "usage: pantheon model [--auxiliary judge|compression|title_gen|embeddings|search_synthesis|vision|scheduled|mcp_synthesis] [options]"
+        "usage: pantheon model [--auxiliary {}] [options]",
+        aux_slot_names().join("|")
     );
     eprintln!("       pantheon model --list");
     eprintln!("  interactive (default): provider picker (custom add/remove rows) →");
@@ -1142,13 +1530,37 @@ fn usage() -> ! {
         "    --set VAR=VAL       endpoint template value, repeatable (region, resource, ...)"
     );
     eprintln!(
-        "    --auxiliary KIND    pin judge|compression|title_gen|embeddings|search_synthesis|vision|scheduled|mcp_synthesis instead of default"
+        "    --auxiliary KIND    pin one auxiliary instead of default ({});",
+        aux_slot_names().join("|")
+    );
+    eprintln!("                      the aux flow reuses the interactive path and is key-aware:");
+    eprintln!(
+        "                      providers with a key on file sort first (tagged `key on file`)"
     );
     eprintln!("  endpoints: `pantheon provider add|list|remove` (new URLs live there)");
+}
+
+/// Usage error: print the usage text and exit 2 (wrong flags, missing
+/// values). `--help` instead exits 0 via [`model_help`].
+fn usage() -> ! {
+    print_usage();
     std::process::exit(2);
 }
 
+/// `--help` short-circuit: print the usage text and exit 0 before
+/// anything else runs. The interactive provider picker is the default
+/// path, so without this `--help` would prompt — help must never
+/// prompt or mutate.
+fn model_help() -> ! {
+    print_usage();
+    std::process::exit(0);
+}
+
 pub fn cmd_model(args: &[String]) {
+    let raw: &[String] = &args[1.min(args.len())..];
+    if raw.iter().any(|a| a == "--help" || a == "-h") {
+        model_help();
+    }
     // dotenv + customs so --list key checks and saves see the full picture.
     let dd = data_dir();
     config::init_env_and_catalog(&dd);
@@ -1170,15 +1582,23 @@ pub fn cmd_model(args: &[String]) {
             "compression" => "compression".to_string(),
             "title_gen" | "titlegen" | "title" => "title_gen".to_string(),
             "embeddings" | "embed" => "embeddings".to_string(),
-            "search_synthesis" | "search_synth" | "search" => {
-                "search_synthesis".to_string()
-            }
+            "search_synthesis" | "search_synth" | "search" => "search_synthesis".to_string(),
             "vision" | "images" => "vision".to_string(),
+            "video" => "video".to_string(),
             "scheduled" | "schedule" => "scheduled".to_string(),
-            "mcp_synthesis" | "mcp" => "mcp_synthesis".to_string(),
+            "mcp_synthesis" | "mcp_synth" | "mcp" => "mcp_synthesis".to_string(),
+            "extraction" | "extract" => "extraction".to_string(),
+            "rerank" => "rerank".to_string(),
+            "planner" | "plan" => "planner".to_string(),
+            "repair" => "repair".to_string(),
+            "verify" => "verify".to_string(),
+            "reflect" | "reflection" => "reflect".to_string(),
+            "consolidation" | "consol" => "consolidation".to_string(),
+            "nightly" => "nightly".to_string(),
             _ => {
                 eprintln!(
-                    "unknown --auxiliary {k:?} (judge|compression|title_gen|embeddings|search_synthesis|vision|scheduled|mcp_synthesis)"
+                    "unknown --auxiliary {k:?} (valid: {})",
+                    aux_slot_names().join("|")
                 );
                 std::process::exit(2);
             }
@@ -1281,7 +1701,7 @@ pub fn cmd_model(args: &[String]) {
     // first, then the auxiliary step lives at the bottom.
     let first_target = target;
     let bottom_aux = matches!(first_target, Target::Default);
-    match interactive(first_target) {
+    match interactive(first_target, &prompt_line) {
         Some(choice) => {
             let summary = format!("{} / {}", choice.provider, choice.model);
             let saved_scope = match &choice.target {
@@ -1307,45 +1727,53 @@ pub fn cmd_model(args: &[String]) {
     }
 }
 
-/// Bottom-of-flow auxiliary step: after the default is saved, offer each
-/// auxiliary in turn until "done". Cancelling keeps whatever was saved.
+/// Bottom-of-flow auxiliary step: a deliberate bottom row. `Set
+/// auxiliary` opens the slot list; `Done` (or Esc) finishes.
+/// Cancelling keeps whatever was saved.
 fn run_aux_bottom(dd: &std::path::Path) {
-    const KINDS: [&str; 7] = [
-        "judge",
-        "compression",
-        "title_gen",
-        "embeddings",
-        "search_synthesis",
-        "vision",
-        "scheduled",
+    let items = vec![
+        PickItem {
+            label: "Set auxiliary".into(),
+            desc: "pin provider+model per auxiliary slot".into(),
+        },
+        PickItem {
+            label: "Done".into(),
+            desc: "keep auxiliaries as they are".into(),
+        },
     ];
-    let descs = [
-        "auxiliary judge model (routes + tool gates)",
-        "auxiliary compression model",
-        "auxiliary session-title model",
-        "auxiliary embeddings model (vector search)",
-        "auxiliary search-synthesis model",
-        "auxiliary vision model",
-        "auxiliary model for scheduled runs",
-    ];
-    let mut items = vec![PickItem {
-        label: "Done".into(),
-        desc: "keep auxiliaries as they are".into(),
-    }];
-    items.extend(KINDS.iter().zip(descs).map(|(k, d)| PickItem {
-        label: (*k).into(),
-        desc: d.into(),
-    }));
     loop {
-        let Some(idx) = pick("also set an auxiliary? (bottom step)", &items) else {
+        let Some(idx) = pick("auxiliary models (bottom step)", &items) else {
             println!("auxiliaries unchanged");
             return;
         };
-        if idx == 0 {
-            return;
+        match idx {
+            0 => run_aux_slot_list(dd),
+            _ => return,
         }
-        let kind = KINDS[idx - 1].to_string();
-        match interactive(Target::Auxiliary(kind.clone())) {
+    }
+}
+
+/// Slot list opened from "Set auxiliary": every pinnable slot, driven
+/// from [`aux_slot_names`] so it cannot drift. Esc goes back to the
+/// bottom step. Picking a slot runs the same interactive flow as the
+/// default model (provider → URL + wire mode → key → live `/models`
+/// fetch → model pick), then returns here so several slots can be
+/// pinned in a row.
+fn run_aux_slot_list(dd: &std::path::Path) {
+    let slots = aux_slot_names();
+    let items: Vec<PickItem> = slots
+        .iter()
+        .map(|name| PickItem {
+            label: (*name).into(),
+            desc: aux_slot_desc(name).into(),
+        })
+        .collect();
+    loop {
+        let Some(idx) = pick("set auxiliary — pick a slot (Esc: back)", &items) else {
+            return;
+        };
+        let kind = slots[idx].to_string();
+        match interactive(Target::Auxiliary(kind.clone()), &prompt_line) {
             Some(choice) => {
                 let summary = format!("{} / {}", choice.provider, choice.model);
                 match save_choice(dd, &choice) {
@@ -1360,3 +1788,7 @@ fn run_aux_bottom(dd: &std::path::Path) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// tests
+// ---------------------------------------------------------------------------

@@ -19,8 +19,12 @@
 //! A denial aborts the call; the server never sees it.
 
 use crate::framed::{self, FrameError};
+use crate::{classify, result_text, McpConn, Wire};
+use pantheon_api::capability::{Capability, Policy};
 use pantheon_api::message::ToolSchema;
+use pantheon_exec::sandbox::{build_sandboxed, enforce, Enforcement};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -54,6 +58,12 @@ pub struct McpServerConfig {
     pub request_timeout: Duration,
     /// Max bytes for one JSON-RPC message, either direction.
     pub max_message_bytes: usize,
+    /// Extra environment for the child, applied on top of the cleared
+    /// environment (plus PATH). Values are already resolved — the
+    /// manager turns `env:NAME` refs into values before building this,
+    /// so this struct never sees a ref it cannot resolve. Never logged:
+    /// only the variable names travel in errors.
+    pub env: HashMap<String, String>,
 }
 
 impl McpServerConfig {
@@ -65,11 +75,17 @@ impl McpServerConfig {
             args: Vec::new(),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES,
+            env: HashMap::new(),
         }
     }
 
     pub fn with_args(mut self, args: Vec<String>) -> Self {
         self.args = args;
+        self
+    }
+
+    pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
+        self.env = env;
         self
     }
 
@@ -92,6 +108,9 @@ pub enum McpError {
     Timeout { method: String },
     /// The transport is dead (timeout, EOF, or framing failure killed it).
     Closed,
+    /// The server is in reconnect backoff: not dead, but the manager will
+    /// not attempt a new connection until the cooldown elapses.
+    Unavailable { retry_in_secs: u64 },
     /// A message exceeded the configured cap. The child has been killed.
     Oversized { bytes: usize },
     /// The server sent bytes that are not a valid framed message.
@@ -105,6 +124,9 @@ pub enum McpError {
     ServerToolError(String),
     /// The capability gate denied the call. The server never saw it.
     GateDenied(String),
+    /// The sandbox policy denied the spawn (or held it for approval).
+    /// The server process was never started.
+    PolicyDenied(String),
 }
 
 impl fmt::Display for McpError {
@@ -116,6 +138,10 @@ impl fmt::Display for McpError {
                 write!(f, "mcp: request '{method}' timed out; server killed")
             }
             McpError::Closed => write!(f, "mcp: transport closed"),
+            McpError::Unavailable { retry_in_secs } => write!(
+                f,
+                "mcp: server in reconnect backoff, retry in {retry_in_secs}s"
+            ),
             McpError::Oversized { bytes } => {
                 write!(
                     f,
@@ -129,6 +155,9 @@ impl fmt::Display for McpError {
             }
             McpError::ServerToolError(t) => write!(f, "mcp: tool reported error: {t}"),
             McpError::GateDenied(e) => write!(f, "mcp: capability gate denied the call: {e}"),
+            McpError::PolicyDenied(e) => {
+                write!(f, "mcp: sandbox policy denied the spawn: {e}")
+            }
         }
     }
 }
@@ -200,21 +229,67 @@ pub struct McpClient {
     max_bytes: usize,
     /// Protocol version the server answered in `initialize`.
     pub negotiated_version: String,
+    /// The server's self-reported version (`serverInfo.version`), when it
+    /// sends one. The manager binds operator approval to this plus the
+    /// content hash.
+    pub server_version: Option<String>,
     dead: bool,
 }
 
 impl McpClient {
     /// Spawn the server and run the `initialize` handshake. The child is a
-    /// third-party process: its environment is cleared down to `PATH` so
-    /// host secrets never leak across the boundary.
-    pub fn connect(config: &McpServerConfig) -> Result<Self, McpError> {
-        let mut cmd = Command::new(&config.command);
+    /// third-party process: its environment is cleared down to `PATH` plus
+    /// the explicitly configured `env` entries, so host secrets never leak
+    /// across the boundary except the ones the operator declared.
+    ///
+    /// `policy` gates the spawn through the sandbox enforcement bridge:
+    /// `Deny` / `RequireApproval` abort before the process starts
+    /// ([`McpError::PolicyDenied`]); `Allow` runs the server inside the
+    /// enforcement's sandbox profile. `None` = no policy configured: the
+    /// spawn proceeds un-gated, as before.
+    pub fn connect(config: &McpServerConfig, policy: Option<&Policy>) -> Result<Self, McpError> {
+        // Sandbox enforcement: the capability policy owns *whether* the
+        // server process may run at all.
+        let profile = match policy {
+            Some(policy) => match enforce(policy, &Capability::McpEnable) {
+                Enforcement::Run(profile) => Some(profile),
+                Enforcement::Deny { reason, .. } => {
+                    return Err(McpError::PolicyDenied(format!("mcp.enable: {reason}")))
+                }
+                Enforcement::RequireApproval { scope, .. } => {
+                    return Err(McpError::PolicyDenied(format!(
+                        "mcp.enable requires approval (scope: {scope})"
+                    )))
+                }
+            },
+            None => None,
+        };
+        let args: Vec<&str> = config.args.iter().map(|s| s.as_str()).collect();
+        // The sandbox builder needs an explicit cwd; inheriting the
+        // process cwd preserves the previous (unset-cwd) behavior.
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| ".".to_string());
+        let mut cmd = match &profile {
+            // Policy allowed it: the enforcement's sandbox profile decides
+            // how isolated the child runs (namespace wrapper + rlimits
+            // where the host supports them; a direct spawn where it does
+            // not — the policy gate above is what restores enforcement).
+            Some(profile) => build_sandboxed(profile, &config.command, &args, &cwd),
+            None => {
+                let mut cmd = Command::new(&config.command);
+                cmd.args(&args);
+                cmd
+            }
+        };
         cmd.env_clear();
         if let Ok(p) = std::env::var("PATH") {
             cmd.env("PATH", p);
         }
+        for (k, v) in &config.env {
+            cmd.env(k, v);
+        }
         let mut child = cmd
-            .args(&config.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -258,6 +333,7 @@ impl McpClient {
             timeout: config.request_timeout,
             max_bytes: config.max_message_bytes,
             negotiated_version: String::new(),
+            server_version: None,
             dead: false,
         };
         client.initialize()?;
@@ -306,6 +382,11 @@ impl McpClient {
             )));
         }
         self.negotiated_version = version.to_string();
+        self.server_version = result
+            .get("serverInfo")
+            .and_then(|i| i.get("version"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         // Notification: no id, no response expected.
         self.send(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -436,7 +517,7 @@ impl McpClient {
             serde_json::json!({"name": name, "arguments": args}),
         )?;
         if result.get("isError").and_then(|b| b.as_bool()) == Some(true) {
-            return Err(McpError::ServerToolError(tool_text(&result)));
+            return Err(McpError::ServerToolError(result_text(&result)));
         }
         Ok(result)
     }
@@ -460,80 +541,96 @@ impl Drop for McpClient {
     }
 }
 
-/// Classify one decoded JSON-RPC value.
-enum Wire {
-    Request {
-        id: Value,
-    },
-    Response {
-        id: Value,
-        result: Option<Value>,
-        error: Option<(i64, String)>,
-    },
-    Notification,
-    Invalid,
-}
-
-fn classify(v: &Value) -> Wire {
-    let obj = match v.as_object() {
-        Some(o) => o,
-        None => return Wire::Invalid,
-    };
-    if obj.get("jsonrpc").and_then(|j| j.as_str()) != Some("2.0") {
-        return Wire::Invalid;
+impl McpConn for McpClient {
+    fn list_tools(&mut self) -> Result<Vec<McpToolDef>, McpError> {
+        McpClient::list_tools(self)
     }
-    let id = obj.get("id").cloned();
-    let method = obj
-        .get("method")
-        .and_then(|m| m.as_str())
-        .map(str::to_string);
-    match (id, method) {
-        (Some(id), Some(_)) => Wire::Request { id },
-        (Some(id), None) => {
-            if let Some(err) = obj.get("error") {
-                let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
-                let message = err
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                Wire::Response {
-                    id,
-                    result: None,
-                    error: Some((code, message)),
-                }
-            } else {
-                Wire::Response {
-                    id,
-                    result: obj.get("result").cloned(),
-                    error: None,
-                }
-            }
-        }
-        (None, Some(_)) => Wire::Notification,
-        (None, None) => Wire::Invalid,
+
+    /// The registry boundary (`ToolRegistry::execute_gated`) already
+    /// enforced policy before the projected tool's closure runs, so the
+    /// client-level gate is allow-all here. Direct `McpClient` users
+    /// still pass their own gate to [`McpClient::call_tool`].
+    fn call_tool(&mut self, name: &str, args: &Value) -> Result<Value, McpError> {
+        McpClient::call_tool(self, name, args, &|_: &str, _: &Value| Ok(()))
+    }
+
+    fn alive(&mut self) -> bool {
+        McpClient::alive(self)
+    }
+
+    fn shutdown(&mut self) {
+        self.kill();
+    }
+
+    fn negotiated_version(&self) -> &str {
+        &self.negotiated_version
+    }
+
+    fn server_version(&self) -> Option<&str> {
+        self.server_version.as_deref()
     }
 }
 
-/// Pull the human-readable text out of a `tools/call` result's `content`
-/// blocks, for error reporting.
-fn tool_text(result: &Value) -> String {
-    let mut out = String::new();
-    if let Some(blocks) = result.get("content").and_then(|c| c.as_array()) {
-        for b in blocks {
-            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                    if !out.is_empty() {
-                        out.push('\n');
-                    }
-                    out.push_str(t);
-                }
-            }
+#[cfg(test)]
+mod client_policy_tests {
+    use super::*;
+    use pantheon_api::capability::{Capability, Policy};
+
+    /// Item 2: a policy that denies `mcp.enable` refuses the spawn —
+    /// the server process is never started (the command below does not
+    /// exist; a spawn attempt would surface as `Spawn`, never
+    /// `PolicyDenied`).
+    #[test]
+    fn connect_denied_when_policy_denies_mcp_enable() {
+        // Policy::default() is default-deny: no rule grants mcp.enable.
+        let cfg = McpServerConfig::new("denied-server", "definitely-not-a-real-binary");
+        match McpClient::connect(&cfg, Some(&Policy::default())) {
+            Err(McpError::PolicyDenied(_)) => {}
+            other => panic!("expected PolicyDenied, got: {}", other.is_ok()),
         }
     }
-    if out.is_empty() {
-        result.to_string()
-    } else {
-        out
+
+    /// Item 2: a policy that allows `mcp.enable` lets the spawn proceed
+    /// through the sandbox profile — the gate was consulted and passed,
+    /// and the server completes the `initialize` handshake.
+    #[test]
+    fn connect_proceeds_when_policy_allows_mcp_enable() {
+        // Minimal fake MCP server: answers `initialize`, then idles.
+        // Lines are joined explicitly so Python keeps its indentation
+        // (Rust `\`-continuations would strip it).
+        let script = [
+            "import sys, json",
+            "inp = sys.stdin.buffer",
+            "out = sys.stdout.buffer",
+            "def read_msg():",
+            "    line = inp.readline()",
+            "    if not line:",
+            "        return None",
+            "    text = line.decode().strip()",
+            "    if text.lower().startswith('content-length'):",
+            "        n = int(text.split(':')[1])",
+            "        inp.readline()",
+            "        return json.loads(inp.read(n).decode())",
+            "    return json.loads(text)",
+            "def write_msg(obj):",
+            "    out.write(json.dumps(obj).encode() + b'\\n')",
+            "    out.flush()",
+            "while True:",
+            "    msg = read_msg()",
+            "    if msg is None:",
+            "        break",
+            "    if isinstance(msg, dict) and msg.get('method') == 'initialize':",
+            "        write_msg({'jsonrpc': '2.0', 'id': msg.get('id'), 'result': {",
+            "            'protocolVersion': '2025-06-18',",
+            "            'serverInfo': {'version': 'fake-1'}}})",
+        ]
+        .join("\n");
+        let policy = Policy::default().allow(Capability::McpEnable);
+        let cfg = McpServerConfig::new("fake-server", "python3")
+            .with_args(vec!["-c".to_string(), script]);
+        let client = McpClient::connect(&cfg, Some(&policy))
+            .expect("allowed policy should let the spawn proceed");
+        assert_eq!(client.negotiated_version, "2025-06-18");
+        assert_eq!(client.server_version.as_deref(), Some("fake-1"));
     }
 }

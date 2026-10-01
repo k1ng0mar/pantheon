@@ -21,7 +21,6 @@
 //! * The /sessions overlay stays the detailed view; this bar is the switcher.
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use pantheon_storage::RunListing;
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
@@ -61,10 +60,10 @@ pub const MAX_LABEL_CHARS: usize = 22;
 
 /// An ordered list of session tabs with one active tab.
 ///
-/// The tab list is rebuilt from `ledger_list_runs` whenever the driver
-/// refreshes it; [`TabList::refresh_from_runs`] preserves the active tab by
-/// run id across rebuilds so a title arriving mid-session does not steal
-/// the selection.
+/// The tab list is rebuilt from the driver's explicit open-tab list
+/// whenever it refreshes; [`TabList::refresh_from_explicit`] preserves
+/// the active tab by run id across rebuilds so a title arriving
+/// mid-session does not steal the selection.
 #[derive(Debug, Default, Clone)]
 pub struct TabList {
     tabs: Vec<Tab>,
@@ -73,44 +72,6 @@ pub struct TabList {
 }
 
 impl TabList {
-    /// Build a tab list from `ledger_list_runs` output (newest first, the
-    /// order the listing already carries).
-    ///
-    /// `busy` decides the per-tab busy indicator — the driver passes
-    /// `|id| supervisor.has_active_lease(id).unwrap_or(false)`. It is a
-    /// closure (not a supervisor reference) so this stays pure and testable.
-    ///
-    /// `active_run_id` is the currently selected session. It is included
-    /// even when it holds no lease yet (a fresh `/new` has no ledger row),
-    /// so the bar never loses the session the user is looking at.
-    pub fn from_runs(
-        runs: &[RunListing],
-        busy: impl Fn(&str) -> bool,
-        active_run_id: &str,
-    ) -> Self {
-        let mut list = TabList {
-            tabs: Vec::new(),
-            active: 0,
-        };
-        list.refresh_from_runs(runs, &busy, active_run_id);
-        list
-    }
-
-    /// Rebuild from a fresh listing, keeping the active tab when its run id
-    /// survives the refresh and falling back to the first tab otherwise.
-    pub fn refresh_from_runs(
-        &mut self,
-        runs: &[RunListing],
-        busy: impl Fn(&str) -> bool,
-        active_run_id: &str,
-    ) {
-        let explicit: Vec<(String, Option<String>)> = runs
-            .iter()
-            .map(|(run_id, _status, _ts, title)| (run_id.clone(), title.clone()))
-            .collect();
-        self.refresh_from_explicit(&explicit, &busy, active_run_id);
-    }
-
     /// Rebuild from an explicit open-tab list: (run id, title) pairs in
     /// display order. This is the true open-tab model — the driver owns
     /// the list; the ledger is only consulted for titles, never for
@@ -321,7 +282,7 @@ pub fn tab_key_action(code: KeyCode, mods: KeyModifiers) -> Option<TabAction> {
 }
 
 /// Separator glyph between tabs.
-const TAB_SEP: &str = " │ ";
+const TAB_SEP: &str = "  ";
 /// Status dot: every tab carries one. Green = turn running, amber =
 /// parked on approval/input (the look-at-me state), grey = idle.
 const DOT_BUSY: &str = "●";
@@ -330,10 +291,12 @@ const DOT_IDLE: &str = "○";
 
 /// Render the tab bar into `area` (expects a single row).
 ///
-/// opencode-style: `[ 1 title ● │ 2 other ]` — the active tab is bold cyan,
-/// inactive tabs dim, and a yellow ● marks sessions with a running turn.
-/// When the bar is wider than the area, a window around the active tab is
-/// shown so the selected tab is never the one clipped away.
+/// Browser-style: the active tab sits on a subtle wash with bright bold
+/// text and a dim `×`; inactive tabs are plain dim text. A colored dot
+/// leads each tab — green for a running turn, amber for a parked
+/// approval — and `+` at the end opens a new session. When the bar is
+/// wider than the area, a window around the active tab is shown so the
+/// selected tab is never the one clipped away.
 pub fn render_tab_bar(
     f: &mut Frame,
     area: Rect,
@@ -346,55 +309,49 @@ pub fn render_tab_bar(
     let width = area.width as usize;
     let active = tabs.active_index();
 
-    // Per-tab segment text and display width.
-    let segments: Vec<String> = tabs
+    // Per-tab segment text and display width. No numbering: this is a
+    // browser bar, not a list; Alt+1..9 still jumps by position. The
+    // active tab carries a dim `×`; every tab pads to its wash.
+    let widths: Vec<usize> = tabs
         .tabs()
         .iter()
         .enumerate()
         .map(|(i, tab)| {
-            let dot = if tab.approval {
-                DOT_APPROVAL
-            } else if tab.busy {
-                DOT_BUSY
+            let label_w = tab.label().chars().count();
+            // " ● " + label + " × " (active) or "  " (inactive).
+            if i == active {
+                label_w + 6
             } else {
-                DOT_IDLE
-            };
-            format!(" {} {} {dot}", i + 1, tab.label())
+                label_w + 5
+            }
         })
         .collect();
-    let widths: Vec<usize> = segments.iter().map(|s| s.chars().count()).collect();
 
     // Window around the active tab: expand left, then right, while it fits.
+    // The trailing `+` always keeps its slot.
     let sep_w = TAB_SEP.chars().count();
+    let plus_w = 2; // " +"
     let (mut start, mut end) = (active, active);
-    let mut used = widths[active];
+    let mut used = widths[active] + plus_w;
     while start > 0 && used + sep_w + widths[start - 1] <= width {
         start -= 1;
         used += sep_w + widths[start];
     }
-    while end + 1 < segments.len() && used + sep_w + widths[end + 1] <= width {
+    while end + 1 < widths.len() && used + sep_w + widths[end + 1] <= width {
         end += 1;
         used += sep_w + widths[end];
     }
 
-    // Build the line: dim separators, bold active tab, dim inactive
-    // tabs, and the status dot as its own span so it reads as a state
-    // rather than part of the name. Amber is approval-only: the dot is
-    // the one place outside the approval card that may use it.
+    // Build the line: the active tab gets the wash + bright text, the
+    // status dot keeps its own color so it reads as state rather than
+    // part of the name. Amber is approval-only: the dot is the one place
+    // outside the approval card that may use it.
     let mut line_spans: Vec<Span> = Vec::new();
     for i in start..=end {
         if i > start {
             line_spans.push(Span::styled(TAB_SEP, Style::default().fg(theme.dim)));
         }
         let tab = &tabs.tabs()[i];
-        let style = if i == active {
-            Style::default()
-                .fg(theme.tab_active)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.tab_idle)
-        };
-        line_spans.push(Span::styled(format!(" {} {}", i + 1, tab.label()), style));
         let (dot, dot_color) = if tab.approval {
             (DOT_APPROVAL, theme.warning)
         } else if tab.busy {
@@ -402,10 +359,29 @@ pub fn render_tab_bar(
         } else {
             (DOT_IDLE, theme.dim)
         };
-        line_spans.push(Span::styled(
-            format!(" {dot}"),
-            Style::default().fg(dot_color),
-        ));
+        if i == active {
+            let wash = Style::default().bg(theme.tab_active_bg);
+            line_spans.push(Span::styled(
+                format!(" {dot} "),
+                wash.fg(dot_color).add_modifier(Modifier::BOLD),
+            ));
+            line_spans.push(Span::styled(
+                tab.label(),
+                wash.fg(theme.tab_active).add_modifier(Modifier::BOLD),
+            ));
+            line_spans.push(Span::styled(" × ", wash.fg(theme.dim)));
+        } else {
+            line_spans.push(Span::styled(
+                format!(" {dot} ",),
+                Style::default().fg(dot_color),
+            ));
+            line_spans.push(Span::styled(
+                tab.label(),
+                Style::default().fg(theme.tab_idle),
+            ));
+            line_spans.push(Span::raw("  "));
+        }
     }
+    line_spans.push(Span::styled(" +", Style::default().fg(theme.dim)));
     f.render_widget(Paragraph::new(Line::from(line_spans)), area);
 }

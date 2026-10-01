@@ -1,5 +1,5 @@
 //! Behavioral tests for the MCP stdio client, against the hermetic fake
-//! server in `crates/pantheon-mcp/tests/fixtures/fake_mcp_server.py`
+//! server in `eval/tests/fixtures/fake_mcp_server.py`
 //! (stdlib-only, no network). Moved here from
 //! `pantheon-mcp/src/client_tests.rs`: subprocess + stdio + timeouts, so it
 //! runs under `cargo test -p pantheon-eval`, not beside the code.
@@ -10,7 +10,7 @@ use std::time::Duration;
 
 fn fixture() -> String {
     format!(
-        "{}/../crates/pantheon-mcp/tests/fixtures/fake_mcp_server.py",
+        "{}/tests/fixtures/fake_mcp_server.py",
         env!("CARGO_MANIFEST_DIR")
     )
 }
@@ -35,7 +35,7 @@ fn read_log(path: &std::path::Path) -> String {
 
 #[test]
 fn handshake_lists_and_calls() {
-    let mut client = McpClient::connect(&config("normal", None)).expect("connect");
+    let mut client = McpClient::connect(&config("normal", None), None).expect("connect");
     assert_eq!(client.negotiated_version, "2025-03-26");
     assert!(client.alive());
 
@@ -61,7 +61,7 @@ fn handshake_lists_and_calls() {
 
 #[test]
 fn tool_error_is_structured() {
-    let mut client = McpClient::connect(&config("normal", None)).expect("connect");
+    let mut client = McpClient::connect(&config("normal", None), None).expect("connect");
     let err = client
         .call_tool("fail", &Value::Null, &allow_all)
         .expect_err("fail tool must error");
@@ -72,7 +72,7 @@ fn tool_error_is_structured() {
 fn gate_denial_aborts_before_wire() {
     let log = std::env::temp_dir().join(format!("mcp-gate-{}", std::process::id()));
     let _ = std::fs::remove_file(&log);
-    let mut client = McpClient::connect(&config("normal", Some(&log))).expect("connect");
+    let mut client = McpClient::connect(&config("normal", Some(&log)), None).expect("connect");
     let deny = |_: &str, _: &Value| Err(McpError::GateDenied("policy says no".into()));
     let err = client
         .call_tool("echo", &serde_json::json!({}), &deny)
@@ -87,7 +87,7 @@ fn gate_denial_aborts_before_wire() {
 
 #[test]
 fn gate_sees_name_and_args() {
-    let mut client = McpClient::connect(&config("normal", None)).expect("connect");
+    let mut client = McpClient::connect(&config("normal", None), None).expect("connect");
     let seen: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
     let seen2 = seen.clone();
     let gate = move |name: &str, args: &Value| {
@@ -105,7 +105,7 @@ fn gate_sees_name_and_args() {
 #[test]
 fn timeout_kills_hanging_server() {
     let cfg = config("hang", None).with_timeout(Duration::from_secs(1));
-    let mut client = McpClient::connect(&cfg).expect("connect");
+    let mut client = McpClient::connect(&cfg, None).expect("connect");
     let err = client
         .call_tool("echo", &Value::Null, &allow_all)
         .expect_err("hang must time out");
@@ -121,21 +121,21 @@ fn timeout_kills_hanging_server() {
 
 #[test]
 fn oversized_message_rejected() {
-    let mut client = McpClient::connect(&config("oversize", None)).expect("connect");
+    let mut client = McpClient::connect(&config("oversize", None), None).expect("connect");
     let err = client.list_tools().expect_err("oversize must fail");
     assert!(matches!(err, McpError::Oversized { .. }), "got {err:?}");
 }
 
 #[test]
 fn malformed_jsonrpc_is_structured_error() {
-    let mut client = McpClient::connect(&config("garbage", None)).expect("connect");
+    let mut client = McpClient::connect(&config("garbage", None), None).expect("connect");
     let err = client.list_tools().expect_err("garbage must fail");
     assert!(matches!(err, McpError::Framing(_)), "got {err:?}");
 }
 
 #[test]
 fn unknown_protocol_version_rejected() {
-    let err = match McpClient::connect(&config("badversion", None)) {
+    let err = match McpClient::connect(&config("badversion", None), None) {
         Err(e) => e,
         Ok(_) => panic!("bad version must fail"),
     };
@@ -145,7 +145,7 @@ fn unknown_protocol_version_rejected() {
 #[test]
 fn spawn_failure_is_structured() {
     let cfg = McpServerConfig::new("nope", "pantheon-definitely-not-a-real-binary");
-    let err = match McpClient::connect(&cfg) {
+    let err = match McpClient::connect(&cfg, None) {
         Err(e) => e,
         Ok(_) => panic!("missing binary must fail"),
     };

@@ -8,6 +8,38 @@ use pantheon_tools::tools::ToolRegistry;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Spawn a plugin runner, tolerating the kernel's ETXTBSY ("Text file busy",
+/// os error 26) with a short bounded retry.
+///
+/// These tests write a fresh `run.sh` and exec it immediately afterwards.
+/// Under parallel load the exec can rarely race the just-finished write and
+/// the kernel refuses with ETXTBSY even though our write handle is closed.
+/// That is a test-harness timing artifact, not a product behavior under test:
+/// production runners are installed files, never written mid-spawn. The retry
+/// keeps the suite deterministic without weakening any assertion; any other
+/// spawn failure still fails loudly, and persistent ETXTBSY panics after the
+/// budget is exhausted.
+fn spawn_plugin(
+    runner: &std::path::Path,
+    manifest: &PluginManifest,
+    dir: &std::path::Path,
+    timeout: Duration,
+    allowlist: &[String],
+) -> PluginSupervisor {
+    let mut last_err = None;
+    for _ in 0..50 {
+        match PluginSupervisor::spawn(runner, manifest, dir, timeout, allowlist) {
+            Ok(sup) => return sup,
+            Err(e) if e.code == "PLUGIN_SPAWN" && e.cause.contains("os error 26") => {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(e) => panic!("plugin spawn failed: {e:?}"),
+        }
+    }
+    panic!("plugin spawn kept hitting ETXTBSY: {last_err:?}");
+}
+
 #[test]
 fn registry_wires_plugin_tool() {
     let dir = std::env::temp_dir().join(format!(
@@ -48,9 +80,13 @@ fn registry_wires_plugin_tool() {
         runner: "run.sh".into(),
         enabled: true,
     };
-    let sup = Arc::new(Mutex::new(
-        PluginSupervisor::spawn(&runner, &manifest, &dir, Duration::from_secs(5), &[]).unwrap(),
-    ));
+    let sup = Arc::new(Mutex::new(spawn_plugin(
+        &runner,
+        &manifest,
+        &dir,
+        Duration::from_secs(5),
+        &[],
+    )));
     let mut reg = ToolRegistry::new();
     register_plugin_tools(&mut reg, &manifest, sup.clone()).unwrap();
     let out = reg.execute("greet", "{}").unwrap();
@@ -110,16 +146,13 @@ fn register_plugin_tools_rejects_squat() {
         p.set_mode(0o755);
         std::fs::set_permissions(&runner, p).unwrap();
     }
-    let sup = Arc::new(Mutex::new(
-        PluginSupervisor::spawn(
-            &runner,
-            &manifest_of("ok_tool"),
-            &dir,
-            Duration::from_secs(5),
-            &[],
-        )
-        .unwrap(),
-    ));
+    let sup = Arc::new(Mutex::new(spawn_plugin(
+        &runner,
+        &manifest_of("ok_tool"),
+        &dir,
+        Duration::from_secs(5),
+        &[],
+    )));
 
     for squat in ["shell", "SHELL", "Memory_Recall", "memory.recall"] {
         let mut reg = ToolRegistry::new();

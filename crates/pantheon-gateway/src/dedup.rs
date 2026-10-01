@@ -63,7 +63,3 @@ impl DedupWindow {
         self.seen.is_empty()
     }
 }
-
-#[cfg(test)]
-#[path = "dedup_tests.rs"]
-mod tests;

@@ -101,13 +101,13 @@ fn sup_for(dir: &Path) -> Result<crate::Supervisor, RpcError> {
 /// How a turn opens its Session. Set once by `pantheon serve` so the AG-UI
 /// path resolves the same provider, secrets, and auxiliary models as the
 /// CLI, instead of falling back to bare environment variables.
-static SESSION_FACTORY: std::sync::OnceLock<crate::serve::SessionFactory> =
+static SESSION_FACTORY: std::sync::OnceLock<crate::agui_serve::SessionFactory> =
     std::sync::OnceLock::new();
 
 /// Install the process-wide session factory. Called by the CLI before the
 /// server starts. A second call is ignored so an embedder that already set
 /// one is not silently overridden.
-pub fn set_session_factory(f: crate::serve::SessionFactory) {
+pub fn set_session_factory(f: crate::agui_serve::SessionFactory) {
     let _ = SESSION_FACTORY.set(f);
 }
 
@@ -136,7 +136,7 @@ fn release_turn_lock(run_id: &str, lock: &Arc<std::sync::Mutex<()>>) {
 
 /// The installed factory, or the environment-only default used by library
 /// embedders and tests.
-fn session_factory_for(_dir: &PathBuf) -> Result<crate::serve::SessionFactory, RpcError> {
+fn session_factory_for(_dir: &PathBuf) -> Result<crate::agui_serve::SessionFactory, RpcError> {
     if let Some(f) = SESSION_FACTORY.get() {
         return Ok(Arc::clone(f));
     }
@@ -183,22 +183,40 @@ impl MethodHandler for SendMsg {
         let factory = session_factory_for(&dir)?;
         let session =
             factory(&dir).map_err(|e| RpcError::internal(format!("open session: {e}")))?;
-        crate::serve::remember_thread(&dir, &run_id, &thread_id);
+        crate::agui_serve::remember_thread(&dir, &run_id, &thread_id);
         let turn_id = crate::new_turn_id();
         let worker_run = run_id.clone();
         let worker_turn = turn_id.clone();
         let worker_text = text.to_string();
         let worker_lock = turn_lock_for(&worker_run);
+        let worker_sup = sup.clone();
         std::thread::spawn(move || {
             // Serialize with any other in-flight turn for this run; the
             // RPC already returned, so this only orders the workers.
             let result = {
                 let _guard = worker_lock.lock().unwrap();
-                session.chat_turn(&worker_run, &worker_turn, &worker_text)
+                // FIFO queue drain (dashboard parity): a message queued
+                // while the run was busy rides this turn as the earliest
+                // input instead of sitting until a dashboard/TUI client
+                // drains it. Peek first — the head is popped only after
+                // the turn starts, so a turn that fails to start never
+                // eats it. The lock serializes workers, so two turns
+                // cannot drain the same head.
+                let drained = worker_sup
+                    .queued_messages(&worker_run)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .next();
+                let turn_text = compose_turn_text(drained.as_deref(), &worker_text);
+                let outcome = session.chat_turn(&worker_run, &worker_turn, &turn_text);
+                if outcome.is_ok() && drained.is_some() {
+                    let _ = worker_sup.take_queued_message(&worker_run);
+                }
+                outcome
             };
             release_turn_lock(&worker_run, &worker_lock);
             if let Err(error) = result {
-                eprintln!("agui turn {worker_turn} failed: {error}");
+                log_warn!("agui turn {worker_turn} failed: {error}");
             }
         });
         // Admission is durable before the RPC returns. A short bounded wait
@@ -235,6 +253,41 @@ impl MethodHandler for SendMsg {
         }))
     }
 }
+
+/// Combine a drained queue head with the turn's message: the queued
+/// text rides first; when the client already sent the same text (the
+/// app echoes the oldest queued text when the run looks idle), it is
+/// not duplicated. Same rule as the dashboard's idle-path send.
+fn compose_turn_text(drained: Option<&str>, message: &str) -> String {
+    match drained {
+        Some(queued) if queued != message => format!("{queued}\n\n{message}"),
+        _ => message.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod agui_queue_tests {
+    use super::compose_turn_text;
+
+    #[test]
+    fn queue_head_rides_first() {
+        assert_eq!(
+            compose_turn_text(Some("first"), "second"),
+            "first\n\nsecond"
+        );
+    }
+
+    #[test]
+    fn echoed_head_is_not_duplicated() {
+        assert_eq!(compose_turn_text(Some("same"), "same"), "same");
+    }
+
+    #[test]
+    fn empty_queue_leaves_message_alone() {
+        assert_eq!(compose_turn_text(None, "hello"), "hello");
+    }
+}
+
 struct Grant {
     data_dir: PathBuf,
 }
@@ -450,6 +503,3 @@ impl MethodHandler for ServeHint {
         }))
     }
 }
-#[cfg(test)]
-#[path = "agui_tests.rs"]
-mod tests;

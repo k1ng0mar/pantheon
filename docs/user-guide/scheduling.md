@@ -19,7 +19,10 @@ You can also fire due jobs by hand, which is what CI and manual setups use:
 
 ```sh
 pantheon schedule tick [--watch]   # --watch keeps it running in the foreground
+pantheon schedule run <job-id>     # run one job now, outside its schedule
 ```
+
+A successful `schedule run` removes a one-shot job — it has fired its single time. If the run fails, the one-shot stays so you can retry it; recurring jobs are never removed this way, they just record the run.
 
 ## Where results go
 
@@ -41,7 +44,9 @@ Ready-made job blueprints, `pantheon schedule template list`:
 pantheon schedule create --template morning-briefing --var topic="AI agents" --deliver telegram
 ```
 
-Each template has a default schedule and a prompt with `{{variable}}` placeholders. Missing values are asked for interactively, or error out without a terminal. You can add your own templates as TOML files in `<data_dir>/templates/`; same name as a built-in replaces it.
+Each template has a default schedule and a prompt with `{{variable}}` placeholders. Missing values are asked for interactively, or error out without a terminal. Manage your own with `pantheon schedule template save --name my-watch --every 1h --prompt "Check {{thing}} and report back." --var thing:"What should I watch?":"the build"`; they live in `<data_dir>/templates.json` and are shared by every client. Same name as a built-in overrides it — and `pantheon schedule template delete <name>` on an overridden built-in removes your copy and reveals the built-in again. Deleting a built-in you never overrode is an error.
+
+A job's template can be swapped later: the dashboard's `PUT /api/schedule/jobs/<id>` accepts `template` (a name, or `null` to clear it) plus `template_vars` (`vars` works too). Reassigning validates like creation — the template must exist, missing vars are rejected, defaults fill gaps, and the task text is re-rendered from the new template. An explicit `task` in the same request still wins over the rendered text.
 
 ## Which model runs jobs
 

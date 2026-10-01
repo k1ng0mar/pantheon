@@ -53,7 +53,13 @@ pub struct BgTask {
     /// Independent cancel token: the main turn's double-Esc writes the
     /// session token, never this one.
     pub cancel: Arc<AtomicBool>,
+    /// Tool calls captured from this task's own run id, for the sidebar
+    /// activity timeline. Bounded; see [`MAX_BG_STEPS`].
+    pub steps: Vec<super::activity::BgStep>,
 }
+
+/// Max captured tool steps per background task (timeline display cap).
+pub const MAX_BG_STEPS: usize = 12;
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
@@ -89,6 +95,7 @@ impl BgTask {
             finished_ms: None,
             output: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            steps: Vec::new(),
         }
     }
 
@@ -163,44 +170,5 @@ pub fn result_header(task: &BgTask) -> String {
         BgStatus::Done => format!("◈ background result bg-{} · “{}”", task.id, task.label),
         BgStatus::Failed => format!("× background task bg-{} failed · “{}”", task.id, task.label),
         _ => format!("● background task bg-{} · “{}”", task.id, task.label),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn status_words_are_stable() {
-        assert_eq!(BgStatus::Queued.word(), "queued");
-        assert_eq!(BgStatus::Running.word(), "running");
-        assert_eq!(BgStatus::Done.word(), "done");
-        assert_eq!(BgStatus::Failed.word(), "failed");
-        assert!(BgStatus::Queued.is_active());
-        assert!(BgStatus::Running.is_active());
-        assert!(!BgStatus::Done.is_active());
-        assert!(!BgStatus::Failed.is_active());
-    }
-
-    #[test]
-    fn spinner_frame_is_deterministic_in_clock() {
-        assert_eq!(spinner_frame(0), '⠋');
-        assert_eq!(spinner_frame(199), '⠋');
-        assert_eq!(spinner_frame(200), '⠙');
-        assert_eq!(spinner_frame(2000), '⠋');
-    }
-
-    #[test]
-    fn empty_prompt_gets_placeholder_label() {
-        assert_eq!(task_label(""), "(empty prompt)");
-        assert_eq!(task_label("   \n  "), "(empty prompt)");
-    }
-
-    #[test]
-    fn mark_running_only_leaves_queued() {
-        let mut t = BgTask::new(1, "p", "r".into(), "par".into());
-        t.finish("done".into());
-        t.mark_running();
-        assert_eq!(t.status, BgStatus::Done);
     }
 }

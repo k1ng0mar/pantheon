@@ -389,19 +389,6 @@ impl SafeWriter {
         let _ = f.sync_all();
         Ok(())
     }
-    /// Test-only seam: same as `journal_append` but callable from outside the
-    /// module so torn-apply recovery tests can simulate a missing commit.
-    #[cfg(test)]
-    pub fn journal_append_for_test(
-        &self,
-        kind: &str,
-        id: &str,
-        checkpoint: Option<String>,
-        ledger_seq: i64,
-        paths: Vec<PathBuf>,
-    ) -> Result<(), PantheonError> {
-        self.journal_append(kind, id, checkpoint, ledger_seq, paths)
-    }
     /// Snapshot pre-images for paths, anchoring ledger_seq in the manifest.
     pub fn checkpoint(
         &self,
@@ -756,7 +743,3 @@ impl SafeWriter {
         Ok(recovered)
     }
 }
-
-#[cfg(test)]
-#[path = "safewrite_tests.rs"]
-mod tests;

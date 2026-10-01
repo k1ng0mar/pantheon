@@ -16,6 +16,7 @@ use crate::env::EnvVault;
 use crate::error::SecretsError;
 use crate::value::SecretValue;
 use crate::vault::SecretVault;
+use std::path::Path;
 use std::sync::Arc;
 
 /// Resolves and injects secrets for a run.
@@ -77,9 +78,13 @@ impl SecretsBroker {
     /// Like `from_system_env`, but also picks up the legacy `PANTHEON_API_KEY`
     /// env var (and any config-named env var passed via `key_env`) by injecting
     /// it into a memory vault. The mirror is ranked *with the environment*
-    /// (in front of the keychain), so exporting a rotated key always beats a
-    /// stale stored one; an explicit `--key` still beats both via
-    /// [`Self::with_vault_front`].
+    /// (in front of the keychain) for reads, so exporting a rotated key
+    /// always beats a stale stored one; an explicit `--key` still beats both
+    /// via [`Self::with_vault_front`].
+    ///
+    /// The mirror is read-only: it is wrapped in
+    /// [`crate::vault::ReadOnlyVault`] so a `set` falls through to the next
+    /// durable vault (the keychain) instead of dying in process memory.
     pub fn from_system_env_with_api_key(key_env: Option<&str>) -> Self {
         let mem = crate::vault::MemoryVault::new();
         let found = key_env
@@ -88,7 +93,35 @@ impl SecretsBroker {
         if let Some(k) = found {
             let _ = mem.set("PANTHEON_API_KEY", SecretValue::new(k));
         }
-        Self::from_system_env().with_vault_front(Box::new(mem))
+        Self::from_system_env().with_vault_front(Box::new(crate::vault::ReadOnlyVault::new(mem)))
+    }
+
+    /// Broker with a durable vault that survives restarts, for hosts where
+    /// the OS keychain may be absent (headless Linux): the OS keychain
+    /// when the platform has a usable credential store, otherwise an
+    /// [`crate::filevault::EncryptedFileVault`] under `data_dir`
+    /// (`secrets.json` sealed under `.secrets.key`, 0600).
+    ///
+    /// There is deliberately no in-memory fallback in the chain: a `set`
+    /// that only reaches process memory silently loses the secret on
+    /// restart, which is the failure this constructor exists to prevent.
+    /// Fails loudly when the file vault cannot be opened (I/O, tampered
+    /// envelope) rather than degrading to memory.
+    pub fn durable(data_dir: &Path) -> Result<Self, SecretsError> {
+        let mut durable: Vec<Arc<dyn SecretVault>> = Vec::new();
+        if crate::keychain::KeychainVault::platform_available().is_ok() {
+            durable.push(Arc::new(crate::keychain::KeychainVault::new()));
+        } else {
+            durable.push(Arc::new(crate::filevault::EncryptedFileVault::open(
+                data_dir.join("secrets.json"),
+                data_dir.join(".secrets.key"),
+            )?));
+        }
+        Ok(Self {
+            durable,
+            env: EnvVault::system(),
+            plugin_env_allowlist: Vec::new(),
+        })
     }
 
     /// Add a durable vault (OS keychain, encrypted local, memory). Durable
@@ -227,15 +260,116 @@ impl SecretsBroker {
     /// Delete a secret from every vault that holds it. A name no vault
     /// knows is a no-op (not an error): the caller asked for it to be gone,
     /// and it is.
+    ///
+    /// A vault whose platform store cannot answer
+    /// ([`SecretsError::Backend`]) is skipped, not fatal — the same
+    /// degraded-store rule as [`Self::resolve`] and [`Self::set`]. Every
+    /// other failure propagates: a delete that reports `Ok` really deleted.
     pub fn delete(&self, name: &str) -> Result<(), SecretsError> {
         crate::error::validate_name(name)?;
         for vault in &self.durable {
-            let _ = vault.delete(name);
+            match vault.delete(name) {
+                Ok(()) => {}
+                Err(SecretsError::Backend(_)) => continue,
+                Err(e) => return Err(e),
+            }
         }
         Ok(())
     }
 }
 
 #[cfg(test)]
-#[path = "broker_tests.rs"]
-mod tests;
+mod tests {
+    use super::*;
+
+    /// Item 3: a secret `set` through the durable broker survives a
+    /// full drop-and-recreate from the same data dir. On a host with no
+    /// OS keychain (this environment), the fallback is the
+    /// EncryptedFileVault — a memory-only fallback would lose the
+    /// secret at the second `durable()` call.
+    #[test]
+    fn durable_broker_secret_survives_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-secrets-durable-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let broker = SecretsBroker::durable(&dir).expect("durable broker opens");
+            broker
+                .set("TEST_RESTART_SECRET", SecretValue::new("s3cr3t-value"))
+                .expect("set through the durable broker");
+        }
+        let broker2 = SecretsBroker::durable(&dir).expect("durable broker reopens");
+        let got = broker2
+            .resolve("TEST_RESTART_SECRET")
+            .expect("resolve works")
+            .expect("secret survived the restart");
+        assert_eq!(got.expose(), "s3cr3t-value");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Item 5: redaction tests — broker descriptions and name listings must
+/// never carry secret material.
+#[cfg(test)]
+mod broker_redaction_tests {
+    use super::*;
+    use crate::dotenv::DotenvVault;
+    use crate::vault::SecretVault;
+
+    #[test]
+    fn describe_reports_presence_never_value() {
+        // EnvVault normalizes lookups through PANTHEON_SECRET_<NAME>;
+        // seed the map under the normalized key.
+        let broker = SecretsBroker::new().with_env(EnvVault::from_map(vec![(
+            "PANTHEON_SECRET_TEST_DESCRIBE_SECRET",
+            "s3cr3t-value",
+        )]));
+        let d = broker.describe("TEST_DESCRIBE_SECRET");
+        assert!(
+            !d.contains("s3cr3t-value"),
+            "describe() must not leak the value: {d}"
+        );
+        assert!(d.contains("present"), "presence is reported: {d}");
+        let missing = broker.describe("TEST_DESCRIBE_MISSING");
+        assert!(
+            missing.contains("absent") && !missing.contains("s3cr3t"),
+            "absent secrets describe cleanly: {missing}"
+        );
+    }
+
+    #[test]
+    fn dotenv_vault_roundtrip_and_names_are_names_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-secrets-redact-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = DotenvVault::new(&dir);
+        vault
+            .set("TEST_REDACT_KEY", SecretValue::new("s3cr3t-value"))
+            .expect("set works");
+        let got = vault
+            .get("TEST_REDACT_KEY")
+            .expect("get works")
+            .expect("round-trips");
+        assert_eq!(got.expose(), "s3cr3t-value");
+        let names = vault.names().expect("names works");
+        assert!(
+            names.iter().any(|n| n == "TEST_REDACT_KEY"),
+            "names lists the key: {names:?}"
+        );
+        for n in &names {
+            assert!(
+                !n.contains("s3cr3t"),
+                "names() must carry names only, never values: {n}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

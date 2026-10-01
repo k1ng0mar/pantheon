@@ -27,8 +27,7 @@ fn once_per_session_dedups() {
     let base = std::env::temp_dir().join(format!("pantheon-mgr-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     plug(&base.join("p"), "p", true, "CTX");
-    let mut m = ExtensionManager::new(RunnerConfig::default());
-    m.load_dir(&base).unwrap();
+    let m = mgr_with(&base);
     assert_eq!(
         m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
         Some("CTX".into())
@@ -59,8 +58,7 @@ fn seen_sessions_sniff_dedups_without_manifest_flag() {
             "_seen_sessions = set()\ndef register(ctx):\n    ctx.register_hook('pre_llm_call', _h)\ndef _h(**kw):\n    return {'context': 'Q'}\n",
         )
         .unwrap();
-    let mut m = ExtensionManager::new(RunnerConfig::default());
-    m.load_dir(&base).unwrap();
+    let m = mgr_with(&base);
     assert_eq!(
         m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
         Some("Q".into())
@@ -76,8 +74,7 @@ fn normal_plugin_fires_every_time() {
     let base = std::env::temp_dir().join(format!("pantheon-mgr3-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     plug(&base.join("r"), "r", false, "R");
-    let mut m = ExtensionManager::new(RunnerConfig::default());
-    m.load_dir(&base).unwrap();
+    let m = mgr_with(&base);
     assert_eq!(
         m.fire(Hook::PreLlmCall, "s1", "cli", Default::default()),
         Some("R".into())
@@ -106,9 +103,47 @@ fn plug_hook(dir: &std::path::Path, name: &str, hook: &str, body: &str) {
 }
 
 fn mgr_with(base: &std::path::Path) -> ExtensionManager {
+    // Fixtures simulate an operator who has reviewed and approved the test
+    // plugins: record approval for every plugin dir before loading, so the
+    // third-party privilege gate doesn't filter them out.
+    if let Ok(rd) = std::fs::read_dir(base) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p.join("plugin.yaml").exists() {
+                if let Ok(man) =
+                    pantheon_extensions::manifest::PluginManifest::load(&p.join("plugin.yaml"))
+                {
+                    let _ = pantheon_extensions::record_approval(base, &man.name);
+                }
+            }
+        }
+    }
     let mut m = ExtensionManager::new(RunnerConfig::default());
     m.load_dir(base).unwrap();
     m
+}
+
+#[test]
+fn unapproved_plugin_stays_pending_and_never_fires() {
+    // The privilege gate itself: a third-party plugin with no recorded
+    // approval is never loaded and never fires.
+    let base = std::env::temp_dir().join("pantheon-gate-pending");
+    let _ = std::fs::remove_dir_all(&base);
+    plug_hook(
+        &base.join("shady"),
+        "shady",
+        "pre_llm_call",
+        "{'context': 'X'}",
+    );
+    // NOTE: deliberately not mgr_with — this test needs the plugin UNAPPROVED.
+    let mut m = ExtensionManager::new(RunnerConfig::default());
+    m.load_dir(&base).unwrap();
+    assert!(m.names().is_empty(), "unapproved plugin must not load");
+    assert_eq!(m.pending().len(), 1);
+    assert_eq!(
+        m.fire(Hook::PreLlmCall, "s", "cli", Default::default()),
+        None
+    );
 }
 
 #[test]

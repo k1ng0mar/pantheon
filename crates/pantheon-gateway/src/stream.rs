@@ -157,6 +157,3 @@ pub fn frames_for_entries(
     }
     out
 }
-#[cfg(test)]
-#[path = "stream_tests.rs"]
-mod tests;

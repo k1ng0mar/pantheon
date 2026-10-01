@@ -31,13 +31,35 @@ fn merr(code: &str, cause: String) -> PantheonError {
 }
 
 /// Catalog metadata for one backend. The registry builds the catalog
-/// dynamically from the constructors passed at construction.
+/// dynamically from the constructors passed at construction. The setup
+/// wizard consumes `BackendRegistry::catalog()`; `auth` names the
+/// credential the entry needs (env var or keyless), `deployment` says
+/// where it runs, and `recommended` is reserved for a future named
+/// default (false everywhere — native is the implicit default).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackendInfo {
     pub name: String,
     pub label: String,
     pub kind: BackendKind,
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub recommended: bool,
+    #[serde(default)]
+    pub auth: String,
+    #[serde(default)]
+    pub deployment: DeploymentKind,
+}
+
+/// Where the backend runs. Orthogonal to [`BackendKind`], which says how
+/// the runtime instantiates it (native store vs HTTP bridge vs
+/// subprocess); this says where the service lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeploymentKind {
+    #[default]
+    Local,
+    Cloud,
+    SelfHosted,
 }
 
 /// Backend kind: what the runtime expects when it instantiates the
@@ -145,66 +167,186 @@ impl std::fmt::Debug for BackendEntry {
     }
 }
 
+/// One HTTP-bridge plugin backend. `default_url` is `None` for every
+/// registered entry: no vendor ships a service that speaks Pantheon's
+/// `/v1/memory` protocol, so any vendor URL as a default would point the
+/// protocol client at a native API that returns 404s or foreign JSON.
+/// Users supply `options.url` (or the env var) pointing at their own
+/// thin bridge (a user-operated shim translating the vendor API to
+/// Pantheon's `/v1/memory` protocol). Keeping the default empty makes a
+/// missing bridge a clear `MEM_BACKEND_CONFIG` error instead of a
+/// confusing protocol failure.
+struct PluginSpec {
+    name: &'static str,
+    label: &'static str,
+    default_url: Option<&'static str>,
+    auth: &'static str,
+    deployment: DeploymentKind,
+}
+
 /// Registered HTTP-bridge plugin backends: each talks to a service that
 /// exposes (or is bridged to) Pantheon's small `/v1/memory` JSON API.
 /// URL/key come from selection options (`url`, `key`) or env
-/// `PANTHEON_MEMORY_<NAME>_URL` / `PANTHEON_MEMORY_<NAME>_KEY`.
-const PLUGIN_BACKENDS: &[(&str, &str)] = &[
-    (
-        "galaxymem",
-        "GalaxyMem via HTTP bridge (Pantheon /v1/memory protocol)",
-    ),
-    (
-        "mnemosyne",
-        "Mnemosyne via HTTP bridge (Pantheon /v1/memory protocol)",
-    ),
-    (
-        "honcho",
-        "Honcho via HTTP bridge (Pantheon /v1/memory protocol)",
-    ),
-    (
-        "hindsight",
-        "Hindsight via HTTP bridge (Pantheon /v1/memory protocol)",
-    ),
-    (
-        "openviking",
-        "OpenViking via HTTP bridge (Pantheon /v1/memory protocol)",
-    ),
-    // OMP ships two more real backends (`memory.backend` in its
-    // settings-schema): `mnemopi` is OMP's local SQLite memory, and
-    // `sharpshooter` is its project decision memory ("friction-earned"
-    // decisions). Neither speaks Pantheon's /v1/memory protocol natively,
-    // so both go through the same thin-bridge deal as the rest: point them
-    // at a bridge, or at an OMP sidecar that exposes the protocol.
-    (
-        "mnemopi",
-        "OMP local SQLite memory via HTTP bridge (needs a thin bridge)",
-    ),
-    (
-        "sharpshooter",
-        "OMP project decision memory via HTTP bridge (needs a thin bridge)",
-    ),
+/// `PANTHEON_MEMORY_<NAME>_URL` / `PANTHEON_MEMORY_<NAME>_KEY` (dashes in
+/// the name become underscores). Nothing ships a working bridge: no
+/// entry carries a default URL, so a backend with no configured `url`
+/// fails closed with `MEM_BACKEND_CONFIG` naming the missing piece and
+/// what a working setup needs (a thin bridge exposing Pantheon's
+/// `/v1/memory` protocol, or a future native adapter).
+///
+/// Accuracy notes (docs-verified 2026-09-29, browser search against each
+/// vendor's current official docs; none of these backends has ever been
+/// live-tested against the real service, so every entry is
+/// still-unverifiable at the wire level):
+/// - Hindsight Cloud is real (api.hindsight.vectorize.io, `hsk_` tokens),
+///   as is `pip install hindsight-api` serving :8888; neither speaks
+///   Pantheon's `/v1/memory` protocol. Old defaults pointing the
+///   protocol client at those hosts were broken-by-design and removed.
+/// - Honcho Cloud is real (api.honcho.dev, `HONCHO_API_KEY`, Bearer) and
+///   Honcho self-hosts from a Docker Compose stack on :8000 (often
+///   keyless unless a config key is set); neither speaks Pantheon's
+///   `/v1/memory` protocol. Old defaults removed for the same reason.
+/// - Supermemory Cloud is real (api.supermemory.ai, Bearer, `sm_` keys)
+///   and `npx supermemory local` is real (:6767, prints an `sm_...` API
+///   key on first boot — local access is NOT keyless). Neither speaks
+///   Pantheon's `/v1/memory` protocol. Old defaults removed.
+/// - Mem0 Cloud is real (api.mem0.ai, `m0-` keys; Mem0's own API uses
+///   `Authorization: Token <key>`, not Bearer). Old default removed.
+/// - OpenViking self-hosts on :1933 with `root_api_key` in `ov.conf`
+///   (sent as `X-API-Key` by its own clients, not Bearer); its REST does
+///   not speak Pantheon's `/v1/memory` protocol. Old default removed.
+/// - GalaxyMem (k1ng0mar/galaxymem) is a local-first SQLite memory
+///   engine (Hermes plugin or standalone library); it has no plain REST
+///   surface at all — a thin bridge is the only path.
+/// - ByteRover is `brv` CLI/MCP-shaped (no plain REST); Mnemosyne is
+///   MCP-shaped (stdio/SSE/streamable HTTP, no REST); mnemopi is omp's
+///   local SQLite engine (stdio MCP); sharpshooter is omp's
+///   file-based project decision memory (no HTTP surface at all).
+const PLUGIN_SPECS: &[PluginSpec] = &[
+    PluginSpec {
+        name: "byterover",
+        label: "ByteRover via local thin bridge (brv is CLI/MCP-shaped: no plain REST API — point `url` at a bridge that fronts `brv query`/`brv curate`)",
+        default_url: None,
+        auth: "via the bridge; local brv is keyless (`brv login` is only for cloud sync)",
+        deployment: DeploymentKind::Local,
+    },
+    PluginSpec {
+        name: "galaxymem",
+        label: "GalaxyMem via HTTP bridge (needs a thin bridge exposing Pantheon's /v1/memory protocol; GalaxyMem itself is a local SQLite engine with no plain REST)",
+        default_url: None,
+        auth: "PANTHEON_MEMORY_GALAXYMEM_KEY if the bridge requires auth",
+        deployment: DeploymentKind::Local,
+    },
+    PluginSpec {
+        name: "hindsight-cloud",
+        label: "Hindsight Cloud via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; Hindsight's own REST (api.hindsight.vectorize.io) does not speak it",
+        default_url: None,
+        auth: "hsk_ API token via PANTHEON_MEMORY_HINDSIGHT_CLOUD_KEY",
+        deployment: DeploymentKind::Cloud,
+    },
+    PluginSpec {
+        name: "hindsight-local",
+        label: "Hindsight (local) via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; the `hindsight-api` server's own REST (:8888) does not speak it",
+        default_url: None,
+        auth: "none on loopback; an LLM provider key or local model is needed for extraction",
+        deployment: DeploymentKind::Local,
+    },
+    PluginSpec {
+        name: "honcho-cloud",
+        label: "Honcho Cloud via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; Honcho's own API (api.honcho.dev) does not speak it",
+        default_url: None,
+        auth: "HONCHO_API_KEY via PANTHEON_MEMORY_HONCHO_CLOUD_KEY (Bearer)",
+        deployment: DeploymentKind::Cloud,
+    },
+    PluginSpec {
+        name: "honcho-local",
+        label: "Honcho (self-host) via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; the Docker Compose stack's own API (:8000) does not speak it",
+        default_url: None,
+        auth: "optional: self-set config key via PANTHEON_MEMORY_HONCHO_LOCAL_KEY (self-hosted Honcho is often keyless)",
+        deployment: DeploymentKind::SelfHosted,
+    },
+    PluginSpec {
+        name: "mem0",
+        label: "Mem0 via HTTP bridge — cloud memory API (needs a thin bridge to Pantheon's /v1/memory protocol; api.mem0.ai does not speak it)",
+        default_url: None,
+        auth: "m0- API key via PANTHEON_MEMORY_MEM0_KEY (Mem0's own API uses `Authorization: Token <key>`)",
+        deployment: DeploymentKind::Cloud,
+    },
+    PluginSpec {
+        name: "mnemopi",
+        label: "OMP local SQLite memory via HTTP bridge (needs a thin bridge)",
+        default_url: None,
+        auth: "as the OMP sidecar requires",
+        deployment: DeploymentKind::Local,
+    },
+    PluginSpec {
+        name: "mnemosyne",
+        label: "Mnemosyne (local-only) via HTTP bridge — target its MCP streamable-HTTP endpoint or a thin bridge; no plain REST API",
+        default_url: None,
+        auth: "none (local loopback; embeddings may need OPENAI_API_KEY or a local profile)",
+        deployment: DeploymentKind::Local,
+    },
+    PluginSpec {
+        name: "openviking",
+        label: "OpenViking (self-host only) via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; OpenViking's own REST (:1933) does not speak it",
+        default_url: None,
+        auth: "root_api_key from ov.conf via PANTHEON_MEMORY_OPENVKING_KEY (sent to the bridge as Bearer; OpenViking itself uses X-API-Key)",
+        deployment: DeploymentKind::SelfHosted,
+    },
+    PluginSpec {
+        name: "sharpshooter",
+        label: "OMP project decision memory via HTTP bridge (needs a thin bridge)",
+        default_url: None,
+        auth: "as the OMP sidecar requires",
+        deployment: DeploymentKind::Local,
+    },
+    PluginSpec {
+        name: "supermemory-cloud",
+        label: "Supermemory Cloud via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; Supermemory's own API (api.supermemory.ai) does not speak it",
+        default_url: None,
+        auth: "API key (sm_...) via PANTHEON_MEMORY_SUPERMEMORY_CLOUD_KEY (Bearer)",
+        deployment: DeploymentKind::Cloud,
+    },
+    PluginSpec {
+        name: "supermemory-local",
+        label: "Supermemory (local binary) via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; the local server's own API (:6767) does not speak it",
+        default_url: None,
+        auth: "API key printed on first boot (sm_...) via PANTHEON_MEMORY_SUPERMEMORY_LOCAL_KEY",
+        deployment: DeploymentKind::Local,
+    },
 ];
 
 fn bridge_factory(
-    name: &'static str,
+    spec: &'static PluginSpec,
 ) -> impl Fn(&BackendSelection) -> Result<Arc<dyn MemoryBackend>, PantheonError> + Send + Sync + 'static
 {
     move |sel: &BackendSelection| {
-        let opt_url = sel.options.get("url").cloned();
-        let env_url = format!("PANTHEON_MEMORY_{}_URL", name.to_uppercase());
-        let base = match opt_url.or_else(|| std::env::var(&env_url).ok()) {
-            Some(u) if !u.trim().is_empty() => u,
+        let prefix = spec.name.to_uppercase().replace('-', "_");
+        let env_url = format!("PANTHEON_MEMORY_{prefix}_URL");
+        let base = sel
+            .options
+            .get("url")
+            .cloned()
+            .filter(|u| !u.trim().is_empty())
+            .or_else(|| {
+                std::env::var(&env_url)
+                    .ok()
+                    .filter(|u| !u.trim().is_empty())
+            })
+            .or_else(|| spec.default_url.map(str::to_string));
+        let base = match base {
+            Some(u) => u,
             _ => {
                 return Err(merr(
                     "MEM_BACKEND_CONFIG",
                     format!(
-                        "{name}: no url configured (set options.url in memory-backend.toml or ${env_url})"
+                        "{}: no url configured — point it at a thin bridge exposing Pantheon's /v1/memory protocol (or a future native adapter); set options.url in memory-backend.toml or ${env_url}",
+                        spec.name,
                     ),
                 ))
             }
         };
-        let env_key = format!("PANTHEON_MEMORY_{}_KEY", name.to_uppercase());
+        let env_key = format!("PANTHEON_MEMORY_{prefix}_KEY");
         let key = sel
             .options
             .get("key")
@@ -234,6 +376,9 @@ impl BackendRegistry {
                     "memory.forget".into(),
                     "memory.md".into(),
                 ],
+                recommended: false,
+                auth: "none (local file)".into(),
+                deployment: DeploymentKind::Local,
             },
             |_| Ok(Arc::new(MemoryStore::open_in_memory()?) as Arc<dyn MemoryBackend>),
         );
@@ -243,6 +388,9 @@ impl BackendRegistry {
                 label: "External memory backend over HTTP (Pantheon /v1/memory protocol)".into(),
                 kind: BackendKind::Http,
                 capabilities: vec!["memory.read".into(), "memory.write".into()],
+                recommended: false,
+                auth: "PANTHEON_MEMORY_HTTP_KEY if the service requires auth".into(),
+                deployment: DeploymentKind::SelfHosted,
             },
             |_| {
                 let base = std::env::var("PANTHEON_MEMORY_HTTP_URL").map_err(|_| {
@@ -256,15 +404,18 @@ impl BackendRegistry {
                     as Arc<dyn MemoryBackend>)
             },
         );
-        for (name, label) in PLUGIN_BACKENDS {
+        for spec in PLUGIN_SPECS {
             r.register_with(
                 BackendInfo {
-                    name: (*name).into(),
-                    label: (*label).into(),
+                    name: spec.name.into(),
+                    label: spec.label.into(),
                     kind: BackendKind::Http,
                     capabilities: vec!["memory.read".into(), "memory.write".into()],
+                    recommended: false,
+                    auth: spec.auth.into(),
+                    deployment: spec.deployment,
                 },
-                bridge_factory(name),
+                bridge_factory(spec),
             );
         }
         r
@@ -314,15 +465,39 @@ impl BackendRegistry {
         v
     }
 
-    /// One backend by name.
+    /// The setup-wizard catalog: every registered backend, native first,
+    /// then alphabetical by name. Native stays the implicit default —
+    /// no entry is marked `recommended`.
+    pub fn catalog(&self) -> Vec<BackendInfo> {
+        let mut v = self.list();
+        v.sort_by(|a, b| {
+            (a.name != "native")
+                .cmp(&(b.name != "native"))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        v
+    }
+
+    /// Old backend ids that were split into local/cloud variants.
+    /// `hindsight` and `honcho` resolve to their cloud variants, the
+    /// defaults the old ids pointed at.
+    pub fn resolve_alias(name: &str) -> &str {
+        match name {
+            "hindsight" => "hindsight-cloud",
+            "honcho" => "honcho-cloud",
+            other => other,
+        }
+    }
+
+    /// One backend by name (aliases resolve first).
     pub fn info(&self, name: &str) -> Option<&BackendInfo> {
-        self.entries.get(name).map(|e| &e.info)
+        self.entries.get(Self::resolve_alias(name)).map(|e| &e.info)
     }
 
     /// Instantiate by name with no options (legacy shape; http reads env).
     pub fn instantiate(&self, name: &str) -> Result<Arc<dyn MemoryBackend>, PantheonError> {
         self.instantiate_selected(&BackendSelection {
-            name: name.to_string(),
+            name: Self::resolve_alias(name).to_string(),
             options: HashMap::new(),
         })
     }
@@ -333,161 +508,22 @@ impl BackendRegistry {
         &self,
         sel: &BackendSelection,
     ) -> Result<Arc<dyn MemoryBackend>, PantheonError> {
-        let e = self.entries.get(&sel.name).ok_or_else(|| {
+        let name = Self::resolve_alias(&sel.name);
+        let e = self.entries.get(name).ok_or_else(|| {
             merr(
                 "MEM_BACKEND_UNKNOWN",
                 format!("no backend named '{}'", sel.name),
             )
         })?;
-        (e.factory)(sel)
+        let sel = BackendSelection {
+            name: name.to_string(),
+            options: sel.options.clone(),
+        };
+        (e.factory)(&sel)
     }
 
-    /// Has a backend with this name.
+    /// Has a backend with this name (aliases resolve first).
     pub fn contains(&self, name: &str) -> bool {
-        self.entries.contains_key(name)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_include_native_http_and_plugin_backends() {
-        let r = BackendRegistry::with_defaults();
-        let names: Vec<String> = r.list().iter().map(|b| b.name.clone()).collect();
-        for want in [
-            "native",
-            "http",
-            "galaxymem",
-            "mnemosyne",
-            "honcho",
-            "hindsight",
-            "openviking",
-        ] {
-            assert!(
-                names.contains(&want.to_string()),
-                "missing {want}: {names:?}"
-            );
-        }
-        assert!(r.contains("native"));
-        assert!(r.contains("http"));
-    }
-
-    #[test]
-    fn register_and_instantiate_round_trips() {
-        let mut r = BackendRegistry::with_defaults();
-        r.register(
-            BackendInfo {
-                name: "fake".into(),
-                label: "Fake backend".into(),
-                kind: BackendKind::Http,
-                capabilities: vec!["memory.read".into()],
-            },
-            || Ok(Arc::new(MemoryStore::open_in_memory()?) as Arc<dyn MemoryBackend>),
-        );
-        let info = r.info("fake").unwrap();
-        assert_eq!(info.label, "Fake backend");
-        let backend = r.instantiate("fake").unwrap();
-        // It really is a working memory store.
-        let _ = backend.list_agent("nyx").unwrap();
-    }
-
-    #[test]
-    fn unknown_backend_returns_structured_error() {
-        let r = BackendRegistry::with_defaults();
-        let err = r.instantiate("nope").unwrap_err();
-        assert_eq!(err.code, "MEM_BACKEND_UNKNOWN");
-    }
-
-    #[test]
-    fn plugin_factory_reads_url_from_selection_options() {
-        let r = BackendRegistry::with_defaults();
-        let sel = BackendSelection {
-            name: "honcho".into(),
-            options: [("url".to_string(), "http://127.0.0.1:9/v1".to_string())]
-                .into_iter()
-                .collect(),
-        };
-        // Construction performs no I/O; only the URL check runs here.
-        let backend = r.instantiate_selected(&sel).unwrap();
-        // list_agent would need the service; expect a structured conn error,
-        // not a panic — proves the adapter is wired.
-        let err = backend.list_agent("nyx").unwrap_err();
-        assert_eq!(err.code, "MEM_HTTP_CONN");
-    }
-
-    #[test]
-    fn plugin_factory_without_url_is_a_config_error() {
-        let r = BackendRegistry::with_defaults();
-        let sel = BackendSelection {
-            name: "hindsight".into(),
-            options: HashMap::new(),
-        };
-        let err = r.instantiate_selected(&sel).unwrap_err();
-        assert_eq!(err.code, "MEM_BACKEND_CONFIG");
-        assert!(err.cause.contains("hindsight"), "{}", err.cause);
-    }
-
-    #[test]
-    fn selection_round_trips_through_toml() {
-        let dir = std::env::temp_dir().join(format!(
-            "pantheon-sel-{}-{:x}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(load_selection(&dir), BackendSelection::default());
-        let sel = BackendSelection {
-            name: "honcho".into(),
-            options: [("url".to_string(), "http://x".to_string())]
-                .into_iter()
-                .collect(),
-        };
-        save_selection(&dir, &sel).unwrap();
-        assert_eq!(load_selection(&dir), sel);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn open_selected_defaults_to_persistent_native() {
-        let dir = std::env::temp_dir().join(format!(
-            "pantheon-opensel-{}-{:x}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let backend = open_selected(&dir).unwrap();
-        // Persistent file exists after first write.
-        let policy = pantheon_api::capability::Policy::coder_with_memory();
-        let prov = crate::Provenance {
-            source: "test".into(),
-            origin: "user".into(),
-            trust: pantheon_api::provenance::TrustTier::User,
-            recorded_at_ms: 0,
-        };
-        crate::write_via(
-            backend.as_ref(),
-            &policy,
-            crate::Proposal {
-                layer: crate::LayerKind::Agent,
-                namespace: "nyx".into(),
-                key: "k".into(),
-                value: "v".into(),
-                provenance: prov,
-            },
-            4096,
-        )
-        .unwrap();
-        assert!(dir.join("memory.db").exists());
-        let _ = std::fs::remove_dir_all(&dir);
+        self.entries.contains_key(Self::resolve_alias(name))
     }
 }

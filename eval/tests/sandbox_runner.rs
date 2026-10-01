@@ -1,8 +1,8 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
-use pantheon_sandbox::level::ExecutionBoundary;
-use pantheon_sandbox::runner::run_sandboxed;
-use pantheon_sandbox::{SandboxLevel, SandboxProfile};
+use pantheon_exec::sandbox::level::ExecutionBoundary;
+use pantheon_exec::sandbox::runner::run_sandboxed;
+use pantheon_exec::sandbox::{SandboxLevel, SandboxProfile};
 
 #[test]
 fn echo_runs_and_produces_output() {

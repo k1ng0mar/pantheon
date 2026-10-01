@@ -7,15 +7,14 @@
 //! | path | crate | owns |
 //! |---|---|---|
 //! | `pantheon::api` | `pantheon-api` | commands, events, types |
-//! | `pantheon::agent` | `pantheon-agent` | agent, profile, inheritance |
+//! | `pantheon::agent` | `pantheon-agent` | agent, profile, inheritance, capability enforcement |
 //! | `pantheon::runtime` | `pantheon-runtime` | lifecycle, turn, context, state |
-//! | `pantheon::swarm` | `pantheon-swarm` | delegation, coordination |
+//! | `pantheon::swarm` | `pantheon-runtime::swarm` | delegation, coordination |
 //! | `pantheon::providers` | `pantheon-providers` | catalog, provider, streaming |
-//! | `pantheon::reflect` | `pantheon-reflect` | ledger-native self-improvement |
-//! | `pantheon::capability` | `pantheon-capability` | capability registry, resolution |
+//! | `pantheon::nightly` | `pantheon-nightly` | nightly self-improvement pass |
 //! | `pantheon::tools` | `pantheon-tools` | callable tools + registry |
 //! | `pantheon::exec` | `pantheon-exec` | process/fs execution engine |
-//! | `pantheon::sandbox` | `pantheon-sandbox` | sandbox levels + policy boundary |
+//! | `pantheon::sandbox` | `pantheon-exec::sandbox` | sandbox levels + policy boundary |
 //! | `pantheon::memory` | `pantheon-memory` | memory store, recall, write |
 //! | `pantheon::storage` | `pantheon-storage` | SQLite ledger, repository |
 //! | `pantheon::migration` | `pantheon-migration` | Hermes/OpenClaw/OMP migration |
@@ -25,39 +24,29 @@
 //! | `pantheon::scheduler` | `pantheon-scheduler` | cron/interval/webhook jobs |
 //! | `pantheon::secrets` | `pantheon-secrets` | vaults + broker |
 //! | `pantheon::tui` | `pantheon-tui` | interactive terminal surface |
+//! | `pantheon::web` | `pantheon-web` | browser automation + web search |
 //!
 //! The terminal application (`pantheon-tui`, the `pantheon` binary) is
 //! deliberately not re-exported: it is the composition root, not library
 //! surface.
 
 pub use pantheon_agent as agent;
+pub use pantheon_agent::capability;
 pub use pantheon_api as api;
-pub use pantheon_capability as capability;
 pub use pantheon_exec as exec;
+pub use pantheon_exec::sandbox;
 pub use pantheon_extensions as extensions;
 pub use pantheon_gateway as gateway;
 pub use pantheon_mcp as mcp;
 pub use pantheon_memory as memory;
 pub use pantheon_migration as migration;
+pub use pantheon_nightly as nightly;
 pub use pantheon_providers as providers;
-pub use pantheon_reflect as reflect;
 pub use pantheon_runtime as runtime;
-pub use pantheon_sandbox as sandbox;
+pub use pantheon_runtime::swarm;
 pub use pantheon_scheduler as scheduler;
 pub use pantheon_secrets as secrets;
 pub use pantheon_storage as storage;
-pub use pantheon_swarm as swarm;
 pub use pantheon_tools as tools;
 pub use pantheon_tui as tui;
-
-#[cfg(test)]
-mod tests {
-    /// Every façade path resolves at compile time; this is the smoke test
-    /// that keeps the re-export surface honest.
-    #[test]
-    fn facade_paths_resolve() {
-        let _ = std::any::type_name::<pantheon_agent::AgentLoop>();
-        let _ = std::any::type_name::<pantheon_runtime::session::Session>();
-        let _ = std::any::type_name::<pantheon_tools::tools::ToolRegistry>();
-    }
-}
+pub use pantheon_web as web;

@@ -72,7 +72,7 @@ struct AgentRuntimeInner {
     /// `max_concurrent` and `max_total_agents` could never fire and a
     /// peer could never release the coordinator's slot — the cap check
     /// would report enforcement that did not exist.
-    swarm: Arc<Mutex<pantheon_swarm::Swarm>>,
+    swarm: Arc<Mutex<crate::swarm::Swarm>>,
     profiles: ProfileRegistry,
     /// The profile this runtime *is*. Not a preference: it is the identity
     /// bound to every run and the only memory namespace this agent may use.
@@ -105,8 +105,8 @@ impl AgentRuntime {
                 supervisor,
                 // One swarm per process, shared by every profile in it, so
                 // caps bound the whole run rather than each call.
-                swarm: Arc::new(Mutex::new(pantheon_swarm::Swarm::new(
-                    pantheon_swarm::Caps::default(),
+                swarm: Arc::new(Mutex::new(crate::swarm::Swarm::new(
+                    crate::swarm::Caps::default(),
                 ))),
                 profiles,
                 effective,
@@ -115,12 +115,6 @@ impl AgentRuntime {
                 policy_preset,
             }),
         })
-    }
-
-    /// Every declared profile, for the TUI's profile list and for resolving
-    /// a delegation target.
-    pub fn profiles(&self) -> &ProfileRegistry {
-        &self.inner.profiles
     }
 
     /// A second runtime for a peer profile, sharing this one's supervisor
@@ -169,6 +163,27 @@ impl AgentRuntime {
         &self.inner.effective.memory_namespace.value
     }
 
+    /// Persona file path declared by this profile, if any. Read verbatim
+    /// into a delegated child's system prompt — the child cannot inherit
+    /// the parent's context, so the persona must travel with the spawn.
+    pub fn soul_file(&self) -> Option<&str> {
+        self.inner.effective.soul_file.value.as_deref()
+    }
+
+    /// User-context file path declared by this profile, if any. Read
+    /// verbatim into the main session's system prompt alongside the
+    /// persona — it is part of the identity, not a layer.
+    pub fn user_file(&self) -> Option<&str> {
+        self.inner.effective.user_file.value.as_deref()
+    }
+
+    /// Layered instruction files, parent first then child, each tagged
+    /// with the profile that contributed it: `(profile, path)`. Inlined
+    /// verbatim into a delegated child's system prompt, same reason.
+    pub fn instruction_files(&self) -> &[(String, String)] {
+        &self.inner.effective.agents_files
+    }
+
     /// The policy preset name this profile resolved to. The CLI maps this
     /// to a `Policy`; the runtime carries it so the mapping has one home.
     pub fn policy_preset(&self) -> &str {
@@ -213,199 +228,23 @@ impl AgentRuntime {
         })
     }
 
-    /// The agent a run belongs to, if it is bound.
+    /// Which agent owns a run, if any. `None` is a real answer for runs
+    /// created before agent profiles existed — never default it.
     pub fn run_agent(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
         self.inner.supervisor.ledger_run_agent(run_id)
     }
 
-    // ------------------------------------------------------------ delegation
-
-    /// Delegate a task to another profile, creating the collaboration and
-    /// the first task if this is the first delegation in it.
-    ///
-    /// Returns the created task. The caller (the model, through the
-    /// delegation tool) gets a task id it can poll, so a long-running
-    /// sub-agent does not block the parent turn.
-    pub fn delegate(
-        &self,
-        collaboration_id: &str,
-        objective: &str,
-        target: &str,
-        task_id: &str,
-    ) -> Result<AgentTask, PantheonError> {
-        let coordinator = self.inner.effective.name.as_str();
-        if target == coordinator {
-            return Err(aerr(
-                "DELEGATE_SELF",
-                format!("{coordinator} cannot delegate to itself; run the work inline"),
-                "name a different agent profile",
-            ));
-        }
-        // The target must be a declared profile. Refusing here is what keeps
-        // a typo'd name from creating a task that can never be executed.
-        let target_effective = self.resolve_target(target).map_err(|e| {
-            aerr(
-                "DELEGATE_UNKNOWN_AGENT",
-                e,
-                "declare the target in [agents.<name>]",
-            )
-        })?;
-
-        // Swarm caps first: a refusal must not leave a half-created task.
-        let model = target_effective
-            .model
-            .value
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-        self.spawn_in_swarm(target, &model)?;
-
-        // Create the collaboration on first use so a coordinator's objective
-        // is recorded once rather than per-task.
-        if self
-            .inner
-            .collaboration
-            .collaboration(collaboration_id)?
-            .is_none()
-        {
-            self.inner.collaboration.create_collaboration(
-                collaboration_id,
-                coordinator,
-                objective,
-            )?;
-        }
-        let task = self.inner.collaboration.create_task(
-            task_id,
-            Some(collaboration_id),
-            coordinator,
-            Some(target),
-            None,
-            objective,
-        )?;
-        // The delegation itself is a message, so "what was sent to whom"
-        // is answerable from the conversation trail alone.
-        let message_id = format!("{task_id}-assign");
-        self.inner.collaboration.record_message(
-            &message_id,
-            Some(collaboration_id),
-            Some(task_id),
-            coordinator,
-            target,
-            MessageKind::Delegation,
-            objective,
-        )?;
-        Ok(task)
-    }
-
-    /// The tool surface a profile can use to reach its peers. Gated on
-    /// `AgentSpawn` in the *calling* agent's policy, so an agent whose
-    /// policy forbids spawning simply has no such tool.
-    pub fn register_delegate_tool(&self, reg: &mut pantheon_tools::tools::ToolRegistry) {
-        let me = self.clone();
-        reg.register(
-            pantheon_api::message::ToolSchema {
-                name: "agent_delegate".into(),
-                description: "Delegate a unit of work to another agent profile. \
-                              Returns a task id to poll with agent_task. \
-                              The other agent runs under its own permissions, \
-                              never yours."
-                    .into(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "task_id": {"type": "string", "description": "Id you choose for this task."},
-                        "target": {"type": "string", "description": "Profile name of the agent to delegate to."},
-                        "objective": {"type": "string", "description": "What the other agent should do."},
-                        "collaboration_id": {"type": "string", "description": "Shared objective id (default: 'collab')."}
-                    },
-                    "required": ["task_id", "target", "objective"]
-                }),
-            },
-            pantheon_api::capability::Capability::AgentSpawn,
-            move |args| {
-                let v: serde_json::Value =
-                    serde_json::from_str(args).map_err(|e| aerr("DELEGATE_ARGS", e.to_string(), ""))?;
-                let get = |k: &str| -> Result<String, PantheonError> {
-                    v.get(k)
-                        .and_then(|x| x.as_str())
-                        .map(str::to_string)
-                        .ok_or_else(|| aerr("DELEGATE_ARGS", format!("missing {k}"), ""))
-                };
-                let task_id = get("task_id")?;
-                let target = get("target")?;
-                let objective = get("objective")?;
-                let collab = v
-                    .get("collaboration_id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("collab")
-                    .to_string();
-                match me.delegate(&collab, &objective, &target, &task_id) {
-                    Ok(t) => Ok(format!("delegated {} to {} (task {})", t.task_id, target, t.task_id)),
-                    Err(e) => Ok(format!("delegation refused: {}", e.cause)),
-                }
-            },
-        );
-
-        // Polling tool. Separate from delegation so a coordinator can check
-        // on work it handed off without holding its turn open.
-        let me2 = self.clone();
-        reg.register(
-            pantheon_api::message::ToolSchema {
-                name: "agent_task".into(),
-                description: "Read the status and result of a delegated task by id. \
-                              Use this to collect results, review work, or decide on a retry."
-                    .into(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "task_id": {"type": "string", "description": "The delegated task id."}
-                    },
-                    "required": ["task_id"]
-                }),
-            },
-            pantheon_api::capability::Capability::AgentSpawn,
-            move |args| {
-                let v: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| aerr("DELEGATE_ARGS", e.to_string(), ""))?;
-                let id = v
-                    .get("task_id")
-                    .and_then(|x| x.as_str())
-                    .ok_or_else(|| aerr("DELEGATE_ARGS", "missing task_id".into(), ""))?;
-                match me2.task_status(id) {
-                    Ok(Some(t)) => Ok(format!(
-                        "{id}: {} ({}){}",
-                        t.status,
-                        t.assigned_agent.as_deref().unwrap_or("unassigned"),
-                        t.result
-                            .as_deref()
-                            .map(|r| format!(" result: {r}"))
-                            .unwrap_or_default()
-                    )),
-                    Ok(None) => Ok(format!("{id}: no such task")),
-                    Err(e) => Ok(format!("{id}: {}", e.cause)),
-                }
-            },
-        );
-    }
-
-    /// Read one task's current state.
-    pub fn task_status(&self, task_id: &str) -> Result<Option<AgentTask>, PantheonError> {
-        self.inner.collaboration.task(task_id)
-    }
-
     /// Report this agent's work on a task it was assigned.
     ///
-    /// `result` and `error` are recorded verbatim as *data*. The settle
-    /// path is the same for every agent: there is no variant of this call
-    /// that grants the reporter anything the reporter's own policy lacks.
+    /// `result` is recorded verbatim as *data*. Only the assignee settles
+    /// its own task: a coordinator that completed someone else's work would
+    /// erase the audit trail of who actually did it.
     pub fn complete_task(&self, task_id: &str, result: &str) -> Result<AgentTask, PantheonError> {
         let current = self
             .inner
             .collaboration
             .task(task_id)?
             .ok_or_else(|| aerr("TASK_NOT_FOUND", format!("no task {task_id}"), ""))?;
-        // Only the assignee settles its own task. A coordinator that
-        // completes someone else's work would erase the audit trail of who
-        // actually did it.
         if current.assigned_agent.as_deref() != Some(self.inner.effective.name.as_str()) {
             return Err(aerr(
                 "TASK_NOT_OWNED",
@@ -468,73 +307,32 @@ impl AgentRuntime {
         Ok(settled)
     }
 
-    /// Send a structured message to another agent.
-    pub fn send(
-        &self,
-        message_id: &str,
-        recipient: &str,
-        kind: MessageKind,
-        content: &str,
-        task_id: Option<&str>,
-    ) -> Result<AgentMessage, PantheonError> {
-        self.inner.collaboration.record_message(
-            message_id,
-            Some("collab"),
-            task_id,
-            &self.inner.effective.name,
-            recipient,
-            kind,
-            content,
-        )
-    }
-
     /// This agent's unread mail, oldest first.
     pub fn inbox(&self) -> Result<Vec<AgentMessage>, PantheonError> {
         self.inner.collaboration.inbox(&self.inner.effective.name)
     }
 
-    /// Resolve a peer profile for delegation. Fails closed: an undeclared
-    /// name never gets a synthesized profile.
-    fn resolve_target(&self, target: &str) -> Result<EffectiveProfile, String> {
-        if self.inner.profiles.get(target).is_none() {
-            return Err(format!(
-                "no agent profile named {target:?} is declared; \
-                 add [agents.{target}] to the config"
-            ));
-        }
-        self.inner
-            .profiles
-            .resolve(target, &self.inner.policy_preset)
-            .map_err(|e| format!("{e}"))
+    /// Send a message to another agent profile. The message is data, never
+    /// instruction: kinds are a closed set with no authority variant, and
+    /// provenance always names the sender.
+    pub fn send(
+        &self,
+        message_id: &str,
+        to: &str,
+        kind: MessageKind,
+        body: &str,
+        task_id: Option<&str>,
+    ) -> Result<AgentMessage, PantheonError> {
+        self.inner.collaboration.record_message(
+            message_id,
+            None,
+            task_id,
+            &self.inner.effective.name,
+            to,
+            kind,
+            body,
+        )
     }
-
-    /// Check the caps and take a slot, against the shared swarm.
-    ///
-    /// Caps are runtime-owned, not agent-chosen: a delegating agent cannot
-    /// widen its own limits by asking for them. The lock is held only for
-    /// the check-and-insert, never across task creation or a model call.
-    fn spawn_in_swarm(&self, target: &str, model: &str) -> Result<(), PantheonError> {
-        let mut swarm = self.inner.swarm.lock().map_err(|_| {
-            aerr(
-                "SWARM_STATE_POISONED",
-                "swarm accounting lock is poisoned".into(),
-                "restart pantheon",
-            )
-        })?;
-        swarm.spawn(target, 0, model).map(|_| ()).map_err(|e| {
-            PantheonError::new(
-                "SWARM_SPAWN_DENIED",
-                Layer::Agent,
-                false,
-                e.cause,
-                e.remediation,
-                "",
-            )
-        })
-    }
-
-    /// Retire a sub-agent and fold its usage into the shared counters, so a
-    /// finished delegation frees its concurrency slot.
     fn retire_from_swarm(&self, target: &str) {
         if let Ok(mut swarm) = self.inner.swarm.lock() {
             swarm.complete(target, 0, 0, 0);
@@ -546,6 +344,9 @@ impl AgentRuntime {
     }
 }
 
+/// Turn a task-store mutation error into a runtime error, preserving the
+/// distinction between "no such task", "someone else moved it", and "the
+/// store itself failed".
 fn task_err(e: TaskMutationError) -> PantheonError {
     let (code, cause) = match &e {
         TaskMutationError::Conflict(TaskConflict::Missing { task_id }) => {

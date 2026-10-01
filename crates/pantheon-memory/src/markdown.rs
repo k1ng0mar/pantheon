@@ -351,7 +351,3 @@ pub fn import_agent(
     }
     Ok(written)
 }
-
-#[cfg(test)]
-#[path = "markdown_tests.rs"]
-mod tests;

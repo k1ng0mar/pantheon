@@ -98,7 +98,7 @@ fn claim_agrees_with_the_tick_loop_contract() {
     assert!(job.due(now, None));
     assert!(CronSchedule::parse("30 14 * * *").unwrap().matches_ms(now));
 
-    let key = pantheon_scheduler::idempotency::occurrence_key(&job, &now.to_string());
+    let key = pantheon_scheduler::occurrence_key(&job, &now.to_string());
     assert!(ledger.claim(&key).unwrap());
     assert!(
         !ledger.claim(&key).unwrap(),

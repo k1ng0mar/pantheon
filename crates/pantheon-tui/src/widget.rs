@@ -774,80 +774,6 @@ impl Confirm {
 }
 
 // ---------------------------------------------------------------------------
-// SearchList
-// ---------------------------------------------------------------------------
-
-/// Browsing a collection the runtime owns rather than a fixed menu: sessions,
-/// runs, skills, tools, providers-with-live-state.
-///
-/// Separate from [`Select`] because the list can be empty for a reason the
-/// user needs stated ("no runs yet") and because rows carry a status that
-/// reflects something outside the widget.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SearchList {
-    pub title: String,
-    pub hint: String,
-    /// Rendered when there are no rows at all, which is different from
-    /// "your filter matched nothing".
-    pub empty_reason: String,
-    pub list: ListState,
-    /// Set when the collection is being loaded, so the widget can say so
-    /// instead of claiming the list is empty.
-    pub loading: bool,
-}
-
-impl SearchList {
-    pub fn new(
-        title: impl Into<String>,
-        items: Vec<Item>,
-        empty_reason: impl Into<String>,
-    ) -> Self {
-        Self {
-            title: title.into(),
-            hint: "type to filter · up/down · enter open · esc back".into(),
-            empty_reason: empty_reason.into(),
-            loading: false,
-            list: ListState::new(items),
-        }
-    }
-
-    pub fn current(&self) -> Option<&Item> {
-        self.list.current()
-    }
-
-    pub fn selected_value(&self) -> Option<String> {
-        self.list.current().map(|i| i.value.clone())
-    }
-
-    pub fn handle_key(&mut self, key: Key) -> KeyResult {
-        if self.list.nav(key) {
-            return KeyResult::Redraw;
-        }
-        match key {
-            Key::Char(c) => {
-                self.list.push_char(c);
-                KeyResult::Redraw
-            }
-            Key::Space => {
-                self.list.push_char(' ');
-                KeyResult::Redraw
-            }
-            Key::Backspace => {
-                self.list.backspace();
-                KeyResult::Redraw
-            }
-            Key::Enter => match self.list.current() {
-                Some(it) if it.enabled => KeyResult::Submit(Selection::One(it.value.clone())),
-                Some(_) => KeyResult::Redraw,
-                None => KeyResult::Submit(Selection::None),
-            },
-            Key::Esc => KeyResult::Cancel,
-            _ => KeyResult::Ignored,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // list rendering, shared by every list widget
 // ---------------------------------------------------------------------------
 
@@ -864,7 +790,7 @@ pub struct Row {
 
 /// Build the drawable rows for any list-backed widget.
 ///
-/// One function for all four list widgets, so a selected row cannot be styled
+/// One function for all three list widgets, so a selected row cannot be styled
 /// one way in `Select` and another in `MultiSelect`. `checkbox` supplies the
 /// `[x]`/`[ ]` prefix for the multi-select and nothing for the others.
 pub fn rows_for(state: &ListState, checkbox: Option<&[bool]>) -> Vec<Row> {
@@ -905,11 +831,6 @@ pub fn select_rows(s: &Select) -> Vec<Row> {
 /// Multi-select rows, with checkboxes.
 pub fn multi_rows(m: &MultiSelect) -> Vec<Row> {
     rows_for(&m.list, Some(&m.checked))
-}
-
-/// Search-list rows.
-pub fn search_rows(s: &SearchList) -> Vec<Row> {
-    rows_for(&s.list, None)
 }
 
 impl fmt::Display for Item {

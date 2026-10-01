@@ -49,7 +49,13 @@ fn assistant_entry(ts_ms: i64, text: &str) -> LedgerEntry {
 
 #[test]
 fn gap_below_threshold_stays_silent() {
-    let now = Utc::now().timestamp_millis();
+    // Fixed noon UTC: a live `Utc::now()` breaks this test within an hour
+    // after a UTC midnight, when the date-rollover trigger ("yesterday")
+    // legitimately fires for a 1h gap. Deterministic by construction.
+    let now = Utc
+        .with_ymd_and_hms(2026, 9, 29, 12, 0, 0)
+        .unwrap()
+        .timestamp_millis();
     let one_hour_ago = now - 3_600_000;
     assert_eq!(
         temporal_hint(Some(one_hour_ago), now, &Tz::UTC, &cfg()),

@@ -13,6 +13,37 @@ if (qs.get("token")) {
   history.replaceState(null, "", location.pathname + location.hash);
 }
 
+/* 401 recovery (D-6): the token is per-instance and rotates on every
+   restart, so a stale token 401s every view. Instead of dead Retry
+   buttons, any 401 raises this modal gate: paste the current token,
+   Reconnect stores it and re-renders the current view. Guarded so
+   concurrent 401s raise it only once. */
+function showReauthGate() {
+  if ($("#reauth-veil") || !$("#modal-root")) return;
+  const root = $("#modal-root");
+  root.innerHTML =
+    '<div class="modal-veil" id="reauth-veil"><div class="gate-card" role="dialog" aria-modal="true" aria-label="Reconnect">' +
+    '<div class="gate-brand"><span class="brand-mark" aria-hidden="true"></span>Pantheon</div>' +
+    '<p class="gate-sub"><strong>Token expired.</strong> The dashboard token rotates on every restart. ' +
+    "Paste the current token printed by <span class='mono'>pantheon dashboard</span> at startup.</p>" +
+    '<form id="reauth-form">' +
+    '<input id="reauth-token" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="token" aria-label="dashboard token">' +
+    '<button class="btn primary" type="submit" style="margin-top:10px">Reconnect</button></form>' +
+    '<p class="gate-note">Stored in this tab only (sessionStorage), sent as X-Pantheon-Token.</p>' +
+    "</div></div>";
+  $("#reauth-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const t = $("#reauth-token").value.trim();
+    if (!t) return;
+    TOKEN = t;
+    sessionStorage.setItem("pantheon_token", TOKEN);
+    root.innerHTML = "";
+    if (typeof refreshStatus === "function") refreshStatus();
+    navigate();
+  });
+  $("#reauth-token").focus();
+}
+
 const $ = (sel, el) => (el || document).querySelector(sel);
 const $$ = (sel, el) => Array.from((el || document).querySelectorAll(sel));
 
@@ -26,7 +57,10 @@ async function api(method, path, body) {
     ),
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401) throw { status: 401, message: "unauthorized: bad or missing token" };
+  if (res.status === 401) {
+    showReauthGate();
+    throw { status: 401, reauth: true, message: "unauthorized: bad or missing token — reconnect with the current token" };
+  }
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
     const data = await res.json();
@@ -49,6 +83,57 @@ function download(path, filename) {
 /* ---------------- formatting ---------------- */
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+/* Minimal safe markdown subset for inspector message bodies (D-11):
+   escape first, then restore a small set of constructs — no raw HTML
+   ever passes through. Covers fenced/inline code, headings, bold,
+   italic, markdown links, bare-URL autolinks, lists, and blockquotes. */
+function renderMd(text) {
+  const stash = [];
+  const put = (h) => { stash.push(h); return "\uE000" + (stash.length - 1) + "\uE000"; };
+  let src = esc(text);
+  src = src.replace(/```[^\S\n]*\w*\n([\s\S]*?)```/g, (m, code) =>
+    put('<pre class="md-code"><code>' + code.replace(/^\n+|\s+$/g, "") + "</code></pre>"));
+  const inline = (s) => s
+    .replace(/`([^`\n]+)`/g, (m, c) => put("<code class='inline'>" + c + "</code>"))
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/(^|[\s(])(https?:\/\/[^\s<]+)/g, (m, pre, url) => {
+      const trail = (url.match(/[.,;:!?)]+$/) || [""])[0];
+      const clean = url.slice(0, url.length - trail.length);
+      return pre + '<a href="' + clean + '" target="_blank" rel="noopener">' + clean + "</a>" + trail;
+    });
+  const lines = src.split("\n");
+  let html = "", inList = null;
+  const closeList = () => { if (inList) { html += inList === "ul" ? "</ul>" : "</ol>"; inList = null; } };
+  for (const line of lines) {
+    const t = line.trim();
+    let m;
+    if (!t) { closeList(); continue; }
+    if (/^\uE000\d+\uE000$/.test(t)) { closeList(); html += t; }
+    else if ((m = /^(#{1,4})\s+(.*)$/.exec(t))) { closeList(); html += '<div class="md-h' + m[1].length + '">' + inline(m[2]) + "</div>"; }
+    else if ((m = /^&gt;\s?(.*)$/.exec(t))) { closeList(); html += '<div class="md-quote">' + inline(m[1]) + "</div>"; }
+    else if ((m = /^[-*]\s+(.*)$/.exec(t))) {
+      if (inList !== "ul") { closeList(); html += "<ul class='md-list'>"; inList = "ul"; }
+      html += "<li>" + inline(m[1]) + "</li>";
+    }
+    else if ((m = /^\d+[.)]\s+(.*)$/.exec(t))) {
+      if (inList !== "ol") { closeList(); html += "<ol class='md-list'>"; inList = "ol"; }
+      html += "<li>" + inline(m[1]) + "</li>";
+    }
+    else { closeList(); html += "<p>" + inline(t) + "</p>"; }
+  }
+  closeList();
+  return html.replace(/\uE000(\d+)\uE000/g, (m, i) => stash[+i]);
+}
+/* Rich link card from GET /api/link-preview (D-11). */
+function linkCardHtml(p) {
+  return '<a class="link-card" href="' + esc(p.url) + '" target="_blank" rel="noopener">' +
+    (p.image ? '<img class="link-card-img" src="' + esc(p.image) + '" alt="" loading="lazy">' : "") +
+    '<span class="link-card-body"><span class="link-card-title">' + esc(p.title || p.url) + "</span>" +
+    (p.description ? '<span class="link-card-desc">' + esc(p.description) + "</span>" : "") +
+    '<span class="link-card-domain mono">' + esc(p.domain || p.site_name || "") + "</span></span></a>";
 }
 function fmtNum(n) {
   if (n == null) return "—";
@@ -120,6 +205,7 @@ function icon(name, size) {
     logs: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/>',
     skills: '<path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
     mcp: '<path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0z"/><path d="M12 18v4"/>',
+    plugins: '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 7V4M14 7V4M10 20v-3M14 20v-3M7 10H4M7 14H4M20 10h-3M20 14h-3"/>',
     system: '<rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 6.5h.01M6 17.5h.01"/>',
     zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
@@ -130,6 +216,9 @@ function icon(name, size) {
     back: '<path d="M19 12H5m6 6-6-6 6-6"/>',
     wrench: '<path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3z"/>',
     bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
+    profiles: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/>',
+    users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.4 2.9-5.5 6.5-5.5s6.5 2.1 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M17.6 14.7c2.3.7 4 2.5 4 5.3"/>',
+    swarm: '<circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="19" r="2.4"/><circle cx="19" cy="19" r="2.4"/><path d="M12 7.4 6 16.8M12 7.4l6 9.4M7.4 19h9.2"/>',
   };
   return '<svg width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     (paths[name] || paths.home) + "</svg>";
@@ -207,6 +296,10 @@ const VIEWS = [
   ["logs", "Logs", "logs"],
   ["skills", "Skills", "skills"],
   ["mcp", "MCP", "mcp"],
+  ["plugins", "Plugins", "plugins"],
+  ["profiles", "Profiles", "profiles"],
+  ["swarm", "Swarm", "swarm"],
+  ["experts", "Experts", "users"],
   ["system", "System", "system"],
 ];
 const state = { pendingApprovals: 0, route: "overview", param: null };
@@ -231,6 +324,8 @@ function updateBadges() {
   }
 }
 function navigate() {
+  stopFollow();
+  stopInspPoll();
   const parts = (location.hash || "#/overview").replace(/^#\//, "").split("/");
   state.route = parts[0] || "overview";
   state.param = parts[1] ? decodeURIComponent(parts.slice(1).join("/")) : null;
@@ -433,7 +528,7 @@ renderers.overview = async function () {
           '<li><span class="act-icon">' + icon("schedule", 14) + '</span>' +
           '<span class="act-body"><span class="act-title">' + esc(j.task.slice(0, 80)) + (j.task.length > 80 ? "…" : "") + "</span><br>" +
           '<span class="act-sub">' + esc(kindLabel(j.kind)) + "</span></span>" +
-          '<span class="act-time">in ' + esc(fmtDur(j.next_fire_ms - Date.now())) + "</span></li>"
+          '<span class="act-time">' + esc(fmtNextFire(j.next_fire_ms)) + "</span></li>"
         ).join("") + "</ul>"
         : "";
       paintActivity("recent");
@@ -508,6 +603,9 @@ const INSP_KINDS = {
   turn_parked:        { label: "Turn parked",        milestone: false, tone: "warn" },
   model_requested:    { label: "Model requested",    milestone: false, tone: "" },
   model_completed:    { label: "Model responded",    milestone: false, tone: "" },
+  model_fallback:      { label: "Model fallback",     milestone: false, tone: "warn" },
+  model_attempt_failed: { label: "Model attempt failed", milestone: false, tone: "err" },
+  model_exhausted:    { label: "Provider chain exhausted", milestone: false, tone: "err" },
   usage:              { label: "Usage recorded",     milestone: false, tone: "" },
   approval_requested: { label: "Approval requested", milestone: false, tone: "warn" },
   approval_granted:   { label: "Approval granted",   milestone: false, tone: "ok" },
@@ -516,6 +614,10 @@ const INSP_KINDS = {
   agent_message:      { label: "Subagent message",   milestone: false, tone: "accent" },
   agent_completed:    { label: "Subagent completed", milestone: false, tone: "ok" },
   titled:             { label: "Session retitled",   milestone: false, tone: "" },
+  tool_requested:    { label: "Tool requested",     milestone: false, tone: "accent" },
+  tool_started:      { label: "Tool started",       milestone: false, tone: "accent" },
+  tool_output:       { label: "Tool output",        milestone: false, tone: "" },
+  tool_completed:    { label: "Tool completed",     milestone: false, tone: "ok" },
   other:              { label: "Event",              milestone: false, tone: "" },
 };
 function inspKind(k) { return INSP_KINDS[k] || INSP_KINDS.other; }
@@ -560,29 +662,43 @@ function inspDetailHtml(t) {
 
 renderers.inspector = async function () {
   const id = state.param || "";
+  if (inspRunId !== id) { inspRunId = id; inspSelSeq = null; inspQDraft = ""; }
   setView(viewHead("Inspector", "") + loading("run detail"));
   try {
     const r = await api("GET", "/api/runs/" + encodeURIComponent(id));
     const timeline = r.timeline || [];
     const title = r.title || ("Run " + id.slice(0, 12));
-    const transcript = (r.transcript || []).map((m) =>
+    const TERMINAL = { completed: 1, failed: 1, canceled: 1 };
+    const isLive = !TERMINAL[r.status];
+    const transcript = (r.transcript || []).map((m, i) =>
       m.type === "reasoning"
         ? '<div class="msg" data-role="reason"><div class="m-role">reasoning</div><div class="m-body">' + esc(m.content) + "</div></div>"
-        : '<div class="msg" data-role="' + esc(m.role) + '"><div class="m-role">' + esc(m.role) + '</div><div class="m-body">' + esc(m.content) + "</div></div>"
+        : '<div class="msg" data-role="' + esc(m.role) + '"><div class="m-role">' + esc(m.role) + '</div><div class="m-body">' + renderMd(m.content) + '</div><div class="link-cards" id="lp-' + i + '"></div></div>'
     ).join("");
     setView(
       '<div class="insp-head"><a class="btn small" href="#/runs">' + icon("back", 14) + " Runs</a>" +
       statusPill(r.status) +
       '<h1 class="view-title">' + esc(title) + '</h1><span class="mono text-faint">' + esc(id.slice(0, 12)) + "</span>" +
       '<span class="spacer"></span><span class="btn-row">' +
+      (r.status === "running" || r.status === "paused" || r.status === "awaiting_approval"
+        ? '<button class="btn small danger" id="rd-cancel">Cancel</button>'
+        : (r.status === "completed" || r.status === "failed" || r.status === "canceled"
+          ? '<button class="btn small" id="rd-retry">Retry</button>' : "")) +
       '<button class="btn small" id="rd-json">JSON</button>' +
       '<button class="btn small" id="rd-md">Markdown</button>' +
       '<button class="btn small danger" id="rd-prune">Prune</button></span></div>' +
+      '<div class="panel insp-queue"><div class="panel-body">' +
+      '<div class="field" style="margin:0"><label for="rd-qmsg">Queue / steer a follow-up</label>' +
+      '<div style="display:flex;gap:8px"><input class="input" id="rd-qmsg" placeholder="Message the agent…" style="flex:1" aria-label="queue message">' +
+      '<button class="btn primary small" id="rd-qsend">Send</button></div>' +
+      '<div class="hint">Busy run: the message is queued and runs when the current turn settles. Idle run: it starts a new turn.</div></div>' +
+      "</div></div>" +
       '<div class="insp-grid">' +
       '<div class="panel"><div class="panel-head"><span class="panel-title">Execution timeline</span><span class="spacer"></span>' +
+      (isLive ? '<span class="pill" data-s="running" id="insp-live">live</span><button class="btn small" id="insp-pause">Pause</button>' : "") +
       '<span class="view-sub">' + timeline.length + " events</span></div>" +
       '<div class="panel-body">' +
-      '<div class="ev-note">Per-tool-call detail isn\u2019t recorded in the ledger yet \u2014 this timeline shows run, turn, model, approval, and subagent events.</div>' +
+      '<div class="ev-note">Per-tool-call detail is recorded in the ledger: requested / started / output / completed events appear below with the tool name, redacted arguments, and durations.</div>' +
       (timeline.length
         ? '<ol class="ev-list">' + inspTimelineHtml(timeline) + "</ol>"
         : emptyState("No events recorded", "This run has no ledger events yet.")) +
@@ -609,6 +725,7 @@ renderers.inspector = async function () {
     const select = (i) => {
       items.forEach((el) => el.classList.toggle("sel", +el.dataset.ev === i));
       $("#insp-detail").innerHTML = inspDetailHtml(timeline[i]);
+      inspSelSeq = timeline[i] ? timeline[i].seq : null;
     };
     items.forEach((el) => {
       el.onclick = () => select(+el.dataset.ev);
@@ -616,8 +733,14 @@ renderers.inspector = async function () {
     });
     if (timeline.length) {
       let def = timeline.length - 1;
-      for (let i = timeline.length - 1; i >= 0; i--) {
-        if (inspKind(timeline[i].kind).milestone && timeline[i].kind !== "run_started") { def = i; break; }
+      if (inspSelSeq != null) {
+        // Keep the user's selection across live re-renders (matched by seq).
+        const kept = timeline.findIndex((t) => t.seq === inspSelSeq);
+        if (kept >= 0) def = kept;
+      } else {
+        for (let i = timeline.length - 1; i >= 0; i--) {
+          if (inspKind(timeline[i].kind).milestone && timeline[i].kind !== "run_started") { def = i; break; }
+        }
       }
       select(def);
     }
@@ -636,6 +759,96 @@ renderers.inspector = async function () {
         location.hash = "#/runs";
       } catch (e) { toast("Prune failed: " + e.message, "err"); }
     };
+    // Link cards (D-11): bare URLs in assistant messages get og: previews
+    // from GET /api/link-preview, rendered under the message. Capped so a
+    // link-heavy transcript cannot fan out unboundedly; failures are silent.
+    const lpByUrl = {};
+    (r.transcript || []).forEach((m, i) => {
+      if (m.type !== "message" || m.role !== "assistant") return;
+      const urls = String(m.content || "").match(/https?:\/\/[^\s<>"')\]]+/g) || [];
+      [...new Set(urls)].slice(0, 4).forEach((u) => {
+        (lpByUrl[u] = lpByUrl[u] || []).push(i);
+      });
+    });
+    Object.keys(lpByUrl).slice(0, 12).forEach((u) => {
+      api("GET", "/api/link-preview?url=" + encodeURIComponent(u)).then((p) => {
+        if (!p || !p.title) return;
+        lpByUrl[u].forEach((i) => {
+          const host = $("#lp-" + i);
+          if (host) host.innerHTML += linkCardHtml(p);
+        });
+      }).catch(() => {});
+    });
+    // Run controls (D-7): cancel, retry, and the queue/steer box.
+    const cxlBtn = $("#rd-cancel");
+    if (cxlBtn) cxlBtn.onclick = async () => {
+      const ok = await confirmDialog({
+        title: "Cancel this run?",
+        body: '<p class="m-sub">Asks the in-flight turn to wind down cooperatively — it stops at its next checkpoint.</p>',
+        confirmLabel: "Cancel run", danger: true,
+      });
+      if (!ok) return;
+      try {
+        await api("POST", "/api/runs/" + encodeURIComponent(id) + "/cancel");
+        toast("Cancel requested", "ok");
+        renderers.inspector();
+      } catch (e) { toast(e.message, "err"); }
+    };
+    const retBtn = $("#rd-retry");
+    if (retBtn) retBtn.onclick = async () => {
+      try {
+        await api("POST", "/api/runs/" + encodeURIComponent(id) + "/retry");
+        toast("Retrying the last turn", "ok");
+        renderers.inspector();
+      } catch (e) { toast(e.message, "err"); }
+    };
+    const qInput = $("#rd-qmsg");
+    const qSend = async () => {
+      const q = qInput.value.trim();
+      if (!q) return;
+      const body = { message: q };
+      if (r.status === "running" || r.status === "paused") body.queue = true;
+      try {
+        const res = await api("POST", "/api/runs/" + encodeURIComponent(id) + "/message", body);
+        qInput.value = "";
+        inspQDraft = "";
+        toast(res.steered ? "Steered — queued for the next turn" : res.queued ? "Message queued" : "Sent", "ok");
+        renderers.inspector();
+      } catch (e) { toast(e.message, "err"); }
+    };
+    if (qInput) {
+      qInput.value = inspQDraft;
+      qInput.addEventListener("input", () => { inspQDraft = qInput.value; });
+      qInput.addEventListener("keydown", (e) => { if (e.key === "Enter") qSend(); });
+      const qBtn = $("#rd-qsend");
+      if (qBtn) qBtn.onclick = qSend;
+    }
+    // Live poll (D-16): while the run is non-terminal and not user-paused,
+    // re-fetch every 3s. A re-render only happens when the status or the
+    // last event seq changed, so the view doesn't flicker; the selected
+    // event (by seq) and the queue draft survive re-renders.
+    const pauseBtn = $("#insp-pause");
+    if (pauseBtn) pauseBtn.onclick = () => {
+      inspPaused = !inspPaused;
+      pauseBtn.textContent = inspPaused ? "Resume" : "Pause";
+      const pill = $("#insp-live");
+      if (pill) { pill.textContent = inspPaused ? "paused" : "live"; pill.dataset.s = inspPaused ? "paused" : "running"; }
+    };
+    stopInspPoll();
+    if (isLive) {
+      inspPoll = setInterval(async () => {
+        // The inspector is reachable as #/runs/<id> and #/inspector/<id>;
+        // polling must survive both, and stop on any other navigation.
+        if (inspPaused || (location.hash !== "#/runs/" + id && location.hash !== "#/inspector/" + id)) return;
+        try {
+          const cur = await api("GET", "/api/runs/" + encodeURIComponent(id));
+          const tl = cur.timeline || [];
+          const seq = tl.length ? tl[tl.length - 1].seq : null;
+          const curSeq = timeline.length ? timeline[timeline.length - 1].seq : null;
+          if (cur.status !== r.status || seq !== curSeq) renderers.inspector();
+        } catch (e) { /* 401 raises the re-auth gate; anything else retries next tick */ }
+      }, 3000);
+    }
   } catch (e) {
     setView(viewHead("Inspector", "") + errorState(e.message, true));
     $("[data-retry]").onclick = () => renderers.inspector();
@@ -715,6 +928,13 @@ function fmtDur(ms) {
   if (s < 86400) return Math.round(s / 3600) + "h";
   return Math.round(s / 86400) + "d";
 }
+/* Next-fire countdown, future-aware (D-10): fires in the future render
+   "in Xm", overdue jobs read "due now" instead of a negative duration. */
+function fmtNextFire(ms) {
+  if (ms == null) return "—";
+  if (ms - Date.now() <= 0) return "due now";
+  return "in " + fmtDur(ms - Date.now());
+}
 
 renderers.schedule = async function () {
   setView(viewHead("Schedule", "jobs, templates, delivery") +
@@ -735,7 +955,7 @@ renderers.schedule = async function () {
           "<tr><td style='max-width:340px'>" + esc(j.task.slice(0, 120)) + (j.task.length > 120 ? "…" : "") +
           "<div class='mono view-sub'>" + esc(j.id) + "</div></td>" +
           "<td>" + kindLabel(j.kind) + "</td>" +
-          "<td class='mono'>" + (j.paused ? "—" : relTime(j.next_fire_ms).replace(" ago", "")) + "</td>" +
+          "<td class='mono'>" + (j.paused ? "—" : fmtNextFire(j.next_fire_ms)) + "</td>" +
           "<td>" + (j.paused ? '<span class="pill" data-s="paused">paused</span>' : '<span class="pill" data-s="ok">active</span>') + "</td>" +
           "<td class='mono'>" + esc(j.model || "—") + "</td><td class='mono'>" + esc(j.deliver || "—") + "</td>" +
           "<td><span class='btn-row'>" +
@@ -927,8 +1147,11 @@ function configInput(f) {
       f.enum.map((o) => '<option value="' + esc(o) + '"' + (String(val) === o ? " selected" : "") + ">" + esc(o) + "</option>").join("") + "</select>";
   }
   if (f.type === "bool") {
-    return '<select class="input" id="' + id + '" data-path="' + esc(f.path) + '">' +
+    return '<select class="input" id="' + id + '" data-path="' + esc(f.path) + '" data-type="bool">' +
       ["true", "false"].map((o) => '<option value="' + o + '"' + (String(val) === o ? " selected" : "") + ">" + o + "</option>").join("") + "</select>";
+  }
+  if (f.type === "datetime") {
+    return '<input class="input mono" id="' + id + '" data-path="' + esc(f.path) + '" data-type="datetime" value="' + esc(val == null ? "" : val) + '" placeholder="ISO-8601, e.g. 2026-10-01T12:00:00Z">';
   }
   if (f.type === "secret_ref") {
     const src = val && val.source ? val.source : "env";
@@ -948,10 +1171,17 @@ function configInput(f) {
 }
 
 renderers.config = async function () {
-  setView(viewHead("Config", "config.toml: validated, atomic writes") +
+  const rrBanner = (state.pendingRestart && state.pendingRestart.length)
+    ? '<div class="notice warn" role="status">Restart required for <strong>' + esc(state.pendingRestart.join(", ")) +
+      "</strong> to take effect — these sections are read once at startup." +
+      '<span class="spacer"></span><button class="btn small" id="cf-rr-x">Dismiss</button></div>'
+    : "";
+  setView(viewHead("Config", "config.toml: validated, atomic writes") + rrBanner +
     '<div class="toolbar"><button class="btn primary" id="cf-save">Review changes</button>' +
     '<button class="btn" id="cf-export">Export</button><button class="btn" id="cf-import">Import</button>' +
     '<span class="view-sub" id="cf-dirty"></span></div><div id="cf-body">' + loading("config schema") + "</div>");
+  const rrX = $("#cf-rr-x");
+  if (rrX) rrX.onclick = () => { state.pendingRestart = null; rrX.closest(".notice").remove(); };
   try {
     const schema = await api("GET", "/api/config/schema");
     const fields = schema.fields || [];
@@ -990,6 +1220,11 @@ renderers.config = async function () {
           if (el.value.trim() === "") return;
           v = parseFloat(el.value);
           if (!Number.isFinite(v)) throw "not a number at " + path;
+        } else if (el.dataset.type === "bool") {
+          v = el.value === "true";
+        } else if (el.dataset.type === "datetime") {
+          if (el.value.trim() === "") return;
+          v = el.value.trim();
         } else v = el.value;
         // secret_ref: merge .source/.name back into one object at the base path
         const m = path.match(/^(.*)\.(source|name)$/);
@@ -1023,7 +1258,13 @@ renderers.config = async function () {
           names: preview.changes,
           apply: async () => {
             const res = await api("PUT", "/api/config", { changes, confirm: true });
-            toast("Applied " + res.changed.length + " change(s)", "ok");
+            const rr = res.restart_required || [];
+            if (rr.length) state.pendingRestart = rr;
+            toast(
+              "Applied " + res.changed.length + " change(s)" +
+              (rr.length ? " — restart required for " + rr.join(", ") + " to take effect" : ""),
+              rr.length ? "warn" : "ok"
+            );
             renderers.config();
           },
         });
@@ -1050,7 +1291,13 @@ renderers.config = async function () {
             names: preview.changes,
             apply: async () => {
               const res = await api("POST", "/api/config/import", { toml, confirm: true });
-              toast("Applied " + res.changed.length + " change(s)", "ok");
+              const rr = res.restart_required || [];
+              if (rr.length) state.pendingRestart = rr;
+              toast(
+                "Applied " + res.changed.length + " change(s)" +
+                (rr.length ? " — restart required for " + rr.join(", ") + " to take effect" : ""),
+                rr.length ? "warn" : "ok"
+              );
               renderers.config();
             },
           });
@@ -1139,6 +1386,16 @@ function keyForm(existingKey) {
 /* ---------------- logs ---------------- */
 let logSource = null; // EventSource for follow mode
 function stopFollow() { if (logSource) { logSource.close(); logSource = null; } }
+
+/* Inspector live-poll (D-16): refreshed on a 3s tick while the inspected
+   run is in a non-terminal state. Cleared on every navigate(), exactly
+   like follow mode above, so no timer outlives its view. */
+let inspPoll = null;
+let inspPaused = false;
+let inspRunId = null;   // run the inspector is currently showing
+let inspSelSeq = null;  // selected timeline event seq (preserved across live re-renders)
+let inspQDraft = "";    // queue-box draft (preserved across live re-renders)
+function stopInspPoll() { if (inspPoll) { clearInterval(inspPoll); inspPoll = null; } }
 
 renderers.logs = async function () {
   stopFollow();
@@ -1391,22 +1648,260 @@ function mcpAddForm() {
   $("#ma-name", root).focus();
 }
 
+/* ---------------- plugins ---------------- */
+/* Plugin imports, quarantine review, and approvals. Kept as one block;
+   separate from the profile/swarm sections below. */
+function pluginErrMsg(e) {
+  if (e && e.message && typeof e.message === "object") {
+    const inner = e.message.error || e.message;
+    return inner.message || inner.code || ("HTTP " + e.status);
+  }
+  return (e && e.message) || "request failed";
+}
+function pluginScanPill(p) {
+  if (!p.quarantined) return '<span class="pill">—</span>';
+  const v = p.scan_verdict || "unknown";
+  const s = v === "clean" ? "ok" : v === "suspicious" ? "warn" : "err";
+  const n = p.scan_report && p.scan_report.findings ? p.scan_report.findings.length : 0;
+  return '<span class="pill" data-s="' + s + '">' + esc(v) + "</span>" +
+    (n ? ' <button class="btn small" data-scan="' + esc(p.name) + '">findings (' + n + ")</button>" : "");
+}
+function pluginStateCell(p) {
+  if (p.quarantined) return '<span class="pill" data-s="warn">quarantined</span>';
+  const bits = [];
+  bits.push(p.enabled ? '<span class="pill" data-s="enabled">enabled</span>' : '<span class="pill" data-s="disabled">disabled</span>');
+  if (!p.approved) bits.push('<span class="pill" data-s="warn">unapproved</span>');
+  return bits.join(" ");
+}
+function pluginActions(p) {
+  const n = esc(p.name), k = esc(p.kind);
+  if (p.quarantined) {
+    const v = p.scan_verdict;
+    if (v === "malicious") {
+      return "<span class='btn-row'><button class='btn small' disabled title='Blocked by the static scan'>Approve</button></span>";
+    }
+    return "<span class='btn-row'><button class='btn small primary' data-papprove='" + n + "' data-kind='" + k + "' data-verdict='" + esc(v || "") + "'>Approve</button></span>";
+  }
+  if (p.bundled) {
+    return "<span class='btn-row'><button class='btn small' data-ptoggle='" + n + "' data-kind='" + k + "' data-on='" + (p.enabled ? "1" : "0") + "'>" + (p.enabled ? "Disable" : "Enable") + "</button></span>";
+  }
+  if (p.approved) {
+    return "<span class='btn-row'><button class='btn small danger' data-pdisable='" + n + "' data-kind='" + k + "'>Disable</button></span>";
+  }
+  return "<span class='btn-row'><button class='btn small primary' data-papprove='" + n + "' data-kind='" + k + "'>Approve</button></span>";
+}
+renderers.plugins = async function () {
+  setView(viewHead("Plugins", "tool and hook plugins. Imports are quarantined and scanned until approved") +
+    '<div class="toolbar"><button class="btn primary" id="pl-import">Import</button>' +
+    '<input id="pl-cq" class="input mono" placeholder="search ClawHub…" spellcheck="false" style="max-width:220px">' +
+    '<button class="btn small" id="pl-csearch">Search</button>' +
+    '<button class="btn small" id="pl-refresh">Refresh</button></div>' +
+    '<div id="pl-reg"></div><div id="pl-body">' + loading("plugins") + "</div>");
+  $("#pl-refresh").onclick = () => renderers.plugins();
+  $("#pl-import").onclick = pluginImportForm;
+  $("#pl-csearch").onclick = pluginRegistrySearch;
+  $("#pl-cq").addEventListener("keydown", (e) => { if (e.key === "Enter") pluginRegistrySearch(); });
+  const load = async () => {
+    try {
+      const data = await api("GET", "/api/plugins");
+      const plugins = data.plugins || [];
+      if (!plugins.length) {
+        $("#pl-body").innerHTML = emptyState("No plugins installed", "Import one from a GitHub repo.");
+        return;
+      }
+      const rows = plugins.map((p) =>
+        "<tr><td class='mono'>" + esc(p.name) +
+        "<div class='view-sub'>" + esc(p.kind) + " · v" + esc(p.version || "?") + "</div></td>" +
+        "<td>" + esc(p.description || "—") +
+        (p.privilege_notes ? "<div class='view-sub'>" + esc(p.privilege_notes) + "</div>" : "") + "</td>" +
+        "<td>" + (p.bundled ? '<span class="pill">bundled</span>' : '<span class="pill">third-party</span>') +
+        "<div class='view-sub mono'>" + esc(p.location || "") + "</div></td>" +
+        "<td>" + pluginStateCell(p) + "</td>" +
+        "<td>" + pluginScanPill(p) + "</td>" +
+        "<td>" + pluginActions(p) + "</td></tr>"
+      ).join("");
+      $("#pl-body").innerHTML =
+        '<div class="panel"><div class="panel-body flush"><table class="grid"><thead><tr>' +
+        "<th>Plugin</th><th>Description</th><th>Source</th><th>State</th><th>Scan</th><th></th></tr></thead><tbody>" +
+        rows + "</tbody></table></div></div>" +
+        '<p class="view-sub">Quarantined imports never load until approved. A malicious scan verdict blocks approval; a suspicious one needs explicit risk acknowledgement.</p>';
+      wirePluginButtons(load, plugins);
+    } catch (e) { $("#pl-body").innerHTML = errorState(pluginErrMsg(e), true); $("[data-retry]").onclick = load; }
+  };
+  load();
+};
+function wirePluginButtons(reload, plugins) {
+  const byName = {};
+  plugins.forEach((p) => { byName[p.name] = p; });
+  $$("#pl-body [data-scan]").forEach((b) => b.onclick = () => pluginScanModal(byName[b.dataset.scan]));
+  $$("#pl-body [data-papprove]").forEach((b) => b.onclick = async () => {
+    const p = byName[b.dataset.papprove];
+    if (!p) return;
+    if (p.quarantined && p.scan_verdict === "suspicious") {
+      // Suspicious: show the findings and require explicit risk ack.
+      const findings = (p.scan_report && p.scan_report.findings) || [];
+      const list = findings.slice(0, 8).map((f) =>
+        "<div class='mono' style='margin:4px 0'>[" + esc(f.severity) + "] " + esc(f.file) +
+        (f.line ? ":" + f.line : "") + " — " + esc(f.rule) + "</div>"
+      ).join("") || "<p class='m-sub'>No findings recorded.</p>";
+      const ok = await confirmDialog({
+        title: "Approve " + p.name + " despite the scan?",
+        body: "<p class='m-sub'>The static scan flagged this plugin as suspicious:</p>" + list +
+          (findings.length > 8 ? "<p class='m-sub'>…and " + (findings.length - 8) + " more. This is heuristic static analysis, not a sandbox.</p>" : "") +
+          "<p class='m-sub'>Approving promotes it out of quarantine and lets it load.</p>",
+        confirmLabel: "Approve anyway",
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        await api("POST", "/api/plugins/" + encodeURIComponent(p.kind) + "/" + encodeURIComponent(p.name) + "/approve", { acknowledge_risk: true });
+        toast("Approved " + p.name, "ok");
+        reload();
+      } catch (e) { toast(pluginErrMsg(e), "err"); }
+      return;
+    }
+    const ok = await confirmDialog({
+      title: "Approve " + p.name + "?",
+      body: p.quarantined
+        ? "<p class='m-sub'>Scan verdict: clean. Approving promotes it out of quarantine and lets it load.</p>"
+        : (p.privilege_notes ? "<p class='m-sub'>" + esc(p.privilege_notes) + "</p>" : "<p class='m-sub'>Records operator approval so the plugin can load.</p>"),
+      confirmLabel: "Approve",
+    });
+    if (!ok) return;
+    try {
+      await api("POST", "/api/plugins/" + encodeURIComponent(p.kind) + "/" + encodeURIComponent(p.name) + "/approve", {});
+      toast("Approved " + p.name, "ok");
+      reload();
+    } catch (e) { toast(pluginErrMsg(e), "err"); }
+  });
+  $$("#pl-body [data-pdisable]").forEach((b) => b.onclick = async () => {
+    const ok = await confirmDialog({
+      title: "Disable " + b.dataset.pdisable + "?",
+      body: '<p class="m-sub">Revokes approval; the plugin stays installed but will not load.</p>',
+      confirmLabel: "Disable",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api("POST", "/api/plugins/" + encodeURIComponent(b.dataset.kind) + "/" + encodeURIComponent(b.dataset.pdisable) + "/disable", {});
+      toast("Disabled", "ok");
+      reload();
+    } catch (e) { toast(pluginErrMsg(e), "err"); }
+  });
+  $$("#pl-body [data-ptoggle]").forEach((b) => b.onclick = async () => {
+    const disabling = b.dataset.on === "1";
+    const path = "/api/plugins/" + encodeURIComponent(b.dataset.kind) + "/" + encodeURIComponent(b.dataset.ptoggle) + (disabling ? "/disable" : "/approve");
+    try {
+      await api("POST", path, {});
+      toast(disabling ? "Disabled" : "Enabled", "ok");
+      reload();
+    } catch (e) { toast(pluginErrMsg(e), "err"); }
+  });
+}
+function pluginScanModal(p) {
+  if (!p || !p.scan_report) return;
+  const findings = p.scan_report.findings || [];
+  const root = $("#modal-root");
+  const rows = findings.length ? findings.map((f) =>
+    "<tr><td><span class='pill' data-s='" + (f.severity === "critical" ? "err" : f.severity === "high" ? "err" : f.severity === "medium" ? "warn" : "ok") + "'>" + esc(f.severity) + "</span></td>" +
+    "<td class='mono'>" + esc(f.file) + (f.line ? ":" + f.line : "") + "</td>" +
+    "<td class='mono'>" + esc(f.rule) + "</td>" +
+    "<td>" + esc(f.description) + "</td></tr>"
+  ).join("") : "<tr><td colspan='4'>No findings.</td></tr>";
+  root.innerHTML = '<div class="modal-veil"><div class="modal" role="dialog" aria-modal="true" aria-label="Scan report" style="max-width:720px">' +
+    "<h3>Scan report: " + esc(p.name) + "</h3>" +
+    "<p class='m-sub'>Verdict: <b>" + esc(p.scan_verdict || "unknown") + "</b>. Heuristic static analysis — not a sandbox, not a guarantee.</p>" +
+    '<div class="panel"><div class="panel-body flush"><table class="grid"><thead><tr><th>Severity</th><th>File</th><th>Rule</th><th>Description</th></tr></thead><tbody>' +
+    rows + "</tbody></table></div></div>" +
+    '<div class="m-actions"><button class="btn primary" data-x>Close</button></div></div></div>';
+  $("[data-x]", root).onclick = () => { root.innerHTML = ""; };
+  $(".modal-veil", root).addEventListener("mousedown", (e) => { if (e.target.classList.contains("modal-veil")) root.innerHTML = ""; });
+}
+function pluginImportForm() {
+  const root = $("#modal-root");
+  root.innerHTML = '<div class="modal-veil"><div class="modal" role="dialog" aria-modal="true" aria-label="Import plugin">' +
+    "<h3>Import plugin</h3><p class='m-sub'>From a GitHub repo URL or a <span class='mono'>clawhub:&lt;slug&gt;</span> reference. The bundle is downloaded, scanned, and quarantined — nothing loads until you approve it.</p>" +
+    '<div class="field"><label>GitHub repo URL or clawhub:slug</label><input id="pi-url" class="input mono" placeholder="https://github.com/owner/repo or clawhub:slug" spellcheck="false"></div>' +
+    '<div class="field"><label>ref (optional: branch, tag, commit)</label><input id="pi-ref" class="input mono" placeholder="main" spellcheck="false"></div>' +
+    '<div id="pi-err" class="view-sub" style="color:var(--danger)"></div>' +
+    '<div class="m-actions"><button class="btn" data-x>Cancel</button><button class="btn primary" data-ok>Import</button></div></div></div>';
+  const close = () => { root.innerHTML = ""; };
+  $("[data-x]", root).onclick = close;
+  $("[data-ok]", root).onclick = async () => {
+    const url = $("#pi-url", root).value.trim(), ref = $("#pi-ref", root).value.trim();
+    if (!url) { toast("Give a URL or a clawhub:slug", "err"); return; }
+    $("#pi-err", root).textContent = "";
+    $("[data-ok]", root).disabled = true;
+    try {
+      const body = { url };
+      if (ref) body.ref = ref;
+      const res = await api("POST", "/api/plugins/import", body);
+      toast("Imported " + res.name + " — quarantined, scan: " + (res.scan_report && res.scan_report.verdict), "ok");
+      close();
+      renderers.plugins();
+    } catch (e) {
+      // Structured 422s carry machine-readable extras on the thrown error object.
+      const inner = e.message && typeof e.message === "object" ? e.message : {};
+      if (inner.code === "NOT_A_PLUGIN" && inner.skill) {
+        $("#pi-err", root).textContent = "That ClawHub entry is a skill (" + (inner.skill.name || inner.skill.slug) + "), not a plugin. " + (inner.hint || "Import it from the Skills page instead.");
+      } else if (inner.code === "UNSUPPORTED_LAYOUT") {
+        $("#pi-err", root).textContent = (inner.message || "Unsupported layout.") + (inner.found && inner.found.length ? " Found: " + inner.found.join(", ") : "");
+      } else {
+        $("#pi-err", root).textContent = pluginErrMsg(e);
+      }
+      $("[data-ok]", root).disabled = false;
+    }
+  };
+  $("#pi-url", root).focus();
+}
+async function pluginRegistrySearch() {
+  const q = $("#pl-cq").value.trim();
+  if (!q) return;
+  $("#pl-reg").innerHTML = '<p class="view-sub">Searching ClawHub…</p>';
+  try {
+    const data = await api("GET", "/api/plugins/registry/search?q=" + encodeURIComponent(q) + "&source=clawhub");
+    const results = data.results || [];
+    if (!results.length) {
+      $("#pl-reg").innerHTML = '<p class="view-sub">No ClawHub results for "' + esc(q) + '".</p>';
+      return;
+    }
+    $("#pl-reg").innerHTML = '<div class="section-label">ClawHub results</div>' +
+      '<div class="panel"><div class="panel-body flush"><table class="grid"><thead><tr><th>Entry</th><th>Description</th><th>Version</th><th></th></tr></thead><tbody>' +
+      results.map((r) =>
+        "<tr><td class='mono'>" + esc(r.name || r.slug) + "<div class='view-sub'>" + esc(r.slug) + " · " + esc(r.kind) + "</div></td>" +
+        "<td>" + esc(r.description || "—") + "</td>" +
+        "<td class='mono'>" + esc(r.version || "—") + "</td>" +
+        "<td><span class='view-sub'>ClawHub lists skills — import from the " +
+        "<a href='#/skills'>Skills</a> page, not here.</span></td></tr>"
+      ).join("") + "</tbody></table></div></div>";
+  } catch (e) { $("#pl-reg").innerHTML = '<p class="view-sub">Search failed: ' + esc(pluginErrMsg(e)) + "</p>"; }
+}
+
 /* ---------------- system: gateway, reflect, consolidate ---------------- */
 renderers.system = async function () {
-  setView(viewHead("System", "gateway service, reflection, consolidation") + loading("system status"));
+  setView(viewHead("System", "gateway service, nightly pass, reflection, consolidation") + loading("system status"));
   try {
-    const [gw, refl, cons] = await Promise.all([
+    const [gw, night, refl, cons] = await Promise.all([
       api("GET", "/api/gateway/status"),
+      api("GET", "/api/nightly/status"),
       api("GET", "/api/reflect/status"),
       api("GET", "/api/consolidate/status"),
     ]);
-    setView(viewHead("System", "gateway service, reflection, consolidation") +
+    setView(viewHead("System", "gateway service, nightly pass, reflection, consolidation") +
       '<div class="grid-2">' +
       '<div class="panel"><div class="panel-head"><span class="panel-title">Gateway</span><span class="spacer"></span>' +
       '<button class="btn small danger" id="sy-gw-restart">Restart</button></div><div class="panel-body"><dl class="kv">' +
       "<dt>Detected</dt><dd class='mono'>" + esc(gw.detected) + "</dd>" +
       "<dt>Installed</dt><dd class='mono'>" + esc(gw.installed || "no") + "</dd>" +
       "<dt>Running</dt><dd>" + (gw.running ? '<span class="pill" data-s="ok">running</span>' : '<span class="pill" data-s="warn">stopped</span>') + "</dd>" +
+      "</dl></div></div>" +
+      '<div class="panel"><div class="panel-head"><span class="panel-title">Nightly pass</span><span class="spacer"></span>' +
+      '<button class="btn small' + (night.enabled ? " danger" : " primary") + '" id="sy-night-toggle">' + (night.enabled ? "Disable" : "Enable") + '</button></div>' +
+      '<div class="panel-body"><dl class="kv">' +
+      "<dt>Loop</dt><dd>" + (night.enabled ? '<span class="pill" data-s="ok">enabled</span>' : '<span class="pill" data-s="warn">off</span>') + "</dd>" +
+      "<dt>Why</dt><dd class='mono'>" + esc(night.reason || "—") + "</dd>" +
+      "<dt>Next run</dt><dd class='mono'>" + (night.next_run_ms ? fmtTime(night.next_run_ms) + " (" + relTime(night.next_run_ms) + ")" : "not scheduled") + "</dd>" +
+      "<dt>Last pass</dt><dd class='mono' style='white-space:pre-wrap'>" + esc(night.last_summary || "no nightly passes yet") + "</dd>" +
       "</dl></div></div>" +
       '<div class="panel"><div class="panel-head"><span class="panel-title">Reflection</span><span class="spacer"></span>' +
       '<span class="btn-row"><button class="btn small" id="sy-refl-dry">Dry run</button><button class="btn small primary" id="sy-refl-run">Run pass</button></span></div>' +
@@ -1423,10 +1918,24 @@ renderers.system = async function () {
       "<dt>Promoted keys</dt><dd class='mono'>" + fmtNum(cons.promoted_keys) + "</dd>" +
       "</dl></div></div>"
     );
-    $("#sy-gw-restart").onclick = async () => {
-      const ok = await confirmDialog({ title: "Restart gateway?", body: '<p class="m-sub">Runs <code class="inline">pantheon gateway restart</code> in the background. Chat surfaces may drop briefly.</p>', confirmLabel: "Restart", danger: true });
+    $("#sy-night-toggle").onclick = async () => {
+      const enable = !night.enabled;
+      const ok = await confirmDialog({
+        title: (enable ? "Enable" : "Disable") + " nightly pass?",
+        body: '<p class="m-sub">' + (enable
+          ? "Writes <code class=\"inline\">enabled = true</code> to <code class=\"inline\">[nightly]</code> — the same flag <code class=\"inline\">/nightly on</code> writes."
+          : "Writes <code class=\"inline\">enabled = false</code> to <code class=\"inline\">[nightly]</code>; it wins even with a model pin.") + "</p>",
+        confirmLabel: enable ? "Enable" : "Disable",
+        danger: !enable,
+      });
       if (!ok) return;
-      try { await api("POST", "/api/gateway/restart", { confirm: true }); toast("Restart requested", "ok"); }
+      try { await api("POST", "/api/nightly/enabled", { enabled: enable, confirm: true }); toast("Nightly " + (enable ? "enabled" : "disabled"), "ok"); renderers.system(); }
+      catch (e) { toast(e.message, "err"); }
+    };
+    $("#sy-gw-restart").onclick = async () => {
+      const ok = await confirmDialog({ title: "Restart gateway?", body: '<p class="m-sub">Runs <code class="inline">pantheon gateway restart</code> in the background. <strong>This page will disconnect</strong> when the gateway restarts — reload the dashboard URL afterwards. Chat surfaces may drop briefly.</p>', confirmLabel: "Restart", danger: true });
+      if (!ok) return;
+      try { await api("POST", "/api/gateway/restart", { confirm: true }); toast("Restart requested — this page will disconnect", "ok"); }
       catch (e) { toast(e.message, "err"); }
     };
     const runPass = (kind, dry) => async () => {
@@ -1449,7 +1958,914 @@ renderers.system = async function () {
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* Swarm: launch a task across N subagents or picked profiles, with an  */
+/* optional judge ruling whether the work is done. Built against the    */
+/* mobile client's API contract                                         */
+/* (pantheon-mobile/lib/services/pantheon_api.dart ~L954-993):          */
+/*   POST /api/swarm {task, mode, subagent_count?, profiles?, judge}    */
+/*     -> 201 {swarm_id, run_id, agents}                                */
+/*   GET  /api/swarm/status?swarm=<id>                                  */
+/*     -> {task, status, round, agents, verdict}                        */
+/*   GET  /api/swarm/transcript?swarm=<id>&agent=<name>                 */
+/*   POST /api/swarm/<id>/retry {feedback?} -> 200 {swarm_id, round}    */
+/* The backend routes HAVE landed (see src/swarm.rs); the contract has  */
+/* no list endpoint, so recently launched swarms are remembered         */
+/* client-side in sessionStorage.                                       */
+/* ------------------------------------------------------------------ */
+
+const SWARM_MISSING =
+  "Swarm not found — it may have been pruned, or the id is wrong. " +
+  "Recently launched swarms are remembered in this tab's sessionStorage.";
+
+function swarmIsMissing(e) {
+  return !!e && (e.status === 404 || /not found/i.test(String(e.message || "")));
+}
+
+function swarmRecent() {
+  try { return JSON.parse(sessionStorage.getItem("swarm_recent") || "[]"); }
+  catch (e) { return []; }
+}
+
+function swarmRemember(entry) {
+  const list = swarmRecent().filter((x) => x.id !== entry.id);
+  list.unshift(entry);
+  try { sessionStorage.setItem("swarm_recent", JSON.stringify(list.slice(0, 20))); }
+  catch (e) { /* storage full/blocked: recent list is best-effort */ }
+}
+
+/* Normalize the status call's per-agent payload: accept an array of
+   names/objects or a name->status map. */
+function swarmAgentsOf(st) {
+  const a = st.agents;
+  if (Array.isArray(a)) {
+    return a.map((x) => typeof x === "string"
+      ? { name: x, status: "" }
+      : { name: x.name || x.id || "agent", status: x.status || "" });
+  }
+  if (a && typeof a === "object") {
+    return Object.keys(a).map((k) => {
+      const v = a[k];
+      return { name: k, status: typeof v === "string" ? v : ((v && v.status) || "") };
+    });
+  }
+  return [];
+}
+
+function swarmTranscriptHtml(t) {
+  if (t && Array.isArray(t.messages)) {
+    if (!t.messages.length) return '<span class="text-faint">No transcript yet.</span>';
+    return t.messages.map((m) =>
+      '<div style="margin-bottom:10px"><div class="mono text-faint" style="font-size:11px;margin-bottom:2px">' +
+      esc(m.role || m.author || "?") + "</div><div style=\"white-space:pre-wrap;font-size:13px\">" +
+      esc(m.text || m.content || "") + "</div></div>"
+    ).join("");
+  }
+  if (t && typeof t.transcript === "string") {
+    return '<pre class="mono" style="white-space:pre-wrap;font-size:12px;line-height:1.6;margin:0">' +
+      esc(t.transcript) + "</pre>";
+  }
+  return '<pre class="mono" style="white-space:pre-wrap;font-size:12px;margin:0">' +
+    esc(JSON.stringify(t, null, 2)) + "</pre>";
+}
+
+/* ---------- team runs: a staged swarm reads as a multi-agent conversation ----------
+   Every message is labeled with the speaking expert (avatar + name, like the
+   HERMES / MEDUSA labels); handoffs between experts render as @-mention
+   chips; the header shows the participant stack. The lead's messages are the
+   primary thread — member runs are team activity, never user-facing. */
+
+/* Avatar in the expert's own color when we have it, else the hash avatar. */
+function expertAvatarHtml(x, cls) {
+  const color = x && x.color;
+  if (color && /^#[0-9a-fA-F]{6}$/.test(String(color))) {
+    return '<span class="' + (cls || "av") + '" style="background:' + esc(color) +
+      ';color:#fff">' + esc(initials((x && x.name) || "?")) + "</span>";
+  }
+  return avatarHtml((x && x.name) || "?", cls);
+}
+
+/* One @-mention chip for an expert name. */
+function mentionHtml(name) {
+  return '<span class="mention">@' + esc(name) + "</span>";
+}
+
+/* Split a combined swarm transcript into headed blocks:
+   === Name (r_1) [status] [role] === ... plus the staged execution log. */
+function parseTeamTranscript(text) {
+  const blocks = [];
+  const lines = String(text || "").split("\n");
+  let cur = null;
+  const head = /^=== (.+?) \((r_\d+)\) \[([^\]]+)\](?: \[([^\]]+)\])? ===$/;
+  for (const line of lines) {
+    const m = head.exec(line);
+    if (m) {
+      cur = { name: m[1], run: m[2], status: m[3], role: m[4] || "", log: false, body: [] };
+      blocks.push(cur);
+      continue;
+    }
+    if (/^=== staged execution log: /.test(line)) {
+      cur = { name: "", log: true, title: line.replace(/^=== /, "").replace(/ ===$/, ""), body: [] };
+      blocks.push(cur);
+      continue;
+    }
+    if (cur) cur.body.push(line);
+  }
+  blocks.forEach((b) => { b.text = b.body.join("\n").replace(/^\n+|\s+$/g, ""); delete b.body; });
+  return blocks;
+}
+
+/* Wrap every known expert name in a log line with an @-mention chip. */
+function chipNamesHtml(line, names) {
+  let out = esc(line);
+  const sorted = names.slice().sort((a, b) => b.length - a.length);
+  sorted.forEach((n) => {
+    const needle = esc(n);
+    if (!needle || out.indexOf(needle) < 0) return;
+    out = out.split(needle).join('<span class="mention">@' + needle + "</span>");
+  });
+  return out;
+}
+
+function expertBlockHtml(block, isLead) {
+  return '<div class="tm-msg' + (isLead ? " lead" : "") + '">' +
+    '<div class="tm-who">' + avatarHtml(block.name, "av") +
+    '<span class="tm-name">' + esc(block.name) + "</span>" +
+    (isLead ? '<span class="tm-tag">lead</span>' : "") +
+    (block.status ? '<span class="text-faint mono" style="font-size:11px">' + esc(block.status) + "</span>" : "") +
+    "</div>" +
+    (block.text
+      ? '<div class="tm-body">' + esc(block.text) + "</div>"
+      : '<div class="tm-body text-faint">No output yet.</div>') +
+    "</div>";
+}
+
+function handoffHtml(fromNames, toNames, label) {
+  return '<div class="tm-handoff"><span class="text-faint">' + esc(label || "handoff") + "</span> " +
+    fromNames.map(mentionHtml).join(" ") +
+    ' <span aria-hidden="true">\u2192</span> ' +
+    toNames.map(mentionHtml).join(" ") + "</div>";
+}
+
+function teamTranscriptHtml(text, st) {
+  const staged = st.staged || {};
+  const stages = staged.stages || [];
+  const blocks = parseTeamTranscript(text);
+  const byName = {};
+  blocks.forEach((b) => { if (!b.log) byName[b.name] = b; });
+  const knownNames = Object.keys(byName);
+  let html = "";
+  // The lead's block is the primary thread, first.
+  const leadBlock = blocks.find((b) => !b.log && /lead/i.test(b.role || ""));
+  if (leadBlock) html += expertBlockHtml(leadBlock, true);
+  // Then each stage in plan order: member sections, then the handoff row.
+  stages.forEach((sg, i) => {
+    const members = (sg.members || []).filter((n) => n !== (leadBlock && leadBlock.name));
+    const shown = members.filter((n) => byName[n]).map((n) => byName[n]);
+    if (!shown.length && !members.length) return;
+    html += '<div class="tm-stage"><span class="stage-pill' +
+      (i < staged.stage_index ? " done" : i === staged.stage_index ? " current" : " todo") + '">' +
+      "Stage " + (i + 1) + " \u00b7 " + esc(sg.name || "") + "</span></div>";
+    shown.forEach((b) => { html += expertBlockHtml(b, false); });
+    // Any agent blocks not claimed by a stage (shouldn't happen) stay visible.
+    if (i === stages.length - 1) {
+      const claimed = {};
+      stages.forEach((s2) => (s2.members || []).forEach((n) => { claimed[n] = 1; }));
+      if (leadBlock) claimed[leadBlock.name] = 1;
+      blocks.forEach((b) => {
+        if (!b.log && !claimed[b.name]) html += expertBlockHtml(b, false);
+      });
+    }
+    const next = stages[i + 1];
+    if (next && members.length && (next.members || []).length) {
+      html += handoffHtml(members, next.members, "stage " + (i + 1) + " hands off to stage " + (i + 2));
+    }
+    if (sg.loop_back_to != null && stages[sg.loop_back_to]) {
+      html += '<div class="tm-handoff"><span class="text-faint">on verification failure loops back to</span> ' +
+        mentionHtml("stage " + (sg.loop_back_to + 1) + " \u00b7 " + stages[sg.loop_back_to].name) + "</div>";
+    }
+  });
+  // The staged execution log: system rows with @-mention chips.
+  blocks.forEach((b) => {
+    if (!b.log || !b.text) return;
+    html += '<div class="tm-stage"><span class="stage-pill">execution log</span></div>';
+    b.text.split("\n").forEach((line) => {
+      if (!line.trim()) return;
+      const cls = /^escalation:/.test(line) ? " err" : /^review:/.test(line) ? " warn" : "";
+      html += '<div class="tm-sys' + cls + '">' + chipNamesHtml(line, knownNames) + "</div>";
+    });
+  });
+  return html || '<span class="text-faint">No transcript yet.</span>';
+}
+
+/* Participant stack for a team-run header: lead first, then unique members. */
+function teamStackHtml(st) {
+  const staged = st.staged || {};
+  const stages = staged.stages || [];
+  const leadAgent = (st.agents || []).find((a) => a.lead);
+  const names = [];
+  const push = (n) => { if (n && names.indexOf(n) < 0) names.push(n); };
+  if (leadAgent) push(leadAgent.name);
+  stages.forEach((s) => (s.members || []).forEach(push));
+  const stack = names.slice(0, 8).map((n) => avatarHtml(n)).join("") +
+    (names.length > 8 ? '<span class="av more">+' + (names.length - 8) + "</span>" : "");
+  return '<span class="av-stack">' + (stack || avatarHtml("?")) + "</span>" +
+    '<span style="margin-left:8px;font-size:13px">' + names.map(esc).join(", ") + "</span>";
+}
+
+function stagePillsHtml(staged) {
+  const stages = staged.stages || [];
+  return '<div class="stage-pills">' + stages.map((s, i) => {
+    const cls = i < staged.stage_index ? " done" : i === staged.stage_index ? " current" : " todo";
+    return '<span class="stage-pill' + cls + '">' + (i + 1) + " \u00b7 " + esc(s.name || "") + "</span>";
+  }).join("") + "</div>";
+}
+
+renderers.teamRun = async function (id, st) {
+  const my = ++swarmPoll;
+  const staged = st.staged || {};
+  setView(viewHead("Team run", "") +
+    '<div class="insp-head"><a class="btn small" href="#/swarm">' + icon("back", 14) + " Swarms</a>" +
+    '<h1 class="view-title" style="font-size:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%">' +
+    esc(staged.team || st.task || id) + '</h1><span class="mono text-faint">' + esc(id) + "</span></div>" +
+    (staged.escalation
+      ? '<div class="panel" style="border-color:var(--red-border)"><div class="panel-body">' +
+        '<span class="pill" data-s="err">escalated</span>' +
+        '<div style="margin-top:8px;font-size:13px;white-space:pre-wrap">' + esc(staged.escalation) + "</div></div></div>"
+      : "") +
+    '<div class="panel"><div class="panel-body">' +
+    '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">' + teamStackHtml(st) + "</div>" +
+    '<div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap">' +
+    '<span class="pill" data-s="accent">' + esc(String(staged.topology || "").replace(/_/g, " ")) + "</span>" +
+    '<span class="text-faint" style="font-size:12px">' + esc(st.status || "running") +
+    (staged.topology === "review_loop"
+      ? " \u00b7 review iterations " + staged.review_iterations + "/" + staged.max_review_iterations
+      : "") + "</span>" +
+    '<span class="spacer"></span><button class="btn small" id="tm-refresh">Refresh</button></div>' +
+    '<div style="margin-top:10px">' + stagePillsHtml(staged) + "</div>" +
+    "</div></div>" +
+    '<div class="panel" style="margin-top:16px"><div class="panel-head"><span class="panel-title">Team transcript</span>' +
+    '<span class="spacer"></span><span class="text-faint" style="font-size:11px">lead speaks to you \u00b7 members report to the lead</span></div>' +
+    '<div class="panel-body" id="tm-transcript">' + loading("transcript") + "</div></div>");
+  $("#tm-refresh").onclick = () => renderers.swarmDetail(id);
+  try {
+    const t = await api("GET", "/api/swarm/transcript?swarm=" + encodeURIComponent(id));
+    const box = $("#tm-transcript");
+    if (box) box.innerHTML = teamTranscriptHtml(t && t.transcript, st);
+  } catch (e) {
+    const box = $("#tm-transcript");
+    if (box) box.innerHTML = errorState(swarmIsMissing(e) ? SWARM_MISSING : e.message, false);
+  }
+  /* Keep the run live while it is working. */
+  if (st.status === "running") {
+    setTimeout(() => {
+      if (my === swarmPoll && state.route === "swarm" && state.param === id) renderers.swarmDetail(id);
+    }, 5000);
+  }
+};
+
+renderers.swarm = async function () {
+  if (state.param) return renderers.swarmDetail(state.param);
+  setView(viewHead("Swarm", "split a task across subagents, with an optional judge") +
+    '<div id="sw-view">' + loading("swarm") + "</div>");
+  let profiles = [];
+  try {
+    const cfg = await api("GET", "/api/config");
+    profiles = Object.keys((cfg.values || {}).agents || {}).sort();
+  } catch (e) { /* the launch form still renders without the profile list */ }
+  const recent = swarmRecent();
+  const form =
+    '<div class="panel"><div class="panel-head"><span class="panel-title">Launch swarm</span></div>' +
+    '<div class="panel-body">' +
+    '<label class="m-sub" for="sw-task" style="display:block;margin-bottom:6px">Task</label>' +
+    '<textarea class="input" id="sw-task" rows="4" style="width:100%;box-sizing:border-box" ' +
+    'placeholder="Describe the task for the swarm\u2026"></textarea>' +
+    '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;align-items:flex-start">' +
+    '<div><div class="m-sub" style="margin-bottom:6px">Mode</div>' +
+    '<label style="margin-right:12px"><input type="radio" name="sw-mode" value="count" checked> count</label>' +
+    '<label><input type="radio" name="sw-mode" value="profiles"> profiles</label></div>' +
+    '<div id="sw-count-wrap"><div class="m-sub" style="margin-bottom:6px">Subagents</div>' +
+    '<input type="number" class="input" id="sw-count" min="1" max="16" value="3" style="width:76px"></div>' +
+    '<div><div class="m-sub" style="margin-bottom:6px">Judge</div>' +
+    '<label><input type="checkbox" id="sw-judge" checked> judge verdict</label></div>' +
+    "</div>" +
+    '<div id="sw-profiles-wrap" style="display:none;margin-top:12px"><div class="m-sub" style="margin-bottom:6px">Profiles</div>' +
+    (profiles.length
+      ? profiles.map((p) => '<label style="margin-right:12px"><input type="checkbox" name="sw-profile" value="' +
+        esc(p) + '"> ' + esc(p) + "</label>").join("")
+      : '<span class="text-faint">No [agents.*] profiles declared.</span>') +
+    "</div>" +
+    '<div class="btn-row" style="margin-top:14px"><button class="btn primary" id="sw-launch">Launch swarm</button></div>' +
+    '<div id="sw-err" style="margin-top:10px"></div>' +
+    "</div></div>";
+  const list =
+    '<div class="panel" style="margin-top:16px"><div class="panel-head"><span class="panel-title">Recent swarms</span>' +
+    '<span class="spacer"></span><span class="text-faint" style="font-size:11px">remembered in this tab</span></div>' +
+    '<div class="panel-body">' +
+    (recent.length
+      ? '<div class="qa-grid">' + recent.map((r) =>
+        '<a class="card-link card" href="#/swarm/' + encodeURIComponent(r.id) + '" style="text-decoration:none">' +
+        '<div class="card-body" style="padding:14px 18px"><div class="agent-name">' +
+        esc((r.task || "").slice(0, 80) || r.id) + '</div>' +
+        '<div class="agent-sub">' + esc(r.id) + (r.created ? " \u00b7 " + esc(r.created) : "") + "</div></div></a>"
+      ).join("") + "</div>"
+      : emptyState("No swarms launched yet", "Launch one above — it will be remembered here for this tab.")) +
+    "</div></div>";
+  $("#sw-view").innerHTML = form + list;
+
+  $$('input[name="sw-mode"]').forEach((r) => {
+    r.onchange = () => {
+      const byProfiles = document.querySelector('input[name="sw-mode"]:checked').value === "profiles";
+      $("#sw-count-wrap").style.display = byProfiles ? "none" : "";
+      $("#sw-profiles-wrap").style.display = byProfiles ? "" : "none";
+    };
+  });
+  $("#sw-launch").onclick = async () => {
+    const task = $("#sw-task").value.trim();
+    if (!task) { toast("Describe the task first", "err"); return; }
+    const mode = document.querySelector('input[name="sw-mode"]:checked').value;
+    const judge = $("#sw-judge").checked;
+    const body = { task: task, mode: mode, judge: judge };
+    if (mode === "count") {
+      body.subagent_count = Math.max(1, parseInt($("#sw-count").value, 10) || 3);
+    } else {
+      body.profiles = $$('input[name="sw-profile"]:checked').map((c) => c.value);
+      if (!body.profiles.length) { toast("Pick at least one profile", "err"); return; }
+    }
+    const btn = $("#sw-launch");
+    btn.disabled = true;
+    btn.textContent = "Launching\u2026";
+    try {
+      const res = await api("POST", "/api/swarm", body);
+      const id = res.swarm_id || res.id;
+      swarmRemember({ id: id, task: task, created: new Date().toLocaleString() });
+      toast("Swarm launched", "ok");
+      location.hash = "#/swarm/" + encodeURIComponent(id);
+    } catch (e) {
+      $("#sw-err").innerHTML = swarmIsMissing(e) ? errorState(SWARM_MISSING, false) : errorState(e.message, false);
+      btn.disabled = false;
+      btn.textContent = "Launch swarm";
+    }
+  };
+};
+
+/* Poll guard: every detail render bumps the counter, so stale timers die. */
+let swarmPoll = 0;
+
+renderers.swarmDetail = async function (id) {
+  const my = ++swarmPoll;
+  setView(viewHead("Swarm", "") + loading("swarm status"));
+  let st;
+  try {
+    st = await api("GET", "/api/swarm/status?swarm=" + encodeURIComponent(id));
+  } catch (e) {
+    const back = '<div class="insp-head"><a class="btn small" href="#/swarm">' + icon("back", 14) + " Swarms</a></div>";
+    if (swarmIsMissing(e)) {
+      setView(viewHead("Swarm", "") + back + emptyState("Swarm backend unavailable", SWARM_MISSING));
+    } else {
+      setView(viewHead("Swarm", "") + back + errorState(e.message, true));
+      const rb = $("[data-retry]");
+      if (rb) rb.onclick = () => renderers.swarmDetail(id);
+    }
+    return;
+  }
+  const agents = swarmAgentsOf(st);
+  const v = st.verdict;
+  /* Staged swarms render as a team run: a multi-agent conversation with
+     per-expert attribution, handoff chips, and the participant stack. */
+  if (st.staged) return renderers.teamRun(id, st);
+  const isDone = v === "done" || (v && v.done === true);
+  let banner;
+  if (isDone) {
+    banner = '<div class="panel"><div class="panel-body"><span class="pill" data-s="ok">verdict: done</span>' +
+      '<span class="text-faint" style="margin-left:8px">the judge accepted the work</span></div></div>';
+  } else if (v) {
+    banner = '<div class="panel"><div class="panel-head"><span class="panel-title">Judge verdict</span>' +
+      '<span class="spacer"></span><button class="btn small primary" id="sw-retry">Retry round</button></div>' +
+      '<div class="panel-body"><span class="pill" data-s="warn">not done</span>' +
+      '<div style="margin-top:8px;white-space:pre-wrap;font-size:13px">' +
+      esc(typeof v === "string" ? v : JSON.stringify(v, null, 2)) + "</div></div></div>";
+  } else {
+    banner = '<div class="panel"><div class="panel-body"><span class="pill" data-s="running">' +
+      esc(st.status || "running") + '</span><span class="text-faint" style="margin-left:8px">awaiting judge verdict' +
+      (st.round != null ? " \u00b7 round " + esc(String(st.round)) : "") + '</span><span class="spacer"></span>' +
+      '<button class="btn small" id="sw-refresh">Refresh</button></div></div>';
+  }
+  const cards = agents.length
+    ? '<div class="qa-grid">' + agents.map((a) =>
+      '<div class="card" data-agent="' + esc(a.name) + '" style="cursor:pointer" role="button" tabindex="0">' +
+      '<div class="card-body" style="padding:14px 18px"><div class="agent-name">' + esc(a.name) + "</div>" +
+      '<div class="agent-sub">' + esc(a.status || "\u2014") + "</div></div></div>"
+    ).join("") + "</div>"
+    : emptyState("No agents yet", "The swarm has not spawned any agents.");
+  setView(
+    viewHead("Swarm", "") +
+    '<div class="insp-head"><a class="btn small" href="#/swarm">' + icon("back", 14) + " Swarms</a>" +
+    '<h1 class="view-title" style="font-size:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%">' +
+    esc(st.task || id) + '</h1><span class="mono text-faint">' + esc(id) + "</span></div>" +
+    banner +
+    '<div class="panel" style="margin-top:16px"><div class="panel-head"><span class="panel-title">Agents</span>' +
+    '<span class="spacer"></span><span class="text-faint" style="font-size:11px">tap a card for its transcript</span></div>' +
+    '<div class="panel-body">' + cards + "</div></div>" +
+    '<div id="sw-transcript" style="margin-top:16px"></div>'
+  );
+  const showTranscript = async (name) => {
+    const box = $("#sw-transcript");
+    box.innerHTML = '<div class="panel"><div class="panel-head"><span class="panel-title">Transcript \u00b7 ' +
+      esc(name) + '</span><span class="spacer"></span><button class="btn small" id="sw-ts-close">Close</button></div>' +
+      '<div class="panel-body">' + loading("transcript") + "</div></div>";
+    $("#sw-ts-close").onclick = () => { box.innerHTML = ""; };
+    try {
+      const t = await api("GET", "/api/swarm/transcript?swarm=" + encodeURIComponent(id) +
+        "&agent=" + encodeURIComponent(name));
+      box.querySelector(".panel-body").innerHTML = swarmTranscriptHtml(t);
+    } catch (e) {
+      box.querySelector(".panel-body").innerHTML =
+        errorState(swarmIsMissing(e) ? SWARM_MISSING : e.message, false);
+    }
+  };
+  $$("#view [data-agent]").forEach((c) => {
+    const open = () => showTranscript(c.dataset.agent);
+    c.onclick = open;
+    c.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
+  });
+  const retryBtn = $("#sw-retry");
+  if (retryBtn) retryBtn.onclick = async () => {
+    const ok = await confirmDialog({
+      title: "Retry swarm round?",
+      body: '<p class="m-sub">Optional feedback for the next round \u2014 blank uses the judge\u2019s notes.</p>' +
+        '<textarea class="input" id="sw-feedback" rows="3" style="width:100%;box-sizing:border-box"></textarea>',
+      confirmLabel: "Retry",
+    });
+    if (!ok) return;
+    const fb = ($("#sw-feedback") || { value: "" }).value.trim();
+    try {
+      const r = await api("POST", "/api/swarm/" + encodeURIComponent(id) + "/retry", fb ? { feedback: fb } : {});
+      toast("Retry started" + (r.round != null ? " \u2014 round " + r.round : ""), "ok");
+      renderers.swarmDetail(id);
+    } catch (e) { toast(swarmIsMissing(e) ? SWARM_MISSING : e.message, "err"); }
+  };
+  const refreshBtn = $("#sw-refresh");
+  if (refreshBtn) refreshBtn.onclick = () => renderers.swarmDetail(id);
+  /* Keep the cards live while the verdict is pending. */
+  if (!v) {
+    setTimeout(() => {
+      if (my === swarmPoll && state.route === "swarm" && state.param === id) renderers.swarmDetail(id);
+    }, 5000);
+  }
+};
+
 /* ---------------- boot ---------------- */
+/* ---------------- profiles: persona files ---------------- */
+const PROFILE_FILES = [
+  ["soul", "SOUL", "Persona — who this agent is"],
+  ["user", "USER", "User context — who it serves"],
+  ["agents", "AGENTS", "Instructions — how it works"],
+];
+
+renderers.profiles = async function () {
+  if (state.param) return renderers.profileEditor();
+  setView(viewHead("Profiles", "agent identities and their persona files") + '<div id="pflist">' + loading("profiles") + "</div>");
+  try {
+    const cfg = await api("GET", "/api/config");
+    const values = cfg.values || {};
+    const agents = values.agents || {};
+    const active = values.agent || "";
+    const names = Object.keys(agents).sort();
+    if (!names.length) {
+      $("#pflist").innerHTML = emptyState("No profiles declared", "Add an [agents.<name>] table under Config to give Pantheon a named identity.");
+      return;
+    }
+    $("#pflist").innerHTML = '<div class="qa-grid">' + names.map((n) => {
+      const p = agents[n] || {};
+      const display = p.display_name || n;
+      const initial = (display.trim().charAt(0) || "?").toUpperCase();
+      return '<a class="card-link card" href="#/profiles/' + encodeURIComponent(n) + '" style="text-decoration:none">' +
+        '<div class="card-body" style="padding:16px 18px"><div style="display:flex;align-items:center;gap:14px">' +
+        '<span class="agent-avatar" style="width:44px;height:44px;font-size:18px">' + esc(initial) + "</span>" +
+        '<span><span class="agent-name">' + esc(display) + "</span><br>" +
+        '<span class="agent-sub mono">' + esc(n) + "</span></span>" +
+        (n === active ? '<span style="margin-left:auto">' + statusPill("true") + "</span>" : "") +
+        "</div></div></a>";
+    }).join("") + "</div>";
+  } catch (e) {
+    $("#pflist").innerHTML = errorState(e.message, true);
+    const rb = $("[data-retry]");
+    if (rb) rb.onclick = () => renderers.profiles();
+  }
+};
+
+function profileFileCard(name, kind, label, sub, file) {
+  const content = file.content || "";
+  const preview = content.split("\n").slice(0, 3).join("\n") || "— empty —";
+  const pathLine = file.path
+    ? '<div class="mono text-faint" style="font-size:11px;margin-top:8px;word-break:break-all">' + esc(file.path) + "</div>"
+    : '<div class="text-faint" style="font-size:11px;margin-top:8px">Not set — saving creates it under the profile.</div>';
+  return '<div class="panel" id="pf-' + kind + '"><div class="panel-head">' +
+    '<span class="panel-title">' + esc(label) + '</span><span class="spacer"></span>' +
+    '<button class="btn small" data-edit="' + kind + '">Edit</button></div>' +
+    '<div class="panel-body"><div class="view-sub" style="margin-bottom:10px">ACCESS WITH CARE · ' + esc(sub) + "</div>" +
+    '<pre class="mono" data-preview style="white-space:pre-wrap;font-size:12px;line-height:1.6;max-height:120px;overflow:hidden;margin:0">' + esc(preview) + "</pre>" +
+    pathLine + "</div></div>";
+}
+
+renderers.profileEditor = async function () {
+  const name = state.param || "";
+  setView(viewHead("Profile", "") + loading("persona files"));
+  try {
+    const cfg = await api("GET", "/api/config");
+    const values = cfg.values || {};
+    const agents = values.agents || {};
+    const p = agents[name];
+    if (!p) {
+      setView(viewHead("Profile", "") + errorState("No [agents." + name + "] profile declared.", false));
+      return;
+    }
+    const active = values.agent || "";
+    const display = p.display_name || name;
+    const initial = (display.trim().charAt(0) || "?").toUpperCase();
+    const files = await api("GET", "/api/profiles/" + encodeURIComponent(name) + "/files");
+    const head =
+      '<div class="insp-head"><a class="btn small" href="#/profiles">' + icon("back", 14) + " Profiles</a>" +
+      '<span class="agent-avatar" style="width:48px;height:44px;font-size:20px">' + esc(initial) + "</span>" +
+      '<h1 class="view-title">' + esc(display) + '</h1><span class="mono text-faint">' + esc(name) + "</span>" +
+      (name === active ? statusPill("true") : "") +
+      '<span class="spacer"></span>' +
+      (name === active
+        ? ""
+        : '<button class="btn small" id="pf-activate">Set as active</button>' +
+          '<button class="btn small danger" id="pf-delete">Delete</button>') +
+      "</div>";
+    setView(head + '<div class="view-sub" style="margin-bottom:14px">These files are injected into the agent\'s prompt every turn. Edit with care.</div>' +
+      '<div class="qa-grid">' +
+      PROFILE_FILES.map(([kind, label, sub]) => profileFileCard(name, kind, label, sub, files[kind] || {})).join("") +
+      "</div>");
+    const actBtn = $("#pf-activate");
+    if (actBtn) actBtn.onclick = async () => {
+      try {
+        await api("PUT", "/api/config", { changes: { agent: name }, confirm: true });
+        toast(name + " is now the active profile", "ok");
+        renderers.profileEditor();
+      } catch (e) { toast(e.message, "err"); }
+    };
+    const delBtn = $("#pf-delete");
+    if (delBtn) delBtn.onclick = async () => {
+      const ok = await confirmDialog({
+        title: "Delete profile " + name + "?",
+        body: '<p class="m-sub">Removes the <code class="inline">[agents.' + esc(name) + "]</code> table from config.toml. This cannot be undone.</p>",
+        confirmLabel: "Delete", danger: true,
+      });
+      if (!ok) return;
+      try {
+        await api("DELETE", "/api/profiles/" + encodeURIComponent(name));
+        toast("Profile " + name + " deleted", "ok");
+        location.hash = "#/profiles";
+      } catch (e) { toast(e.message, "err"); }
+    };
+    $$("#view [data-edit]").forEach((b) => {
+      b.onclick = () => profileEditFile(name, b.dataset.edit, files[b.dataset.edit] || {});
+    });
+  } catch (e) {
+    setView(viewHead("Profile", "") + errorState(e.message, true));
+    const rb = $("[data-retry]");
+    if (rb) rb.onclick = () => renderers.profileEditor();
+  }
+};
+
+async function profileEditFile(name, kind, file) {
+  const panel = $("#pf-" + kind);
+  if (!panel) return;
+  const label = (PROFILE_FILES.find(([k]) => k === kind) || [kind, kind])[1];
+  const body = panel.querySelector(".panel-body");
+  const original = file.content || "";
+  body.innerHTML =
+    '<textarea class="input" id="pf-ta" rows="18" spellcheck="false" style="width:100%;box-sizing:border-box">' + esc(original) + "</textarea>" +
+    '<div class="btn-row" style="margin-top:10px;display:flex;gap:8px">' +
+    '<button class="btn primary" id="pf-save">Save</button>' +
+    '<button class="btn" id="pf-discard">Discard</button>' +
+    '<span class="view-sub" id="pf-dirty"></span></div>';
+  const ta = $("#pf-ta");
+  const dirty = $("#pf-dirty");
+  ta.addEventListener("input", () => {
+    dirty.textContent = ta.value !== original ? "unsaved changes" : "";
+  });
+  $("#pf-discard").onclick = () => renderers.profileEditor();
+  $("#pf-save").onclick = async () => {
+    const btn = $("#pf-save");
+    btn.disabled = true;
+    btn.textContent = "Saving…";
+    try {
+      await api("PUT", "/api/profiles/" + encodeURIComponent(name) + "/files", { file: kind, content: ta.value });
+      toast(label + " saved", "ok");
+      renderers.profileEditor();
+    } catch (e) {
+      toast(e.message, "err");
+      btn.disabled = false;
+      btn.textContent = "Save";
+    }
+  };
+  ta.focus();
+}
+
+/* ---------------- experts (Teams | Experts tabs) ---------------- */
+/* The /api/teams and /api/experts routes are live. If they 404, each tab
+   degrades to a "backend unavailable" empty state instead of breaking the
+   page, same pattern as the swarm view. */
+const TEAMS_MISSING =
+  "Teams backend unavailable \u2014 the /api/teams routes have not landed yet. " +
+  "This UI follows the /api/teams contract and will light up when they do.";
+const EXPERTS_MISSING =
+  "Experts backend unavailable \u2014 the /api/experts routes have not landed yet. " +
+  "This UI follows the /api/experts contract and will light up when they do.";
+
+function xIsMissing(e) {
+  return !!e && (e.status === 404 || /not found/i.test(String(e.message || "")));
+}
+
+function initials(name) {
+  const parts = String(name || "?").trim().split(/[\s._-]+/).filter(Boolean);
+  return parts.slice(0, 2).map((p) => p.charAt(0).toUpperCase()).join("") || "?";
+}
+function avColor(name) {
+  let h = 0;
+  const s = String(name || "?");
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 6;
+  return h;
+}
+function avatarHtml(name, cls) {
+  return '<span class="' + (cls || "av") + '" data-c="' + avColor(name) + '">' + esc(initials(name)) + "</span>";
+}
+/* Accept an array of names/objects or a name->role map, like swarmAgentsOf. */
+function teamMembersOf(t) {
+  const m = t.members || t.agents;
+  if (Array.isArray(m)) {
+    return m.map((x) => typeof x === "string"
+      ? { name: x, role: "" }
+      : { name: x.name || x.id || "member", role: x.role || x.title || "" });
+  }
+  if (m && typeof m === "object") {
+    return Object.keys(m).map((k) => ({ name: k, role: String(m[k] || "") }));
+  }
+  return [];
+}
+
+function teamCardHtml(t) {
+  const id = t.id || "";
+  const members = teamMembersOf(t);
+  const stack = members.slice(0, 5).map((m) => avatarHtml(m.name)).join("") +
+    (members.length > 5 ? '<span class="av more">+' + (members.length - 5) + "</span>" : "");
+  return '<article class="team-card" data-team="' + esc(id) + '" tabindex="0" role="button" ' +
+    'aria-label="' + esc(t.name || "team") + ' details">' +
+    '<div class="team-band"><span class="av-stack">' + (stack || avatarHtml("?")) + "</span></div>" +
+    '<div class="team-body"><div class="team-name">' + esc(t.name || id || "Untitled team") + "</div>" +
+    (t.description
+      ? '<p class="team-desc clamp2">' + esc(t.description) + "</p>"
+      : '<p class="team-desc clamp2 text-faint">No description.</p>') +
+    '<div class="team-foot"><span class="team-count">' + members.length +
+    (members.length === 1 ? " member" : " members") + '</span>' +
+    '<button class="btn small primary" data-use="' + esc(id) + '">Use team</button></div></div></article>';
+}
+
+async function useTeamNow(id, task, closeModal) {
+  const res = await api("POST", "/api/teams/" + encodeURIComponent(id) + "/use", task ? { task: task } : {});
+  const sid = res.swarm_id || res.id;
+  if (!sid) throw { message: "the /use endpoint returned no swarm id" };
+  if (closeModal) closeModal();
+  toast("Team launched", "ok");
+  location.hash = "#/swarm/" + encodeURIComponent(sid);
+}
+
+/* Enriched roster from GET /api/teams/:id: members carry their expert
+   identity (or null when the expert was deleted). */
+function teamRosterOf(t) {
+  const m = t.members;
+  if (!Array.isArray(m)) return teamMembersOf(t);
+  return m.map((x) => ({
+    name: (x.expert && x.expert.name) || x.expert_id || "member",
+    role: x.role || "",
+    expert: x.expert || null,
+    unresolved: !x.expert,
+  }));
+}
+
+function topoLabel(topo) {
+  const s = String(topo || "").replace(/_/g, " ");
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Team";
+}
+
+/* Topology badge, lead row, and the ordered stages with their handoff
+   contracts — how the team actually executes. */
+function teamPlanHtml(t) {
+  const stages = t.stages || [];
+  const byId = {};
+  (t.members || []).forEach((m) => { if (m.expert_id) byId[m.expert_id] = m; });
+  const lead = t.lead;
+  let html = '<div class="section-label" style="margin-top:0">How it runs</div>' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
+    '<span class="pill" data-s="accent">' + esc(topoLabel(t.topology)) + "</span>" +
+    (lead ? '<span style="display:inline-flex;align-items:center;gap:8px">' + expertAvatarHtml(lead, "av") +
+      '<span><span class="roster-name">' + esc(lead.name || "Lead") + '</span> <span class="tm-tag">lead</span><br>' +
+      '<span class="roster-role">only the lead talks to you</span></span></span>'
+      : "") +
+    "</div>";
+  if (!stages.length) return html;
+  html += stages.map((s, i) => {
+    const mems = (s.members || []).map((id) => {
+      const m = byId[id];
+      const x = (m && m.expert) || { name: id };
+      return '<span class="chip">' + expertAvatarHtml(x, "av xs") + esc(x.name || id) + "</span>";
+    }).join(" ");
+    return '<div class="tm-stage-block"><div class="tm-stage"><span class="stage-pill">' +
+      "Stage " + (i + 1) + " \u00b7 " + esc(s.name || "") + "</span></div>" +
+      (mems ? '<div style="margin:6px 0;display:flex;gap:6px;flex-wrap:wrap">' + mems + "</div>" : "") +
+      (s.input_contract ? '<div class="contract"><span class="contract-k">in</span> ' + esc(s.input_contract) + "</div>" : "") +
+      (s.output_contract ? '<div class="contract"><span class="contract-k">out</span> ' + esc(s.output_contract) + "</div>" : "") +
+      (s.loop_back_to
+        ? '<div class="tm-handoff"><span class="text-faint">on verification failure loops back to stage</span> ' +
+          '<span class="chip">' + esc(s.loop_back_to) + "</span></div>"
+        : "") +
+      "</div>";
+  }).join("");
+  return html;
+}
+
+function openTeamDetail(id) {
+  const root = $("#modal-root");
+  const close = () => { root.innerHTML = ""; };
+  root.innerHTML = '<div class="modal-veil"><div class="modal" role="dialog" aria-modal="true" aria-label="Team details">' +
+    loading("team") + "</div></div>";
+  $(".modal-veil", root).addEventListener("mousedown", (e) => { if (e.target.classList.contains("modal-veil")) close(); });
+  (async () => {
+    let t;
+    try {
+      t = await api("GET", "/api/teams/" + encodeURIComponent(id));
+    } catch (e) {
+      $(".modal", root).innerHTML = "<h3>Team</h3>" + errorState(e.message, false) +
+        '<div class="m-actions"><button class="btn" data-x>Close</button></div>';
+      $("[data-x]", root).onclick = close;
+      return;
+    }
+    t = t.team || t;
+    const members = teamRosterOf(t);
+    const brief = t.task_brief || t.brief || t.brief_template || "";
+    $(".modal", root).innerHTML =
+      "<h3>" + esc(t.name || id || "Team") + "</h3>" +
+      (t.description ? '<p class="m-sub">' + esc(t.description) + "</p>" : "") +
+      teamPlanHtml(t) +
+      '<div class="section-label">Members \u00b7 ' + members.length + "</div>" +
+      (members.length
+        ? '<ul class="roster">' + members.map((m) =>
+          "<li>" + expertAvatarHtml(m.expert || { name: m.name }) +
+          '<span><span class="roster-name">' + esc(m.name) + "</span>" +
+          (m.unresolved ? ' <span class="pill" data-s="warn">unresolved</span>' : "") +
+          (m.role ? '<br><span class="roster-role">' + esc(m.role) + "</span>" : "") + "</span></li>"
+        ).join("") + "</ul>"
+        : '<p class="view-sub">No members listed.</p>') +
+      (brief
+        ? '<div class="section-label">Task brief template</div><pre class="brief-block">' + esc(brief) + "</pre>"
+        : "") +
+      '<div class="field" style="margin-top:16px"><label for="td-task">Task (optional)</label>' +
+      '<textarea class="input" id="td-task" rows="2" style="box-sizing:border-box" spellcheck="false" ' +
+      'placeholder="Override the task brief\u2026"></textarea></div>' +
+      '<div id="td-err"></div>' +
+      '<div class="m-actions"><button class="btn" data-x>Cancel</button>' +
+      '<button class="btn primary" data-use-team>Use team</button></div>';
+    $("[data-x]", root).onclick = close;
+    $("[data-use-team]", root).onclick = async () => {
+      const btn = $("[data-use-team]", root);
+      const task = $("#td-task", root).value.trim();
+      btn.disabled = true;
+      btn.textContent = "Launching\u2026";
+      try {
+        await useTeamNow(id, task, close);
+      } catch (e) {
+        $("#td-err", root).innerHTML = errorState(e.message, false);
+        btn.disabled = false;
+        btn.textContent = "Use team";
+      }
+    };
+  })();
+}
+
+async function loadTeams() {
+  const body = $("#x-body");
+  body.innerHTML = loading("teams");
+  try {
+    const data = await api("GET", "/api/teams");
+    const teams = data.teams || [];
+    if (!teams.length) {
+      body.innerHTML = emptyState("No teams yet", "Define teams on the backend and they will appear here.");
+      return;
+    }
+    body.innerHTML = '<div class="team-grid">' + teams.map(teamCardHtml).join("") + "</div>";
+    $$("#x-body .team-card").forEach((card) => {
+      const id = card.dataset.team;
+      card.addEventListener("click", (e) => {
+        if (e.target.closest("[data-use]")) return;
+        openTeamDetail(id);
+      });
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.target.closest("[data-use]")) openTeamDetail(id);
+      });
+    });
+    $$("#x-body [data-use]").forEach((b) => {
+      b.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        b.disabled = true;
+        const label = b.textContent;
+        b.textContent = "Launching\u2026";
+        try {
+          await useTeamNow(b.dataset.use, "");
+        } catch (err) {
+          toast(err.message, "err");
+          b.disabled = false;
+          b.textContent = label;
+        }
+      });
+    });
+  } catch (e) {
+    if (xIsMissing(e)) {
+      body.innerHTML = emptyState("No teams backend yet", TEAMS_MISSING);
+    } else {
+      body.innerHTML = errorState(e.message, true);
+      const rb = $("[data-retry]", body);
+      if (rb) rb.onclick = loadTeams;
+    }
+  }
+}
+
+async function loadExperts() {
+  const body = $("#x-body");
+  body.innerHTML = loading("experts");
+  try {
+    const data = await api("GET", "/api/experts");
+    const experts = data.experts || [];
+    if (!experts.length) {
+      body.innerHTML = emptyState("No experts yet", "Define experts on the backend and they will appear here.");
+      return;
+    }
+    body.innerHTML = '<div class="team-grid">' + experts.map((x) => {
+      const id = x.id || "";
+      const name = x.name || id || "Expert";
+      return '<article class="team-card expert-card"><div class="team-body">' +
+        '<div class="expert-top">' + avatarHtml(name, "av xl") +
+        "<div><div class=\"team-name\">" + esc(name) + "</div>" +
+        (x.persona ? '<div class="agent-sub">' + esc(x.persona) + "</div>" : "") + "</div></div>" +
+        (x.description
+          ? '<p class="team-desc clamp2">' + esc(x.description) + "</p>"
+          : '<p class="team-desc clamp2 text-faint">No description.</p>') +
+        '<div class="team-foot"><span></span>' +
+        '<button class="btn small primary" data-use-expert="' + esc(id) + '">Use expert</button>' +
+        "</div></div></article>";
+    }).join("") + "</div>";
+    $$("#x-body [data-use-expert]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        const id = b.dataset.useExpert;
+        b.disabled = true;
+        const label = b.textContent;
+        b.textContent = "Starting\u2026";
+        try {
+          const res = await api("POST", "/api/experts/" + encodeURIComponent(id) + "/use", {});
+          const sid = res.session_id || res.swarm_id || res.id;
+          if (!sid) throw { message: "the /use endpoint returned no session id" };
+          toast("Expert session started", "ok");
+          // use_expert returns a RUN id (session_id = run_id), not a swarm:
+          // land on the run inspector, not #/swarm/<id> (D-4).
+          location.hash = "#/runs/" + encodeURIComponent(sid);
+        } catch (err) {
+          toast(err.message, "err");
+          b.disabled = false;
+          b.textContent = label;
+        }
+      });
+    });
+  } catch (e) {
+    if (xIsMissing(e)) {
+      body.innerHTML = emptyState("No experts backend yet", EXPERTS_MISSING);
+    } else {
+      body.innerHTML = errorState(e.message, true);
+      const rb = $("[data-retry]", body);
+      if (rb) rb.onclick = loadExperts;
+    }
+  }
+}
+
+renderers.experts = async function () {
+  state.expertsTab = state.expertsTab || "teams";
+  setView(viewHead("Experts", "teams and expert personas you can hand work to") +
+    '<div class="card"><div class="tabs" role="tablist">' +
+    '<button role="tab" aria-selected="true" data-xtab="teams">Teams</button>' +
+    '<button role="tab" aria-selected="false" data-xtab="experts">Experts</button></div>' +
+    '<div id="x-body" style="padding:16px 18px">' + loading("teams") + "</div></div>");
+  const paint = (which) => {
+    state.expertsTab = which;
+    $$('#view [data-xtab]').forEach((b) => b.setAttribute("aria-selected", String(b.dataset.xtab === which)));
+    if (which === "teams") loadTeams(); else loadExperts();
+  };
+  $$('#view [data-xtab]').forEach((b) => { b.onclick = () => paint(b.dataset.xtab); });
+  paint(state.expertsTab);
+};
+
 (function boot() {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});

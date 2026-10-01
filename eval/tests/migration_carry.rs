@@ -13,6 +13,23 @@ fn tmp(name: &str) -> PathBuf {
     d
 }
 
+/// The old free `write_session_import` gained a budget parameter; wrap the
+/// new signature with default budgets for these behavioral tests.
+fn import_sessions(data_dir: &Path, source: &str, from: &Path) -> SessionImport {
+    let mut usage = BudgetUsage::default();
+    write_session_import_with_budget(data_dir, source, from, &StageBudgets::default(), &mut usage)
+        .unwrap()
+}
+
+/// The old free `count_jsonl_records` helper is gone; count non-blank lines
+/// locally (missing file = 0), matching its former semantics.
+fn count_jsonl_records(path: &Path) -> usize {
+    match fs::read_to_string(path) {
+        Ok(body) => body.lines().filter(|l| !l.trim().is_empty()).count(),
+        Err(_) => 0,
+    }
+}
+
 // ===========================================================================
 // MCP
 // ===========================================================================
@@ -407,7 +424,7 @@ fn same_named_transcripts_in_different_subdirs_do_not_collide() {
     fs::write(from.join("b/t.jsonl"), "{\"who\":\"b\"}\n").unwrap();
     fs::write(from.join("c/d/t.jsonl"), "{\"who\":\"c-d\"}\n").unwrap();
 
-    let imp = write_session_import(&d.join("data"), "hermes", &from).unwrap();
+    let imp = import_sessions(&d.join("data"), "hermes", &from);
     assert_eq!(
         imp.files.len(),
         3,
@@ -444,7 +461,7 @@ fn a_symlinked_transcript_is_not_followed() {
     fs::write(from.join("real.jsonl"), "{}\n").unwrap();
     std::os::unix::fs::symlink(&outside, from.join("leak.jsonl")).unwrap();
 
-    let imp = write_session_import(&d.join("data"), "hermes", &from).unwrap();
+    let imp = import_sessions(&d.join("data"), "hermes", &from);
     assert_eq!(imp.files.len(), 1, "only the real transcript");
     for f in &imp.files {
         assert!(!fs::read_to_string(f).unwrap().contains("TOP SECRET"));

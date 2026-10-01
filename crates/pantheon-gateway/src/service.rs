@@ -660,6 +660,52 @@ impl ChannelPlan {
     }
 }
 
+/// Read the channel tokens from the secrets store, with the process
+/// environment winning when both are set: `(discord_token, telegram_token,
+/// allowlist)`. Empty/blank tokens are treated as missing.
+///
+/// This is what `gateway run` calls. Tokens the Full Setup wizard collects
+/// land in `<data_dir>/gateway.env` via the secrets store
+/// (`pantheon_secrets::gateway_token`); an exported
+/// `PANTHEON_TELEGRAM_BOT_TOKEN` / `PANTHEON_DISCORD_TOKEN` always
+/// overrides the stored one. [`read_channel_env`] stays the pure
+/// env-only reader for callers that must not touch the filesystem.
+/// Callers feed the tokens into [`ChannelPlan`] to decide what starts.
+pub fn read_channel_tokens(
+    data_dir: &std::path::Path,
+) -> (
+    Option<String>,
+    Option<String>,
+    std::collections::HashSet<String>,
+) {
+    let token = |name: &str| {
+        pantheon_secrets::gateway_token(data_dir, name)
+            .map(|v| v.expose().to_string())
+            .filter(|t| !t.trim().is_empty())
+    };
+    (
+        token(pantheon_secrets::DISCORD_TOKEN_NAME),
+        token(pantheon_secrets::TELEGRAM_TOKEN_NAME),
+        read_allowlist(),
+    )
+}
+
+/// Comma-separated platform ids:
+///   PANTHEON_GATEWAY_ALLOW=6123456789,223344556677889900
+/// The allowlist stays env-only: it is an operator control, not a secret
+/// the wizard collects.
+fn read_allowlist() -> std::collections::HashSet<String> {
+    std::env::var("PANTHEON_GATEWAY_ALLOW")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Read the channel env without exiting: `(discord_token, telegram_token,
 /// allowlist)`. Callers feed this into [`ChannelPlan`] to decide what
 /// starts. Empty/blank tokens are treated as missing.
@@ -669,21 +715,10 @@ pub fn read_channel_env() -> (
     std::collections::HashSet<String>,
 ) {
     let present = |name: &str| std::env::var(name).ok().filter(|t| !t.trim().is_empty());
-    // Comma-separated platform ids:
-    //   PANTHEON_GATEWAY_ALLOW=6123456789,223344556677889900
-    let allow: std::collections::HashSet<String> = std::env::var("PANTHEON_GATEWAY_ALLOW")
-        .ok()
-        .map(|raw| {
-            raw.split(',')
-                .map(|id| id.trim().to_string())
-                .filter(|id| !id.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
     (
         present("PANTHEON_DISCORD_TOKEN"),
         present("PANTHEON_TELEGRAM_BOT_TOKEN"),
-        allow,
+        read_allowlist(),
     )
 }
 

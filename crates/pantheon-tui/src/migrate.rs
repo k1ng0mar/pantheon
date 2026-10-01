@@ -634,7 +634,9 @@ fn source_arg(args: &[String]) -> Option<SourceKind> {
         }
     }
     eprintln!("migrate: name a source");
-    eprintln!("  usage: pantheon migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp>");
+    eprintln!(
+        "  usage: pantheon migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp|claude>"
+    );
     std::process::exit(2);
 }
 
@@ -660,7 +662,7 @@ pub fn dispatch(verb: &str, args: &[String]) {
 /// calls with the full arg tail.
 pub fn cmd_migrate(args: &[String]) {
     let Some(verb) = args.first() else {
-        eprintln!("usage: pantheon migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp> [path]");
+        eprintln!("usage: pantheon migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp|claude> [path]");
         eprintln!("  detect    which sources are installed here");
         eprintln!("  show      every detected item and its disposition");
         eprintln!("  plan      dry run: import / archive / skip (read-only)");

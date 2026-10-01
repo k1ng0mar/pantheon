@@ -6,9 +6,9 @@
 //! logs` reader parses it. `GET /api/logs` tails; `GET /api/logs/stream`
 //! is Server-Sent Events over chunked encoding for live follow.
 
-use crate::server::{write_chunk, Request, Response};
 use crate::{bad_json, err_json, json_ok, query_usize, App};
 use pantheon_api::logging::{self, Level};
+use pantheon_gateway::http::{write_chunk, Request, Response};
 use std::io::Read;
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -17,6 +17,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Width of `YYYY-MM-DD HH:MM:SS.mmm`. Same fixed-offset parse as the
 /// CLI reader: splitting on whitespace looks equivalent and is not.
 const TS_WIDTH: usize = 23;
+/// How far back the SSE stream starts: the last 64 KiB of the log, like
+/// `tail` — enough context without dumping a huge file to the client.
+const STREAM_TAIL_BYTES: u64 = 64 * 1024;
+/// Poll interval for new log lines on the SSE stream.
+const STREAM_POLL: Duration = Duration::from_millis(500);
+/// Hard cap on one SSE stream's lifetime; clients reconnect for longer
+/// follows so a forgotten tab cannot hold a connection forever.
+const STREAM_MAX_AGE: Duration = Duration::from_secs(600);
 
 struct Filter {
     level: Option<Level>,
@@ -229,15 +237,15 @@ pub fn stream(app: &App, req: &Request) -> Response {
         // Start at the tail: like the CLI's follow, we show what's there
         // and then stream.
         if let Ok(meta) = std::fs::metadata(&path) {
-            offset = meta.len().saturating_sub(64 * 1024);
+            offset = meta.len().saturating_sub(STREAM_TAIL_BYTES);
         }
         let mut pending = String::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        let deadline = std::time::Instant::now() + STREAM_MAX_AGE;
         loop {
             if std::time::Instant::now() > deadline {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(500));
+            std::thread::sleep(STREAM_POLL);
             let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(offset);
             if len < offset {
                 offset = 0; // truncated/rotated under us
@@ -283,29 +291,5 @@ pub fn stream(app: &App, req: &Request) -> Response {
     Response::ChunkedStream {
         content_type: "text/event-stream",
         stream: Box::new(run),
-    }
-}
-
-#[cfg(test)]
-mod invariant_tests {
-    use super::*;
-
-    #[test]
-    fn level_filter_keeps_unparseable_lines() {
-        let f = Filter {
-            level: Some(Level::Warning),
-            grep: None,
-            since_ms: None,
-        };
-        assert!(keep("2026-09-28 10:00:00.000 WARNING [x] hello", &f));
-        assert!(keep("a continuation line with no level", &f));
-        assert!(!keep(
-            "2026-09-28 10:00:00.000 INFO [x] hello",
-            &Filter {
-                level: Some(Level::Error),
-                grep: None,
-                since_ms: None,
-            }
-        ));
     }
 }

@@ -12,23 +12,21 @@ authors.workspace = true
 [dependencies]
 pantheon-agent = { path = "../pantheon-agent" }
 pantheon-api = { path = "../pantheon-api" }
-pantheon-capability = { path = "../pantheon-capability" }
 pantheon-exec = { path = "../pantheon-exec" }
 pantheon-extensions = { path = "../pantheon-extensions" }
 pantheon-gateway = { path = "../pantheon-gateway" }
 pantheon-mcp = { path = "../pantheon-mcp" }
 pantheon-memory = { path = "../pantheon-memory" }
 pantheon-migration = { path = "../pantheon-migration" }
+pantheon-nightly = { path = "../pantheon-nightly" }
 pantheon-providers = { path = "../pantheon-providers" }
-pantheon-reflect = { path = "../pantheon-reflect" }
 pantheon-runtime = { path = "../pantheon-runtime" }
-pantheon-sandbox = { path = "../pantheon-sandbox" }
 pantheon-scheduler = { path = "../pantheon-scheduler" }
 pantheon-secrets = { path = "../pantheon-secrets" }
 pantheon-storage = { path = "../pantheon-storage" }
-pantheon-swarm = { path = "../pantheon-swarm" }
 pantheon-tools = { path = "../pantheon-tools" }
 pantheon-tui = { path = "../pantheon-tui" }
+pantheon-web = { path = "../pantheon-web" }
 
 [lints]
 workspace = true

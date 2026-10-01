@@ -1,0 +1,35 @@
+[package]
+name = "pantheon-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Web access: browser automation (gsd-browser subprocess, trait seam for native CDP) and web search (Tavily) as two distinct tool surfaces in one crate."
+
+# Merged from pantheon-browser + pantheon-websearch. Browser automation
+# (gsd-browser subprocess wrapper) and web search (Tavily) are distinct
+# tools — the model looks things up with web_search and acts on live
+# sites with browser_* — but one crate: both are consumed only by the
+# runtime's tool registration.
+[dependencies]
+pantheon-api = { path = "../pantheon-api" }
+pantheon-exec = { path = "../pantheon-exec" }
+pantheon-secrets = { path = "../pantheon-secrets" }
+pantheon-tools = { path = "../pantheon-tools" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", default-features = false, features = ["tls", "json", "proxy-from-env", "native-certs"] }
+# Native CDP backend (chromiumoxide) + the shared CDP driver used by the
+# Steel/Browserbase/Lightpanda backends. Pinned exact: CDP schema drift
+# broke 0.6 against Chrome 142, so the version is a deliberate pin, not a
+# range. tokio is here only to drive chromiumoxide's async API behind the
+# sync BrowserBackend trait (one shared runtime, block_on per call).
+chromiumoxide = "=0.9.1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync"] }
+futures = "0.3"
+# Official Steel Rust SDK (steel-dev/steel-rust): session create/release.
+# The returned CDP websocket is driven by our shared chromiumoxide driver.
+steel-rs = "0.1"
+
+[lints]
+workspace = true

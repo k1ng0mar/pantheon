@@ -1,0 +1,13 @@
+This plugin ports the provider request/response contracts from the
+Hermes web search plugin.
+
+Source: https://github.com/robbyczgw-cla/hermes-web-search-plus
+Copyright (c) robbyczgw-cla — licensed under the MIT License.
+Bundled verbatim here as LICENSE-MIT; the Pantheon adaptations are
+marked in run.py's header.
+
+The upstream project (~24k lines: agent orchestration, caching,
+budgeting, dashboards) was NOT vendored — only its provider contracts
+(endpoints, authentication headers, response shapes, and the SSRF-guard
+posture of its extract path) were ported, rewritten as a lean stdlib
+Pantheon tool runner.

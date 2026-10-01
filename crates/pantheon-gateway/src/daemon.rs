@@ -11,11 +11,12 @@
 //! It contains no business logic.
 
 use crate::channel::{Channel, ChannelEnvelope, ChannelError, ChannelEvent};
-use crate::telegram::{TelegramRestTransport, TelegramTransport};
+use crate::channel_voice::VoiceOutcome;
+use crate::telegram::{TelegramChannel, TelegramRestTransport, TelegramTransport};
 use crate::OutboundMessage;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,16 +25,271 @@ use std::time::Duration;
 /// not wedge the queue behind it forever: three strikes, then a log line.
 pub const MAX_SEND_ATTEMPTS: u32 = 3;
 
+/// Consecutive poll/send failures before a channel is marked dead.
+const HEALTH_DEAD_AFTER: u32 = 5;
+/// Health files are rewritten on state transition and at most this often.
+const HEALTH_WRITE_INTERVAL_MS: u64 = 30_000;
+/// A health file older than this means the daemon stopped reporting.
+const HEALTH_STALE_AFTER_MS: u64 = 120_000;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Channel health state for `GET /api/health/channels` (F-7). The daemon
+/// reports; the dashboard reads via [`channel_health_json`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelState {
+    /// No poll/send outcome observed yet.
+    Unknown,
+    /// Last interaction succeeded.
+    Connected,
+    /// Recent failures, still retrying.
+    Degraded,
+    /// Auth failure, failure budget exhausted, or dead-lettered: needs an
+    /// operator (fix the token / config, then the daemon recovers on the
+    /// next success).
+    Dead,
+}
+
+impl ChannelState {
+    fn as_str(self) -> &'static str {
+        match self {
+            ChannelState::Unknown => "unknown",
+            ChannelState::Connected => "connected",
+            ChannelState::Degraded => "degraded",
+            ChannelState::Dead => "dead",
+        }
+    }
+}
+
+/// One channel's health snapshot. Serialized to
+/// `channel-health-<name>.json` next to the cursor file.
+#[derive(Debug, Clone)]
+pub struct ChannelHealth {
+    pub name: String,
+    pub state: ChannelState,
+    pub last_error: Option<String>,
+    pub last_success_ms: Option<u64>,
+    pub consecutive_failures: u32,
+    pub updated_ms: u64,
+}
+
+/// True for errors that mean the credential is gone (401 from the
+/// platform), not that the network hiccuped: those go straight to dead,
+/// no failure-budget grace.
+fn is_auth_failure(detail: &str) -> bool {
+    detail.contains("401") || detail.to_lowercase().contains("unauthorized")
+}
+
+/// Per-daemon health tracker (F-7). Call the `record_*` methods from the
+/// daemon loop; snapshots are written on state transition and at most
+/// every 30s so a crash mid-degradation still leaves evidence.
+pub struct ChannelHealthTracker {
+    dir: PathBuf,
+    states: HashMap<String, ChannelHealth>,
+    last_write_ms: u64,
+}
+
+impl ChannelHealthTracker {
+    pub fn new(dir: PathBuf) -> Self {
+        let _ = std::fs::create_dir_all(&dir);
+        Self {
+            dir,
+            states: HashMap::new(),
+            last_write_ms: 0,
+        }
+    }
+
+    fn entry(&mut self, name: &str) -> &mut ChannelHealth {
+        let now = now_ms();
+        self.states
+            .entry(name.to_string())
+            .or_insert(ChannelHealth {
+                name: name.to_string(),
+                state: ChannelState::Unknown,
+                last_error: None,
+                last_success_ms: None,
+                consecutive_failures: 0,
+                updated_ms: now,
+            })
+    }
+
+    fn record_ok(&mut self, name: &str) {
+        let now = now_ms();
+        let h = self.entry(name);
+        let transitioned = h.state != ChannelState::Connected;
+        h.state = ChannelState::Connected;
+        h.consecutive_failures = 0;
+        h.last_error = None;
+        h.last_success_ms = Some(now);
+        h.updated_ms = now;
+        self.maybe_write(transitioned);
+    }
+
+    fn record_err(&mut self, name: &str, detail: String) {
+        let now = now_ms();
+        let h = self.entry(name);
+        let prev = h.state;
+        if is_auth_failure(&detail) {
+            h.state = ChannelState::Dead;
+            h.consecutive_failures = HEALTH_DEAD_AFTER;
+        } else {
+            h.consecutive_failures += 1;
+            h.state = if h.consecutive_failures >= HEALTH_DEAD_AFTER {
+                ChannelState::Dead
+            } else {
+                ChannelState::Degraded
+            };
+        }
+        let transitioned = prev != h.state;
+        h.last_error = Some(detail);
+        h.updated_ms = now;
+        // The 30s throttle in maybe_write keeps the failure budget
+        // visible even between transitions.
+        self.maybe_write(transitioned);
+    }
+
+    /// Telegram long-poll batch succeeded (even an empty batch proves the
+    /// connection works).
+    pub fn record_poll_ok(&mut self, name: &str) {
+        self.record_ok(name);
+    }
+
+    /// Telegram long-poll batch failed.
+    pub fn record_poll_err(&mut self, name: &str, err: &str) {
+        self.record_err(name, err.to_string());
+    }
+
+    /// A channel send succeeded.
+    pub fn record_send_ok(&mut self, name: &str) {
+        self.record_ok(name);
+    }
+
+    /// A channel send failed (non-rate-limit).
+    pub fn record_send_err(&mut self, name: &str, err: &ChannelError) {
+        if is_auth_failure(&err.to_string()) {
+            self.record_err(name, format!("{} (credential rejected)", err));
+        } else {
+            self.record_err(name, err.to_string());
+        }
+    }
+
+    /// A 429 is the platform asking us to slow down, not a channel fault:
+    /// mark degraded without spending the failure budget.
+    pub fn record_send_rate_limited(&mut self, name: &str, err: &ChannelError) {
+        let now = now_ms();
+        let h = self.entry(name);
+        let transitioned = h.state != ChannelState::Degraded && h.state != ChannelState::Dead;
+        if h.state != ChannelState::Dead {
+            h.state = ChannelState::Degraded;
+        }
+        h.last_error = Some(err.to_string());
+        h.updated_ms = now;
+        self.maybe_write(transitioned);
+    }
+
+    /// A message exhausted [`MAX_SEND_ATTEMPTS`] and was dead-lettered.
+    pub fn record_dead_letter(&mut self, name: &str, detail: &str) {
+        let now = now_ms();
+        let h = self.entry(name);
+        let transitioned = h.state != ChannelState::Dead;
+        h.state = ChannelState::Dead;
+        h.consecutive_failures = HEALTH_DEAD_AFTER;
+        h.last_error = Some(format!(
+            "dead-lettered after {MAX_SEND_ATTEMPTS} attempts: {detail}"
+        ));
+        h.updated_ms = now;
+        self.maybe_write(transitioned);
+    }
+
+    fn maybe_write(&mut self, transitioned: bool) {
+        let now = now_ms();
+        if transitioned || now.saturating_sub(self.last_write_ms) >= HEALTH_WRITE_INTERVAL_MS {
+            self.write();
+        }
+    }
+
+    fn write(&mut self) {
+        for h in self.states.values() {
+            let safe: String = h
+                .name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let path = self.dir.join(format!("channel-health-{safe}.json"));
+            let v = serde_json::json!({
+                "name": h.name,
+                "state": h.state.as_str(),
+                "last_error": h.last_error,
+                "last_success_ms": h.last_success_ms,
+                "consecutive_failures": h.consecutive_failures,
+                "updated_ms": h.updated_ms,
+            });
+            let _ = std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default());
+        }
+        self.last_write_ms = now_ms();
+    }
+}
+
+/// Merge the daemon's per-channel health files for
+/// `GET /api/health/channels`. Files older than ~120s are marked stale
+/// (the daemon stopped reporting); a missing file means the daemon never
+/// reported that channel.
+pub fn channel_health_json(data_dir: &Path) -> serde_json::Value {
+    let dir = data_dir.join("gateway");
+    let mut channels = Vec::new();
+    let now = now_ms();
+    let entries: Vec<_> = std::fs::read_dir(&dir)
+        .map(|r| r.filter_map(|e| e.ok()).collect())
+        .unwrap_or_default();
+    for entry in entries {
+        let fname = entry.file_name().to_string_lossy().into_owned();
+        let Some(rest) = fname.strip_prefix("channel-health-") else {
+            continue;
+        };
+        if !rest.ends_with(".json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let updated = v.get("updated_ms").and_then(|u| u.as_u64()).unwrap_or(0);
+        if now.saturating_sub(updated) > HEALTH_STALE_AFTER_MS {
+            v["stale"] = serde_json::Value::Bool(true);
+        }
+        channels.push(v);
+    }
+    channels.sort_by(|a, b| {
+        a.get("name")
+            .and_then(|n| n.as_str())
+            .cmp(&b.get("name").and_then(|n| n.as_str()))
+    });
+    serde_json::json!({ "channels": channels })
+}
+
 /// Where polled events go: implemented by the runtime bridge. `sender`
 /// is the platform sender identity when the surface exposes one; the
 /// gateway allowlist keys on it.
 pub trait EventSink: Send + Sync {
     /// A user message arrived.
     fn on_message(&self, thread_id: &str, sender: Option<&str>, text: &str);
-    /// An approval button was clicked. `run_id` is `Some` for phone
-    /// notifications sent about locally-started runs (the callback carries
-    /// it); `None` for the legacy button format, where the sink falls back
-    /// to its thread→run map.
+    /// An approval button was clicked. `run_id` is `Some` when the
+    /// callback carries one (`grant:{run_id}:{scope}`); `None` for the
+    /// plain `grant:{scope}` format, where the sink falls back to its
+    /// thread→run map.
     fn on_approval(
         &self,
         thread_id: &str,
@@ -221,12 +477,23 @@ impl ChannelDaemon {
     pub fn run(
         &self,
         channels: Vec<Arc<dyn Channel>>,
-        telegram: Option<(&Arc<TelegramRestTransport>, &str, &str)>,
+        telegram: Option<(&Arc<TelegramChannel>, &Arc<TelegramRestTransport>)>,
         sink: &dyn EventSink,
         outbound: &Mutex<Vec<OutboundMessage>>,
         stop: &dyn Fn() -> bool,
     ) {
         let cursor = UpdateCursor::new(self.state_path.clone());
+        // Channel health (F-7): snapshots live next to the cursor file, in
+        // `<data_dir>/gateway/`.
+        let state_dir = self
+            .state_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        // Retention prunes under the data dir; state_dir is
+        // `<data_dir>/gateway/`, so its parent is the data dir.
+        let data_dir = state_dir.parent().map(|p| p.to_path_buf());
+        let mut health = ChannelHealthTracker::new(state_dir);
         let mut backoff = 0u32;
         // Longest server-asked wait outstanding (from `Retry-After` /
         // `parameters.retry_after` on a 429). The platform knows its window;
@@ -241,28 +508,52 @@ impl ChannelDaemon {
             .find(|c| c.name() == "telegram")
             .or(channels.first())
             .map(|c| c.name().to_string());
+        let telegram_name = telegram_owner
+            .clone()
+            .unwrap_or_else(|| "telegram".to_string());
         while !stop() {
+            // Retention: prune old events/search chunks/claims past the
+            // configured window. The 24h gate lives inside
+            // `maybe_run_retention`, so this is a cheap check per tick.
+            if let Some(data_dir) = data_dir.as_deref() {
+                pantheon_scheduler::retention::maybe_run_retention(data_dir);
+            }
             let mut progressed = false;
-            // Telegram long poll (with the persisted cursor).
-            if let Some((transport, _api_base, _bot_token)) = telegram {
-                match poll_telegram_once(transport.as_ref(), cursor.get(), self.long_poll_timeout) {
-                    Ok((events, next)) => {
-                        for event in &events {
-                            route_event(sink, event);
-                            if let Some(owner) = &telegram_owner {
-                                claimed
-                                    .entry(event.thread_id.clone())
-                                    .or_insert_with(|| owner.clone());
+            // Telegram long poll (with the persisted cursor). Voice-aware:
+            // voice/audio messages are downloaded and transcribed with
+            // the telegram channel's voice pipes; declines ride the
+            // normal outbound queue below.
+            if let Some((channel, transport)) = telegram {
+                match channel.poll_updates(transport.as_ref(), cursor.get(), self.long_poll_timeout)
+                {
+                    Ok((outcomes, next)) => {
+                        health.record_poll_ok(&telegram_name);
+                        for outcome in &outcomes {
+                            match outcome {
+                                VoiceOutcome::Event(event) => {
+                                    route_event(sink, event);
+                                    if let Some(owner) = &telegram_owner {
+                                        claimed
+                                            .entry(event.thread_id.clone())
+                                            .or_insert_with(|| owner.clone());
+                                    }
+                                }
+                                VoiceOutcome::Reply { thread_id, text } => {
+                                    let mut out =
+                                        outbound.lock().unwrap_or_else(|e| e.into_inner());
+                                    out.push(OutboundMessage::new(thread_id, text, "telegram"));
+                                }
                             }
                         }
                         if next > cursor.get() {
                             cursor.advance(next);
                         }
-                        if !events.is_empty() {
+                        if !outcomes.is_empty() {
                             progressed = true;
                         }
                     }
                     Err(e) => {
+                        health.record_poll_err(&telegram_name, &e);
                         eprintln!("telegram poll error: {e}");
                     }
                 }
@@ -314,6 +605,7 @@ impl ChannelDaemon {
                     };
                     match channel.send(envelope) {
                         Ok(()) => {
+                            health.record_send_ok(channel.name());
                             progressed = true;
                         }
                         Err(e) => {
@@ -323,9 +615,14 @@ impl ChannelDaemon {
                                 // just our backoff guess.
                                 rate_wait_ms =
                                     rate_wait_ms.max(crate::delivery::retry_delay_ms(&e, backoff));
+                                health.record_send_rate_limited(channel.name(), &e);
+                            } else {
+                                health.record_send_err(channel.name(), &e);
                             }
                             if let Some(retry) = retry_or_dead_letter(msg, channel.name(), &e) {
                                 pending.push(retry);
+                            } else {
+                                health.record_dead_letter(channel.name(), &e.to_string());
                             }
                         }
                     }
@@ -366,5 +663,122 @@ impl ChannelDaemon {
 }
 
 #[cfg(test)]
-#[path = "daemon_tests.rs"]
-mod tests;
+mod health_tests {
+    use super::*;
+
+    fn tmpdir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("pantheon-health-test-{name}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn poll_ok_marks_connected() {
+        let d = tmpdir("ok");
+        let mut t = ChannelHealthTracker::new(d.clone());
+        t.record_poll_ok("telegram");
+        let h = t.states.get("telegram").unwrap();
+        assert_eq!(h.state, ChannelState::Connected);
+        assert_eq!(h.consecutive_failures, 0);
+        // Snapshot file written on the unknown->connected transition.
+        assert!(d.join("channel-health-telegram.json").is_file());
+    }
+
+    #[test]
+    fn failures_degrade_then_die() {
+        let d = tmpdir("degrade");
+        let mut t = ChannelHealthTracker::new(d);
+        for i in 1..HEALTH_DEAD_AFTER {
+            t.record_poll_err("telegram", "getUpdates failed [TELEGRAM_HTTP]");
+            let h = t.states.get("telegram").unwrap();
+            assert_eq!(h.state, ChannelState::Degraded);
+            assert_eq!(h.consecutive_failures, i);
+        }
+        t.record_poll_err("telegram", "getUpdates failed [TELEGRAM_HTTP]");
+        assert_eq!(t.states.get("telegram").unwrap().state, ChannelState::Dead);
+    }
+
+    #[test]
+    fn revoked_token_is_dead_immediately() {
+        let d = tmpdir("revoked");
+        let mut t = ChannelHealthTracker::new(d);
+        t.record_poll_err(
+            "telegram",
+            "getUpdates failed [TELEGRAM_HTTP]: 401 unauthorized (token revoked?)",
+        );
+        let h = t.states.get("telegram").unwrap();
+        assert_eq!(h.state, ChannelState::Dead);
+    }
+
+    #[test]
+    fn success_resets_failures() {
+        let d = tmpdir("reset");
+        let mut t = ChannelHealthTracker::new(d);
+        t.record_poll_err("telegram", "boom");
+        t.record_poll_err("telegram", "boom");
+        t.record_poll_ok("telegram");
+        let h = t.states.get("telegram").unwrap();
+        assert_eq!(h.state, ChannelState::Connected);
+        assert_eq!(h.consecutive_failures, 0);
+        assert!(h.last_error.is_none());
+    }
+
+    #[test]
+    fn rate_limit_does_not_spend_failure_budget() {
+        let d = tmpdir("ratelimit");
+        let mut t = ChannelHealthTracker::new(d);
+        let err = ChannelError::rate_limited("TELEGRAM_HTTP", "slow down", Some(5));
+        for _ in 0..10 {
+            t.record_send_rate_limited("telegram", &err);
+        }
+        let h = t.states.get("telegram").unwrap();
+        assert_eq!(h.state, ChannelState::Degraded);
+        assert_eq!(h.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn dead_letter_marks_dead() {
+        let d = tmpdir("deadletter");
+        let mut t = ChannelHealthTracker::new(d);
+        t.record_send_ok("discord");
+        t.record_dead_letter("discord", "[DISCORD_HTTP] 404");
+        let h = t.states.get("discord").unwrap();
+        assert_eq!(h.state, ChannelState::Dead);
+        assert!(h.last_error.as_deref().unwrap().contains("dead-lettered"));
+    }
+
+    #[test]
+    fn reader_merges_and_marks_stale() {
+        let data_dir = tmpdir("reader");
+        let gw = data_dir.join("gateway");
+        std::fs::create_dir_all(&gw).unwrap();
+        // Fresh file: written by a tracker just now.
+        let mut t = ChannelHealthTracker::new(gw.clone());
+        t.record_poll_ok("telegram");
+        // Stale file: hand-written with an ancient timestamp.
+        std::fs::write(
+            gw.join("channel-health-discord.json"),
+            r#"{"name":"discord","state":"connected","last_error":null,"last_success_ms":1,"consecutive_failures":0,"updated_ms":1}"#,
+        )
+        .unwrap();
+        let v = channel_health_json(&data_dir);
+        let channels = v.get("channels").unwrap().as_array().unwrap();
+        assert_eq!(channels.len(), 2);
+        // Sorted by name: discord first.
+        assert_eq!(channels[0].get("name").unwrap(), "discord");
+        assert_eq!(
+            channels[0].get("stale"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(channels[1].get("name").unwrap(), "telegram");
+        assert!(channels[1].get("stale").is_none());
+    }
+
+    #[test]
+    fn reader_empty_without_gateway_dir() {
+        let data_dir = tmpdir("reader-empty");
+        let v = channel_health_json(&data_dir);
+        assert_eq!(v.get("channels").unwrap().as_array().unwrap().len(), 0);
+    }
+}

@@ -92,7 +92,8 @@ fn plan_blank_token_counts_as_missing() {
 
 #[test]
 fn read_channel_env_roundtrip() {
-    // These vars are ours alone; no other test reads them.
+    // Serialize with the token tests: they share these vars now.
+    let _g = ChannelEnvGuard::hold();
     std::env::set_var("PANTHEON_DISCORD_TOKEN", "d123");
     std::env::set_var("PANTHEON_TELEGRAM_BOT_TOKEN", "t456");
     std::env::set_var("PANTHEON_GATEWAY_ALLOW", "111, 222 ,");
@@ -237,4 +238,111 @@ fn stop_cron_is_honest_noop() {
         }
         other => panic!("expected Noop, got {other:?}"),
     }
+}
+
+// ── channel tokens: secrets file + env precedence ───────────────────────
+
+/// Save/restore the channel env vars so this test never leaks into the
+/// `read_channel_env_roundtrip` test sharing this binary. The process-wide
+/// lock serializes the token tests: without it, one test's `set_var` races
+/// another's `read_channel_tokens` on parallel test threads.
+static CHANNEL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct ChannelEnvGuard {
+    saved: Vec<(&'static str, Option<String>)>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl ChannelEnvGuard {
+    fn hold() -> Self {
+        let lock = CHANNEL_ENV_LOCK.lock().unwrap();
+        let names = [
+            "PANTHEON_DISCORD_TOKEN",
+            "PANTHEON_TELEGRAM_BOT_TOKEN",
+            "PANTHEON_GATEWAY_ALLOW",
+        ];
+        let saved = names.iter().map(|n| (*n, std::env::var(n).ok())).collect();
+        for n in names {
+            std::env::remove_var(n);
+        }
+        Self { saved, _lock: lock }
+    }
+}
+
+impl Drop for ChannelEnvGuard {
+    fn drop(&mut self) {
+        for (name, val) in self.saved.drain(..) {
+            match val {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
+#[test]
+fn channel_tokens_come_from_the_secrets_file() {
+    let _g = ChannelEnvGuard::hold();
+    let dir = tempfile::tempdir().unwrap();
+    pantheon_secrets::set_gateway_token(
+        dir.path(),
+        pantheon_secrets::TELEGRAM_TOKEN_NAME,
+        pantheon_secrets::SecretValue::new("file-telegram-token"),
+    )
+    .unwrap();
+
+    let (discord, telegram, _) = pantheon_gateway::read_channel_tokens(dir.path());
+    assert_eq!(telegram.as_deref(), Some("file-telegram-token"));
+    assert!(discord.is_none());
+    // The plan the runtime feeds these into starts the surface off the
+    // file-backed token, same as an env var would.
+    let plan = ChannelPlan::from_env(discord.as_deref(), telegram.as_deref(), &allow(&["123"]));
+    assert!(plan.telegram && !plan.discord);
+}
+
+#[test]
+fn channel_tokens_env_beats_the_secrets_file() {
+    let _g = ChannelEnvGuard::hold();
+    let dir = tempfile::tempdir().unwrap();
+    for (name, file_val) in [
+        (pantheon_secrets::TELEGRAM_TOKEN_NAME, "file-telegram-token"),
+        (pantheon_secrets::DISCORD_TOKEN_NAME, "file-discord-token"),
+    ] {
+        pantheon_secrets::set_gateway_token(
+            dir.path(),
+            name,
+            pantheon_secrets::SecretValue::new(file_val),
+        )
+        .unwrap();
+    }
+
+    std::env::set_var("PANTHEON_TELEGRAM_BOT_TOKEN", "env-telegram-token");
+    let (discord, telegram, _) = pantheon_gateway::read_channel_tokens(dir.path());
+    // Env wins where set; the file answers where env is absent.
+    assert_eq!(telegram.as_deref(), Some("env-telegram-token"));
+    assert_eq!(discord.as_deref(), Some("file-discord-token"));
+
+    // Blank env is missing, not a value: the file answers again.
+    std::env::set_var("PANTHEON_TELEGRAM_BOT_TOKEN", "  ");
+    let (_, telegram, _) = pantheon_gateway::read_channel_tokens(dir.path());
+    assert_eq!(telegram.as_deref(), Some("file-telegram-token"));
+}
+
+#[test]
+fn channel_tokens_never_render_in_debug() {
+    let _g = ChannelEnvGuard::hold();
+    let dir = tempfile::tempdir().unwrap();
+    pantheon_secrets::set_gateway_token(
+        dir.path(),
+        pantheon_secrets::DISCORD_TOKEN_NAME,
+        pantheon_secrets::SecretValue::new("file-discord-token"),
+    )
+    .unwrap();
+    let stored = pantheon_secrets::gateway_token(dir.path(), pantheon_secrets::DISCORD_TOKEN_NAME)
+        .expect("token just stored");
+    let rendered = format!("{stored:?}");
+    assert!(
+        !rendered.contains("file-discord-token"),
+        "SecretValue Debug must not leak the token: {rendered}"
+    );
 }

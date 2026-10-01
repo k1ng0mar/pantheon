@@ -13,22 +13,19 @@ use pantheon_api::message::ToolSchema;
 use pantheon_providers::embeddings::EmbedderClient;
 use std::sync::Arc;
 
-fn serr(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(
-        code,
-        Layer::Execution,
-        false,
-        cause,
-        "check tool arguments",
-        "",
-    )
-}
-
 fn arg_str(v: &serde_json::Value, key: &str) -> Result<String, PantheonError> {
     v.get(key)
         .and_then(|x| x.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| serr("TOOL_BAD_ARGS", format!("missing string arg '{key}'")))
+        .ok_or_else(|| {
+            crate::tools::tool_err(
+                "TOOL_BAD_ARGS",
+                Layer::Execution,
+                false,
+                format!("missing string arg '{key}'"),
+                "check tool arguments",
+            )
+        })
 }
 
 /// Options for `register_session_search`. The store is shared with the
@@ -75,10 +72,10 @@ pub fn register_session_search(reg: &mut ToolRegistry, opts: SessionSearchOption
             let hits = match qvec.as_deref() {
                 Some(q) => store
                     .search_hybrid(&query, Some(q), limit)
-                    .map_err(|e| serr("TOOL_SEARCH", e.cause.clone()))?,
+                    .map_err(|e| crate::tools::tool_err("TOOL_SEARCH", Layer::Execution, false, e.cause.clone(), "check tool arguments"))?,
                 None => store
                     .search(&query, limit)
-                    .map_err(|e| serr("TOOL_SEARCH", e.cause.clone()))?,
+                    .map_err(|e| crate::tools::tool_err("TOOL_SEARCH", Layer::Execution, false, e.cause.clone(), "check tool arguments"))?,
             };
             if hits.is_empty() {
                 return Ok(format!("no sessions matched '{query}'"));

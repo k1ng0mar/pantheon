@@ -26,6 +26,17 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS claims (
   ts_ms INTEGER NOT NULL
 );";
 
+/// Durable twin of the tick driver's in-memory queue: one row per job id
+/// that owes a queued fire. Set semantics (PRIMARY KEY on job_id) mirror
+/// the driver's `HashSet` — re-queueing while a fire is already owed just
+/// refreshes the timestamp. Rows are deleted when the drain is taken, on
+/// abandon, and on claim failure; a row left behind by a crash is
+/// re-driven by the next process at `tick_job` entry.
+const DRAIN_QUEUE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS drain_queue (
+  job_id TEXT PRIMARY KEY,
+  queued_ms INTEGER NOT NULL
+);";
+
 /// SQLite-persisted occurrence claims.
 ///
 /// One row per claimed occurrence key. `claim` is idempotent and atomic:
@@ -92,6 +103,8 @@ impl ClaimStore {
         crate::configure_durability(&conn, "CLAIM")?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| err("CLAIM_SCHEMA", e.to_string()))?;
+        conn.execute_batch(DRAIN_QUEUE_SCHEMA)
+            .map_err(|e| err("CLAIM_SCHEMA", e.to_string()))?;
         migrate_occurrence_claims(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -102,6 +115,8 @@ impl ClaimStore {
         let conn = Connection::open_in_memory().map_err(|e| err("CLAIM_OPEN", e.to_string()))?;
         crate::configure_durability(&conn, "CLAIM")?;
         conn.execute_batch(SCHEMA)
+            .map_err(|e| err("CLAIM_SCHEMA", e.to_string()))?;
+        conn.execute_batch(DRAIN_QUEUE_SCHEMA)
             .map_err(|e| err("CLAIM_SCHEMA", e.to_string()))?;
         migrate_occurrence_claims(&conn)?;
         Ok(Self {
@@ -208,8 +223,125 @@ impl ClaimStore {
         }
         Ok(keys)
     }
+
+    /// Record that `job_id` owes one queued fire. Idempotent: re-queueing
+    /// while a fire is already owed just refreshes the timestamp.
+    pub fn enqueue_drain(&self, job_id: &str) -> Result<(), PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO drain_queue (job_id, queued_ms) VALUES (?1, ?2)",
+            params![job_id, now_ms()],
+        )
+        .map_err(|e| err("CLAIM_DRAIN_INSERT", e.to_string()))?;
+        Ok(())
+    }
+
+    /// Drop the owed fire for `job_id`, if any. Returns true when a row
+    /// was removed.
+    pub fn dequeue_drain(&self, job_id: &str) -> Result<bool, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
+        let removed = conn
+            .execute("DELETE FROM drain_queue WHERE job_id = ?1", params![job_id])
+            .map_err(|e| err("CLAIM_DRAIN_DELETE", e.to_string()))?;
+        Ok(removed == 1)
+    }
+
+    /// Atomically take `job_id`'s owed fire, if any: the SELECT and the
+    /// DELETE run in one IMMEDIATE transaction, so two recovering
+    /// processes (or a racing tick) agree on exactly one owner.
+    ///
+    /// Take-before-complete trade-off: the row is gone once taken, so a
+    /// crash between the take and the drain firing loses the owed run.
+    /// The alternative — deleting only after the drain completes — would
+    /// re-fire a drain whose pre-crash run may already have executed the
+    /// job, risking a duplicate run. Under-fire is the safer failure.
+    pub fn take_pending_drain(&self, job_id: &str) -> Result<bool, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| err("CLAIM_DRAIN_TXN", e.to_string()))?;
+        let taken: Result<bool, PantheonError> = (|| {
+            let owed: bool = conn
+                .query_row(
+                    "SELECT 1 FROM drain_queue WHERE job_id = ?1",
+                    params![job_id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|e| err("CLAIM_DRAIN_QUERY", e.to_string()))?
+                .is_some();
+            if owed {
+                conn.execute("DELETE FROM drain_queue WHERE job_id = ?1", params![job_id])
+                    .map_err(|e| err("CLAIM_DRAIN_DELETE", e.to_string()))?;
+            }
+            Ok(owed)
+        })();
+        match taken {
+            Ok(owed) => {
+                conn.execute_batch("COMMIT")
+                    .map_err(|e| err("CLAIM_DRAIN_TXN", e.to_string()))?;
+                Ok(owed)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
-#[path = "claims_tests.rs"]
-mod tests;
+mod drain_queue_tests {
+    use super::*;
+
+    #[test]
+    fn enqueue_dequeue_round_trip() {
+        let store = ClaimStore::open_in_memory().unwrap();
+        assert!(!store.dequeue_drain("job-a").unwrap());
+        store.enqueue_drain("job-a").unwrap();
+        assert!(store.dequeue_drain("job-a").unwrap());
+        assert!(!store.dequeue_drain("job-a").unwrap());
+    }
+
+    #[test]
+    fn enqueue_is_idempotent() {
+        let store = ClaimStore::open_in_memory().unwrap();
+        store.enqueue_drain("job-a").unwrap();
+        store.enqueue_drain("job-a").unwrap();
+        // Still exactly one owed fire: one take consumes it.
+        assert!(store.take_pending_drain("job-a").unwrap());
+        assert!(!store.take_pending_drain("job-a").unwrap());
+    }
+
+    #[test]
+    fn take_is_atomic_first_taker_wins() {
+        let store = ClaimStore::open_in_memory().unwrap();
+        store.enqueue_drain("job-a").unwrap();
+        assert!(store.take_pending_drain("job-a").unwrap());
+        // Second take (a racing recovery) finds nothing.
+        assert!(!store.take_pending_drain("job-a").unwrap());
+    }
+
+    #[test]
+    fn take_on_empty_is_false() {
+        let store = ClaimStore::open_in_memory().unwrap();
+        assert!(!store.take_pending_drain("nope").unwrap());
+    }
+
+    #[test]
+    fn drain_rows_are_per_job() {
+        let store = ClaimStore::open_in_memory().unwrap();
+        store.enqueue_drain("job-a").unwrap();
+        store.enqueue_drain("job-b").unwrap();
+        assert!(store.take_pending_drain("job-a").unwrap());
+        assert!(store.take_pending_drain("job-b").unwrap());
+    }
+}

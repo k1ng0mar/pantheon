@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pantheon: MCP servers</title>
+  <meta name="description" content="Pantheon documentation.">
+  <meta property="og:title" content="Pantheon docs">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="logo.png">
+  <link rel="icon" href="logo.png">
+  <link rel="preconnect" href="https://api.fontshare.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://api.fontshare.com/v2/css?f[]=array@400,500,600,700&f[]=alpino@400,500,600,700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            paper: '#fafaf9', ink: '#141417', grey: '#6f6f76', line: '#e9e6e1',
+            codebg: '#f1efeb', brand: '#7223FF', branddark: '#5c1de0'
+          },
+          fontFamily: {
+            mono: ['JetBrains Mono', 'monospace'],
+            sans: ['Alpino', 'sans-serif']
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { background: #fafaf9; color: #141417; font-family: 'Alpino', sans-serif; font-size: 1.0625rem; line-height: 1.7; }
+    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
+    .hairline { height: 1px; background: #e9e6e1; }
+    .logo-mark { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; flex: none;
+      filter: drop-shadow(0 2px 8px rgba(114,35,255,.25)); transition: transform .2s; }
+    .logo-mark:hover { transform: scale(1.08); }
+    .logo-mark img { height: 38px; width: auto; }
+    /* Doc content type scale: h1 30 / h2 22 / h3 20 / body 16 (each step >= 1.25x) */
+    .doc h1 { font-family: 'Array', sans-serif; font-size: 1.875rem; font-weight: 600; line-height: 1.2; letter-spacing: -0.02em; }
+    .doc h2 { font-size: 1.375rem; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
+    .doc h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.3; }
+    .doc p, .doc li { color: #3f3f46; }
+    .doc h1, .doc h2, .doc h3 { color: #141417; }
+    .doc strong { color: #141417; }
+    .doc pre { background: #f1efeb; border: 1px solid #e9e6e1; border-radius: 10px; padding: 1.25rem; overflow-x: auto; margin: 1.5rem 0; }
+    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #141417; background: none; padding: 0; }
+    .doc code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
+    .doc table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }
+    .doc th, .doc td { border-bottom: 1px solid #e9e6e1; padding: .65rem .8rem; text-align: left; font-size: .9rem; vertical-align: top; }
+    .doc th { font-size: .75rem; font-weight: 600; color: #6f6f76; text-transform: uppercase; letter-spacing: .04em; }
+    .doc tr:hover td { background: rgba(114,35,255,.04); }
+    .doc blockquote { border-left: 2px solid #7223FF; padding-left: 1.25rem; margin: 1.5rem 0; color: #3f3f46; }
+    .doc p a, .doc li a, .doc td a { color: #7223FF; text-decoration: underline; text-underline-offset: 3px; }
+    .doc ul { list-style: disc; padding-left: 1.5rem; }
+    .doc ol { list-style: decimal; padding-left: 1.5rem; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    @media (max-width: 640px) {
+      .doc table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    }
+  </style>
+</head>
+<body class="antialiased">
+
+  <header class="max-w-6xl mx-auto px-6 md:px-10 pt-8 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
+      <span class="logo-mark"><img src="logo.svg" alt="" width="38" height="38"></span>
+      <span class="font-semibold text-ink text-lg tracking-tight">pantheon</span>
+    </a>
+    <nav class="flex items-center gap-6 md:gap-8 text-[15px]" aria-label="Main">
+      <a href="product.html" class="hidden sm:inline text-grey hover:text-ink">Product</a>
+      <a href="install.html" class="hidden sm:inline text-grey hover:text-ink">Install</a>
+      <a href="docs.html" class="hidden sm:inline text-ink">Docs</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="hidden sm:inline text-grey hover:text-ink">GitHub</a>
+      <button type="button" id="menu-btn" class="sm:hidden text-grey hover:text-ink text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
+    </nav>
+  </header>
+  <div id="menu" class="hidden sm:hidden max-w-6xl mx-auto px-6 py-4 flex-col gap-1 text-[15px] border-b border-line">
+    <a href="product.html" class="text-grey hover:text-ink py-2.5 block">Product</a>
+    <a href="install.html" class="text-grey hover:text-ink py-2.5 block">Install</a>
+    <a href="docs.html" class="text-ink py-2.5 block">Docs</a>
+    <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink py-2.5 block">GitHub</a>
+  </div>
+
+  <main class="doc max-w-3xl mx-auto px-6 pt-24 pb-16">
+<h1 id="mcp-servers" class="text-3xl font-bold tracking-tight mb-2">MCP servers</h1><div class="hairline my-6"></div>
+<p class="my-3 leading-relaxed">MCP (Model Context Protocol) servers are third-party programs that give the agent extra tools: a GitHub server, a database server, a codebase index, anything that speaks the protocol. Pantheon launches them (or connects to them over the network) and hands each of their tools to the model as <code>mcp_&lt;server&gt;_&lt;tool&gt;</code> — so the <code>echo</code> tool on a server you named <code>github</code> becomes <code>mcp_github_echo</code>.</p>
+<h2 id="declaring-servers" class="text-xl font-bold tracking-tight mt-10 mb-3">Declaring servers</h2>
+<p class="my-3 leading-relaxed">Add them to <code>config.toml</code> (see <a href="configuration.html#mcp-servers">Configuration</a>):</p>
+<pre><code>
+[mcp.servers.github]
+transport = &quot;http&quot;
+url = &quot;http://localhost:8080/mcp&quot;
+
+[mcp.servers.github.env]
+GITHUB_TOKEN = &quot;env:GITHUB_TOKEN&quot;
+</code></pre>
+<p class="my-3 leading-relaxed">Servers imported from another agent setup by <code>pantheon migrate apply</code> also work: their declarations live under <code>&lt;data_dir&gt;/mcp/*.json</code> and fill in any names the config section doesn&#x27;t define. The config section always wins on a name clash.</p>
+<p class="my-3 leading-relaxed">A codebase index is not special: it&#x27;s just another <code>[mcp.servers.&lt;name&gt;]</code> entry pointing at whatever MCP server indexes your repo. There is no bespoke codebase-memory integration to configure.</p>
+<h2 id="approving-servers" class="text-xl font-bold tracking-tight mt-10 mb-3">Approving servers</h2>
+<p class="my-3 leading-relaxed">Nothing runs until you say so. <code>pantheon mcp approve &lt;name&gt;</code> shows you exactly what would launch (or where it would connect) and asks you to type the server name to confirm:</p>
+<pre><code>
+pantheon mcp approve github
+</code></pre>
+<p class="my-3 leading-relaxed">The approval is bound to three things: the server&#x27;s name, the version it reports, and a hash of what would run (the binary and its script arguments for <code>stdio</code>, the endpoint URL for remote servers). Upgrade the server or change its arguments and the approval stops matching — you&#x27;re asked again. To see what&#x27;s declared and whether it&#x27;s approved: <code>pantheon mcp list</code>.</p>
+<p class="my-3 leading-relaxed">Secrets a server needs go in its <code>env</code> map as <code>&quot;env:NAME&quot;</code> references. They resolve from your vault (or environment) when the server launches and are never printed — <code>mcp list</code> and the dashboard only ever show variable *names*.</p>
+<h2 id="watching-them-run" class="text-xl font-bold tracking-tight mt-10 mb-3">Watching them run</h2>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><code>pantheon mcp list</code> — declared servers, transports, approval state.</li>
+<li><code>pantheon mcp status</code> — live snapshot: status, tool counts, connects, failures.</li>
+<li><code>pantheon mcp health &lt;name&gt;</code> — detail for one server, including the last error.</li>
+<li><code>pantheon mcp enable|disable &lt;name&gt;</code> — toggle a declared server (config-defined servers are toggled in <code>config.toml</code>).</li>
+<li>Inside the TUI: <code>/mcp reload</code> re-reads config + declarations and hands the new specs to the launcher without dropping your session.</li>
+</ul>
+<p class="my-3 leading-relaxed">The dashboard&#x27;s MCP page shows the same merged view with live health. A server that keeps failing backs off (1s, doubling, capped at 5 minutes) instead of hammering retries; a server that dies mid-call gets one reconnect and one retry, then the error goes to the model like any other tool failure.</p>
+</main>
+
+  <footer class="border-t border-line mt-8">
+    <div class="max-w-6xl mx-auto px-6 md:px-10 py-14">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-8">
+        <div class="flex items-center gap-2.5">
+          <span class="logo-mark"><img src="logo.svg" alt="" width="38" height="38"></span>
+          <span class="font-semibold text-ink">pantheon</span>
+        </div>
+        <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
+          <a href="product.html" class="text-grey hover:text-ink">Product</a>
+          <a href="install.html" class="text-grey hover:text-ink">Install</a>
+          <a href="docs.html" class="text-grey hover:text-ink">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink">GitHub</a>
+        </div>
+      </div>
+      <p class="text-grey text-sm mt-10">An assistant that does everything. MIT licensed.</p>
+    </div>
+  </footer>
+
+  <script>
+    var menuBtn = document.getElementById('menu-btn');
+    var menu = document.getElementById('menu');
+    if (menuBtn && menu) {
+      menuBtn.addEventListener('click', function () {
+        var isHidden = menu.classList.toggle('hidden');
+        menu.classList.toggle('flex', !isHidden);
+        menuBtn.setAttribute('aria-expanded', String(!isHidden));
+      });
+    }
+  </script>
+
+</body>
+</html>

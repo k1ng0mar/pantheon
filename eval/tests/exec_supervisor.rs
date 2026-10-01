@@ -10,6 +10,38 @@ use pantheon_exec::plugins::{EnvVarDecl, PluginManifest, ToolCapability};
 use pantheon_exec::supervisor::*;
 use std::time::{Duration, Instant};
 
+/// Spawn a plugin runner, tolerating the kernel's ETXTBSY ("Text file busy",
+/// os error 26) with a short bounded retry.
+///
+/// These tests write a fresh `run.sh` and exec it immediately afterwards.
+/// Under parallel load the exec can rarely race the just-finished write and
+/// the kernel refuses with ETXTBSY even though our write handle is closed.
+/// That is a test-harness timing artifact, not a product behavior under test:
+/// production runners are installed files, never written mid-spawn. The retry
+/// keeps the suite deterministic without weakening any assertion; any other
+/// spawn failure still fails loudly, and persistent ETXTBSY panics after the
+/// budget is exhausted.
+fn spawn_plugin(
+    runner: &std::path::Path,
+    manifest: &PluginManifest,
+    dir: &std::path::Path,
+    timeout: Duration,
+    allowlist: &[String],
+) -> PluginSupervisor {
+    let mut last_err = None;
+    for _ in 0..50 {
+        match PluginSupervisor::spawn(runner, manifest, dir, timeout, allowlist) {
+            Ok(sup) => return sup,
+            Err(e) if e.code == "PLUGIN_SPAWN" && e.cause.contains("os error 26") => {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(e) => panic!("plugin spawn failed: {e:?}"),
+        }
+    }
+    panic!("plugin spawn kept hitting ETXTBSY: {last_err:?}");
+}
+
 /// Spawn a fake plugin (a shell loop that answers one canned response)
 /// and drive a full call through the supervisor.
 #[test]
@@ -53,8 +85,7 @@ fn live_call_round_trip() {
         runner: "run.sh".into(),
         enabled: true,
     };
-    let mut sup =
-        PluginSupervisor::spawn(&runner, &manifest, &dir, Duration::from_secs(5), &[]).unwrap();
+    let mut sup = spawn_plugin(&runner, &manifest, &dir, Duration::from_secs(5), &[]);
     let out = sup.call("ping", serde_json::json!({})).unwrap();
     assert!(out.contains("pong:ping"), "got: {out}");
     sup.stop();
@@ -94,8 +125,7 @@ fn timeout_kills_wedged_plugin() {
         runner: "run.sh".into(),
         enabled: true,
     };
-    let mut sup =
-        PluginSupervisor::spawn(&runner, &manifest, &dir, Duration::from_millis(300), &[]).unwrap();
+    let mut sup = spawn_plugin(&runner, &manifest, &dir, Duration::from_millis(300), &[]);
     let t0 = Instant::now();
     let err = sup.call("anything", serde_json::json!({})).unwrap_err();
     assert_eq!(err.code, "PLUGIN_TIMEOUT");
@@ -171,9 +201,7 @@ fn manifest_env_needs_allowlist_hit() {
         enabled: true,
     };
     let allowlist = vec!["PANTHEON_SUP_TEST_ALLOWED".to_string()];
-    let mut sup =
-        PluginSupervisor::spawn(&runner, &manifest, &dir, Duration::from_secs(5), &allowlist)
-            .unwrap();
+    let mut sup = spawn_plugin(&runner, &manifest, &dir, Duration::from_secs(5), &allowlist);
     let out = sup.call("ping", serde_json::json!({})).unwrap();
     assert!(
         out.contains("allowed=visible"),
@@ -186,8 +214,7 @@ fn manifest_env_needs_allowlist_hit() {
     sup.stop();
 
     // Empty allowlist: nothing declared crosses, even when set on the host.
-    let mut sup =
-        PluginSupervisor::spawn(&runner, &manifest, &dir, Duration::from_secs(5), &[]).unwrap();
+    let mut sup = spawn_plugin(&runner, &manifest, &dir, Duration::from_secs(5), &[]);
     let out = sup.call("ping", serde_json::json!({})).unwrap();
     assert!(
         out.contains("allowed=<unset>"),

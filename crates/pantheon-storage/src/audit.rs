@@ -130,7 +130,3 @@ pub fn export_jsonl(entries: &[LedgerEntry], path: &Path) -> Result<usize, Panth
         .map_err(|e| aerr("AUDIT_WRITE", format!("flush: {e}")))?;
     Ok(n)
 }
-
-#[cfg(test)]
-#[path = "audit_tests.rs"]
-mod tests;

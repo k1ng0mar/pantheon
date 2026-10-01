@@ -60,10 +60,8 @@ pub struct McpServer {
     #[serde(default)]
     pub needs_credentials: bool,
     /// Operator toggle. Defaults to true so every declaration written
-    /// before this field existed reads as enabled. Nothing consumes it
-    /// yet — Pantheon has no MCP launcher (spec section 15) — but the
-    /// dashboard and `pantheon mcp` surface it, and the launcher will
-    /// honor it when it lands.
+    /// before this field existed reads as enabled. The launcher honors
+    /// it: a disabled declaration is never configured.
     #[serde(default = "mcp_enabled_default")]
     pub enabled: bool,
 }
@@ -78,10 +76,10 @@ fn mcp_enabled_default() -> bool {
 /// `Some(blocker)` says why not. Single source of truth for the `/mcp`
 /// listing, `/mcp reload`, and the dashboard's MCP view.
 ///
-/// Honest scope note: Pantheon still has no MCP server launcher (spec
-/// section 15), so "ready" means prepared-but-unattached, and "reload"
-/// re-scans the declaration files on disk — there are no live clients
-/// to drop and reconnect. When a launcher lands, this is its hook point.
+/// "Ready" means the launcher knows how to attach it (stdio with a
+/// command, http/sse with a url) and no credential is missing that only
+/// the operator can supply. Registration additionally needs an explicit
+/// `pantheon mcp approve <name>` — readiness is not approval.
 pub fn server_readiness(s: &McpServer) -> Option<String> {
     let blocker = match s.transport.as_str() {
         "stdio" => match s.command.as_deref() {
@@ -624,13 +622,6 @@ pub fn transcript_format(path: &Path) -> Option<&'static str> {
     None
 }
 
-/// Count records in a JSONL transcript without retaining them.
-pub fn count_jsonl_records(path: &Path) -> usize {
-    std::fs::read_to_string(path)
-        .map(|b| b.lines().filter(|l| !l.trim().is_empty()).count())
-        .unwrap_or(0)
-}
-
 // ===========================================================================
 // Writers — the bridge artefacts
 // ===========================================================================
@@ -746,47 +737,10 @@ pub fn read_dotenv(path: &Path) -> Vec<(String, String)> {
     out
 }
 
-/// The key a dotenv line sets, ignoring comments and blanks.
-fn dotenv_line_key(line: &str) -> Option<String> {
-    let t = line.trim();
-    if t.is_empty() || t.starts_with('#') {
-        return None;
-    }
-    let t = t.strip_prefix("export ").unwrap_or(t);
-    t.split_once('=').map(|(k, _)| k.trim().to_string())
-}
-
-/// Insert or replace one `KEY=value`, preserving every other line and its
-/// order. A hand-edited file with duplicate keys collapses to one, matching
-/// `pantheon-tui::dotenv::upsert_dotenv`, which this mirrors.
-fn upsert_dotenv(path: &Path, key: &str, value: &str) -> std::io::Result<()> {
-    let rendered = format!("{key}={value}");
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    if existing.is_empty() {
-        std::fs::write(path, format!("{rendered}\n"))?;
-        return Ok(());
-    }
-    let mut replaced = false;
-    let mut lines: Vec<String> = Vec::new();
-    for raw in existing.lines() {
-        if dotenv_line_key(raw).as_deref() == Some(key) {
-            if !replaced {
-                lines.push(rendered.clone());
-                replaced = true;
-            }
-        } else {
-            lines.push(raw.to_string());
-        }
-    }
-    if !replaced {
-        lines.push(rendered);
-    }
-    let mut text = lines.join("\n");
-    text.push('\n');
-    std::fs::write(path, text)
-}
-
 /// Owner-only, matching `restrict_permissions` in `pantheon-tui::dotenv`.
+/// Belt and braces: the dotenv writer below already creates the file with
+/// owner-only permissions; this keeps the historical guarantee even if the
+/// writer ever changes.
 #[cfg(unix)]
 fn restrict_permissions(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -842,7 +796,17 @@ pub fn merge_env_into(
             report.already_present.push(e.name);
             continue;
         }
-        upsert_dotenv(&dest, &e.name, &value)
+        // The store write goes through the canonical atomic dotenv writer
+        // (temp + fsync + rename, owner-only, lossless quoting): the old
+        // raw `format!("{key}={value}")` + `fs::write` path silently
+        // truncated values like `sk-abc # def` on read-back.
+        if value.contains('\n') || value.contains('\r') {
+            return Err(werr(
+                "MIGRATE_ENV_WRITE",
+                format!("value for {} must be single-line", e.name),
+            ));
+        }
+        pantheon_api::dotenv::upsert_dotenv(data_dir, &e.name, &value)
             .map_err(|e| werr("MIGRATE_ENV_WRITE", format!("{}: {e}", dest.display())))?;
         report.added.push(e.name);
     }
@@ -905,28 +869,9 @@ struct Doc {
 }
 
 /// Copy transcript files into a quarantine path and write a manifest, so they
-/// can be indexed into `session_search` deliberately.
-///
-/// Returns the number of files copied. Non-transcript files are ignored.
-///
-/// The copy is charged against the default [`StageBudgets`](crate::apply::StageBudgets);
-/// see [`write_session_import_with_budget`].
-pub fn write_session_import(
-    targets_data_dir: &Path,
-    source: &str,
-    from: &Path,
-) -> Result<SessionImport, PantheonError> {
-    write_session_import_with_budget(
-        targets_data_dir,
-        source,
-        from,
-        &crate::apply::StageBudgets::default(),
-        &mut crate::apply::BudgetUsage::default(),
-    )
-}
-
-/// As [`write_session_import`], with explicit budgets. A budget breach aborts
-/// the quarantine copy with an error; the caller discards the partial tree.
+/// can be indexed into `session_search` deliberately, with explicit budgets.
+/// A budget breach aborts the quarantine copy with an error; the caller
+/// discards the partial tree.
 pub fn write_session_import_with_budget(
     targets_data_dir: &Path,
     source: &str,
@@ -1061,4 +1006,111 @@ fn collect_transcripts(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod carry_env_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-carry-env-{}-{}-{tag}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// End-to-end `migrate apply` credential path: `merge_env_into` is the
+    /// exact function `apply.rs` calls for `ItemKind::Credentials`.
+    /// Adversarial source values must land in `<data_dir>/.env` and read
+    /// back byte-identical through the canonical parser. Before the quoting
+    /// fix, a source `"sk-abc # def"` was written back raw and read back as
+    /// `sk-abc` — silent truncation.
+    #[test]
+    fn merge_env_into_round_trips_adversarial_values() {
+        let dir = scratch("roundtrip");
+        let data_dir = dir.join("data");
+        let source = dir.join("source.env");
+        // Values are double-quoted in the source so the source parser hands
+        // the writer the raw special characters; the writer must re-quote
+        // them losslessly.
+        let cases: Vec<(&str, &str)> = vec![
+            ("MIG_A_API_KEY", "sk-abc # def"),
+            ("MIG_B_API_KEY", "#leading"),
+            ("MIG_C_API_KEY", "a\"b"),
+            ("MIG_D_API_KEY", "c:\\path\\to"),
+            ("MIG_E_API_KEY", "a=b"),
+            ("MIG_F_API_KEY", "unicode-✓-•••-日本語"),
+            ("MIG_G_API_KEY", "trailing "),
+            ("MIG_H_API_KEY", "  padded  "),
+            ("MIG_I_API_KEY", "semi;colon"),
+            ("MIG_J_API_KEY", "dollar$back`tick"),
+        ];
+        let mut body = String::new();
+        for (k, v) in &cases {
+            body.push_str(&format!("{k}=\"{v}\"\n"));
+        }
+        // A non-credential must not be carried; a placeholder must not be.
+        body.push_str("PATH=/usr/bin:/bin\n");
+        body.push_str("MIG_Z_API_KEY=changeme\n");
+        std::fs::write(&source, &body).unwrap();
+
+        let report = merge_env_into(&data_dir, "test-source", &source).expect("merge");
+        assert_eq!(
+            report.added.len(),
+            cases.len(),
+            "all credentials carried: {report:?}"
+        );
+        assert!(report.unclassified.iter().any(|n| n == "PATH"));
+        assert!(report.no_value.iter().any(|n| n == "MIG_Z_API_KEY"));
+
+        let text = std::fs::read_to_string(data_dir.join(".env")).unwrap();
+        let back = pantheon_api::dotenv::parse_dotenv(&text);
+        for (k, v) in &cases {
+            let got = back.iter().find(|(ek, _)| ek == k).map(|(_, ev)| ev);
+            assert_eq!(
+                got,
+                Some(&v.to_string()),
+                "key {k} must round-trip byte-identical"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The never-clobber rule: a key already in `<data_dir>/.env` is left
+    /// untouched and reported, never overwritten by a migration.
+    #[test]
+    fn merge_env_into_never_clobbers_existing_keys() {
+        let dir = scratch("noclobber");
+        let data_dir = dir.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        pantheon_api::dotenv::upsert_dotenv(&data_dir, "MIG_A_API_KEY", "operator-set")
+            .expect("seed");
+        let source = dir.join("source.env");
+        std::fs::write(
+            &source,
+            "MIG_A_API_KEY=\"new-value\"\nMIG_B_API_KEY=\"fresh\"\n",
+        )
+        .unwrap();
+
+        let report = merge_env_into(&data_dir, "test-source", &source).expect("merge");
+        assert_eq!(report.already_present, vec!["MIG_A_API_KEY".to_string()]);
+        assert_eq!(report.added, vec!["MIG_B_API_KEY".to_string()]);
+        assert_eq!(
+            pantheon_api::dotenv::read_dotenv_value(&data_dir, "MIG_A_API_KEY").as_deref(),
+            Some("operator-set"),
+            "existing key must be untouched"
+        );
+        assert_eq!(
+            pantheon_api::dotenv::read_dotenv_value(&data_dir, "MIG_B_API_KEY").as_deref(),
+            Some("fresh")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

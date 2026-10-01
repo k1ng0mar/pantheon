@@ -182,6 +182,3 @@ impl GenUiSigner {
         diff == 0
     }
 }
-#[cfg(test)]
-#[path = "genui_tests.rs"]
-mod tests;

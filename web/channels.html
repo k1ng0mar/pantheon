@@ -105,6 +105,36 @@ pantheon gateway restart|stop|status|run
 </code></pre>
 <p class="my-3 leading-relaxed">Two things are required, no exceptions: your chat app tokens (put them in <code>&lt;data_dir&gt;/.env</code>, never in the config file) and a list of who is allowed to talk to it (<code>PANTHEON_GATEWAY_ALLOW</code>). Strangers are turned away before anything reaches the assistant.</p>
 <p class="my-3 leading-relaxed">Replies go out with <code>pantheon run --say ... --deliver telegram|discord</code>. Outgoing messages are saved first, so they get delivered even if the gateway was down when they were queued.</p>
+<h2 id="voice-api-mobile" class="text-xl font-bold tracking-tight mt-10 mb-3">Voice API (mobile)</h2>
+<p class="my-3 leading-relaxed">The serve API exposes the voice edge so the mobile app can talk to</p>
+<p class="my-3 leading-relaxed">the assistant hands-free. Both routes inherit the serve token and</p>
+<p class="my-3 leading-relaxed">origin checks, and both are gated by the <code>[tools] voice</code> group plus the</p>
+<p class="my-3 leading-relaxed"><code>[stt]</code> / <code>[tts]</code> config sections (toggle the group off and the routes</p>
+<p class="my-3 leading-relaxed">400 with <code>voice_not_configured</code>).</p>
+<p class="my-3 leading-relaxed"><code>POST /agui/voice/transcribe</code> — audio to text:</p>
+<pre><code>
+{ &quot;audio&quot;: &quot;&lt;base64-encoded audio&gt;&quot;, &quot;language&quot;: &quot;en&quot;, &quot;prompt&quot;: &quot;...&quot; }
+</code></pre>
+<p class="my-3 leading-relaxed"><code>language</code> and <code>prompt</code> are optional hints. Decoded audio is capped at</p>
+<p class="my-3 leading-relaxed">1 MiB. Response: <code>{&quot;transcript&quot;: &quot;...&quot;, &quot;backend&quot;: &quot;&lt;provider&gt;&quot;}</code>.</p>
+<p class="my-3 leading-relaxed"><code>POST /agui/voice/speak</code> — text to speech:</p>
+<pre><code>
+{ &quot;text&quot;: &quot;...&quot;, &quot;voice&quot;: &quot;...&quot;, &quot;format&quot;: &quot;wav&quot; }
+</code></pre>
+<p class="my-3 leading-relaxed"><code>voice</code> is optional (uses the configured default), <code>format</code> is one of</p>
+<p class="my-3 leading-relaxed"><code>wav</code> (default), <code>mp3</code>, <code>ogg</code>. Text is capped at 32 KiB. The response</p>
+<p class="my-3 leading-relaxed">body is the raw audio bytes with <code>audio/wav</code>, <code>audio/mpeg</code>, or</p>
+<p class="my-3 leading-relaxed"><code>audio/ogg</code>.</p>
+<p class="my-3 leading-relaxed">Error bodies are <code>{&quot;error&quot;: {&quot;code&quot;: &quot;...&quot;, &quot;message&quot;: &quot;...&quot;}}</code>:</p>
+<table class="my-6"><thead><tr><th>Status</th><th>Code</th><th>Meaning</th></tr></thead><tbody>
+<tr><td>400</td><td><code>voice_bad_request</code></td><td>malformed JSON, bad base64, empty audio/text, unknown format</td></tr>
+<tr><td>400</td><td><code>voice_not_configured</code></td><td><code>[tools] voice</code> off, or the <code>[stt]</code>/<code>[tts]</code> section missing</td></tr>
+<tr><td>413</td><td><code>voice_audio_too_large</code> / <code>voice_text_too_large</code></td><td>over the caps above</td></tr>
+<tr><td>500</td><td><code>voice_backend_misconfigured</code></td><td>backend name/options wrong (provider code in the message)</td></tr>
+<tr><td>502</td><td><code>voice_transcribe_failed</code> / <code>voice_tts_failed</code></td><td>the provider call failed</td></tr>
+<tr><td>504</td><td><code>voice_timeout</code></td><td>provider took longer than the request bound</td></tr>
+</tbody></table>
+<p class="my-3 leading-relaxed">See also: <a href="providers.html">Providers</a> for per-backend setup (<code>run pantheon setup</code> walks through each tool&#x27;s providers).</p>
 <h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="sessions.html">Sessions</a>: the terminal app</li>

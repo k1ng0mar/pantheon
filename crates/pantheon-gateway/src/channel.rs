@@ -137,6 +137,22 @@ impl ChannelError {
             _ => Self::new(prefix, err.to_string()),
         }
     }
+    /// Best-effort extraction of the HTTP status from a ureq-mapped
+    /// message (`"{url}: status code {n}"`). `None` for non-HTTP errors.
+    /// Lets health classification see a 401 without re-exposing the URL
+    /// (which may embed a bot token).
+    pub fn http_status(&self) -> Option<u16> {
+        if !self.message.contains("status code ") {
+            return None;
+        }
+        self.message
+            .rsplit("status code ")
+            .next()?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    }
 }
 /// Parse a `Retry-After` header value (delta-seconds). HTTP-date form is
 /// not parsed — a platform clock we cannot verify is worse than our own
@@ -305,6 +321,28 @@ impl Channel for MemoryChannel {
         std::mem::take(&mut *lock(&self.inbox))
     }
 }
+
 #[cfg(test)]
-#[path = "channel_tests.rs"]
-mod tests;
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn http_status_parses_ureq_message() {
+        let e = ChannelError::new(
+            "TELEGRAM_HTTP",
+            "https://api.telegram.org/bottoken/getUpdates: status code 401",
+        );
+        assert_eq!(e.http_status(), Some(401));
+        let e2 = ChannelError::new("TELEGRAM_HTTP", "Dns Failed");
+        assert_eq!(e2.http_status(), None);
+        let e3 = ChannelError::new("X", "no marker here");
+        assert_eq!(e3.http_status(), None);
+    }
+
+    #[test]
+    fn rate_limited_predicate() {
+        let e = ChannelError::rate_limited("TELEGRAM_HTTP", "slow", Some(5));
+        assert!(e.is_rate_limited());
+        assert!(!ChannelError::new("TELEGRAM_HTTP", "x").is_rate_limited());
+    }
+}

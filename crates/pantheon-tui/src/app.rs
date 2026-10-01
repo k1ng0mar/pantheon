@@ -48,13 +48,12 @@ pub struct Screen {
 }
 
 /// The widgets a screen may hold. A screen holds exactly one, so key routing
-/// is a match with five arms rather than a trait-object dance.
+/// is a match with four arms rather than a trait-object dance.
 pub enum ScreenWidget {
     Select(crate::widget::Select),
     MultiSelect(crate::widget::MultiSelect),
     TextInput(crate::widget::TextInput),
     Confirm(crate::widget::Confirm),
-    SearchList(crate::widget::SearchList),
 }
 
 impl Screen {
@@ -83,13 +82,6 @@ impl Screen {
         Self {
             title: title.into(),
             widget: ScreenWidget::Confirm(w),
-            on_finish: None,
-        }
-    }
-    pub fn search(title: impl Into<String>, w: crate::widget::SearchList) -> Self {
-        Self {
-            title: title.into(),
-            widget: ScreenWidget::SearchList(w),
             on_finish: None,
         }
     }
@@ -227,7 +219,6 @@ impl TuiApp {
                 ScreenWidget::MultiSelect(w) => submit(w.handle_key(key)),
                 ScreenWidget::TextInput(w) => submit(w.handle_key(key)),
                 ScreenWidget::Confirm(w) => submit(w.handle_key(key)),
-                ScreenWidget::SearchList(w) => submit(w.handle_key(key)),
             };
             if let Some(r) = r {
                 result = Some((i, r));
@@ -308,7 +299,6 @@ impl TuiApp {
                 ScreenWidget::MultiSelect(w) => crate::render::draw_multi(f, target, w),
                 ScreenWidget::TextInput(w) => crate::render::draw_text(f, target, w),
                 ScreenWidget::Confirm(w) => crate::render::draw_confirm(f, target, w),
-                ScreenWidget::SearchList(w) => crate::render::draw_search(f, target, w),
             }
         }
     }
@@ -385,7 +375,8 @@ impl TerminalSession {
     pub fn enter() -> io::Result<Self> {
         use crossterm::execute;
         use crossterm::terminal::{
-            disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+            disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
+            LeaveAlternateScreen,
         };
         enable_raw_mode()?;
         let mut out = io::stdout();
@@ -393,6 +384,17 @@ impl TerminalSession {
             let _ = disable_raw_mode();
             return Err(e);
         }
+        // Every prompt builds a fresh ratatui Terminal whose internal
+        // buffer starts blank. The diff writer then skips cells it
+        // believes are already blank — but the reused alternate screen
+        // still holds the previous prompt's content, so stale rows bleed
+        // through (a `Clear` widget is a diff no-op for the same reason).
+        // Blank the real screen to match the fresh buffer. This is a raw
+        // crossterm clear on purpose: ratatui's `Terminal::clear` queries
+        // the cursor position first (a terminal round-trip that fails on
+        // pipes and non-answering terminals), which is more than a prompt
+        // needs.
+        let _ = execute!(out, Clear(ClearType::All));
         let backend = ratatui::backend::CrosstermBackend::new(out);
         match ratatui::Terminal::new(backend) {
             Ok(t) => Ok(Self { terminal: t }),

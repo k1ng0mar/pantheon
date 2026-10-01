@@ -1,49 +1,56 @@
-//! Schedule templates: built-in job blueprints plus a user-extensible store.
+//! Schedule templates: built-in job blueprints plus a user-managed store.
 //!
-//! A template is a named, documented starting point for `pantheon schedule
-//! create --template <name>`: a default schedule, a prompt with
-//! `{{variable}}` placeholders, and the questions needed to fill them.
-//! Built-ins are embedded below; users add or override templates with TOML
-//! files in `<data_dir>/templates/*.toml`:
+//! A template is a named, documented starting point for creating a job: a
+//! default schedule, a prompt with `{{variable}}` placeholders, and the
+//! questions needed to fill them. Built-ins are embedded in
+//! [`builtin_templates`]; users add or override templates through the
+//! [`TemplateStore`] API, which persists user templates to
+//! `<data_dir>/templates.json`:
 //!
-//! ```toml
-//! name = "my-watch"
-//! description = "Watch something I care about."
-//! schedule_every = "1h"          # or: schedule_cron = "0 9 * * *"
-//! prompt = "Check {{thing}} and report back."
-//!
-//! [[vars]]
-//! name = "thing"
-//! question = "What should I watch?"
-//! default = "the build"          # optional
+//! ```json
+//! { "templates": [
+//!     { "name": "my-watch",
+//!       "description": "Watch something I care about.",
+//!       "schedule": { "every": "1h" },
+//!       "prompt": "Check {{thing}} and report back.",
+//!       "vars": [
+//!         { "name": "thing", "question": "What should I watch?",
+//!           "default": "the build" }
+//!       ] }
+//! ] }
 //! ```
 //!
-//! A user file with the same `name` as a built-in replaces it; anything
-//! else is added. Broken files are skipped (create-time validation still
-//! rejects a bad schedule loudly).
+//! A user template with a built-in's name overrides it for [`TemplateStore::get`]
+//! and [`TemplateStore::list`]; built-ins themselves cannot be deleted.
+//! Templates created through [`TemplateStore::save`] are validated loudly —
+//! a bad schedule is an error at save time, never a silent no-show at fire
+//! time. A job names a template in [`Job::template`](crate::Job::template);
+//! [`Job::resolve_task`](crate::Job::resolve_task) re-renders it at fire time.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One fill-in variable in a template prompt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplateVar {
     pub name: String,
     pub question: String,
     pub default: Option<String>,
 }
 
-/// A template's default schedule, in `schedule create` flag terms.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A template's default schedule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TemplateSchedule {
-    /// `--every <duration>`, e.g. `"30m"`.
+    /// An interval, e.g. `"30m"`.
     Every(String),
-    /// `--cron '<expr>'`, e.g. `"0 7 * * *"`.
+    /// A cron expression, e.g. `"0 7 * * *"`.
     Cron(String),
 }
 
 /// A schedule blueprint: what to run, when, and what it needs to know.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleTemplate {
     pub name: String,
     pub description: String,
@@ -284,109 +291,247 @@ pub fn apply_defaults(template: &ScheduleTemplate, vars: &mut HashMap<String, St
     }
 }
 
-/// The template store: embedded built-ins overlaid with the user's
-/// `<data_dir>/templates/*.toml`. A user file with a built-in's name
-/// replaces it; anything else is added.
-pub struct TemplateStore {
-    templates: Vec<ScheduleTemplate>,
-}
-
-impl TemplateStore {
-    pub fn builtins() -> Self {
-        Self {
-            templates: builtin_templates(),
+/// Expand a template into a job's creation fields: the shared half of the
+/// CLI's `schedule create --template` and the dashboard's
+/// `POST /api/schedule/jobs`.
+///
+/// Reserved vars (`model`, `provider`) become the model pin, not prompt
+/// text — an explicit pin wins, a blank var is dropped. Defaults fill the
+/// remaining gaps; every var left without a value or a default is resolved
+/// through `missing_var(name, question)` — the CLI prompts interactively,
+/// the dashboard fails loudly.
+///
+/// A `missing_var` error does not abort the scan: the remaining vars are
+/// still offered to the callback (so a caller can collect *every* missing
+/// name for a single loud error), and the first error is returned
+/// afterwards — without rendering, since a render with unresolved vars
+/// cannot succeed. [`render_prompt`] failures propagate unchanged.
+///
+/// On success `vars` holds the final var map (reserved vars removed),
+/// `task` holds the rendered snapshot when the caller left it empty, and
+/// the template's own schedule fills `every`/`cron` when the caller
+/// specified none (`has_schedule`).
+pub fn expand_template(
+    template: &ScheduleTemplate,
+    vars: &mut HashMap<String, String>,
+    model: &mut Option<String>,
+    provider: &mut Option<String>,
+    task: &mut String,
+    every: &mut Option<String>,
+    cron: &mut Option<String>,
+    has_schedule: bool,
+    missing_var: &mut dyn FnMut(&str, &str) -> Result<String, String>,
+) -> Result<(), String> {
+    // Reserved vars become the job's model pin, not prompt text. An
+    // explicit pin wins over the var; a blank var is dropped silently.
+    for reserved in ["model", "provider"] {
+        if let Some(v) = vars.remove(reserved) {
+            if v.trim().is_empty() {
+                continue;
+            }
+            if reserved == "model" && model.is_none() {
+                *model = Some(v);
+            } else if reserved == "provider" && provider.is_none() {
+                *provider = Some(v);
+            }
         }
     }
-
-    /// Built-ins plus the user dir. Broken user files are skipped —
-    /// `schedule create` still validates the final schedule loudly.
-    pub fn load(data_dir: &Path) -> Self {
-        let mut store = Self::builtins();
-        store.overlay_user_dir(&data_dir.join("templates"));
-        store
-    }
-
-    pub fn get(&self, name: &str) -> Option<&ScheduleTemplate> {
-        self.templates.iter().find(|t| t.name == name)
-    }
-
-    pub fn list(&self) -> &[ScheduleTemplate] {
-        &self.templates
-    }
-
-    fn overlay_user_dir(&mut self, dir: &Path) {
-        let entries = std::fs::read_dir(dir).map(|r| r.filter_map(Result::ok).collect::<Vec<_>>());
-        let mut files: Vec<std::path::PathBuf> = entries
-            .unwrap_or_default()
-            .into_iter()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "toml"))
-            .collect();
-        files.sort();
-        for path in files {
-            if let Some(t) = load_user_template(&path) {
-                if let Some(slot) = self.templates.iter_mut().find(|t0| t0.name == t.name) {
-                    *slot = t;
-                } else {
-                    self.templates.push(t);
+    apply_defaults(template, vars);
+    let mut first_err: Option<String> = None;
+    for tv in &template.vars {
+        let current = vars.get(&tv.name).map(String::as_str).unwrap_or("");
+        // A default (even "") satisfies the var without resolving it.
+        if !current.is_empty() || tv.default.is_some() {
+            continue;
+        }
+        match missing_var(&tv.name, &tv.question) {
+            Ok(answer) => {
+                vars.insert(tv.name.clone(), answer);
+            }
+            // Keep scanning: the caller may be collecting every missing
+            // name for one loud error instead of failing on the first.
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e);
                 }
             }
         }
     }
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct UserTemplateFile {
-    name: String,
-    description: String,
-    schedule_every: Option<String>,
-    schedule_cron: Option<String>,
-    prompt: String,
-    #[serde(default)]
-    vars: Vec<UserVar>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct UserVar {
-    name: String,
-    question: String,
-    default: Option<String>,
-}
-
-fn load_user_template(path: &Path) -> Option<ScheduleTemplate> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let file: UserTemplateFile = toml::from_str(&text).ok()?;
-    if file.name.trim().is_empty() || file.prompt.trim().is_empty() {
-        return None;
+    if let Some(e) = first_err {
+        return Err(e);
     }
-    let schedule = match (file.schedule_every, file.schedule_cron) {
-        (Some(d), None) if !d.trim().is_empty() => TemplateSchedule::Every(d.trim().to_string()),
-        (None, Some(c)) if !c.trim().is_empty() => {
-            // Reject a broken cron here so `template list` never shows a
-            // job that could never fire.
-            if crate::CronSchedule::parse(c.trim()).is_err() {
-                return None;
-            }
-            TemplateSchedule::Cron(c.trim().to_string())
+    let rendered = render_prompt(template, vars)?;
+    if task.is_empty() {
+        *task = rendered;
+    }
+    if !has_schedule {
+        match &template.schedule {
+            TemplateSchedule::Every(d) => *every = Some(d.clone()),
+            TemplateSchedule::Cron(e) => *cron = Some(e.clone()),
         }
-        _ => return None,
-    };
-    if file.vars.iter().any(|v| v.name.trim().is_empty()) {
-        return None;
     }
-    Some(ScheduleTemplate {
-        name: file.name.trim().to_string(),
-        description: file.description,
-        schedule,
-        prompt: file.prompt,
-        vars: file
-            .vars
-            .into_iter()
-            .map(|v| TemplateVar {
-                name: v.name.trim().to_string(),
-                question: v.question,
-                default: v.default,
-            })
-            .collect(),
-    })
+    Ok(())
+}
+
+/// The on-disk shape of `<data_dir>/templates.json`: user templates only.
+/// Built-ins are embedded in the binary and never written.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct TemplateFile {
+    #[serde(default)]
+    templates: Vec<ScheduleTemplate>,
+}
+
+/// The template store: embedded built-ins overlaid with the user's
+/// `<data_dir>/templates.json`. A user template with a built-in's name
+/// overrides it; anything else is added.
+///
+/// The store is managed through [`TemplateStore::save`] and
+/// [`TemplateStore::delete`], which validate loudly and write through to
+/// `templates.json`. Hand-edited files are read leniently: entries that
+/// fail validation are skipped with a warning.
+pub struct TemplateStore {
+    templates: Vec<ScheduleTemplate>,
+    user: Vec<ScheduleTemplate>,
+    data_dir: PathBuf,
+}
+
+impl TemplateStore {
+    /// Open the store on `data_dir`. A missing or corrupt `templates.json`
+    /// means built-ins only; a corrupt file warns on stderr instead of
+    /// crashing.
+    pub fn open(data_dir: &Path) -> Self {
+        let path = data_dir.join("templates.json");
+        let user = match std::fs::read_to_string(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                eprintln!(
+                    "scheduler: cannot read {}: {e}; using built-in templates only",
+                    path.display()
+                );
+                Vec::new()
+            }
+            Ok(text) => match serde_json::from_str::<TemplateFile>(&text) {
+                Ok(file) => file
+                    .templates
+                    .into_iter()
+                    .filter(|t| {
+                        if let Err(e) = validate_template(t) {
+                            eprintln!(
+                                "scheduler: ignoring invalid template in {}: {e}",
+                                path.display()
+                            );
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .collect(),
+                Err(e) => {
+                    eprintln!(
+                        "scheduler: ignoring corrupt {}: {e}; using built-in templates only",
+                        path.display()
+                    );
+                    Vec::new()
+                }
+            },
+        };
+        Self {
+            templates: builtin_templates(),
+            user,
+            data_dir: data_dir.to_path_buf(),
+        }
+    }
+
+    /// Look up a template by name. A user template wins over a built-in
+    /// with the same name.
+    pub fn get(&self, name: &str) -> Option<&ScheduleTemplate> {
+        self.user
+            .iter()
+            .find(|t| t.name == name)
+            .or_else(|| self.templates.iter().find(|t| t.name == name))
+    }
+
+    /// All templates: built-ins first (a user template with a built-in's
+    /// name is shown in that built-in's slot), then user-only templates in
+    /// save order. Consistent with [`TemplateStore::get`]: every name
+    /// resolves to the template shown here.
+    pub fn list(&self) -> Vec<&ScheduleTemplate> {
+        let mut out: Vec<&ScheduleTemplate> = self
+            .templates
+            .iter()
+            .map(|b| self.user.iter().find(|u| u.name == b.name).unwrap_or(b))
+            .collect();
+        out.extend(self.user.iter().filter(|u| !self.is_builtin(&u.name)));
+        out
+    }
+
+    /// Save (add or replace) a user template, validating loudly and
+    /// writing through to `templates.json`. A template with a built-in's
+    /// name overrides that built-in.
+    pub fn save(&mut self, t: ScheduleTemplate) -> Result<(), String> {
+        validate_template(&t)?;
+        if let Some(slot) = self.user.iter_mut().find(|u| u.name == t.name) {
+            *slot = t;
+        } else {
+            self.user.push(t);
+        }
+        self.write_through()
+    }
+
+    /// Delete a user template. Deleting a user template that overrides a
+    /// built-in removes the override and reveals the same-named built-in
+    /// again; the built-in itself is never deleted. Deleting a built-in
+    /// name with no user override is an error, as is an unknown name.
+    pub fn delete(&mut self, name: &str) -> Result<(), String> {
+        let before = self.user.len();
+        self.user.retain(|u| u.name != name);
+        if self.user.len() == before {
+            if self.is_builtin(name) {
+                return Err(format!(
+                    "cannot delete built-in template '{name}'; save a template with the same name to override it"
+                ));
+            }
+            return Err(format!("unknown template '{name}'"));
+        }
+        self.write_through()
+    }
+
+    /// Is this the name of an embedded built-in template?
+    pub fn is_builtin(&self, name: &str) -> bool {
+        self.templates.iter().any(|t| t.name == name)
+    }
+
+    fn write_through(&self) -> Result<(), String> {
+        std::fs::create_dir_all(&self.data_dir)
+            .map_err(|e| format!("cannot create {}: {e}", self.data_dir.display()))?;
+        let path = self.data_dir.join("templates.json");
+        let text = serde_json::to_string_pretty(&TemplateFile {
+            templates: self.user.clone(),
+        })
+        .map_err(|e| format!("cannot serialize templates: {e}"))?;
+        std::fs::write(&path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))
+    }
+}
+
+/// Loud validation, shared by [`TemplateStore::save`] and the lenient
+/// [`TemplateStore::open`] filter.
+fn validate_template(t: &ScheduleTemplate) -> Result<(), String> {
+    if t.name.trim().is_empty() {
+        return Err("template name cannot be empty".to_string());
+    }
+    if t.prompt.trim().is_empty() {
+        return Err(format!("template '{}' has an empty prompt", t.name));
+    }
+    if t.vars.iter().any(|v| v.name.trim().is_empty()) {
+        return Err(format!(
+            "template '{}' has a variable with an empty name",
+            t.name
+        ));
+    }
+    if let TemplateSchedule::Cron(expr) = &t.schedule {
+        crate::CronSchedule::parse(expr)
+            .map(|_| ())
+            .map_err(|e| format!("template '{}' has an invalid cron schedule: {e}", t.name))?;
+    }
+    Ok(())
 }

@@ -1,0 +1,13 @@
+This plugin bundles security-pattern content adapted from the
+Anthropic Claude Code plugin collection.
+
+Source: https://github.com/anthropics/claude-plugins-official
+Copyright (c) Anthropic — licensed under the Apache License, Version 2.0.
+Bundled verbatim here as LICENSE-APACHE2; the Pantheon adaptations are
+marked in each file's header.
+
+The async LLM diff-review half of the upstream plugin (hooks that sent
+diffs to Claude for review) was NOT ported: Pantheon hook subprocesses
+have no supported path to reach a model. The static pattern rules and
+reminder text ARE ported, and the advisory channel is
+transform_tool_result, which is the supported per-call path in Pantheon.

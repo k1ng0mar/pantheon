@@ -10,19 +10,16 @@ use pantheon_gateway::{
     command_for, cron_line, desktop_notify, detect_notifier, detect_service_mechanism,
     escape_applescript, escape_powershell, manual_cron_line, merge_crontab, queue_summary,
     render_launchd_plist, render_systemd_unit, render_task_xml, InstallEnv, InstallOutcome,
-    Notifier, SchedulableJob, ServiceMechanism, CRON_MARKER, LAUNCHD_LABEL, UNIT_NAME,
+    Notifier, ServiceMechanism, CRON_MARKER, LAUNCHD_LABEL, UNIT_NAME,
 };
-use pantheon_scheduler::{cron::civil_from_ms, Job, ScheduleKind};
+use pantheon_scheduler::{cron::civil_from_ms, Job, ScheduleKind, ScheduledJob};
 use std::path::{Path, PathBuf};
 
-fn sched_job(id: &str, kind: ScheduleKind, last_run: Option<i64>) -> SchedulableJob {
+fn sched_job(id: &str, kind: ScheduleKind, last_run: Option<i64>) -> ScheduledJob {
     let mut job = Job::new(id, kind, "agent");
     job.id = id.to_string();
-    SchedulableJob {
-        job,
-        task: "do the thing".to_string(),
-        last_run,
-    }
+    job.task = "do the thing".to_string();
+    ScheduledJob { job, last_run }
 }
 
 fn write_stub(dir: &Path, name: &str, body: &str) -> PathBuf {
@@ -279,13 +276,15 @@ fn queue_summary_counts_and_next_fire() {
             },
             Some(now - 7_200_000),
         ),
-        // Future: daily 09:00 UTC cron.
+        // Future: daily 09:00 UTC cron, fired on schedule yesterday, so
+        // catch-up (default on) sees no missed occurrence and the next
+        // fire is today 09:00 — 9h away.
         sched_job(
             "daily",
             ScheduleKind::Cron {
                 expr: "0 9 * * *".into(),
             },
-            None,
+            Some(now - 15 * 3_600_000),
         ),
         // Paused jobs are invisible to the summary.
         {
@@ -293,8 +292,14 @@ fn queue_summary_counts_and_next_fire() {
             j.job.paused = true;
             j
         },
-        // Manual jobs never fire.
-        sched_job("manual", ScheduleKind::Manual, None),
+        // Spent one-shots never fire again.
+        sched_job(
+            "spent",
+            ScheduleKind::OneShot {
+                at_ms: now - 3_600_000,
+            },
+            Some(now - 3_600_000),
+        ),
     ];
     let s = queue_summary(&jobs, now);
     assert!(s.contains("3 active"), "summary: {s}");

@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Local};
+
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind,
@@ -27,16 +29,20 @@ use ratatui::{
 };
 
 use pantheon_api::events::Event as RuntimeErrorEvent;
+use pantheon_api::mode::AgentMode;
+use pantheon_providers::error_kind::{
+    classify_provider_error, display_message, retry_after_secs_from_cause, ProviderErrorKind,
+};
 use pantheon_providers::model_event::ModelEvent;
 use pantheon_runtime::session::Session;
 use std::path::PathBuf;
 
 /// TUI-B feature modules. Declared here (not in lib.rs) so a sibling
 /// worker editing lib.rs cannot conflict with this branch.
+pub mod activity;
 pub mod bg;
 mod editor;
 pub mod git;
-pub mod overview;
 pub mod statusbar;
 pub mod theme;
 mod timeline;
@@ -49,14 +55,14 @@ pub mod vim;
 /// `/<skill>`) are documentation-only and are skipped by the palette.
 const COMMANDS: &[(&str, &str)] = &[
     ("/help", "this list"),
-    ("/models [FILTER]", "browse providers and models, Enter switches"),
+    ("/models [FILTER]", "providers first, then models — Enter switches"),
     ("/model [P M]", "show the current model, or switch to one"),
     ("/reasoning [LVL]", "reasoning effort: off|minimal|low|medium|high|xhigh|max"),
     ("/remember KEY TEXT", "remember this (agent memory, user trust)"),
     ("/goal [TEXT]", "set/show the session goal (iteration-limited)"),
     ("/goal clear", "drop the session goal"),
     ("/goal iterations N", "retune the goal's iteration budget"),
-    ("/tokens [N|off]", "show/set the per-run token cap (default: uncapped)"),
+    ("/tokens [N|off]", "show/set the per-response output token cap (default: uncapped)"),
     ("/set [KEY VAL]", "show/set session budget (max_turns, max_tool_calls, max_delegate_depth, max_tokens)"),
     ("/learn LESSON", "save a behavioral lesson for future sessions"),
     ("/skills [FILTER]", "installed skills"),
@@ -64,21 +70,30 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/tools [reload]", "rebuild the tool registry in place"),
     ("/settings", "data dir, model, policy, memory, server, agents"),
     ("/gateway", "service state and queued outbound"),
+    ("/send <target> <message>", "push a message to a surface (telegram|discord|mobile|home)"),
     ("/doctor", "diagnose this install"),
     ("/sessions", "reopen a parked session (searchable)"),
     ("/new", "start a fresh conversation"),
     ("/rewind", "roll back the last turn (confirm; ledger kept)"),
+    ("/undo", "undo the last response (same as /rewind)"),
     ("/checkpoint [NAME]", "save a named snapshot of the current turn"),
     ("/checkpoints", "list saved checkpoints"),
     ("/restore NAME", "rewind back to a checkpoint (ledger kept)"),
-    ("/swarm", "this session's delegation tree"),
+    ("/swarm", "remote swarms: list, or /swarm new <task> to spawn"),
+    ("/swarm <id>", "per-agent statuses + judge verdict for a swarm"),
+    ("/swarm retry <id>", "relaunch a swarm ([feedback])"),
+    ("/swarm tree", "this session's delegation tree (read-only)"),
+    ("/team [<id> [<task>]]", "team of experts: list, roster, or launch on a task"),
+    ("/plugin [import|search]", "plugins: import by URL/slug, search registry (also /plugins)"),
     ("/btw PROMPT", "run a task in the background (result lands here)"),
     ("/bg [ID]", "list background tasks, or show one's output"),
     ("/fork [TURN]", "branch this conversation at a turn into a new run"),
     ("/theme [name]", "switch theme (pantheon, dark, light)"),
     ("/vim [on|off|status]", "modal vim editing for the composer (v1: Normal/Insert only)"),
+    ("/nightly [on|off|status]", "run the nightly maintenance pass now; on/off/status manage the loop"),
     ("/reflect [on|off|status]", "run a reflection pass now, or toggle the self-improvement loop"),
     ("/consolidate [status|--dry-run]", "run a memory consolidation pass (dry run changes nothing)"),
+    ("/todos", "inspect this session's todo list"),
     ("/compress", "compress this conversation to the window now"),
     ("/export [md|json]", "save this conversation to exports/"),
     ("/yank [N]", "copy last answer (or its Nth code block) to clipboard"),
@@ -87,10 +102,17 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/history", "interactive searchable history (pick + resume)"),
     ("/resume [ID]", "resume a run by id"),
     ("/title [TITLE]", "show this conversation's title, or rename it"),
+    ("/project [new|set|clear|list|move]", "named project buckets for sessions"),
     ("/status [run_id]", "this run's status, or another by id"),
+    ("/stats", "today's usage from the ledger (same numbers as `pantheon stats`)"),
     ("/agent [name]", "current agent profile, or switch to one"),
+    ("/agent new <name>", "create a profile ([--display-name][--inherits][--policy])"),
     ("/agents", "declared agent profiles"),
-    ("/collab", "active collaborations and their tasks"),
+    ("/agents create <name>", "create a profile (same flags as /agent new)"),
+    ("/soul", "print the active profile's SOUL.md (/soul set <text> writes it)"),
+    ("/userfile", "print the active profile's USER.md (/userfile set <text> writes it)"),
+    ("/agentsfile", "print the active profile's AGENTS.md (/agentsfile set <text> writes it)"),
+    ("/collab", "deprecated — multi-profile tasks moved to /swarm"),
     ("/tasks <agent>", "that agent's open tasks"),
     ("/inbox", "messages sent to this agent"),
     ("/approvals", "pending approvals for this run"),
@@ -98,6 +120,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/mcp [reload]", "MCP server declarations (reload re-scans them)"),
     ("/migrate", "import from other harnesses (hermes, openclaw, omp, claude)"),
     ("/env", "secret names and status (never values)"),
+    ("/voice", "speech backends ([stt]/[tts]) status"),
     ("/clear", "clear visible transcript"),
     ("/reset", "reset turn state: clear transcript, cancel turn, drop queue (session, title, ledger kept; /clear is display-only, /new starts a new session)"),
 ];
@@ -108,7 +131,9 @@ const KEY_HINTS: &[(&str, &str)] = &[
     ("PgUp/PgDn", "scroll the transcript"),
     ("Ctrl+O / F2", "turn timeline: arrows move, Enter jumps"),
     ("Ctrl+E", "fullscreen draft editor (Ctrl+Enter sends)"),
-    ("Ctrl+B", "mission-control overview"),
+    ("Ctrl+B", "toggle sidebar"),
+    ("Ctrl+G", "sidebar: activity / todo view"),
+    ("Tab", "toggle Build / Plan mode"),
     ("/", "command palette (type to filter, Enter runs)"),
     ("Esc Esc (idle)", "offer to rewind the last turn"),
     ("/exit, /quit", "leave pantheon"),
@@ -143,16 +168,30 @@ pub struct PaletteState {
 impl PaletteState {
     /// Registry entries matching the filter, in registry order. Entries
     /// with `<...>` placeholders are documentation-only and never offered.
+    /// Name matches come before description matches: typing `agents`
+    /// should offer `/agents`, not `/settings` (whose description happens
+    /// to mention "agents").
     pub fn filtered(&self) -> Vec<(&'static str, &'static str)> {
         let f = self.input.to_lowercase();
-        COMMANDS
+        let offered: Vec<(&'static str, &'static str)> = COMMANDS
             .iter()
             .copied()
             .filter(|(name, _desc)| !name.contains('<'))
-            .filter(|(name, desc)| {
-                f.is_empty() || name.to_lowercase().contains(&f) || desc.to_lowercase().contains(&f)
-            })
-            .collect()
+            .collect();
+        if f.is_empty() {
+            return offered;
+        }
+        let mut names: Vec<(&'static str, &'static str)> = Vec::new();
+        let mut descs: Vec<(&'static str, &'static str)> = Vec::new();
+        for entry @ (name, desc) in offered {
+            if name.to_lowercase().contains(&f) {
+                names.push(entry);
+            } else if desc.to_lowercase().contains(&f) {
+                descs.push(entry);
+            }
+        }
+        names.extend(descs);
+        names
     }
 
     pub fn move_sel(&mut self, n: isize) {
@@ -173,9 +212,11 @@ pub enum BlockKind {
     AssistantMessage(String),
     Thinking(String),
     /// Tool card: running until the matching runtime completion event
-    /// sets `ok`. Args are shown inline; the call id disambiguates repeat
-    /// calls of the same tool, `started`/`duration` give the timing, and
-    /// `error` carries the failure detail when the call failed.
+    /// sets `ok`. `name` is the registry id (`shell`) — the UI shows
+    /// the presentable display name. Args render inline;
+    /// `started`/`duration` give the timing, `error` carries the
+    /// failure detail, and `tokens` freezes the session token count at
+    /// completion (the header shows the live count while running).
     ToolCall {
         name: String,
         args: String,
@@ -184,12 +225,20 @@ pub enum BlockKind {
         started: Option<std::time::Instant>,
         duration: Option<std::time::Duration>,
         error: Option<String>,
+        tokens: Option<u32>,
     },
     Swarm {
         agents: u32,
         task: String,
     },
     Status(String),
+    /// Live todo checklist card, rendered inline in the transcript with
+    /// the opencode-style card (`todo_card_lines`). Present only while
+    /// the sidebar is hidden (narrow terminal or toggled off): in wide
+    /// mode the sidebar's todo view owns this. One live block, updated
+    /// in place as the plan progresses — never duplicated, removed when
+    /// the todo list empties or the sidebar comes back.
+    Todos(Vec<crate::todo_card::TodoCardItem>),
     /// A finished `/btw` background task, labeled with the originating
     /// prompt. Rendered as its own card — visually distinct from assistant
     /// messages so a result that lands mid-turn never reads as the main
@@ -234,6 +283,66 @@ pub enum BlockKind {
         sentence: String,
         decided: Option<bool>,
     },
+    /// Provider failure card: which provider/model failed, the classified
+    /// error kind + message, and what the chain did next. Rate-limit
+    /// failures render in the warning tone so quota trouble is visibly
+    /// distinct from a dead provider.
+    ProviderError {
+        provider: String,
+        model: String,
+        kind: ProviderErrorKind,
+        message: String,
+        fallback: FallbackOutcome,
+    },
+}
+
+/// What the fallback chain did after a provider failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FallbackOutcome {
+    /// A fallback was available and engaged: this provider/model is now
+    /// the active one.
+    Engaged { provider: String, model: String },
+    /// Retryable failure, but the chain had nothing left to try.
+    Exhausted,
+    /// The error is not retryable, so no fallback was attempted.
+    NotRetryable,
+    /// The chain is retrying the same provider/model: retry `attempt` of
+    /// `max_attempts`, waiting `wait_secs` before the next try. The card
+    /// stays live — each `RetryAttempt` updates this line in place so
+    /// the transcript shows "retrying 2/3", never a frozen screen.
+    Retrying {
+        attempt: u32,
+        max_attempts: u32,
+        wait_secs: u64,
+    },
+    /// A retry recovered the turn: retry `attempt` of `max_attempts`
+    /// succeeded. The card keeps the honest trail instead of going
+    /// silent or freezing on "retrying n/3".
+    Recovered { attempt: u32, max_attempts: u32 },
+}
+
+/// A retryable provider failure waiting on the chain's verdict. The next
+/// chain event resolves it: `RetryAttempt` (a retry is being waited out),
+/// `Fallback` (a fallback engaged), `Exhausted` (nothing left to try),
+/// or `Attempt` on the same model (a stacked key rotated, not a chain
+/// move). Non-retryable failures render immediately too — a TUI that
+/// attached mid-chain may never see their verdict, and a failure must
+/// never be silent.
+struct PendingProviderFailure {
+    provider: String,
+    model: String,
+    kind: ProviderErrorKind,
+    message: String,
+    code: String,
+    /// Block index of the live error card, if one is on screen. Verdicts
+    /// update the card in place instead of pushing a second one; the
+    /// index is verified before each update (rewind can truncate).
+    card_index: Option<usize>,
+    /// Set by `RetryAttempt`: the next `Attempt` on this model is a
+    /// retry, not a stacked-key rotation (no "trying next key" line).
+    retrying: bool,
+    /// Last `(attempt, max_attempts)` seen, for the Recovered line.
+    last_retry: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +360,16 @@ pub struct ModelRow {
     pub provider_label: String,
     pub model_id: String,
     pub ctx: Option<u32>,
+}
+
+/// One provider in the `/models` provider picker: the label shown, the
+/// id used to drill into its models, and how many curated models it
+/// carries (0 = provider with no catalog entries yet).
+#[derive(Debug, Clone)]
+pub struct ProviderRow {
+    pub provider_id: String,
+    pub provider_label: String,
+    pub model_count: usize,
 }
 
 /// A pending rewind confirmation: the last turn the operator could roll
@@ -299,6 +418,16 @@ pub enum ConfirmAction {
     ClearTranscript,
 }
 
+/// Which card the sidebar's bottom half shows. Auto-switches by
+/// context (Plan mode / fresh todo updates open the todo view, Build
+/// mode the agent view); manual toggle (`^g`) flips it on demand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarView {
+    #[default]
+    Agent,
+    Todo,
+}
+
 /// Runtime state for the TUI session.
 pub struct TuiState {
     pub session_id: String,
@@ -322,15 +451,17 @@ pub struct TuiState {
     /// Set when a run parks on approval: (run_id, scope/call_id).
     /// Drives the permission card; cleared by grant/deny.
     pub pending_approval: Option<(String, String)>,
+    /// A retryable provider failure whose chain verdict has not arrived
+    /// yet. Resolved by the next Fallback / Exhausted / Attempt event;
+    /// never rendered on its own, so the card can say whether a
+    /// fallback engaged.
+    pending_provider_failure: Option<PendingProviderFailure>,
     /// Set when a nightly pass finishes with proposals awaiting
     /// approval. Drives the reflection card; y approves all, n denies all.
     pub pending_reflect: Option<Vec<pantheon_nightly::Proposal>>,
     /// A nightly pass is running on its worker thread. Guards against
     /// overlapping passes clobbering the pending-proposals file.
     pub reflect_running: bool,
-    /// Opt-in phone approval notifications from `[approvals]`:
-    /// (channel, chat_id). None = disabled (the default).
-    pub approval_notify: Option<(String, String)>,
     /// Last tool that started (name, args) — shown in the permission card
     /// because ApprovalRequested only carries the opaque call id.
     pub last_tool: Option<(String, String)>,
@@ -340,23 +471,41 @@ pub struct TuiState {
     /// True once the user confirmed; shows the canceled card.
     pub interrupted: bool,
     /// Open session-history overlay: Some(runs) while /history is open.
-    /// runs: (run_id, status, created_ms, title), newest first.
+    /// runs: (run_id, status, created_ms, title, project), newest first.
     pub history: Option<Vec<pantheon_storage::RunListing>>,
-    /// Cached ledger runs for the mission-control Sessions pane: open
+    /// Cached ledger runs for the session picker: open
     /// tabs first, parked (closed but resumable) runs after. Refreshed
-    /// with the tab bar so the overview never queries the DB per frame.
-    /// (run_id, status, created_ms, title), newest first.
+    /// with the tab bar so the sidebar never queries the DB per frame.
+    /// (run_id, status, created_ms, title, project), newest first.
     pub parked_runs: Vec<pantheon_storage::RunListing>,
     /// Live filter typed into the history overlay.
     pub history_input: String,
     /// Selected index into the filtered history list.
     pub history_sel: usize,
+    /// The project of the session that opened the history picker
+    /// (`None` = unassigned). The picker defaults to showing only this
+    /// project; ctrl+a toggles the all-projects view.
+    pub history_own_project: Option<String>,
+    /// History picker: true = list every project, false = only
+    /// `history_own_project`. Toggled with ctrl+a.
+    pub history_all_projects: bool,
+    /// Inline rename in the history picker: Some((run_id, buffer))
+    /// while ctrl+r is editing a row's title. Enter commits, Esc cancels.
+    pub history_rename: Option<(String, String)>,
     /// Open model-browser overlay: Some(rows) while /models is open.
     pub models: Option<Vec<ModelRow>>,
     /// Live filter typed into the models overlay.
     pub models_input: String,
     /// Selected index into the filtered models list.
     pub models_sel: usize,
+    /// Open provider picker: Some(rows) while the /models provider list
+    /// is open. Picking a provider drills into `models` scoped to it;
+    /// Esc in models returns here, Esc here closes both.
+    pub providers: Option<Vec<ProviderRow>>,
+    /// Live filter typed into the provider picker.
+    pub providers_input: String,
+    /// Selected index into the filtered provider list.
+    pub providers_sel: usize,
     /// Open `@` file-mention picker: while set, keystrokes filter and
     /// navigate the file list instead of reaching the composer.
     pub mention: Option<crate::mentions::MentionPicker>,
@@ -421,13 +570,40 @@ pub struct TuiState {
     /// Explicit open-tab list (true open-tab model): run ids in display
     /// order. Opening a tab = opening a session; the ledger is consulted
     /// for titles only, never for membership. Closing a tab parks the
-    /// run — it stays reopenable via /sessions or the overview nav.
+    /// run — it stays reopenable via /sessions or the session picker.
     pub open_tabs: Vec<String>,
-    /// Overview mode (`^b`): the three-pane mission-control layout.
-    /// Same session underneath — a view toggle, never a state split.
-    pub overview: bool,
-    /// Selected nav row in overview mode.
-    pub overview_sel: usize,
+    /// Sidebar visibility (`^b`): at ≥100 cols it toggles the 75/25
+    /// (80/20) split sidebar; below 100 cols the sidebar is hidden by
+    /// default and `^b` opens it as a floating overlay instead. One
+    /// unified session view either way.
+    pub show_sidebar: bool,
+    /// Last observed terminal width in columns, refreshed every frame
+    /// before draw. Layout decisions that depend on the real terminal
+    /// size (sidebar split vs. single column, inline todo card) read
+    /// this instead of a stale or partial area.
+    pub term_width: u16,
+    /// Narrow-terminal sidebar overlay (`^b` below 100 cols). Always
+    /// false unless explicitly toggled on — the single-column view
+    /// never opens it by itself.
+    pub sidebar_overlay: bool,
+    /// Which card the sidebar's bottom half shows. Manual toggle
+    /// (`^g`): the operator picks whichever serves the moment.
+    pub sidebar_view: SidebarView,
+    /// The dynamic footer status string, driving the footer's traveling
+    /// highlight. Built from real activity: "Thinking...",
+    /// "Reading <path>", "Executing <cmd>", ... The sweep travels
+    /// through this string's characters.
+    pub activity_status: String,
+    /// The traveling highlight sweep for the footer status line.
+    /// Advanced in [`tick`] while a turn is live, parked otherwise.
+    /// Always renders [`activity_status`] — see [`set_activity_status`].
+    pub sweep: activity::TravelHighlight,
+    /// Plan mode (Tab toggle). The sidebar mode tag flips between
+    /// "Build" and "Plan"; while a turn is live the footer status is
+    /// "Planning...". Mirrored into the runtime session via
+    /// [`apply_plan_mode_to_session`], which is what actually gates
+    /// write tools in the agent loop.
+    pub plan_mode: bool,
     /// Every run currently parked on an approval, keyed by run id.
     /// The decision card renders for the active session; other runs get
     /// the amber tab dot.
@@ -467,9 +643,49 @@ pub struct TuiState {
     pub bg_tasks: Vec<bg::BgTask>,
     /// Monotonic id source for background tasks.
     pub bg_seq: u64,
+    /// Subagent activity records fed by `AgentSpawned` / `AgentMessage` /
+    /// `AgentCompleted` ledger events. The sidebar activity timeline
+    /// renders the ones whose parent run is the visible session, so
+    /// background tabs keep their own.
+    pub subagents: Vec<activity::SubAgentRecord>,
     /// Inline image state: thumbnail placements recorded during render,
     /// terminal graphics capability, and the fullscreen preview.
     pub img: crate::richtext::ImagePaintState,
+    /// Open to-dos, owned by the parallel todo track: this field is the
+    /// only todo-related change here. The other track fills it in and
+    /// renders the todo UI; the status bar reads the count.
+    pub todo_count: usize,
+    /// Live todo items for the transcript card, synced from the runtime
+    /// session each frame by `refresh_todos`. Rendered opencode-style at
+    /// the transcript tail while non-empty.
+    pub todo_items: Vec<crate::todo_card::TodoCardItem>,
+    /// Running shells for the status bar's `{n} shells` segment. A plain
+    /// counter, default 0 — never derived from background tasks, which
+    /// are a different thing.
+    pub shell_count: usize,
+    /// Agent profile display name for the status line's
+    /// agent variant segment ("—" when unset).
+    pub variant: String,
+    /// Reasoning effort level (`/reasoning`), e.g. "xhigh". `None` =
+    /// unknown; the status line renders `—` for it, never a guess.
+    pub effort: Option<String>,
+    /// Cached MCP servers for the sidebar: (name, status word).
+    /// Refreshed at startup and by `/mcp`.
+    pub mcp_servers: Vec<(String, String)>,
+    /// Loaded capability plugins, for the splash's bottom line.
+    pub plugin_count: usize,
+    /// Newer release tag found by the background update check; the
+    /// splash shows `pantheon update to install {tag}` when set.
+    pub update_hint: Option<String>,
+    /// Cached health alerts for the bottom strip (failing MCP servers,
+    /// gateway trouble, overdue scheduled jobs). Refreshed at most
+    /// every 30s so the probes never run per frame.
+    pub health_alerts: Vec<String>,
+    pub health_checked_at: Option<std::time::Instant>,
+    /// Swarm ids spawned through the remote swarm backend this session
+    /// (`/swarm new`). The API contract has no list-all endpoint yet, so
+    /// the TUI remembers what it created to answer bare `/swarm`.
+    pub remote_swarms: Vec<String>,
 }
 
 /// How often the status bar re-reads git metadata. Coarse on purpose:
@@ -495,19 +711,25 @@ impl Default for TuiState {
             status_line: String::from("ready"),
             is_inputting: false,
             pending_approval: None,
+            pending_provider_failure: None,
             pending_reflect: None,
             reflect_running: false,
-            approval_notify: None,
             last_tool: None,
             interrupt_armed_at: None,
             interrupted: false,
             history: None,
             history_input: String::new(),
             history_sel: 0,
+            history_own_project: None,
+            history_all_projects: false,
+            history_rename: None,
             parked_runs: Vec::new(),
             models: None,
             models_input: String::new(),
             models_sel: 0,
+            providers: None,
+            providers_input: String::new(),
+            providers_sel: 0,
             mention: None,
             palette: None,
             pending_snaps: std::collections::HashMap::new(),
@@ -528,8 +750,13 @@ impl Default for TuiState {
             tabs: crate::tabs::TabList::default(),
             drafts: std::collections::HashMap::new(),
             open_tabs: Vec::new(),
-            overview: false,
-            overview_sel: 0,
+            show_sidebar: true,
+            term_width: 80,
+            sidebar_overlay: false,
+            sidebar_view: SidebarView::Agent,
+            activity_status: String::new(),
+            sweep: activity::TravelHighlight::new("Thinking..."),
+            plan_mode: false,
             approvals: std::collections::HashMap::new(),
             clarifies: std::collections::HashMap::new(),
             pending_clarify: None,
@@ -544,7 +771,19 @@ impl Default for TuiState {
             git_checked_at: Instant::now(),
             bg_tasks: Vec::new(),
             bg_seq: 0,
+            subagents: Vec::new(),
             img: crate::richtext::ImagePaintState::new(),
+            todo_count: 0,
+            todo_items: Vec::new(),
+            shell_count: 0,
+            variant: String::new(),
+            effort: None,
+            mcp_servers: Vec::new(),
+            plugin_count: 0,
+            update_hint: None,
+            health_alerts: Vec::new(),
+            health_checked_at: None,
+            remote_swarms: Vec::new(),
         }
     }
 }
@@ -614,7 +853,9 @@ fn describe_tool_action(tool: &str, args: &str) -> (String, String) {
 }
 
 impl TuiState {
-    fn new(session_id: String, model: String, tokens_max: u32) -> Self {
+    /// Create a fresh session view-state. Public so embedders (and the
+    /// screenshot harness) can drive the renderer directly.
+    pub fn new(session_id: String, model: String, tokens_max: u32) -> Self {
         Self {
             session_id,
             model,
@@ -632,19 +873,25 @@ impl TuiState {
             status_line: String::from("ready"),
             is_inputting: false,
             pending_approval: None,
+            pending_provider_failure: None,
             pending_reflect: None,
             reflect_running: false,
-            approval_notify: None,
             last_tool: None,
             interrupt_armed_at: None,
             interrupted: false,
             history: None,
             history_input: String::new(),
             history_sel: 0,
+            history_own_project: None,
+            history_all_projects: false,
+            history_rename: None,
             parked_runs: Vec::new(),
             models: None,
             models_input: String::new(),
             models_sel: 0,
+            providers: None,
+            providers_input: String::new(),
+            providers_sel: 0,
             mention: None,
             palette: None,
             pending_snaps: std::collections::HashMap::new(),
@@ -665,8 +912,13 @@ impl TuiState {
             tabs: crate::tabs::TabList::default(),
             drafts: std::collections::HashMap::new(),
             open_tabs: Vec::new(),
-            overview: false,
-            overview_sel: 0,
+            show_sidebar: true,
+            term_width: 80,
+            sidebar_overlay: false,
+            sidebar_view: SidebarView::Agent,
+            activity_status: String::new(),
+            sweep: activity::TravelHighlight::new("Thinking..."),
+            plan_mode: false,
             approvals: std::collections::HashMap::new(),
             clarifies: std::collections::HashMap::new(),
             pending_clarify: None,
@@ -681,31 +933,50 @@ impl TuiState {
             git_checked_at: Instant::now(),
             bg_tasks: Vec::new(),
             bg_seq: 0,
+            subagents: Vec::new(),
             img: crate::richtext::ImagePaintState::new(),
+            todo_count: 0,
+            todo_items: Vec::new(),
+            shell_count: 0,
+            variant: String::new(),
+            effort: None,
+            mcp_servers: Vec::new(),
+            plugin_count: 0,
+            update_hint: None,
+            health_alerts: Vec::new(),
+            health_checked_at: None,
+            remote_swarms: Vec::new(),
         }
     }
 
-    /// Runs matching the current filter, in list order.
+    /// Runs matching the current filter, in list order. Unless the
+    /// all-projects view is on (ctrl+a), only the opener's project is
+    /// shown — `None` (unassigned) matches `None`, so a project-less
+    /// setup behaves exactly like the old unfiltered list.
     pub fn filtered_history(&self) -> Vec<pantheon_storage::RunListing> {
         match &self.history {
             None => Vec::new(),
             Some(runs) => {
                 let f = self.history_input.to_lowercase();
-                if f.is_empty() {
-                    runs.clone()
-                } else {
-                    runs.iter()
-                        .filter(|(id, status, _, title)| {
-                            id.to_lowercase().contains(&f)
-                                || status.to_lowercase().contains(&f)
-                                || title
-                                    .as_deref()
-                                    .map(|t| t.to_lowercase().contains(&f))
-                                    .unwrap_or(false)
-                        })
-                        .cloned()
-                        .collect()
-                }
+                runs.iter()
+                    .filter(|(_, _, _, _, project)| {
+                        self.history_all_projects || project == &self.history_own_project
+                    })
+                    .filter(|(id, status, _, title, project)| {
+                        f.is_empty()
+                            || id.to_lowercase().contains(&f)
+                            || status.to_lowercase().contains(&f)
+                            || title
+                                .as_deref()
+                                .map(|t| t.to_lowercase().contains(&f))
+                                .unwrap_or(false)
+                            || project
+                                .as_deref()
+                                .map(|p| p.to_lowercase().contains(&f))
+                                .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect()
             }
         }
     }
@@ -726,6 +997,9 @@ impl TuiState {
         self.history = None;
         self.history_input.clear();
         self.history_sel = 0;
+        self.history_own_project = None;
+        self.history_all_projects = false;
+        self.history_rename = None;
     }
 
     /// Rows matching the current filter, in catalog order. Matches
@@ -770,6 +1044,46 @@ impl TuiState {
         self.models_sel = 0;
     }
 
+    /// Providers matching the current filter, alphabetical by label.
+    pub fn filtered_providers(&self) -> Vec<ProviderRow> {
+        match &self.providers {
+            None => Vec::new(),
+            Some(rows) => {
+                let f = self.providers_input.to_lowercase();
+                if f.is_empty() {
+                    rows.clone()
+                } else {
+                    rows.iter()
+                        .filter(|r| {
+                            r.provider_id.to_lowercase().contains(&f)
+                                || r.provider_label.to_lowercase().contains(&f)
+                        })
+                        .cloned()
+                        .collect()
+                }
+            }
+        }
+    }
+
+    /// Move the provider-picker selection by n, clamped to the filtered list.
+    pub fn providers_move(&mut self, n: isize) {
+        let len = self.filtered_providers().len();
+        if len == 0 {
+            self.providers_sel = 0;
+            return;
+        }
+        let sel = self.providers_sel as isize + n;
+        self.providers_sel = sel.clamp(0, len as isize - 1) as usize;
+    }
+
+    /// Close the provider picker and any drilled-in models view.
+    pub fn providers_close(&mut self) {
+        self.providers = None;
+        self.providers_input.clear();
+        self.providers_sel = 0;
+        self.models_close();
+    }
+
     /// Live token estimate: ~4 chars per token, updated on every streamed
     /// delta so the counter ticks like Claude Code's. Snapped to the
     /// authoritative number when Usage arrives.
@@ -783,6 +1097,41 @@ impl TuiState {
             ModelEvent::Attempt {
                 provider, model, ..
             } => {
+                // A retry's Attempt arrives right after its RetryAttempt
+                // (`retrying` set): same model, but a retry, not a stacked
+                // key rotating. Only a pending failure with no RetryAttempt
+                // in between is a rotation. A dim status line, not an
+                // error card; the stash stays for the chain's verdict.
+                let is_retry = self
+                    .pending_provider_failure
+                    .as_ref()
+                    .is_some_and(|p| p.retrying);
+                if let Some(p) = self.pending_provider_failure.as_mut() {
+                    p.retrying = false;
+                }
+                if !is_retry {
+                    if let Some(p) = self.pending_provider_failure.as_ref() {
+                        let key_no: String = p
+                            .code
+                            .rsplit(":key")
+                            .next()
+                            .unwrap_or("")
+                            .chars()
+                            .take_while(|c| c.is_ascii_digit())
+                            .collect();
+                        let key_bit = if key_no.is_empty() {
+                            "a stacked key".to_string()
+                        } else {
+                            format!("stacked key {key_no}")
+                        };
+                        self.blocks.push(TranscriptBlock {
+                            kind: BlockKind::Status(format!(
+                                "{}/{}: {} on {key_bit}, trying next key",
+                                p.provider, p.model, p.kind
+                            )),
+                        });
+                    }
+                }
                 // Track mid-session model switches (fallback chain).
                 if self.model != model {
                     self.blocks.push(TranscriptBlock {
@@ -837,6 +1186,7 @@ impl TuiState {
                         started: Some(std::time::Instant::now()),
                         duration: None,
                         error: None,
+                        tokens: None,
                     },
                 });
             }
@@ -852,8 +1202,274 @@ impl TuiState {
                 if let Some(cost) = usage.cost_usd {
                     self.cost_cents = (cost * 100.0) as u32;
                 }
+                // A retry that recovered: flip the live card to
+                // "recovered" instead of leaving a stale "retrying n/3".
+                self.flip_recovered_card();
+                self.pending_provider_failure = None;
             }
-            _ => {}
+            ModelEvent::Completed { .. } => {
+                self.flip_recovered_card();
+                self.pending_provider_failure = None;
+            }
+            ModelEvent::AttemptFailed {
+                provider,
+                model,
+                code,
+                cause,
+                retryable,
+                ..
+            } => {
+                let kind = classify_provider_error(&code, &cause);
+                let message = display_message(&cause);
+                // Carry the live card across the failure: stacked-key
+                // rotation re-stashes per key, and the retry card pushed
+                // by RetryAttempt must not be orphaned by the next
+                // AttemptFailed — refresh kind/message, keep the index.
+                let (card_index, last_retry) = match &self.pending_provider_failure {
+                    Some(p) if p.provider == provider && p.model == model => {
+                        (p.card_index, p.last_retry)
+                    }
+                    _ => (None, None),
+                };
+                let mut card_index = card_index;
+                if let Some(i) = card_index {
+                    self.refresh_live_card(i, &provider, &model, kind, &message);
+                } else if !retryable {
+                    // Non-retryable failures render immediately: a TUI
+                    // that attached mid-chain may never see the verdict,
+                    // and a failure must never be silent. A later
+                    // Fallback/Exhausted updates this card in place.
+                    card_index = Some(self.push_provider_error_card(
+                        provider.clone(),
+                        model.clone(),
+                        kind,
+                        message.clone(),
+                        FallbackOutcome::NotRetryable,
+                    ));
+                }
+                // The chain's verdict is still coming (RetryAttempt,
+                // Fallback, Exhausted, or a stacked-key Attempt). Hold
+                // the failure so the card can say what happened next.
+                self.pending_provider_failure = Some(PendingProviderFailure {
+                    provider,
+                    model,
+                    kind,
+                    message,
+                    code,
+                    card_index,
+                    retrying: false,
+                    last_retry,
+                });
+            }
+            ModelEvent::RetryAttempt {
+                provider,
+                model,
+                attempt,
+                max_attempts,
+                wait_secs,
+                ..
+            } => {
+                // The chain is waiting `wait_secs` before retry
+                // `attempt`/`max_attempts` on the same provider/model.
+                // The first retry pushes the live error card; later
+                // retries update its line in place — "retrying 2/3",
+                // never a frozen screen.
+                if self.pending_provider_failure.is_none() {
+                    // Defensive: the TUI attached mid-chain, after the
+                    // AttemptFailed. The retry is all we know.
+                    self.pending_provider_failure = Some(PendingProviderFailure {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        kind: ProviderErrorKind::Unknown,
+                        message: String::new(),
+                        code: String::new(),
+                        card_index: None,
+                        retrying: false,
+                        last_retry: None,
+                    });
+                }
+                if let Some(p) = self.pending_provider_failure.as_mut() {
+                    p.retrying = true;
+                    p.last_retry = Some((attempt, max_attempts));
+                }
+                self.render_live_card(FallbackOutcome::Retrying {
+                    attempt,
+                    max_attempts,
+                    wait_secs,
+                });
+            }
+            ModelEvent::Fallback {
+                from_provider,
+                from_model,
+                from_code,
+                from_cause,
+                to_provider,
+                to_model,
+                ..
+            } => {
+                // Finalize the live card in place — or push it when the
+                // TUI attached mid-chain, after the AttemptFailed.
+                if self.pending_provider_failure.is_none() {
+                    self.pending_provider_failure = Some(PendingProviderFailure {
+                        provider: from_provider.clone(),
+                        model: from_model.clone(),
+                        kind: classify_provider_error(&from_code, &from_cause),
+                        message: display_message(&from_cause),
+                        code: from_code.clone(),
+                        card_index: None,
+                        retrying: false,
+                        last_retry: None,
+                    });
+                }
+                // The fallback model is active now; the Attempt that
+                // follows must not print the old "routing:" line on top
+                // of this card.
+                self.model = to_model.clone();
+                self.render_live_card(FallbackOutcome::Engaged {
+                    provider: to_provider,
+                    model: to_model,
+                });
+                self.pending_provider_failure = None;
+            }
+            ModelEvent::Exhausted { code } => {
+                if self.pending_provider_failure.is_none() {
+                    // Defensive: the TUI attached after the failure. The
+                    // chain's code is all we have; never invent the model.
+                    self.pending_provider_failure = Some(PendingProviderFailure {
+                        provider: String::new(),
+                        model: String::new(),
+                        kind: classify_provider_error(&code, ""),
+                        message: code.clone(),
+                        code: code.clone(),
+                        card_index: None,
+                        retrying: false,
+                        last_retry: None,
+                    });
+                }
+                self.render_live_card(FallbackOutcome::Exhausted);
+                self.pending_provider_failure = None;
+            }
+        }
+    }
+
+    /// Append a provider error card: which provider/model failed, the
+    /// error kind + message, and what the chain did next. Returns the
+    /// block index so verdicts can update the card in place.
+    fn push_provider_error_card(
+        &mut self,
+        provider: String,
+        model: String,
+        kind: ProviderErrorKind,
+        message: String,
+        fallback: FallbackOutcome,
+    ) -> usize {
+        self.blocks.push(TranscriptBlock {
+            kind: BlockKind::ProviderError {
+                provider,
+                model,
+                kind,
+                message,
+                fallback,
+            },
+        });
+        self.blocks.len() - 1
+    }
+
+    /// Refresh the kind/message lines of the live provider-error card at
+    /// `index` (a newer AttemptFailed for the same failure); the outcome
+    /// line is left alone — the verdict owns it.
+    fn refresh_live_card(
+        &mut self,
+        index: usize,
+        provider: &str,
+        model: &str,
+        kind: ProviderErrorKind,
+        message: &str,
+    ) {
+        if let Some(TranscriptBlock {
+            kind:
+                BlockKind::ProviderError {
+                    provider: p,
+                    model: m,
+                    kind: k,
+                    message: msg,
+                    ..
+                },
+            ..
+        }) = self.blocks.get_mut(index)
+        {
+            if p == provider && m == model {
+                *k = kind;
+                *msg = message.to_string();
+            }
+        }
+    }
+
+    /// Push the provider-error card for the stashed failure if it isn't
+    /// on screen yet, then set its outcome line. The stashed index is
+    /// verified before every update: rewind can truncate the blocks, in
+    /// which case the card is re-pushed rather than written elsewhere.
+    fn render_live_card(&mut self, fallback: FallbackOutcome) {
+        let (provider, model, kind, message) = match &self.pending_provider_failure {
+            Some(p) => (
+                p.provider.clone(),
+                p.model.clone(),
+                p.kind,
+                p.message.clone(),
+            ),
+            None => return,
+        };
+        let live = self
+            .pending_provider_failure
+            .as_ref()
+            .and_then(|p| p.card_index)
+            .filter(|&i| {
+                matches!(
+                    self.blocks.get(i),
+                    Some(TranscriptBlock {
+                        kind: BlockKind::ProviderError {
+                            provider: p,
+                            model: m,
+                            ..
+                        },
+                        ..
+                    }) if p == &provider && m == &model
+                )
+            });
+        let idx = match live {
+            Some(i) => i,
+            None => {
+                let i =
+                    self.push_provider_error_card(provider, model, kind, message, fallback.clone());
+                if let Some(p) = self.pending_provider_failure.as_mut() {
+                    p.card_index = Some(i);
+                }
+                return;
+            }
+        };
+        if let Some(TranscriptBlock {
+            kind: BlockKind::ProviderError { fallback: fb, .. },
+            ..
+        }) = self.blocks.get_mut(idx)
+        {
+            *fb = fallback;
+        }
+    }
+
+    /// A retry that recovered: flip the live card's outcome to
+    /// "recovered on retry n/3" instead of leaving a stale "retrying"
+    /// line. No-op unless a retry card is on screen.
+    fn flip_recovered_card(&mut self) {
+        let last_retry = self
+            .pending_provider_failure
+            .as_ref()
+            .filter(|p| p.card_index.is_some())
+            .and_then(|p| p.last_retry);
+        if let Some((attempt, max_attempts)) = last_retry {
+            self.render_live_card(FallbackOutcome::Recovered {
+                attempt,
+                max_attempts,
+            });
         }
     }
 }
@@ -871,6 +1487,7 @@ fn event_run_id(ev: &RuntimeErrorEvent) -> Option<&str> {
         | E::RunRecovered { run_id }
         | E::AgentBound { run_id, .. }
         | E::TurnStarted { run_id, .. }
+        | E::UserMessage { run_id, .. }
         | E::TurnParked { run_id, .. }
         | E::TurnCompleted { run_id, .. }
         | E::TurnFailed { run_id, .. }
@@ -902,11 +1519,93 @@ fn event_run_id(ev: &RuntimeErrorEvent) -> Option<&str> {
         | E::ContextTrimmed { run_id, .. }
         | E::ContextCompressed { run_id, .. }
         | E::SessionTitled { run_id, .. }
+        | E::TodosUpdated { run_id, .. }
+        | E::BrowserActivity { run_id, .. }
+        | E::ScheduledTaskFailed { run_id, .. }
+        | E::ScheduledTaskRecovered { run_id, .. }
         | E::UsageRecorded { run_id, .. } => Some(run_id),
     }
 }
 
 impl TuiState {
+    /// Toggle the session sidebar (`^b`). At ≥100 cols this flips the
+    /// split sidebar; below 100 cols it flips the floating overlay,
+    /// which is never open by default.
+    pub fn toggle_sidebar(&mut self) {
+        self.show_sidebar = !self.show_sidebar;
+        self.sidebar_overlay = self.show_sidebar;
+    }
+
+    /// Whether the sidebar is actually drawn this frame: ≥100 cols and
+    /// not toggled off. Mirrors the split decision in `render_body` —
+    /// every layout branch that depends on it must use this, never a
+    /// partial area width.
+    pub fn sidebar_visible(&self) -> bool {
+        self.term_width >= 100 && self.show_sidebar
+    }
+
+    /// Flip the sidebar's bottom card: activity timeline | todo list.
+    /// `^g`. Manual by design — the operator picks what the moment needs.
+    pub fn toggle_sidebar_view(&mut self) {
+        self.sidebar_view = match self.sidebar_view {
+            SidebarView::Agent => SidebarView::Todo,
+            SidebarView::Todo => SidebarView::Agent,
+        };
+    }
+
+    /// Flip Build/Plan mode (Tab). The sidebar mode tag flips between
+    /// "Build" and "Plan", and a live turn's status becomes
+    /// "Planning...". The sidebar auto-switches: Plan mode opens the
+    /// todo view, Build mode the agent view. Callers must also mirror
+    /// the flip into the runtime session
+    /// ([`apply_plan_mode_to_session`]) — that is what actually gates
+    /// write tools in the agent loop.
+    pub fn toggle_plan_mode(&mut self) {
+        self.plan_mode = !self.plan_mode;
+        self.status_line = if self.plan_mode {
+            "plan mode on"
+        } else {
+            "build mode on"
+        }
+        .to_string();
+        // Sidebar auto-switch by mode; ^g still toggles manually.
+        self.sidebar_view = if self.plan_mode {
+            SidebarView::Todo
+        } else {
+            SidebarView::Agent
+        };
+        if !self.ready {
+            self.set_activity_status(if self.plan_mode {
+                "Planning...".to_string()
+            } else {
+                "Thinking...".to_string()
+            });
+        }
+    }
+
+    /// Mirror the TUI's Build/Plan toggle into the runtime session so Tab
+    /// actually gates tools, not just labels. The runtime reads the mode
+    /// at every tool gate; a flip mid-turn applies from the next tool
+    /// call and never kills a running one.
+    fn apply_plan_mode_to_session(&self, session: &Session) {
+        session.set_mode(if self.plan_mode {
+            AgentMode::Plan
+        } else {
+            AgentMode::Build
+        });
+    }
+
+    /// Set the dynamic footer status string and keep the sweep on the
+    /// same string. The sweep restarts from the left edge only when the
+    /// string actually changed — repeated tool starts must not stutter
+    /// the animation.
+    pub fn set_activity_status(&mut self, status: String) {
+        if status != self.activity_status {
+            self.activity_status = status.clone();
+            self.sweep.set_word(&status);
+        }
+    }
+
     /// Park an approval decision for `run_id`: parse the tool identity
     /// out of the scope, record it, and raise the amber tab dot. Shared
     /// by the visible path (which also renders the card) and background
@@ -944,10 +1643,37 @@ impl TuiState {
     fn handle_background_event(&mut self, ev: &RuntimeErrorEvent, run_id: &str) {
         match ev {
             // Liveness: the tab dot tracks work the user can't see.
-            RuntimeErrorEvent::ToolStarted { .. }
-            | RuntimeErrorEvent::TurnStarted { .. }
-            | RuntimeErrorEvent::RunStarted { .. } => {
+            RuntimeErrorEvent::TurnStarted { .. } | RuntimeErrorEvent::RunStarted { .. } => {
                 self.tabs.set_busy(run_id, true);
+            }
+            RuntimeErrorEvent::ToolStarted { tool, call_id, .. } => {
+                self.tabs.set_busy(run_id, true);
+                // Capture the step for the sidebar activity timeline when
+                // this run belongs to a `/btw` background task.
+                if let Some(t) = self.bg_tasks.iter_mut().find(|t| t.run_id == run_id) {
+                    t.steps.push(activity::BgStep::started(tool, call_id));
+                    if t.steps.len() > bg::MAX_BG_STEPS {
+                        t.steps.remove(0);
+                    }
+                }
+            }
+            RuntimeErrorEvent::ToolCompleted { tool, call_id, .. } => {
+                if let Some(t) = self.bg_tasks.iter_mut().find(|t| t.run_id == run_id) {
+                    // Exact call id first; fall back to the newest live
+                    // step for this tool when the start carried no card.
+                    let target =
+                        match t.steps.iter_mut().rev().find(|s| {
+                            s.call_id == *call_id && s.status == activity::StepStatus::Running
+                        }) {
+                            Some(s) => Some(s),
+                            None => t.steps.iter_mut().rev().find(|s| {
+                                s.name == *tool && s.status == activity::StepStatus::Running
+                            }),
+                        };
+                    if let Some(s) = target {
+                        s.finish(true);
+                    }
+                }
             }
             RuntimeErrorEvent::RunCompleted { .. }
             | RuntimeErrorEvent::RunFailed { .. }
@@ -955,6 +1681,16 @@ impl TuiState {
             | RuntimeErrorEvent::TurnCompleted { .. }
             | RuntimeErrorEvent::TurnFailed { .. } => {
                 self.tabs.set_busy(run_id, false);
+            }
+            // Subagent lifecycle on a background tab: recorded against
+            // the parent run so the timeline shows it when that tab is
+            // visible. The visible-session arm dedupes the same events.
+            RuntimeErrorEvent::AgentSpawned { agent, .. }
+            | RuntimeErrorEvent::AgentMessage { agent, .. } => {
+                activity::record_spawned(&mut self.subagents, run_id, agent);
+            }
+            RuntimeErrorEvent::AgentCompleted { agent, .. } => {
+                activity::record_completed(&mut self.subagents, run_id, agent);
             }
             // Decisions park durably; the card renders on tab switch.
             RuntimeErrorEvent::ApprovalRequested { scope, .. } => {
@@ -1011,6 +1747,15 @@ impl TuiState {
                 ..
             } => {
                 self.last_tool = Some((tool.clone(), args.clone()));
+                // Drive the footer phase from the real tool identity:
+                // search tools → Searching, edits → Editing, plan/todo
+                // tools → Planning, everything else → Thinking. In plan
+                // mode the phase stays Planning for the whole turn.
+                self.set_activity_status(if self.plan_mode {
+                    "Planning...".to_string()
+                } else {
+                    activity::status_for_tool(tool, args)
+                });
                 // Snapshot edit targets for the inline diff rendered at
                 // completion: the tool is about to rewrite these files, so
                 // capture the "before" now.
@@ -1035,6 +1780,7 @@ impl TuiState {
                         started: Some(std::time::Instant::now()),
                         duration: None,
                         error: None,
+                        tokens: None,
                     },
                 });
             }
@@ -1057,6 +1803,7 @@ impl TuiState {
                         ok,
                         started,
                         duration,
+                        tokens,
                         ..
                     } = &mut block.kind
                     {
@@ -1064,6 +1811,8 @@ impl TuiState {
                         if let Some(s) = started.take() {
                             *duration = Some(s.elapsed());
                         }
+                        // Freeze the live token count on the card.
+                        *tokens = Some(self.tokens_used + self.turn_estimate);
                     }
                 }
                 // Inline diff: compare the pre-tool snapshots with the
@@ -1103,26 +1852,6 @@ impl TuiState {
                 self.scroll_to_bottom();
                 self.pending_approval = Some((run_id.clone(), scope.clone()));
                 self.status_line = "permission required".into();
-                // Opt-in phone notification. Best-effort on a background
-                // thread: the TUI must never block on network I/O.
-                if let Some((channel, chat_id)) = self.approval_notify.clone() {
-                    let run_id = run_id.clone();
-                    let scope = scope.clone();
-                    std::thread::spawn(move || {
-                        let workdir = std::env::current_dir()
-                            .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                        let Some(notice) =
-                            crate::approval_notify::build_notice(&run_id, &scope, &workdir)
-                        else {
-                            return;
-                        };
-                        if let Err(e) =
-                            crate::approval_notify::send_notice(&channel, &chat_id, &notice)
-                        {
-                            eprintln!("approval notify: {e}");
-                        }
-                    });
-                }
             }
             // A sibling decision, resolved elsewhere (another client, a
             // re-entered session): collapse the card instead of leaving it
@@ -1175,13 +1904,26 @@ impl TuiState {
             RuntimeErrorEvent::RunProgress { detail, .. } => {
                 self.status_line = detail.clone();
             }
-            RuntimeErrorEvent::AgentSpawned { agent, .. } => {
+            RuntimeErrorEvent::AgentSpawned { agent, run_id } => {
+                // Feed the sidebar activity timeline (dedupe collapses
+                // the engine + runtime double-announce), then the
+                // transcript card as before.
+                activity::record_spawned(&mut self.subagents, run_id, agent);
                 self.blocks.push(TranscriptBlock {
                     kind: BlockKind::Swarm {
                         agents: 1,
                         task: agent.clone(),
                     },
                 });
+            }
+            // The parent engine announces the delegation before the
+            // runtime records it; the timeline dedupes against the
+            // AgentSpawned that follows.
+            RuntimeErrorEvent::AgentMessage { agent, run_id } => {
+                activity::record_spawned(&mut self.subagents, run_id, agent);
+            }
+            RuntimeErrorEvent::AgentCompleted { agent, run_id } => {
+                activity::record_completed(&mut self.subagents, run_id, agent);
             }
             // Title generation (aux or /name) lands as a durable event;
             // the header follows it with no polling.
@@ -1242,11 +1984,6 @@ impl TuiState {
                 *d = Some(decided);
             }
         }
-    }
-
-    /// Nav selection clamped to the overview rows.
-    fn sel_clamped(&self) -> usize {
-        self.overview_sel.min(overview::NAV_ROWS - 1)
     }
 
     /// How long the first Esc stays armed. The second Esc inside this
@@ -1343,6 +2080,15 @@ impl TuiState {
         self.status_line = "working".to_string();
         self.interrupt_armed_at = None;
         self.interrupted = false;
+        // Fresh working status: Thinking..., or Planning... when plan
+        // mode is on. The sweep restarts from the left edge of the new
+        // string.
+        self.set_activity_status(if self.plan_mode {
+            "Planning...".to_string()
+        } else {
+            "Thinking...".to_string()
+        });
+        self.sweep.reset();
         // Fresh per-turn telemetry: the last turn's in/out must not leak
         // into this turn's status bar.
         self.turn_in = None;
@@ -1538,6 +2284,11 @@ impl TuiState {
     pub fn tick(&mut self) {
         self.elapsed = self.start_time.elapsed();
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
+        // The traveling highlight only sweeps while a turn is live;
+        // parked otherwise it would animate over a settled screen.
+        if !self.ready {
+            self.sweep.tick();
+        }
         // Coarse git refresh: `git status` never runs per frame.
         if self.git_checked_at.elapsed() >= GIT_REFRESH {
             self.refresh_git();
@@ -1564,16 +2315,15 @@ impl TuiState {
     }
 }
 
-/// Icons for transcript cards and the status bar. Every entry is used
-/// by `render_block` or `render_status` below — no speculative glyphs.
+/// Icons for transcript cards and the footer. Every entry is used
+/// by `render_block` or `render_footer` below — no speculative glyphs.
 mod icon {
-    pub const PANTHEON: &str = "◈";
     pub const RUNNING: &str = "●";
     pub const SUCCESS: &str = "✓";
     pub const FAILURE: &str = "×";
-    pub const THINKING: &str = "◇";
     pub const TOOL: &str = "⚙";
     pub const AGENT: &str = "→";
+    pub const WARN: &str = "⚠";
 }
 
 /// Render the full TUI frame: header, transcript, input, status bar.
@@ -1587,7 +2337,7 @@ mod icon {
 /// Rebuild the tab bar from the explicit open-tab list. The ledger is
 /// consulted for titles only, never for membership: opening a tab opens
 /// a session, closing parks it. Parked runs stay reopenable via
-/// /sessions or the overview nav.
+/// /sessions or the session picker.
 fn refresh_tabs(state: &mut TuiState, session: &Arc<Session>) {
     let active = state.session_id.clone();
     // A visible run is an open tab by definition: pin it even if the
@@ -1610,9 +2360,87 @@ fn refresh_tabs(state: &mut TuiState, session: &Arc<Session>) {
     for run in state.approvals.keys().chain(state.clarifies.keys()) {
         state.tabs.set_approval(run, true);
     }
-    // Cache the full ledger list for the mission-control Sessions pane:
+    // Cache the full ledger list for the session picker:
     // open tabs come from the tab bar, parked runs from here.
     state.parked_runs = session.supervisor.ledger_list_runs(50).unwrap_or_default();
+}
+
+/// Sync the transcript todo card from the runtime session's todo list.
+/// Cheap (one mutex): called every frame before draw. Maps the canonical
+/// `pantheon_api::todo` items onto the card's view types; `todo_count`
+/// is the not-yet-done count, matching the card header.
+fn refresh_todos(state: &mut TuiState, session: &Arc<Session>) {
+    use crate::todo_card::{TodoCardItem, TodoStatus as CardStatus};
+    use pantheon_api::todo::TodoStatus as ApiStatus;
+    let items: Vec<TodoCardItem> = session
+        .todo_list()
+        .into_iter()
+        .map(|i| TodoCardItem {
+            content: i.content,
+            status: match i.status {
+                ApiStatus::Pending => CardStatus::Pending,
+                ApiStatus::InProgress => CardStatus::InProgress,
+                ApiStatus::Completed => CardStatus::Completed,
+            },
+        })
+        .collect();
+    state.apply_todo_items(items);
+    sync_inline_todo_card(state);
+}
+
+/// Keep the inline transcript todo card in sync. When the sidebar is
+/// gone (narrow terminal, or toggled off) the opencode-style card
+/// lives in the transcript instead, so the plan stays visible without
+/// any keybind: one live block, updated in place as todos progress.
+/// Wide mode removes it again — the sidebar owns it there. Idempotent
+/// by design: `refresh_todos` calls this every frame, so it only
+/// touches `blocks` when the desired state actually changed.
+fn sync_inline_todo_card(state: &mut TuiState) {
+    let want_card = !state.sidebar_visible() && !state.todo_items.is_empty();
+    let pos = state
+        .blocks
+        .iter()
+        .position(|b| matches!(b.kind, BlockKind::Todos(_)));
+    match (want_card, pos) {
+        (true, Some(i)) => {
+            // Refresh in place; a no-op when nothing changed so the
+            // transcript never churns.
+            if let BlockKind::Todos(items) = &mut state.blocks[i].kind {
+                if *items != state.todo_items {
+                    *items = state.todo_items.clone();
+                }
+            }
+        }
+        (true, None) => {
+            state.blocks.push(TranscriptBlock {
+                kind: BlockKind::Todos(state.todo_items.clone()),
+            });
+            state.scroll_to_bottom();
+        }
+        (false, Some(i)) => {
+            state.blocks.remove(i);
+        }
+        (false, None) => {}
+    }
+}
+
+impl TuiState {
+    /// Apply a fresh todo snapshot: refreshes the count and, when the plan
+    /// actually changed, auto-switches the sidebar's bottom card to the
+    /// todo view. A manual ^g toggle afterwards still wins.
+    pub fn apply_todo_items(&mut self, items: Vec<crate::todo_card::TodoCardItem>) {
+        use crate::todo_card::TodoStatus as CardStatus;
+        self.todo_count = items
+            .iter()
+            .filter(|i| i.status != CardStatus::Completed)
+            .count();
+        if self.todo_items != items {
+            self.todo_items = items;
+            // Fresh plan activity: the todo view becomes the sidebar's
+            // bottom card.
+            self.sidebar_view = SidebarView::Todo;
+        }
+    }
 }
 
 /// Seed the open-tab list at startup: the run the loop opens on is the
@@ -1691,7 +2519,7 @@ fn new_tab(state: &mut TuiState, session: &Arc<Session>, status: &str) {
 
 /// Close the active tab. Parks the run — never kills it: the draft is
 /// stashed, the tab leaves the bar, and the run stays reopenable via
-/// /sessions or the overview nav. Never strands the session: with no
+/// /sessions or the session picker. Never strands the session: with no
 /// tabs left, a fresh one opens.
 fn close_active_tab(state: &mut TuiState, session: &Arc<Session>) {
     let run = state.session_id.clone();
@@ -1701,7 +2529,7 @@ fn close_active_tab(state: &mut TuiState, session: &Arc<Session>) {
             .insert(run.clone(), std::mem::take(&mut state.input));
     }
     // Park: leave the open-tab list, keep the run. It reopens via
-    // /sessions or the overview nav.
+    // /sessions or the session picker.
     state.open_tabs.retain(|id| id != &run);
     state.tabs.remove(&run);
     match state.tabs.active_run_id().map(str::to_string) {
@@ -1837,6 +2665,10 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
         render_models(f, f.area(), state);
         return;
     }
+    if state.providers.is_some() {
+        render_providers(f, f.area(), state);
+        return;
+    }
     if state.editor.is_some() {
         render_editor(f, f.area(), state);
         return;
@@ -1846,30 +2678,52 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
         return;
     }
 
-    let outer = Layout::vertical([
-        Constraint::Length(1), // session tabs
-        Constraint::Length(1), // header (one line)
-        Constraint::Min(1),    // chat / overview
-        Constraint::Length(3), // input
-        Constraint::Length(1), // status bar
-    ]);
-    let [tab_area, header_area, chat_area, input_area, status_area] = outer.areas(f.area());
+    // Near-black base wash: every widget below paints on it.
+    let bg = state.theme.bg;
+    f.render_widget(Paragraph::new("").style(Style::default().bg(bg)), f.area());
 
-    crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
-    render_header(f, header_area, state);
-    if state.overview {
-        render_overview_frame(state, f, chat_area);
+    // Fresh (or /clear'ed) session: the splash owns the chat area and
+    // carries its own centered composer, so the bottom input row is
+    // folded away until the first block lands.
+    if state.blocks.is_empty() {
+        let [tab_area, splash_area, bottom_area] = Layout::vertical([
+            Constraint::Length(1), // session tabs
+            Constraint::Min(1),    // splash
+            Constraint::Length(1), // plugin / version line
+        ])
+        .areas(f.area());
+        crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+        render_splash(f, splash_area, state);
+        render_splash_bottom(f, bottom_area, state);
     } else {
-        render_chat(state, f, chat_area);
+        // ONE unified session view: tabs → 75/25 split → footer, with a
+        // health alert strip above the footer only when something is
+        // actually wrong (failing MCP, gateway trouble, overdue jobs).
+        refresh_health(state);
+        if !state.health_alerts.is_empty() {
+            let outer = Layout::vertical([
+                Constraint::Length(1), // session tabs
+                Constraint::Min(1),    // body: transcript+input | sidebar
+                Constraint::Length(1), // health alerts
+                Constraint::Length(1), // footer
+            ]);
+            let [tab_area, body_area, alerts_area, footer_area] = outer.areas(f.area());
+            crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+            render_body(state, f, body_area);
+            render_alerts(f, alerts_area, state);
+            render_footer(f, footer_area, state);
+        } else {
+            let outer = Layout::vertical([
+                Constraint::Length(1), // session tabs
+                Constraint::Min(1),    // body: transcript+input | sidebar
+                Constraint::Length(1), // footer
+            ]);
+            let [tab_area, body_area, footer_area] = outer.areas(f.area());
+            crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+            render_body(state, f, body_area);
+            render_footer(f, footer_area, state);
+        }
     }
-    // Approval no longer steals the input row: the decision card lives
-    // in the transcript. The reflect card still owns the row while open.
-    if state.pending_reflect.is_some() {
-        render_reflect_card(f, input_area, state);
-    } else {
-        render_input(f, input_area, state);
-    }
-    render_status(f, status_area, state);
     if state.timeline.is_some() {
         render_timeline(f, f.area(), state);
     }
@@ -1897,7 +2751,10 @@ fn render_palette(f: &mut Frame, area: Rect, state: &TuiState) {
         inner_w = inner_w.max(format!("  {name:<22} {desc}").len());
     }
     let inner_w = (inner_w as u16 + 4).clamp(30, area.width.saturating_sub(4).max(30));
-    let height = (rows as u16 + 4).min(area.height.saturating_sub(4).max(6));
+    // The empty state adds a "no matching command" line below the blank
+    // separator: reserve a row for it or the border clips it.
+    let body_rows = rows + usize::from(items.is_empty());
+    let height = (body_rows as u16 + 4).min(area.height.saturating_sub(4).max(6));
     let x = area.x + (area.width.saturating_sub(inner_w)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 3;
     let popup = Rect::new(x, y, inner_w, height);
@@ -1961,7 +2818,11 @@ fn render_palette(f: &mut Frame, area: Rect, state: &TuiState) {
         Block::bordered()
             .title(format!(
                 " commands ({}/{} · Enter run · Esc dismiss) ",
-                (p.sel + 1).min(items.len().max(1)),
+                if items.is_empty() {
+                    0
+                } else {
+                    (p.sel + 1).min(items.len())
+                },
                 items.len()
             ))
             .border_style(Style::default().fg(th.primary)),
@@ -1969,277 +2830,61 @@ fn render_palette(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_widget(body, popup);
 }
 
-/// Chat layout: transcript beside the session sidebar. The sidebar
-/// takes the right third on wide terminals, collapses to a narrow
-/// strip on medium ones, and hides on narrow ones. Chat and overview
-/// share transcript/input/status rendering.
-fn render_chat(state: &mut TuiState, f: &mut Frame, area: Rect) {
+/// Subtle column divider: a 1-cell column with a slightly lighter
+/// background tint than the surrounding #121212/#1E1E1E. No glyphs —
+/// the box-drawing ban still stands.
+const DIVIDER_BG: Color = Color::Rgb(38, 38, 38);
+
+/// Session body: the unified 75/25 split — transcript + input block on
+/// the left, the session sidebar on the right. 100–119 cols narrows the
+/// split to 80/20; below 100 cols the body is a single column and the
+/// sidebar (while toggled on) floats as a right-side overlay. Column
+/// separation is the 1-cell divider's bg tint — zero borders, zero
+/// box-drawing.
+fn render_body(state: &mut TuiState, f: &mut Frame, area: Rect) {
     let w = area.width;
-    if w >= 120 {
-        let cols = Layout::horizontal([Constraint::Percentage(67), Constraint::Percentage(33)]);
-        let [transcript_area, sidebar_area] = cols.areas(area);
-        render_transcript(f, transcript_area, state);
-        render_sidebar(f, sidebar_area, state, false);
-    } else if w >= 100 {
-        let cols = Layout::horizontal([Constraint::Min(1), Constraint::Length(14)]);
-        let [transcript_area, sidebar_area] = cols.areas(area);
-        render_transcript(f, transcript_area, state);
-        render_sidebar(f, sidebar_area, state, true);
+    if state.sidebar_visible() {
+        let pct = if w >= 120 { 25u32 } else { 20u32 };
+        let side_w = (area.width as u32 * pct / 100) as u16;
+        let left_w = area.width.saturating_sub(side_w).saturating_sub(1);
+        let left = Rect::new(area.x, area.y, left_w, area.height);
+        let divider = Rect::new(area.x + left_w, area.y, 1, area.height);
+        let right = Rect::new(area.x + left_w + 1, area.y, side_w, area.height);
+        render_left(state, f, left);
+        f.render_widget(
+            Paragraph::new("").style(Style::default().bg(DIVIDER_BG)),
+            divider,
+        );
+        render_sidebar(f, right, state);
     } else {
-        render_transcript(f, area, state);
+        render_left(state, f, area);
+        if state.sidebar_overlay {
+            // Narrow terminal: the sidebar floats over the body's right
+            // edge (~36 cols) once explicitly toggled on with ^b — it
+            // never opens by itself.
+            let ow = 36.min(area.width);
+            let overlay = Rect::new(
+                area.x + area.width.saturating_sub(ow),
+                area.y,
+                ow,
+                area.height,
+            );
+            f.render_widget(Clear, overlay);
+            render_sidebar(f, overlay, state);
+        }
     }
 }
 
-/// Overview layout: frame + nav + live transcript + detail. The center
-/// pane reuses the shared transcript renderer — one transcript, two
-/// views.
-fn render_overview_frame(state: &mut TuiState, f: &mut Frame, area: Rect) {
-    let model = build_overview_model(state);
-    let center = overview::render_frame(f, area, &model, &state.theme);
-    render_transcript(f, center, state);
-}
-
-/// Assemble the overview model from live state. Counts are truthful:
-/// sessions from the tab bar, approvals/clarifies from the parked maps,
-/// jobs from the scheduler store; MCP/memory show "—" (no live count is
-/// wired) rather than a fabricated number.
-fn build_overview_model(state: &TuiState) -> overview::OverviewModel {
-    use overview::*;
-    let th = &state.theme;
-    let dim = Style::default().fg(th.dim);
-
-    let status = if state.pending_approval.is_some() {
-        "APPROVAL"
-    } else if state.pending_clarify.is_some() {
-        "INPUT"
-    } else if state.interrupted {
-        "INTERRUPTED"
-    } else if !state.ready {
-        "RUNNING"
+/// Left column: transcript above, the 2-row input block below. The
+/// reflect card owns the input row while it is open.
+fn render_left(state: &mut TuiState, f: &mut Frame, area: Rect) {
+    let [transcript_area, input_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(area);
+    render_transcript(f, transcript_area, state);
+    if state.pending_reflect.is_some() {
+        render_reflect_card(f, input_area, state);
     } else {
-        "IDLE"
-    };
-    let top_left = format!(
-        "{status} {:03} · {}",
-        state.display_turn_no().unwrap_or(0),
-        state.model
-    );
-
-    let session_count = state.tabs.tabs().len();
-    let approval_count = state.approvals.len() + state.clarifies.len();
-    let data_dir = crate::terminal::data_dir();
-    let job_count = pantheon_scheduler::load_jobs(&data_dir)
-        .map(|jobs| jobs.len())
-        .unwrap_or(0);
-    let top_right =
-        format!("{session_count} sessions · {approval_count} approvals · {job_count} jobs");
-
-    let agent_tasks: Vec<String> = state
-        .blocks
-        .iter()
-        .rev()
-        .filter_map(|b| match &b.kind {
-            BlockKind::Swarm { task, .. } => Some(task.clone()),
-            _ => None,
-        })
-        .take(5)
-        .collect();
-
-    let nav = vec![
-        ("Current".to_string(), "●".to_string()),
-        ("Sessions".to_string(), format!("{session_count}")),
-        ("Agents".to_string(), format!("{}", agent_tasks.len())),
-        ("Schedule".to_string(), format!("{job_count}")),
-        ("Approvals".to_string(), format!("{approval_count}")),
-        ("MCP".to_string(), "—".to_string()),
-        ("Memory".to_string(), "—".to_string()),
-    ];
-
-    let (detail_title, detail) = match state.sel_clamped() {
-        NAV_CURRENT => {
-            let pct = if state.tokens_max > 0 {
-                format!(
-                    "{:.0}%",
-                    100.0 * state.tokens_used as f64 / state.tokens_max as f64
-                )
-            } else {
-                "—".to_string()
-            };
-            let name = state
-                .title
-                .clone()
-                .unwrap_or_else(|| state.session_id.clone());
-            (
-                "Current".to_string(),
-                vec![
-                    Line::from(Span::styled(
-                        name,
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )),
-                    Line::from(Span::styled(
-                        format!(
-                            "run {}",
-                            &state.session_id[..state.session_id.len().min(12)]
-                        ),
-                        dim,
-                    )),
-                    Line::from(""),
-                    Line::from(format!("model   {}", state.model)),
-                    Line::from(format!("ctx     {pct}")),
-                    Line::from(format!("cost    ${:.2}", state.cost_cents as f64 / 100.0)),
-                    Line::from(format!("turns   {}", state.turns_completed)),
-                    Line::from(format!("tools   {}", state.tools_used)),
-                ],
-            )
-        }
-        NAV_SESSIONS => {
-            let mut lines = Vec::new();
-            for (i, tab) in state.tabs.tabs().iter().enumerate() {
-                let active = i == state.tabs.active_index();
-                let (dot, dot_color) = if tab.approval {
-                    ("●", th.warning)
-                } else if tab.busy {
-                    ("●", th.success)
-                } else {
-                    ("○", th.dim)
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{} {} ", i + 1, tab.label()),
-                        if active {
-                            Style::default().fg(th.primary).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default()
-                        },
-                    ),
-                    Span::styled(dot.to_string(), Style::default().fg(dot_color)),
-                ]));
-            }
-            let parked: Vec<_> = state
-                .parked_runs
-                .iter()
-                .filter(|(id, _, _, _)| !state.open_tabs.contains(id))
-                .take(10)
-                .collect();
-            if !parked.is_empty() {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(" parked", dim)));
-                for (id, _status, _created, title) in parked {
-                    let label = title
-                        .clone()
-                        .unwrap_or_else(|| id.chars().take(12).collect::<String>());
-                    lines.push(Line::from(Span::styled(format!("  ○ {label}"), dim)));
-                }
-            }
-            if lines.is_empty() {
-                lines.push(Line::from(Span::styled("(no sessions)", dim)));
-            }
-            ("Sessions".to_string(), lines)
-        }
-        NAV_AGENTS => {
-            let lines = if agent_tasks.is_empty() {
-                vec![Line::from(Span::styled("(no subagents this session)", dim))]
-            } else {
-                agent_tasks
-                    .iter()
-                    .map(|t| {
-                        let short: String = t.chars().take(40).collect();
-                        Line::from(format!("◈ {short}"))
-                    })
-                    .collect()
-            };
-            ("Agents".to_string(), lines)
-        }
-        NAV_SCHEDULE => (
-            "Schedule".to_string(),
-            vec![
-                Line::from(format!("{job_count} jobs")),
-                Line::from(""),
-                Line::from(Span::styled("manage with /schedule", dim)),
-            ],
-        ),
-        NAV_APPROVALS => {
-            let mut lines = Vec::new();
-            for (run, (_scope, tool, _args)) in &state.approvals {
-                let stem: String = run.chars().take(8).collect();
-                lines.push(Line::from(vec![
-                    Span::styled("● ", Style::default().fg(th.warning)),
-                    Span::styled(format!("{stem} · approval · {tool}"), Style::default()),
-                ]));
-            }
-            for (run, req) in &state.clarifies {
-                let stem: String = run.chars().take(8).collect();
-                let q: String = req.question.chars().take(28).collect();
-                lines.push(Line::from(vec![
-                    Span::styled("? ", Style::default().fg(th.primary)),
-                    Span::styled(format!("{stem} · clarify · {q}"), Style::default()),
-                ]));
-            }
-            if lines.is_empty() {
-                lines.push(Line::from(Span::styled("(none pending)", dim)));
-            } else {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled("enter jumps to the first", dim)));
-            }
-            ("Approvals".to_string(), lines)
-        }
-        NAV_MCP => (
-            "MCP".to_string(),
-            vec![
-                Line::from(Span::styled("no live count wired", dim)),
-                Line::from(""),
-                Line::from(Span::styled("server list: /mcp", dim)),
-            ],
-        ),
-        _ => (
-            "Memory".to_string(),
-            vec![
-                Line::from(Span::styled("no live count wired", dim)),
-                Line::from(""),
-                Line::from(Span::styled("memory lives in config", dim)),
-            ],
-        ),
-    };
-
-    OverviewModel {
-        top_left,
-        top_right,
-        nav,
-        sel: state.sel_clamped(),
-        detail_title,
-        detail,
-    }
-}
-
-/// Enter on a nav row: Sessions cycles to the next tab, Approvals jumps
-/// to the first run parked on a decision. Other rows have no target.
-fn overview_enter(state: &mut TuiState, session: &Arc<Session>) {
-    match state.overview_sel {
-        overview::NAV_SESSIONS => {
-            // The searchable picker lists parked ledger runs too;
-            // picking one reopens it as a tab.
-            match session.supervisor.ledger_list_runs(50) {
-                Ok(runs) => {
-                    state.history = Some(runs);
-                    state.history_input.clear();
-                    state.history_sel = 0;
-                }
-                Err(e) => state.add_status(format!("sessions: {e}")),
-            }
-        }
-        overview::NAV_APPROVALS => {
-            let target = state
-                .approvals
-                .keys()
-                .chain(state.clarifies.keys())
-                .next()
-                .cloned();
-            if let Some(id) = target {
-                switch_to_run(state, session, &id, "resumed");
-                state.overview = false;
-            }
-        }
-        _ => {}
+        render_input_block(f, input_area, state);
     }
 }
 
@@ -2296,11 +2941,14 @@ fn render_mention_picker(f: &mut Frame, area: Rect, state: &TuiState) {
 
 /// Searchable scrollable history overlay: /history. Type-to-filter,
 /// Up/Down to move, Enter to resume, Esc to close. Mirrors the REPL's
-/// /history picker, rendered as a centered list.
+/// /sessions picker: searchable, date-grouped, project-aware. Layout
+/// follows the reference: Search header, group headers per calendar day,
+/// a full-bleed selection wash in the theme's tab highlight color, and a
+/// key-hint footer (delete ctrl+d, rename ctrl+r, all projects ctrl+a).
 fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
-    let w = area.width.clamp(40, 80);
-    let h = area.height.clamp(7, 20);
+    let w = area.width.clamp(44, 84);
+    let h = area.height.clamp(9, 24);
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
     let area = Rect {
@@ -2309,13 +2957,19 @@ fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
         width: w,
         height: h,
     };
+    // Inner width (inside the borders): rows are padded to it so the
+    // selection wash bleeds edge to edge like the reference.
+    let inner = w.saturating_sub(2) as usize;
 
     let runs = state.filtered_history();
+    let renaming = state.history_rename.clone();
     let mut lines = vec![
-        Line::from(Span::styled(
-            "  type to filter, Up/Down to move, Enter to resume, Esc to close",
-            Style::default().fg(th.primary),
-        )),
+        Line::from(Span::styled("  Search", Style::default().fg(th.dim))),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(state.history_input.clone(), Style::default().fg(th.body)),
+            Span::styled("\u{258f}", Style::default().fg(th.primary)),
+        ]),
         Line::from(""),
     ];
     if runs.is_empty() {
@@ -2324,7 +2978,17 @@ fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
             Style::default().fg(th.failure),
         )));
     }
-    for (i, (id, status, ts, title)) in runs.iter().enumerate() {
+    let mut last_day = String::new();
+    for (i, (id, status, ts, title, project)) in runs.iter().enumerate() {
+        // Date group header on day change; purely visual, never selected.
+        let day = fmt_day(*ts);
+        if day != last_day {
+            last_day = day.clone();
+            lines.push(Line::from(Span::styled(
+                format!("  {day}"),
+                Style::default().fg(th.heading).add_modifier(Modifier::BOLD),
+            )));
+        }
         let glyph = match status.as_str() {
             "completed" => "\u{2713}",
             "failed" => "\u{d7}",
@@ -2335,36 +2999,74 @@ fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
         // The generated session title leads; untitled runs fall back to
         // the run id stem so the row still reads as an identity.
         let label = match title.as_deref().filter(|t| !t.is_empty()) {
-            Some(t) => t.chars().take(38).collect::<String>(),
+            Some(t) => t.chars().take(34).collect::<String>(),
             None => short.clone(),
         };
-        let style = if i == state.history_sel {
-            Style::default().fg(th.primary).add_modifier(Modifier::BOLD)
+        // The pinned home session leads the list; mark it so it reads as
+        // permanent rather than just another recent run.
+        let pin = if id == pantheon_storage::HOME_SESSION_ID {
+            "\u{2302} "
         } else {
-            Style::default()
+            "  "
         };
+        // In the all-projects view the project tag disambiguates rows;
+        // in the single-project view it would just repeat the header.
+        let proj_tag = if state.history_all_projects {
+            match project.as_deref().filter(|p| !p.is_empty()) {
+                Some(p) => format!(" \u{b7} {p}"),
+                None => String::new(),
+            }
+        } else {
+            String::new()
+        };
+        let selected = i == state.history_sel;
+        let is_renaming = renaming.as_ref().is_some_and(|(rid, _)| rid == id);
+        let row_text = if is_renaming {
+            // Inline rename: the row becomes an editor.
+            let buf = renaming.as_ref().map(|(_, b)| b.as_str()).unwrap_or("");
+            format!("  > {buf}\u{258f}")
+        } else {
+            format!("  {pin}{glyph} {label:<34} {}{}", fmt_age(*ts), proj_tag)
+        };
+        let padded = format!("{row_text:<inner$}");
+        let style = if selected {
+            Style::default()
+                .fg(th.body)
+                .bg(th.tab_active_bg)
+                .add_modifier(Modifier::BOLD)
+        } else if is_renaming {
+            Style::default().fg(th.warning)
+        } else {
+            Style::default().fg(th.body)
+        };
+        lines.push(Line::from(Span::styled(padded, style)));
+    }
+    lines.push(Line::from(""));
+    if renaming.is_some() {
         lines.push(Line::from(Span::styled(
-            format!(
-                "  {:>3}  {glyph} {:<10} {:<38} {}",
-                i,
-                status,
-                label,
-                fmt_age(*ts)
-            ),
-            style,
+            "  Enter saves   Esc cancels",
+            Style::default().fg(th.dim),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  delete ctrl+d    rename ctrl+r    all projects ctrl+a",
+            Style::default().fg(th.dim),
         )));
     }
-    if !state.history_input.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(format!("  filter: {}", state.history_input)));
-    }
-    let title = " conversations (/history) ";
+    let scope = if state.history_all_projects {
+        "all projects"
+    } else {
+        match state.history_own_project.as_deref() {
+            Some(p) => p,
+            None => "sessions",
+        }
+    };
     let card = Paragraph::new(lines).block(
         Block::bordered()
             .border_type(BorderType::Double)
             .border_style(Style::default().fg(th.primary))
             .title(Span::styled(
-                title,
+                format!(" {scope} "),
                 Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
             )),
     );
@@ -2420,14 +3122,13 @@ fn render_reflect_card(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_widget(card, area);
 }
 
-/// Searchable model browser overlay: /models. Type-to-filter across
-/// provider and model names, Up/Down to move, Enter to switch the live
-/// session's default model, Esc to close. Same overlay contract as
-/// /history, rendered as a centered list.
-fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
+/// Provider picker: the first level of `/models`. Search header,
+/// alphabetical provider rows, full-bleed selection wash in the theme's
+/// tab highlight color. Enter drills into the provider's models.
+fn render_providers(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
-    let w = area.width.clamp(48, 88);
-    let h = area.height.clamp(7, 22);
+    let w = area.width.clamp(44, 72);
+    let h = area.height.clamp(9, 22);
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
     let area = Rect {
@@ -2436,13 +3137,91 @@ fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
         width: w,
         height: h,
     };
+    let inner = w.saturating_sub(2) as usize;
+
+    let rows = state.filtered_providers();
+    let mut lines = vec![
+        Line::from(Span::styled("  Search", Style::default().fg(th.dim))),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(state.providers_input.clone(), Style::default().fg(th.body)),
+            Span::styled("\u{258f}", Style::default().fg(th.primary)),
+        ]),
+        Line::from(""),
+    ];
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no matches)",
+            Style::default().fg(th.failure),
+        )));
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let selected = i == state.providers_sel;
+        let count = if row.model_count == 0 {
+            String::new()
+        } else {
+            format!("  {} models", row.model_count)
+        };
+        let text = format!("  {}{}", row.provider_label, count);
+        let padded = format!("{text:<inner$}");
+        let style = if selected {
+            Style::default()
+                .fg(th.body)
+                .bg(th.tab_active_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(th.body)
+        };
+        lines.push(Line::from(Span::styled(padded, style)));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter opens models   Esc closes",
+        Style::default().fg(th.dim),
+    )));
+    let card = Paragraph::new(lines).block(
+        Block::bordered()
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(th.primary))
+            .title(Span::styled(
+                " providers ",
+                Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+            )),
+    );
+    f.render_widget(card, area);
+}
+
+/// Searchable model browser overlay: /models. Type-to-filter across
+/// provider and model names, Up/Down to move, Enter to switch the live
+/// session's default model, Esc to close. Same overlay contract as
+/// /history, rendered as a centered list.
+/// Model list: the second level of `/models`, scoped to the provider
+/// picked in the provider list. Layout follows the reference: Search
+/// header, one row per model with the current model marked `●`, the ctx
+/// limit right-aligned as the badge column, a full-bleed selection wash
+/// in the theme's tab highlight color. Esc steps back to providers.
+fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
+    let th = &state.theme;
+    let w = area.width.clamp(48, 88);
+    let h = area.height.clamp(9, 22);
+    let x = area.x + (area.width - w) / 2;
+    let y = area.y + (area.height - h) / 2;
+    let area = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    let inner = w.saturating_sub(2) as usize;
 
     let rows = state.filtered_models();
     let mut lines = vec![
-        Line::from(Span::styled(
-            "  type to filter, Up/Down to move, Enter to switch, Esc to close",
-            Style::default().fg(th.primary),
-        )),
+        Line::from(Span::styled("  Search", Style::default().fg(th.dim))),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(state.models_input.clone(), Style::default().fg(th.body)),
+            Span::styled("\u{258f}", Style::default().fg(th.primary)),
+        ]),
         Line::from(""),
     ];
     if rows.is_empty() {
@@ -2453,37 +3232,84 @@ fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
     }
     for (i, row) in rows.iter().enumerate() {
         let current = format!("{}/{}", row.provider_id, row.model_id) == state.model;
-        let glyph = if current { "\u{25cf}" } else { " " };
-        let model = if row.model_id.is_empty() {
-            "(no curated models — Enter for how to switch)".to_string()
-        } else {
-            row.model_id.clone()
-        };
-        let ctx = match row.ctx {
+        let selected = i == state.models_sel;
+        if row.model_id.is_empty() {
+            let text = "  (no curated models — Enter for how to switch)";
+            let padded = format!("{text:<inner$}");
+            let style = if selected {
+                Style::default()
+                    .fg(th.body)
+                    .bg(th.tab_active_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(th.dim)
+            };
+            lines.push(Line::from(Span::styled(padded, style)));
+            continue;
+        }
+        // Badge column: the ctx limit, right-aligned like the
+        // reference's "Free" column.
+        let badge = match row.ctx {
+            Some(c) if c >= 1_000_000 => format!("{}M ctx", c / 1_000_000),
             Some(c) if c >= 1000 => format!("{}k ctx", c / 1000),
             Some(c) => format!("{c} ctx"),
             None => "ctx ?".to_string(),
         };
-        let style = if i == state.models_sel {
-            Style::default().fg(th.primary).add_modifier(Modifier::BOLD)
-        } else {
+        let model: String = row.model_id.chars().take(40).collect();
+        let marker = if current { "\u{25cf}" } else { " " };
+        // Left part width, then a gap so the badge hugs the right edge
+        // and the row fills the card exactly.
+        let left_len = 2 + 1 + 1 + model.chars().count();
+        let gap = inner.saturating_sub(left_len + badge.chars().count() + 1);
+        let base = if selected {
             Style::default()
+                .fg(th.body)
+                .bg(th.tab_active_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(th.body)
         };
-        lines.push(Line::from(Span::styled(
-            format!(
-                "  {glyph} {:<18} {:<32} {}",
-                row.provider_label.chars().take(18).collect::<String>(),
-                model.chars().take(32).collect::<String>(),
-                ctx,
-            ),
-            style,
-        )));
+        let marker_style = if current {
+            // The current model glows amber; on a selected row it keeps
+            // the selection wash behind it.
+            let mut s = Style::default()
+                .fg(th.emphasis)
+                .add_modifier(Modifier::BOLD);
+            if selected {
+                s = s.bg(th.tab_active_bg);
+            }
+            s
+        } else {
+            base
+        };
+        let badge_style = if selected {
+            Style::default().fg(th.dim).bg(th.tab_active_bg)
+        } else {
+            Style::default().fg(th.dim)
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  ", base),
+            Span::styled(marker, marker_style),
+            Span::styled(format!(" {model}"), base),
+            Span::styled(format!("{:gap$}", "", gap = gap), base),
+            Span::styled(format!(" {badge}"), badge_style),
+        ]));
     }
-    if !state.models_input.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(format!("  filter: {}", state.models_input)));
-    }
-    let title = " models (/models) ";
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter switches   Esc back to providers",
+        Style::default().fg(th.dim),
+    )));
+    let scope = state
+        .filtered_models()
+        .first()
+        .map(|r| r.provider_label.clone())
+        .unwrap_or_default();
+    let title = if scope.is_empty() {
+        " models ".to_string()
+    } else {
+        format!(" models · {scope} ")
+    };
     let card = Paragraph::new(lines).block(
         Block::bordered()
             .border_type(BorderType::Double)
@@ -2640,6 +3466,19 @@ fn fmt_age(ms: i64) -> String {
     }
 }
 
+/// Calendar-day label for session-picker group headers: `Sun Sep 27 2026`.
+/// Local timezone, like the rest of the TUI's timestamps.
+fn fmt_day(ms: i64) -> String {
+    DateTime::from_timestamp(ms / 1000, 0)
+        .map(|dt| {
+            dt.with_timezone(&Local)
+                .format("%a %b %e %Y")
+                .to_string()
+                .replace("  ", " ")
+        })
+        .unwrap_or_default()
+}
+
 /// Permission-required card. Shown when a run parked on approval.
 /// Fullscreen shortcuts overlay, opened with `?` when the prompt is empty
 /// and not editing. Lists only bindings the event loop implements;
@@ -2661,6 +3500,9 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
     }
 
     let key_style = Style::default().fg(th.primary).add_modifier(Modifier::BOLD);
+    // Note: plain `[`/`]` are deliberately absent here. The main-view key
+    // handler gates them out of tab_key_action, so they always type into
+    // the composer; tab switching is Ctrl+Tab / Ctrl+Shift+Tab / Alt+1..9.
     let rows: &[(&str, &str)] = &[
         ("?", "this help"),
         ("q", "quit pantheon"),
@@ -2669,15 +3511,14 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
         ("Esc x2", "interrupt run / offer rewind"),
         ("PgUp PgDn", "scroll transcript"),
         ("F2 / Ctrl+O", "turn timeline"),
-        ("Ctrl+B", "mission-control overview"),
+        ("Ctrl+B", "toggle sidebar"),
+        ("Ctrl+G", "sidebar activity / todo view"),
+        ("Tab", "toggle build / plan mode"),
         ("Ctrl+T / Ctrl+W", "new tab / close tab (parked)"),
-        ("[ / ]", "previous / next tab"),
         ("Ctrl+Tab", "next session"),
         ("Ctrl+Shift+Tab", "previous session"),
         ("Alt+1..9", "jump to session"),
-        ("Up / Down", "move in lists / overview nav"),
-        ("Enter (overview)", "open nav row"),
-        ("digit (overview)", "jump to tab"),
+        ("Up / Down", "move in lists"),
         ("a / d", "approve / deny approval"),
         ("y / n", "allow / deny (alias)"),
         ("digit (clarify)", "answer pending question"),
@@ -2709,19 +3550,21 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
 }
 
 /// Draw the input box at the bottom.
-fn render_input(f: &mut Frame, area: Rect, state: &TuiState) {
-    let th = &state.theme;
-    let line = if state.vim.enabled && state.is_inputting {
+/// The composer text with its cursor marker, no chrome. Shared by the
+/// bottom input row and the splash's centered input so both always show
+/// the same draft.
+fn composer_text(state: &TuiState) -> String {
+    if state.vim.enabled && state.is_inputting {
         // Vim: draw the cursor at the modal (row, col) instead of the
         // trailing `_`. Normal shows a bar before the char under the
-        // cursor; Insert keeps today's `_` idiom, positioned.
+        // cursor; Insert keeps the `_` idiom, positioned.
         let (row, col) = state.vim.cursor(&state.input);
         let marker = if state.vim.mode == vim::VimMode::Normal {
             '▌'
         } else {
             '_'
         };
-        let mut out = String::from("› ");
+        let mut out = String::new();
         for (i, l) in state.input.split('\n').enumerate() {
             if i > 0 {
                 out.push('\n');
@@ -2738,28 +3581,257 @@ fn render_input(f: &mut Frame, area: Rect, state: &TuiState) {
         out
     } else {
         let cursor = if state.is_inputting { "_" } else { " " };
-        format!("› {}{}", state.input, cursor)
-    };
-    let input = Paragraph::new(line).block(
-        Block::bordered()
-            .border_type(BorderType::Rounded)
-            .title(Span::styled(" Input ", Style::default().fg(th.primary))),
-    );
-    f.render_widget(input, area);
+        format!("{}{}", state.input, cursor)
+    }
 }
 
-/// Draw the one-line live status bar under the input.
-///
-/// Telemetry is real or absent: context %, per-turn in/out, tok/s, model,
-/// turn count, and cost come from `ModelEvent::Usage` and turn timing;
-/// anything the runtime did not expose renders as `—` (see `statusbar`).
-/// A pending rewind confirmation takes over the bar so the question is
-/// impossible to miss.
-/// One-line status bar: `{icon} {state} │ turn {n} │ tools {n} │ ctx {pct} · {cost} │ {hints}`.
-/// The state word is the only colored state signal: green working/ready,
-/// amber approval, cyan input, dim everything else. Amber appears here
-/// only for the approval state.
-fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
+/// Spans for one composer row: blue left accent border, then the draft
+/// (or the dim placeholder when the draft is empty). `first` selects the
+/// accent bar vs. the continuation indent for wrapped rows.
+fn composer_line_spans(
+    state: &TuiState,
+    th: &theme::Theme,
+    text: &str,
+    first: bool,
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    if first {
+        spans.push(Span::styled(
+            "▌",
+            Style::default()
+                .fg(th.input_accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(" "));
+    } else {
+        spans.push(Span::raw("  "));
+    }
+    // Placeholder when the draft is empty: `composer_text` always
+    // appends a cursor marker, so it can never be empty itself — check
+    // the raw draft instead.
+    if state.input.is_empty() && first {
+        spans.push(Span::styled(
+            "Ask anything, …",
+            Style::default().fg(th.dim).add_modifier(Modifier::ITALIC),
+        ));
+        if state.is_inputting {
+            spans.push(Span::styled("_", Style::default().fg(th.dim)));
+        }
+    } else {
+        spans.push(Span::styled(text.to_string(), Style::default().fg(th.body)));
+    }
+    spans
+}
+
+/// opencode-style composer: a rounded box with a dim border and a blue
+/// left accent, a prompt row, and a `provider · model · effort` row
+/// (variant in blue, effort in orange). Exactly 4 rows tall; too-small
+/// areas fall back to a single bare prompt row.
+fn render_composer_box(f: &mut Frame, area: Rect, state: &TuiState) {
+    let th = &state.theme;
+    let dim = Style::default().fg(th.dim);
+    let accent = Style::default().fg(th.input_accent);
+    let w = area.width as usize;
+    if w < 16 || area.height < 4 {
+        let text = composer_text(state);
+        let first = text.lines().next().unwrap_or("");
+        f.render_widget(
+            Paragraph::new(Line::from(composer_line_spans(state, th, first, true))),
+            Rect::new(area.x, area.y, area.width, area.height.min(1)),
+        );
+        return;
+    }
+    let inner = w - 2; // columns between the border glyphs
+    let mut rows: Vec<Line> = Vec::with_capacity(4);
+    rows.push(Line::from(vec![
+        Span::styled("╭", dim),
+        Span::styled("─".repeat(inner), dim),
+        Span::styled("╮", dim),
+    ]));
+    rows.push(bordered_row(
+        Span::styled("│", accent),
+        composer_prompt_spans(state, th, inner - 1),
+        inner,
+        Span::styled("│", dim),
+    ));
+    rows.push(bordered_row(
+        Span::styled("│", accent),
+        composer_variant_spans(state, th, inner - 1),
+        inner,
+        Span::styled("│", dim),
+    ));
+    rows.push(Line::from(vec![
+        Span::styled("╰", dim),
+        Span::styled("─".repeat(inner), dim),
+        Span::styled("╯", dim),
+    ]));
+    f.render_widget(
+        Paragraph::new(rows),
+        Rect::new(area.x, area.y, area.width, 4),
+    );
+}
+
+/// One content row inside the composer box: `left | inner…pad | right`.
+/// The inner spans are measured (display width) and padded so the right
+/// border always lands on the box edge. Over-wide content clips — the
+/// Paragraph never wraps, so the box keeps its shape.
+fn bordered_row(
+    left: Span<'static>,
+    inner: Vec<Span<'static>>,
+    inner_w: usize,
+    right: Span<'static>,
+) -> Line<'static> {
+    let used = Line::from(inner.clone()).width();
+    let mut spans = Vec::with_capacity(inner.len() + 3);
+    spans.push(left);
+    spans.extend(inner);
+    if used < inner_w {
+        spans.push(Span::raw(" ".repeat(inner_w - used)));
+    }
+    spans.push(right);
+    Line::from(spans)
+}
+
+/// Prompt row spans: the draft's first line (with cursor marker), or the
+/// dim placeholder when the draft is empty. Clipped to `max_w` display
+/// cells so the box never overflows.
+fn composer_prompt_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> Vec<Span<'static>> {
+    if state.input.is_empty() {
+        let mut spans = vec![Span::styled(
+            "Ask anything, 'Fix broken tests'",
+            Style::default().fg(th.dim).add_modifier(Modifier::ITALIC),
+        )];
+        if state.is_inputting {
+            spans.push(Span::styled("_", Style::default().fg(th.dim)));
+        }
+        return spans;
+    }
+    let text = composer_text(state);
+    let first = text.lines().next().unwrap_or("");
+    let shown: String = first.chars().take(max_w).collect();
+    vec![Span::styled(shown, Style::default().fg(th.body))]
+}
+
+/// The composer's `profile · provider · model · effort` row: profile in
+/// body bold (when a profile is active), provider in blue bold, model in
+/// body, effort in orange — the opencode signature. The model string is
+/// `provider/model`; the provider segment replaces the old Build/Plan
+/// variant (the mode already shows in the sidebar tag). The profile
+/// segment is the active `[agents.<name>]` table name (`state.variant`,
+/// set at startup and by `/agent <name>`); with no profiles declared it
+/// is empty and the row renders exactly the old `provider · model ·
+/// effort` shape (fail-open: no declared profile, no change).
+fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> Vec<Span<'static>> {
+    let (provider, model) = match state.model.split_once('/') {
+        Some((p, _)) => (p, state.model.rsplit('/').next().unwrap_or(p)),
+        None => ("", state.model.as_str()),
+    };
+    let effort = state.effort.clone().unwrap_or_else(|| "—".to_string());
+    let effort_len = effort.chars().count();
+    let profile: String = state.variant.trim().to_string();
+    // Fixed cells around the (possibly truncated) model: each present
+    // leading segment costs its text plus one ` · ` separator, and the
+    // effort costs one more separator.
+    let leading = |text: &str| {
+        if text.is_empty() {
+            0
+        } else {
+            text.chars().count() + 3
+        }
+    };
+    let fixed = leading(&profile) + leading(provider) + 3 + effort_len;
+    // Over-wide: keep profile + provider + effort, middle-ellipsis the
+    // model. `fixed + 1` reserves the ellipsis itself.
+    let model_shown: String = if fixed + model.chars().count() <= max_w {
+        model.to_string()
+    } else {
+        let keep = max_w.saturating_sub(fixed + 1);
+        if keep > 1 {
+            let m: String = model.chars().take(keep.saturating_sub(1)).collect();
+            format!("{m}…")
+        } else {
+            "…".to_string()
+        }
+    };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if !profile.is_empty() {
+        spans.push(Span::styled(
+            profile,
+            Style::default().fg(th.body).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(" · ", Style::default().fg(th.dim)));
+    }
+    if !provider.is_empty() {
+        spans.push(Span::styled(
+            provider.to_string(),
+            Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(" · ", Style::default().fg(th.dim)));
+    }
+    spans.push(Span::styled(model_shown, Style::default().fg(th.body)));
+    spans.push(Span::styled(" · ", Style::default().fg(th.dim)));
+    spans.push(Span::styled(effort, Style::default().fg(th.emphasis)));
+    spans
+}
+
+/// Input block at the foot of the left column: row 0 is the
+/// `profile · provider · model · effort` model status line (the profile
+/// segment appears only while an agent profile is active), row 1 is
+/// `> ` plus the draft (or the dim italic placeholder when the draft
+/// is empty). Exactly 2 rows tall; zero chrome.
+fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
+    let th = &state.theme;
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let w = area.width as usize;
+    f.render_widget(
+        Paragraph::new(Line::from(composer_variant_spans(state, th, w))),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    if area.height < 2 {
+        return;
+    }
+    let mut prompt = vec![Span::styled(
+        "> ",
+        Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+    )];
+    prompt.extend(composer_prompt_spans(state, th, w.saturating_sub(2)));
+    f.render_widget(
+        Paragraph::new(Line::from(prompt)),
+        Rect::new(area.x, area.y + 1, area.width, 1),
+    );
+}
+
+/// Health alert strip: one amber line directly above the footer, shown
+/// only when something is actually wrong (failing MCP server, dead
+/// gateway, stuck outbox, overdue scheduled job). Empty alerts render
+/// nothing — the strip never takes space when Pantheon is healthy.
+fn render_alerts(f: &mut Frame, area: Rect, state: &TuiState) {
+    if area.height == 0 || area.width == 0 || state.health_alerts.is_empty() {
+        return;
+    }
+    let th = &state.theme;
+    let text = format!("{} {}", icon::WARN, state.health_alerts.join(" · "));
+    let w = area.width as usize;
+    let clipped: String = text.chars().take(w.saturating_sub(1)).collect();
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            clipped,
+            Style::default().fg(th.warning),
+        )))
+        .style(Style::default().bg(th.bg)),
+        area,
+    );
+}
+
+/// One-line footer under the body: left is the compact live state word
+/// (`✓ ready`, the braille working spinner, `awaiting approval` /
+/// `awaiting input`, vim mode prefix); right is
+/// `{tokens} ({pct}%) | / commands`. A pending rewind
+/// confirmation takes over the whole bar so the question is impossible
+/// to miss.
+fn render_footer(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
     if let Some(offer) = &state.rewind_offer {
         let text = format!(
@@ -2774,8 +3846,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
         f.render_widget(bar, area);
         return;
     }
-    // Braille spinner for the working state, advanced by tick().
-    const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let mut sweeping = false;
     let (icon, color, word): (String, Color, String) = if state.pending_approval.is_some() {
         ("●".to_string(), th.warning, "awaiting approval".to_string())
     } else if state.pending_clarify.is_some() {
@@ -2796,80 +3867,110 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
     } else if state.ready {
         ("✓".to_string(), th.success, "ready".to_string())
     } else {
-        let frame = SPINNER[(state.spinner_tick as usize) % SPINNER.len()];
-        (frame.to_string(), th.success, "working".to_string())
+        // Traveling highlight through the dynamic status string while the
+        // turn is live: a soft purplish light sweeping left→right across
+        // its characters, looping until the turn completes. No spinner,
+        // no blinking, no layout change.
+        sweeping = true;
+        (String::new(), th.dim, String::new())
     };
     // Vim mode rides along in the status word; absent when vim is off.
-    let word = match state.vim.status_label() {
-        Some(mode) => format!("{mode} · {word}"),
-        None => word,
+    let vim_prefix: Option<String> = state.vim.status_label().map(|m| format!("{m} · "));
+    let left_text = if sweeping {
+        match &vim_prefix {
+            Some(p) => format!("{p}{}", state.sweep.text()),
+            None => state.sweep.text().to_string(),
+        }
+    } else {
+        let word = match &vim_prefix {
+            Some(p) => format!("{p}{word}"),
+            None => word,
+        };
+        format!("{icon} {word}")
     };
-    let live_tokens = state.tokens_used + state.turn_estimate;
-    let ctx = if state.tokens_max > 0 {
-        format!(
-            "{:.0}%",
-            100.0 * live_tokens as f64 / state.tokens_max as f64
-        )
+    // Left-side spans: the sweep renders one span per character with a
+    // smooth falloff around the sweep position; every other state is a
+    // single bold span.
+    let left_spans: Vec<Span> = if sweeping {
+        let mut v: Vec<Span> = Vec::new();
+        if let Some(p) = &vim_prefix {
+            v.push(Span::styled(p.clone(), Style::default().fg(th.dim)));
+        }
+        v.extend(state.sweep.render(th.dim, activity::SWEEP_PEAK));
+        v
+    } else {
+        vec![Span::styled(
+            left_text.clone(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )]
+    };
+    let live = state.tokens_used + state.turn_estimate;
+    let pct = if state.tokens_max > 0 {
+        format!("{:.0}%", 100.0 * live as f64 / state.tokens_max as f64)
     } else {
         "—".to_string()
     };
-    let cost = format!("${:.2}", state.cost_cents as f64 / 100.0);
-    let hints = if state.pending_approval.is_some() {
-        "a approve · d deny · esc cancel"
-    } else if state.pending_clarify.is_some() {
-        "1-9 answer · enter send · esc cancel"
-    } else if state.pending_confirm.is_some() {
-        "a confirm · d dismiss"
-    } else if state.overview {
-        "↑↓ nav · enter open · ^b chat · ^q quit"
-    } else {
-        "esc cancel · ^b overview · ^q quit"
-    };
-    let turn = state
-        .display_turn_no()
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "–".to_string());
-    let mut text = format!(
-        "{icon} {word} │ turn {turn} │ tools {} │ ctx {ctx} · {cost} │ {hints}",
-        state.tools_used,
+    let left = left_text;
+    let right = format!(
+        "{} ({}) | / commands",
+        statusbar::fmt_count(live as u64),
+        pct
     );
-    // Shed the hints first on narrow terminals; the state always fits.
     let max = area.width as usize;
-    if max > 0 && text.chars().count() > max {
-        text = format!(
-            "{icon} {word} │ turn {turn} │ tools {} │ ctx {ctx} · {cost}",
-            state.tools_used,
-        );
-    }
-    if max > 0 && text.chars().count() > max {
-        text = text.chars().take(max.saturating_sub(1)).collect();
-    }
-    let prefix = format!("{icon} {word}");
-    let bar = Paragraph::new(Line::from(vec![
-        Span::styled(
-            prefix.clone(),
+    // Shed the right side first on narrow terminals; the state always fits.
+    let shed = max > 0 && left.chars().count() + 3 + right.chars().count() > max;
+    let line = if shed {
+        // Narrow: clip the plain text. The sweep is decorative — static
+        // dim text survives the shed.
+        let mut text = left.clone();
+        if text.chars().count() > max {
+            text = text.chars().take(max.saturating_sub(1)).collect();
+        }
+        Line::from(vec![Span::styled(
+            text,
             Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            text[prefix.len()..].to_string(),
-            Style::default().fg(th.dim),
-        ),
-    ]));
-    f.render_widget(bar, area);
+        )])
+    } else {
+        // Right-align the right side: pad between left and right.
+        let gap = max.saturating_sub(left.chars().count() + right.chars().count());
+        let mut spans = left_spans;
+        spans.push(Span::raw(" ".repeat(gap)));
+        spans.push(Span::styled(right, Style::default().fg(th.dim)));
+        Line::from(spans)
+    };
+    f.render_widget(Paragraph::new(line), area);
 }
 
-/// Draw the persistent top header bar.
-/// One-line header: identity, not telemetry. Telemetry lives in the
-/// status bar and the sidebar; the header just says where you are.
-fn render_header(f: &mut Frame, area: Rect, state: &TuiState) {
+/// Right sidebar: session title + mode tag, and the switchable bottom
+/// card (agent view | todo view, `^g`). The whole rect is painted with
+/// the panel wash first; column separation is the divider column's bg
+/// tint — zero borders, zero box-drawing. The bottom card pins to the
+/// bottom (tail-anchored: the latest activity always wins).
+fn render_sidebar(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
-    // Session name: the generated title when the run has one, else the
-    // run id stem. Never an empty string.
-    let session_name = state
+    // Panel wash over the whole rect: this fill IS the column separation.
+    f.render_widget(
+        Paragraph::new("").style(Style::default().bg(th.panel)),
+        area,
+    );
+    if area.width < 12 || area.height < 6 {
+        return;
+    }
+    let dim = Style::default().fg(th.dim);
+    let wash =
+        |lines: Vec<Line<'static>>| Paragraph::new(lines).style(Style::default().bg(th.panel));
+    let w = area.width as usize;
+    let clip = |text: &str| -> String { text.chars().take(w.saturating_sub(2)).collect() };
+
+    // TOP card: the session title, then a subtle dim mode tag
+    // ("Build"/"Plan"). The activity status heads the task list in the
+    // agent view below instead — it describes the tasks, so it sits
+    // with them. No bright boxes — the tag is plain dim text.
+    let title = state
         .title
         .as_deref()
         .filter(|t| !t.trim().is_empty())
-        .map(|t| t.to_string())
+        .map(str::to_string)
         .unwrap_or_else(|| {
             state
                 .session_id
@@ -2878,150 +3979,412 @@ fn render_header(f: &mut Frame, area: Rect, state: &TuiState) {
                 .unwrap_or(&state.session_id)
                 .to_string()
         });
-    let provider = state.model.split('/').next().unwrap_or(&state.model);
-    let model = state.model.rsplit('/').next().unwrap_or(&state.model);
-    let elapsed = state.elapsed;
-    let ctx = if state.tokens_max > 0 {
-        format!(
-            "{:.0}%",
-            100.0 * state.tokens_used as f64 / state.tokens_max as f64
-        )
-    } else {
-        "?".to_string()
-    };
-    let mut title = format!(
-        "◈ PANTHEON · {session_name} · {provider} · {model} · {:02}:{:02}:{:02} · {ctx}",
-        elapsed.as_secs() / 3600,
-        (elapsed.as_secs() % 3600) / 60,
-        elapsed.as_secs() % 60,
-    );
-    // Truncate the middle on narrow terminals so the PANTHEON mark and
-    // the context readout survive. Applies at every width: the header is
-    // one line and must never wrap or hard-clip, even at tiny widths.
-    let max = area.width as usize;
-    if max > 0 && title.chars().count() > max {
-        title = if max > 24 {
-            let keep = max.saturating_sub(24);
-            let head: String = title.chars().take(keep).collect();
-            let tail: String = title
-                .chars()
-                .rev()
-                .take(20)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect();
-            format!("{head}…{tail}")
-        } else {
-            // Tiny terminal: keep the mark and the context readout.
-            overview::middle_ellipsis(&format!("◈ PANTHEON · {ctx}"), max)
-        };
-    }
-    let header = Paragraph::new(Line::from(Span::styled(
-        title,
-        Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+    let mut top: Vec<Line> = Vec::new();
+    top.push(Line::from(Span::styled(
+        clip(&title),
+        Style::default().fg(th.body).add_modifier(Modifier::BOLD),
     )));
-    f.render_widget(header, area);
+    top.push(Line::from(Span::styled(
+        if state.plan_mode { "Plan" } else { "Build" },
+        dim,
+    )));
+    // Paint: the top card at the top, the switchable bottom card flowing
+    // downward right beneath it (top-anchored: content sits high).
+    let h = area.height as usize;
+    let top_h = top.len().min(h);
+    f.render_widget(
+        wash(top.into_iter().take(top_h).collect()),
+        Rect::new(area.x, area.y, area.width, top_h as u16),
+    );
+    let avail = h.saturating_sub(top_h);
+    if avail >= 4 {
+        let card = Rect::new(area.x, area.y + top_h as u16, area.width, avail as u16);
+        match state.sidebar_view {
+            SidebarView::Agent => activity::render_agent_card(f, card, state),
+            SidebarView::Todo => render_sidebar_todos(f, card, state),
+        }
+    }
 }
 
-/// Session sidebar (chat view, wide terminals): model, context bar,
-/// usage, and activity. `mini` collapses it to counts on medium
-/// terminals; it hides entirely below that.
-fn render_sidebar(f: &mut Frame, area: Rect, state: &TuiState, mini: bool) {
-    let th = &state.theme;
-    let dim = Style::default().fg(th.dim);
-    let pct = if state.tokens_max > 0 {
-        (100.0 * state.tokens_used as f64 / state.tokens_max as f64).clamp(0.0, 100.0)
-    } else {
-        0.0
-    };
-    let over = pct >= 80.0;
-    let mut lines: Vec<Line> = Vec::new();
-    if mini {
-        lines.push(Line::from(Span::styled("ctx", dim)));
-        lines.push(Line::from(Span::styled(
-            format!("{pct:.0}%"),
-            Style::default().fg(if over { th.failure } else { Color::Reset }),
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("cost", dim)));
-        lines.push(Line::from(format!(
-            "${:.2}",
-            state.cost_cents as f64 / 100.0
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("tools", dim)));
-        lines.push(Line::from(format!("{}", state.tools_used)));
-    } else {
-        lines.push(Line::from(Span::styled("model", dim)));
-        lines.push(Line::from(Span::styled(
-            state.model.clone(),
-            Style::default().fg(Color::Reset),
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("context", dim)));
-        // 20-cell bar; red past 80%.
-        let cells = 20usize;
-        let filled = ((pct / 100.0) * cells as f64).round() as usize;
-        let mut bar: Vec<Span> = Vec::with_capacity(cells);
-        for i in 0..cells {
-            let (ch, color) = if i < filled {
-                ('█', if over { th.failure } else { th.success })
-            } else {
-                ('░', th.dim)
-            };
-            bar.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-        }
-        lines.push(Line::from(bar));
-        lines.push(Line::from(Span::styled(
-            format!("{pct:.0}%"),
-            Style::default().fg(if over { th.failure } else { th.dim }),
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("usage", dim)));
-        let in_s = state
-            .turn_in
-            .map(|n| format!("{n}"))
-            .unwrap_or_else(|| "—".to_string());
-        let out_s = state
-            .turn_out
-            .map(|n| format!("{n}"))
-            .unwrap_or_else(|| "—".to_string());
-        lines.push(Line::from(format!("in   {in_s}")));
-        lines.push(Line::from(format!("out  {out_s}")));
-        lines.push(Line::from(format!(
-            "cost ${:.4}",
-            state.cost_cents as f64 / 100.0
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("activity", dim)));
-        lines.push(Line::from(format!("turns {}", state.turns_completed)));
-        lines.push(Line::from(format!("tools {}", state.tools_used)));
+/// Sidebar bottom card, Todo view: the same ☒/⊞/☐ card as the
+/// transcript, repainted on the panel wash. Top-anchored like the
+/// activity card so the list sits high in the column.
+fn render_sidebar_todos(f: &mut Frame, area: Rect, state: &TuiState) {
+    if area.width < 12 || area.height == 0 {
+        return;
     }
-    let para = Paragraph::new(lines).block(
-        Block::bordered()
-            .border_type(BorderType::Rounded)
-            .title(Span::styled(" Session ", dim)),
+    let th = &state.theme;
+    let width = area.width as usize;
+    let dim = Style::default().fg(th.dim);
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(
+            "Todos",
+            Style::default().fg(th.dim).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    if state.todo_items.is_empty() {
+        lines.push(Line::from(Span::styled("No to-dos — /todos to plan", dim)));
+    } else {
+        for line in crate::todo_card::todo_card_lines(&state.todo_items) {
+            lines.push(clip_line_spans(line, width));
+        }
+    }
+    let avail = area.height as usize;
+    let shown: Vec<Line> = if lines.len() <= avail {
+        lines
+    } else {
+        let mut it = lines.into_iter();
+        let h0 = it.next();
+        let h1 = it.next();
+        let rest: Vec<Line> = it.collect();
+        let keep = avail.saturating_sub(2);
+        let skip = rest.len().saturating_sub(keep);
+        h0.into_iter()
+            .chain(h1)
+            .chain(rest.into_iter().skip(skip))
+            .collect()
+    };
+    let h = shown.len().min(avail);
+    if h == 0 {
+        return;
+    }
+    // Top-anchored like the activity card: the checklist sits high.
+    f.render_widget(
+        Paragraph::new(shown.into_iter().take(h).collect::<Vec<_>>())
+            .style(Style::default().bg(th.panel)),
+        Rect::new(area.x, area.y, area.width, h as u16),
     );
-    f.render_widget(para, area);
+}
+
+/// Rebuild a [`Line`] as `'static`, clipping its spans to `max` chars.
+fn clip_line_spans(line: Line, max: usize) -> Line<'static> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for sp in line.spans {
+        if used >= max {
+            break;
+        }
+        let text: String = sp.content.chars().take(max - used).collect();
+        used += text.chars().count();
+        out.push(Span::styled(text, sp.style));
+        if used >= max {
+            break;
+        }
+    }
+    Line::from(out)
+}
+
+/// `12.3s`, `850ms` — compact duration for the Activity card.
+fn fmt_dur(d: Duration) -> String {
+    if d.as_secs() >= 1 {
+        format!("{:.1}s", d.as_secs_f64())
+    } else {
+        format!("{}ms", d.as_millis())
+    }
+}
+
+/// Umar's brand purple gradient, top to bottom: #7223FF → #4B00CD → #0C0046.
+const WORDMARK_TOP: (u8, u8, u8) = (114, 35, 255);
+const WORDMARK_MID: (u8, u8, u8) = (75, 0, 205);
+const WORDMARK_BOT: (u8, u8, u8) = (12, 0, 70);
+
+/// Chunky 5-row PANTHEON wordmark, 47 columns wide.
+const WORDMARK: [&str; 5] = [
+    "█████  ███  █   █ █████ █   █ █████  ███  █   █",
+    "█   █ █   █ ██  █   █   █   █ █     █   █ ██  █",
+    "█████ █████ █ █ █   █   █████ ████  █   █ █ █ █",
+    "█     █   █ █  ██   █   █   █ █     █   █ █  ██",
+    "█     █   █ █   █   █   █   █ █████  ███  █   █",
+];
+
+/// Wordmark row color: vertical gradient TOP → MID → BOT.
+fn wordmark_color(row: usize) -> Color {
+    let t = (row as f64 / 4.0).clamp(0.0, 1.0);
+    let lerp = |a: u8, b: u8, t: f64| (a as f64 + (b as f64 - a as f64) * t).round() as u8;
+    let (r, g, b) = if t <= 0.5 {
+        let u = t * 2.0;
+        (
+            lerp(WORDMARK_TOP.0, WORDMARK_MID.0, u),
+            lerp(WORDMARK_TOP.1, WORDMARK_MID.1, u),
+            lerp(WORDMARK_TOP.2, WORDMARK_MID.2, u),
+        )
+    } else {
+        let u = (t - 0.5) * 2.0;
+        (
+            lerp(WORDMARK_MID.0, WORDMARK_BOT.0, u),
+            lerp(WORDMARK_MID.1, WORDMARK_BOT.1, u),
+            lerp(WORDMARK_MID.2, WORDMARK_BOT.2, u),
+        )
+    };
+    Color::Rgb(r, g, b)
+}
+
+/// Center `line` in `width` columns (pads left; over-wide lines pass
+/// through unpadded and clip as usual).
+fn centered_line(line: Line<'static>, width: usize) -> Line<'static> {
+    let w = line.width();
+    if w >= width {
+        return line;
+    }
+    let mut spans = vec![Span::raw(" ".repeat((width - w) / 2))];
+    spans.extend(line.spans);
+    Line::from(spans)
+}
+
+/// Refresh the splash/sidebar MCP segment from the live manager:
+/// server names with their current status.
+fn refresh_mcp_segment(state: &mut TuiState, session: &Session) {
+    state.mcp_servers = session
+        .mcp_manager
+        .health()
+        .iter()
+        .map(|h| {
+            let status = match h.status {
+                pantheon_mcp::manager::ServerStatus::Ready => "ready",
+                pantheon_mcp::manager::ServerStatus::Connecting => "connecting",
+                pantheon_mcp::manager::ServerStatus::Failed => "failed",
+                pantheon_mcp::manager::ServerStatus::Backoff => "backoff",
+                pantheon_mcp::manager::ServerStatus::Unapproved => "unapproved",
+                pantheon_mcp::manager::ServerStatus::Disabled => "disabled",
+            };
+            (h.name.clone(), status.to_string())
+        })
+        .collect();
+}
+
+/// Pure health-alert builder: failing MCP servers, a dead gateway
+/// service, a stuck gateway outbox, and overdue/missed scheduled jobs.
+/// Kept pure so tests pin the alert rules without touching the system.
+fn health_alerts(
+    mcp_servers: &[(String, String)],
+    gw_installed: bool,
+    gw_active: bool,
+    outbox_pending: usize,
+    jobs: &[pantheon_scheduler::ScheduledJob],
+    now_ms: i64,
+) -> Vec<String> {
+    let mut alerts = Vec::new();
+    for (name, status) in mcp_servers {
+        match status.as_str() {
+            "failed" => alerts.push(format!("MCP \"{name}\" failed")),
+            "backoff" => alerts.push(format!("MCP \"{name}\" backing off")),
+            "unapproved" => alerts.push(format!("MCP \"{name}\" needs approval")),
+            _ => {}
+        }
+    }
+    if gw_installed && !gw_active {
+        alerts.push("gateway installed but not running".to_string());
+    }
+    if outbox_pending > 0 {
+        alerts.push(format!("gateway outbox: {outbox_pending} queued"));
+    }
+    for sj in jobs {
+        let job = &sj.job;
+        if job.paused {
+            continue;
+        }
+        let short: String = job.id.chars().take(24).collect();
+        match &job.kind {
+            pantheon_scheduler::ScheduleKind::Interval { every_ms } => {
+                if let Some(last) = sj.last_run {
+                    if now_ms - last > (*every_ms as i64) * 2 {
+                        alerts.push(format!("schedule \"{short}\" overdue"));
+                    }
+                }
+            }
+            pantheon_scheduler::ScheduleKind::OneShot { at_ms } => {
+                if sj.last_run.is_none() && *at_ms < now_ms {
+                    alerts.push(format!("schedule \"{short}\" missed"));
+                }
+            }
+            pantheon_scheduler::ScheduleKind::Cron { .. } => {}
+            // Webhook jobs fire on inbound calls; no clock-based overdue.
+            pantheon_scheduler::ScheduleKind::Webhook { .. } => {}
+        }
+    }
+    alerts
+}
+
+/// Refresh the cached health alerts (at most every 30s). Called from
+/// the render path so the bottom strip stays current without
+/// per-frame probes.
+fn refresh_health(state: &mut TuiState) {
+    let due = state
+        .health_checked_at
+        .map(|t| t.elapsed().as_secs() >= 30)
+        .unwrap_or(true);
+    if !due {
+        return;
+    }
+    state.health_checked_at = Some(std::time::Instant::now());
+    let gw = crate::gateway::gateway_status();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let jobs = crate::schedule::load_jobs_public(&crate::terminal::data_dir());
+    state.health_alerts = health_alerts(
+        &state.mcp_servers,
+        gw.installed,
+        gw.active,
+        gw.outbox_pending,
+        &jobs,
+        now_ms,
+    );
+}
+
+/// The splash's bottom line: `● N MCP /mcp · M plugins /plugins` left,
+/// version right.
+fn render_splash_bottom(f: &mut Frame, area: Rect, state: &TuiState) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let th = &state.theme;
+    let w = area.width as usize;
+    let left = format!(
+        "● {} MCP /mcp · {} plugin{} /plugins",
+        state.mcp_servers.len(),
+        state.plugin_count,
+        if state.plugin_count == 1 { "" } else { "s" },
+    );
+    let right = format!("v{}", env!("CARGO_PKG_VERSION"));
+    // The trailing space after the left segment counts as a cell.
+    let gap = w.saturating_sub(left.chars().count() + 1 + right.chars().count());
+    let brow = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!("{left} "), Style::default().fg(th.success)),
+            Span::raw(" ".repeat(gap)),
+            Span::styled(right, Style::default().fg(th.dim)),
+        ])),
+        brow,
+    );
+}
+
+/// New-session splash: big gradient PANTHEON wordmark, update hint,
+/// centered composer input, and a bottom line with plugin/MCP counts +
+/// version. Rendered while the transcript is empty (fresh or /clear'ed
+/// session). The centered input mirrors `state.input` — the same draft
+/// the composer edits — so typing works before the first block exists.
+fn render_splash(f: &mut Frame, area: Rect, state: &TuiState) {
+    let th = &state.theme;
+    let w = area.width as usize;
+    let h = area.height as usize;
+
+    if w < 30 || h < 10 {
+        // Tiny terminal: wordmark text only.
+        let mut lines = vec![Line::from(""), Line::from("")];
+        lines.push(centered_line(
+            Line::from(Span::styled(
+                "PANTHEON",
+                Style::default().fg(th.heading).add_modifier(Modifier::BOLD),
+            )),
+            w,
+        ));
+        f.render_widget(Paragraph::new(lines), area);
+        return;
+    }
+
+    let big = w >= 55;
+    let mut head: Vec<Line> = Vec::new();
+    if big {
+        for (r, row) in WORDMARK.iter().enumerate() {
+            head.push(centered_line(
+                Line::from(Span::styled(
+                    row.to_string(),
+                    Style::default()
+                        .fg(wordmark_color(r))
+                        .add_modifier(Modifier::BOLD),
+                )),
+                w,
+            ));
+        }
+    } else {
+        head.push(centered_line(
+            Line::from(Span::styled(
+                "PANTHEON",
+                Style::default().fg(th.heading).add_modifier(Modifier::BOLD),
+            )),
+            w,
+        ));
+    }
+    head.push(Line::from(""));
+    // Update hint, opencode-style; blank when up to date.
+    if let Some(tag) = &state.update_hint {
+        head.push(centered_line(
+            Line::from(Span::styled(
+                format!("pantheon update to install {tag}"),
+                Style::default().fg(th.emphasis),
+            )),
+            w,
+        ));
+    } else {
+        head.push(Line::from(""));
+    }
+    head.push(Line::from(""));
+
+    // Input zone: centered composer box (or the reflect card while
+    // proposals are pending — it owns the keyboard then, like the
+    // bottom row does), plus the dim key hint under it, opencode-style.
+    let box_w = 64.min(w.saturating_sub(8)).max(20) as u16;
+    let zone_rows: usize = if state.pending_reflect.is_some() {
+        9
+    } else {
+        5 // 4-row composer box + hint line
+    };
+    let top_pad = h.saturating_sub(head.len() + zone_rows + 1) / 2;
+
+    let mut lines: Vec<Line> = vec![Line::from(""); top_pad];
+    let head_len = head.len();
+    lines.extend(head);
+    f.render_widget(Paragraph::new(lines), area);
+
+    // The input zone sits right below the head block.
+    let zone_y = area.y + top_pad as u16 + head_len as u16;
+    if state.pending_reflect.is_some() {
+        let cw = (72usize).min(w.saturating_sub(4)) as u16;
+        let ch = (zone_rows as u16).min(area.y + area.height.saturating_sub(zone_y + 1));
+        if cw >= 20 && ch >= 5 {
+            let card = Rect::new(area.x + area.width.saturating_sub(cw) / 2, zone_y, cw, ch);
+            f.render_widget(Clear, card);
+            render_reflect_card(f, card, state);
+        }
+    } else {
+        let box_x = area.x + area.width.saturating_sub(box_w) / 2;
+        render_composer_box(
+            f,
+            Rect::new(box_x, zone_y, box_w, 4.min(area.height)),
+            state,
+        );
+        // Dim key hint under the box, right-aligned to its edge.
+        let hint = "shift+tab prev tab   / commands";
+        let hint_w = (hint.chars().count() as u16).min(box_w);
+        let hint_x = box_x + box_w.saturating_sub(hint_w);
+        if zone_y + 4 < area.y + area.height {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(th.dim)))),
+                Rect::new(hint_x, zone_y + 4, hint_w, 1),
+            );
+        }
+    }
 }
 
 /// Draw the conversation transcript with visual blocks per event type.
 ///
-/// Consumes `jump_to_block` (set by the timeline's Enter): the viewport
-/// pins so the target turn's first block sits at the top. Read-only
-/// otherwise — jumping never mutates the transcript.
+/// No border, no title: the transcript is the screen. Consumes
+/// `jump_to_block` (set by the timeline's Enter): the viewport pins so
+/// the target turn's first block sits at the top. Read-only otherwise —
+/// jumping never mutates the transcript. When the user scrolled up, a
+/// dim `Jump to latest ↓` marker anchors to the bottom-right.
 fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
     // Placements are rebuilt every frame: blocks only ever append, but a
     // rewind can drop them, and scroll changes every row.
     state.img.placements.clear();
     let th = &state.theme;
+    // The new-session splash owns the empty state (see render_main); the
+    // transcript never renders an empty welcome of its own.
     if state.blocks.is_empty() {
-        let mut welcome = crate::terminal::splash_lines(area.width, th);
-        welcome.push(Line::from(""));
-        welcome.push(Line::from("Ask me anything. /help for commands."));
-        let welcome = Paragraph::new(welcome).block(Block::bordered().title(" Transcript "));
-        f.render_widget(welcome, area);
         return;
     }
 
@@ -3039,12 +4402,51 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
         // the time the scroll math runs.
         let img = &mut state.img;
         let interrupted = state.interrupted;
+        // Live session token count for the tool-card tickers; copied
+        // up front so the blocks borrow below stays shared.
+        let live_tokens = state.tokens_used + state.turn_estimate;
         for (i, block) in state.blocks.iter().enumerate() {
             block_starts.push(lines.len());
             let is_last = i + 1 == block_count;
-            render_block(&mut lines, block, is_last, interrupted, th, img, area.width);
+            render_block(
+                &mut lines,
+                block,
+                is_last,
+                interrupted,
+                th,
+                img,
+                area.width,
+                live_tokens,
+            );
+            // Airy, opencode-style: messages breathe with two blank
+            // lines after them; compact cards keep one.
             lines.push(Line::from(""));
+            if matches!(
+                block.kind,
+                BlockKind::UserMessage(_) | BlockKind::AssistantMessage(_)
+            ) {
+                lines.push(Line::from(""));
+            }
         }
+    }
+
+    // Todo tail status: a single dim line, not the full checklist — the
+    // checklist's primary home is the sidebar's todo view (`^g`), and in
+    // narrow mode the live card renders inline in the transcript instead.
+    // Synced every frame by `refresh_todos`.
+    if !state.todo_items.is_empty() && state.sidebar_visible() {
+        use crate::todo_card::TodoStatus as CardStatus;
+        let done = state
+            .todo_items
+            .iter()
+            .filter(|i| i.status == CardStatus::Completed)
+            .count();
+        let total = state.todo_items.len();
+        lines.push(Line::from(Span::styled(
+            format!("Todos {done}/{total} done · see sidebar (^g)"),
+            Style::default().fg(state.theme.dim),
+        )));
+        lines.push(Line::from(""));
     }
 
     // Pin to the bottom: offset 0 shows the tail, and scrolling up reveals
@@ -3060,7 +4462,8 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
     }
     let off = max_scroll.saturating_sub(state.scroll_offset) as u16;
     // Viewport geometry for the post-draw image painter: `off` lines are
-    // scrolled off the top, content starts one row below the border.
+    // scrolled off the top, content starts at the area's first row (no
+    // border since the transcript went borderless).
     state.img.view = Some(crate::richtext::TranscriptView {
         x: area.x,
         y: area.y,
@@ -3069,16 +4472,33 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
         scroll_off: off as usize,
     });
     let text = Text::from(lines);
-    let para = Paragraph::new(text)
-        .block(Block::bordered().title(" Transcript "))
-        .scroll((off, 0));
+    let para = Paragraph::new(text).scroll((off, 0));
     f.render_widget(para, area);
+    // Scrolled up: offer the way back. Bottom-right, dim, one row.
+    if state.scroll_offset > 0 && area.height > 0 && area.width > 20 {
+        let label = "Jump to latest ↓";
+        let w = (label.chars().count() as u16 + 2).min(area.width);
+        let hint_area = Rect::new(
+            area.x + area.width.saturating_sub(w),
+            area.y + area.height - 1,
+            w,
+            1,
+        );
+        f.render_widget(Clear, hint_area);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {label} "),
+                Style::default().fg(th.dim),
+            ))),
+            hint_area,
+        );
+    }
 }
 
-/// Render message text with rich features: fenced mermaid blocks become
-/// Unicode diagrams, `$…$` math becomes Unicode approximations (both via
-/// [`crate::richtext`]), and image references become a placeholder line
-/// plus reserved rows the post-draw painter fills with a thumbnail.
+/// Render message text with rich features: text segments go through
+/// [`crate::markdown`] (headings, lists, tables, fences, inline styles),
+/// and image references become a placeholder line plus reserved rows the
+/// post-draw painter fills with a thumbnail.
 fn render_rich_text(
     lines: &mut Vec<Line>,
     text: &str,
@@ -3090,9 +4510,10 @@ fn render_rich_text(
     for seg in crate::richtext::segment_message(text) {
         match seg {
             crate::richtext::RichSegment::Text(t) => {
-                for line in t.lines() {
-                    lines.push(Line::from(format!("│  {line}")));
-                }
+                // Markdown rendering (headings, lists, tables, fences,
+                // inline styles) lives in `crate::markdown`; this only
+                // routes each text segment there.
+                lines.extend(crate::markdown::render_markdown(&t, th));
             }
             crate::richtext::RichSegment::Image(image) => {
                 let line_idx = lines.len();
@@ -3108,11 +4529,11 @@ fn render_rich_text(
                     dims,
                     index,
                 );
-                lines.push(Line::from(Span::styled(format!("│  {label}"), dim)));
+                lines.push(Line::from(Span::styled(label, dim)));
                 // Spacer rows the thumbnail paints over (label stays visible
                 // above it).
                 for _ in 1..rows {
-                    lines.push(Line::from("│"));
+                    lines.push(Line::from(""));
                 }
             }
         }
@@ -3207,18 +4628,21 @@ fn render_block(
     th: &theme::Theme,
     img: &mut crate::richtext::ImagePaintState,
     term_width: u16,
+    live_tokens: u32,
 ) {
     match &block.kind {
         BlockKind::UserMessage(text) => {
+            // Colored sender label, no chrome: whitespace + color are
+            // the only separators, opencode-style.
             lines.push(Line::from(Span::styled(
-                "╭─ You ──",
+                "You",
                 Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
             )));
             render_rich_text(lines, text, th, img, term_width);
         }
         BlockKind::AssistantMessage(text) => {
             lines.push(Line::from(Span::styled(
-                format!("╭─ {} Pantheon ──", icon::PANTHEON),
+                "Pantheon",
                 Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
             )));
             render_rich_text(lines, text, th, img, term_width);
@@ -3238,7 +4662,7 @@ fn render_block(
                 (icon::FAILURE, th.failure, "background task failed")
             };
             lines.push(Line::from(Span::styled(
-                format!("╭─ {glyph} {verb} bg-{task_id} · “{label}” ──"),
+                format!("{glyph} {verb} · “{label}” · bg-{task_id}"),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             )));
             render_rich_text(lines, output, th, img, term_width);
@@ -3251,13 +4675,13 @@ fn render_block(
             let dim = Style::default().fg(th.dim).add_modifier(Modifier::ITALIC);
             if is_last {
                 lines.push(Line::from(Span::styled(
-                    format!("┌─ {} reasoning ──", icon::THINKING),
+                    "◇ reasoning",
                     Style::default()
                         .fg(th.dim)
                         .add_modifier(Modifier::BOLD | Modifier::ITALIC),
                 )));
                 for line in text.lines().take(40) {
-                    lines.push(Line::from(Span::styled(format!("│  {line}"), dim)));
+                    lines.push(Line::from(Span::styled(line.to_string(), dim)));
                 }
             } else {
                 // Collapsed summary: first line of the thought + size hint.
@@ -3279,10 +4703,11 @@ fn render_block(
             name,
             args,
             ok,
-            call_id,
+            call_id: _,
             started,
             duration,
             error,
+            tokens,
         } => {
             let (glyph, col) = match ok {
                 // A tool still marked running after an interrupt was stopped
@@ -3293,30 +4718,39 @@ fn render_block(
                 Some(true) => (icon::SUCCESS, th.success),
                 Some(false) => (icon::FAILURE, th.failure),
             };
-            // Short call id (last 6 chars) disambiguates repeat calls of the
-            // same tool; the full id is one `y` yank away via /history.
-            let short_id: String = call_id
-                .chars()
-                .rev()
-                .take(6)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect();
-            let timing = match duration {
-                Some(d) => format!(" · {:.1}s", d.as_secs_f64()),
+            // Minimal single-line header: `⚙ Execute · 0.4s · 154.2k ✓`.
+            // The token count ticks live while the call runs and freezes
+            // at completion; cards completed before tracking simply omit
+            // it. Tool names render presentable, never raw registry ids.
+            let display = activity::tool_display_name(name);
+            let mut timing = match duration {
+                Some(d) => format!("{:.1}s", d.as_secs_f64()),
                 None => match started {
-                    Some(_) => " · …".to_string(),
+                    Some(_) => "…".to_string(),
                     None => String::new(),
                 },
             };
-            lines.push(Line::from(Span::styled(
-                format!("┌─ {} {name} ── {glyph}{timing}#{short_id}", icon::TOOL),
-                Style::default().fg(col),
-            )));
+            if !timing.is_empty() {
+                timing = format!(" · {timing}");
+            }
+            let count = match (tokens, ok) {
+                (Some(t), _) => Some(statusbar::fmt_count(*t as u64)),
+                (None, None) => Some(statusbar::fmt_count(live_tokens as u64)),
+                (None, Some(_)) => None,
+            };
+            let tool_dim = Style::default().fg(th.dim);
+            let mut header = vec![
+                Span::styled(format!("{} {display}", icon::TOOL), tool_dim),
+                Span::styled(timing, tool_dim),
+            ];
+            if let Some(c) = count {
+                header.push(Span::styled(format!(" · {c}"), tool_dim));
+            }
+            header.push(Span::styled(format!(" {glyph}"), Style::default().fg(col)));
+            lines.push(Line::from(header));
             if !args.is_empty() {
                 for line in args.lines().take(6) {
-                    lines.push(Line::from(format!("│  {line}")));
+                    lines.push(Line::from(Span::styled(format!("  {line}"), tool_dim)));
                 }
             }
             // Failure detail: the worker records the error text on the
@@ -3326,7 +4760,7 @@ fn render_block(
                 if !err.is_empty() {
                     for line in err.lines().take(10) {
                         lines.push(Line::from(Span::styled(
-                            format!("│  ✕ {line}"),
+                            format!("  ✕ {line}"),
                             Style::default().fg(th.failure),
                         )));
                     }
@@ -3335,14 +4769,78 @@ fn render_block(
         }
         BlockKind::Swarm { agents, task } => {
             lines.push(Line::from(Span::styled(
-                format!("┌─{} Swarm · {agents} agents", icon::AGENT),
+                format!("{} Swarm · {agents} agents", icon::AGENT),
                 Style::default().fg(th.primary),
             )));
-            lines.push(Line::from(format!("│  {task}")));
+            lines.push(Line::from(format!("  {task}")));
         }
         BlockKind::Status(text) => {
             lines.push(Line::from(Span::styled(
                 format!("… {text}"),
+                Style::default().fg(th.dim),
+            )));
+        }
+        BlockKind::Todos(items) => {
+            // The opencode-style card, inline: same lines the sidebar's
+            // todo view renders, clipped to the transcript width.
+            for line in crate::todo_card::todo_card_lines(items) {
+                lines.push(clip_line_spans(line, term_width as usize));
+            }
+        }
+        BlockKind::ProviderError {
+            provider,
+            model,
+            kind,
+            message,
+            fallback,
+        } => {
+            // Rate limits get their own amber state: quota trouble must
+            // never read as a dead provider. Everything else is red.
+            let (glyph, color, head) = if kind.is_rate_limited() {
+                (icon::WARN, th.warning, "rate limited")
+            } else {
+                (icon::FAILURE, th.failure, "provider error")
+            };
+            let mut head_line = format!("{glyph} {head}");
+            if !provider.is_empty() || !model.is_empty() {
+                head_line.push_str(&format!(" · {provider}/{model}"));
+            }
+            if kind.is_rate_limited() {
+                if let Some(secs) = retry_after_secs_from_cause(message) {
+                    head_line.push_str(&format!(" · retry in {secs}s"));
+                }
+            }
+            lines.push(Line::from(Span::styled(
+                head_line,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )));
+            if !message.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {kind} · {message}"),
+                    Style::default().fg(th.dim),
+                )));
+            }
+            let outcome = match fallback {
+                FallbackOutcome::Engaged {
+                    provider: p,
+                    model: m,
+                } => {
+                    format!("fallback engaged → {p}/{m} (now active)")
+                }
+                FallbackOutcome::Exhausted => "no fallback available — chain exhausted".into(),
+                FallbackOutcome::NotRetryable => "not retryable — no fallback attempted".into(),
+                FallbackOutcome::Retrying {
+                    attempt,
+                    max_attempts,
+                    wait_secs,
+                } => format!("retrying {attempt}/{max_attempts} — waiting {wait_secs}s"),
+                FallbackOutcome::Recovered {
+                    attempt,
+                    max_attempts,
+                } => format!("recovered on retry {attempt}/{max_attempts}"),
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {outcome}"),
                 Style::default().fg(th.dim),
             )));
         }
@@ -3369,19 +4867,21 @@ fn render_block(
                 ))),
                 None => {
                     lines.push(Line::from(Span::styled(
-                        format!("┌─ ⚠ Permission required · {tool} ──"),
+                        format!("⚠ Permission required · {tool}"),
                         Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
                     )));
-                    lines.push(Line::from(format!("│  {sentence}")));
+                    lines.push(Line::from(Span::styled(
+                        sentence.clone(),
+                        Style::default().fg(th.body),
+                    )));
                     if !target.is_empty() {
                         lines.push(Line::from(Span::styled(
-                            format!("│  {target}"),
+                            target.clone(),
                             Style::default().fg(th.primary),
                         )));
                     }
-                    lines.push(Line::from("│"));
+                    lines.push(Line::from(""));
                     lines.push(Line::from(vec![
-                        Span::styled("│  ", Style::default().fg(th.dim)),
                         Span::styled(
                             "[a]",
                             Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
@@ -3415,26 +4915,29 @@ fn render_block(
                 }
                 None => {
                     lines.push(Line::from(Span::styled(
-                        "┌─ ? Clarify ──",
+                        "? Clarify",
                         Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
                     )));
                     for qline in question.lines().take(6) {
-                        lines.push(Line::from(format!("│  {qline}")));
+                        lines.push(Line::from(Span::styled(
+                            qline.to_string(),
+                            Style::default().fg(th.body),
+                        )));
                     }
                     for (i, opt) in options.iter().enumerate().take(9) {
                         let short: String = opt.chars().take(64).collect();
                         lines.push(Line::from(vec![
-                            Span::styled("│  ", Style::default().fg(th.dim)),
+                            Span::styled("  ", Style::default().fg(th.dim)),
                             Span::styled(
                                 format!("{}", i + 1),
                                 Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
                             ),
-                            Span::styled(format!("  {short}"), Style::default()),
+                            Span::styled(format!("  {short}"), Style::default().fg(th.body)),
                         ]));
                     }
-                    lines.push(Line::from("│"));
+                    lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
-                        "│  1-9 answer · type + enter for free text · esc cancel",
+                        "  1-9 answer · type + enter for free text · esc cancel",
                         Style::default().fg(th.dim),
                     )));
                 }
@@ -3445,26 +4948,20 @@ fn render_block(
             lines: cmd_lines,
             failed,
         } => {
-            // Every slash command echoes, then renders one titled result
-            // block. `/help` renders as a two-column table; error lines
-            // inside any block render red.
+            // Every slash command echoes, then renders its result lines.
+            // `/help` renders as a two-column table; error lines inside
+            // any block render red, and a failed command echoes red.
+            let echo_color = if *failed { th.failure } else { th.primary };
             lines.push(Line::from(vec![
                 Span::styled("❯ ", Style::default().fg(th.dim)),
                 Span::styled(
                     cmd.clone(),
-                    Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+                    Style::default().fg(echo_color).add_modifier(Modifier::BOLD),
                 ),
             ]));
             if *cmd == "/help" {
                 render_help_table(lines, cmd_lines, th);
             } else {
-                let title_color = if *failed { th.failure } else { th.primary };
-                lines.push(Line::from(Span::styled(
-                    format!("┌─ {cmd} ──"),
-                    Style::default()
-                        .fg(title_color)
-                        .add_modifier(Modifier::BOLD),
-                )));
                 for l in cmd_lines.iter().take(60) {
                     let t = l.trim_start();
                     let is_err = t.starts_with('✗')
@@ -3472,12 +4969,15 @@ fn render_block(
                         || t.starts_with("Error:")
                         || t.starts_with("failed");
                     if is_err {
-                        lines.push(Line::from(vec![
-                            Span::styled("│  ", Style::default().fg(th.dim)),
-                            Span::styled(l.clone(), Style::default().fg(th.failure)),
-                        ]));
+                        lines.push(Line::from(Span::styled(
+                            format!("  {l}"),
+                            Style::default().fg(th.failure),
+                        )));
                     } else {
-                        lines.push(Line::from(format!("│  {l}")));
+                        lines.push(Line::from(Span::styled(
+                            format!("  {l}"),
+                            Style::default().fg(th.body),
+                        )));
                     }
                 }
             }
@@ -3501,13 +5001,15 @@ fn render_block(
                 ))),
                 None => {
                     lines.push(Line::from(Span::styled(
-                        format!("┌─ ⚠ {label} ──"),
+                        format!("⚠ {label}"),
                         Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
                     )));
-                    lines.push(Line::from(format!("│  {sentence}")));
-                    lines.push(Line::from("│"));
+                    lines.push(Line::from(Span::styled(
+                        sentence.clone(),
+                        Style::default().fg(th.body),
+                    )));
+                    lines.push(Line::from(""));
                     lines.push(Line::from(vec![
-                        Span::styled("│  ", Style::default().fg(th.dim)),
                         Span::styled(
                             "[a]",
                             Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
@@ -3644,6 +5146,11 @@ enum TuiEvent {
         pending: Vec<pantheon_nightly::Proposal>,
         from_command: bool,
     },
+    /// The background update probe found a newer release. Sets
+    /// `state.update_hint` so the splash offers `pantheon update`.
+    UpdateAvailable {
+        tag: String,
+    },
 }
 
 /// Run the session view on a real terminal.
@@ -3692,6 +5199,9 @@ pub fn run_tui_session_with(
             std::process::exit(1);
         }
     };
+    // Tools screen (`[tools]` in config.toml). Absent section = every
+    // group enabled, the pre-Tools-screen default.
+    crate::config::apply_tool_enablement(&session, file_cfg.as_ref());
 
     // Run budgets from `[budget]` in config.toml (max turns, tool calls,
     // delegate depth, token cap). Absent = the runtime defaults; `/set`
@@ -3701,6 +5211,17 @@ pub fn run_tui_session_with(
             .as_ref()
             .map(config::config_budget)
             .unwrap_or_default(),
+    );
+    // The configured token cap, kept apart from the live budget: `/tokens`
+    // overwrites `budget.max_tokens` for the session, and `/tokens off`
+    // must fall back to this configured value rather than forget it.
+    // (0 = unset, same as `resolve_budget_section`.)
+    session.set_budget_max_tokens(
+        file_cfg
+            .as_ref()
+            .and_then(|c| c.budget.as_ref())
+            .and_then(|b| b.max_tokens)
+            .filter(|&v| v > 0),
     );
 
     // Tacit temporal awareness (`[temporal]` in config.toml). Absent
@@ -3726,6 +5247,22 @@ pub fn run_tui_session_with(
             .map(|s| config::resolve_websearch_section(&s))
             .unwrap_or_default(),
     );
+
+    // Speech-to-text (`[stt]` in config.toml) for the video fallback's
+    // audio leg. Absent = frames only, noted honestly in the summary.
+    session.set_stt_section(file_cfg.as_ref().and_then(|c| c.stt.clone()));
+
+    // MCP servers (`[mcp]` in config.toml + imported declarations under
+    // `<data_dir>/mcp/`). The config section is primary; declarations
+    // fill in names it does not define. The launcher stays off until
+    // either exists, and nothing runs before an explicit `mcp approve`.
+    {
+        let declarations = pantheon_migration::read_mcp_declarations(&data_dir);
+        session.set_mcp_config(config::resolve_mcp_section(
+            file_cfg.as_ref().and_then(|c| c.mcp.as_ref()),
+            &declarations,
+        ));
+    }
 
     // Attach the configured agent profile, if the config declares any. A
     // config with no `[agents]` table is not an error: those runs stay
@@ -3812,18 +5349,6 @@ pub fn run_tui_session_with(
 
     let mut state = TuiState::new(pantheon_runtime::new_run_id(), header_model, tokens_max);
 
-    // Phone approval notifications: opt-in `[approvals]` config.
-    // Off unless both channel and destination chat are set.
-    if let Some(cfg) = file_cfg.as_ref() {
-        if let Some(a) = cfg.approvals.as_ref() {
-            if let (Some(channel), Some(chat_id)) =
-                (a.notify_channel.clone(), a.notify_chat_id.clone())
-            {
-                state.approval_notify = Some((channel, chat_id));
-            }
-        }
-    }
-
     // Restore the saved theme before the first frame: load_theme_name
     // falls back to the default on missing config or unknown names.
     let saved_theme = theme::load_theme_name(&crate::terminal::data_dir());
@@ -3832,6 +5357,45 @@ pub fn run_tui_session_with(
     state.vim.enabled = vim::load_vim(&crate::terminal::data_dir());
     // Prime the git segment so the first frame already shows it.
     state.refresh_git();
+
+    // Status line / splash metadata: agent variant, reasoning effort, MCP
+    // servers, and installed-skill ("plugin") count. Read once here;
+    // `/mcp` and `/reasoning` refresh their own slices live.
+    state.variant = file_cfg
+        .as_ref()
+        .and_then(|c| c.resolve_profile(None).ok().flatten())
+        .map(|eff| eff.name)
+        .unwrap_or_default();
+    state.effort = Some(session.reasoning().as_str().to_string());
+    refresh_mcp_segment(&mut state, &session);
+    {
+        let extra_roots: Vec<std::path::PathBuf> = std::env::var("PANTHEON_SKILLS_DIR")
+            .map(|v| {
+                v.split(':')
+                    .filter(|s| !s.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let project_root =
+            std::env::current_dir().unwrap_or_else(|_| session.supervisor.data_dir().clone());
+        state.plugin_count = pantheon_exec::skills::discover_skills_enabled(
+            &session.supervisor.data_dir(),
+            &project_root,
+            &extra_roots,
+        )
+        .len();
+    }
+    // Background update probe: sets `update_hint` when a newer release
+    // exists, so the splash can offer `/update`. Silent on failure.
+    {
+        let txu = tx.clone();
+        std::thread::spawn(move || {
+            if let Some(tag) = crate::update::check_for_update() {
+                let _ = txu.send(TuiEvent::UpdateAvailable { tag });
+            }
+        });
+    }
 
     // A resume id means the caller already validated the run exists, so the
     // session opens onto it. Otherwise this is a new run.
@@ -4112,9 +5676,37 @@ fn do_goal(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
     state.add_status(format!("goal set ({max_iterations} iterations): {text}"));
 }
 
-/// `/tokens [n|off]` — show or set the per-run token cap. Strictly
-/// optional: the default is uncapped (`None`), Pantheon never requires
-/// it, and `[budget] max_tokens` only sets the session default.
+/// `/todos` — inspect the session's todo list. Read-only: the agent
+/// maintains the list through the `todo` tool (the runtime persists
+/// each replacement to the run's ledger); this is the operator's
+/// window into it, using the same glyphs as the transcript card.
+fn show_todos(state: &mut TuiState, session: &Arc<Session>) {
+    use pantheon_api::todo::TodoStatus;
+    let items = session.todo_list();
+    if items.is_empty() {
+        state.add_status("no todos — the agent plans multi-step work with the `todo` tool".into());
+        return;
+    }
+    let remaining = items
+        .iter()
+        .filter(|i| i.status != TodoStatus::Completed)
+        .count();
+    state.add_status(format!("working on {remaining} to-dos:"));
+    for item in &items {
+        let glyph = match item.status {
+            TodoStatus::Completed => "☒",
+            TodoStatus::InProgress => "⊞",
+            TodoStatus::Pending => "☐",
+        };
+        state.add_status(format!("  {glyph} {}", item.content));
+    }
+}
+
+/// `/tokens [n|off]` — show or set the per-request output cap: the most
+/// tokens the model may emit in one response. Strictly optional: the
+/// default is uncapped (`None`), Pantheon never requires it, and
+/// `[budget] max_tokens` only sets the session default. The winner is
+/// clamped to the session model's known maximum output.
 fn do_tokens(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
     let arg = cmd.strip_prefix("/tokens").map(str::trim).unwrap_or("");
     let mut budget = session.budget_snapshot();
@@ -4171,7 +5763,27 @@ fn do_set(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
     let (key, val) = match arg.split_once(char::is_whitespace) {
         Some((k, v)) => (k.to_lowercase(), v.trim().to_string()),
         None => {
-            state.add_status(format!("usage: /set <key> <value> — unknown: {arg}"));
+            // `/set max_turns` is a missing value, not an unknown key;
+            // say which one it is.
+            let known = matches!(
+                arg.to_lowercase().as_str(),
+                "max_turns"
+                    | "turns"
+                    | "max_tool_calls"
+                    | "tool_calls"
+                    | "max_delegate_depth"
+                    | "delegate_depth"
+                    | "depth"
+                    | "max_tokens"
+                    | "tokens"
+            );
+            if known {
+                state.add_status(format!("usage: /set {arg} <number> — value missing"));
+            } else {
+                state.add_status(format!(
+                    "unknown key: {arg} (max_turns, max_tool_calls, max_delegate_depth, max_tokens)"
+                ));
+            }
             return;
         }
     };
@@ -4231,10 +5843,12 @@ fn do_set(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
 /// `/nightly [on|off|status]` — the unified self-improvement pass,
 /// OpenClaw-`/dreaming` style. Bare `/nightly` runs a manual one-shot
 /// pass on a worker thread (eval-gating and replay can take minutes; the
-/// TUI never blocks). `on`/`off` persist `[nightly] enabled` to
-/// config.toml; `status` shows the toggle state plus the last pass
-/// summary. `/reflect` and `/consolidate` are kept as aliases: both run
-/// the same unified pass.
+/// TUI never blocks). `on`/`off` persist the explicit `[nightly] enabled`
+/// flag to config.toml (the same flag the dashboard toggle and a manual
+/// config edit write); `status` shows the resolved state with the
+/// reason, the model-pin presence, and the next scheduled run.
+/// `/reflect` and `/consolidate` are kept as aliases: both run the same
+/// unified pass.
 fn do_nightly(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEvent>, cmd: &str) {
     let data_dir = crate::terminal::data_dir();
     let arg = cmd
@@ -4243,22 +5857,35 @@ fn do_nightly(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEvent>, cmd:
         .or_else(|| cmd.strip_prefix("/consolidate"))
         .map(str::trim)
         .unwrap_or("");
-    match arg {
-        "on" => match crate::nightly_cli::persist_nightly_enabled(&data_dir, true) {
-            Ok(()) => state.add_status("nightly LLM steps: on (persisted to [nightly])".into()),
-            Err(e) => state.add_status(format!("nightly: {e}")),
-        },
-        "off" => match crate::nightly_cli::persist_nightly_enabled(&data_dir, false) {
-            Ok(()) => state.add_status("nightly LLM steps: off (persisted to [nightly])".into()),
-            Err(e) => state.add_status(format!("nightly: {e}")),
-        },
-        "status" => {
+    match crate::nightly_cli::NightlySub::parse(arg) {
+        crate::nightly_cli::NightlySub::On => {
+            match crate::nightly_cli::persist_nightly_enabled(&data_dir, true) {
+                Ok(()) => {
+                    state.add_status("nightly pass: on (persisted to [nightly])".into());
+                    // Explicit `true` enables the pass even with no model
+                    // pin — say so, and show how to pin one, instead of
+                    // pretending a pinned model is in play.
+                    if !crate::nightly_cli::nightly_pin_present(&data_dir) {
+                        for line in crate::nightly_cli::pin_guidance().lines() {
+                            state.add_status(line.to_string());
+                        }
+                    }
+                }
+                Err(e) => state.add_status(format!("nightly: {e}")),
+            }
+        }
+        crate::nightly_cli::NightlySub::Off => {
+            match crate::nightly_cli::persist_nightly_enabled(&data_dir, false) {
+                Ok(()) => state.add_status("nightly pass: off (persisted to [nightly])".into()),
+                Err(e) => state.add_status(format!("nightly: {e}")),
+            }
+        }
+        crate::nightly_cli::NightlySub::Status => {
             for line in crate::nightly_cli::status_line(&data_dir).lines() {
                 state.add_status(line.to_string());
             }
         }
-        "" | "--dry-run" | "-n" => {
-            let dry_run = !arg.is_empty();
+        crate::nightly_cli::NightlySub::Run { dry_run } => {
             if state.reflect_running {
                 state.add_status("nightly pass already running".into());
                 return;
@@ -4296,7 +5923,7 @@ fn do_nightly(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEvent>, cmd:
                 },
             );
         }
-        other => state.add_status(format!(
+        crate::nightly_cli::NightlySub::Unknown(other) => state.add_status(format!(
             "usage: /nightly [on|off|status|--dry-run] — unknown: {other}"
         )),
     }
@@ -4506,13 +6133,7 @@ fn answer_clarify(
 }
 
 /// Run a destructive slash command the user confirmed on the amber card.
-fn run_confirmed_action(
-    state: &mut TuiState,
-    session: &Arc<Session>,
-    tx: &std::sync::mpsc::Sender<TuiEvent>,
-    action: ConfirmAction,
-) {
-    let _ = tx;
+fn run_confirmed_action(state: &mut TuiState, action: ConfirmAction) {
     match action {
         ConfirmAction::ClearTranscript => {
             state.blocks.clear();
@@ -4520,7 +6141,6 @@ fn run_confirmed_action(
             state.add_status("transcript cleared".into());
         }
     }
-    let _ = session;
 }
 
 /// Send raw text as a message: slash commands dispatch, anything else
@@ -4878,6 +6498,10 @@ fn tui_loop(
                         }
                     }
                 }
+                TuiEvent::UpdateAvailable { tag } => {
+                    // Background update probe: only the splash reads it.
+                    state.update_hint = Some(tag);
+                }
                 TuiEvent::BgDone { task_id, result } => {
                     // A background task finished: record the terminal state,
                     // hand the result back into the transcript as a labeled
@@ -4898,6 +6522,13 @@ fn tui_loop(
                                 t.finish(output.clone());
                             } else {
                                 t.fail(output.clone());
+                            }
+                            // Settle any steps still marked running: the
+                            // task is over, so they are too.
+                            for s in t.steps.iter_mut() {
+                                if s.status == activity::StepStatus::Running {
+                                    s.finish(ok);
+                                }
                             }
                             (t.label.clone(), output, ok)
                         });
@@ -4942,9 +6573,13 @@ fn tui_loop(
                         .rev()
                         .find(|b| matches!(&b.kind, BlockKind::ToolCall { ok: None, .. }))
                     {
-                        if let BlockKind::ToolCall { ok, error, .. } = &mut block.kind {
+                        if let BlockKind::ToolCall {
+                            ok, error, tokens, ..
+                        } = &mut block.kind
+                        {
                             *ok = Some(false);
                             *error = Some(msg.clone());
+                            *tokens = Some(state.tokens_used + state.turn_estimate);
                         }
                     }
                     state.ready = true;
@@ -4985,6 +6620,11 @@ fn tui_loop(
         }
 
         state.tick();
+        // Real terminal size before any layout decision: the sidebar
+        // split, the inline todo card, and the transcript tail hint all
+        // read `state.term_width`.
+        state.term_width = terminal.size().map(|s| s.width).unwrap_or(80);
+        refresh_todos(state, &session);
         terminal.draw(|f| render(state, f))?;
 
         if event::poll(Duration::from_millis(100))? {
@@ -5000,11 +6640,15 @@ fn tui_loop(
                         }
                         KeyCode::Up => state.models_move(-1),
                         KeyCode::Down => state.models_move(1),
-                        KeyCode::Esc => state.models_close(),
+                        // Esc steps back to the provider list (which is
+                        // still open underneath); Esc there closes all.
+                        KeyCode::Esc => {
+                            state.models_close();
+                        }
                         KeyCode::Enter => {
                             let sel = state.models_sel;
                             let target = state.filtered_models().get(sel).cloned();
-                            state.models_close();
+                            state.providers_close();
                             if let Some(row) = target {
                                 if row.model_id.is_empty() {
                                     state.add_status(format!(
@@ -5027,8 +6671,137 @@ fn tui_loop(
                     terminal.draw(|f| render(state, f))?;
                     continue;
                 }
-                if state.history.is_some() {
+                if state.providers.is_some() {
                     match key.code {
+                        KeyCode::Char(c) => state.providers_input.push(c),
+                        KeyCode::Backspace => {
+                            state.providers_input.pop();
+                        }
+                        KeyCode::Up => state.providers_move(-1),
+                        KeyCode::Down => state.providers_move(1),
+                        KeyCode::Esc => state.providers_close(),
+                        KeyCode::Enter => {
+                            let sel = state.providers_sel;
+                            let target = state.filtered_providers().get(sel).cloned();
+                            if let Some(p) = target {
+                                // Drill in: the models view is scoped to
+                                // this provider only.
+                                let rows: Vec<ModelRow> = build_model_rows()
+                                    .into_iter()
+                                    .filter(|r| r.provider_id == p.provider_id)
+                                    .collect();
+                                state.models = Some(rows);
+                                state.models_input.clear();
+                                state.models_sel = 0;
+                            }
+                        }
+                        _ => {}
+                    }
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
+                if state.history.is_some() {
+                    // Inline rename captures everything except Esc/Enter.
+                    if state.history_rename.is_some() {
+                        match key.code {
+                            KeyCode::Esc => {
+                                state.history_rename = None;
+                            }
+                            KeyCode::Enter => {
+                                if let Some((id, buf)) = state.history_rename.take() {
+                                    let title = buf.trim().to_string();
+                                    if title.is_empty() {
+                                        state.add_status(
+                                            "rename: empty title, kept the old one".into(),
+                                        );
+                                    } else {
+                                        let ev = pantheon_api::events::Event::SessionTitled {
+                                            run_id: id.clone(),
+                                            title: title.clone(),
+                                            model: "user".into(),
+                                            source: "manual".into(),
+                                        };
+                                        match session.supervisor.emit(ev) {
+                                            Ok(()) => {
+                                                if id == state.session_id {
+                                                    state.title = Some(title.clone());
+                                                }
+                                                if let Ok(runs) =
+                                                    session.supervisor.ledger_list_runs(50)
+                                                {
+                                                    state.history = Some(
+                                                        pantheon_storage::Ledger::pin_home_first(
+                                                            runs,
+                                                        ),
+                                                    );
+                                                }
+                                                state.add_status(format!(
+                                                    "renamed \u{201c}{title}\u{201d}"
+                                                ));
+                                            }
+                                            Err(e) => state.add_status(format!("rename: {e}")),
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                if let Some((_, buf)) = state.history_rename.as_mut() {
+                                    buf.push(c);
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                if let Some((_, buf)) = state.history_rename.as_mut() {
+                                    buf.pop();
+                                }
+                            }
+                            _ => {}
+                        }
+                        state.tick();
+                        terminal.draw(|f| render(state, f))?;
+                        continue;
+                    }
+                    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                    match key.code {
+                        // Delete the selected session (ctrl+d). The home
+                        // session is ledger-protected; deleting the live
+                        // session's row keeps the live state going.
+                        KeyCode::Char('d') if ctrl => {
+                            let sel = state.history_sel;
+                            let target = state.filtered_history().get(sel).cloned();
+                            if let Some((id, _, _, _, _)) = target {
+                                let live = id == state.session_id;
+                                match session.supervisor.ledger_delete_run(&id) {
+                                    Ok(_) => {
+                                        if let Ok(runs) = session.supervisor.ledger_list_runs(50) {
+                                            state.history = Some(
+                                                pantheon_storage::Ledger::pin_home_first(runs),
+                                            );
+                                        }
+                                        state.history_move(0);
+                                        state.add_status(if live {
+                                            format!("deleted {id} (live session continues)")
+                                        } else {
+                                            format!("deleted {id}")
+                                        });
+                                    }
+                                    Err(e) => state.add_status(format!("delete: {e}")),
+                                }
+                            }
+                        }
+                        // Rename the selected session inline (ctrl+r).
+                        KeyCode::Char('r') if ctrl => {
+                            let sel = state.history_sel;
+                            let target = state.filtered_history().get(sel).cloned();
+                            if let Some((id, _, _, title, _)) = target {
+                                state.history_rename = Some((id, title.unwrap_or_default()));
+                            }
+                        }
+                        // Toggle all-projects vs this-project-only (ctrl+a).
+                        KeyCode::Char('a') if ctrl => {
+                            state.history_all_projects = !state.history_all_projects;
+                            state.history_sel = 0;
+                        }
                         KeyCode::Char(c) => state.history_input.push(c),
                         KeyCode::Backspace => {
                             state.history_input.pop();
@@ -5047,10 +6820,6 @@ fn tui_loop(
                                 // the run the loop opened on.
                                 switch_to_run(state, &session, &id, "resumed");
                                 refresh_tabs(state, &session);
-                                // The picker can be launched from the
-                                // mission-control overview: a pick lands in
-                                // chat, not back in the overview.
-                                state.overview = false;
                             }
                         }
                         _ => {}
@@ -5152,11 +6921,24 @@ fn tui_loop(
                         match key.code {
                             KeyCode::Esc => state.palette = None,
                             KeyCode::Enter => {
-                                run_cmd = p.filtered().get(p.sel).map(|(name, _)| {
-                                    // Strip the `[ARGS]` usage suffix so the
-                                    // command runs in its bare form.
-                                    name.split_whitespace().next().unwrap_or(name).to_string()
-                                });
+                                let matches = p.filtered();
+                                run_cmd = matches
+                                    .get(p.sel)
+                                    .map(|(name, _)| {
+                                        // Strip the `[ARGS]` usage suffix so the
+                                        // command runs in its bare form.
+                                        name.split_whitespace().next().unwrap_or(name).to_string()
+                                    })
+                                    .or_else(|| {
+                                        // No match: run the typed text as a
+                                        // slash command anyway. `/goal fix the
+                                        // tests` reaches its handler (with
+                                        // args), and a genuine typo lands on
+                                        // the unknown-command path with its
+                                        // did-you-mean, instead of a dead Enter.
+                                        let raw = p.input.trim();
+                                        (!raw.is_empty()).then(|| format!("/{raw}"))
+                                    });
                                 state.palette = None;
                             }
                             KeyCode::Up => p.move_sel(-1),
@@ -5231,14 +7013,17 @@ fn tui_loop(
                     match key.code {
                         KeyCode::Char('o') | KeyCode::Char('O') => state.toggle_timeline(),
                         KeyCode::Char('b') | KeyCode::Char('B') => {
-                            // Mission-control overview: same session, view
-                            // toggle — never a state split. Refresh on open
-                            // so the Sessions pane sees parked runs.
-                            state.overview = !state.overview;
-                            state.overview_sel = 0;
-                            if state.overview {
-                                refresh_tabs(state, &session);
-                            }
+                            // Toggle the session sidebar: the 75/25
+                            // (80/20) split at ≥100 cols, a floating
+                            // overlay below that (never open by default).
+                            // One unified view — the session underneath
+                            // never changes.
+                            state.toggle_sidebar();
+                        }
+                        KeyCode::Char('g') | KeyCode::Char('G') => {
+                            // Flip the sidebar's bottom card: activity
+                            // timeline | todo list.
+                            state.toggle_sidebar_view();
                         }
                         KeyCode::Char('t') | KeyCode::Char('T') => {
                             new_tab(state, &session, "new tab (unsaved until the first turn)");
@@ -5283,13 +7068,11 @@ fn tui_loop(
                 }
                 // Session tabs: Ctrl+Tab cycle, Alt+1..9 jump. Checked before
                 // the Char handler (Alt+1 arrives as Char('1')+ALT).
-                // Plain `[`/`]` cycle tabs only in mission-control
-                // overview with an empty composer: anywhere else the
-                // bracket must type into the chat input. Ctrl+Tab and
-                // Alt+digits stay global.
+                // Plain `[`/`]` always type into the chat input; Ctrl+Tab
+                // and Alt+digits stay global.
                 let bracket_key = matches!(key.code, KeyCode::Char('[') | KeyCode::Char(']'))
                     && key.modifiers.is_empty();
-                let tab_action = if bracket_key && !(state.overview && state.input.is_empty()) {
+                let tab_action = if bracket_key {
                     None
                 } else {
                     crate::tabs::tab_key_action(key.code, key.modifiers)
@@ -5325,19 +7108,18 @@ fn tui_loop(
                     terminal.draw(|f| render(state, f))?;
                     continue;
                 }
+                // Plain Tab toggles Build/Plan mode. The fullscreen
+                // editor, @ mention picker, and palette own Tab while
+                // open (handled above with `continue`), so reaching here
+                // means Tab never lands in the composer as whitespace.
+                if key.code == KeyCode::Tab && key.modifiers.is_empty() {
+                    state.toggle_plan_mode();
+                    state.apply_plan_mode_to_session(&session);
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
                 match key.code {
-                    // Overview nav: Up/Down moves, Enter opens. The
-                    // composer still types normally in overview.
-                    KeyCode::Up if state.overview => {
-                        state.overview_sel =
-                            (state.overview_sel + overview::NAV_ROWS - 1) % overview::NAV_ROWS;
-                    }
-                    KeyCode::Down if state.overview => {
-                        state.overview_sel = (state.overview_sel + 1) % overview::NAV_ROWS;
-                    }
-                    KeyCode::Enter if state.overview && !state.is_inputting => {
-                        overview_enter(state, &session);
-                    }
                     KeyCode::Char(c) => {
                         // A lone digit answers the pending clarify question
                         // directly; anything else (or a non-empty input)
@@ -5391,7 +7173,7 @@ fn tui_loop(
                             match c {
                                 'a' | 'A' | 'y' | 'Y' => {
                                     if let Some(action) = state.pending_confirm.take() {
-                                        run_confirmed_action(state, &session, tx, action);
+                                        run_confirmed_action(state, action);
                                     }
                                 }
                                 'd' | 'D' | 'n' | 'N' => {
@@ -5540,23 +7322,10 @@ fn tui_loop(
                                 // Start typing into the input box on the first
                                 // printable char. Without this the box never
                                 // becomes active, so slash commands never
-                                // reached the handler. In overview mode a
-                                // lone digit jumps to that tab instead.
+                                // reached the handler.
                                 _ => {
-                                    let digit_jump = state.overview
-                                        && c.to_digit(10).is_some_and(|d| d >= 1)
-                                        && state.tabs.jump(c.to_digit(10).unwrap() as usize);
-                                    if digit_jump {
-                                        if let Some(id) =
-                                            state.tabs.active_run_id().map(str::to_string)
-                                        {
-                                            switch_to_run(state, &session, &id, "resumed");
-                                            refresh_tabs(state, &session);
-                                        }
-                                    } else {
-                                        state.is_inputting = true;
-                                        state.input.push(c);
-                                    }
+                                    state.is_inputting = true;
+                                    state.input.push(c);
                                 }
                             }
                         }
@@ -5601,11 +7370,15 @@ fn tui_loop(
                         }
                     }
                     KeyCode::Esc => {
-                        // Decision cards own Esc: a single press resolves.
-                        // Approval: deny + cancel the turn (the pending
-                        // call never runs). Clarify: cancel the turn.
-                        // Confirm: dismiss.
-                        if state.pending_confirm.is_some() {
+                        // The narrow-terminal sidebar overlay owns Esc
+                        // while open: one press dismisses it, nothing
+                        // else happens.
+                        let overlay_open = state.sidebar_overlay
+                            && terminal.size().map(|sz| sz.width < 100).unwrap_or(false);
+                        if overlay_open {
+                            state.sidebar_overlay = false;
+                            state.show_sidebar = false;
+                        } else if state.pending_confirm.is_some() {
                             state.pending_confirm = None;
                             state.resolve_confirm_block(false);
                             state.status_line = "dismissed".into();
@@ -5714,7 +7487,10 @@ fn switch_agent(state: &mut TuiState, session: &Arc<Session>, name: &str) {
         }
     };
     match session.switch_agent(agent) {
-        Ok(()) => state.add_status(format!("now talking to {name}")),
+        Ok(()) => {
+            state.variant = name.to_string();
+            state.add_status(format!("now talking to {name}"))
+        }
         Err(e) => state.add_status(format!("/agent: {}", e.cause)),
     }
 }
@@ -5754,49 +7530,6 @@ fn agent_profiles(session: &Arc<Session>) -> Vec<(String, bool)> {
             (n, cur)
         })
         .collect()
-}
-
-/// Active collaborations with a one-line progress summary each.
-fn show_collaborations(state: &mut TuiState) {
-    let store = match collaboration_store() {
-        Ok(s) => s,
-        Err(msg) => {
-            state.add_status(format!("/collab: {msg}"));
-            return;
-        }
-    };
-    let active = match store.active_collaborations() {
-        Ok(c) => c,
-        Err(e) => {
-            state.add_status(format!("/collab: {}", e.cause));
-            return;
-        }
-    };
-    if active.is_empty() {
-        state.add_status("no active collaborations".into());
-        return;
-    }
-    for c in active {
-        let tasks = store
-            .tasks_in_collaboration(&c.collaboration_id)
-            .unwrap_or_default();
-        let done = tasks.iter().filter(|t| t.status.is_terminal()).count();
-        state.add_status(format!(
-            "{} \u{2022} {} \u{2022} {done}/{} tasks done",
-            c.collaboration_id,
-            c.objective,
-            tasks.len()
-        ));
-        for t in tasks {
-            state.add_status(format!(
-                "  {} {} \u{2192} {} [{}]",
-                t.task_id,
-                t.origin_agent,
-                t.assigned_agent.as_deref().unwrap_or("unassigned"),
-                t.status
-            ));
-        }
-    }
 }
 
 /// One agent's open tasks.
@@ -5855,14 +7588,46 @@ fn show_inbox(state: &mut TuiState, session: &Arc<Session>) {
 
 /// The durable collaboration store the TUI reads.
 ///
-/// Opens by path rather than going through the attached agent: `/collab`
-/// and `/tasks <other agent>` are inspection commands that must work when
-/// no agent is attached, and they are strictly read-only.
+/// Opens by path rather than going through the attached agent: `/tasks
+/// <other agent>` is an inspection command that must work when no agent
+/// is attached, and it is strictly read-only. (`/collab` no longer reads
+/// this store — it is deprecated in favor of the swarm system; the stored
+/// data is untouched.)
 fn collaboration_store() -> Result<pantheon_storage::CollaborationStore, String> {
     pantheon_storage::CollaborationStore::open(
         &crate::terminal::data_dir().join("collaboration.db"),
     )
     .map_err(|e| e.cause)
+}
+
+/// Distinct providers from model rows, alphabetical by label, with
+/// curated-model counts. Drives the `/models` provider picker; a
+/// provider with no catalog entries still lists (count 0) so its
+/// models stay reachable via `/model <provider> <id>`.
+fn provider_rows(rows: &[ModelRow]) -> Vec<ProviderRow> {
+    let mut seen = std::collections::HashSet::new();
+    let mut providers: Vec<ProviderRow> = Vec::new();
+    for r in rows {
+        if seen.insert(r.provider_id.clone()) {
+            providers.push(ProviderRow {
+                provider_id: r.provider_id.clone(),
+                provider_label: r.provider_label.clone(),
+                model_count: 0,
+            });
+        }
+    }
+    for p in providers.iter_mut() {
+        p.model_count = rows
+            .iter()
+            .filter(|r| r.provider_id == p.provider_id && !r.model_id.is_empty())
+            .count();
+    }
+    providers.sort_by(|a, b| {
+        a.provider_label
+            .to_lowercase()
+            .cmp(&b.provider_label.to_lowercase())
+    });
+    providers
 }
 
 /// Every selectable row for the /models browser: one per curated model,
@@ -6005,6 +7770,61 @@ fn export_transcript(blocks: &[TranscriptBlock], session_id: &str, format: &str)
                 ),
             ),
             BlockKind::Status(t) => ("status", t.clone()),
+            BlockKind::Todos(items) => {
+                use crate::todo_card::TodoStatus as CardStatus;
+                let remaining = items
+                    .iter()
+                    .filter(|i| i.status != CardStatus::Completed)
+                    .count();
+                let body = items
+                    .iter()
+                    .map(|i| {
+                        let g = match i.status {
+                            CardStatus::Completed => "x",
+                            CardStatus::InProgress => ">",
+                            CardStatus::Pending => " ",
+                        };
+                        format!("[{g}] {}", i.content)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ("todos", format!("working on {remaining} to-dos:\n{body}"))
+            }
+            BlockKind::ProviderError {
+                provider,
+                model,
+                kind,
+                message,
+                fallback,
+            } => {
+                let fb = match fallback {
+                    FallbackOutcome::Engaged {
+                        provider: p,
+                        model: m,
+                    } => {
+                        format!("fallback engaged -> {p}/{m}")
+                    }
+                    FallbackOutcome::Exhausted => "no fallback available".to_string(),
+                    FallbackOutcome::NotRetryable => "not retryable".to_string(),
+                    FallbackOutcome::Retrying {
+                        attempt,
+                        max_attempts,
+                        wait_secs,
+                    } => {
+                        format!("retrying {attempt}/{max_attempts} (waiting {wait_secs}s)")
+                    }
+                    FallbackOutcome::Recovered {
+                        attempt,
+                        max_attempts,
+                    } => {
+                        format!("recovered on retry {attempt}/{max_attempts}")
+                    }
+                };
+                (
+                    "provider-error",
+                    format!("{provider}/{model}: {kind} - {message} [{fb}]"),
+                )
+            }
             BlockKind::Diff(lines) => (
                 "diff",
                 lines
@@ -6252,6 +8072,7 @@ fn handle_slash(
     // Overlays and decision cards own the UI: no transcript block.
     if state.history.is_some()
         || state.models.is_some()
+        || state.providers.is_some()
         || state.editor.is_some()
         || state.pending_confirm.is_some()
     {
@@ -6267,10 +8088,117 @@ fn handle_slash(
             || t.starts_with("Error:")
             || t.starts_with("failed")
     });
+    // Never persist secret material: `/env set NAME VALUE` keeps the
+    // command shape for context but the value is redacted.
+    let cmd = redact_command_for_transcript(&cmd);
     state.blocks.push(TranscriptBlock {
         kind: BlockKind::Command { cmd, lines, failed },
     });
     state.scroll_to_bottom();
+}
+
+/// Strip secret values from a slash command before it is persisted in the
+/// transcript. `/env set NAME VALUE` is stored as `/env set NAME ••••` —
+/// the command name and argument count survive for context, the value
+/// never reaches the ledger.
+fn redact_command_for_transcript(cmd: &str) -> String {
+    if let Some(rest) = cmd.strip_prefix("/env set ") {
+        let name = rest.split_whitespace().next().unwrap_or("?");
+        return format!("/env set {name} ••••");
+    }
+    cmd.to_string()
+}
+
+/// `/voice`: `[stt]`/`[tts]` backend status. Reports backend, provider,
+/// and whether the key resolves — never key values. Construction is
+/// attempted so a misconfigured backend shows its real config error.
+fn voice_status(state: &mut TuiState, session: &Arc<Session>) {
+    let dd = crate::terminal::data_dir();
+    let cfg = match crate::config::Config::load(&dd) {
+        Ok(c) => c,
+        Err(e) => {
+            state.add_status(format!("/voice: {}", e.cause));
+            return;
+        }
+    };
+    // The Tools screen's Voice group gates the whole speech surface:
+    // off means no backend is constructed and no key is resolved.
+    if !crate::config::tool_group_enabled(Some(&cfg), pantheon_api::config::ToolGroup::Voice) {
+        state.add_status("voice: disabled on the Tools screen ([tools] voice = false)".into());
+        return;
+    }
+    state.add_status("voice:".into());
+    for (name, section) in [("stt", &cfg.stt), ("tts", &cfg.tts)] {
+        let Some(sec) = section else {
+            state.add_status(format!("  {name}: unset ([{name}] not configured)"));
+            continue;
+        };
+        let mut line = format!("  {name}: {} backend", sec.backend);
+        if sec.backend == "openai" {
+            if let Some(p) = sec.options.get("provider") {
+                line.push_str(&format!(" via {p}"));
+            }
+            if let Some(m) = sec.options.get("model") {
+                line.push_str(&format!(" ({m})"));
+            }
+        } else if let Some(c) = sec.options.get("cmd") {
+            line.push_str(&format!(" ({c})"));
+        }
+        state.add_status(line);
+        if sec.backend == "openai" {
+            let provider = sec
+                .options
+                .get("provider")
+                .map(String::as_str)
+                .unwrap_or("");
+            match pantheon_providers::voice_api_key(&session.secrets, provider, &sec.options) {
+                Ok(Some(_)) => state.add_status(format!("  {name}: key set")),
+                Ok(None) => {
+                    state.add_status(format!("  {name}: no key found (ok for keyless endpoints)"))
+                }
+                Err(e) => state.add_status(format!("  {name}: key error: {}", e.cause)),
+            }
+        }
+        let built = if name == "stt" {
+            pantheon_providers::stt_from_config(Some(sec), &session.secrets).map(|r| r.map(|_| ()))
+        } else {
+            pantheon_providers::tts_from_config(Some(sec), &session.secrets).map(|r| r.map(|_| ()))
+        };
+        match built {
+            Some(Ok(())) => state.add_status(format!("  {name}: backend constructs ok")),
+            Some(Err(e)) => state.add_status(format!("  {name}: ✗ {}", e.cause)),
+            None => {}
+        }
+    }
+    state.add_status(
+        "no mic capture or speaker playback in the TUI — backends serve callers that already have audio".into(),
+    );
+}
+
+/// `/send <target> <message>`: push a message to a gateway surface — the
+/// user's surfaces, not this agent's reply path. Runs synchronously so the
+/// result lands in the command block: errors are prefixed with `✗`, which
+/// marks the block failed. Nothing here fails silently — an unknown target
+/// or a missing token shows exactly what is wrong.
+fn do_send(state: &mut TuiState, arg: &str) {
+    let mut parts = arg.splitn(2, char::is_whitespace);
+    let target = parts.next().unwrap_or("").trim();
+    let message = parts.next().unwrap_or("").trim();
+    if target.is_empty() || message.is_empty() {
+        state.add_status("usage: /send <telegram|discord|mobile|home> <message>".into());
+        return;
+    }
+    let deliver = match pantheon_gateway::schedule_delivery::Deliver::parse(target) {
+        Ok(d) => d,
+        Err(e) => {
+            state.add_status(format!("✗ /send: {e}"));
+            return;
+        }
+    };
+    match crate::send::send_to_target(&crate::terminal::data_dir(), &deliver, message) {
+        Ok(confirmation) => state.add_status(format!("/send: {confirmation}")),
+        Err(e) => state.add_status(format!("✗ /send: {e}")),
+    }
 }
 
 fn handle_slash_inner(
@@ -6304,9 +8232,17 @@ fn handle_slash_inner(
         }
         return;
     }
+    if cmd == "/agent new" || cmd.starts_with("/agent new ") {
+        crate::swarm_remote::do_agent_new(state, cmd["/agent new".len()..].trim());
+        return;
+    }
     if let Some(name) = cmd.strip_prefix("/agent ") {
         let name = name.trim();
         switch_agent(state, session, name);
+        return;
+    }
+    if cmd == "/agents create" || cmd.starts_with("/agents create ") {
+        crate::swarm_remote::do_agent_new(state, cmd["/agents create".len()..].trim());
         return;
     }
     if cmd == "/agents" {
@@ -6324,8 +8260,31 @@ fn handle_slash_inner(
         }
         return;
     }
+    // Persona files of the active profile: `/soul` prints SOUL.md,
+    // `/soul set <text>` writes it; same for USER.md (`/userfile`) and
+    // AGENTS.md (`/agentsfile`). HTTP when the dashboard server runs,
+    // direct declared-path file access otherwise.
+    if cmd == "/soul" || cmd.starts_with("/soul ") {
+        crate::swarm_remote::do_persona(state, session, cmd, "soul", "soul");
+        return;
+    }
+    if cmd == "/userfile" || cmd.starts_with("/userfile ") {
+        crate::swarm_remote::do_persona(state, session, cmd, "user", "userfile");
+        return;
+    }
+    if cmd == "/agentsfile" || cmd.starts_with("/agentsfile ") {
+        crate::swarm_remote::do_persona(state, session, cmd, "agents", "agentsfile");
+        return;
+    }
     if cmd == "/collab" {
-        show_collaborations(state);
+        // Deprecated: multi-profile tasks moved to the swarm system.
+        // Routes through the swarm backend when it answers; otherwise a
+        // one-line pointer. Stored collaboration data is untouched.
+        crate::swarm_remote::do_collab(state);
+        return;
+    }
+    if cmd == "/tasks" {
+        state.add_status("usage: /tasks <agent> — that agent's open tasks".into());
         return;
     }
     if let Some(agent) = cmd.strip_prefix("/tasks ") {
@@ -6387,6 +8346,12 @@ fn handle_slash_inner(
     // prefix check cannot swallow it.
     if cmd == "/set" || cmd.starts_with("/set ") {
         do_set(state, session, cmd);
+        return;
+    }
+    // Agent todo list, maintained through the `todo` tool: bare /todos
+    // inspects it.
+    if cmd == "/todos" {
+        show_todos(state, session);
         return;
     }
     if cmd == "/help" {
@@ -6480,6 +8445,113 @@ fn handle_slash_inner(
         return;
     }
 
+    if cmd == "/project" || cmd.starts_with("/project ") {
+        // Named projects: user-created buckets sessions are assigned to
+        // by hand. A project exists when at least one run carries its
+        // name; "new"/"set" just assigns the name, there is no registry.
+        let rest = cmd.strip_prefix("/project").unwrap_or("").trim();
+        let (sub, arg) = match rest.split_once(char::is_whitespace) {
+            Some((s, a)) => (s, a.trim()),
+            None => (rest, ""),
+        };
+        let bound_name = |raw: &str| -> Option<String> {
+            let one_line: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+            let name = one_line.trim();
+            if name.is_empty() || name.len() > 64 {
+                return None;
+            }
+            Some(name.to_string())
+        };
+        match sub {
+            "" => {
+                let current = supervisor
+                    .ledger_run_project(&state.session_id)
+                    .ok()
+                    .flatten();
+                match current.as_deref() {
+                    Some(p) => state.add_status(format!("project: {p}")),
+                    None => state.add_status("project: (none)".into()),
+                }
+                match supervisor.ledger_list_projects() {
+                    Ok(ps) if !ps.is_empty() => {
+                        state.add_status(format!("projects: {}", ps.join(", ")));
+                    }
+                    Ok(_) => state.add_status("no projects yet — /project new <name>".into()),
+                    Err(e) => state.add_status(format!("/project: {e}")),
+                }
+                return;
+            }
+            "new" | "set" => {
+                let Some(name) = bound_name(arg) else {
+                    state.add_status("usage: /project new <name>".into());
+                    return;
+                };
+                // A never-chatted run has no row yet; create it so the
+                // assignment survives (/title does the same).
+                if supervisor
+                    .ledger_status(&state.session_id)
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
+                    let _ = supervisor.start_run(&state.session_id);
+                }
+                match supervisor.ledger_set_run_project(&state.session_id, Some(&name)) {
+                    Ok(()) => state.add_status(format!("session → project \u{201c}{name}\u{201d}")),
+                    Err(e) => state.add_status(format!("/project: {e}")),
+                }
+                return;
+            }
+            "clear" => {
+                match supervisor.ledger_set_run_project(&state.session_id, None) {
+                    Ok(()) => state.add_status("session removed from its project".into()),
+                    Err(e) => state.add_status(format!("/project: {e}")),
+                }
+                return;
+            }
+            "list" => {
+                match supervisor.ledger_list_projects() {
+                    Ok(ps) if ps.is_empty() => {
+                        state.add_status("no projects yet — /project new <name>".into())
+                    }
+                    Ok(ps) => {
+                        for p in ps {
+                            state.add_status(format!("  {p}"));
+                        }
+                    }
+                    Err(e) => state.add_status(format!("/project: {e}")),
+                }
+                return;
+            }
+            "move" => {
+                let Some((run, name_raw)) = arg.split_once(char::is_whitespace) else {
+                    state.add_status("usage: /project move <run> <name>".into());
+                    return;
+                };
+                let Some(name) = bound_name(name_raw) else {
+                    state.add_status("/project move: bad project name".into());
+                    return;
+                };
+                match supervisor.ledger_status(run) {
+                    Ok(Some(_)) => match supervisor.ledger_set_run_project(run, Some(&name)) {
+                        Ok(()) => {
+                            state.add_status(format!("{run} → project \u{201c}{name}\u{201d}"))
+                        }
+                        Err(e) => state.add_status(format!("/project: {e}")),
+                    },
+                    _ => state.add_status(format!("/project move: no such run {run}")),
+                }
+                return;
+            }
+            _ => {
+                state.add_status(
+                    "usage: /project [new <name>|set <name>|clear|list|move <run> <name>]".into(),
+                );
+                return;
+            }
+        }
+    }
+
     if let Some(id) = cmd.strip_prefix("/resume ") {
         let id = id.trim();
         // Prove the run exists before switching; reopen a terminal run.
@@ -6550,10 +8622,16 @@ fn handle_slash_inner(
         return;
     }
     if cmd == "/runs" || cmd.starts_with("/runs ") {
-        let n = cmd
-            .strip_prefix("/runs ")
-            .and_then(|s| s.trim().parse::<usize>().ok())
-            .unwrap_or(10);
+        let n = match cmd.strip_prefix("/runs ") {
+            None => 10,
+            Some(s) => match s.trim().parse::<usize>() {
+                Ok(n) => n,
+                Err(_) => {
+                    state.add_status("usage: /runs [n] — n must be a number".into());
+                    return;
+                }
+            },
+        };
         match supervisor.ledger_list_runs(n) {
             Ok(runs) => {
                 if runs.is_empty() {
@@ -6571,7 +8649,7 @@ fn handle_slash_inner(
                         state.session_id
                     ));
                 }
-                for (run_id, status, _ts, title) in runs {
+                for (run_id, status, _ts, title, _project) in runs {
                     let glyph = match status.as_str() {
                         "completed" => "\u{2713}",
                         "failed" => "\u{d7}",
@@ -6617,17 +8695,23 @@ fn handle_slash_inner(
         return;
     }
     if cmd == "/models" || cmd.starts_with("/models ") {
-        // Optional filter: `/models anth` opens the browser already
-        // filtered, the same as opening it and typing.
+        // Two-level flow: /models opens the provider list; picking one
+        // drills into that provider's models. Optional filter applies to
+        // the provider list, the same as opening it and typing.
         let filter = cmd.strip_prefix("/models").unwrap_or("").trim().to_string();
         let rows = build_model_rows();
         if rows.is_empty() {
             state.add_status("no models in the provider catalog".into());
             return;
         }
-        state.models = Some(rows);
-        state.models_input = filter;
-        state.models_sel = 0;
+        // Distinct providers, alphabetical by label, with curated-model
+        // counts. A provider with no catalog entries still lists so its
+        // models can be reached via /model <provider> <id>.
+        let providers = provider_rows(&rows);
+        state.providers = Some(providers);
+        state.providers_input = filter;
+        state.providers_sel = 0;
+        state.models_close();
         return;
     }
     if cmd == "/model" {
@@ -6700,6 +8784,7 @@ fn handle_slash_inner(
                     state.add_status(format!("/reasoning: {e}"));
                     return;
                 }
+                state.effort = Some(level.as_str().to_string());
                 // Carry the live budget through: setting a level must not
                 // silently wipe an override set earlier (and vice versa).
                 match persist_reasoning(
@@ -6732,16 +8817,18 @@ fn handle_slash_inner(
         refresh_tabs(state, session);
         return;
     }
-    if cmd == "/rewind" {
-        // Same confirm flow as double-Esc on an idle session: the ledger
-        // is append-only, so rewind hides the last turn from the live view
-        // behind a rewind marker instead of rewriting history.
+    if cmd == "/rewind" || cmd == "/undo" {
+        // `/undo` is the friendly alias: undoing the last response is
+        // exactly what rewind does. Same confirm flow as double-Esc on an
+        // idle session: the ledger is append-only, so rewind hides the
+        // last turn from the live view behind a rewind marker instead of
+        // rewriting history.
         match state.rewind_candidate() {
             Some(offer) => {
                 state.rewind_offer = Some(offer);
                 state.status_line = "rewind last turn? [y]es [n]o".into();
             }
-            None => state.add_status("/rewind: no finished turn to rewind".into()),
+            None => state.add_status("/undo: no finished turn to undo".into()),
         }
         return;
     }
@@ -6757,8 +8844,37 @@ fn handle_slash_inner(
         crate::checkpoint::cmd_restore(state, session, cmd);
         return;
     }
-    if cmd == "/swarm" {
-        crate::swarm_view::cmd_swarm(state, session);
+    if cmd == "/swarm" || cmd.starts_with("/swarm ") {
+        // Remote swarm controls (`/swarm new`, `/swarm <id>`, `/swarm
+        // retry`); `/swarm tree` keeps the old read-only delegation
+        // tree render.
+        crate::swarm_remote::do_swarm(state, session, cmd);
+        return;
+    }
+    if cmd == "/team" || cmd.starts_with("/team ") {
+        // Team of experts: list teams, show a roster, or launch a team on
+        // a task (via the dashboard's Teams API).
+        crate::team_remote::do_team(state, cmd);
+        return;
+    }
+    if cmd == "/plugins" || cmd.starts_with("/plugins ") {
+        // Remote plugin install (`/plugins import <url|clawhub:slug>
+        // [--ref <ref>]`) and registry search (`/plugins search
+        // <query>`), against the dashboard's plugin API. The local
+        // `pantheon plugins list|approve|disable` verbs stay in
+        // terminal.rs; there were no TUI slash commands for them.
+        crate::plugin_remote::do_plugins(state, cmd);
+        return;
+    }
+    if cmd == "/plugin" || cmd.starts_with("/plugin ") {
+        // Singular alias for /plugins: normalize to the plural form the
+        // handler parses.
+        let normalized = if cmd == "/plugin" {
+            "/plugins".to_string()
+        } else {
+            format!("/plugins {}", cmd["/plugin ".len()..].trim_start())
+        };
+        crate::plugin_remote::do_plugins(state, &normalized);
         return;
     }
     if cmd == "/theme" || cmd.starts_with("/theme ") {
@@ -6864,7 +8980,7 @@ fn handle_slash_inner(
             state.add_status("usage: /remember KEY TEXT...".into());
             return;
         }
-        let Some(store) = session.memory.as_ref() else {
+        let Some(store) = session.memory.as_deref() else {
             state.add_status("/remember: no memory store in this session".into());
             return;
         };
@@ -6884,9 +9000,9 @@ fn handle_slash_inner(
                 recorded_at_ms: now_ms,
             },
         };
-        match pantheon_memory::write_via(store.as_ref(), &session.policy, proposal, 4096) {
+        match pantheon_memory::write_via(store, &session.policy, proposal, 4096) {
             Ok(rec) => state.add_status(format!("remembered {}", rec.key)),
-            Err(e) => state.add_status(format!("/remember: {e}")),
+            Err(e) => state.add_status(memory_write_status("/remember", &e)),
         }
         return;
     }
@@ -6906,7 +9022,7 @@ fn handle_slash_inner(
         }
         match learn_lesson(session, lesson) {
             Ok(key) => state.add_status(format!("learned [{key}]: {lesson}")),
-            Err(e) => state.add_status(format!("/learn: {e}")),
+            Err(e) => state.add_status(memory_write_status("/learn", &e)),
         }
         return;
     }
@@ -6987,6 +9103,10 @@ fn handle_slash_inner(
         }
         return;
     }
+    if cmd == "/voice" {
+        voice_status(state, session);
+        return;
+    }
     if cmd == "/gateway" {
         let st = crate::gateway::gateway_status();
         state.add_status(format!(
@@ -7002,13 +9122,19 @@ fn handle_slash_inner(
         state.add_status(format!("outbox: {} queued", st.outbox_pending));
         return;
     }
+    if cmd == "/send" || cmd.starts_with("/send ") {
+        let arg = cmd.strip_prefix("/send").map(str::trim).unwrap_or("");
+        do_send(state, arg);
+        return;
+    }
     if cmd == "/doctor" {
         let rep = crate::doctor::run_system_doctor(&crate::terminal::data_dir());
         for c in &rep.checks {
             let glyph = match c.status.as_str() {
                 "ok" => "\u{2713}",
                 "warn" => "\u{26a0}",
-                _ => "\u{17d}",
+                "fail" => "\u{2717}",
+                _ => "?",
             };
             let mut line = format!("{glyph} {}: {}", c.section, c.detail);
             if !c.fix.is_empty() && c.status != "ok" {
@@ -7028,14 +9154,28 @@ fn handle_slash_inner(
         // a tab (parked sessions included). Shared by /sessions (the
         // reopen-UI) and /history (the resume-UI); both route through
         // switch_to_run, which now maintains the explicit open-tab list.
-        match supervisor.ledger_list_runs(50) {
+        // The permanent home session is auto-created on first access and
+        // pinned first, ahead of every ordinary session.
+        match supervisor
+            .ensure_home_session()
+            .and_then(|_| supervisor.ledger_list_runs(50))
+        {
             Ok(runs) => {
+                let runs = pantheon_storage::Ledger::pin_home_first(runs);
                 if runs.is_empty() {
                     state.add_status("no runs yet".into());
                 } else {
                     state.history = Some(runs);
                     state.history_input.clear();
                     state.history_sel = 0;
+                    // The picker defaults to the opener's project
+                    // (None = unassigned); ctrl+a toggles all projects.
+                    state.history_own_project = supervisor
+                        .ledger_run_project(&state.session_id)
+                        .ok()
+                        .flatten();
+                    state.history_all_projects = false;
+                    state.history_rename = None;
                 }
             }
             Err(e) => state.add_status(format!("sessions: {e}")),
@@ -7071,10 +9211,14 @@ fn handle_slash_inner(
         let arg = cmd.strip_prefix("/export").unwrap_or("").trim();
         let format = if arg.is_empty() {
             "markdown"
-        } else if arg == "markdown" || arg == "json" {
+        } else if arg == "markdown" || arg == "md" {
+            // `md` is the spelling /help advertises; normalize it here so
+            // the written filename keeps the canonical extension.
+            "markdown"
+        } else if arg == "json" {
             arg
         } else {
-            state.add_status("usage: /export [markdown|json]".into());
+            state.add_status("usage: /export [md|json]".into());
             return;
         };
         if state.session_id.is_empty() {
@@ -7248,41 +9392,45 @@ fn handle_slash_inner(
     }
     // --- mcp -------------------------------------------------------------
     if cmd == "/mcp" {
-        let dd = crate::terminal::data_dir();
-        let groups = pantheon_migration::read_mcp_declarations(&dd);
-        if groups.is_empty() {
-            state.add_status("no MCP declarations found".into());
+        // Live view from the session's manager: configured servers with
+        // their current status, tool counts, and approval state.
+        let health = session.mcp_manager.health();
+        refresh_mcp_segment(state, session);
+        if health.is_empty() {
+            state.add_status(
+                "no MCP servers configured — add `[mcp.servers.<name>]` to config.toml or run `pantheon migrate apply`".into(),
+            );
             return;
         }
-        let mut total = 0;
-        let mut ready = 0;
-        for g in &groups {
-            for s in &g.servers {
-                total += 1;
-                let is_ready = crate::mcp::server_readiness(s).is_none();
-                if is_ready {
-                    ready += 1;
+        for h in &health {
+            let status = match h.status {
+                pantheon_mcp::manager::ServerStatus::Ready => {
+                    format!("ready ({} tools)", h.tools)
                 }
-                state.add_status(format!(
-                    "  {}/{} [{}] {}",
-                    g.source,
-                    s.name,
-                    s.transport,
-                    if is_ready { "ready" } else { "not ready" }
-                ));
+                pantheon_mcp::manager::ServerStatus::Connecting => "connecting".to_string(),
+                pantheon_mcp::manager::ServerStatus::Failed => "failed".to_string(),
+                pantheon_mcp::manager::ServerStatus::Backoff => "backoff".to_string(),
+                pantheon_mcp::manager::ServerStatus::Unapproved => {
+                    "needs `pantheon mcp approve`".to_string()
+                }
+                pantheon_mcp::manager::ServerStatus::Disabled => "disabled".to_string(),
+            };
+            let mut line = format!("  {} [{}] {status}", h.name, h.transport);
+            if let Some(e) = &h.last_error {
+                line.push_str(&format!(": {e}"));
             }
+            state.add_status(line);
         }
-        state.add_status(format!("{total} server(s), {ready} ready"));
+        state.add_status(format!("{} server(s)", health.len()));
         return;
     }
     if cmd == "/mcp reload" {
         // Re-scan the declaration files on disk: picks up servers added
-        // or edited since startup without restarting the TUI. There are
-        // no live MCP clients to reconnect (no launcher yet, spec
-        // section 15), so a reload can never drop the session — the
-        // worst case is an unchanged report.
+        // or edited since startup without restarting the TUI. The
+        // manager drops live clients for changed specs and reconnects
+        // lazily on the next registry build.
         let dd = crate::terminal::data_dir();
-        for line in crate::mcp::reload_report(&dd) {
+        for line in crate::mcp::reload_report(session, &dd) {
             state.add_status(line);
         }
         return;
@@ -7293,18 +9441,32 @@ fn handle_slash_inner(
         // registry the next turn will actually use, so the report can
         // never describe a different tool set. Skill discovery re-reads
         // the skill directories, so newly installed skills appear without
-        // a restart. MCP contributes zero tools: declarations exist, but
-        // there is no launcher attaching them yet (spec section 15).
+        // a restart. MCP contributes its approved, connected servers'
+        // tools (`mcp_<server>_<tool>`).
         let (reg, counts) = session.build_tool_registry();
         debug_assert_eq!(counts.total(), reg.names().len());
+        let pending = session
+            .mcp_manager
+            .health()
+            .iter()
+            .filter(|h| h.status == pantheon_mcp::manager::ServerStatus::Unapproved)
+            .count();
+        let pending_note = if pending > 0 {
+            format!(" ({pending} server(s) need `mcp approve`)")
+        } else {
+            String::new()
+        };
         state.add_status(format!(
-            "{} tools available ({} built-in, {} skill, {} session-search, {} browser, {} web-search, 0 MCP — no launcher yet)",
+            "{} tools available ({} built-in, {} skill, {} vault, {} session-search, {} browser, {} web-search, {} MCP{})",
             counts.total(),
             counts.builtin,
             counts.skills,
+            counts.vault,
             counts.session_search,
             counts.browser,
-            counts.websearch
+            counts.websearch,
+            counts.mcp,
+            pending_note
         ));
         return;
     }
@@ -7361,6 +9523,12 @@ fn handle_slash_inner(
         let name = name.trim();
         if name.is_empty() {
             state.add_status("usage: /env unset <name>".into());
+            return;
+        }
+        // `delete` is a no-op for unknown names by design; the TUI says
+        // what actually happened instead of claiming a removal.
+        if !session.secrets.names().iter().any(|n| n == name) {
+            state.add_status(format!("no secret named {name}"));
             return;
         }
         match session.secrets.delete(name) {
@@ -7505,7 +9673,7 @@ pub fn learn_lesson(
     session: &Session,
     lesson: &str,
 ) -> Result<String, pantheon_api::error::PantheonError> {
-    let Some(store) = session.memory.as_ref() else {
+    let Some(store) = session.memory.as_deref() else {
         return Err(pantheon_api::error::PantheonError::new(
             "LEARN_NO_STORE",
             pantheon_api::error::Layer::Memory,
@@ -7521,174 +9689,477 @@ pub fn learn_lesson(
         .unwrap_or(0);
     let proposal = lesson_proposal(&session.memory_namespace, lesson, now_ms);
     let key = proposal.key.clone();
-    pantheon_memory::write_via(store.as_ref(), &session.policy, proposal, 4096)?;
+    pantheon_memory::write_via(store, &session.policy, proposal, 4096)?;
     Ok(key)
 }
 
+/// Status line for a failed memory write. Memory writes are policy-gated
+/// by design (the default `coder` preset leaves them off, `coder_memory`
+/// enables them), so a bare `MEM_NO_CAPABILITY` code tells the user
+/// nothing about the fix — lead with the one-line remediation instead of
+/// burying it past the visible width.
+fn memory_write_status(prefix: &str, e: &pantheon_api::error::PantheonError) -> String {
+    if e.to_string().contains("MEM_NO_CAPABILITY") {
+        return format!(
+            "{prefix}: memory writes are gated by the agent policy — set policy = \"coder_memory\" to enable them"
+        );
+    }
+    format!("{prefix}: {e}")
+}
+
 #[cfg(test)]
-mod tests {
-    use super::auto_reflect_due;
-    use super::{render, BlockKind, PaletteState, TranscriptBlock, TuiState};
+mod inline_todo_card_tests {
+    use super::*;
+    use crate::todo_card::{TodoCardItem, TodoStatus as CardStatus};
+
+    fn test_state() -> TuiState {
+        TuiState::new("test-session".to_string(), "test-model".to_string(), 0)
+    }
+
+    fn sample_items() -> Vec<TodoCardItem> {
+        vec![
+            TodoCardItem {
+                content: "Made new things".to_string(),
+                status: CardStatus::Completed,
+            },
+            TodoCardItem {
+                content: "Read files".to_string(),
+                status: CardStatus::InProgress,
+            },
+            TodoCardItem {
+                content: "Edit files".to_string(),
+                status: CardStatus::Pending,
+            },
+        ]
+    }
+
+    fn todo_blocks(state: &TuiState) -> Vec<&Vec<TodoCardItem>> {
+        state
+            .blocks
+            .iter()
+            .filter_map(|b| match &b.kind {
+                BlockKind::Todos(items) => Some(items),
+                _ => None,
+            })
+            .collect()
+    }
 
     #[test]
-    fn auto_reflect_due_fires_on_configured_multiples() {
-        // Default cadence: every 20 completed turns.
-        assert!(auto_reflect_due(20, true, 20, false));
-        assert!(auto_reflect_due(40, true, 20, false));
-        // Not a multiple, or disabled, or already running: no.
-        assert!(!auto_reflect_due(19, true, 20, false));
-        assert!(!auto_reflect_due(20, false, 20, false));
-        assert!(!auto_reflect_due(20, true, 20, true));
-        assert!(!auto_reflect_due(0, true, 20, false));
+    fn sidebar_visible_matches_render_body_split() {
+        let mut s = test_state();
+        s.term_width = 100;
+        s.show_sidebar = true;
+        assert!(s.sidebar_visible());
+        s.term_width = 99;
+        assert!(!s.sidebar_visible());
+        s.term_width = 140;
+        s.show_sidebar = false;
+        assert!(!s.sidebar_visible());
     }
 
-    /// Representative session: long title, mixed blocks, open tabs with
-    /// decisions pending — the content most likely to overflow narrow
-    /// terminals.
-    fn responsive_state() -> TuiState {
-        let mut s = TuiState::new(
-            "run_test123456789".to_string(),
-            "openai/gpt-4o-mini".to_string(),
-            200_000,
-        );
-        s.title = Some(
-            "a very long session title that will definitely overflow narrow terminals".to_string(),
-        );
-        s.blocks.push(TranscriptBlock {
-            kind: BlockKind::UserMessage("hello [brackets] should type".to_string()),
-        });
-        s.blocks.push(TranscriptBlock {
-            kind: BlockKind::AssistantMessage("hi there".to_string()),
-        });
-        s.blocks.push(TranscriptBlock {
-            kind: BlockKind::ToolCall {
-                name: "exec".to_string(),
-                args: "cargo check -p pantheon-tui --all-features".to_string(),
-                ok: Some(false),
-                call_id: "call_abc123xyz".to_string(),
-                started: None,
-                duration: Some(std::time::Duration::from_secs_f64(12.3)),
-                error: Some("error: could not compile".to_string()),
-            },
-        });
-        s.tokens_used = 42_000;
-        s.cost_cents = 137;
-        let id = s.session_id.clone();
-        s.open_tabs.push(id.clone());
-        s.open_tabs.push("run_other987654321".to_string());
-        s.tabs.refresh_from_explicit(
-            &[
-                (id.clone(), s.title.clone()),
-                ("run_other987654321".to_string(), None),
-            ],
-            |_| false,
-            &id,
-        );
-        s
+    #[test]
+    fn inline_card_appears_in_narrow_mode() {
+        let mut s = test_state();
+        s.term_width = 60;
+        s.todo_items = sample_items();
+        sync_inline_todo_card(&mut s);
+        let cards = todo_blocks(&s);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0], &sample_items());
     }
 
-    /// Render into a TestBackend and return the screen as text rows.
-    fn render_rows(width: u16, height: u16, state: &mut TuiState) -> Vec<String> {
-        let backend = ratatui::backend::TestBackend::new(width, height);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| render(state, f)).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        (0..height)
+    #[test]
+    fn inline_card_appears_when_sidebar_toggled_off_wide() {
+        let mut s = test_state();
+        s.term_width = 140;
+        s.show_sidebar = false;
+        s.todo_items = sample_items();
+        sync_inline_todo_card(&mut s);
+        assert_eq!(todo_blocks(&s).len(), 1);
+    }
+
+    #[test]
+    fn no_inline_card_in_wide_mode() {
+        let mut s = test_state();
+        s.term_width = 140;
+        s.todo_items = sample_items();
+        sync_inline_todo_card(&mut s);
+        assert!(todo_blocks(&s).is_empty());
+    }
+
+    #[test]
+    fn no_inline_card_without_todos() {
+        let mut s = test_state();
+        s.term_width = 60;
+        sync_inline_todo_card(&mut s);
+        assert!(todo_blocks(&s).is_empty());
+    }
+
+    #[test]
+    fn inline_card_updates_in_place_never_duplicates() {
+        let mut s = test_state();
+        s.term_width = 60;
+        s.todo_items = sample_items();
+        sync_inline_todo_card(&mut s);
+        sync_inline_todo_card(&mut s);
+        assert_eq!(todo_blocks(&s).len(), 1);
+
+        // Progress the plan: the same single block refreshes.
+        let mut updated = sample_items();
+        updated[1].status = CardStatus::Completed;
+        updated[2].status = CardStatus::InProgress;
+        s.todo_items = updated.clone();
+        sync_inline_todo_card(&mut s);
+        let cards = todo_blocks(&s);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0], &updated);
+    }
+
+    #[test]
+    fn inline_card_removed_when_sidebar_returns() {
+        let mut s = test_state();
+        s.term_width = 60;
+        s.todo_items = sample_items();
+        sync_inline_todo_card(&mut s);
+        assert_eq!(todo_blocks(&s).len(), 1);
+        s.term_width = 140;
+        sync_inline_todo_card(&mut s);
+        assert!(todo_blocks(&s).is_empty());
+    }
+
+    #[test]
+    fn inline_card_removed_when_todos_empty() {
+        let mut s = test_state();
+        s.term_width = 60;
+        s.todo_items = sample_items();
+        sync_inline_todo_card(&mut s);
+        assert_eq!(todo_blocks(&s).len(), 1);
+        s.todo_items.clear();
+        sync_inline_todo_card(&mut s);
+        assert!(todo_blocks(&s).is_empty());
+    }
+
+    #[test]
+    fn inline_card_survives_other_blocks() {
+        // The card is found by kind, not position: surrounding transcript
+        // content must not confuse the sync.
+        let mut s = test_state();
+        s.term_width = 60;
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::Status("hello".to_string()),
+        });
+        s.todo_items = sample_items();
+        sync_inline_todo_card(&mut s);
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::Status("world".to_string()),
+        });
+        let mut updated = sample_items();
+        updated[2].status = CardStatus::Completed;
+        s.todo_items = updated.clone();
+        sync_inline_todo_card(&mut s);
+        let cards = todo_blocks(&s);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0], &updated);
+        assert_eq!(s.blocks.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+
+    fn test_state() -> TuiState {
+        TuiState::new("test-session".to_string(), "test-model".to_string(), 0)
+    }
+
+    fn run(id: &str, title: &str, project: Option<&str>, ts: i64) -> pantheon_storage::RunListing {
+        (
+            id.to_string(),
+            "completed".to_string(),
+            ts,
+            Some(title.to_string()),
+            project.map(|p| p.to_string()),
+        )
+    }
+
+    fn model_row(provider_id: &str, label: &str, model_id: &str) -> ModelRow {
+        ModelRow {
+            provider_id: provider_id.to_string(),
+            provider_label: label.to_string(),
+            model_id: model_id.to_string(),
+            ctx: None,
+        }
+    }
+
+    #[test]
+    fn history_defaults_to_own_project() {
+        let mut s = test_state();
+        s.history = Some(vec![
+            run("a", "Alpha work", Some("alpha"), 1000),
+            run("b", "Beta work", Some("beta"), 2000),
+            run("c", "Loose work", None, 3000),
+        ]);
+        s.history_own_project = Some("alpha".to_string());
+        s.history_all_projects = false;
+        let ids: Vec<_> = s.filtered_history().iter().map(|r| r.0.clone()).collect();
+        assert_eq!(ids, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn history_all_projects_toggle_shows_everything() {
+        let mut s = test_state();
+        s.history = Some(vec![
+            run("a", "Alpha work", Some("alpha"), 1000),
+            run("b", "Beta work", Some("beta"), 2000),
+        ]);
+        s.history_own_project = Some("alpha".to_string());
+        s.history_all_projects = true;
+        assert_eq!(s.filtered_history().len(), 2);
+    }
+
+    #[test]
+    fn history_unassigned_groups_with_unassigned() {
+        let mut s = test_state();
+        s.history = Some(vec![
+            run("a", "Alpha work", Some("alpha"), 1000),
+            run("c", "Loose work", None, 3000),
+        ]);
+        s.history_own_project = None;
+        s.history_all_projects = false;
+        let ids: Vec<_> = s.filtered_history().iter().map(|r| r.0.clone()).collect();
+        assert_eq!(ids, vec!["c".to_string()]);
+    }
+
+    #[test]
+    fn history_text_filter_composes_with_project_filter() {
+        let mut s = test_state();
+        s.history = Some(vec![
+            run("a", "Alpha work", Some("alpha"), 1000),
+            run("a2", "Alpha docs", Some("alpha"), 2000),
+        ]);
+        s.history_own_project = Some("alpha".to_string());
+        s.history_input = "docs".to_string();
+        let ids: Vec<_> = s.filtered_history().iter().map(|r| r.0.clone()).collect();
+        assert_eq!(ids, vec!["a2".to_string()]);
+    }
+
+    #[test]
+    fn provider_rows_dedup_sort_and_count() {
+        let rows = vec![
+            model_row("zeta", "Zeta", "z1"),
+            model_row("alpha", "Alpha", "a1"),
+            model_row("alpha", "Alpha", "a2"),
+            model_row("mid", "Mid", ""),
+        ];
+        let ps = provider_rows(&rows);
+        assert_eq!(ps.len(), 3);
+        assert_eq!(ps[0].provider_label, "Alpha");
+        assert_eq!(ps[0].model_count, 2);
+        assert_eq!(ps[1].provider_label, "Mid");
+        assert_eq!(ps[1].model_count, 0);
+        assert_eq!(ps[2].provider_label, "Zeta");
+        assert_eq!(ps[2].model_count, 1);
+    }
+
+    #[test]
+    fn filtered_providers_matches_id_and_label() {
+        let mut s = test_state();
+        s.providers = Some(provider_rows(&[
+            model_row("anthropic", "Anthropic", "m"),
+            model_row("openai", "OpenAI", "m"),
+        ]));
+        s.providers_input = "anth".to_string();
+        let ps = s.filtered_providers();
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].provider_id, "anthropic");
+        s.providers_input = "openai".to_string();
+        assert_eq!(s.filtered_providers().len(), 1);
+        s.providers_input = String::new();
+        assert_eq!(s.filtered_providers().len(), 2);
+    }
+
+    #[test]
+    fn providers_move_clamps_to_filtered_list() {
+        let mut s = test_state();
+        s.providers = Some(provider_rows(&[
+            model_row("a", "A", "m"),
+            model_row("b", "B", "m"),
+        ]));
+        s.providers_move(5);
+        assert_eq!(s.providers_sel, 1);
+        s.providers_move(-5);
+        assert_eq!(s.providers_sel, 0);
+    }
+
+    #[test]
+    fn providers_close_clears_models_too() {
+        let mut s = test_state();
+        s.providers = Some(provider_rows(&[model_row("a", "A", "m")]));
+        s.models = Some(vec![model_row("a", "A", "m")]);
+        s.providers_close();
+        assert!(s.providers.is_none());
+        assert!(s.models.is_none());
+    }
+
+    #[test]
+    fn fmt_day_renders_reference_shape() {
+        // 2026-09-27 12:00:00 UTC; Local rendering keeps the calendar day
+        // for any sane timezone (UTC±14 stays on the 27th at noon).
+        let label = fmt_day(1790510400000);
+        assert!(
+            label.starts_with("Sun Sep 27 2026"),
+            "unexpected day label: {label}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod picker_render_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn test_state() -> TuiState {
+        TuiState::new("test-session".to_string(), "test-model".to_string(), 0)
+    }
+
+    fn run(id: &str, title: &str, project: Option<&str>, ts: i64) -> pantheon_storage::RunListing {
+        (
+            id.to_string(),
+            "completed".to_string(),
+            ts,
+            Some(title.to_string()),
+            project.map(|p| p.to_string()),
+        )
+    }
+
+    fn model_row(provider_id: &str, label: &str, model_id: &str) -> ModelRow {
+        ModelRow {
+            provider_id: provider_id.to_string(),
+            provider_label: label.to_string(),
+            model_id: model_id.to_string(),
+            ctx: None,
+        }
+    }
+
+    fn render_to_string(
+        draw: impl FnOnce(&mut Frame, Rect, &TuiState),
+        state: &TuiState,
+    ) -> Vec<String> {
+        let backend = TestBackend::new(84, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| draw(f, f.area(), state)).unwrap();
+        let buf = term.backend().buffer().clone();
+        (0..buf.area.height)
             .map(|y| {
-                (0..width)
+                (0..buf.area.width)
                     .map(|x| buf[(x, y)].symbol().to_string())
                     .collect::<String>()
             })
             .collect()
     }
 
-    /// No row exceeds `width` cells: nothing wrapped or overflowed the
-    /// frame. (Cell count, not char count: one cell can hold a
-    /// multi-char grapheme.)
-    fn assert_fits(rows: &[String], width: u16) {
-        for (i, row) in rows.iter().enumerate() {
-            let cells = row.chars().count();
-            assert!(
-                cells <= width as usize,
-                "row {i} exceeds width {width}: {row:?}"
-            );
-        }
-    }
-
     #[test]
-    fn responsive_chat_widths_render_cleanly() {
-        // Wide (full sidebar), medium (compact sidebar), narrow
-        // (transcript only), and very narrow.
-        for (w, h) in [(140u16, 40u16), (110, 40), (90, 30), (60, 24), (40, 20)] {
-            let mut s = responsive_state();
-            let rows = render_rows(w, h, &mut s);
-            assert_fits(&rows, w);
-            // Header (row 1) keeps the mark at every width; the status
-            // bar (last row) always shows the state word.
-            assert!(
-                rows[1].contains("PANTHEON"),
-                "width {w}: header lost the mark: {:?}",
-                rows[1]
-            );
-            let status = rows.last().unwrap();
-            assert!(
-                status.contains("ready") || status.contains("working"),
-                "width {w}: status bar lost the state word: {status:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn narrow_overview_stacks_vertically() {
-        let mut s = responsive_state();
-        s.overview = true;
-        // Below the 100-column breakpoint the three panes stack.
-        let rows = render_rows(80, 30, &mut s);
-        assert_fits(&rows, 80);
-        let screen = rows.join("\n");
-        assert!(screen.contains("nav"), "stacked overview lost the nav pane");
+    fn history_renders_groups_search_and_footer() {
+        let mut s = test_state();
+        // Two different calendar days (2026-09-27 and 2026-09-26 noon UTC).
+        s.history = Some(vec![
+            run("a", "Alpha work", Some("alpha"), 1790510400000),
+            run("b", "Beta work", Some("alpha"), 1790424000000),
+        ]);
+        s.history_own_project = Some("alpha".to_string());
+        let lines = render_to_string(render_history, &s);
+        let text = lines.join("\n");
+        assert!(text.contains("Search"), "search header missing");
         assert!(
-            screen.contains("detail"),
-            "stacked overview lost the detail pane"
+            text.contains("Sun Sep 27 2026"),
+            "day group missing:\n{text}"
         );
         assert!(
-            screen.contains("Live"),
-            "stacked overview lost the transcript pane"
+            text.contains("Sat Sep 26 2026"),
+            "day group missing:\n{text}"
         );
-        // Wide overview keeps the side-by-side panes.
-        let rows = render_rows(140, 40, &mut s);
-        assert_fits(&rows, 140);
-        assert!(rows.join("\n").contains("WORKSPACE"));
+        assert!(text.contains("Alpha work"), "row missing");
+        assert!(text.contains("ctrl+d"), "footer hints missing");
     }
 
     #[test]
-    fn palette_renders_within_narrow_popup() {
-        let mut s = responsive_state();
-        s.palette = Some(PaletteState::default());
-        for (w, h) in [(140u16, 40u16), (80, 24), (50, 20)] {
-            let rows = render_rows(w, h, &mut s);
-            assert_fits(&rows, w);
-            let screen = rows.join("\n");
-            assert!(
-                screen.contains("commands"),
-                "width {w}: palette popup missing"
-            );
-        }
-        // Filtering narrows the list; a selection still renders.
-        let mut s = responsive_state();
-        let mut p = PaletteState::default();
-        p.input = "reflect".to_string();
-        assert!(!p.filtered().is_empty());
-        s.palette = Some(p);
-        let rows = render_rows(80, 24, &mut s);
-        assert!(rows.join("\n").contains("/reflect"));
+    fn providers_render_alphabetical_with_search() {
+        let mut s = test_state();
+        // Built through provider_rows, the way production populates the
+        // picker: the sort invariant lives there, not in the test data.
+        s.providers = Some(provider_rows(&[
+            model_row("zeta", "Zeta", "z1"),
+            model_row("zeta", "Zeta", "z2"),
+            model_row("zeta", "Zeta", "z3"),
+            model_row("alpha", "Alpha", "a1"),
+        ]));
+        let lines = render_to_string(render_providers, &s);
+        let text = lines.join("\n");
+        assert!(text.contains("Search"), "search header missing");
+        let ai = text.find("Alpha").unwrap();
+        let zi = text.find("Zeta").unwrap();
+        assert!(ai < zi, "providers not alphabetical");
+        assert!(text.contains("3 models"), "model count missing");
+        assert!(text.contains("Esc closes"), "footer missing");
     }
 
     #[test]
-    fn tiny_terminal_header_never_overflows() {
-        let mut s = responsive_state();
-        let rows = render_rows(24, 12, &mut s);
-        assert_fits(&rows, 24);
-        assert!(rows[1].contains("PANTHEON"), "tiny header: {:?}", rows[1]);
+    fn models_render_ctx_badge_right_aligned() {
+        let mut s = test_state();
+        s.models = Some(vec![
+            ModelRow {
+                provider_id: "p".into(),
+                provider_label: "Pee".into(),
+                model_id: "big-model".into(),
+                ctx: Some(1_000_000),
+            },
+            ModelRow {
+                provider_id: "p".into(),
+                provider_label: "Pee".into(),
+                model_id: "small-model".into(),
+                ctx: Some(128_000),
+            },
+        ]);
+        s.model = "p/big-model".to_string();
+        let lines = render_to_string(render_models, &s);
+        let text = lines.join("\n");
+        assert!(text.contains("1M ctx"), "badge missing");
+        assert!(text.contains("128k ctx"), "badge missing");
+        assert!(text.contains("\u{25cf}"), "current marker missing");
+        // Badge hugs the right edge of its row (before the border).
+        let badge_line = lines.iter().find(|l| l.contains("1M ctx")).unwrap();
+        let pos = badge_line.find("1M ctx").unwrap();
+        assert!(
+            pos + "1M ctx".len() + 1 >= 82,
+            "badge not right-aligned: [{badge_line}]"
+        );
+    }
+}
+
+/// Item 5: redaction test — `/env set NAME VALUE` must reach the
+/// transcript with the value masked, never the raw secret (the P1 fix
+/// for the `/env set` transcript leak).
+#[cfg(test)]
+mod transcript_redaction_tests {
+    use super::*;
+
+    #[test]
+    fn env_set_value_masked_in_transcript() {
+        assert_eq!(
+            redact_command_for_transcript("/env set FOO bar"),
+            "/env set FOO ••••"
+        );
+        // Secrets with spaces/special chars: only the name survives.
+        assert_eq!(
+            redact_command_for_transcript("/env set API_KEY sk-live-abc 123"),
+            "/env set API_KEY ••••"
+        );
+    }
+
+    #[test]
+    fn other_commands_pass_through_untouched() {
+        assert_eq!(redact_command_for_transcript("/help"), "/help");
+        assert_eq!(redact_command_for_transcript("/env list"), "/env list");
     }
 }

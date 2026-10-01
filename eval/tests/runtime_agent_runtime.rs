@@ -238,61 +238,29 @@ fn the_binding_survives_a_restart() {
 
 // -------------------------------------------------------------- delegation
 
-#[test]
-fn delegation_creates_a_durable_task_and_a_message() {
-    let dir = tmp("delegate");
-    let nyx = runtime(&dir, "nyx");
-    let task = nyx
-        .delegate("collab-1", "write the tests", "zeus", "t1")
-        .unwrap();
-    assert_eq!(task.origin_agent, "nyx", "the creator is always recorded");
-    assert_eq!(task.assigned_agent.as_deref(), Some("zeus"));
-    assert_eq!(task.status, pantheon_storage::TaskStatus::Assigned);
-    assert_eq!(task.collaboration_id.as_deref(), Some("collab-1"));
-
-    // The delegation is also a message, so "what was sent to whom" is
-    // answerable from the conversation trail alone.
-    let msgs = nyx.collaboration().messages_for_task("t1").unwrap();
-    assert_eq!(msgs.len(), 1);
-    assert_eq!(msgs[0].sender, "nyx");
-    assert_eq!(msgs[0].recipient, "zeus");
-    assert_eq!(msgs[0].kind, pantheon_storage::MessageKind::Delegation);
-
-    // Zeus sees it as unread mail.
-    let zeus = nyx.for_profile("zeus").unwrap();
-    let inbox = zeus.inbox().unwrap();
-    assert_eq!(inbox.len(), 1);
-    assert_eq!(inbox[0].task_id.as_deref(), Some("t1"));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn delegation_to_an_undeclared_agent_is_refused() {
-    let dir = tmp("unknown");
-    let nyx = runtime(&dir, "nyx");
-    let err = nyx.delegate("c", "do it", "ghost", "t1").unwrap_err();
-    assert_eq!(err.code, "DELEGATE_UNKNOWN_AGENT");
-    assert!(
-        nyx.collaboration().task("t1").unwrap().is_none(),
-        "a refused delegation leaves no half-created task"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn an_agent_cannot_delegate_to_itself() {
-    let dir = tmp("self");
-    let nyx = runtime(&dir, "nyx");
-    let err = nyx.delegate("c", "loop", "nyx", "t1").unwrap_err();
-    assert_eq!(err.code, "DELEGATE_SELF");
-    let _ = std::fs::remove_dir_all(&dir);
-}
+// --------------------------------------------------------- delegation
+//
+// NOTE: the old `AgentRuntime::delegate()` / `task_status()` record-and-poll
+// API was removed (2026-10-01 delegation build). Delegation is now a
+// blocking tool call on the session — `delegate(agent, task, budget?,
+// context?)` in `crates/pantheon-runtime/src/session.rs` — which drives a
+// real child session to a terminal state instead of writing a task row that
+// nothing executed. The behavioral tests for the new primitive live beside
+// the code (`delegate_tool_tests` in pantheon-runtime): blocking-until-finish,
+// budget separation, spawn-bomb refusal, approval parking on the child run,
+// child failure surfacing, arg validation, policy gate, depth cap.
+//
+// What remains here are the task-settle mechanics (`complete_task`,
+// `fail_task`, `task()`), which still enforce ownership and optimistic
+// concurrency on the collaboration store.
 
 #[test]
 fn the_receiving_agent_settles_its_own_task() {
     let dir = tmp("settle");
     let nyx = runtime(&dir, "nyx");
-    nyx.delegate("c", "build it", "zeus", "t1").unwrap();
+    nyx.collaboration()
+        .create_task("t1", Some("c"), "nyx", Some("zeus"), None, "build it")
+        .unwrap();
     let zeus = nyx.for_profile("zeus").unwrap();
 
     let done = zeus.complete_task("t1", "built it").unwrap();
@@ -300,7 +268,7 @@ fn the_receiving_agent_settles_its_own_task() {
     assert_eq!(done.result.as_deref(), Some("built it"));
 
     // And the coordinator can read the result back.
-    let seen = nyx.task_status("t1").unwrap().unwrap();
+    let seen = nyx.collaboration().task("t1").unwrap().unwrap();
     assert_eq!(seen.result.as_deref(), Some("built it"));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -309,12 +277,14 @@ fn the_receiving_agent_settles_its_own_task() {
 fn only_the_assignee_may_report_a_result() {
     let dir = tmp("notowned");
     let nyx = runtime(&dir, "nyx");
-    nyx.delegate("c", "build it", "zeus", "t1").unwrap();
+    nyx.collaboration()
+        .create_task("t1", Some("c"), "nyx", Some("zeus"), None, "build it")
+        .unwrap();
     let athena = nyx.for_profile("athena").unwrap();
 
     let err = athena.complete_task("t1", "I did it").unwrap_err();
     assert_eq!(err.code, "TASK_NOT_OWNED");
-    let t = nyx.task_status("t1").unwrap().unwrap();
+    let t = nyx.collaboration().task("t1").unwrap().unwrap();
     assert!(
         t.result.is_none(),
         "a rejected settle records nothing: the audit trail keeps the real owner"
@@ -326,11 +296,13 @@ fn only_the_assignee_may_report_a_result() {
 fn failure_is_recorded_and_a_retry_reuses_the_same_task() {
     let dir = tmp("retry");
     let nyx = runtime(&dir, "nyx");
-    nyx.delegate("c", "flaky", "zeus", "t1").unwrap();
+    nyx.collaboration()
+        .create_task("t1", Some("c"), "nyx", Some("zeus"), None, "flaky")
+        .unwrap();
     let zeus = nyx.for_profile("zeus").unwrap();
 
     zeus.fail_task("t1", "provider down").unwrap();
-    let t = nyx.task_status("t1").unwrap().unwrap();
+    let t = nyx.collaboration().task("t1").unwrap().unwrap();
     assert_eq!(t.status, pantheon_storage::TaskStatus::Failed);
     assert_eq!(t.error.as_deref(), Some("provider down"));
 
@@ -351,51 +323,11 @@ fn failure_is_recorded_and_a_retry_reuses_the_same_task() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn swarm_caps_actually_refuse_once_they_are_reached() {
-    let dir = tmp("caps");
-    let nyx = runtime(&dir, "nyx");
-    // `Caps::default()` allows 4 concurrent and 8 total. If the swarm were
-    // rebuilt per call, neither cap could ever fire and this would pass 20
-    // delegations; with shared accounting it refuses.
-    for i in 0..20 {
-        let id = format!("t{i}");
-        let res = nyx.delegate("c", "work", "zeus", &id);
-        if i < 4 {
-            assert!(res.is_ok(), "delegation {i} should be within the caps");
-        } else if i >= 8 {
-            // Past max_total_agents the cap is unconditional.
-            let err = res.unwrap_err();
-            assert_eq!(err.code, "SWARM_SPAWN_DENIED");
-        }
-    }
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn settling_a_task_frees_its_concurrency_slot() {
-    let dir = tmp("slots");
-    let nyx = runtime(&dir, "nyx");
-    let zeus = nyx.for_profile("zeus").unwrap();
-    // Fill the concurrency cap.
-    for i in 0..4 {
-        nyx.delegate("c", "work", "zeus", &format!("t{i}")).unwrap();
-    }
-    assert_eq!(
-        nyx.delegate("c", "one too many", "zeus", "t-overflow")
-            .unwrap_err()
-            .code,
-        "SWARM_SPAWN_DENIED"
-    );
-    // Finish one, then the slot is available again.
-    zeus.complete_task("t0", "done").unwrap();
-    assert!(
-        nyx.delegate("c", "now it fits", "zeus", "t-ok").is_ok(),
-        "a settled task must release its slot, or a long session \
-         delegating many small tasks would deadlock against its own history"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
+// The old swarm cap tests lived here (`SWARM_SPAWN_DENIED` on the hollow
+// delegate path). The anti-spawn-army constraint is now the per-run
+// `max_delegations` cap on the session's blocking delegate tool, tested in
+// pantheon-runtime's `delegate_tool_tests` ("spawn-bomb refused by per-run
+// cap").
 
 // -------------------------------------------------------------- security
 
@@ -404,8 +336,6 @@ fn a_delegated_agent_retains_its_own_permissions() {
     let dir = tmp("perms");
     let nyx = runtime(&dir, "nyx");
     let athena = nyx.for_profile("athena").unwrap();
-    // Nyx delegates to a read-only peer.
-    nyx.delegate("c", "read the docs", "athena", "t1").unwrap();
 
     // The receiving agent's policy is what governs its work, not the
     // coordinator's. Athena resolves `reader`; Nyx's `coder` never applies.
@@ -499,7 +429,16 @@ fn a_collaboration_survives_a_restart_with_its_state() {
     let dir = tmp("collabrestart");
     {
         let nyx = runtime(&dir, "nyx");
-        nyx.delegate("collab-1", "objective", "zeus", "t1").unwrap();
+        nyx.collaboration()
+            .create_task(
+                "t1",
+                Some("collab-1"),
+                "nyx",
+                Some("zeus"),
+                None,
+                "objective",
+            )
+            .unwrap();
         let zeus = nyx.for_profile("zeus").unwrap();
         zeus.complete_task("t1", "result text").unwrap();
         zeus.send(
@@ -513,7 +452,11 @@ fn a_collaboration_survives_a_restart_with_its_state() {
     }
     // Fresh processes over the same data dir.
     let nyx2 = runtime(&dir, "nyx");
-    let t = nyx2.task_status("t1").unwrap().expect("task survived");
+    let t = nyx2
+        .collaboration()
+        .task("t1")
+        .unwrap()
+        .expect("task survived");
     assert_eq!(t.status, pantheon_storage::TaskStatus::Completed);
     assert_eq!(t.result.as_deref(), Some("result text"));
     assert_eq!(t.origin_agent, "nyx", "provenance survived the restart");
@@ -526,7 +469,9 @@ fn an_unsettled_task_is_recoverable_as_an_orphan() {
     let dir = tmp("orphan");
     {
         let nyx = runtime(&dir, "nyx");
-        nyx.delegate("c", "long job", "zeus", "t1").unwrap();
+        nyx.collaboration()
+            .create_task("t1", Some("c"), "nyx", Some("zeus"), None, "long job")
+            .unwrap();
         // Zeus "crashes": the task stays assigned, never settled.
     }
     let nyx2 = runtime(&dir, "nyx");
@@ -545,8 +490,10 @@ fn an_unsettled_task_is_recoverable_as_an_orphan() {
 fn concurrent_settles_of_one_task_produce_exactly_one_winner() {
     let dir = tmp("race");
     let nyx = runtime(&dir, "nyx");
-    nyx.delegate("c", "contended", "zeus", "t1").unwrap();
-    let version = nyx.task_status("t1").unwrap().unwrap().version;
+    nyx.collaboration()
+        .create_task("t1", Some("c"), "nyx", Some("zeus"), None, "contended")
+        .unwrap();
+    let version = nyx.collaboration().task("t1").unwrap().unwrap().version;
 
     // Two writers both read version N and both try to settle. Optimistic
     // concurrency means exactly one wins and the other is told to reload.
@@ -573,7 +520,7 @@ fn concurrent_settles_of_one_task_produce_exactly_one_winner() {
         .filter(|won| *won)
         .count();
     assert_eq!(wins, 1, "exactly one writer may settle a task");
-    let t = nyx.task_status("t1").unwrap().unwrap();
+    let t = nyx.collaboration().task("t1").unwrap().unwrap();
     assert!(t.result.is_some());
     assert!(t.result.as_deref().unwrap().starts_with("from-"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -583,7 +530,12 @@ fn concurrent_settles_of_one_task_produce_exactly_one_winner() {
 fn a_collaboration_cannot_close_while_work_is_outstanding() {
     let dir = tmp("closesettle");
     let nyx = runtime(&dir, "nyx");
-    nyx.delegate("c", "objective", "zeus", "t1").unwrap();
+    nyx.collaboration()
+        .create_collaboration("c", "nyx", "objective")
+        .unwrap();
+    nyx.collaboration()
+        .create_task("t1", Some("c"), "nyx", Some("zeus"), None, "objective")
+        .unwrap();
     let store = nyx.collaboration();
     let err = store
         .settle_collaboration("c", pantheon_storage::CollaborationStatus::Completed, false)

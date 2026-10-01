@@ -50,6 +50,28 @@ impl PartialEq for SecretValue {
 
 impl Eq for SecretValue {}
 
+/// Item 5: redaction tests — a secret's value must never surface through
+/// formatting or description paths, only through [`SecretValue::expose`]
+/// at the execution boundary.
 #[cfg(test)]
-#[path = "value_tests.rs"]
-mod tests;
+mod value_redaction_tests {
+    use super::*;
+
+    #[test]
+    fn debug_never_shows_the_value() {
+        let v = SecretValue::new("s3cr3t-value");
+        let d = format!("{v:?}");
+        assert_eq!(d, "SecretValue(***)");
+        assert!(
+            !d.contains("s3cr3t"),
+            "Debug output must not contain secret material: {d}"
+        );
+    }
+
+    #[test]
+    fn expose_still_returns_the_value_at_the_boundary() {
+        // The redaction is a display contract, not data loss: the
+        // execution boundary still gets the real bytes via expose().
+        assert_eq!(SecretValue::new("s3cr3t-value").expose(), "s3cr3t-value");
+    }
+}

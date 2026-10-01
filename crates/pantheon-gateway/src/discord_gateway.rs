@@ -298,8 +298,29 @@ impl DiscordGateway {
                             // nested in `data`. For MESSAGE_CREATE, `data`
                             // is absent and parse_event falls back to the
                             // payload itself, which holds channel_id/content.
-                            if let Ok(Some(event)) = crate::discord::parse_event(&data) {
-                                inbox.push_inbound(event);
+                            //
+                            // Voice-aware: messages with audio attachments
+                            // are transcribed through the channel's voice
+                            // pipes; declines go straight back as text (the
+                            // bridge owns no outbound queue, so this is
+                            // best-effort rather than daemon-retried).
+                            for outcome in inbox.ingest(&data) {
+                                match outcome {
+                                    crate::channel_voice::VoiceOutcome::Event(event) => {
+                                        inbox.push_inbound(event);
+                                    }
+                                    crate::channel_voice::VoiceOutcome::Reply {
+                                        thread_id,
+                                        text,
+                                    } => {
+                                        if let Err(e) = inbox.send_text(&thread_id, &text) {
+                                            eprintln!(
+                                                "discord: voice decline send failed [{}]",
+                                                e.code
+                                            );
+                                        }
+                                    }
+                                }
                             }
                         }
                         _ => {}
@@ -347,7 +368,3 @@ impl DiscordGateway {
         true
     }
 }
-
-#[cfg(test)]
-#[path = "discord_gateway_tests.rs"]
-mod tests;

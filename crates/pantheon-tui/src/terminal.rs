@@ -24,12 +24,15 @@ fn die(msg: &str) -> ! {
     std::process::exit(1);
 }
 
-/// `pantheon dashboard [--port 7171] [--bind 127.0.0.1] [--open]`.
+/// `pantheon dashboard [--port 7171] [--host 127.0.0.1] [--open]`.
 /// Starts the web control plane. The dashboard prints a tokenized URL at
 /// startup; that token is the dashboard's password. Binding a
 /// non-loopback address is allowed but warned about loudly at startup —
 /// public exposure belongs behind a reverse proxy with real
 /// authentication.
+///
+/// `--host` is the canonical bind-address flag (B-14); `--bind` is kept
+/// as an alias so muscle memory and scripts keep working.
 fn cmd_dashboard(args: &[String]) {
     let mut port: u16 = 7171;
     let mut bind = "127.0.0.1".to_string();
@@ -44,21 +47,25 @@ fn cmd_dashboard(args: &[String]) {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or_else(|| die("--port needs a number"));
             }
-            "--bind" => {
+            // Canonical name first; the historic alias still works.
+            "--host" | "--bind" => {
                 i += 1;
                 bind = args
                     .get(i)
                     .cloned()
-                    .unwrap_or_else(|| die("--bind needs an address"));
+                    .unwrap_or_else(|| die("--host/--bind needs an address"));
             }
             "--open" => open = true,
             "--help" | "-h" => {
                 println!(
-                    "pantheon dashboard [--port 7171] [--bind 127.0.0.1] [--open]\n\
+                    "pantheon dashboard [--port 7171] [--host 127.0.0.1] [--open]\n\
                      \n\
                      Start the web control plane: runs, approvals, schedule,\n\
                      usage stats, memory, config, keys, logs, skills/MCP, and\n\
                      gateway — over a std-only HTTP server on localhost.\n\
+                     \n\
+                     --host is the canonical bind-address flag; --bind is an\n\
+                     alias. Same flags as `pantheon serve`.\n\
                      \n\
                      Every /api/* request needs the per-instance token printed\n\
                      at startup. Keep it on 127.0.0.1; exposing it publicly\n\
@@ -70,20 +77,113 @@ fn cmd_dashboard(args: &[String]) {
         }
         i += 1;
     }
-    pantheon_dashboard::run(pantheon_dashboard::DashboardConfig {
-        data_dir: data_dir(),
-        bind,
-        port,
-        open_browser: open,
-        // In the CLI there is no live session to resume; surface the
-        // decision on stderr so the operator sees it.
-        on_approval: Some(std::sync::Arc::new(|run_id: &str, granted: bool| {
-            eprintln!(
-                "dashboard: approval {} for run {run_id}",
-                if granted { "granted" } else { "denied" }
-            );
-        })),
-    });
+    // Unified serve surface: the dashboard control plane and the AG-UI
+    // routes share one listener and one token — one front door. This
+    // command reuses `pantheon serve`'s builders; it just owns `--open`
+    // and keeps the dashboard's historic default port.
+    let dir = data_dir();
+    let token = crate::agui::resolve_serve_token("pantheon dashboard");
+    let bind_all = bind == "0.0.0.0" || bind == "::";
+    let dash_mount = std::sync::Arc::new(pantheon_dashboard::DashboardMount::new(
+        pantheon_dashboard::App {
+            data_dir: dir.clone(),
+            token: token.clone(),
+            bind: bind.clone(),
+            bind_all,
+            on_approval: Some(crate::agui::approval_callback()),
+            send_locks: Default::default(),
+            turn_children: Default::default(),
+            swarm: pantheon_dashboard::swarm::orchestrator_for(&dir),
+        },
+    ));
+    // Single-token invariant: the gateway's auth context comes from the
+    // dashboard mount's own `auth_ctx()`, so both mounts enforce the
+    // same token.
+    let auth = dash_mount.auth_ctx();
+    let agui_cfg = crate::agui::build_agui_serve_parts(&dir, &bind, port, &token);
+    let agui_mount = std::sync::Arc::new(pantheon_runtime::agui_serve::AguiMount { cfg: agui_cfg });
+    let url = format!("http://{bind}:{port}/?token={token}");
+    println!("pantheon dashboard on {url}");
+    if bind_all {
+        eprintln!(
+            "WARNING: dashboard is bound to a non-loopback address. The token is the only \
+             protection. Put a reverse proxy with real auth in front, or keep it on 127.0.0.1."
+        );
+    } else {
+        eprintln!("keep this URL private: the token is the dashboard's password.");
+    }
+    if open {
+        open_browser(&url);
+    }
+    let cfg = pantheon_gateway::http::ServerConfig {
+        bind_addr: format!("{bind}:{port}"),
+        auth,
+        mounts: vec![dash_mount, agui_mount],
+        label: "pantheon dashboard".to_string(),
+    };
+    if let Err(e) = pantheon_gateway::http::serve(cfg) {
+        die(&format!("dashboard: {e}"));
+    }
+}
+
+/// Best-effort `--open`: hand the URL to the OS browser; never fatal.
+fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let prog = "open";
+    #[cfg(not(target_os = "macos"))]
+    let prog = "xdg-open";
+    if let Err(e) = std::process::Command::new(prog).arg(url).spawn() {
+        eprintln!("dashboard: could not open browser ({prog}): {e}");
+    }
+}
+
+/// Drain the run's FIFO queue after a turn settles: pop each queued
+/// follow-up (oldest first) and run it as a new turn until the queue
+/// is empty. Best-effort: a failed step is reported, not fatal.
+pub(crate) fn drain_queued_turns(
+    session: &pantheon_runtime::session::Session,
+    run_id: &str,
+    _channel: &str,
+) {
+    let ledger = match pantheon_storage::Ledger::open(&data_dir().join("ledger.db")) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("queue drain: open ledger: {e}");
+            return;
+        }
+    };
+    loop {
+        let mut queued = match ledger.queued_messages(run_id) {
+            Ok(q) => q,
+            Err(e) => {
+                eprintln!("queue drain: read queue: {e}");
+                return;
+            }
+        };
+        if queued.is_empty() {
+            return;
+        }
+        let msg = queued.remove(0);
+        // Pop-oldest: clear the queue, then re-append the remainder.
+        if let Err(e) = ledger.set_queued_message(run_id, None) {
+            eprintln!("queue drain: clear queue: {e}");
+            return;
+        }
+        for rest in &queued {
+            if let Err(e) = ledger.set_queued_message(run_id, Some(rest)) {
+                eprintln!("queue drain: re-queue: {e}");
+                return;
+            }
+        }
+        let turn_id = pantheon_runtime::new_turn_id();
+        match session.chat_turn(run_id, &turn_id, &msg) {
+            Ok(_) => println!("run {run_id} continued (queued follow-up)"),
+            Err(e) => {
+                eprintln!("queue drain: turn failed: {e}");
+                return;
+            }
+        }
+    }
 }
 pub(crate) fn ext_dir() -> PathBuf {
     if let Ok(d) = std::env::var("PANTHEON_EXT_DIR") {
@@ -126,11 +226,16 @@ pub(crate) fn print_json<T: serde::Serialize>(label: &str, v: &T) {
 /// the reply is queued in the durable outbox for the running gateway to pick
 /// up, so the user sees it where they asked for it instead of on a terminal
 /// nobody is watching.
-fn run_delivered_task(task_id: &Option<String>, say: &Option<String>, target: &str) {
+fn run_delivered_task(
+    task_id: &Option<String>,
+    say: &Option<String>,
+    target: &str,
+    verdict_tool: bool,
+) {
     let text = match say {
         Some(s) => s.clone(),
         None => {
-            eprintln!("run --deliver {target} needs --say \"text\" (the task to run)");
+            eprintln!("run --deliver {target} needs --say \"text\" (or --say - / PANTHEON_SAY_STDIN=1 for stdin)");
             std::process::exit(2);
         }
     };
@@ -163,6 +268,9 @@ fn run_delivered_task(task_id: &Option<String>, say: &Option<String>, target: &s
                 std::process::exit(1);
             }
         };
+    if verdict_tool {
+        session.set_verdict_tool(true);
+    }
     match session.chat_turn(&run_id, "", &text) {
         Ok(outcome) => {
             let answer = outcome_text(&outcome);
@@ -231,15 +339,20 @@ fn usage() -> String {
     s.push_str("  update [--check] [--version TAG]  replace this binary with the latest release\n");
     s.push_str("  model [--list] [--auxiliary KIND]        provider picker, keys -> .env\n");
     s.push_str("  provider <add|list|remove>   custom-endpoint registry\n");
+    s.push_str("  config <set|get|edit|path>  read and write config.toml values\n");
     s.push_str("  providers                    list cataloged providers and models\n");
     s.push_str("  fallback <add|list|remove>   ordered provider/model fallback chain\n");
-    s.push_str("  doctor [<plugin_dir>]        system preflight (or per-plugin)\n");
+    s.push_str("  doctor [--ping] [<plugin_dir>]  system preflight (or per-plugin)\n");
     s.push_str(
         "  repair [--dry-run]              find and fix anything wrong with this install;\n",
     );
     s.push_str("                                --dry-run reports without changing anything.\n");
     s.push_str("                                (pantheon doctor is diagnose-only)\n");
-    s.push_str("  reset [--config|--state|--everything] [--yes]\n\n");
+    s.push_str("  reset [--config|--state|--everything] [--yes]\n");
+    s.push_str("  backup [--list] [--restore DIR --yes]\n");
+    s.push_str("        atomic SQLite snapshots into backups/<UTC-timestamp>/\n");
+    s.push_str("  uninstall [--yes] [--include-secrets]\n");
+    s.push_str("        remove config + data (keeps .env unless --include-secrets)\n\n");
 
     s.push_str("EXTEND\n");
     s.push_str("  skills list|import <name>|doctor        SKILL.md skills\n");
@@ -255,7 +368,11 @@ fn usage() -> String {
     s.push_str("  reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]\n");
     s.push_str("        ledger-native self-improvement: propose, eval-gate, approve, apply\n");
     s.push_str("  consolidate [--dry-run] [status]\n");
-    s.push_str("        stage/weigh/promote repeated facts into long-term memory\n\n");
+    s.push_str("        stage/weigh/promote repeated facts into long-term memory\n");
+    s.push_str(
+        "  nightly [--dry-run] [on|off|status|log|pending|escalations|report|replay-tasks]\n",
+    );
+    s.push_str("        [--approve ID] [--deny ID]  nightly pass: repair, memory, tasks\n\n");
 
     s.push_str("RUN UNATTENDED\n");
     s.push_str("  schedule <task> --30m | list|pause|resume|cancel|run <id>\n");
@@ -263,7 +380,7 @@ fn usage() -> String {
     s.push_str("  gateway [run|start|stop|restart|status]\n");
     s.push_str("        always-on service: chat surfaces + scheduled tasks\n");
     s.push_str("  serve [--port N] [--host H]   AG-UI SSE + RPC server\n");
-    s.push_str("  dashboard [--port 7171] [--bind 127.0.0.1] [--open]\n");
+    s.push_str("  dashboard [--port 7171] [--host 127.0.0.1] [--open]\n");
     s.push_str("        web control plane: runs, approvals, schedule, config, keys,\n");
     s.push_str("        logs, skills/MCP, gateway. Per-instance token auth; stays on\n");
     s.push_str("        localhost unless you put a reverse proxy with real auth in front.\n\n");
@@ -284,6 +401,7 @@ fn usage() -> String {
 /// kept in sync with the `match args[1]` arms in `main`.
 const KNOWN_VERBS: &[&str] = &[
     "audit",
+    "backup",
     "consolidate",
     "dashboard",
     "doctor",
@@ -297,6 +415,7 @@ const KNOWN_VERBS: &[&str] = &[
     "memory",
     "migrate",
     "model",
+    "nightly",
     "pipeline",
     "plugins",
     "provider",
@@ -312,6 +431,7 @@ const KNOWN_VERBS: &[&str] = &[
     "skills",
     "stats",
     "swarm",
+    "uninstall",
     "update",
 ];
 
@@ -371,6 +491,56 @@ fn levenshtein(a: &str, b: &str) -> usize {
         std::mem::swap(&mut prev, &mut cur);
     }
     prev[b.len()]
+}
+
+/// Guard for verbs that take a positional argument (`audit <run_id>`,
+/// `runs [<run_id>]`): the hand-rolled dispatch used to treat `--*`
+/// tokens as the positional value, so `doctor --ping` ran the plugin
+/// doctor on a directory literally named "--ping" and `runs --frobnicate`
+/// looked up a run literally named "--frobnicate". `--help`/`-h` prints
+/// the verb help and exits 0; any other flag-looking token that is not
+/// in `allowed_flags` is a usage error (exit 2).
+fn reject_flag_positional(
+    verb: &str,
+    args: &[String],
+    index: usize,
+    allowed_flags: &[&str],
+    help: fn(),
+) {
+    match args.get(index).map(String::as_str) {
+        Some("--help") | Some("-h") => {
+            help();
+            std::process::exit(0);
+        }
+        Some(a) if a.starts_with('-') && !allowed_flags.contains(&a) => {
+            eprintln!("{verb}: unexpected flag {a:?} in a positional slot");
+            help();
+            std::process::exit(2);
+        }
+        _ => {}
+    }
+}
+
+fn audit_help() {
+    eprintln!("usage: pantheon audit <run_id> [OUT.jsonl]");
+    eprintln!("  sequence-validated JSONL trajectory for one run;");
+    eprintln!("  writes OUT.jsonl when given, stdout otherwise");
+}
+
+fn runs_help() {
+    eprintln!("usage: pantheon runs [--metrics] [<run_id>]");
+    eprintln!("  no run id: list runs and their status");
+    eprintln!("  <run_id>:  full event trace for one run");
+    eprintln!("  --metrics: one-line counts folded from the ledger");
+}
+
+fn doctor_help() {
+    eprintln!("usage: pantheon doctor [--ping] [--json|--human] [<plugin_dir>]");
+    eprintln!("  no args:     system preflight (human-readable; --json for JSON)");
+    eprintln!("  <plugin_dir>: verify one plugin directory");
+    eprintln!("  --ping:      also probe the configured model provider's endpoint");
+    eprintln!("  --json:      machine-readable JSON on stdout");
+    eprintln!("  --human:     human-readable output (the default)");
 }
 
 /// Closest known verbs to `unknown`, nearest first (up to `max_n`).
@@ -502,6 +672,41 @@ fn memory_help() {
     eprintln!("  vault list [CAT]    list files in Obsidian vault");
 }
 
+/// Resolve the `run --say` message (A-10): turn text must not travel via
+/// argv, where it is visible in process listings (`ps`). Two stdin paths:
+///
+/// - `--say -`: the message is read from stdin instead of argv.
+/// - `PANTHEON_SAY_STDIN=1` with no `--say` at all: same, for callers that
+///   cannot pass the flag (e.g. the dashboard spawner).
+///
+/// A `--say` value other than `-` is returned unchanged. Empty stdin is an
+/// error: silently running with no message would seed a confusing turn.
+fn resolve_say_stdin(say: Option<String>) -> Option<String> {
+    let from_stdin = match &say {
+        Some(s) if s == "-" => true,
+        None => matches!(
+            std::env::var("PANTHEON_SAY_STDIN").as_deref(),
+            Ok("1") | Ok("true")
+        ),
+        _ => false,
+    };
+    if !from_stdin {
+        return say;
+    }
+    use std::io::Read;
+    let mut buf = String::new();
+    if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+        eprintln!("run: could not read the message from stdin: {e}");
+        std::process::exit(1);
+    }
+    let text = buf.trim_end_matches(['\r', '\n']).to_string();
+    if text.is_empty() {
+        eprintln!("run: stdin was empty; nothing to say");
+        std::process::exit(2);
+    }
+    Some(text)
+}
+
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     // The pantheon folder's own key store: `<data_dir>/.env` fills in any
@@ -536,6 +741,12 @@ pub fn run() {
     if args.len() >= 2 && args[1] == "--resume" {
         let resume_id: Option<String> = args.get(2).cloned();
         crate::entry::run_with_resume(resume_id);
+        return;
+    }
+    // `pantheon --profile <name>` (also `-p`, `--agent <name>`): open the
+    // TUI as the named agent profile instead of the configured default.
+    if args.len() >= 3 && matches!(args[1].as_str(), "--profile" | "-p" | "--agent") {
+        crate::entry::run_with_profile(&args[2]);
         return;
     }
     match args[1].as_str() {
@@ -933,83 +1144,7 @@ timeout_ms = 5000
             }
         }
         "plugins" => {
-            let dd = data_dir();
-            let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            match args.get(2).map(|s| s.as_str()) {
-                Some("list") | None => {
-                    let found = pantheon_exec::plugins::discover_plugins(&dd, &project_root);
-                    if found.is_empty() {
-                        println!("no plugins installed");
-                    }
-                    for p in &found {
-                        let src = match p.location {
-                            pantheon_exec::plugins::PluginLocation::User => "user",
-                            pantheon_exec::plugins::PluginLocation::Project => "project",
-                        };
-                        let status = if p.manifest.enabled { "on" } else { "off" };
-                        println!(
-                            "{:30} {}\t{} ({} tools)",
-                            p.manifest.name,
-                            status,
-                            src,
-                            p.manifest.capabilities.len(),
-                        );
-                    }
-                }
-                Some("install") => {
-                    if args.len() < 4 {
-                        eprintln!("usage: pantheon plugins install <name>");
-                        eprintln!(
-                            "catalog plugins: {}",
-                            pantheon_exec::plugins::catalog_names().join(", ")
-                        );
-                        std::process::exit(2);
-                    }
-                    let name = &args[3];
-                    pantheon_exec::plugins::install_catalog(name, &dd, &project_root)
-                        .unwrap_or_else(|e| {
-                            eprintln!("plugins install: {e}");
-                            std::process::exit(1);
-                        });
-                    println!("installed {}", name);
-                }
-                Some(cmd @ ("enable" | "disable")) => {
-                    if args.len() < 4 {
-                        eprintln!("usage: pantheon plugins {cmd} <name>");
-                        std::process::exit(2);
-                    }
-                    let name = &args[3];
-                    // Find the plugin in either scope; enable/disable only
-                    // touches the manifest in place.
-                    let found = pantheon_exec::plugins::discover_plugins(&dd, &project_root);
-                    let plugin = found
-                        .iter()
-                        .find(|p| p.manifest.name == *name)
-                        .unwrap_or_else(|| {
-                            eprintln!("plugins {cmd}: no plugin named '{name}'");
-                            std::process::exit(1);
-                        });
-                    pantheon_exec::plugins::set_enabled(plugin, cmd == "enable").unwrap_or_else(
-                        |e| {
-                            eprintln!("plugins {cmd}: {e}");
-                            std::process::exit(1);
-                        },
-                    );
-                    println!(
-                        "{} {}",
-                        if cmd == "enable" {
-                            "enabled"
-                        } else {
-                            "disabled"
-                        },
-                        name
-                    );
-                }
-                _ => {
-                    eprintln!("usage: pantheon plugins <list|install|enable|disable>");
-                    std::process::exit(2);
-                }
-            }
+            crate::plugins_verb::cmd_plugins(&args);
         }
         "run" => {
             let mut id: Option<String> = None;
@@ -1018,6 +1153,11 @@ timeout_ms = 5000
             let mut fail: Option<String> = None;
             let mut with_ext = false;
             let mut platform = String::from("cli");
+            // Reviewer-only tool for staged teams: the dashboard's swarm
+            // worker passes this to reviewer child runs (`--deliver
+            // session`), registering the `verdict` tool on the turn so the
+            // orchestrator can read a structured verdict.
+            let mut verdict_tool = false;
             // Approvals are normally answered inside the session that raised
             // them. These two flags are the out-of-band path: a run parked
             // from a script, a gateway message, or a second terminal. They
@@ -1079,6 +1219,9 @@ timeout_ms = 5000
                     "--ext" => {
                         with_ext = true;
                     }
+                    "--verdict-tool" => {
+                        verdict_tool = true;
+                    }
                     "--platform" => {
                         i += 1;
                         if i < args.len() {
@@ -1089,6 +1232,9 @@ timeout_ms = 5000
                 }
                 i += 1;
             }
+            // A-10: resolve the message before anything consumes it, so
+            // `--say -` / PANTHEON_SAY_STDIN keep turn text out of argv.
+            let say = resolve_say_stdin(say);
             // Out-of-band approval: settle a parked scope, then continue the
             // run unless the caller opted out. The supervisor is scoped so
             // its SQLite write handle closes before the Session opens — two
@@ -1138,7 +1284,7 @@ timeout_ms = 5000
                 // turn printed to this terminal — not the synthetic ledger
                 // writer below. Gating it on `target != "session"` meant the
                 // default path produced an event trace with no model call.
-                return run_delivered_task(&id, &say, &target);
+                return run_delivered_task(&id, &say, &target, verdict_tool);
             }
             // `run` writes ledger events directly. It does not call a model
             // and does not execute the named tool, so it is a synthetic-run
@@ -1146,7 +1292,10 @@ timeout_ms = 5000
             // alternative to `chat`, and saying so up front is cheaper than
             // letting someone discover it from an empty transcript.
             if say.is_none() && tool.is_none() && fail.is_none() && !with_ext {
-                eprintln!("usage: pantheon run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]");
+                eprintln!("usage: pantheon run [--id ID] [--say TEXT|--say -] [--tool NAME] [--fail CODE] [--ext] [--platform P]");
+                eprintln!("       --say - reads the message from stdin (never via argv, so it");
+                eprintln!("       never appears in process listings); PANTHEON_SAY_STDIN=1 does");
+                eprintln!("       the same when --say is absent.");
                 eprintln!();
                 eprintln!("run writes synthetic ledger events only: it never calls a model and");
                 eprintln!(
@@ -1232,12 +1381,18 @@ timeout_ms = 5000
         "consolidate" => {
             crate::consolidate_cli::cmd_consolidate(&args, &data_dir());
         }
+        "nightly" => {
+            crate::nightly_cli::cmd_nightly(&args, &data_dir());
+        }
         "swarm" => {
             crate::swarm::cmd_swarm(&args, &data_dir());
         }
         "runs" => {
             // No run id: the operator wants to know what exists and what
-            // state each run is in.
+            // state each run is in. The run id is positional: `--metrics`
+            // is the one real flag; any other `--*` in its slot is a
+            // usage error, not a run id.
+            reject_flag_positional("runs", &args, 2, &["--metrics", "-m"], runs_help);
             if args.len() < 3 {
                 let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
                     eprintln!("open runtime: {e}");
@@ -1247,7 +1402,7 @@ timeout_ms = 5000
                     Ok(rows) if rows.is_empty() => println!("no runs yet"),
                     Ok(rows) => {
                         println!("{:<34} {:<18} TITLE", "RUN", "STATUS");
-                        for (run_id, status, _ts, title) in rows {
+                        for (run_id, status, _ts, title, _project) in rows {
                             // Same status vocabulary as the TUI `/runs` view,
                             // so the two never disagree about a run.
                             println!("{run_id:<34} {status:<18} {}", title.unwrap_or_default());
@@ -1293,8 +1448,11 @@ timeout_ms = 5000
         "audit" => {
             // Export a run's ledger as a sequence-validated JSONL trajectory.
             // Usage: pantheon audit <run_id> [OUT]  (default: <run_id>.jsonl)
+            // The run id is positional: a `--*` token there is a misplaced
+            // flag, not a run id.
+            reject_flag_positional("audit", &args, 2, &[], audit_help);
             if args.len() < 3 {
-                eprintln!("usage: pantheon audit <run_id> [OUT.jsonl]");
+                audit_help();
                 std::process::exit(2);
             }
             let sup = Supervisor::open(data_dir()).unwrap_or_else(|e| {
@@ -1369,19 +1527,58 @@ timeout_ms = 5000
             }
         }
         "doctor" => {
-            if args.len() >= 3 {
-                // Plugin-dir form: keep the original extension doctor.
-                let rep = doctor(std::path::Path::new(&args[2]));
-                print_json("doctor", &rep);
-                if !rep.ok {
-                    std::process::exit(1);
+            // Flags: --ping (reachability probe), --json / --human
+            // (output format; human is the default). The plugin dir is the
+            // first non-flag positional; an unknown `--*` is a usage
+            // error, not a plugin directory named "--ping".
+            let mut ping = false;
+            let mut json = false;
+            let mut plugin_dir: Option<&str> = None;
+            for a in args.iter().skip(2) {
+                match a.as_str() {
+                    "--help" | "-h" => {
+                        doctor_help();
+                        std::process::exit(0);
+                    }
+                    "--ping" => ping = true,
+                    "--json" => json = true,
+                    "--human" => json = false,
+                    s if s.starts_with('-') => {
+                        eprintln!("doctor: unexpected flag {s:?}");
+                        doctor_help();
+                        std::process::exit(2);
+                    }
+                    s => {
+                        if plugin_dir.is_none() {
+                            plugin_dir = Some(s);
+                        }
+                    }
                 }
-            } else {
-                // System doctor: config, model, ledger, memory, plugins.
-                let rep = crate::doctor::run_system_doctor(&data_dir());
-                print_json("doctor", &rep);
-                if !rep.ok {
-                    std::process::exit(1);
+            }
+            match plugin_dir {
+                Some(dir) => {
+                    // Plugin-dir form: keep the original extension doctor.
+                    let rep = doctor(std::path::Path::new(dir));
+                    if json {
+                        print_json("doctor", &rep);
+                    } else {
+                        print!("{}", crate::doctor::render_plugin_doctor_human(&rep));
+                    }
+                    if !rep.ok {
+                        std::process::exit(1);
+                    }
+                }
+                None => {
+                    // System doctor: config, model, ledger, memory, plugins.
+                    let rep = crate::doctor::run_system_doctor_opts(&data_dir(), ping);
+                    if json {
+                        print_json("doctor", &rep);
+                    } else {
+                        print!("{}", crate::doctor::render_human(&rep));
+                    }
+                    if !rep.ok {
+                        std::process::exit(1);
+                    }
                 }
             }
         }
@@ -1403,11 +1600,20 @@ timeout_ms = 5000
         "update" => {
             crate::update::cmd_update(&args);
         }
+        "backup" => {
+            crate::backup::cmd_backup(&args);
+        }
+        "uninstall" => {
+            crate::uninstall::cmd_uninstall(&args);
+        }
         "model" => {
             crate::model::cmd_model(&args);
         }
         "provider" => {
             crate::provider::cmd_provider(&args);
+        }
+        "config" => {
+            crate::config_verb::cmd_config(&args);
         }
         "reset" => {
             crate::reset::cmd_reset(&args);
@@ -1511,155 +1717,6 @@ timeout_ms = 5000
     }
 }
 
-#[cfg(test)]
-mod verb_guard_tests {
-    use super::*;
-
-    fn argv(words: &[&str]) -> Vec<String> {
-        words.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn exact_match_passes() {
-        for v in KNOWN_VERBS {
-            assert!(is_known_verb(v), "known verb '{v}' must pass");
-            assert_eq!(classify_first_arg(&argv(&["pantheon", v])), FirstArg::Known);
-        }
-        assert!(!is_known_verb("statsu"));
-        assert!(!is_known_verb(""));
-    }
-
-    #[test]
-    fn typo_suggests_a_verb_that_still_exists() {
-        // A typo handler that suggests a removed verb sends the user
-        // straight to "unknown verb", so the suggestion must be checked
-        // against the live list rather than hardcoded to a name that used
-        // to exist.
-        assert_eq!(
-            suggest_verbs("serv", 3).first(),
-            Some(&"serve"),
-            "'serv' should suggest serve"
-        );
-        // `status` and `session` were removed; they must never come back as
-        // a suggestion for a near-miss.
-        for typo in ["stats", "statsu", "sesion", "sess"] {
-            let got = suggest_verbs(typo, 3);
-            for removed in ["status", "session", "grant", "deny"] {
-                assert!(
-                    !got.contains(&removed),
-                    "typo '{typo}' suggested removed verb '{removed}': {got:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn empty_argv_is_noargs() {
-        assert_eq!(classify_first_arg(&[]), FirstArg::NoArgs);
-        assert_eq!(classify_first_arg(&argv(&["pantheon"])), FirstArg::NoArgs);
-    }
-
-    #[test]
-    fn flags_are_not_verbs() {
-        for f in ["--help", "-h", "--resume", "--version"] {
-            assert!(is_flag_arg(f), "'{f}' must classify as flag");
-            assert!(!is_known_verb(f));
-            assert_eq!(classify_first_arg(&argv(&["pantheon", f])), FirstArg::Flag);
-            assert!(
-                !suggest_verbs(f, 3).contains(&"--help"),
-                "flags must never be suggested as verbs"
-            );
-        }
-    }
-
-    #[test]
-    fn version_and_help_have_real_handlers() {
-        // Both used to fall into the bare-flag arm, which printed usage to
-        // stderr and exited 2. `pantheon --version` answering with a usage
-        // dump makes "what version am I running" unanswerable, and it broke
-        // the release smoke test.
-        let v = argv(&["pantheon", "--version"]);
-        assert_eq!(classify_first_arg(&v), FirstArg::Flag);
-        assert!(
-            v.get(1).map(String::as_str) == Some("--version"),
-            "version must be handled before the bare-flag arm"
-        );
-        for f in ["--version", "-V", "--help", "-h"] {
-            let a = argv(&["pantheon", f]);
-            let handled = a.get(1).map(String::as_str) == Some("--version")
-                || a.get(1).map(String::as_str) == Some("-V")
-                || a.get(1).map(String::as_str) == Some("--help")
-                || a.get(1).map(String::as_str) == Some("-h");
-            assert!(handled, "{f} must have a dedicated handler");
-        }
-    }
-
-    #[test]
-    fn unknown_is_rejected_not_swallowed() {
-        assert_eq!(
-            classify_first_arg(&argv(&["pantheon", "statsu"])),
-            FirstArg::Unknown("statsu".into())
-        );
-        // Gibberish yields no misleading suggestion, still Unknown.
-        assert!(suggest_verbs("zzzqqqx", 3).is_empty());
-        assert_eq!(
-            classify_first_arg(&argv(&["pantheon", "zzzqqqx"])),
-            FirstArg::Unknown("zzzqqqx".into())
-        );
-    }
-
-    #[test]
-    fn verb_list_covers_dispatch() {
-        // Every dispatch arm in main must be known: the 29-verb surface.
-        // (An earlier comment said 28 + extras; the list below is the
-        // whole truth and the test fails if a new arm is added without
-        // registering it here and in KNOWN_VERBS.)
-        for v in [
-            "run",
-            "runs",
-            "logs",
-            "audit",
-            "memory",
-            "plugins",
-            "extensions",
-            "hook",
-            "doctor",
-            "serve",
-            "fallback",
-            "gateway",
-            "setup",
-            "repair",
-            "reset",
-            "pipeline",
-            "providers",
-            "skills",
-            "migrate",
-            "reflect",
-            "schedule",
-            "swarm",
-            "model",
-            "provider",
-            "mcp",
-            "update",
-        ] {
-            assert!(
-                is_known_verb(v),
-                "dispatch verb '{v}' missing from KNOWN_VERBS"
-            );
-        }
-    }
-
-    #[test]
-    fn usage_mentions_every_known_verb() {
-        // usage() is the operator's map of the surface; a verb missing
-        // from it is discoverable only by source-diving.
-        let u = usage();
-        for v in KNOWN_VERBS {
-            assert!(u.contains(v), "usage() omits verb '{v}'");
-        }
-    }
-}
-
 // ── Startup splash ──────────────────────────────────────────────────────
 // The Pantheon logo on the TUI welcome screen. The ASCII art is embedded at
 // compile time from assets/ (relative to this file: src/ → ../../../assets).
@@ -1735,78 +1792,4 @@ pub fn splash_lines(
             .add_modifier(Modifier::BOLD),
     )));
     lines
-}
-
-#[cfg(test)]
-mod splash_tests {
-    use super::*;
-
-    fn max_line_width(art: &str) -> usize {
-        art.lines().map(|l| l.chars().count()).max().unwrap_or(0)
-    }
-
-    #[test]
-    fn wide_terminal_gets_60_col_art() {
-        let art = splash_logo(120);
-        assert_eq!(art, SPLASH_LOGO_WIDE);
-        // The 60-col art's widest line exceeds the 44-col art's width.
-        assert!(max_line_width(art) > 44);
-        assert!(max_line_width(SPLASH_LOGO_NARROW) <= 44);
-    }
-
-    #[test]
-    fn narrow_terminal_gets_44_col_art() {
-        assert_eq!(splash_logo(63), SPLASH_LOGO_NARROW);
-        assert_eq!(splash_logo(40), SPLASH_LOGO_NARROW);
-    }
-
-    #[test]
-    fn threshold_is_64() {
-        assert_eq!(splash_logo(64), SPLASH_LOGO_WIDE);
-        assert_eq!(choose_splash_logo(None, None, 120), None);
-    }
-
-    #[test]
-    fn missing_asset_falls_back_or_skips_gracefully() {
-        // Wide asset missing: fall back to narrow rather than empty.
-        assert_eq!(
-            choose_splash_logo(None, Some("narrow"), 120),
-            Some("narrow")
-        );
-        // Both missing: None, and splash_lines keeps the wordmark.
-        assert_eq!(choose_splash_logo(None, None, 40), None);
-    }
-
-    #[test]
-    fn splash_lines_end_with_styled_wordmark() {
-        let lines = splash_lines(80, &crate::session::theme::Theme::pantheon());
-        let last = lines.last().unwrap();
-        let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text.trim(), "PANTHEON");
-        let style = last.spans[0].style;
-        assert!(style.add_modifier.contains(ratatui::style::Modifier::BOLD));
-        assert_eq!(
-            style.fg,
-            Some(crate::session::theme::Theme::pantheon().primary)
-        );
-    }
-
-    #[test]
-    fn splash_lines_skip_logo_but_keep_wordmark_when_art_missing() {
-        // Simulate a missing asset through the graceful path: build lines
-        // the way splash_lines does, with no art.
-        let lines: Vec<ratatui::text::Line<'static>> = {
-            let mut v = Vec::new();
-            if !choose_splash_logo(None, None, 80)
-                .unwrap_or("")
-                .trim()
-                .is_empty()
-            {
-                unreachable!();
-            }
-            v.push(ratatui::text::Line::from("PANTHEON"));
-            v
-        };
-        assert_eq!(lines.len(), 1);
-    }
 }

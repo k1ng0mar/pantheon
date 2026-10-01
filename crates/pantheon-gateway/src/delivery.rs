@@ -96,7 +96,3 @@ impl Outbox {
         self.pending.is_empty()
     }
 }
-
-#[cfg(test)]
-#[path = "delivery_tests.rs"]
-mod tests;

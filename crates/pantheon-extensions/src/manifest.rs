@@ -37,6 +37,11 @@ pub struct PluginManifest {
     /// which our subprocess runner cannot preserve across fires.
     #[serde(default)]
     pub once_per_session: bool,
+    /// Enabled by default after install. The `[plugins.<name>]` config
+    /// entry wins when present; when absent this flag is the default
+    /// (false for every bundled plugin except noisegate).
+    #[serde(default)]
+    pub enabled: bool,
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, serde_yaml::Value>,
 }

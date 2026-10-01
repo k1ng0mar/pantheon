@@ -7,8 +7,17 @@ authors.workspace = true
 
 [dependencies]
 pantheon-api = { path = "../pantheon-api" }
+# Sandbox enforcement for server spawns (capability gate + sandbox profile).
+pantheon-exec = { path = "../pantheon-exec" }
+# ToolRegistry projection: the manager registers each server's tools as
+# `mcp_<server>_<tool>`. Direction is mcp -> tools (tools never depends
+# on mcp), matching the Tools -> Exec layering.
+pantheon-tools = { path = "../pantheon-tools" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# HTTP/SSE transports for remote MCP servers. Same crate + features the
+# provider layer uses (pantheon-providers), sync rustls, no tokio.
+ureq = { version = "2", default-features = false, features = ["tls", "json", "proxy-from-env", "native-certs"] }
 
 
 [lints]

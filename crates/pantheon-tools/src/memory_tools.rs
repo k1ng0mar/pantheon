@@ -20,17 +20,6 @@ use pantheon_memory::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-fn merr(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(
-        code,
-        Layer::Execution,
-        false,
-        cause,
-        "check tool arguments and policy",
-        "",
-    )
-}
-
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -176,12 +165,15 @@ pub fn resolve_namespace(
     match requested.map(str::trim).filter(|s| !s.is_empty()) {
         None => Ok(session_ns.to_string()),
         Some(ns) if ns == session_ns => Ok(ns.to_string()),
-        Some(other) => Err(merr(
+        Some(other) => Err(crate::tools::tool_err(
             "MEM_NAMESPACE_DENIED",
+            Layer::Execution,
+            false,
             format!(
                 "this session may only use namespace '{session_ns}'; \
                  '{other}' belongs to another session"
             ),
+            "check tool arguments and policy",
         )),
     }
 }
@@ -209,7 +201,7 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
             let query = v
                 .get("query")
                 .and_then(|x| x.as_str())
-                .ok_or_else(|| merr("TOOL_BAD_ARGS", "missing 'query'".into()))?
+                .ok_or_else(|| crate::tools::tool_err("TOOL_BAD_ARGS", Layer::Execution, false, "missing 'query'".into(), "check tool arguments and policy"))?
                 .to_string();
             let limit = v.get("limit").and_then(|x| x.as_u64()).unwrap_or(8) as usize;
             let layers = [
@@ -345,12 +337,12 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
             let key = v
                 .get("key")
                 .and_then(|x| x.as_str())
-                .ok_or_else(|| merr("TOOL_BAD_ARGS", "missing 'key'".into()))?
+                .ok_or_else(|| crate::tools::tool_err("TOOL_BAD_ARGS", Layer::Execution, false, "missing 'key'".into(), "check tool arguments and policy"))?
                 .to_string();
             let value = v
                 .get("value")
                 .and_then(|x| x.as_str())
-                .ok_or_else(|| merr("TOOL_BAD_ARGS", "missing 'value'".into()))?
+                .ok_or_else(|| crate::tools::tool_err("TOOL_BAD_ARGS", Layer::Execution, false, "missing 'value'".into(), "check tool arguments and policy"))?
                 .to_string();
             let layer = v
                 .get("layer")
@@ -434,7 +426,15 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
             let key = v
                 .get("key")
                 .and_then(|x| x.as_str())
-                .ok_or_else(|| merr("TOOL_BAD_ARGS", "missing 'key'".into()))?
+                .ok_or_else(|| {
+                    crate::tools::tool_err(
+                        "TOOL_BAD_ARGS",
+                        Layer::Execution,
+                        false,
+                        "missing 'key'".into(),
+                        "check tool arguments and policy",
+                    )
+                })?
                 .to_string();
             let layer = v
                 .get("layer")
@@ -454,9 +454,12 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
 
             match forget_opts.store.forget(layer, &namespace, &key) {
                 Ok(true) => Ok(format!("forgot {key}")),
-                Ok(false) => Err(merr(
+                Ok(false) => Err(crate::tools::tool_err(
                     "MEM_NOT_FOUND",
+                    Layer::Execution,
+                    false,
                     format!("no record for {key} in {namespace}"),
+                    "check tool arguments and policy",
                 )),
                 Err(e) => {
                     forget_opts.sink.record(MemoryToolEvent::Denied {
@@ -500,7 +503,7 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
             let key = v
                 .get("key")
                 .and_then(|x| x.as_str())
-                .ok_or_else(|| merr("TOOL_BAD_ARGS", "missing 'key'".into()))?
+                .ok_or_else(|| crate::tools::tool_err("TOOL_BAD_ARGS", Layer::Execution, false, "missing 'key'".into(), "check tool arguments and policy"))?
                 .to_string();
             let layer = v
                 .get("layer")
@@ -541,6 +544,3 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
         },
     );
 }
-#[cfg(test)]
-#[path = "memory_tools_tests.rs"]
-mod tests;

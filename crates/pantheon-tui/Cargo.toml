@@ -15,6 +15,7 @@ path = "src/main.rs"
 pantheon-api = { path = "../pantheon-api" }
 pantheon-gateway = { path = "../pantheon-gateway" }
 pantheon-runtime = { path = "../pantheon-runtime" }
+pantheon-mcp = { path = "../pantheon-mcp" }
 pantheon-exec = { path = "../pantheon-exec" }
 # Direct tool registration paths (vault verbs, memory vault, registry).
 pantheon-tools = { path = "../pantheon-tools" }
@@ -22,16 +23,18 @@ pantheon-extensions = { path = "../pantheon-extensions" }
 pantheon-memory = { path = "../pantheon-memory" }
 pantheon-secrets = { path = "../pantheon-secrets" }
 pantheon-scheduler = { path = "../pantheon-scheduler" }
-pantheon-swarm = { path = "../pantheon-swarm" }
 pantheon-migration = { path = "../pantheon-migration" }
 pantheon-agent = { path = "../pantheon-agent" }
 # Model/provider metadata rendered in pickers comes from the catalog.
 pantheon-providers = { path = "../pantheon-providers" }
+# Web-search provider registry enumerated by the setup wizard's provider
+# picker (`pantheon-web` has no TUI-facing API beyond the registry).
+pantheon-web = { path = "../pantheon-web" }
 pantheon-storage = { path = "../pantheon-storage" }
-# Ledger-native self-improvement (reflection passes, proposals, audit).
-pantheon-reflect = { path = "../pantheon-reflect" }
-# Background memory consolidation (stage/weigh/promote over ledger events).
-pantheon-consolidate = { path = "../pantheon-consolidate" }
+# Unified nightly self-improvement (one ledger scan → proposals,
+# eval-gating, replay validation, approvals, audit). Replaces the old
+# pantheon-reflect + pantheon-consolidate split.
+pantheon-nightly = { path = "../pantheon-nightly" }
 # Web dashboard (std-only HTTP control plane). Driven by `pantheon dashboard`.
 pantheon-dashboard = { path = "../pantheon-dashboard" }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -39,10 +42,13 @@ serde_json = "1"
 ratatui = "0.30"
 crossterm = "0.29"
 toml = "0.8"
-ureq = { version = "2", default-features = false, features = ["tls"] }
+toml_edit = "0.22"
+ureq = { version = "2", default-features = false, features = ["tls", "proxy-from-env", "native-certs"] }
 ctrlc = "3.4"
 # Minimal PNG inflate for the Sixel preview path (already in the lock).
 flate2 = "1"
+# RFC3339 parsing for `schedule --at` (already in the lock).
+chrono = "0.4"
 
 [lints]
 workspace = true

@@ -131,7 +131,7 @@
 <h2 id="surfaces" class="text-xl font-bold tracking-tight mt-10 mb-3">Surfaces</h2>
 <p class="my-3 leading-relaxed">Terminal app, terminal commands, web (<code>serve</code>), and chat gateways (Discord, Telegram) all drive the same assistant off the same record. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default; foreign plugin formats load through a compat adapter that only maps real matches.</p>
 <h2 id="migration" class="text-xl font-bold tracking-tight mt-10 mb-3">Migration</h2>
-<p class="my-3 leading-relaxed"><code>pantheon migrate hermes|openclaw|omp</code>: detect → plan → approve → backup → apply → validate. The apply is transactional (stage → validate → commit): everything found is imported or archived with a reason, nothing silently dropped, credentials never written outside <code>&lt;data_dir&gt;/.env</code>.</p>
+<p class="my-3 leading-relaxed"><code>pantheon migrate hermes|openclaw|omp|claude</code>: detect → plan → approve → backup → apply → validate. The apply is transactional (stage → validate → commit): everything found is imported or archived with a reason, nothing silently dropped, credentials never written outside <code>&lt;data_dir&gt;/.env</code>.</p>
 <h2 id="locked-decisions" class="text-xl font-bold tracking-tight mt-10 mb-3">Locked decisions</h2>
 <p>1. The runtime owns conversations, state, permissions, execution, recovery, events.</p>
 <p>2. Model policy is default + failure-only backups + helper models. No routing.</p>

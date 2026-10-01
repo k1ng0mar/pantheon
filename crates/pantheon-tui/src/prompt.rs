@@ -10,7 +10,7 @@
 //! the failure shows up later as an agent that talks to the wrong provider.
 
 use crate::app::{Screen, TuiApp};
-use crate::widget::{Item, Select, TextInput};
+use crate::widget::{Confirm, Item, MultiSelect, Select, TextInput};
 
 /// Draw and run a `Select` until the user chooses. `None` means cancelled.
 pub fn pick_one(title: &str, subtitle: &str, items: Vec<Item>) -> Option<String> {
@@ -36,4 +36,33 @@ pub fn pick_text(title: &str, subtitle: &str, placeholder: &str) -> Option<Strin
         return None;
     }
     app.take_value().and_then(|s| s.text().map(String::from))
+}
+
+/// Draw and run a `MultiSelect`. `None` means cancelled (esc); `Some`
+/// (possibly empty) is the confirmed check set, in list order.
+pub fn pick_many(
+    title: &str,
+    subtitle: &str,
+    items: Vec<Item>,
+    preselected: &[&str],
+) -> Option<Vec<String>> {
+    let widget = MultiSelect::new(title, items, preselected);
+    let mut app = TuiApp::new();
+    app.push(Screen::multi(subtitle, widget));
+    if app.run().is_err() {
+        return None;
+    }
+    app.take_value().and_then(|s| s.many().map(|v| v.to_vec()))
+}
+
+/// Draw and run a `Confirm`. `None` means the run errored; esc submits
+/// `false`, so cancelling is always the safe answer.
+pub fn pick_confirm(title: &str, question: &str, default_yes: bool) -> Option<bool> {
+    let widget = Confirm::new(title, question).default_yes(default_yes);
+    let mut app = TuiApp::new();
+    app.push(Screen::confirm(question, widget));
+    if app.run().is_err() {
+        return None;
+    }
+    app.take_value().and_then(|s| s.flag())
 }

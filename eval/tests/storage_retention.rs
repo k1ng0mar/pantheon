@@ -197,6 +197,12 @@ fn old_claims_are_pruned_per_policy() {
     let ledger = DurableClaimLedger::open(&db).unwrap();
     let pruned = ledger.prune_before(cutoff_90d()).unwrap();
     assert_eq!(pruned, 1);
-    assert!(!ledger.is_claimed("old-key").unwrap());
-    assert!(ledger.is_claimed("new-key").unwrap());
+    assert!(
+        ledger.claim("old-key").unwrap(),
+        "pruned key must be claimable again"
+    );
+    assert!(
+        !ledger.claim("new-key").unwrap(),
+        "live key must already be claimed"
+    );
 }

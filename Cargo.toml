@@ -7,14 +7,12 @@ members = [
   "crates/pantheon-runtime",
   "crates/pantheon-api",
   "crates/pantheon-agent",
-  "crates/pantheon-swarm",
   "crates/pantheon-exec",
   # Capability ≠ tool: the callable-operation layer (registry, builtins,
   # memory/vault/session-search tools) is its own crate, distinct from
-  # pantheon-capability. Depends on pantheon-exec (Tools → Exec).
+  # the capability-enforcement module inside pantheon-agent. Depends on
+  # pantheon-exec (Tools → Exec).
   "crates/pantheon-tools",
-  "crates/pantheon-capability",
-  "crates/pantheon-sandbox",
   "crates/pantheon-memory",
   "crates/pantheon-secrets",
   "crates/pantheon-providers",
@@ -26,18 +24,20 @@ members = [
   # pantheon-tui is the one terminal application: the `pantheon` binary
   # (interactive session + non-interactive verbs) lives here.
   "crates/pantheon-tui",
-  # Ledger-native self-improvement: reflection passes over structured
-  # ledger signals, proposal generation with provenance, eval-gating,
-  # approvals, application, and audit. Driven by pantheon-tui.
-  "crates/pantheon-reflect",
-  # Background memory consolidation: stage/weigh/promote passes over
-  # ledger events, promoting durable facts into long-term memory with
-  # provenance. Driven by pantheon-tui.
-  "crates/pantheon-consolidate",
+  # Unified nightly self-improvement: one ledger scan feeds signal
+  # proposals (skill/persona/lesson) and memory promotion, with
+  # eval-gating, replay validation (strict improvement), approvals,
+  # application, and audit. Driven by pantheon-tui. Replaces the old
+  # pantheon-reflect + pantheon-consolidate split.
+  "crates/pantheon-nightly",
   # Web dashboard: std-only HTTP control plane over the ledger,
   # scheduler, config, keys, logs, skills/MCP, and gateway. Driven by
   # pantheon-tui (`pantheon dashboard`).
   "crates/pantheon-dashboard",
+  # Web access: browser automation and web search as two tool surfaces
+  # in one crate (merged from pantheon-browser + pantheon-websearch).
+  # Consumed only by pantheon-runtime.
+  "crates/pantheon-web",
   # Behavioral/integration/eval test suite. Not shipped; runs with
   # `cargo test -p pantheon-eval`.
   "eval",

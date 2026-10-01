@@ -6,12 +6,12 @@
 //! dashboard cannot depend on the TUI crate, so the fold is mirrored here
 //! against the stable ledger API — the same rows, the same sums.
 
-use crate::server::{Request, Response};
+use crate::util::{now_ms, round_cost_usd};
 use crate::{err_json, json_ok, query_usize, App};
 use pantheon_api::events::Event;
+use pantheon_gateway::http::{Request, Response};
 use pantheon_storage::Ledger;
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const DAY_MS: i64 = 86_400_000;
 
@@ -42,17 +42,10 @@ impl Totals {
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
-            "cost_usd": (self.cost_usd * 10000.0).round() / 10000.0,
+            "cost_usd": round_cost_usd(self.cost_usd),
             "priced_calls": self.priced_calls,
         })
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// `YYYY-MM-DD` (UTC). Howard Hinnant's civil-from-days, same as the TUI.

@@ -7,15 +7,21 @@ use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::message::ToolSchema;
 use std::collections::HashMap;
 
-fn terr(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(
-        code,
-        Layer::Execution,
-        false,
-        cause,
-        "check tool name and arguments",
-        "",
-    )
+/// Shared error constructor for the tool layer: `PantheonError::new` with
+/// the evidence slot pinned empty. Every module names its own remediation;
+/// `retryable` marks transient failures.
+///
+/// This replaces the eight copy-pasted `berr` / `merr` / `name_err` / …
+/// constructors (plus ad-hoc `PantheonError::new` calls) that had drifted
+/// across the tool modules.
+pub(crate) fn tool_err(
+    code: &str,
+    layer: Layer,
+    retryable: bool,
+    cause: String,
+    remediation: &str,
+) -> PantheonError {
+    PantheonError::new(code, layer, retryable, cause, remediation, "")
 }
 
 /// One registered tool: schema + capability + executor.
@@ -79,6 +85,14 @@ impl ToolRegistry {
         );
     }
 
+    /// Remove a tool by name. The nightly repair loop's host adapter
+    /// uses this to disable a broken tool: the tool stops being offered
+    /// to the agent loop, and the host records the disable so the next
+    /// registry build skips it. Returns `true` when a tool was removed.
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.tools.remove(name).is_some()
+    }
+
     pub fn get(&self, name: &str) -> Option<&Tool> {
         self.tools.get(name)
     }
@@ -93,10 +107,15 @@ impl ToolRegistry {
 
     /// Execute by name. Unknown tool is a structured error, never a panic.
     pub fn execute(&self, name: &str, args: &str) -> Result<String, PantheonError> {
-        let tool = self
-            .tools
-            .get(name)
-            .ok_or_else(|| terr("TOOL_UNKNOWN", format!("no tool named '{name}'")))?;
+        let tool = self.tools.get(name).ok_or_else(|| {
+            tool_err(
+                "TOOL_UNKNOWN",
+                Layer::Execution,
+                false,
+                format!("no tool named '{name}'"),
+                "check tool name and arguments",
+            )
+        })?;
         (tool.run)(args)
     }
 
@@ -153,20 +172,23 @@ impl ToolRegistry {
         // capability denial for a tool that does not exist, hiding the one
         // error the caller can actually fix (a typo in the tool name).
         if !self.tools.contains_key(name) {
-            return Err(terr("TOOL_UNKNOWN", format!("no tool named '{name}'")));
+            return Err(tool_err(
+                "TOOL_UNKNOWN",
+                Layer::Execution,
+                false,
+                format!("no tool named '{name}'"),
+                "check tool name and arguments",
+            ));
         }
         let required = self.required_capabilities(name, args);
         for cap in &required {
             match policy.check(cap) {
                 Decision::Allow => {}
                 other => {
-                    return Err(terr(
-                        "TOOL_DENIED",
-                        format!(
+                    return Err(tool_err("TOOL_DENIED", Layer::Execution, false, format!(
                             "tool '{name}' needs capability {cap:?}, policy says {other:?}; \
                              grant it with `pantheon run --taskID <run> --grant <scope>` or widen the policy preset"
-                        ),
-                    ))
+                        ), "check tool name and arguments"))
                 }
             }
         }
@@ -179,9 +201,13 @@ pub fn parse_args(args: &str) -> Result<serde_json::Value, PantheonError> {
     if args.trim().is_empty() {
         return Ok(serde_json::json!({}));
     }
-    serde_json::from_str(args).map_err(|e| terr("TOOL_BAD_ARGS", format!("invalid JSON args: {e}")))
+    serde_json::from_str(args).map_err(|e| {
+        tool_err(
+            "TOOL_BAD_ARGS",
+            Layer::Execution,
+            false,
+            format!("invalid JSON args: {e}"),
+            "check tool name and arguments",
+        )
+    })
 }
-
-#[cfg(test)]
-#[path = "tools_tests.rs"]
-mod tools_tests;

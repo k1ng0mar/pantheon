@@ -10,6 +10,7 @@ use crate::hooks::{Hook, HookClass};
 use crate::python_runner::{
     fire_hook, fire_hook_full, HookDirective, HookInput, PythonPlugin, RunnerConfig,
 };
+use pantheon_api::approval::{self, PendingPlugin};
 use pantheon_api::error::{Layer, PantheonError};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -35,6 +36,9 @@ pub struct ExtensionManager {
     /// consecutive failures it is skipped for the rest of the session
     /// (in-memory only; a new session retries it).
     timeout_streaks: Mutex<HashMap<String, u32>>,
+    /// Third-party plugins discovered but not approved yet. They are never
+    /// fired; see [`approval`].
+    pending: Vec<PendingPlugin>,
 }
 
 /// The verdict of a gate hook.
@@ -53,6 +57,24 @@ pub enum GateDecision {
 /// disable the plugin), but a wedge degrades every turn until stopped.
 const SKIP_AFTER_FAILURES: u32 = 3;
 
+/// Immediate subdirs of `dir` containing a plugin.yaml, sorted. A
+/// missing or unreadable dir yields nothing — used for the optional
+/// `<ext>/bundled/` layer, where absence is the normal first-run state.
+fn plugin_dirs(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.is_dir() && p.join("plugin.yaml").exists() {
+            out.push(p);
+        }
+    }
+    out.sort();
+    out
+}
+
 impl ExtensionManager {
     pub fn new(cfg: RunnerConfig) -> Self {
         Self {
@@ -60,6 +82,7 @@ impl ExtensionManager {
             cfg,
             seen_once: Mutex::new(HashSet::new()),
             timeout_streaks: Mutex::new(HashMap::new()),
+            pending: Vec::new(),
         }
     }
 
@@ -76,34 +99,162 @@ impl ExtensionManager {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
-    /// Load every immediate subdir of `dir` containing plugin.yaml.
+    /// Load every immediate subdir of `dir` containing plugin.yaml, plus
+    /// every plugin under `<dir>/bundled/` (the first-party layout
+    /// [`pantheon_api::approval::is_bundled`] recognizes).
+    ///
+    /// Third-party plugins are loaded only with a live operator approval
+    /// (see [`approval`]); unapproved ones are collected in [`Self::pending`]
+    /// and never fired. First-party plugins under `<dir>/bundled/` load
+    /// without approval.
     pub fn load_dir(&mut self, dir: &Path) -> Result<Vec<String>, PantheonError> {
+        // The top-level dir keeps its old contract: unreadable means an
+        // error the caller can report. The bundled subdir is optional —
+        // missing just means no bundled plugins on disk yet.
         let rd = std::fs::read_dir(dir).map_err(|e| merr("EXT_DIR", e.to_string()))?;
-        let mut names = Vec::new();
+        let mut tops = Vec::new();
         for entry in rd {
             let entry = entry.map_err(|e| merr("EXT_DIR", e.to_string()))?;
             let p = entry.path();
             if p.is_dir() && p.join("plugin.yaml").exists() {
-                match PythonPlugin::load(&p) {
-                    Ok(pl) => {
-                        names.push(pl.manifest.name.clone());
-                        self.plugins.push(pl);
-                    }
-                    Err(e) => eprintln!("skip {}: {e}", p.display()),
-                }
+                tops.push(p);
             }
+        }
+        tops.sort();
+        for p in tops {
+            self.load_plugin_dir(dir, &p);
+        }
+        for p in plugin_dirs(&dir.join("bundled")) {
+            self.load_plugin_dir(dir, &p);
         }
         self.plugins
             .sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
-        Ok(names)
+        self.pending.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(self.names())
+    }
+
+    /// Try one plugin directory: load it when approved (bundled plugins
+    /// consult the config enablement flag, third-party ones the approval
+    /// store), otherwise record why it was skipped.
+    fn load_plugin_dir(&mut self, ext_dir: &Path, p: &Path) {
+        match PythonPlugin::load(p) {
+            Ok(pl) => {
+                let name = pl.manifest.name.clone();
+                if self.approved_here(
+                    ext_dir,
+                    p,
+                    &pl.manifest.name,
+                    &pl.manifest.version,
+                    pl.manifest.enabled,
+                ) {
+                    if !self.plugins.iter().any(|q| q.manifest.name == name) {
+                        // Bind the approval scope: every hook fire re-hashes
+                        // the plugin dir against this scope immediately
+                        // before spawn and fails closed on divergence.
+                        let mut pl = pl;
+                        pl.scope_dir = Some(ext_dir.to_path_buf());
+                        self.plugins.push(pl);
+                    }
+                } else if approval::is_bundled(ext_dir, p) {
+                    // Bundled but disabled in config: not pending
+                    // approval, just off. Never silently enabled.
+                    eprintln!(
+                        "extension '{name}' is bundled but disabled; enable it with [plugins.{name}] enabled = true"
+                    );
+                } else {
+                    eprintln!(
+                        "extension '{name}' is not approved and will not load; run `pantheon extensions approve {name}`"
+                    );
+                    self.pending.push(PendingPlugin {
+                        name,
+                        version: pl.manifest.version.clone(),
+                        dir: p.to_path_buf(),
+                    });
+                }
+            }
+            Err(e) => eprintln!("skip {}: {e}", p.display()),
+        }
     }
     pub fn load_one(&mut self, dir: &Path) -> Result<String, PantheonError> {
         let pl = PythonPlugin::load(dir)?;
         let name = pl.manifest.name.clone();
-        self.plugins.push(pl);
+        // `load_one` targets a specific plugin dir; the extensions root is
+        // its parent. Approval still applies — an explicit load is not
+        // consent.
+        let ext_dir = dir.parent().unwrap_or(dir);
+        if !self.approved_here(
+            ext_dir,
+            dir,
+            &pl.manifest.name,
+            &pl.manifest.version,
+            pl.manifest.enabled,
+        ) {
+            if approval::is_bundled(ext_dir, dir) {
+                return Err(merr(
+                    "EXT_BUNDLED_DISABLED",
+                    format!(
+                        "extension '{name}' is bundled but disabled; enable it with [plugins.{name}] enabled = true"
+                    ),
+                ));
+            }
+            self.pending.push(PendingPlugin {
+                name: name.clone(),
+                version: pl.manifest.version.clone(),
+                dir: dir.to_path_buf(),
+            });
+            return Err(merr(
+                "EXT_NOT_APPROVED",
+                format!(
+                    "extension '{name}' is not approved; run `pantheon extensions approve {name}`"
+                ),
+            ));
+        }
+        self.plugins.push({
+            // Bind the approval scope: every hook fire re-hashes the
+            // plugin dir against this scope immediately before spawn
+            // and fails closed on divergence.
+            let mut pl = pl;
+            pl.scope_dir = Some(ext_dir.to_path_buf());
+            pl
+        });
         self.plugins
             .sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
         Ok(name)
+    }
+    /// Third-party plugins discovered but never approved. They are not
+    /// loaded and never fire.
+    pub fn pending(&self) -> &[PendingPlugin] {
+        &self.pending
+    }
+    /// Approval check for one plugin dir. Bundled (first-party) plugins
+    /// always pass; third-party plugins need a live approval bound to the
+    /// current content hash.
+    fn approved_here(
+        &self,
+        ext_dir: &Path,
+        plugin_dir: &Path,
+        name: &str,
+        version: &str,
+        manifest_enabled: bool,
+    ) -> bool {
+        if approval::is_bundled(ext_dir, plugin_dir) {
+            // Bundled (first-party) plugins skip the third-party approval
+            // store. Enablement: the config file (`[plugins.<name>]`) is
+            // the single enablement state, shared with the dashboard, the
+            // mobile app, and the agent — and it wins when present. When
+            // absent, the bundled manifest's own `enabled` flag is the
+            // default (true only for plugins that ship on, like
+            // noisegate). A missing or unparsable config fails closed
+            // (disabled).
+            let data_dir = ext_dir.parent().unwrap_or(ext_dir);
+            return crate::bundled::load_config(data_dir)
+                .map(|c| crate::bundled::is_enabled_with_default(&c, name, manifest_enabled))
+                .unwrap_or(false);
+        }
+        match approval::dir_hash(plugin_dir) {
+            Ok(h) => approval::is_approved(ext_dir, name, version, &h),
+            Err(_) => false,
+        }
     }
     pub fn names(&self) -> Vec<String> {
         self.plugins

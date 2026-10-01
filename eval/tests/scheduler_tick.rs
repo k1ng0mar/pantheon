@@ -329,9 +329,21 @@ fn panicking_executor_is_reported_not_lost() {
         rx.recv_timeout(Duration::from_secs(5)).unwrap(),
         RunOutcome::Panicked
     );
-    // The slot is released: the job can fire again next tick.
-    match driver.tick_job(&job, NOW + 60_000, None, Arc::new(|| {})) {
-        TickDecision::Fired { .. } => {}
-        other => panic!("slot should be free after panic, got {other:?}"),
+    // The slot is released asynchronously after the outcome is reported,
+    // so poll until the job can fire again instead of assuming the worker
+    // thread won the race.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match driver.tick_job(&job, NOW + 60_000, None, Arc::new(|| {})) {
+            TickDecision::Fired { .. } => break,
+            TickDecision::SkippedOverlap => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "slot still held after panic"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            other => panic!("slot should be free after panic, got {other:?}"),
+        }
     }
 }
