@@ -959,10 +959,10 @@ impl TuiState {
             Some(runs) => {
                 let f = self.history_input.to_lowercase();
                 runs.iter()
-                    .filter(|(_, _, _, _, project)| {
+                    .filter(|(_, _, _, _, project, ..)| {
                         self.history_all_projects || project == &self.history_own_project
                     })
-                    .filter(|(id, status, _, title, project)| {
+                    .filter(|(id, status, _, title, project, ..)| {
                         f.is_empty()
                             || id.to_lowercase().contains(&f)
                             || status.to_lowercase().contains(&f)
@@ -2979,7 +2979,7 @@ fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
         )));
     }
     let mut last_day = String::new();
-    for (i, (id, status, ts, title, project)) in runs.iter().enumerate() {
+    for (i, (id, status, ts, title, project, ..)) in runs.iter().enumerate() {
         // Date group header on day change; purely visual, never selected.
         let day = fmt_day(*ts);
         if day != last_day {
@@ -6769,7 +6769,7 @@ fn tui_loop(
                         KeyCode::Char('d') if ctrl => {
                             let sel = state.history_sel;
                             let target = state.filtered_history().get(sel).cloned();
-                            if let Some((id, _, _, _, _)) = target {
+                            if let Some((id, ..)) = target {
                                 let live = id == state.session_id;
                                 match session.supervisor.ledger_delete_run(&id) {
                                     Ok(_) => {
@@ -6793,7 +6793,7 @@ fn tui_loop(
                         KeyCode::Char('r') if ctrl => {
                             let sel = state.history_sel;
                             let target = state.filtered_history().get(sel).cloned();
-                            if let Some((id, _, _, title, _)) = target {
+                            if let Some((id, _, _, title, ..)) = target {
                                 state.history_rename = Some((id, title.unwrap_or_default()));
                             }
                         }
@@ -8649,7 +8649,7 @@ fn handle_slash_inner(
                         state.session_id
                     ));
                 }
-                for (run_id, status, _ts, title, _project) in runs {
+                for (run_id, status, _ts, title, ..) in runs {
                     let glyph = match status.as_str() {
                         "completed" => "\u{2713}",
                         "failed" => "\u{d7}",

@@ -32,9 +32,7 @@ pub fn list(app: &App) -> Response {
         Err(e) => return err_json(500, "SUPERVISOR", &format!("open supervisor: {e}")),
     };
     let mut out = Vec::new();
-    for (run_id, status, created_ms, title, _project) in
-        ledger.list_runs(10_000).unwrap_or_default()
-    {
+    for (run_id, status, created_ms, title, ..) in ledger.list_runs(10_000).unwrap_or_default() {
         if status != "awaiting_approval" {
             continue;
         }
@@ -71,7 +69,7 @@ pub fn decide(app: &App, scope: &str, granted: bool) -> Response {
     // Find the run holding this scope. Scopes are unique per pending set;
     // the first match wins.
     let mut run_id: Option<String> = None;
-    for (id, status, _, _, _) in ledger.list_runs(10_000).unwrap_or_default() {
+    for (id, status, ..) in ledger.list_runs(10_000).unwrap_or_default() {
         if status != "awaiting_approval" {
             continue;
         }
