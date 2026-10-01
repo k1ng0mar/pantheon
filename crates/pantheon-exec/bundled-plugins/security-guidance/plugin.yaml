@@ -1,0 +1,9 @@
+name: security-guidance
+version: "1.0.0"
+description: Advisory security review of tool calls. Scans write_file/shell arguments for common vulnerability patterns (adapted from anthropics/claude-plugins-official security-guidance, Apache-2.0) and tool results for leaked credentials, then prepends compact advisories the model can see. Never blocks a tool call; fail-open everywhere. No network, no model calls.
+author: "Pantheon (adapted from anthropics/claude-plugins-official)"
+license: "Apache-2.0"
+enabled: false
+provides_hooks:
+  - pre_tool_call
+  - transform_tool_result

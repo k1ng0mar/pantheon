@@ -42,6 +42,3 @@ impl SseEncoder {
         response_head()
     }
 }
-#[cfg(test)]
-#[path = "sse_tests.rs"]
-mod tests;

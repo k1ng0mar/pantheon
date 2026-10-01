@@ -16,7 +16,7 @@
 //! session    the conversation view: transcript state, overlays, slash
 //!            commands, streaming event handling, permission card
 //! app        the screen-stack event loop (setup wizard, pickers)
-//!   widget   Select / MultiSelect / TextInput / Confirm / SearchList
+//!   widget   Select / MultiSelect / TextInput / Confirm
 //!   render   the same widgets, drawn. no terminal imports in widget.rs
 //!   commands the slash-command registry (metadata; handlers live in session)
 //!   setup_graph the setup section graph
@@ -51,36 +51,44 @@ pub mod render;
 pub mod session;
 pub mod setup;
 pub mod setup_graph;
+pub mod setup_providers;
 pub mod widget;
 
 pub use app::TuiApp;
-pub use widget::{
-    Confirm, Item, Key, KeyResult, MultiSelect, SearchList, Select, Selection, TextInput,
-};
+pub use widget::{Confirm, Item, Key, KeyResult, MultiSelect, Select, Selection, TextInput};
 
 // Terminal command modules: argv dispatch and the non-interactive verbs.
 // Private: the binary calls `terminal::run()`; nothing outside this crate
 // reaches past it.
 mod agui;
-pub mod approval_notify;
 mod args;
+mod backup;
 pub mod config;
 mod config_schema;
+mod config_verb;
 pub mod consolidate_cli;
 pub mod diffview;
 mod doctor;
+mod uninstall;
 pub use pantheon_api::dotenv;
 mod entry;
 mod fallback;
 mod gateway;
 mod init;
 mod logs;
+mod markdown;
 pub mod mcp;
 pub mod mentions;
 mod migrate;
 mod model;
+mod model_catalog;
+pub mod nightly_cli;
+pub mod nightly_repair;
 pub mod notify;
 mod pipeline;
+pub mod plugin_remote;
+mod plugin_toggle;
+mod plugins_verb;
 mod prompt;
 mod provider;
 pub mod reflect_cli;
@@ -88,14 +96,25 @@ mod repair;
 mod reset;
 pub mod richtext;
 pub mod schedule;
+mod schedule_self_heal;
+pub mod send;
+pub mod session_summary;
 mod setup_wizard;
+mod skill_deps;
 mod skills;
 pub mod stats;
-mod swarm;
+pub mod swarm;
+pub mod swarm_remote;
 pub mod swarm_view;
+pub mod team_remote;
 pub mod terminal;
+pub mod transcript;
 mod update;
 pub mod yank;
 
 // TUI-A: session tab bar model + rendering (startup splash lives in terminal).
 mod tabs;
+
+// Agent todo card: opencode-style "Working on N to-dos" widget, rendered
+// with ratatui only. The visual track wires it into the transcript.
+pub mod todo_card;

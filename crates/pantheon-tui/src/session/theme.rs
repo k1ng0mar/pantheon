@@ -28,23 +28,48 @@ pub struct Theme {
     pub tab_active: Color,
     /// Inactive session tabs.
     pub tab_idle: Color,
+    /// Subtle wash behind the active tab (browser-style highlight).
+    pub tab_active_bg: Color,
+    /// Markdown headings in the transcript.
+    pub heading: Color,
+    /// Inline code, fenced code, and file paths in the transcript.
+    pub code: Color,
+    /// `**emphasis**` in the transcript.
+    pub emphasis: Color,
+    /// Default transcript body text (off-white on dark themes).
+    pub body: Color,
+    /// The input box's left accent border.
+    pub input_accent: Color,
+    /// Near-black app background.
+    pub bg: Color,
+    /// Sidebar / panel wash: the only thing separating the right column
+    /// from the transcript (no borders, no box-drawing).
+    pub panel: Color,
 }
 
 /// The theme a fresh install renders: today's look, unchanged.
 pub const DEFAULT_THEME: &str = "pantheon";
 
 impl Theme {
-    /// The default theme (today's look).
+    /// The default theme: opencode-style transcript on near-black.
     pub fn pantheon() -> Self {
         Self {
             name: "pantheon",
-            primary: Color::Cyan,
+            primary: Color::Rgb(122, 162, 247),
             success: Color::Green,
             warning: Color::Yellow,
             failure: Color::Red,
-            dim: Color::DarkGray,
-            tab_active: Color::Yellow,
+            dim: Color::Rgb(107, 114, 128),
+            tab_active: Color::White,
             tab_idle: Color::DarkGray,
+            tab_active_bg: Color::Rgb(30, 30, 40),
+            heading: Color::Rgb(122, 162, 247),
+            code: Color::Rgb(126, 231, 135),
+            emphasis: Color::Rgb(224, 175, 104),
+            body: Color::Rgb(229, 231, 235),
+            input_accent: Color::Rgb(91, 140, 255),
+            bg: Color::Rgb(18, 18, 18),
+            panel: Color::Rgb(30, 30, 30),
         }
     }
 
@@ -59,6 +84,14 @@ impl Theme {
             dim: Color::Gray,
             tab_active: Color::White,
             tab_idle: Color::DarkGray,
+            tab_active_bg: Color::Rgb(30, 30, 40),
+            heading: Color::Rgb(167, 139, 250),
+            code: Color::Rgb(126, 231, 135),
+            emphasis: Color::Rgb(240, 163, 94),
+            body: Color::Rgb(237, 237, 237),
+            input_accent: Color::Rgb(91, 140, 255),
+            bg: Color::Rgb(10, 10, 14),
+            panel: Color::Rgb(24, 24, 30),
         }
     }
 
@@ -73,6 +106,14 @@ impl Theme {
             dim: Color::DarkGray,
             tab_active: Color::Blue,
             tab_idle: Color::Gray,
+            tab_active_bg: Color::Rgb(229, 231, 235),
+            heading: Color::Rgb(109, 40, 217),
+            code: Color::Rgb(22, 101, 52),
+            emphasis: Color::Rgb(154, 66, 14),
+            body: Color::Rgb(17, 24, 39),
+            input_accent: Color::Blue,
+            bg: Color::Rgb(250, 250, 250),
+            panel: Color::Rgb(235, 235, 238),
         }
     }
 

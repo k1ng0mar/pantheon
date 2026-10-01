@@ -7,9 +7,20 @@ authors.workspace = true
 
 [dependencies]
 pantheon-api = { path = "../pantheon-api" }
+# Sandbox enforcement for plugin spawns: the capability gate
+# (pantheon_exec::sandbox::enforce) decides whether a plugin may run,
+# and the sandbox profile decides how isolated it runs.
+pantheon-exec = { path = "../pantheon-exec" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+toml = "0.8"
+
+# killpg for the pipe-drain grace (unix only): a grandchild holding a
+# pipe open is reaped via the child's process group (setsid'd by
+# build_sandboxed).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 
 [lints]

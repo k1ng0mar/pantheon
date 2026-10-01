@@ -8,22 +8,29 @@
 use crate::tools::ToolRegistry;
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::message::ToolSchema;
+use pantheon_api::todo::TODO_TOOL_NAME;
 use pantheon_exec::plugins::{PluginManifest, ToolCapability};
 use pantheon_exec::supervisor::PluginSupervisor;
 use std::sync::{Arc, Mutex};
 
 /// Built-in tool names a plugin may never claim (compared case-insensitively).
 /// Enumerated from the tool modules in this crate: `builtins` (shell,
-/// read_file, write_file, list_dir), `memory_tools` (memory_*),
-/// `session_search_tools`, `skill_tools`, `vault_tools`, `safewrite_tools`.
+/// read_file, write_file, list_dir, ask_user, enable_plugin, enable_mcp),
+/// `memory_tools` (memory_*), `session_search_tools`, `skill_tools`,
+/// `vault_tools`, `safewrite_tools`, `todo_tools` (`todo`, from
+/// `pantheon_api::todo::TODO_TOOL_NAME`).
 /// Kept in sync manually with those modules; `register_plugin_tools` also
 /// checks the live registry as belt-and-braces against tools registered
 /// from other crates.
 const BUILTIN_TOOL_NAMES: &[&str] = &[
+    TODO_TOOL_NAME,
     "shell",
     "read_file",
     "write_file",
     "list_dir",
+    "ask_user",
+    "enable_plugin",
+    "enable_mcp",
     "memory_recall",
     "memory_list",
     "memory_propose",
@@ -50,17 +57,6 @@ const BUILTIN_TOOL_NAMES: &[&str] = &[
 /// Plugins declaring under these can impersonate first-party tooling.
 const RESERVED_TOOL_PREFIXES: &[&str] = &["pantheon.", "builtin.", "memory."];
 
-fn name_err(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(
-        code,
-        Layer::Extension,
-        false,
-        cause,
-        "rename the plugin tool or remove it from the plugin manifest",
-        "",
-    )
-}
-
 /// Validate a plugin tool name before registration. Rejects:
 /// - empty names
 /// - names containing whitespace or path separators (`/`, `\`)
@@ -73,43 +69,58 @@ fn name_err(code: &str, cause: String) -> PantheonError {
 /// (which would otherwise silently replace the builtin).
 pub fn validate_plugin_tool_name(name: &str) -> Result<(), PantheonError> {
     if name.is_empty() {
-        return Err(name_err(
+        return Err(crate::tools::tool_err(
             "PLUGIN_TOOL_NAME_INVALID",
+            Layer::Extension,
+            false,
             "plugin tool name must not be empty".to_string(),
+            "rename the plugin tool or remove it from the plugin manifest",
         ));
     }
     if name.chars().any(|c| c.is_whitespace()) {
-        return Err(name_err(
+        return Err(crate::tools::tool_err(
             "PLUGIN_TOOL_NAME_INVALID",
+            Layer::Extension,
+            false,
             format!("plugin tool name '{name}' must not contain whitespace"),
+            "rename the plugin tool or remove it from the plugin manifest",
         ));
     }
     if name.contains('/') || name.contains('\\') {
-        return Err(name_err(
+        return Err(crate::tools::tool_err(
             "PLUGIN_TOOL_NAME_INVALID",
+            Layer::Extension,
+            false,
             format!("plugin tool name '{name}' must not contain path separators"),
+            "rename the plugin tool or remove it from the plugin manifest",
         ));
     }
     let lower = name.to_lowercase();
     if let Some(builtin) = BUILTIN_TOOL_NAMES.iter().find(|b| **b == lower.as_str()) {
-        return Err(name_err(
+        return Err(crate::tools::tool_err(
             "PLUGIN_TOOL_NAME_CONFLICT",
+            Layer::Extension,
+            false,
             format!(
                 "plugin tool name '{name}' collides with built-in tool '{builtin}'; \
                  plugins cannot shadow built-in tools"
             ),
+            "rename the plugin tool or remove it from the plugin manifest",
         ));
     }
     if let Some(prefix) = RESERVED_TOOL_PREFIXES
         .iter()
         .find(|p| lower.starts_with(**p))
     {
-        return Err(name_err(
+        return Err(crate::tools::tool_err(
             "PLUGIN_TOOL_NAME_CONFLICT",
+            Layer::Extension,
+            false,
             format!(
                 "plugin tool name '{name}' uses reserved prefix '{prefix}'; \
                  the '{prefix}' namespace belongs to the runtime"
             ),
+            "rename the plugin tool or remove it from the plugin manifest",
         ));
     }
     Ok(())
@@ -146,13 +157,16 @@ pub fn register_plugin_tools(
         // not in BUILTIN_TOOL_NAMES.
         let lower = cap.name.to_lowercase();
         if let Some(existing) = reg.names().into_iter().find(|n| n.to_lowercase() == lower) {
-            return Err(name_err(
+            return Err(crate::tools::tool_err(
                 "PLUGIN_TOOL_NAME_CONFLICT",
+                Layer::Extension,
+                false,
                 format!(
                     "plugin tool name '{}' collides with already-registered tool '{existing}'; \
                      plugins cannot replace existing tools",
                     cap.name
                 ),
+                "rename the plugin tool or remove it from the plugin manifest",
             ));
         }
     }
@@ -186,24 +200,22 @@ fn register_one_plugin_tool(
                 serde_json::json!({})
             } else {
                 serde_json::from_str(args).map_err(|e| {
-                    PantheonError::new(
+                    crate::tools::tool_err(
                         "TOOL_BAD_ARGS",
                         Layer::Execution,
                         false,
                         format!("invalid JSON args: {e}"),
                         "check tool name and arguments",
-                        "",
                     )
                 })?
             };
             let mut guard = sup.lock().map_err(|_| {
-                PantheonError::new(
+                crate::tools::tool_err(
                     "PLUGIN_LOCK",
                     Layer::Execution,
                     false,
                     "plugin supervisor lock poisoned".to_string(),
                     "respawn the plugin",
-                    "",
                 )
             })?;
             guard.call(&cap.name, v)

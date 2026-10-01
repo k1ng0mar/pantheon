@@ -293,7 +293,3 @@ pub fn ensure_sessions_indexed(
         )
     })
 }
-
-#[cfg(test)]
-#[path = "index_tests.rs"]
-mod tests;

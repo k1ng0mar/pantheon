@@ -4,6 +4,7 @@
 use crate::message::Message;
 use crate::model::DecisionPoint;
 use crate::provenance::Provenance;
+use crate::todo::TodoItem;
 use serde::{Deserialize, Serialize};
 
 /// Compact summary of a decision answer for ledger events.
@@ -35,8 +36,18 @@ pub enum DecisionAnswerSummary {
 #[serde(tag = "type")]
 pub enum DecisionActionSummary {
     Accepted,
-    Overridden { fallback_used: String },
-    Denied { reason: String },
+    /// Parked awaiting an operator decision (approval or input) — the
+    /// run is neither accepted nor denied. Recording a park as
+    /// `Accepted` hid blocked runs from every ledger consumer.
+    Parked {
+        scope: String,
+    },
+    Overridden {
+        fallback_used: String,
+    },
+    Denied {
+        reason: String,
+    },
 }
 
 /// Canonical runtime events (§2 agent engine + §18 runtime API).
@@ -84,6 +95,13 @@ pub enum Event {
     TurnStarted {
         run_id: String,
         turn_id: String,
+    },
+    /// The raw user prompt that opened the turn. Recorded so a turn can be
+    /// retried (`POST /api/runs/:id/retry`) without the client resending
+    /// the text; display paths redact it like any other user content.
+    UserMessage {
+        run_id: String,
+        text: String,
     },
     /// The turn yielded to an external continuation such as human approval.
     TurnParked {
@@ -167,6 +185,14 @@ pub enum Event {
         tool: String,
         /// Provenance of the completion boundary.
         provenance: Provenance,
+    },
+    /// The agent replaced its todo list via the `todo` tool. The items
+    /// ride on the event so transcript observers (TUI card, gateway) see
+    /// every change as it happens; the durable per-run snapshot lives in
+    /// the ledger's `todos` table, reloaded on session resume.
+    TodosUpdated {
+        run_id: String,
+        items: Vec<TodoItem>,
     },
     /// Assistant turn persisted so resume rebuilds messages without a model call.
     AssistantMessage {
@@ -325,6 +351,40 @@ pub enum Event {
         /// USD cost for this call, when the catalog priced it.
         cost_usd: Option<f64>,
     },
+    /// Browser narration: what the agent (or dashboard take-control) just
+    /// did in a browser session. Powers the live "Tapping… / Typing… /
+    /// Opening example.com…" subtitle in the app's browser screen.
+    ///
+    /// `action` is the canonical command (`navigate`, `snapshot`,
+    /// `click`, `type`, `press`, `scroll`, `tap`, `back`, …); `detail`
+    /// is display-safe by construction — a host for `navigate`, a ref or
+    /// key for `click`/`press`, and never typed text (it may contain
+    /// secrets). The dashboard's take-control path uses an empty `run_id`
+    /// (no run context there); consumers key on `session`.
+    BrowserActivity {
+        run_id: String,
+        session: String,
+        action: String,
+        detail: String,
+    },
+    /// A scheduled task's run failed. Emitted by the scheduler's
+    /// outcome sink — the durable, user-visible alert for a failed
+    /// scheduled run. `error` is the failure detail; `detail` carries
+    /// what was found and done (investigation summary when self-heal
+    /// ran, otherwise a note that self-heal is disabled or was skipped).
+    ScheduledTaskFailed {
+        run_id: String,
+        job_id: String,
+        error: String,
+        detail: String,
+    },
+    /// A scheduled task recovered: the self-heal investigation fixed the
+    /// cause and the single retry run succeeded.
+    ScheduledTaskRecovered {
+        run_id: String,
+        job_id: String,
+        detail: String,
+    },
 }
 impl Event {
     /// A copy of this event addressed to a different run.
@@ -368,6 +428,10 @@ impl Event {
             Event::TurnStarted { run_id: _, turn_id } => Event::TurnStarted {
                 run_id: run_id.to_string(),
                 turn_id,
+            },
+            Event::UserMessage { run_id: _, text } => Event::UserMessage {
+                run_id: run_id.to_string(),
+                text,
             },
             Event::TurnParked {
                 run_id: _,
@@ -464,6 +528,10 @@ impl Event {
                 call_id,
                 tool,
                 provenance,
+            },
+            Event::TodosUpdated { run_id: _, items } => Event::TodosUpdated {
+                run_id: run_id.to_string(),
+                items,
             },
             Event::AssistantMessage { run_id: _, message } => Event::AssistantMessage {
                 run_id: run_id.to_string(),
@@ -615,6 +683,37 @@ impl Event {
                 output_tokens,
                 total_tokens,
                 cost_usd,
+            },
+            Event::BrowserActivity {
+                run_id: _,
+                session,
+                action,
+                detail,
+            } => Event::BrowserActivity {
+                run_id: run_id.to_string(),
+                session,
+                action,
+                detail,
+            },
+            Event::ScheduledTaskFailed {
+                run_id: _,
+                job_id,
+                error,
+                detail,
+            } => Event::ScheduledTaskFailed {
+                run_id: run_id.to_string(),
+                job_id,
+                error,
+                detail,
+            },
+            Event::ScheduledTaskRecovered {
+                run_id: _,
+                job_id,
+                detail,
+            } => Event::ScheduledTaskRecovered {
+                run_id: run_id.to_string(),
+                job_id,
+                detail,
             },
         }
     }

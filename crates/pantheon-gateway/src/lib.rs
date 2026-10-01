@@ -8,15 +8,17 @@
 //! task-id + signed-URL references (never embedded payloads).
 use serde::{Deserialize, Serialize};
 
-pub mod allowlist;
-pub mod canonical;
 pub mod channel;
+pub mod channel_voice;
 pub mod daemon;
 pub mod dedup;
 pub mod delivery;
 pub mod discord;
 pub mod discord_gateway;
 pub mod genui;
+pub mod http;
+pub mod live_voice;
+pub mod mcp_boot;
 pub mod notify;
 pub mod schedule_delivery;
 pub mod scheduler;
@@ -24,12 +26,15 @@ pub mod service;
 pub mod sse;
 pub mod stream;
 pub mod telegram;
+pub mod voice;
 
-pub use allowlist::{Admission, Allowlist, Pairing};
-pub use canonical::{Canonical, Command, Conversation, Reaction};
 pub use channel::{
     chunk_text, fanout, format_text, ApprovalButtons, Channel, ChannelEnvelope, ChannelError,
     ChannelEvent, MemoryChannel, ThreadRunMap,
+};
+pub use channel_voice::{
+    ext_for_filename, ext_for_mime, VoiceOutcome, VoicePipes, VoiceSlot, MAX_VOICE_BYTES,
+    STT_EMPTY, STT_FAILED, STT_NOT_CONFIGURED, STT_UNAVAILABLE, VOICE_TRANSCRIPT_PREFIX,
 };
 pub use daemon::{
     poll_telegram_once, route_event, route_outbound, ChannelDaemon, EventSink, UpdateCursor,
@@ -42,17 +47,26 @@ pub use discord::{
     DISCORD_CONTENT_LIMIT,
 };
 pub use genui::{valid_task_id, GenUiRef, GenUiSigner, SignedUrl};
+pub use live_voice::{
+    is_speech, pcm_rms, wav_to_pcm_16k, wav_wrap, LiveTurnDriver, LiveVoiceConfig, TurnOutcome,
+    LIVE_TRANSCRIPT_PREFIX, LIVE_VOICE_PATH, SAMPLE_RATE,
+};
 pub use notify::{
     command_for, desktop_notify, detect_notifier, escape_applescript, escape_powershell, Notifier,
 };
 pub use schedule_delivery::{
-    build_summary, deliver_best_effort, deliver_summary, ChannelSender, Deliver, RestChannelSender,
+    build_summary, deliver_best_effort, deliver_summary, deliver_to_home_session,
+    routes_via_home_session, ChannelSender, Deliver, RestChannelSender,
 };
 pub use sse::{parse_last_event_id, SseEncoder};
 pub use stream::{frame_for_event, frames_for_entries, UiFrame, UiFrameKind};
 pub use telegram::{
     parse_event as parse_telegram_event, TelegramChannel, TelegramRestTransport, TelegramTransport,
     TELEGRAM_MESSAGE_LIMIT,
+};
+pub use voice::{
+    content_type_for, SpeakBody, TranscribeBody, VoiceEdge, VoiceHttp, DEFAULT_REQUEST_TIMEOUT,
+    MAX_AUDIO_BYTES, MAX_TEXT_CHARS, SPEAK_PATH, TRANSCRIBE_PATH,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -66,6 +80,16 @@ pub struct Attachment {
     pub name: String,
     pub mime: String,
     pub bytes: usize,
+}
+
+/// A place a conversation happens: a channel, DM, or thread on a surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conversation {
+    pub gateway: String,
+    /// Surface-native conversation id.
+    pub id: String,
+    /// Thread inside the conversation, when the surface has threads.
+    pub thread: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,13 +134,14 @@ impl OutboundMessage {
 }
 
 pub use scheduler::{
-    queue_summary, rel_time, ExecuteFn, FireOutcome, SchedulableJob, SchedulerLoop, TickReport,
+    queue_summary, rel_time, ExecuteFn, FireOutcome, OutcomeSink, ScheduledJob, SchedulerLoop,
+    TaskOutcome, TickReport,
 };
 pub use service::{
     channels_disabled_note, cron_line, detect as detect_service_mechanism,
     install as install_service, manual_cron_line, merge_crontab, read_channel_env,
-    render_launchd_plist, render_systemd_unit, render_task_xml, restart as restart_service,
-    self_exe, status as service_status, stop as stop_service, ChannelPlan, InstallEnv,
-    InstallOutcome, Mechanism as ServiceMechanism, RestartOutcome, ServiceStatus, StopOutcome,
-    CRON_MARKER, LAUNCHD_LABEL, TASK_NAME, UNIT_NAME,
+    read_channel_tokens, render_launchd_plist, render_systemd_unit, render_task_xml,
+    restart as restart_service, self_exe, status as service_status, stop as stop_service,
+    ChannelPlan, InstallEnv, InstallOutcome, Mechanism as ServiceMechanism, RestartOutcome,
+    ServiceStatus, StopOutcome, CRON_MARKER, LAUNCHD_LABEL, TASK_NAME, UNIT_NAME,
 };

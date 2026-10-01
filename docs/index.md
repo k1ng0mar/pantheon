@@ -20,6 +20,8 @@ Pantheon is an assistant that runs on your own computer. It talks to AI models f
 | [Providers](user-guide/providers.md) | Which AI models it talks to, and how to switch |
 | [Scheduling](user-guide/scheduling.md) | Recurring tasks that run on their own |
 | [Extensions](user-guide/extensions.md) | Plugins and extra capabilities |
+| [Web access](user-guide/web.md) | Web search and browser automation |
+| [MCP servers](user-guide/mcp.md) | Third-party tools: declaring, approving, watching them run |
 
 ## Reference
 

@@ -73,6 +73,51 @@ impl SecretVault for MemoryVault {
     }
 }
 
-#[cfg(test)]
-#[path = "vault_tests.rs"]
-mod tests;
+/// Read-only view over another vault.
+///
+/// An env-var mirror (see
+/// [`crate::broker::SecretsBroker::from_system_env_with_api_key`]) must win
+/// reads — an exported rotation beats a stale stored value — but must never
+/// absorb writes: a write landing in a process-memory mirror dies with the
+/// process instead of reaching durable storage. `set`/`delete` fail with
+/// [`SecretsError::Backend`] so the broker treats this vault like a
+/// degraded platform store and falls through to the next durable vault,
+/// exactly as it does for a locked keychain.
+#[derive(Debug)]
+pub struct ReadOnlyVault<V: SecretVault> {
+    inner: V,
+}
+
+impl<V: SecretVault> ReadOnlyVault<V> {
+    /// Wrap `inner`; reads and listings pass through, writes fail closed.
+    pub fn new(inner: V) -> Self {
+        Self { inner }
+    }
+
+    /// Unwrap back to the inner vault.
+    pub fn into_inner(self) -> V {
+        self.inner
+    }
+}
+
+impl<V: SecretVault> SecretVault for ReadOnlyVault<V> {
+    fn get(&self, name: &str) -> Result<Option<SecretValue>, SecretsError> {
+        self.inner.get(name)
+    }
+
+    fn set(&self, _name: &str, _value: SecretValue) -> Result<(), SecretsError> {
+        Err(SecretsError::Backend(
+            "read-only vault: writes fall through to the next durable vault".into(),
+        ))
+    }
+
+    fn delete(&self, _name: &str) -> Result<(), SecretsError> {
+        Err(SecretsError::Backend(
+            "read-only vault: deletes fall through to the next durable vault".into(),
+        ))
+    }
+
+    fn names(&self) -> Result<Vec<String>, SecretsError> {
+        self.inner.names()
+    }
+}

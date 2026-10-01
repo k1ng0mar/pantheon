@@ -12,13 +12,33 @@ use pantheon_api::message::ToolSchema;
 use pantheon_exec::compact_output;
 use pantheon_exec::confine::confine;
 use pantheon_exec::safewrite::{atomic_write, FileEdit, SafeWriter};
-use pantheon_sandbox::{SandboxLevel, SandboxProfile};
+use pantheon_exec::sandbox::{SandboxLevel, SandboxProfile};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// Lifecycle event for a `shell` tool child process. Fired on the
+/// thread running the tool call: `Spawned` comes from the runner's
+/// spawn hook (synchronously, right after spawn); `Exited` is fired by
+/// `run_shell` after the wait loop ends (exit, timeout kill, or wait
+/// error). The pid is also the child's process-group id — the runner
+/// does `setsid()` in pre-exec — so a cancel path can register the
+/// group for `killpg` on `Spawned` and unregister it on `Exited`, when
+/// the pid is stale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellChildEvent {
+    Spawned,
+    Exited,
+}
+
+/// `ShellChildEvent -> pid` observer for `shell` children, e.g. the
+/// runtime registering the pgid so cancel can kill an in-flight shell.
+/// Must be cheap and non-blocking: it runs on the tool-call thread.
+pub type ShellChildHook = Arc<dyn Fn(ShellChildEvent, u32) + Send + Sync>;
 
 /// Options for `register_builtins`. Empty defaults keep the old call site
 /// working; supplying `safewrite_state_dir` routes `write_file` through the
 /// SafeWriter instead of leaving the safe path as an opt-in side door.
-#[derive(Default)]
+#[derive(Clone)]
 pub struct BuiltinOptions {
     pub safewrite_state_dir: Option<std::path::PathBuf>,
     /// Workspace root for path confinement of the fs tools. The tool layer
@@ -29,17 +49,77 @@ pub struct BuiltinOptions {
     /// read or write — a granted `FilesystemRead`/`FilesystemWrite`
     /// capability never widens it.
     pub workspace_root: Option<std::path::PathBuf>,
+    /// Tool-group toggles from `[tools]` in config.toml: a disabled group
+    /// is never registered, so it cannot appear in the model's tool list.
+    /// `shell` belongs to Terminal; `read_file`/`write_file`/`list_dir`
+    /// to Files; `ask_user` to Ask User.
+    pub enable_terminal: bool,
+    pub enable_files: bool,
+    pub enable_ask_user: bool,
+    /// `enable_plugin` belongs to the Plugins group. Off = the agent
+    /// cannot propose plugin enablement at all.
+    pub enable_plugins: bool,
+    /// Data dir holding `config.toml`. Required for `enable_plugin`:
+    /// the config file is the single enablement state, so the tool must
+    /// know where it lives. `None` = the tool reports a configuration
+    /// error instead of guessing.
+    pub data_dir: Option<std::path::PathBuf>,
+    /// Observer for `shell` child-process lifecycle. `None` (default) =
+    /// no observation. Set by hosts that need to kill an in-flight shell
+    /// on cancel: the runtime registers the child's pgid on `Spawned`
+    /// and unregisters it on `Exited`.
+    pub shell_child_hook: Option<ShellChildHook>,
 }
 
-fn berr(code: &str, cause: String, retryable: bool) -> PantheonError {
-    PantheonError::new(
-        code,
-        Layer::Execution,
-        retryable,
-        cause,
-        "check tool arguments",
-        "",
-    )
+impl std::fmt::Debug for BuiltinOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BuiltinOptions")
+            .field("safewrite_state_dir", &self.safewrite_state_dir)
+            .field("workspace_root", &self.workspace_root)
+            .field("enable_terminal", &self.enable_terminal)
+            .field("enable_files", &self.enable_files)
+            .field("enable_ask_user", &self.enable_ask_user)
+            .field("enable_plugins", &self.enable_plugins)
+            .field("data_dir", &self.data_dir)
+            .field("shell_child_hook", &self.shell_child_hook.is_some())
+            .finish()
+    }
+}
+
+impl Default for BuiltinOptions {
+    /// Absent `[tools]` section = every group on, matching the
+    /// pre-section behavior exactly.
+    fn default() -> Self {
+        Self {
+            safewrite_state_dir: None,
+            workspace_root: None,
+            enable_terminal: true,
+            enable_files: true,
+            enable_ask_user: true,
+            enable_plugins: true,
+            data_dir: None,
+            shell_child_hook: None,
+        }
+    }
+}
+
+/// True when a config entry is exactly what the bundled catalog recipe
+/// materializes (transport, command, args, env, url). `enabled` and
+/// `timeout_secs` are operator-controlled and excluded; `pinned_version`
+/// is informational and not part of the parsed entry. Used by
+/// `enable_mcp` to re-validate a pre-existing table before flipping the
+/// flag, so a name-colliding table with an arbitrary command is flagged
+/// instead of silently kept.
+fn mcp_entry_matches_recipe(
+    entry: &pantheon_api::config::McpServerEntry,
+    recipe: &pantheon_api::mcp_catalog::BundledMcpServer,
+) -> bool {
+    let canonical = recipe.to_config_entry();
+    entry.transport == canonical.transport
+        && entry.command == canonical.command
+        && entry.args == canonical.args
+        && entry.env == canonical.env
+        && entry.url == canonical.url
 }
 
 fn arg_str(v: &serde_json::Value, key: &str) -> Result<String, PantheonError> {
@@ -47,10 +127,12 @@ fn arg_str(v: &serde_json::Value, key: &str) -> Result<String, PantheonError> {
         .and_then(|x| x.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| {
-            berr(
+            crate::tools::tool_err(
                 "TOOL_BAD_ARGS",
-                format!("missing string arg '{key}'"),
+                Layer::Execution,
                 false,
+                format!("missing string arg '{key}'"),
+                "check tool arguments",
             )
         })
 }
@@ -76,7 +158,11 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     );
-    reg.register_with(
+    if opts.enable_terminal {
+        // 'static closure: the child hook is an Arc, so the clone here
+        // is cheap and the registry owns its copy.
+        let shell_child_hook = opts.shell_child_hook.clone();
+        reg.register_with(
         ToolSchema {
             name: "shell".into(),
             description: "Run a shell command with a timeout. Returns compacted stdout+stderr.".into(),
@@ -87,7 +173,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             }),
         },
         Capability::ShellExecute,
-        |args| {
+        move |args| {
             // Dangerous-pattern pre-gate: deterministic, in-process, runs
             // before any spawn. Not the security boundary (policy is), but
             // it fails fast on `rm -rf /` class commands and keeps them
@@ -96,7 +182,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             let v = parse_args(args)?;
             let command = arg_str(&v, "command")?;
             pantheon_exec::danger::gate(&command)?;
-            run_shell(args)
+            run_shell(args, shell_child_hook.as_ref())
         },
         Some(Box::new(|args: &str| {
             // `git push` is the one shell operation the policies single
@@ -116,30 +202,41 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             }
         })),
     );
+    }
     let r0 = root.clone();
-    reg.register(
-        ToolSchema {
-            name: "read_file".into(),
-            description: "Read a text file (compacted if very large). Confined to the workspace."
-                .into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": { "path": { "type": "string" } },
-                "required": ["path"]
-            }),
-        },
-        Capability::FilesystemRead,
-        move |args| {
-            let v = parse_args(args)?;
-            let path = arg_str(&v, "path")?;
-            let cpath = confine(Path::new(&path), &r0)?;
-            let raw = std::fs::read_to_string(&cpath)
-                .map_err(|e| berr("TOOL_FS", format!("read {}: {e}", cpath.display()), false))?;
-            Ok(compact_output(&raw, &Default::default()).text)
-        },
-    );
+    if opts.enable_files {
+        reg.register(
+            ToolSchema {
+                name: "read_file".into(),
+                description:
+                    "Read a text file (compacted if very large). Confined to the workspace.".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "path": { "type": "string" } },
+                    "required": ["path"]
+                }),
+            },
+            Capability::FilesystemRead,
+            move |args| {
+                let v = parse_args(args)?;
+                let path = arg_str(&v, "path")?;
+                let cpath = confine(Path::new(&path), &r0)?;
+                let raw = std::fs::read_to_string(&cpath).map_err(|e| {
+                    crate::tools::tool_err(
+                        "TOOL_FS",
+                        Layer::Execution,
+                        false,
+                        format!("read {}: {e}", cpath.display()),
+                        "check tool arguments",
+                    )
+                })?;
+                Ok(compact_output(&raw, &Default::default()).text)
+            },
+        );
+    }
     let r1 = root.clone();
-    reg.register(
+    if opts.enable_files {
+        reg.register(
         ToolSchema {
             name: "write_file".into(),
             description: "Write a file safely: preview, checkpoint, atomic publish. Fails on stale expected_hash. Confined to the workspace.".into(),
@@ -168,7 +265,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
                 // Safe path: checkpoint + atomic publish + journal.
                 let w = SafeWriter::new(dir.clone())
                     .map_err(|e| {
-                        berr("TOOL_FS", format!("open safewrite state {dir:?}: {e}"), false)
+                        crate::tools::tool_err("TOOL_FS", Layer::Execution, false, format!("open safewrite state {dir:?}: {e}"), "check tool arguments")
                     })?
                     .with_workspace_root((*r1).clone());
                 // Capture the current fingerprint so stale edits get
@@ -188,11 +285,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
                         -1,
                     )
                     .map_err(|e| {
-                        berr(
-                            "TOOL_FS",
-                            format!("safewrite apply {}: {e}", cpath.display()),
-                            false,
-                        )
+                        crate::tools::tool_err("TOOL_FS", Layer::Execution, false, format!("safewrite apply {}: {e}", cpath.display()), "check tool arguments")
                     })?;
                 Ok(format!(
                     "wrote {} bytes to {}; checkpoint={}",
@@ -204,44 +297,57 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
                 // Unsafe fallback: caller opted out of the safe path.
                 atomic_write(&cpath, content.as_bytes())
                     .map_err(|e| {
-                        berr("TOOL_FS", format!("write {}: {e}", cpath.display()), false)
+                        crate::tools::tool_err("TOOL_FS", Layer::Execution, false, format!("write {}: {e}", cpath.display()), "check tool arguments")
                     })?;
                 Ok(format!("wrote {} bytes to {}", content.len(), cpath.display()))
             }
         },
     );
+    }
     let r2 = root.clone();
-    reg.register(
-        ToolSchema {
-            name: "list_dir".into(),
-            description: "List a directory's entries, one per line. Confined to the workspace."
-                .into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": { "path": { "type": "string" } },
-                "required": ["path"]
-            }),
-        },
-        Capability::FilesystemRead,
-        move |args| {
-            let v = parse_args(args)?;
-            let path = arg_str(&v, "path")?;
-            let cpath = confine(Path::new(&path), &r2)?;
-            let mut names: Vec<String> = std::fs::read_dir(&cpath)
-                .map_err(|e| berr("TOOL_FS", format!("list {}: {e}", cpath.display()), false))?
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            names.sort();
-            Ok(names.join("\n"))
-        },
-    );
-    // `ask_user` never executes: the agent engine intercepts the call
+    if opts.enable_files {
+        reg.register(
+            ToolSchema {
+                name: "list_dir".into(),
+                description: "List a directory's entries, one per line. Confined to the workspace."
+                    .into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "path": { "type": "string" } },
+                    "required": ["path"]
+                }),
+            },
+            Capability::FilesystemRead,
+            move |args| {
+                let v = parse_args(args)?;
+                let path = arg_str(&v, "path")?;
+                let cpath = confine(Path::new(&path), &r2)?;
+                let mut names: Vec<String> = std::fs::read_dir(&cpath)
+                    .map_err(|e| {
+                        crate::tools::tool_err(
+                            "TOOL_FS",
+                            Layer::Execution,
+                            false,
+                            format!("list {}: {e}", cpath.display()),
+                            "check tool arguments",
+                        )
+                    })?
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                names.sort();
+                Ok(names.join("\n"))
+            },
+        );
+    }
+    // `ask_user` never executes: the agent loop intercepts the call
     // before gating and parks the turn for operator input (the clarify
-    // card). It is registered so the model sees it in the tool list and
-    // so direct `execute("ask_user", …)` callers get a structured refusal
-    // instead of TOOL_UNKNOWN.
-    reg.register(
+    // card) — production `Session::drive` pre-gates it, so it can never
+    // require approval, consume budget, or execute. It is registered so the model sees it
+    // in the tool list and so direct `execute("ask_user", …)` callers get
+    // a structured refusal instead of TOOL_UNKNOWN.
+    if opts.enable_ask_user {
+        reg.register(
         ToolSchema {
             name: "ask_user".into(),
             description: "Ask the operator a question and wait for their answer. Use when you genuinely cannot proceed without input — a genuine fork in the road, not a guess you could make. `question` is required; `options` (max 9) offers quick-pick choices but the operator can always type free text."
@@ -257,16 +363,132 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
         },
         Capability::Other("ask_user".into()),
         |_args| {
-            Err(berr(
-                "TOOL_HOST_MEDIATED",
-                "ask_user is host-mediated: call it through the agent loop, which parks for operator input".to_string(),
-                false,
+            Err(crate::tools::tool_err("TOOL_HOST_MEDIATED", Layer::Execution, false, "ask_user is host-mediated: call it through the agent loop, which parks for operator input".to_string(), "check tool arguments"))
+        },
+    );
+    }
+    // `enable_plugin` lets the agent propose enabling a bundled plugin.
+    // The capability gate runs before this closure: default policies mark
+    // `plugin.enable` Approval, so the run parks, an `ApprovalRequested`
+    // event is audit-logged, and the write below happens only after the
+    // operator grants. Never silent. Only bundled-catalog names are
+    // accepted — there is no agent path to install or enable arbitrary
+    // plugins. The config file is the single enablement state, so the
+    // toggle lands in `[plugins.<name>]` where the dashboard, the mobile
+    // app, and the TUI all read it. Without a data dir the tool cannot
+    // function, so it is not registered at all rather than advertised
+    // broken.
+    if opts.enable_plugins && opts.data_dir.is_some() {
+        let dd = opts.data_dir.clone();
+        reg.register(
+        ToolSchema {
+            name: "enable_plugin".into(),
+            description: "Propose enabling one of Pantheon's bundled plugins (first-party code shipped with Pantheon, all disabled by default). `name` must be a bundled-catalog name — anything else is refused. Calling this parks the run for operator approval: the proposal is audit-logged and the plugin switches on only if the operator grants. Use when a bundled plugin would genuinely help the task; say why in your message first."
+                .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Bundled plugin name from the catalog (e.g. \"time-gap\")" }
+                },
+                "required": ["name"]
+            }),
+        },
+        Capability::PluginEnable,
+        move |args| {
+            let v = parse_args(args)?;
+            let name = arg_str(&v, "name")?;
+            let data_dir = dd.clone().ok_or_else(|| {
+                crate::tools::tool_err("TOOL_NO_DATA_DIR", Layer::Execution, false, "plugin enablement needs a data dir; registration did not provide one".to_string(), "check tool arguments")
+            })?;
+            let plugin = pantheon_extensions::bundled::find(&name).ok_or_else(|| {
+                crate::tools::tool_err("TOOL_UNKNOWN_PLUGIN", Layer::Execution, false, format!("'{name}' is not a bundled plugin; only catalog plugins can be enabled"), "check tool arguments")
+            })?;
+            pantheon_extensions::bundled::set_enabled(&data_dir, &plugin.name, true).map_err(|e| {
+                crate::tools::tool_err("TOOL_PLUGIN_ENABLE", Layer::Execution, false, e.to_string(), "check tool arguments")
+            })?;
+            Ok(format!(
+                "bundled plugin '{}' ({}) enabled: [plugins.{}] enabled = true",
+                plugin.name, plugin.kind, plugin.name
             ))
         },
     );
+    }
+    // `enable_mcp` lets the agent propose enabling a bundled MCP server.
+    // The capability gate runs before this closure: default policies mark
+    // `mcp.enable` Approval, so the run parks, an `ApprovalRequested`
+    // event is audit-logged, and the write below happens only after the
+    // operator grants. Never silent. Only bundled-catalog names are
+    // accepted — there is no agent path to put an arbitrary command on
+    // the spawn line (the supply-chain boundary). The config file is the
+    // single enablement state, so the toggle lands in
+    // `[mcp.servers.<name>]` where the dashboard, the mobile app, and the
+    // TUI all read it. The pinned catalog version is materialized, never
+    // `latest`.
+    if opts.enable_plugins {
+        let dd = opts.data_dir.clone();
+        reg.register(
+        ToolSchema {
+            name: "enable_mcp".into(),
+            description: "Propose enabling one of Pantheon's bundled MCP servers (first-party catalog entries, all disabled by default). `name` must be a bundled-catalog name — anything else is refused, so this can never install an arbitrary server command. Calling this parks the run for operator approval: the proposal is audit-logged and the server switches on only if the operator grants. Use when a bundled server would genuinely help the task; say why in your message first."
+                .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Bundled MCP server name from the catalog (e.g. \"github\")" }
+                },
+                "required": ["name"]
+            }),
+        },
+        Capability::McpEnable,
+        move |args| {
+            let v = parse_args(args)?;
+            let name = arg_str(&v, "name")?;
+            let data_dir = dd.clone().ok_or_else(|| {
+                crate::tools::tool_err("TOOL_NO_DATA_DIR", Layer::Execution, false, "MCP enablement needs a data dir; registration did not provide one".to_string(), "check tool arguments")
+            })?;
+            let server = pantheon_api::mcp_catalog::find(&name).ok_or_else(|| {
+                crate::tools::tool_err("TOOL_UNKNOWN_MCP_SERVER", Layer::Execution, false, format!("'{name}' is not a bundled MCP server; only catalog servers can be enabled"), "check tool arguments")
+            })?;
+            // Re-validate any pre-existing table under this bundled name
+            // against the canonical recipe: `set_enabled` preserves
+            // existing keys, so a name-colliding table carrying an
+            // arbitrary command would otherwise survive a legitimate
+            // enable click and run under the bundled name. Flag it
+            // loudly and refuse — never silently keep the poison.
+            if let Some(entry) = pantheon_api::mcp_catalog::load_config(&data_dir)
+                .as_ref()
+                .and_then(|cfg| cfg.mcp.as_ref())
+                .and_then(|mcp| mcp.servers.get(&server.name))
+            {
+                if !mcp_entry_matches_recipe(entry, &server) {
+                    return Err(crate::tools::tool_err(
+                        "TOOL_MCP_NAME_COLLISION",
+                        Layer::Execution,
+                        false,
+                        format!(
+                            "[mcp.servers.{}] exists but does not match the canonical bundled recipe \
+                             (different transport, command, args, env, or url): refusing to enable what \
+                             looks like a name-collision table; remove or rename the table and call \
+                             enable_mcp again to materialize the genuine recipe",
+                            server.name
+                        ),
+                        "inspect [mcp.servers.<name>] in config.toml",
+                    ));
+                }
+            }
+            pantheon_api::mcp_catalog::set_enabled(&data_dir, &server.name, true).map_err(|e| {
+                crate::tools::tool_err("TOOL_MCP_ENABLE", Layer::Execution, false, e.to_string(), "check tool arguments")
+            })?;
+            Ok(format!(
+                "bundled MCP server '{}' (pinned {}) enabled: [mcp.servers.{}] enabled = true",
+                server.name, server.version, server.name
+            ))
+        },
+    );
+    }
 }
 
-fn run_shell(args: &str) -> Result<String, PantheonError> {
+fn run_shell(args: &str, child_hook: Option<&ShellChildHook>) -> Result<String, PantheonError> {
     let v = parse_args(args)?;
     let command = arg_str(&v, "command")?;
     // Shell runs at HIGH isolation: bwrap with dropped caps + no-new-privs
@@ -276,7 +498,32 @@ fn run_shell(args: &str) -> Result<String, PantheonError> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "/tmp".to_string());
 
-    let result = pantheon_sandbox::runner::run_sandboxed(&profile, "sh", &["-c", &command], &cwd)?;
+    // The spawn hook fires synchronously on this thread right after the
+    // child is spawned; the pid doubles as the process-group id (the
+    // runner does setsid() in pre-exec). Capture it so the Exited event
+    // below names the same child.
+    let spawned: std::cell::Cell<Option<u32>> = std::cell::Cell::new(None);
+    let spawn_hook = child_hook.map(|hook| {
+        let hook = Arc::clone(hook);
+        let spawned = &spawned;
+        move |pid: u32| {
+            spawned.set(Some(pid));
+            hook(ShellChildEvent::Spawned, pid);
+        }
+    });
+    let result = pantheon_exec::sandbox::runner::run_sandboxed_with_spawn_hook(
+        &profile,
+        "sh",
+        &["-c", &command],
+        &cwd,
+        spawn_hook.as_ref().map(|f| f as &dyn Fn(u32)),
+    );
+    if let (Some(hook), Some(pid)) = (child_hook, spawned.get()) {
+        // Fires on every terminal path (exit, timeout kill, wait error):
+        // the pid is stale now — unregister it.
+        hook(ShellChildEvent::Exited, pid);
+    }
+    let result = result?;
 
     let code = result.exit_code;
     let raw = if result.output.is_empty() {
@@ -302,5 +549,99 @@ fn run_shell(args: &str) -> Result<String, PantheonError> {
 }
 
 #[cfg(test)]
-#[path = "builtins_tests.rs"]
-mod tests;
+mod tests {
+    use super::{register_builtins_with, BuiltinOptions};
+    use crate::tools::ToolRegistry;
+
+    fn enable_mcp_registry(data_dir: &std::path::Path) -> ToolRegistry {
+        let mut reg = ToolRegistry::new();
+        register_builtins_with(
+            &mut reg,
+            BuiltinOptions {
+                data_dir: Some(data_dir.to_path_buf()),
+                ..Default::default()
+            },
+        );
+        reg
+    }
+
+    fn call_enable_mcp(reg: &ToolRegistry) -> Result<String, pantheon_api::error::PantheonError> {
+        let tool = reg.get("enable_mcp").expect("enable_mcp is registered");
+        (tool.run)(r#"{"name": "playwright"}"#)
+    }
+
+    /// A poisoned table under a bundled name must be flagged, never
+    /// silently kept: `set_enabled` preserves pre-existing keys, so
+    /// without the re-validation the attacker's command would survive a
+    /// legitimate enable click and run under the bundled exemption.
+    #[test]
+    fn enable_mcp_flags_poisoned_table() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path();
+        std::fs::write(
+            data_dir.join("config.toml"),
+            "[mcp.servers.playwright]\n\
+             transport = \"stdio\"\n\
+             command = \"python3\"\n\
+             args = [\"/tmp/evil_mcp_server.py\"]\n\
+             enabled = false\n",
+        )
+        .expect("write poisoned config");
+
+        let reg = enable_mcp_registry(data_dir);
+        let err = call_enable_mcp(&reg).expect_err("poisoned table must be refused, not enabled");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("TOOL_MCP_NAME_COLLISION"),
+            "refusal must name the collision; got: {msg}"
+        );
+
+        // Never silently kept: the enable flag must NOT have flipped.
+        let cfg_text = std::fs::read_to_string(data_dir.join("config.toml")).expect("read config");
+        assert!(
+            !cfg_text.contains("enabled = true"),
+            "poisoned table must not be enabled; config now:\n{cfg_text}"
+        );
+        assert!(
+            cfg_text.contains("command = \"python3\""),
+            "refusal must not rewrite the table either; config now:\n{cfg_text}"
+        );
+    }
+
+    /// The normal path is untouched: no pre-existing table materializes
+    /// the canonical recipe and enables it.
+    #[test]
+    fn enable_mcp_still_enables_clean_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path();
+
+        let reg = enable_mcp_registry(data_dir);
+        let out = call_enable_mcp(&reg).expect("clean enable_mcp works");
+        assert!(out.contains("enabled"), "unexpected output: {out}");
+
+        let cfg =
+            pantheon_api::mcp_catalog::load_config(data_dir).expect("config loads after enable");
+        assert!(cfg.mcp_server_enabled("playwright"));
+        let entry = cfg
+            .mcp
+            .as_ref()
+            .and_then(|m| m.servers.get("playwright"))
+            .expect("table materialized");
+        assert_eq!(entry.command.as_deref(), Some("npx"));
+    }
+
+    /// Idempotent: enabling an already-canonical table again is fine.
+    #[test]
+    fn enable_mcp_accepts_canonical_table() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path();
+
+        let reg = enable_mcp_registry(data_dir);
+        call_enable_mcp(&reg).expect("first enable works");
+        call_enable_mcp(&reg).expect("second enable over the canonical table works");
+
+        let cfg =
+            pantheon_api::mcp_catalog::load_config(data_dir).expect("config loads after enable");
+        assert!(cfg.mcp_server_enabled("playwright"));
+    }
+}

@@ -1,1140 +1,263 @@
-//! The complete `config.toml` document plus load/save/validate.
+//! Client-side config resolution for the TUI.
+//!
+//! The `config.toml` **document** (all section structs, `Config`,
+//! load/save/validate) lives in [`pantheon_api::config`] — the shared,
+//! client-agnostic home. This module re-exports it so existing
+//! `crate::config::…` paths keep working, and adds what only the TUI
+//! (as a client) needs:
+//!
+//! * resolution of document sections into runtime/agent types
+//!   ([`resolve_budget_section`], [`resolve_browser_section`],
+//!   [`resolve_websearch_section`], [`resolve_mcp_section`],
+//!   [`config_budget`]) — inherent impls can't live here because the
+//!   structs are foreign now;
+//! * auxiliary-model wiring, secrets-broker construction, and the other
+//!   composition helpers below.
+//!
+//! [`pantheon_api::config`]: https://docs.rs/pantheon-api
 
-use super::config_schema::{PolicyPreset, SecretRef};
-use pantheon_agent::agent_profile::{EffectiveProfile, ProfileError, ProfileRegistry};
-use pantheon_api::error::{Layer, PantheonError};
+pub use pantheon_api::config::*;
+
 use pantheon_secrets::SecretVault;
-use serde::{Deserialize, Serialize};
-use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct ModelSection {
-    pub provider: String,
-    pub model: String,
-    /// Env var name holding the API key. Never the key itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
-    /// Ordered fallback chain: [{provider, model}].
-    #[serde(default)]
-    pub fallbacks: Vec<FallbackEntry>,
-    /// Reasoning effort for chat turns: off|minimal|low|medium|high.
-    /// Absent (or `PANTHEON_REASONING` unset) means off — no effort param
-    /// is sent and every provider behaves exactly as before.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<String>,
-    /// Exact thinking budget in tokens for budget wires (Anthropic).
-    /// Overrides the level mapping; ignored on effort-string wires.
-    /// 0 disables thinking entirely.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_budget: Option<u32>,
+// --- Resolution of document sections into runtime/agent types ---------------
+// These were inherent `resolve()` methods before the document moved to
+// `pantheon-api`. The structs are foreign now, so they are free functions.
+
+fn nz(value: Option<u32>, default: u32) -> u32 {
+    value.filter(|&v| v > 0).unwrap_or(default)
 }
 
-/// One aux-model slot: every `[judge]`, `[compression]`, `[title_gen]`,
-/// `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]` and
-/// `[mcp_synthesis]` section has exactly this shape — provider + model +
-/// optional key env name. The named section types below are aliases so
-/// existing construction sites keep compiling untouched.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct AuxSection {
-    pub provider: String,
-    pub model: String,
-    /// Env var name holding the API key for the endpoint.
-    /// Never the key itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
+/// The `[tools]` enablement for a loaded config: absent section = every
+/// group enabled, the pre-Tools-screen default.
+pub fn tool_enablement(cfg: Option<&Config>) -> pantheon_runtime::tool_config::ToolEnablement {
+    cfg.and_then(|c| c.tools.as_ref())
+        .map(pantheon_runtime::tool_config::ToolEnablement::from_section)
+        .unwrap_or_default()
 }
 
-/// `[judge]`: the auxiliary judge model. Any provider/model the
-/// catalog knows (or a raw base URL as provider) — the runtime resolves
-/// wire mode and key env the same way it does for chat. Absent = `auto`:
-/// the run's default model answers judge queries (route select, tool
-/// gate) — judging always runs, it just gets cheaper when configured.
-pub type JudgeSection = AuxSection;
-
-/// `[title_gen]`: the auxiliary session-title model. Names a conversation
-/// from its first user prompt (fire-and-forget beside the first turn).
-/// Absent = `auto`: the runtime uses the run's default model instead —
-/// titles always work, they just get cheaper/smaller when configured.
-pub type TitleGenSection = AuxSection;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct FallbackEntry {
-    pub provider: String,
-    pub model: String,
-}
-
-/// One model row inside `[custom_providers.<name>.models]`.
+/// Apply the `[tools]` section of a loaded config to a fresh session.
 ///
-/// Present so a custom endpoint's models appear in the catalog and can be
-/// picked by name. A migrated provider used to register with no models at all,
-/// which meant `pantheon providers` showed a bare endpoint and the operator had
-/// to type a model id they could not see listed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct CustomModel {
-    /// Model id as the endpoint spells it.
-    pub id: String,
-    /// Context window in tokens. Omitted = unknown, which the runtime treats
-    /// conservatively rather than guessing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_limit: Option<u32>,
-    /// Provider-imposed max output tokens. Omitted = unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_output_tokens: Option<u32>,
+/// Call this on every `Session::new` before the first turn: the enablement
+/// is snapshotted at registry build time, so a session built without it
+/// would ignore the user's Tools-screen choices.
+pub fn apply_tool_enablement(session: &pantheon_runtime::session::Session, cfg: Option<&Config>) {
+    session.set_tool_enablement(tool_enablement(cfg));
 }
 
-/// `[custom_providers.<name>]`: a user-defined endpoint (written by
-/// `pantheon model` when you pick "Custom provider"). Behaves like a
-/// cataloged provider everywhere: base URL + wire mode + key env.
-/// The provider id is the table name.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct CustomProviderSection {
-    /// Full base URL, no trailing slash (e.g. `http://127.0.0.1:8015/v1`).
-    #[serde(default)]
-    pub base_url: String,
-    /// Wire format: `openai` (default) or `anthropic`.
-    #[serde(default = "default_openai_mode")]
-    pub api_mode: String,
-    /// Env var name holding the API key. Never the key itself.
-    /// Default: `PANTHEON_KEY_<NAME>`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_env: Option<String>,
-    /// Models this endpoint serves. Optional: an endpoint with none still
-    /// works, the operator just has to name the model explicitly.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub models: Vec<CustomModel>,
+/// Whether a tool group is enabled in a loaded config. Used for
+/// out-of-registry gates: the `/voice` status command and the
+/// vision/video auxiliary entries.
+pub fn tool_group_enabled(cfg: Option<&Config>, group: pantheon_api::config::ToolGroup) -> bool {
+    tool_enablement(cfg).is_enabled(group)
 }
 
-fn default_openai_mode() -> String {
-    "openai".into()
+/// Thread the `[budget]` tiers into a freshly built session: the live
+/// run budget (`set_budget`, from [`config_budget`]) plus the
+/// kept-apart configured token cap (`set_budget_max_tokens`), so
+/// `/tokens off` falls back to the config value instead of forgetting
+/// it. Call on every `Session::new` that serves turns — the interactive
+/// TUI startup does this inline in session.rs; the /agui, gateway, and
+/// dashboard paths use this helper so they cannot drift apart.
+pub fn apply_budget_tiers(session: &pantheon_runtime::session::Session, cfg: Option<&Config>) {
+    session.set_budget(cfg.map(config_budget).unwrap_or_default());
+    session.set_budget_max_tokens(
+        cfg.and_then(|c| c.budget.as_ref())
+            .and_then(|b| b.max_tokens)
+            .filter(|&v| v > 0),
+    );
 }
 
-/// `[stt]` / `[tts]`: speech service selection. These are provider-plane
-/// services (a local binary or an HTTP endpoint), never model-policy
-/// entries — same shape as `[memory]`'s backend selection. Absent = the
-/// surface simply has no speech capability.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct VoiceSection {
-    /// Backend name from the provider registry: `command` | `openai`.
-    pub backend: String,
-    /// Backend-specific options (cmd/args for command, provider/model
-    /// for openai, timeout_secs, ...).
-    #[serde(default)]
-    pub options: std::collections::HashMap<String, String>,
+/// Resolve `[budget]` to the runtime [`pantheon_agent::Budget`].
+/// Absent section = the runtime defaults.
+pub fn resolve_budget_section(s: &BudgetSection) -> pantheon_agent::Budget {
+    pantheon_agent::Budget {
+        max_turns: nz(s.max_turns, 16),
+        max_tool_calls: nz(s.max_tool_calls, 32),
+        max_tokens: s.max_tokens.filter(|&v| v > 0),
+        max_delegate_depth: nz(s.max_delegate_depth, 2),
+        allow_child_spawn: true,
+    }
 }
 
-/// `[compression]`: the auxiliary context-compression model. Summarizes
-/// the oldest exchanges when a transcript overflows the window. Absent =
-/// `auto`: the run's default model compresses; the deterministic fit
-/// stays the correctness path either way.
-pub type CompressionSection = AuxSection;
-
-/// `[embeddings]`: the vector-search embedding model. The one auxiliary
-/// where `auto` would be wrong: absent = the local hashing embedder,
-/// never the chat model — pin a provider here to embed remotely.
-pub type EmbeddingsSection = AuxSection;
-
-/// `[search_synthesis]`: the model that turns retrieved passages into a
-/// synthesized answer. Absent = `auto`: the run's default model writes
-/// the synthesis — configuring it just makes search answers cheaper.
-pub type SearchSynthesisSection = AuxSection;
-
-/// `[vision]`: the image-understanding model. Absent = `auto`: the run's
-/// default model handles images. Config + client surface only for now —
-/// message image plumbing lands with multimodal content.
-pub type VisionSection = AuxSection;
-
-/// `[scheduled]`: the model scheduled (background) runs execute with.
-/// Absent = `auto`: scheduled jobs run on the run's default model —
-/// pin a small/cheap model here so background tasks stop competing with
-/// interactive chat.
-pub type ScheduledSection = AuxSection;
-
-/// Default completed turns before an automatic reflection pass.
-pub const DEFAULT_REFLECT_AUTO_TURNS: u32 = 20;
-
-/// Default proposal cap per reflection pass.
-pub const DEFAULT_REFLECT_MAX_PROPOSALS: usize = 5;
-
-fn default_reflect_auto_turns() -> u32 {
-    DEFAULT_REFLECT_AUTO_TURNS
+/// Effective run budget for a config. Absent `[budget]` = the runtime
+/// defaults (16 turns, 32 tool calls, depth 2, uncapped tokens).
+pub fn config_budget(cfg: &Config) -> pantheon_agent::Budget {
+    cfg.budget
+        .as_ref()
+        .map(resolve_budget_section)
+        .unwrap_or_default()
 }
 
-fn default_reflect_max_proposals() -> usize {
-    DEFAULT_REFLECT_MAX_PROPOSALS
+/// Resolve `[browser]` — now in [`pantheon_runtime::resolve_browser_section`]
+/// so the dashboard's browser stream endpoints resolve the section
+/// identically. Kept here as a thin delegate for existing callers.
+pub fn resolve_browser_section(s: &BrowserSection) -> pantheon_runtime::BrowserToolConfig {
+    pantheon_runtime::resolve_browser_section(s)
 }
 
-/// `[reflect]`: Reflection — Pantheon's ledger-native self-improvement
-/// loop, plus the auxiliary model pin for its LLM-backed steps, in one
-/// table.
-///
-/// Behavior knobs (`enabled`, `auto_turns`, `max_proposals`) and the model
-/// pin share the table the same way `[scheduled]` doubles as both the
-/// schedule-model pin and the background-runs section: one `[reflect]`
-/// table is everything the feature needs. Absent `provider`/`model` =
-/// `auto`: the run's default model answers reflection LLM calls —
-/// configure a small/cheap model here (or
-/// `PANTHEON_REFLECTION_PROVIDER`/`PANTHEON_REFLECTION_MODEL`) so
-/// background self-improvement never competes with interactive chat.
-///
-/// LLM-backed reflection steps are **off by default** (`enabled = false`):
-/// the deterministic signal-extraction pipeline always runs, but anything
-/// spending model tokens needs explicit opt-in. Every LLM call the
-/// reflection pipeline makes resolves through the
-/// [`AuxiliaryKind::Reflection`](pantheon_api::model::AuxiliaryKind)
-/// slot — never the chat model directly.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ReflectSection {
-    /// Allow LLM-backed reflection steps. Default false.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Completed turns before an automatic reflection pass runs. Default
-    /// 20. `0` disables the automatic trigger.
-    #[serde(default = "default_reflect_auto_turns")]
-    pub auto_turns: u32,
-    /// Maximum proposals generated per pass. Default 5.
-    #[serde(default = "default_reflect_max_proposals")]
-    pub max_proposals: usize,
-    /// Auxiliary model pin for reflection LLM calls. Absent = `auto`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// Auxiliary model pin for reflection LLM calls. Absent = `auto`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// Env var name holding the API key for the endpoint. Never the key
-    /// itself. Seeds the `PANTHEON_REFLECTION_API_KEY` vault entry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
-}
-
-/// `[consolidation]`: Consolidation — Pantheon's background memory
-/// consolidation, plus the auxiliary model pin for its LLM-backed
-/// distill step, in one table.
-///
-/// Behavior knobs (`enabled`, `half_life_days`, `min_sessions`,
-/// `min_score`, `cron`) and the model pin share the table the same way
-/// `[reflect]` does: one `[consolidation]` table is everything the
-/// feature needs. Absent `provider`/`model` = `auto`: the run's default
-/// model answers consolidation LLM calls — configure a small/cheap
-/// model here (or `PANTHEON_CONSOLIDATION_PROVIDER` /
-/// `PANTHEON_CONSOLIDATION_MODEL`) so nightly memory consolidation
-/// never competes with interactive chat.
-///
-/// LLM-backed consolidation steps are **off by default**
-/// (`enabled = false`): the deterministic stage/weigh/promote pipeline
-/// always runs, but anything spending model tokens needs explicit
-/// opt-in. Every LLM call the consolidation pipeline makes resolves
-/// through the
-/// [`AuxiliaryKind::Consolidation`](pantheon_api::model::AuxiliaryKind)
-/// slot — never the chat model directly.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ConsolidationSection {
-    /// Allow LLM-backed consolidation steps (candidate distillation).
-    /// Default false.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Recency half-life for the scoring decay curve, in days. Default
-    /// 14.
-    #[serde(default = "default_consolidation_half_life")]
-    pub half_life_days: f64,
-    /// Distinct sessions a candidate must appear in before promotion.
-    /// Default 3.
-    #[serde(default = "default_consolidation_min_sessions")]
-    pub min_sessions: usize,
-    /// Minimum decayed score for promotion. Default 2.0.
-    #[serde(default = "default_consolidation_min_score")]
-    pub min_score: f64,
-    /// Default cron for `pantheon consolidate --schedule`. Default
-    /// `0 3 * * *` (03:00 nightly).
-    #[serde(default = "default_consolidation_cron")]
-    pub cron: String,
-    /// Auxiliary model pin for consolidation LLM calls. Absent = `auto`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// Auxiliary model pin for consolidation LLM calls. Absent = `auto`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// Env var name holding the API key for the endpoint. Never the key
-    /// itself. Seeds the `PANTHEON_CONSOLIDATION_API_KEY` vault entry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
-}
-
-fn default_consolidation_half_life() -> f64 {
-    14.0
-}
-
-fn default_consolidation_min_sessions() -> usize {
-    3
-}
-
-fn default_consolidation_min_score() -> f64 {
-    2.0
-}
-
-fn default_consolidation_cron() -> String {
-    "0 3 * * *".to_string()
-}
-
-/// Default event-history retention when `[retention]` is absent.
-pub const DEFAULT_RETENTION_DAYS: u32 = 90;
-
-fn default_retention_days() -> u32 {
-    DEFAULT_RETENTION_DAYS
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_temporal_min_gap_secs() -> u64 {
-    7200
-}
-
-/// `[temporal]`: tacit temporal awareness — the model notices when a
-/// conversation has meaningfully aged, without timestamping every
-/// message. Before a turn's first model call the pipeline measures the
-/// idle gap since the last assistant turn (from the durable ledger, so
-/// it is restart-safe) and, when the gap matters, appends one coarse,
-/// human-friendly hint to the outgoing user message — for the API call
-/// only, never persisted, never on the system prompt.
-///
-/// Zero tokens by construction (pure string injection), so this defaults
-/// to on. Absent section = all defaults.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TemporalSection {
-    /// Master switch. Default true.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Idle seconds before an elapsed-gap hint fires. Default 7200 (2h).
-    /// `0` disables the elapsed-gap trigger; the date-rollover trigger
-    /// still works.
-    #[serde(default = "default_temporal_min_gap_secs")]
-    pub min_gap_secs: u64,
-    /// Hint when the local calendar date rolled over since the last
-    /// turn, even on a short gap. Default true.
-    #[serde(default = "default_true")]
-    pub notify_date_change: bool,
-    /// IANA timezone name, e.g. `timezone = "Africa/Lagos"`. Absent =
-    /// the system local timezone; unparseable falls back to UTC.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timezone: Option<String>,
-}
-
-impl From<&TemporalSection> for pantheon_api::temporal::TemporalConfig {
-    fn from(s: &TemporalSection) -> Self {
-        pantheon_api::temporal::TemporalConfig {
-            enabled: s.enabled,
-            min_gap_secs: s.min_gap_secs,
-            notify_date_change: s.notify_date_change,
-            timezone: s.timezone.clone(),
+/// Resolve `[websearch]` to the runtime
+/// [`pantheon_runtime::WebsearchToolConfig`]. Env vars
+/// (`PANTHEON_WEBSEARCH_ENABLED`) win over the file, matching the
+/// runtime defaults.
+pub fn resolve_websearch_section(s: &WebsearchSection) -> pantheon_runtime::WebsearchToolConfig {
+    let mut cfg = pantheon_runtime::WebsearchToolConfig::default();
+    cfg.enabled = std::env::var("PANTHEON_WEBSEARCH_ENABLED")
+        .map(|v| v != "0")
+        .unwrap_or_else(|_| s.enabled.unwrap_or(cfg.enabled));
+    if let Some(provider) = s.provider.clone() {
+        if !provider.trim().is_empty() {
+            cfg.provider = provider;
         }
     }
-}
-
-/// `[retention]`: how long the event ledger keeps transcripts.
-/// The ledger is append-only and grows forever; the scheduled maintenance
-/// pass prunes it. `keep_days = 0` disables pruning (unbounded growth).
-/// Finished runs keep their status/title rows and lose only old events;
-/// runs that are still open are never pruned, however old their events.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RetentionSection {
-    /// Days of event history to keep. Default 90. `0` = disabled.
-    #[serde(default = "default_retention_days")]
-    pub keep_days: u32,
-}
-
-/// Run budgets (`[budget]` in config.toml). Every key is optional and
-/// every key is overridable per session via `/set` (and `/tokens` for
-/// the token cap). A `0` is treated as unset — a zero cap would end
-/// every run before it starts, so it falls back to the default instead
-/// of silently bricking the session.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct BudgetSection {
-    /// Max agent turns per run. Default 16.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_turns: Option<u32>,
-    /// Max tool calls per run. Default 32.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_tool_calls: Option<u32>,
-    /// Max delegation depth. Default 2.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_delegate_depth: Option<u32>,
-    /// Max pipeline iterations (`pantheon pipeline`). Default 3.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_iterations: Option<u32>,
-    /// Max tokens (input + output) per run. Absent = uncapped.
-    /// Strictly optional: Pantheon never requires it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
-}
-
-impl BudgetSection {
-    fn nz(value: Option<u32>, default: u32) -> u32 {
-        value.filter(|&v| v > 0).unwrap_or(default)
-    }
-
-    /// Resolve to the runtime [`pantheon_agent::Budget`].
-    pub fn resolve(&self) -> pantheon_agent::Budget {
-        pantheon_agent::Budget {
-            max_turns: Self::nz(self.max_turns, 16),
-            max_tool_calls: Self::nz(self.max_tool_calls, 32),
-            max_tokens: self.max_tokens.filter(|&v| v > 0),
-            max_delegate_depth: Self::nz(self.max_delegate_depth, 2),
+    if let Some(name) = s.api_key_secret.clone() {
+        if !name.trim().is_empty() {
+            cfg.api_key_secret = Some(name);
         }
     }
-
-    /// Pipeline iteration cap for `pantheon pipeline`. Default 3.
-    pub fn pipeline_iterations(&self) -> u32 {
-        Self::nz(self.max_iterations, 3)
+    if let Some(n) = s.max_results.filter(|&n| n > 0) {
+        cfg.max_results = n;
     }
-}
-
-/// `/goal` behavior (`[goal]` in config.toml).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct GoalSection {
-    /// Max iterations pursuing one `/goal` before the TUI stops the
-    /// session's turns and asks. Default 10. Overridable per session
-    /// via `/goal iterations <n>`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_iterations: Option<u32>,
-}
-
-/// TUI chrome (`[tui]` in config.toml).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct TuiSection {
-    /// Active theme name (`pantheon`, `dark`, `light`). Absent = default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub theme: Option<String>,
-    /// Modal vim editing for the composer (`/vim`). Absent = off.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vim: Option<bool>,
-}
-
-/// Phone approval notifications (`[approvals]` in config.toml).
-/// Opt-in: absent or `notify_channel` unset = no phone notifications.
-/// When enabled, the TUI sends a Telegram/Discord message whenever a run
-/// parks on an approval — with Grant/Deny buttons that route back through
-/// the gateway daemon into the pending approval flow.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct ApprovalsSection {
-    /// Channel to notify: `telegram` or `discord`. Unset = disabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notify_channel: Option<String>,
-    /// Chat (Telegram) or channel (Discord) id to send the notification to.
-    /// Unset = disabled even when `notify_channel` is set: without a
-    /// destination there is nowhere to deliver.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notify_chat_id: Option<String>,
-}
-
-impl Default for RetentionSection {
-    fn default() -> Self {
-        Self {
-            keep_days: DEFAULT_RETENTION_DAYS,
-        }
-    }
-}
-
-/// `[mcp_synthesis]`: the model that bounds large MCP tool results into
-/// a short note before they enter context (compression's pattern,
-/// scoped to MCP results). Absent = `auto`: the run's default model
-/// summarizes.
-pub type McpSynthesisSection = AuxSection;
-
-/// `[extraction]`: the structured-extraction model. Pulls fields and
-/// records out of prose and tool outputs into typed values the runtime
-/// can act on. Absent = `auto`: the run's default model extracts. No
-/// call sites yet — pin a model here ahead of the extraction workload.
-pub type ExtractionSection = AuxSection;
-
-/// `[rerank]`: the rerank model. Scores and orders search and
-/// memory-retrieval candidates before they enter context. Absent =
-/// `auto`: the run's default model reranks. No call sites yet — pin a
-/// model here ahead of the reranking workload.
-pub type RerankSection = AuxSection;
-
-/// `[planner]`: the planner model for a future planner/worker split,
-/// where planning and execution run on different models. Absent =
-/// `auto`: the run's default model plans. No call sites yet — pin a
-/// model here ahead of the planner workload.
-pub type PlannerSection = AuxSection;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct MemorySection {
-    /// Backend name from the catalog: native | http | ...
-    pub backend: String,
-    #[serde(default)]
-    pub options: std::collections::HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct ServerSection {
-    /// AG-UI HTTP port (0 = auto).
-    #[serde(default)]
-    pub port: u16,
-    #[serde(default)]
-    pub host: String,
-}
-
-/// `[secrets]`: the run's secrets-boundary policy. Both lists are empty by
-/// default (fail closed).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct SecretsSection {
-    /// Env vars readable through the `env:` secret-name form. Entries are
-    /// exact var names (`"MY_KEY"`) or `PREFIX_*` wildcards
-    /// (`"PANTHEON_*"`); `"*"` alone allows all (explicit opt-out).
-    ///
-    /// Default: empty — `env:` lookups resolve nothing. Secrets must come
-    /// from `PANTHEON_SECRET_*` or a durable vault, so a name like
-    /// `env:AWS_SECRET_ACCESS_KEY` can never be used to exfiltrate an
-    /// arbitrary host variable.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub env_allowlist: Vec<String>,
-    /// Manifest-declared env vars the plugin supervisor may copy from the
-    /// host into plugin subprocesses (same entry syntax as above).
-    ///
-    /// Default: empty — plugins receive PATH plus Pantheon-set vars only.
-    /// A project-controlled manifest can declare any name it likes, so a
-    /// declared name alone never crosses the boundary; only an entry here
-    /// lets a host var (including API keys) reach plugin code.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub plugin_env_allowlist: Vec<String>,
-}
-
-/// The whole config file. Everything optional-tolerant so doctor can
-/// describe exactly what is missing instead of failing to parse.
-/// `[agents.<name>]`: a durable identity for one persistent agent (§4).
-///
-/// The audit's gap: Hermes ships this as `profile.yaml` + `SOUL.md` +
-/// `MEMORY.md`/`USER.md` (the 6 `_PROFILE_IDENTITY_MARKERS` files), while
-/// Pantheon had no identity config at all — every run was anonymous.
-/// This is the durable half: name, persona source files, memory namespace,
-/// and capability policy live in config; the prompt assembly that reads
-/// them is next. Persona files are referenced by path (repo-relative or
-/// absolute), never inlined, so secrets that drift into a SOUL.md stay out
-/// of config snapshots.
-///
-/// This is a **re-export of the core type**, not a second definition. The
-/// declaration, inheritance, and namespace rules live in
-/// `pantheon_agent::agent_profile` so the runtime can consume a profile
-/// without depending on the terminal. An earlier version of this file declared
-/// its own struct with four of the fields; it drifted as soon as
-/// `inherits` and `model` were added, which is exactly the duplication
-/// this re-export removes.
-pub use pantheon_agent::agent_profile::AgentProfile as AgentIdentity;
-
-/// Why an `[agents.<name>]` table is not usable, in `doctor`'s wording.
-///
-/// This used to be `AgentIdentity::validate`, a hand-rolled check of slug
-/// shape, policy spelling, and namespace clashes. Every one of those rules
-/// now lives in `ProfileRegistry`, where `resolve` and `validate_all`
-/// enforce them, and where inheritance adds rules the old version could not
-/// express (a child may not claim a parent's namespace, a `profile` that
-/// names no declared agent is an error). Keeping a second copy here meant
-/// `doctor` could pass a config that the runtime then refused.
-fn agent_table_problems(all: &std::collections::HashMap<String, AgentIdentity>) -> Vec<String> {
-    let mut reg = ProfileRegistry::new();
-    let mut problems = Vec::new();
-    // A malformed table name is reported here rather than through
-    // `problems`, because it cannot be inserted and would otherwise
-    // hide every other problem in the file.
-    for (name, agent) in all {
-        if let Err(e) = reg.insert(name, agent.clone()) {
-            problems.push(e.to_string());
-        }
-    }
-    // `problems` covers the registry-wide rules: unknown policies, namespace
-    // clashes, inheritance cycles, parents that do not exist.
-    problems.extend(reg.problems("coder").into_iter().map(|e| e.to_string()));
-    problems
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct Config {
-    /// Free-form install label (`profile = "dev"`). Informational only;
-    /// it does NOT select an agent. See [`Config::agent`].
-    pub profile: Option<String>,
-    /// The agent profile this install runs as (`agent = "zeus"`). Must name
-    /// a declared `[agents.<name>]` table.
-    ///
-    /// Deliberately a different key from `profile`: that one predates agent
-    /// profiles, is written by `setup` as "default", and is read by nothing
-    /// that runs an agent. Overloading it would have made every existing
-    /// config select a profile that was never declared.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
-    pub model: Option<ModelSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub judge: Option<JudgeSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub embeddings: Option<EmbeddingsSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub search_synthesis: Option<SearchSynthesisSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vision: Option<VisionSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scheduled: Option<ScheduledSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mcp_synthesis: Option<McpSynthesisSection>,
-    /// `[extraction]`: structured-extraction model pin. Absent = `auto`.
-    /// No call sites yet; pin ahead of the workload.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extraction: Option<ExtractionSection>,
-    /// `[rerank]`: rerank model pin. Absent = `auto`. No call sites yet;
-    /// pin ahead of the workload.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rerank: Option<RerankSection>,
-    /// `[planner]`: planner model pin for a future planner/worker split.
-    /// Absent = `auto`. No call sites yet; pin ahead of the workload.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub planner: Option<PlannerSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compression: Option<CompressionSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title_gen: Option<TitleGenSection>,
-    /// `[reflect]`: behavior knobs + auxiliary model pin for Reflection.
-    /// Absent = reflection LLM steps off (`enabled = false`), and if
-    /// enabled later, `auto` = the run's default model.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reflect: Option<ReflectSection>,
-    /// `[consolidation]`: behavior knobs + auxiliary model pin for
-    /// Consolidation. Absent = consolidation LLM steps off
-    /// (`enabled = false`), and if enabled later, `auto` = the run's
-    /// default model.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub consolidation: Option<ConsolidationSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stt: Option<VoiceSection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tts: Option<VoiceSection>,
-    pub policy: Option<PolicyPreset>,
-    pub memory: Option<MemorySection>,
-    /// Retained so an existing config.toml with a `[tools]` table still
-    /// loads. The keys are inert: tool registration is unconditional and
-    /// nothing reads them. Kept as an ignored value rather than a typed
-    /// struct so an unfamiliar shape in a user's file is not a parse
-    /// error, and so the decision to drop tool packs stays reversible.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<toml::Value>,
-    pub server: Option<ServerSection>,
-    /// Secrets-boundary policy (`env:` lookups, plugin subprocess env).
-    /// Absent = both allowlists empty (fail closed).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secrets: Option<SecretsSection>,
-    /// Event-ledger retention (`[retention]`). Absent = 90-day default;
-    /// `keep_days = 0` disables pruning.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retention: Option<RetentionSection>,
-    /// Tacit temporal awareness (`[temporal]`). Absent = enabled with
-    /// defaults (2h gap, date-rollover hints, system local timezone).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub temporal: Option<TemporalSection>,
-    /// Run budgets (`[budget]`). Absent = runtime defaults (16 turns,
-    /// 32 tool calls, depth 2, uncapped tokens, 3 pipeline iterations).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget: Option<BudgetSection>,
-    /// `/goal` behavior (`[goal]`). Absent = 10-iteration default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub goal: Option<GoalSection>,
-    /// TUI chrome (`[tui]`). Absent = defaults.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tui: Option<TuiSection>,
-    /// Phone approval notifications (`[approvals]`). Absent = disabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approvals: Option<ApprovalsSection>,
-    /// User-defined providers (`pantheon model` → Custom provider).
-    /// Empty for configs written before this existed (back-compat).
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub custom_providers: std::collections::HashMap<String, CustomProviderSection>,
-    /// Durable per-agent identities (§4). Empty = all runs anonymous, the
-    /// pre-identity behavior (back-compat).
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub agents: std::collections::HashMap<String, AgentIdentity>,
-}
-
-impl Config {
-    pub fn path(data_dir: &Path) -> std::path::PathBuf {
-        data_dir.join("config.toml")
-    }
-    /// Effective event-retention window in days. Absent `[retention]` =
-    /// the 90-day default; `keep_days = 0` disables pruning.
-    pub fn retention_days(&self) -> u32 {
-        self.retention
-            .as_ref()
-            .map(|r| r.keep_days)
-            .unwrap_or(DEFAULT_RETENTION_DAYS)
-    }
-    /// Effective run budget. Absent `[budget]` = the runtime defaults
-    /// (16 turns, 32 tool calls, depth 2, uncapped tokens).
-    pub fn budget(&self) -> pantheon_agent::Budget {
-        self.budget
-            .as_ref()
-            .map(BudgetSection::resolve)
-            .unwrap_or_default()
-    }
-    /// Max `/goal` iterations. Absent `[goal]` = 10.
-    pub fn goal_iterations(&self) -> u32 {
-        self.goal
-            .as_ref()
-            .and_then(|g| g.max_iterations)
-            .filter(|&v| v > 0)
-            .unwrap_or(10)
-    }
-    /// Max pipeline iterations (`pantheon pipeline`). Absent `[budget]` = 3.
-    pub fn pipeline_iterations(&self) -> u32 {
-        self.budget
-            .as_ref()
-            .map(BudgetSection::pipeline_iterations)
-            .unwrap_or(3)
-    }
-    /// Load the config, or explain why it could not be read.
-    ///
-    /// `load(...).ok()` at a dozen call sites threw away a `CONFIG_PARSE`
-    /// error that names the file, line, and column. A single typo then
-    /// looked like a working install that could not reach a provider: the
-    /// session fell back to `local`/`llama3.2` and failed against
-    /// localhost with no mention of the file that was actually broken.
-    ///
-    /// A missing config is not an error, so this returns `None` for that
-    /// case and prints for a config that exists but does not parse.
-    pub fn load_or_report(data_dir: &Path) -> Option<Self> {
-        match Self::load(data_dir) {
-            Ok(c) => Some(c),
-            Err(e) if e.code == "CONFIG_OPEN" => None,
-            Err(e) => {
-                eprintln!("pantheon: {}", e.cause);
-                eprintln!("pantheon: fix: {}", e.remediation);
-                std::process::exit(2);
+    // Endpoint override for self-hosted providers. The section wins; for
+    // SearXNG the `SEARXNG_URL` env var is the conventional fallback the
+    // provider registry documents.
+    cfg.base_url = s
+        .base_url
+        .clone()
+        .filter(|u| !u.trim().is_empty())
+        .or_else(|| {
+            if cfg.provider == "searxng" {
+                std::env::var(pantheon_web::websearch::searxng_url_env())
+                    .ok()
+                    .filter(|u| !u.trim().is_empty())
+            } else {
+                None
             }
-        }
-    }
+        });
+    cfg
+}
 
-    pub fn load(data_dir: &Path) -> Result<Self, PantheonError> {
-        let path = Self::path(data_dir);
-        let text = std::fs::read_to_string(&path).map_err(|e| {
-            PantheonError::new(
-                "CONFIG_OPEN",
-                Layer::Runtime,
-                false,
-                format!("read {}: {e}", path.display()),
-                "run `pantheon setup` to create a config",
-                "",
-            )
-        })?;
-        toml::from_str(&text).map_err(|e| {
-            PantheonError::new(
-                "CONFIG_PARSE",
-                Layer::Runtime,
-                false,
-                format!("parse {}: {e}", path.display()),
-                "fix the TOML or rerun setup",
-                "",
-            )
+/// Hermes-style aux inheritance: `provider = "default"` (or absent/empty)
+/// inherits the default model's provider; an absent/empty `model` inherits
+/// the default model's model. Explicit values always win — slots stay
+/// independent, they just don't have to repeat the default. Pure so tests
+/// don't touch env.
+fn resolve_aux_target(
+    provider: Option<&str>,
+    model: Option<&str>,
+    default: &pantheon_api::model::DefaultModel,
+) -> (String, String) {
+    let provider = match provider.map(str::trim).filter(|p| !p.is_empty()) {
+        None => default.provider.clone(),
+        Some(p) if p.eq_ignore_ascii_case("default") => default.provider.clone(),
+        Some(p) => p.to_string(),
+    };
+    let model = model
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| default.model.clone());
+    (provider, model)
+}
+
+/// Effective key env var name for an aux pin: an explicit `api_key_env`
+/// wins; a default-inheriting provider (`None`, empty, or `"default"`)
+/// inherits `[model].api_key_env`; otherwise `None`, and the runtime
+/// falls back to `PANTHEON_KEY_<PROVIDER>`.
+fn resolve_aux_key_env(
+    provider: Option<&str>,
+    api_key_env: Option<&str>,
+    model: Option<&ModelSection>,
+) -> Option<String> {
+    if let Some(env) = api_key_env.filter(|s| !s.trim().is_empty()) {
+        return Some(env.to_string());
+    }
+    let inherits = provider
+        .map(|p| {
+            let p = p.trim();
+            p.is_empty() || p.eq_ignore_ascii_case("default")
         })
-    }
-    /// The agent profiles declared in this config, as a resolvable registry.
-    ///
-    /// This is the bridge from config text to the runtime's profile layer.
-    /// Building it here (rather than at each call site) means every entry
-    /// point — terminal, scheduler, AG-UI — sees the same declarations, and
-    /// an inheritance chain broken by a typo is reported identically
-    /// everywhere.
-    pub fn profile_registry(&self) -> Result<ProfileRegistry, ProfileError> {
-        let mut reg = ProfileRegistry::new();
-        for (name, agent) in &self.agents {
-            reg.insert(name, agent.clone()).map_err(|e| match e {
-                // `insert` reports the slug problem; `validate` is the
-                // existing doctor path for it, so don't double-report.
-                ProfileError::InvalidName { .. } => e,
-                other => other,
-            })?;
-        }
-        reg.validate_all(self.default_policy_preset())?;
-        Ok(reg)
-    }
-
-    /// The policy preset an agent gets when neither it nor any ancestor
-    /// names one. The global config wins, so a profile inherits the
-    /// install's baseline rather than a hardcoded runtime default.
-    fn default_policy_preset(&self) -> &'static str {
-        self.policy
-            .map(crate::config_schema::PolicyPreset::as_str)
-            .unwrap_or("coder")
-    }
-
-    /// Resolve the agent profile this config selects.
-    ///
-    /// Selection order: an explicit `--agent`, else `agent = "..."`, else
-    /// `default`. A name that is not declared is an error, never a silent
-    /// fallback — an operator who asked for `zeus` and silently got the
-    /// default agent's memory and persona would have no way to notice.
-    ///
-    /// A config with no `[agents]` table at all is not an error: that is
-    /// every install from before profiles, and those runs stay anonymous
-    /// until the user declares one. Only a *named* agent must exist.
-    pub fn resolve_profile(
-        &self,
-        override_name: Option<&str>,
-    ) -> Result<Option<EffectiveProfile>, ProfileError> {
-        let selected = override_name
-            .or(self.agent.as_deref())
-            .unwrap_or(pantheon_runtime::DEFAULT_PROFILE);
-        if self.agents.is_empty() && override_name.is_none() && self.agent.is_none() {
-            // Nothing declared and nothing asked for: anonymous, as before.
-            return Ok(None);
-        }
-        let reg = self.profile_registry()?;
-        reg.resolve(selected, self.default_policy_preset())
-            .map(Some)
-    }
-
-    pub fn save(&self, data_dir: &Path) -> Result<(), PantheonError> {
-        let path = Self::path(data_dir);
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let text = toml::to_string_pretty(self).map_err(|e| {
-            PantheonError::new(
-                "CONFIG_SER",
-                Layer::Runtime,
-                false,
-                e.to_string(),
-                "this is a bug: report the config contents",
-                "",
-            )
-        })?;
-        // Atomic write: tmp then rename, matching the rest of the codebase.
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text)
-            .and_then(|_| std::fs::rename(&tmp, &path))
-            .map_err(|e| {
-                PantheonError::new(
-                    "CONFIG_WRITE",
-                    Layer::Runtime,
-                    false,
-                    format!("write {}: {e}", path.display()),
-                    "check directory permissions",
-                    "",
-                )
-            })
-    }
-    /// Validate the config for doctor. Returns one error per problem.
-    pub fn validate(&self) -> Vec<String> {
-        let mut problems = Vec::new();
-        if let Some(m) = &self.model {
-            if m.provider.trim().is_empty() {
-                problems.push("model.provider is empty".into());
-            }
-            if m.model.trim().is_empty() {
-                problems.push("model.model is empty".into());
-            }
-            if let Some(env) = &m.api_key_env {
-                let r = SecretRef::from_env(env.clone());
-                if let Err(e) = r.validate() {
-                    problems.push(format!("model.api_key_env: {e}"));
-                } else if r.resolve().is_none() {
-                    problems.push(format!("env var {env} is not set"));
-                }
-            }
-            for (i, f) in m.fallbacks.iter().enumerate() {
-                if f.provider.trim().is_empty() || f.model.trim().is_empty() {
-                    problems.push(format!("model.fallbacks[{i}] has empty provider or model"));
-                }
-            }
-            if let Some(r) = m.reasoning.as_deref().filter(|s| !s.trim().is_empty()) {
-                if pantheon_api::model::ReasoningLevel::parse(r).is_none() {
-                    problems.push(format!(
-                        "model.reasoning {r:?} is not off|minimal|low|medium|high|xhigh|max (resolves to off)"
-                    ));
-                }
-            }
-            if let Some(b) = m.reasoning_budget {
-                if b > 0 && b < 1024 {
-                    problems.push(format!(
-                        "model.reasoning_budget {b} is below the 1024-token budget-wire minimum (skipped at request time)"
-                    ));
-                }
-            }
-        } else {
-            problems.push("no [model] section: run `pantheon setup`".into());
-        }
-        // Every aux section validates identically: non-empty target
-        // fields + a resolvable api_key_env when named.
-        fn aux_problem(name: &str, sec: (&str, &str, &Option<String>), problems: &mut Vec<String>) {
-            let (provider, model, api_key_env) = sec;
-            if provider.trim().is_empty() {
-                problems.push(format!("{name}.provider is empty"));
-            }
-            if model.trim().is_empty() {
-                problems.push(format!("{name}.model is empty"));
-            }
-            if let Some(env) = api_key_env {
-                let r = SecretRef::from_env(env.clone());
-                if let Err(e) = r.validate() {
-                    problems.push(format!("{name}.api_key_env: {e}"));
-                } else if r.resolve().is_none() {
-                    problems.push(format!("env var {env} is not set"));
-                }
-            }
-        }
-        for slot in AUX_SLOTS {
-            if let Some(s) = cfg_section(self, slot) {
-                aux_problem(
-                    slot.name,
-                    (&s.provider, &s.model, &s.api_key_env),
-                    &mut problems,
-                );
-            }
-        }
-        // `[reflect]` carries its own model pin (provider/model are
-        // optional: absent = `auto`). A half-set pin is a config error —
-        // the aux target needs both.
-        // `[reflect]` carries its own model pin (provider/model are
-        // optional: absent = `auto`). A half-set pin is a config error —
-        // the aux target needs both.
-        if let Some(r) = &self.reflect {
-            match (&r.provider, &r.model) {
-                (Some(p), Some(m)) => {
-                    aux_problem("reflect", (p, m, &r.api_key_env), &mut problems)
-                }
-                (None, None) => {}
-                _ => problems.push(
-                    "reflect.provider and reflect.model must be set together (or both absent for `auto`)".into(),
-                ),
-            }
-        }
-        // `[consolidation]` carries its own model pin (provider/model are
-        // optional: absent = `auto`). A half-set pin is a config error —
-        // the aux target needs both.
-        if let Some(c) = &self.consolidation {
-            match (&c.provider, &c.model) {
-                (Some(p), Some(m)) => {
-                    aux_problem("consolidation", (p, m, &c.api_key_env), &mut problems)
-                }
-                (None, None) => {}
-                _ => problems.push(
-                    "consolidation.provider and consolidation.model must be set together (or both absent for `auto`)".into(),
-                ),
-            }
-        }
-        if let Some(mem) = &self.memory {
-            if mem.backend.trim().is_empty() {
-                problems.push("memory.backend is empty".into());
-            }
-        }
-        for (section, v) in [("stt", &self.stt), ("tts", &self.tts)] {
-            if let Some(v) = v {
-                if v.backend.trim().is_empty() {
-                    problems.push(format!("{section}.backend is empty"));
-                }
-                if v.backend == "command" && !v.options.contains_key("cmd") {
-                    problems.push(format!(
-                        "{section}.options.cmd is required for the command backend"
-                    ));
-                }
-                if v.backend == "openai" && !v.options.contains_key("provider") {
-                    problems.push(format!(
-                        "{section}.options.provider is required for the openai backend"
-                    ));
-                }
-            }
-        }
-        // Agent identity tables validate at load: slugs, known policies,
-        // no namespace clashes. An invalid [agents.*] table fails doctor
-        // loudly instead of silently running anonymous.
-        // One registry-wide check: the rules are per-registry (namespace
-        // clashes, inheritance chains), so validating table by table would
-        // report the same fault once per profile. Every problem is
-        // reported, not just the first.
-        problems.extend(agent_table_problems(&self.agents));
-        // A selected `agent` that names no declared profile is a config
-        // error. Note this is `agent`, not `profile`: `profile` is a
-        // free-form informational label that `setup` writes as "default"
-        // with no `[agents]` table at all, so treating it as a selector
-        // would fail every install created before agent profiles existed.
-        if let Some(selected) = &self.agent {
-            if !self.agents.contains_key(selected) {
-                problems.push(format!(
-                    "agent {selected:?} is not declared; add [agents.{selected}] or \
-                     remove the agent setting"
-                ));
-            }
-        }
-        if let Some(server) = &self.server {
-            if !server.host.is_empty()
-                && server.host != "127.0.0.1"
-                && server.host != "0.0.0.0"
-                && server.host != "localhost"
-                && server.host != "::"
-            {
-                problems.push(format!(
-                    "server.host {:?} is not a bindable address",
-                    server.host
-                ));
-            }
-        }
-        problems
+        .unwrap_or(true);
+    if inherits {
+        model.and_then(|m| m.api_key_env.clone())
+    } else {
+        None
     }
 }
 
-/// Resolve an aux-model target: `PANTHEON_*` env overrides the section
-/// field-wise. Pure so tests don't touch env. The single generic behind
-/// every `*_target` below.
-fn aux_target(
-    section: Option<(&String, &String)>,
-    env_provider: Option<String>,
-    env_model: Option<String>,
+/// Resolve one slot's target from its section + env pair, applying
+/// Hermes-style inheritance against the default model. `PANTHEON_*` env
+/// overrides win field-wise over the section; `"default"`/empty then
+/// inherits. Returns `None` when nothing is pinned at all (no section,
+/// no env) or when even the default target is empty — the `auto`
+/// fallback in [`auxiliaries`] decides what that means per slot.
+fn slot_target(
+    slot: &AuxSlot,
+    cfg: Option<&Config>,
+    default: &pantheon_api::model::DefaultModel,
 ) -> Option<(String, String)> {
-    let pick = |env: Option<String>, cfg: Option<&String>| -> Option<String> {
-        env.filter(|v| !v.trim().is_empty())
-            .or_else(|| cfg.map(|v| v.to_string()).filter(|v| !v.trim().is_empty()))
-    };
-    let (sp, sm) = match section {
-        Some((p, m)) => (Some(p), Some(m)),
-        None => (None, None),
-    };
-    Some((pick(env_provider, sp)?, pick(env_model, sm)?))
-}
-
-/// One aux slot: everything that varies per capability. The table below
-/// drives target resolution, key seeding, validation, and the
-/// `auxiliaries()` fan-out — adding a capability means adding one row.
-struct AuxSlot {
-    kind: pantheon_api::model::AuxiliaryKind,
-    /// Config section name (for diagnostics).
-    name: &'static str,
-    /// `PANTHEON_<PREFIX>_PROVIDER` / `PANTHEON_<PREFIX>_MODEL`.
-    env_prefix: &'static str,
-    /// Vault entry the section's key env seeds.
-    vault_name: &'static str,
-    /// Absent section falls back to `auto` (the default model).
-    /// False only for embeddings (absent = local embedder, never chat).
-    auto: bool,
-    section: for<'a> fn(&'a Config) -> Option<&'a AuxSection>,
-}
-
-const AUX_SLOTS: &[AuxSlot] = &[
-    AuxSlot {
-        kind: pantheon_api::model::AuxiliaryKind::Judge,
-        name: "judge",
-        env_prefix: "JUDGE",
-        vault_name: "PANTHEON_JUDGE_API_KEY",
-        auto: true,
-        section: |c| c.judge.as_ref(),
-    },
-    AuxSlot {
-        kind: pantheon_api::model::AuxiliaryKind::Compression,
-        name: "compression",
-        env_prefix: "COMPRESSION",
-        vault_name: "PANTHEON_COMPRESSION_API_KEY",
-        auto: true,
-        section: |c| c.compression.as_ref(),
-    },
-    AuxSlot {
-        kind: pantheon_api::model::AuxiliaryKind::TitleGen,
-        name: "title_gen",
-        env_prefix: "TITLEGEN",
-        vault_name: "PANTHEON_TITLEGEN_API_KEY",
-        auto: true,
-        section: |c| c.title_gen.as_ref(),
-    },
-    AuxSlot {
-        kind: pantheon_api::model::AuxiliaryKind::Embeddings,
-        name: "embeddings",
-        env_prefix: "EMBEDDINGS",
-        vault_name: "PANTHEON_EMBEDDINGS_API_KEY",
-        auto: false,
-        section: |c| c.embeddings.as_ref(),
-    },
-    AuxSlot {
-        kind: pantheon_api::model::AuxiliaryKind::SearchSynthesis,
-        name: "search_synthesis",
-        env_prefix: "SEARCH_SYNTHESIS",
-        vault_name: "PANTHEON_SEARCH_SYNTHESIS_API_KEY",
-        auto: true,
-        section: |c| c.search_synthesis.as_ref(),
-    },
-    AuxSlot {
-        kind: pantheon_api::model::AuxiliaryKind::Vision,
-        name: "vision",
-        env_prefix: "VISION",
-        vault_name: "PANTHEON_VISION_API_KEY",
-        auto: true,
-        section: |c| c.vision.as_ref(),
-    },
-    AuxSlot {
-        kind: pantheon_api::model::AuxiliaryKind::Scheduled,
-        name: "scheduled",
-        env_prefix: "SCHEDULED",
-        vault_name: "PANTHEON_SCHEDULED_API_KEY",
-        auto: true,
-        section: |c| c.scheduled.as_ref(),
-    },
-    AuxSlot {
-        kind: pantheon_api::model::AuxiliaryKind::McpSynthesis,
-        name: "mcp_synthesis",
-        env_prefix: "MCP_SYNTHESIS",
-        vault_name: "PANTHEON_MCP_SYNTHESIS_API_KEY",
-        auto: true,
-        section: |c| c.mcp_synthesis.as_ref(),
-    },
-    AuxSlot {
-        kind: pantheon_api::model::AuxiliaryKind::Extraction,
-        name: "extraction",
-        env_prefix: "EXTRACTION",
-        vault_name: "PANTHEON_EXTRACTION_API_KEY",
-        auto: true,
-        section: |c| c.extraction.as_ref(),
-    },
-    AuxSlot {
-        kind: pantheon_api::model::AuxiliaryKind::Rerank,
-        name: "rerank",
-        env_prefix: "RERANK",
-        vault_name: "PANTHEON_RERANK_API_KEY",
-        auto: true,
-        section: |c| c.rerank.as_ref(),
-    },
-    AuxSlot {
-        kind: pantheon_api::model::AuxiliaryKind::Planner,
-        name: "planner",
-        env_prefix: "PLANNER",
-        vault_name: "PANTHEON_PLANNER_API_KEY",
-        auto: true,
-        section: |c| c.planner.as_ref(),
-    },
-];
-
-/// Borrow one slot's section for validation.
-fn cfg_section<'a>(cfg: &'a Config, slot: &AuxSlot) -> Option<&'a AuxSection> {
-    (slot.section)(cfg)
-}
-
-/// Resolve one slot's target from its section + env pair.
-fn slot_target(slot: &AuxSlot, cfg: Option<&Config>) -> Option<(String, String)> {
     let section = cfg.and_then(slot.section);
-    aux_target(
-        section.map(|s| (&s.provider, &s.model)),
-        std::env::var(format!("PANTHEON_{}_PROVIDER", slot.env_prefix)).ok(),
-        std::env::var(format!("PANTHEON_{}_MODEL", slot.env_prefix)).ok(),
-    )
+    let env_provider = std::env::var(format!("PANTHEON_{}_PROVIDER", slot.env_prefix))
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let env_model = std::env::var(format!("PANTHEON_{}_MODEL", slot.env_prefix))
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    if section.is_none() && env_provider.is_none() && env_model.is_none() {
+        return None;
+    }
+    let (provider, model) = resolve_aux_target(
+        env_provider
+            .as_deref()
+            .or_else(|| section.map(|s| s.provider.as_str())),
+        env_model
+            .as_deref()
+            .or_else(|| section.map(|s| s.model.as_str())),
+        default,
+    );
+    if provider.trim().is_empty() || model.trim().is_empty() {
+        return None;
+    }
+    Some((provider, model))
 }
 
 /// Resolve one slot's auxiliary entry (pinned target only, no `auto`).
-fn slot_aux(slot: &AuxSlot, cfg: Option<&Config>) -> Option<pantheon_api::model::AuxiliaryModel> {
-    let (provider, model) = slot_target(slot, cfg)?;
+fn slot_aux(
+    slot: &AuxSlot,
+    cfg: Option<&Config>,
+    default: &pantheon_api::model::DefaultModel,
+) -> Option<pantheon_api::model::AuxiliaryModel> {
+    let (provider, model) = slot_target(slot, cfg, default)?;
+    let timeout_secs = cfg
+        .and_then(slot.section)
+        .and_then(|s| s.timeout)
+        .unwrap_or_else(|| slot.kind.default_timeout_secs());
+    // `[compression] target_percent` rides the generic slot machinery:
+    // the slot abstraction only exposes `&AuxSection`, so the
+    // compression-only knob is resolved here, directly from config.
+    let target_percent = if slot.kind == pantheon_api::model::AuxiliaryKind::Compression {
+        cfg.and_then(|c| c.compression.as_ref())
+            .and_then(|s| s.target_percent)
+    } else {
+        None
+    };
     Some(pantheon_api::model::AuxiliaryModel {
         kind: slot.kind.clone(),
         provider,
         model,
+        timeout_secs,
+        target_percent,
     })
 }
 
 /// Resolve the reflection auxiliary model (`AuxiliaryKind::Reflection`).
-/// `[reflect] provider/model` pin wins, then
-/// `PANTHEON_REFLECTION_PROVIDER`/`PANTHEON_REFLECTION_MODEL`, else `auto`
-/// (the run's default model). Reflection keeps its own row outside
-/// `AUX_SLOTS` because `[reflect]` is a combined behavior + model-pin
-/// table, not a pure [`AuxSection`]; the resolution order is identical.
+/// `PANTHEON_REFLECTION_PROVIDER`/`PANTHEON_REFLECTION_MODEL` win, then
+/// the `[reflect]` pin, else `auto` (the run's default model). Each field
+/// inherits independently: `provider = "default"` (or absent) inherits
+/// the default provider, an absent/empty `model` inherits the default
+/// model. Reflection keeps its own row outside `AUX_SLOTS` because
+/// `[reflect]` is a combined behavior + model-pin table, not a pure
+/// [`AuxSection`]; the resolution order is identical.
 ///
 /// Every LLM call the reflection pipeline makes resolves through this
 /// slot — never the chat model directly — so pinning a cheap model here
@@ -1144,46 +267,42 @@ pub fn reflect_aux_model(
     default: &pantheon_api::model::DefaultModel,
 ) -> pantheon_api::model::AuxiliaryModel {
     use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel};
-    let section_pin = cfg.and_then(|c| c.reflect.as_ref()).and_then(|r| {
-        aux_target(
-            match (&r.provider, &r.model) {
-                (Some(p), Some(m)) => Some((p, m)),
-                _ => None,
-            },
-            std::env::var("PANTHEON_REFLECTION_PROVIDER").ok(),
-            std::env::var("PANTHEON_REFLECTION_MODEL").ok(),
-        )
-    });
-    let (provider, model) =
-        section_pin.unwrap_or_else(|| (default.provider.clone(), default.model.clone()));
+    let section = cfg.and_then(|c| c.reflect.as_ref());
+    let env_provider = std::env::var("PANTHEON_REFLECTION_PROVIDER")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let env_model = std::env::var("PANTHEON_REFLECTION_MODEL")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let (provider, model) = resolve_aux_target(
+        env_provider
+            .as_deref()
+            .or_else(|| section.and_then(|r| r.provider.as_deref())),
+        env_model
+            .as_deref()
+            .or_else(|| section.and_then(|r| r.model.as_deref())),
+        default,
+    );
     AuxiliaryModel {
         kind: AuxiliaryKind::Reflection,
         provider,
         model,
-    }
-}
-
-/// `[reflect]` → [`pantheon_reflect::ReflectConfig`]. Absent section =
-/// defaults (LLM-backed reflection steps off).
-pub fn reflect_config(cfg: Option<&Config>) -> pantheon_reflect::ReflectConfig {
-    match cfg.and_then(|c| c.reflect.as_ref()) {
-        Some(r) => pantheon_reflect::ReflectConfig {
-            enabled: r.enabled,
-            auto_turns: r.auto_turns,
-            max_proposals: r.max_proposals,
-            ..Default::default()
-        },
-        None => pantheon_reflect::ReflectConfig::default(),
+        timeout_secs: section
+            .and_then(|r| r.timeout)
+            .unwrap_or_else(|| AuxiliaryKind::Reflection.default_timeout_secs()),
+        target_percent: None,
     }
 }
 
 /// Resolve the consolidation auxiliary model
-/// (`AuxiliaryKind::Consolidation`). `[consolidation] provider/model`
-/// pin wins, then `PANTHEON_CONSOLIDATION_PROVIDER` /
-/// `PANTHEON_CONSOLIDATION_MODEL`, else `auto` (the run's default
-/// model). Consolidation keeps its own resolver outside `AUX_SLOTS`
-/// because `[consolidation]` is a combined behavior + model-pin table,
-/// not a pure [`AuxSection`]; the resolution order is identical.
+/// (`AuxiliaryKind::Consolidation`). `PANTHEON_CONSOLIDATION_PROVIDER` /
+/// `PANTHEON_CONSOLIDATION_MODEL` win, then the `[consolidation]` pin,
+/// else `auto` (the run's default model). Each field inherits
+/// independently: `provider = "default"` (or absent) inherits the
+/// default provider, an absent/empty `model` inherits the default model.
+/// Consolidation keeps its own resolver outside `AUX_SLOTS` because
+/// `[consolidation]` is a combined behavior + model-pin table, not a
+/// pure [`AuxSection`]; the resolution order is identical.
 ///
 /// Every LLM call the consolidation pipeline makes resolves through
 /// this slot — never the chat model directly — so pinning a cheap model
@@ -1194,39 +313,133 @@ pub fn consolidation_aux_model(
     default: &pantheon_api::model::DefaultModel,
 ) -> pantheon_api::model::AuxiliaryModel {
     use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel};
-    let section_pin = cfg.and_then(|c| c.consolidation.as_ref()).and_then(|s| {
-        aux_target(
-            match (&s.provider, &s.model) {
-                (Some(p), Some(m)) => Some((p, m)),
-                _ => None,
-            },
-            std::env::var("PANTHEON_CONSOLIDATION_PROVIDER").ok(),
-            std::env::var("PANTHEON_CONSOLIDATION_MODEL").ok(),
-        )
-    });
-    let (provider, model) =
-        section_pin.unwrap_or_else(|| (default.provider.clone(), default.model.clone()));
+    let section = cfg.and_then(|c| c.consolidation.as_ref());
+    let env_provider = std::env::var("PANTHEON_CONSOLIDATION_PROVIDER")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let env_model = std::env::var("PANTHEON_CONSOLIDATION_MODEL")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let (provider, model) = resolve_aux_target(
+        env_provider
+            .as_deref()
+            .or_else(|| section.and_then(|s| s.provider.as_deref())),
+        env_model
+            .as_deref()
+            .or_else(|| section.and_then(|s| s.model.as_deref())),
+        default,
+    );
     AuxiliaryModel {
         kind: AuxiliaryKind::Consolidation,
         provider,
         model,
+        timeout_secs: section
+            .and_then(|s| s.timeout)
+            .unwrap_or_else(|| AuxiliaryKind::Consolidation.default_timeout_secs()),
+        target_percent: None,
     }
 }
 
-/// `[consolidation]` → [`pantheon_consolidate::ConsolidationConfig`].
-/// Absent section = defaults (LLM-backed consolidation steps off).
-pub fn consolidation_config(cfg: Option<&Config>) -> pantheon_consolidate::ConsolidationConfig {
-    match cfg.and_then(|c| c.consolidation.as_ref()) {
-        Some(s) => pantheon_consolidate::ConsolidationConfig {
-            enabled: s.enabled,
-            half_life_days: s.half_life_days,
-            min_sessions: s.min_sessions,
-            min_score: s.min_score,
-            cron: s.cron.clone(),
-            ..Default::default()
-        },
-        None => pantheon_consolidate::ConsolidationConfig::default(),
+/// Master gate for the nightly pass over a whole [`Config`]: the pass —
+/// pipeline and repair loop — runs iff this is true.
+///
+/// `[nightly]` present → the single enable rule
+/// ([`pantheon_api::config::nightly_enabled`]): explicit flag wins, else
+/// the model pin (table or `PANTHEON_NIGHTLY_*` env) implies on. Absent →
+/// deprecated migration fallback: the legacy `[reflect]` /
+/// `[consolidation]` `enabled` flags were explicit opt-ins, honored
+/// field-by-field. Absent everything = off (nightly is off by default).
+pub fn nightly_pass_enabled(cfg: Option<&Config>) -> bool {
+    match cfg.and_then(|c| c.nightly.as_ref()) {
+        Some(n) => pantheon_api::config::nightly_enabled(n),
+        None => cfg.is_some_and(|c| {
+            c.reflect.as_ref().is_some_and(|s| s.enabled)
+                || c.consolidation.as_ref().is_some_and(|s| s.enabled)
+        }),
     }
+}
+
+/// `[nightly]` → [`pantheon_nightly::NightlyConfig`].
+///
+/// `[nightly]` is the single authoritative section. When it is present,
+/// the legacy `[reflect]` / `[consolidation]` tables are ignored
+/// entirely for the pass; when it is absent they are honored
+/// field-by-field as a deprecated migration fallback — `llm_enabled` =
+/// either legacy flag, `auto_turns` from `[reflect]`, `min_sessions` /
+/// `cron` from `[consolidation]`. `max_age_days` has no legacy equivalent
+/// (the decay curve is gone), so it always takes the `[nightly]` value or
+/// the default.
+pub fn nightly_config(
+    cfg: Option<&Config>,
+    data_dir: &std::path::Path,
+) -> pantheon_nightly::NightlyConfig {
+    let n = cfg.and_then(|c| c.nightly.as_ref());
+    let r = cfg.and_then(|c| c.reflect.as_ref());
+    let c = cfg.and_then(|c| c.consolidation.as_ref());
+    // Authoritative-when-present: legacy flags must not leak into a pass
+    // whose `[nightly]` section exists — a legacy `enabled = true` must
+    // not turn on LLM steps the user thought they turned off.
+    let llm_enabled = match n {
+        // The single enable rule: explicit flag wins, else the model pin
+        // implies on. See pantheon_api::config::nightly_enabled.
+        Some(s) => pantheon_api::config::nightly_enabled(s),
+        None => r.map(|s| s.enabled).unwrap_or(false) || c.map(|s| s.enabled).unwrap_or(false),
+    };
+    pantheon_nightly::NightlyConfig {
+        data_dir: data_dir.to_path_buf(),
+        memory_trust: pantheon_api::provenance::TrustTier::Memory,
+        since_ms: 0,
+        max_runs: 50,
+        min_sequence_repeats: 3,
+        min_failure_repeats: 3,
+        min_preference_hits: 3,
+        min_sessions: n
+            .map(|s| s.min_sessions)
+            .or_else(|| c.map(|s| s.min_sessions))
+            .unwrap_or(3),
+        max_age_days: n.map(|s| s.max_age_days).unwrap_or(30),
+        eval_timeout: std::time::Duration::from_secs(120),
+        max_evals: 3,
+        replay_command: n.and_then(|s| s.replay_command.clone()),
+        llm_enabled,
+        max_fix_attempts: pantheon_nightly::DEFAULT_MAX_FIX_ATTEMPTS,
+        // Repair-phase bounds from the `[nightly]` section, falling
+        // back to the workstream defaults when unset.
+        mcp_max_failures: n.and_then(|s| s.repair_mcp_max_failures).unwrap_or(5),
+        schedule_max_failures: n.and_then(|s| s.repair_schedule_max_failures).unwrap_or(3),
+        tool_min_calls: n.and_then(|s| s.repair_tool_min_calls).unwrap_or(3),
+        tool_probe_allowlist: n
+            .and_then(|s| s.repair_tool_probe_allowlist.clone())
+            .unwrap_or_default(),
+        dry_run: false,
+    }
+}
+
+/// The `[nightly]` cron: `[nightly].cron`, else legacy
+/// `[consolidation].cron`, else the default.
+pub fn nightly_cron(cfg: Option<&Config>) -> String {
+    cfg.and_then(|c| c.nightly.as_ref())
+        .map(|s| s.cron.clone())
+        .or_else(|| {
+            cfg.and_then(|c| c.consolidation.as_ref())
+                .map(|s| s.cron.clone())
+        })
+        .unwrap_or_else(default_consolidation_cron)
+}
+
+/// The `[nightly]` auto-turns trigger: `[nightly].auto_turns`, else
+/// legacy `[reflect].auto_turns`, else the default.
+pub fn nightly_auto_turns(cfg: Option<&Config>) -> u32 {
+    cfg.and_then(|c| c.nightly.as_ref())
+        .map(|s| s.auto_turns)
+        .or_else(|| cfg.and_then(|c| c.reflect.as_ref()).map(|s| s.auto_turns))
+        .unwrap_or(DEFAULT_REFLECT_AUTO_TURNS)
+}
+
+/// The `[nightly]` replay command for held-out task replays.
+pub fn nightly_replay_command(cfg: Option<&Config>) -> Option<String> {
+    cfg.and_then(|c| c.nightly.as_ref())
+        .and_then(|s| s.replay_command.clone())
 }
 
 /// Seed a named vault entry from an env-var name in config, so the session
@@ -1249,29 +462,58 @@ fn seed_env_key(
 }
 
 /// Seed every configured aux key in one call (the session-builder sites'
-/// entry point).
+/// entry point). A default-inheriting provider seeds from
+/// `[model].api_key_env` via [`resolve_aux_key_env`], so an aux slot that
+/// inherits the default model also inherits its key without repeating it.
 pub fn with_aux_keys(
     secrets: pantheon_secrets::SecretsBroker,
     cfg: Option<&Config>,
 ) -> pantheon_secrets::SecretsBroker {
     let mut secrets = secrets;
+    let model_section = cfg.and_then(|c| c.model.as_ref());
     for slot in AUX_SLOTS {
-        let env = cfg
-            .and_then(slot.section)
-            .and_then(|s| s.api_key_env.clone());
+        let env = cfg.and_then(slot.section).and_then(|s| {
+            resolve_aux_key_env(
+                Some(s.provider.as_str()),
+                s.api_key_env.as_deref(),
+                model_section,
+            )
+        });
         secrets = seed_env_key(secrets, env, slot.vault_name);
     }
     // `[reflect]` is not an AUX_SLOTS row (combined behavior + pin
-    // table); seed its key the same way.
-    let reflect_env = cfg
-        .and_then(|c| c.reflect.as_ref())
-        .and_then(|r| r.api_key_env.clone());
+    // table); seed its key the same way, with inheritance.
+    let reflect_env = cfg.and_then(|c| c.reflect.as_ref()).and_then(|r| {
+        resolve_aux_key_env(
+            r.provider.as_deref(),
+            r.api_key_env.as_deref(),
+            model_section,
+        )
+    });
     secrets = seed_env_key(secrets, reflect_env, "PANTHEON_REFLECTION_API_KEY");
     // `[consolidation]` likewise: its key seeds PANTHEON_CONSOLIDATION_API_KEY.
-    let consolidate_env = cfg
-        .and_then(|c| c.consolidation.as_ref())
-        .and_then(|s| s.api_key_env.clone());
+    let consolidate_env = cfg.and_then(|c| c.consolidation.as_ref()).and_then(|s| {
+        resolve_aux_key_env(
+            s.provider.as_deref(),
+            s.api_key_env.as_deref(),
+            model_section,
+        )
+    });
     secrets = seed_env_key(secrets, consolidate_env, "PANTHEON_CONSOLIDATION_API_KEY");
+    // `[nightly]` is its own aux slot now (`[nightly.model]`): seed its
+    // key the same way, with inheritance — the pass's key lookup tries
+    // PANTHEON_NIGHTLY_API_KEY first.
+    let nightly_env = cfg
+        .and_then(|c| c.nightly.as_ref())
+        .and_then(|n| n.model.as_ref())
+        .and_then(|m| {
+            resolve_aux_key_env(
+                Some(m.provider.as_str()),
+                m.api_key_env.as_deref(),
+                model_section,
+            )
+        });
+    secrets = seed_env_key(secrets, nightly_env, "PANTHEON_NIGHTLY_API_KEY");
     secrets
 }
 
@@ -1372,6 +614,7 @@ pub fn remember_custom_model(
         id: model.to_string(),
         context_limit: None,
         max_output_tokens: None,
+        video: false,
     });
     sec.models.sort_by(|a, b| a.id.cmp(&b.id));
     cfg.save(data_dir).map_err(|e| e.to_string())?;
@@ -1418,6 +661,12 @@ pub fn register_custom_providers(cfg: &Config) {
                 if let Some(o) = m.max_output_tokens {
                     meta.max_output_tokens = Some(o);
                 }
+                // Operator-declared capability: a custom endpoint's model
+                // flagged `video = true` is trusted to take native video
+                // input (e.g. Qwen-Omni on an OpenAI-compatible endpoint).
+                if m.video {
+                    meta.video = true;
+                }
                 meta
             })
             .collect();
@@ -1432,6 +681,7 @@ pub fn register_custom_providers(cfg: &Config) {
                 key_header: "Authorization".into(),
                 models,
                 prominent: true,
+                recommended: false,
                 dev: false,
                 tag: "custom".into(),
             },
@@ -1456,6 +706,22 @@ pub fn chat_secrets(cfg: Option<&Config>) -> pantheon_secrets::SecretsBroker {
         ),
         cfg,
     );
+    // A `set` needs a writable durable vault. The env mirror is read-only
+    // by design, so on hosts with no usable OS keychain (headless Linux)
+    // every write died with "read-only vault". The encrypted local file
+    // vault is the documented fallback for exactly this case; it lives
+    // under the data dir next to config.toml. Reads still prefer the
+    // environment, so a rotated exported key beats a stale stored one.
+    let mut broker = broker;
+    if pantheon_secrets::KeychainVault::platform_available().is_err() {
+        let dir = crate::terminal::data_dir();
+        if let Ok(vault) = pantheon_secrets::EncryptedFileVault::open(
+            dir.join("secrets.json"),
+            dir.join(".secrets.key"),
+        ) {
+            broker = broker.with_vault(Box::new(vault));
+        }
+    }
     // Fail closed by default: without a `[secrets]` section both
     // allowlists are empty, so `env:` lookups resolve nothing and plugin
     // subprocesses receive no host vars beyond the curated minimum.
@@ -1585,27 +851,54 @@ fn resolve_reasoning(cfg: Option<&Config>) -> pantheon_api::model::ReasoningLeve
 
 /// Every auxiliary for this host with a resolved target: an explicit
 /// `[judge]` / `[compression]` / `[title_gen]` / `[search_synthesis]` /
-/// `[vision]` / `[scheduled]` / `[mcp_synthesis]` section (or its env
+/// `[vision]` / `[scheduled]` / `[mcp_synthesis]` / `[extraction]` /
+/// `[rerank]` / `[planner]` / `[repair]` / `[verify]` section (or its env
 /// override) wins; otherwise `auto` — the run's default model. Aux
 /// models default to auto, so an absent section never switches a
 /// capability off, it just means "use what you already use for chat".
 ///
-/// The documented exception is `Embeddings`: absent = the local hashing
-/// embedder, never the chat model — so an entry appears only when
-/// `[embeddings]` (or its env) actually pins a target.
+/// The documented exceptions are `Embeddings`, `Repair`, and `Verify`:
+/// absent = the local hashing embedder (never the chat model), the
+/// repair slot OFF (fix-loop draft revision unavailable — plain
+/// retries, then escalation), and the verifier OFF (never
+/// auto-verified) — so an entry appears only when `[embeddings]` /
+/// `[repair]` / `[verify]` (or their env) actually pins a target.
 pub fn auxiliaries(
     cfg: Option<&Config>,
     default: &pantheon_api::model::DefaultModel,
 ) -> Vec<pantheon_api::model::AuxiliaryModel> {
     use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel};
-    let auto = |kind: AuxiliaryKind| AuxiliaryModel {
-        kind,
-        provider: default.provider.clone(),
-        model: default.model.clone(),
+    let auto = |kind: AuxiliaryKind| {
+        let timeout_secs = kind.default_timeout_secs();
+        AuxiliaryModel {
+            kind,
+            provider: default.provider.clone(),
+            model: default.model.clone(),
+            timeout_secs,
+            // Absent `[compression]` = the historic default target.
+            // A pinned section goes through `slot_aux`, which reads the
+            // knob from config.
+            target_percent: None,
+        }
     };
     let mut out = Vec::with_capacity(AUX_SLOTS.len() + 1);
+    // The Tools screen gates the vision and video-analysis aux entries:
+    // a disabled group means the entry never resolves, so a configured
+    // `[vision]` / `[video]` section cannot be consulted by accident.
+    let enablement = tool_enablement(cfg);
+    let aux_gated = |kind: &AuxiliaryKind| -> bool {
+        let group = match kind {
+            AuxiliaryKind::Vision => Some(pantheon_api::config::ToolGroup::Vision),
+            AuxiliaryKind::Video => Some(pantheon_api::config::ToolGroup::VideoAnalysis),
+            _ => None,
+        };
+        group.map(|g| !enablement.is_enabled(g)).unwrap_or(false)
+    };
     for slot in AUX_SLOTS {
-        match slot_aux(slot, cfg) {
+        if aux_gated(&slot.kind) {
+            continue;
+        }
+        match slot_aux(slot, cfg, default) {
             Some(pinned) => out.push(pinned),
             // Embeddings is the documented exception: absent = the local
             // hashing embedder, never the chat model — no `auto` entry.
@@ -1622,4 +915,127 @@ pub fn auxiliaries(
     // directly.
     out.push(consolidation_aux_model(cfg, default));
     out
+}
+
+/// Resolve `[mcp]` plus imported declarations into the runtime
+/// [`pantheon_runtime::tool_config::McpToolConfig`].
+///
+/// The config section is primary: entries that are disabled or
+/// malformed (stdio without a command, remote without a url, unknown
+/// transport) are skipped with a stderr warning. Migration declarations
+/// (`<data_dir>/mcp/*.json`) fill in names the section does not define;
+/// a declaration's `requires_env` names become `env:` refs so the
+/// session's secrets broker resolves them at launch time.
+///
+/// The launcher is on when the `[mcp]` section is present (its
+/// `enabled`, default true) or when declarations exist; absent both =
+/// off. `PANTHEON_MCP_ENABLED=0` forces it off.
+pub fn resolve_mcp_section(
+    section: Option<&McpSection>,
+    declarations: &[pantheon_migration::McpDeclaration],
+) -> pantheon_runtime::tool_config::McpToolConfig {
+    use pantheon_mcp::manager::{McpServerSpec, McpTransport};
+    use std::time::Duration;
+
+    let env_off = std::env::var("PANTHEON_MCP_ENABLED")
+        .map(|v| v == "0")
+        .unwrap_or(false);
+    let mut cfg = pantheon_runtime::tool_config::McpToolConfig::default();
+    let mut specs: Vec<McpServerSpec> = Vec::new();
+
+    if let Some(sec) = section {
+        cfg.enabled = !env_off && sec.enabled.unwrap_or(true);
+        for (name, e) in &sec.servers {
+            if !e.enabled {
+                continue;
+            }
+            let transport = match e.transport.as_str() {
+                "stdio" => McpTransport::Stdio,
+                "sse" => McpTransport::Sse,
+                "http" => McpTransport::Http,
+                other => {
+                    eprintln!("mcp: server '{name}': unknown transport {other:?}, skipped");
+                    continue;
+                }
+            };
+            let command = e.command.clone().filter(|c| !c.trim().is_empty());
+            let url = e.url.clone().filter(|u| !u.trim().is_empty());
+            match transport {
+                McpTransport::Stdio if command.is_none() => {
+                    eprintln!("mcp: server '{name}': stdio needs a command, skipped");
+                    continue;
+                }
+                McpTransport::Stdio => {}
+                _ if url.is_none() => {
+                    eprintln!("mcp: server '{name}': remote transport needs a url, skipped");
+                    continue;
+                }
+                _ => {}
+            }
+            specs.push(McpServerSpec {
+                name: name.clone(),
+                transport,
+                command,
+                args: e.args.clone(),
+                env: e.env.clone(),
+                url,
+                enabled: e.enabled,
+                timeout: Duration::from_secs(e.timeout_secs.filter(|&s| s > 0).unwrap_or(30)),
+            });
+        }
+    } else if !declarations.is_empty() {
+        cfg.enabled = !env_off;
+    }
+
+    // Declarations fill names the config section does not define.
+    for decl in declarations {
+        for d in &decl.servers {
+            if !d.enabled || specs.iter().any(|s| s.name == d.name) {
+                continue;
+            }
+            let transport = match d.transport.as_str() {
+                "stdio" => McpTransport::Stdio,
+                "sse" => McpTransport::Sse,
+                "http" => McpTransport::Http,
+                other => {
+                    eprintln!(
+                        "mcp: declared server '{}': unknown transport {other:?}, skipped",
+                        d.name
+                    );
+                    continue;
+                }
+            };
+            let command = d.command.clone().filter(|c| !c.trim().is_empty());
+            let url = d.url.clone().filter(|u| !u.trim().is_empty());
+            let ready = match transport {
+                McpTransport::Stdio => command.is_some(),
+                _ => url.is_some(),
+            };
+            if !ready {
+                eprintln!(
+                    "mcp: declared server '{}': incomplete (no command/url), skipped",
+                    d.name
+                );
+                continue;
+            }
+            let env = d
+                .requires_env
+                .iter()
+                .map(|v| (v.clone(), format!("env:{v}")))
+                .collect();
+            specs.push(McpServerSpec {
+                name: d.name.clone(),
+                transport,
+                command,
+                args: d.args.clone(),
+                env,
+                url,
+                enabled: d.enabled,
+                timeout: Duration::from_secs(30),
+            });
+        }
+    }
+
+    cfg.servers = specs;
+    cfg
 }

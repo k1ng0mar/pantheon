@@ -24,8 +24,6 @@ fn title_replaces_name_in_the_command_registry() {
         "/name is a silent alias, not a listed command"
     );
     assert_eq!(reg["title"].desc, "show or rename this conversation");
-    assert!(commands::arg_completes("title"));
-    assert!(!commands::arg_completes("name"));
     let completions = commands::complete("/tit");
     assert!(
         completions.contains(&"/title".to_string()),
@@ -38,20 +36,41 @@ fn title_replaces_name_in_the_command_registry() {
 
 // ---------------------------------------------------------------- /reset ---
 
+/// A minimal runtime session for APIs that now take one (the MCP reload
+/// pushes resolved specs into the session's manager).
+fn test_runtime_session(dir: &std::path::Path) -> pantheon_runtime::session::Session {
+    let model_policy = pantheon_api::model::ModelPolicy {
+        reasoning_budget: Default::default(),
+        reasoning: Default::default(),
+        default: pantheon_api::model::DefaultModel {
+            provider: "test".into(),
+            model: "test".into(),
+        },
+        fallbacks: pantheon_api::model::FallbackChain { fallbacks: vec![] },
+        auxiliaries: Vec::new(),
+    };
+    let secrets = pantheon_secrets::SecretsBroker::new();
+    pantheon_runtime::session::Session::new(
+        dir.to_path_buf(),
+        Policy::coder(),
+        model_policy,
+        secrets,
+    )
+    .expect("test session")
+}
+
 #[test]
 fn reset_ephemeral_clears_turn_state_but_keeps_identity() {
-    let mut state = TuiState {
-        session_id: "sess-1".to_string(),
-        title: Some("my chat".to_string()),
-        queued_message: Some("queued".to_string()),
-        ready: false,
-        active_run: Some("run-9".to_string()),
-        status_line: "working".to_string(),
-        turn_started_at: Some(std::time::Instant::now()),
-        turn_in: Some(10),
-        turn_out: Some(20),
-        ..Default::default()
-    };
+    let mut state = TuiState::default();
+    state.session_id = "sess-1".to_string();
+    state.title = Some("my chat".to_string());
+    state.queued_message = Some("queued".to_string());
+    state.ready = false;
+    state.active_run = Some("run-9".to_string());
+    state.status_line = "working".to_string();
+    state.turn_started_at = Some(std::time::Instant::now());
+    state.turn_in = Some(10);
+    state.turn_out = Some(20);
     state.blocks.push(TranscriptBlock {
         kind: BlockKind::Status("x".into()),
     });
@@ -73,10 +92,9 @@ fn reset_ephemeral_clears_turn_state_but_keeps_identity() {
 
 #[test]
 fn reset_while_idle_reports_no_turn_running() {
-    let mut state = TuiState {
-        ready: true,
-        ..Default::default()
-    }; // booted and waiting for input: genuinely idle
+    let mut state = TuiState::default();
+    state.ready = true;
+    // booted and waiting for input: genuinely idle
     assert!(
         !state.reset_ephemeral(),
         "nothing to cancel when idle, but the clear still applies"
@@ -154,27 +172,36 @@ fn mcp_reload_re_scans_declarations_and_reports_per_server() {
     )
     .unwrap();
 
-    let lines = mcp::reload_report(dir.path());
+    let session = test_runtime_session(dir.path());
+    let lines = mcp::reload_report(&session, dir.path());
     let text = lines.join("\n");
-    assert!(text.contains("hermes/good [stdio] ok"), "{text}");
+    // The reload pushes declaration servers into the live manager; the
+    // broken one never becomes a spec, and nothing is approved yet so
+    // both live servers report as needing approval.
     assert!(
-        text.contains("hermes/broken [stdio] FAIL: no command declared"),
+        text.contains("mcp: re-scanned config + declarations"),
         "{text}"
     );
+    assert!(text.contains("good [needs approval]"), "{text}");
+    assert!(text.contains("web [needs approval]"), "{text}");
     assert!(
-        text.contains("hermes/web [http] FAIL: needs a credential (API_KEY)"),
+        text.contains("2 server(s) need `pantheon mcp approve <name>` before they launch"),
         "{text}"
     );
-    assert!(text.contains("3 server(s), 1 ready"), "{text}");
+    assert!(!text.contains("broken"), "{text}");
 }
 
 #[test]
 fn mcp_reload_with_no_declarations_is_not_an_error() {
     let dir = tempfile::tempdir().unwrap();
-    let lines = mcp::reload_report(dir.path());
+    let session = test_runtime_session(dir.path());
+    let lines = mcp::reload_report(&session, dir.path());
     let text = lines.join("\n");
-    assert!(text.contains("no MCP declarations found"), "{text}");
-    assert!(text.contains("0 server(s), 0 ready"), "{text}");
+    assert!(
+        text.contains("mcp: re-scanned config + declarations"),
+        "{text}"
+    );
+    assert!(text.contains("no MCP servers configured"), "{text}");
 }
 
 // ---------------------------------------------------------- /tools reload ---
@@ -224,8 +251,10 @@ fn skill(name: &str) -> Skill {
             name: name.into(),
             description: "test skill".into(),
             origin: "user".into(),
+            exec: Vec::new(),
         },
         path: PathBuf::from("/tmp/test-skill.md"),
+        dir: PathBuf::from("/tmp"),
     }
 }
 

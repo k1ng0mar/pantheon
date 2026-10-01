@@ -13,7 +13,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 
-use crate::widget::{Confirm, MultiSelect, Row, SearchList, Select, TextInput};
+use crate::widget::{Confirm, MultiSelect, Row, Select, TextInput};
 
 /// How much vertical space a list window gets. Set from the frame height each
 /// draw, so a short terminal shows fewer rows instead of overflowing.
@@ -146,16 +146,6 @@ pub fn draw_multi(f: &mut ratatui::Frame, area: Rect, m: &mut MultiSelect) {
     );
 }
 
-pub fn draw_search(f: &mut ratatui::Frame, area: Rect, s: &mut SearchList) {
-    s.list.set_visible_rows(window(area.height));
-    let rows = crate::widget::search_rows(s);
-    let mut reason = s.empty_reason.clone();
-    if s.list.visible_len() > rows.len() {
-        reason = format!("{} matches", s.list.visible_len());
-    }
-    draw_list(f, area, &s.title, &s.hint, s.list.filter(), &reason, &rows);
-}
-
 pub fn draw_text(f: &mut ratatui::Frame, area: Rect, t: &mut TextInput) {
     let [main, foot] = Layout::vertical([Constraint::Length(3), Constraint::Length(1)]).areas(area);
     f.render_widget(Clear, area);
@@ -184,7 +174,7 @@ pub fn draw_text(f: &mut ratatui::Frame, area: Rect, t: &mut TextInput) {
 }
 
 pub fn draw_confirm(f: &mut ratatui::Frame, area: Rect, c: &mut Confirm) {
-    let [main, foot] = Layout::vertical([Constraint::Length(4), Constraint::Length(1)]).areas(area);
+    let [main, foot] = Layout::vertical([Constraint::Length(6), Constraint::Length(1)]).areas(area);
     f.render_widget(Clear, area);
     f.render_widget(frame_box(&c.title), main);
     let inner = main.inner(ratatui::layout::Margin::new(1, 1));
@@ -192,9 +182,15 @@ pub fn draw_confirm(f: &mut ratatui::Frame, area: Rect, c: &mut Confirm) {
     let n = if c.default_yes { "no" } else { "yes" };
     f.render_widget(
         Paragraph::new(vec![
+            Line::from(Span::styled(
+                c.question.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
             Line::from(format!("{y} / {n}")),
             Line::from(""),
-            Line::from("left/right choose  enter confirm  esc cancels"),
+            // The widget's own hint, not a hardcoded one: it names the
+            // keys `handle_key` actually honors (y/n/enter/esc).
+            Line::from(Span::styled(c.hint(), Style::default().fg(Color::DarkGray))),
         ]),
         inner,
     );

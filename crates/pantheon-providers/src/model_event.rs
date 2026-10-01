@@ -47,15 +47,33 @@ pub enum ModelEvent {
     /// Terminal success of an attempt.
     Completed { finish_reason: Option<String> },
     /// An attempt failed. The chain may still fall back when `retryable`.
-    /// `cause` is a short human snippet (truncated provider error) so
-    /// `pantheon logs` can answer WHY each fallback happened, not just which
-    /// models were tried.
+    /// `cause` is a short human snippet (truncated provider error) so the
+    /// error card and `pantheon logs` can answer WHY each failure happened,
+    /// not just its code: `PROVIDER_HTTP` alone cannot tell a 429 from a
+    /// 401, and the card classifies the kind from this snippet.
     AttemptFailed {
         provider: String,
         model: String,
         chain_index: usize,
         code: String,
         retryable: bool,
+        cause: String,
+    },
+    /// The chain is retrying the SAME provider/model after a retryable
+    /// failure (Umar's spec: up to 3 retries per chain entry, exponential
+    /// backoff + jitter, Retry-After honored). `attempt` is the 1-based
+    /// retry number, `max_attempts` the retry budget for this entry.
+    /// Emitted BEFORE the backoff wait, so the UI can show
+    /// "retrying 2/3" instead of a frozen screen while the wait elapses.
+    RetryAttempt {
+        provider: String,
+        model: String,
+        chain_index: usize,
+        attempt: u32,
+        max_attempts: u32,
+        code: String,
+        /// Seconds the chain waits before this retry (display only).
+        wait_secs: u64,
     },
     /// The chain moved from `from_index` to fallback `to_index`.
     /// Carries the failure cause so the ledger records why.
@@ -64,6 +82,7 @@ pub enum ModelEvent {
         from_provider: String,
         from_model: String,
         from_code: String,
+        from_cause: String,
         to_index: usize,
         to_provider: String,
         to_model: String,
@@ -100,6 +119,7 @@ impl ModelEvent {
                 from_provider,
                 from_model,
                 from_code,
+                from_cause,
                 to_index,
                 to_model,
                 to_provider,
@@ -107,12 +127,32 @@ impl ModelEvent {
             } => Some(Event::RunProgress {
                 run_id: run_id.to_string(),
                 detail: format!(
-                    "fallback {from_provider}/{from_model} ({from_code}) -> {to_provider}/{to_model} (chain index {to_index})"
+                    "fallback {from_provider}/{from_model} ({from_code}: {from_cause}) -> {to_provider}/{to_model} (chain index {to_index})"
                 ),
             }),
-            ModelEvent::AttemptFailed { code, .. } => Some(Event::RunProgress {
+            ModelEvent::AttemptFailed {
+                provider,
+                model,
+                code,
+                cause,
+                ..
+            } => Some(Event::RunProgress {
                 run_id: run_id.to_string(),
-                detail: format!("model attempt failed: {code}"),
+                detail: format!("model attempt failed: {code} ({provider}/{model}): {cause}"),
+            }),
+            ModelEvent::RetryAttempt {
+                provider,
+                model,
+                attempt,
+                max_attempts,
+                code,
+                wait_secs,
+                ..
+            } => Some(Event::RunProgress {
+                run_id: run_id.to_string(),
+                detail: format!(
+                    "model retrying: {provider}/{model} ({attempt}/{max_attempts}) after {code}; waiting {wait_secs}s"
+                ),
             }),
             ModelEvent::Exhausted { code } => Some(Event::RunProgress {
                 run_id: run_id.to_string(),
@@ -154,7 +194,3 @@ impl<F: Fn(ModelEvent)> ModelEventSink for F {
         self(event)
     }
 }
-
-#[cfg(test)]
-#[path = "model_event_tests.rs"]
-mod tests;

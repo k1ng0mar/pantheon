@@ -19,6 +19,21 @@ pub enum Entry {
     Session { resume: Option<String> },
     /// Nothing configured yet. Run setup first, then a session.
     Setup { resume: Option<String> },
+    /// A config file exists but does not parse. Show repair guidance and
+    /// stop: never route this into setup (the wizard will not overwrite the
+    /// file, so it would strand the user) and never silently discard it.
+    Repair,
+}
+
+/// The three states a bare `pantheon` invocation can find the install in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigState {
+    /// Parseable config with a model: open a session.
+    Ready,
+    /// No config file, or one with no model: first run, open setup.
+    Missing,
+    /// Config exists but does not parse: repair guidance, not setup.
+    Broken,
 }
 
 impl Entry {
@@ -29,10 +44,22 @@ impl Entry {
     /// a usable agent no matter what else it declares. Anything less than a
     /// model and a provider means setup.
     pub fn resolve(configured: bool, resume: Option<String>) -> Entry {
-        if configured {
-            Entry::Session { resume }
-        } else {
-            Entry::Setup { resume }
+        Self::resolve_state(
+            if configured {
+                ConfigState::Ready
+            } else {
+                ConfigState::Missing
+            },
+            resume,
+        )
+    }
+
+    /// Tri-state resolution: a broken config is repair, not setup.
+    pub fn resolve_state(state: ConfigState, resume: Option<String>) -> Entry {
+        match state {
+            ConfigState::Ready => Entry::Session { resume },
+            ConfigState::Missing => Entry::Setup { resume },
+            ConfigState::Broken => Entry::Repair,
         }
     }
 }
@@ -49,16 +76,35 @@ impl Entry {
 /// owns that message; here it simply means "not a usable session", which routes
 /// the user to setup, which will not overwrite the file.
 pub fn is_configured(data_dir: &Path) -> bool {
+    matches!(config_state(data_dir), ConfigState::Ready)
+}
+
+/// The full three-way read of the install state.
+///
+/// `Config::load` distinguishes "no file" (`CONFIG_OPEN`) from "file does
+/// not parse" (`CONFIG_PARSE`); collapsing both into "not configured" sent
+/// users with a typo'd config into the setup wizard, which refuses to
+/// overwrite the file and left them stranded with no diagnosis.
+pub fn config_state(data_dir: &Path) -> ConfigState {
     // `load`, not `load_or_report`: the reporting variant exits the process on
     // a parse error, which makes it unusable here and untestable. The exit
     // path belongs to the verb that owns the message.
-    let Ok(cfg) = crate::config::Config::load(data_dir) else {
-        return false;
-    };
-    cfg.model
-        .as_ref()
-        .map(|m| !m.model.trim().is_empty())
-        .unwrap_or(false)
+    match crate::config::Config::load(data_dir) {
+        Ok(cfg) => {
+            let usable = cfg
+                .model
+                .as_ref()
+                .map(|m| !m.model.trim().is_empty())
+                .unwrap_or(false);
+            if usable {
+                ConfigState::Ready
+            } else {
+                ConfigState::Missing
+            }
+        }
+        Err(e) if e.code == "CONFIG_OPEN" => ConfigState::Missing,
+        Err(_) => ConfigState::Broken,
+    }
 }
 
 /// Open the terminal product.
@@ -69,7 +115,7 @@ pub fn is_configured(data_dir: &Path) -> bool {
 /// into a session without the user retyping anything.
 pub fn run() {
     let data_dir = crate::terminal::data_dir();
-    match Entry::resolve(is_configured(&data_dir), None) {
+    match Entry::resolve_state(config_state(&data_dir), None) {
         Entry::Session { resume } => launch(data_dir, resume),
         Entry::Setup { resume } => {
             // Setup owns the terminal for the whole wizard. It is a TUI
@@ -88,6 +134,31 @@ pub fn run() {
                 std::process::exit(1);
             }
         }
+        Entry::Repair => {
+            // The config exists but does not parse. Print the doctor's
+            // findings in human-readable form and stop with a non-zero
+            // exit. This is the "invalid config" arm of the bare-command
+            // auto-pick: onboarding when fresh, repair guidance when
+            // broken, a session when healthy.
+            let report = crate::doctor::run_system_doctor(&data_dir);
+            eprintln!("pantheon: the config file is broken, so there is no session to open.");
+            let mut shown = 0;
+            for c in &report.checks {
+                if c.status != "ok" {
+                    shown += 1;
+                    eprintln!("pantheon: [{}] {}: {}", c.status, c.section, c.detail);
+                    if !c.fix.is_empty() {
+                        eprintln!("pantheon:   fix: {}", c.fix);
+                    }
+                }
+            }
+            if shown == 0 {
+                eprintln!("pantheon: the doctor found nothing actionable; see `pantheon doctor` for the full report.");
+            } else {
+                eprintln!("pantheon: fix the TOML by hand, or move it aside and run `pantheon setup` to start fresh.");
+            }
+            std::process::exit(2);
+        }
     }
 }
 
@@ -102,6 +173,80 @@ pub fn run_with_resume(resume: Option<String>) {
     launch(data_dir, resume);
 }
 
+/// `pantheon --profile <name>` (also `-p`, `--agent`): open the TUI as the
+/// named agent profile instead of the configured default.
+///
+/// The profile is validated *before* the terminal is taken: an unknown
+/// name fails here with a clear error, because the session path folds
+/// resolution failures into the anonymous fallback and would otherwise
+/// open the wrong agent silently. The validated name is installed as the
+/// process-lifetime override, which `Config::resolve_profile` consults —
+/// session construction needs no new parameter.
+pub fn run_with_profile(name: &str) {
+    let data_dir = crate::terminal::data_dir();
+    if !is_configured(&data_dir) {
+        eprintln!("pantheon: nothing is configured yet, so there is no session to open.");
+        eprintln!("pantheon: run `pantheon setup` first.");
+        std::process::exit(1);
+    }
+    match crate::config::Config::load(&data_dir) {
+        Ok(cfg) => {
+            if let Err(e) = cfg.resolve_profile(Some(name)) {
+                eprintln!("pantheon: --profile {name:?}: {e}");
+                eprintln!("pantheon: fix: declare [agents.{name}] in config.toml");
+                std::process::exit(2);
+            }
+        }
+        Err(e) => {
+            eprintln!("pantheon: cannot read config: {e}");
+            std::process::exit(1);
+        }
+    }
+    pantheon_api::config::set_profile_override(Some(name.to_string()));
+    run();
+}
+
+/// Fail fast with Ollama guidance when the configured provider is
+/// `local` and nothing answers at its base URL.
+///
+/// The `local` provider is Ollama (install.sh installs it), and a bare
+/// `pantheon` with Ollama down used to open a session whose first
+/// message died with a bare PROVIDER_HTTP network error — no mention of
+/// Ollama, no `pantheon setup` hint. Probing before the TUI opens turns
+/// that into the fix: start Ollama, pull the model, or pick another
+/// provider.
+///
+/// Only `local` is probed: a cloud endpoint hiccup at launch time must
+/// not refuse to open the session.
+fn check_local_provider(data_dir: &std::path::Path) {
+    let model = match crate::config::Config::load(data_dir) {
+        Ok(cfg) => match cfg.model {
+            Some(m) => m,
+            None => return,
+        },
+        // config_state already decided this is not a session; the
+        // Setup/Repair arms own the message.
+        Err(_) => return,
+    };
+    if model.provider != "local" {
+        return;
+    }
+    let url = match pantheon_providers::catalog::resolve_base_url("local") {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    if crate::doctor::tcp_probe(&url, std::time::Duration::from_secs(3)) {
+        return;
+    }
+    eprintln!("pantheon: the configured provider \"local\" (Ollama) is not reachable at {url}.");
+    eprintln!(
+        "pantheon: if you use Ollama: start it with `ollama serve`, then `ollama pull {}`.",
+        model.model
+    );
+    eprintln!("pantheon: or run `pantheon setup` to choose a different provider.");
+    std::process::exit(1);
+}
+
 /// Hand off to the TUI and make sure a failure leaves the user's shell sane.
 ///
 /// A panic between entering raw mode and leaving the alternate screen leaves
@@ -114,6 +259,7 @@ fn launch(data_dir: std::path::PathBuf, resume: Option<String>) -> ! {
         eprintln!("pantheon: the terminal interface needs a terminal on stdin and stdout.");
         std::process::exit(1);
     }
+    check_local_provider(&data_dir);
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};

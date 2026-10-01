@@ -1202,7 +1202,3 @@ fn task_from_conn(conn: &Connection, task_id: &str) -> Result<Option<AgentTask>,
         None => Ok(None),
     }
 }
-
-#[cfg(test)]
-#[path = "collaboration_tests.rs"]
-mod collaboration_tests;

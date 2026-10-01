@@ -1,6 +1,8 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
+use pantheon_api::events::Event;
 use pantheon_storage::search::{SessionChunk, SessionSearch};
+use pantheon_storage::Ledger;
 
 fn chunk(id: &str, text: &str) -> SessionChunk {
     SessionChunk {
@@ -57,11 +59,21 @@ fn prefix_matching_lets_a_shorter_query_find_a_longer_word() {
 }
 
 #[test]
-fn drop_run_removes_chunks_and_their_fts_rows() {
-    let s = SessionSearch::open_in_memory().unwrap();
+fn delete_run_removes_chunks_and_their_fts_rows() {
+    // Canonical run-deletion path: Ledger::delete_run (SessionSearch::drop_run
+    // was removed; run deletion now owns FTS cleanup transactionally).
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let db = dir.path().join("ledger.db");
+    let ledger = Ledger::open(&db).unwrap();
+    let s = SessionSearch::open(&db).unwrap();
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "run_abc".into(),
+        })
+        .unwrap();
     s.index(&chunk("c1", "findable before the drop")).unwrap();
     assert_eq!(s.search("findable", 10).unwrap().len(), 1);
-    s.drop_run("run_abc").unwrap();
+    ledger.delete_run("run_abc").unwrap();
     assert!(s.search("findable", 10).unwrap().is_empty());
     // And re-indexing after a drop works, with no residue.
     s.index(&chunk("c1", "findable again")).unwrap();

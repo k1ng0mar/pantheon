@@ -470,13 +470,14 @@ struct MermaidNode {
 struct MermaidEdge {
     from: String,
     to: String,
-    #[allow(dead_code)]
-    label: Option<String>,
 }
 
 /// Common subset: `graph TD` / `graph LR` (`flowchart` alias accepted),
-/// `A-->B`, `A --> B`, `A-->|label|B`, `A---B`, `A==>B`, `A-.->B`,
+/// `A-->B`, `A --> B`, `A---B`, `A==>B`, `A-.->B`,
 /// and node labels `A[text]`, `A{text}`, `A((text))`, `A([text])`, `A[[text]]`.
+/// Edge labels (`A-->|label|B`) are NOT supported: a labeled edge makes the
+/// whole block return `None` and the caller shows the raw fence instead of
+/// a diagram that silently drops the label.
 /// Anything outside the subset makes the whole block return `None` and the
 /// caller shows the raw fence instead of a wrong diagram.
 pub fn render_mermaid(src: &str) -> Option<Vec<String>> {
@@ -558,16 +559,10 @@ pub fn render_mermaid(src: &str) -> Option<Vec<String>> {
         if line.starts_with("%%") {
             continue;
         }
-        // Edge operators, longest first. `-->` with a label needs `-->|x|`.
+        // Edge operators, longest first.
         let mut op_at: Option<(usize, &str)> = None;
-        for op in ["-->|", "-->", "==>", "---", "-.->"] {
+        for op in ["-->", "==>", "---", "-.->"] {
             if let Some(p) = line.find(op) {
-                if op == "-->|" {
-                    let after = &line[p + op.len()..];
-                    if after.find('|').is_none() {
-                        continue;
-                    }
-                }
                 op_at = Some((p, op));
                 break;
             }
@@ -575,20 +570,17 @@ pub fn render_mermaid(src: &str) -> Option<Vec<String>> {
         if let Some((p, op)) = op_at {
             let left = line[..p].trim();
             let mut right = line[p + op.len()..].trim();
-            let mut edge_label = None;
-            if op == "-->|" {
-                let end = right.find('|')?;
-                edge_label = Some(right[..end].trim().to_string());
-                right = right[end + 1..].trim();
+            // Strip an edge label: `A-->|yes|B` — the label is metadata,
+            // not part of the target node.
+            if let Some(stripped) = right.strip_prefix('|') {
+                if let Some(end) = stripped.find('|') {
+                    right = stripped[end + 1..].trim();
+                }
             }
             // Each side may itself carry a node def: `A[x]-->B[y]`.
             let from = parse_node_def(left, &mut nodes)?;
             let to = parse_node_def(right, &mut nodes)?;
-            edges.push(MermaidEdge {
-                from,
-                to,
-                label: edge_label,
-            });
+            edges.push(MermaidEdge { from, to });
             continue;
         }
         // Bare node definition line.
@@ -1390,12 +1382,12 @@ impl ImagePaintState {
             if p.line_idx < view.scroll_off {
                 continue;
             }
-            let label_row = view.y + 1 + (p.line_idx - view.scroll_off) as u16;
+            let label_row = view.y + (p.line_idx - view.scroll_off) as u16;
             let row = label_row + 1;
             if row + p.rows.saturating_sub(1) > view.y + view.height.saturating_sub(1) {
                 continue;
             }
-            desired.push((p.id, p.path.clone(), row, view.x + 2, p.cols));
+            desired.push((p.id, p.path.clone(), row, view.x, p.cols));
         }
         // Delete anything painted that is no longer desired (or moved).
         let mut keep: Vec<PaintedImage> = Vec::new();

@@ -8,10 +8,14 @@ authors.workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "2", features = ["json", "proxy-from-env", "native-certs"] }
 pantheon-api = { path = "../pantheon-api" }
+pantheon-mcp = { path = "../pantheon-mcp" }
+pantheon-providers = { path = "../pantheon-providers" }
+pantheon-secrets = { path = "../pantheon-secrets" }
 pantheon-storage = { path = "../pantheon-storage" }
 pantheon-scheduler = { path = "../pantheon-scheduler" }
+toml = "0.8"
 tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 
 [lints]

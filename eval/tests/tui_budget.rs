@@ -58,7 +58,7 @@ max_tokens = 50000
 max_iterations = 5
 "#,
     );
-    let b = cfg.budget();
+    let b = pantheon_tui::config::config_budget(&cfg);
     assert_eq!(b.max_turns, 24);
     assert_eq!(b.max_tool_calls, 40);
     assert_eq!(b.max_delegate_depth, 3);
@@ -71,7 +71,7 @@ max_iterations = 5
 fn budget_defaults_when_sections_absent() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = write_config(dir.path(), "# empty\n");
-    let b = cfg.budget();
+    let b = pantheon_tui::config::config_budget(&cfg);
     assert_eq!(b.max_turns, 16);
     assert_eq!(b.max_tool_calls, 32);
     assert_eq!(b.max_delegate_depth, 2);
@@ -89,7 +89,7 @@ fn budget_zero_is_treated_as_unset() {
     );
     // A zero cap would end every run before it starts; it falls back to
     // the default (uncapped for tokens) instead of bricking the session.
-    let b = cfg.budget();
+    let b = pantheon_tui::config::config_budget(&cfg);
     assert_eq!(b.max_turns, 16);
     assert_eq!(b.max_tokens, None);
     assert_eq!(cfg.pipeline_iterations(), 3);
@@ -99,7 +99,7 @@ fn budget_zero_is_treated_as_unset() {
 fn partial_budget_section_fills_rest_with_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = write_config(dir.path(), "[budget]\nmax_turns = 8\n");
-    let b = cfg.budget();
+    let b = pantheon_tui::config::config_budget(&cfg);
     assert_eq!(b.max_turns, 8);
     assert_eq!(b.max_tool_calls, 32);
     assert_eq!(b.max_tokens, None);
@@ -142,10 +142,8 @@ fn goal(text: &str, used: u32, max: u32) -> ActiveGoal {
 
 #[test]
 fn goal_gate_refuses_at_cap() {
-    let state = TuiState {
-        goal: Some(goal("ship it", 10, 10)),
-        ..Default::default()
-    };
+    let mut state = TuiState::default();
+    state.goal = Some(goal("ship it", 10, 10));
     let refusal = state.goal_refusal().expect("must refuse at cap");
     assert!(
         refusal.contains("10/10"),
@@ -156,10 +154,8 @@ fn goal_gate_refuses_at_cap() {
 
 #[test]
 fn goal_gate_allows_below_cap_and_consumes() {
-    let mut state = TuiState {
-        goal: Some(goal("ship it", 9, 10)),
-        ..Default::default()
-    };
+    let mut state = TuiState::default();
+    state.goal = Some(goal("ship it", 9, 10));
     assert!(state.goal_refusal().is_none(), "one iteration left");
     state.consume_goal_iteration();
     assert_eq!(state.goal.as_ref().unwrap().iterations_used, 10);
@@ -179,10 +175,8 @@ fn goal_gate_is_inert_without_a_goal() {
 
 #[test]
 fn goal_consume_saturates_instead_of_wrapping() {
-    let mut state = TuiState {
-        goal: Some(goal("ship it", u32::MAX, u32::MAX)),
-        ..Default::default()
-    };
+    let mut state = TuiState::default();
+    state.goal = Some(goal("ship it", u32::MAX, u32::MAX));
     state.consume_goal_iteration();
     assert_eq!(state.goal.as_ref().unwrap().iterations_used, u32::MAX);
 }
@@ -220,7 +214,7 @@ fn config_budget_applies_to_a_live_session() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = write_config(dir.path(), "[budget]\nmax_turns = 24\nmax_tokens = 50000\n");
     let session = session_in(dir.path());
-    session.set_budget(cfg.budget());
+    session.set_budget(pantheon_tui::config::config_budget(&cfg));
     let b = session.budget_snapshot();
     assert_eq!(b.max_turns, 24);
     assert_eq!(b.max_tokens, Some(50000));

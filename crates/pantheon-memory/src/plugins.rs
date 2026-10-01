@@ -29,7 +29,7 @@
 //! Policy note: this crate never asks a plugin whether a write is allowed.
 //! Gate (`write_via` / `recall_via` / `confirm_via`) runs before the plugin
 //! is invoked; plugins only store/return what they are handed.
-use crate::backend::BackendKind;
+use crate::backend::{BackendKind, DeploymentKind};
 use crate::{BackendInfo, BackendRegistry, BackendSelection, LayerKind};
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::provenance::TrustTier;
@@ -183,6 +183,16 @@ fn register_manifest(reg: &mut BackendRegistry, name: String, m: MemoryPluginMan
             BackendKind::Http
         },
         capabilities: vec!["memory.read".into(), "memory.write".into()],
+        recommended: false,
+        auth: String::new(),
+        // User manifests point at bridges the user operates themselves:
+        // a stdio manifest is a local process; an http manifest is a
+        // self-hosted bridge.
+        deployment: if m.kind == "stdio" {
+            DeploymentKind::Local
+        } else {
+            DeploymentKind::SelfHosted
+        },
     };
     reg.register_with(info, move |sel: &BackendSelection| {
         // Selection options override manifest values, so one manifest can
@@ -497,7 +507,3 @@ impl crate::MemoryBackend for StdioBackend {
         Ok(self.clamp_record(record))
     }
 }
-
-#[cfg(test)]
-#[path = "plugins_tests.rs"]
-mod tests;

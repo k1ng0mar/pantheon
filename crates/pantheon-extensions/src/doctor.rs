@@ -129,9 +129,32 @@ pub fn doctor(dir: &Path) -> DoctorReport {
                     findings.push(f(
                         "info",
                         "USES_NET_OR_EXEC",
-                        format!("__init__.py mentions '{pat}' (review sandbox level)"),
+                        format!(
+                            "__init__.py mentions '{pat}': plugins are NOT sandboxed and run \
+                             with your full privileges — approve only what you trust"
+                        ),
                     ));
                 }
+            }
+        }
+    }
+    // Approval state: a third-party plugin that is not approved will not
+    // load, so say so here instead of letting the manifest look healthy.
+    if let Some(ext_dir) = dir.parent() {
+        if !pantheon_api::approval::is_bundled(ext_dir, dir) && !man.name.trim().is_empty() {
+            let approved = pantheon_api::approval::dir_hash(dir)
+                .map(|h| pantheon_api::approval::is_approved(ext_dir, &man.name, &man.version, &h))
+                .unwrap_or(false);
+            if !approved {
+                findings.push(f(
+                    "warn",
+                    "NOT_APPROVED",
+                    format!(
+                        "'{}' is third-party and not approved; it will not load until you run \
+                         `pantheon extensions approve {}`",
+                        man.name, man.name
+                    ),
+                ));
             }
         }
     }

@@ -1,0 +1,59 @@
+# pantheon-gateway.service — user-level systemd unit for the Pantheon gateway.
+#
+# This runs `pantheon gateway run` as a supervised user service: restarts on
+# failure with backoff, starts at login, and is hardened with the standard
+# user-service sandbox flags.
+#
+# Install (per user):
+#   1. Edit ExecStart below: replace /usr/local/bin/pantheon with the real
+#      absolute path (run `command -v pantheon` to find it).
+#   2. Install the unit:
+#        mkdir -p ~/.config/systemd/user
+#        cp pantheon-gateway.service ~/.config/systemd/user/
+#        systemctl --user daemon-reload
+#   3. Enable at login and start now:
+#        loginctl enable-linger "$USER"   # keep user services alive after logout
+#        systemctl --user enable --now pantheon-gateway.service
+#   4. Check status and logs:
+#        systemctl --user status pantheon-gateway.service
+#        journalctl --user -u pantheon-gateway.service -f
+#
+# Watchdog note: systemd's Restart= is the watchdog here. A second,
+# Pantheon-specific watchdog daemon (checking /api/health and restarting)
+# is out of scope — if you need one, see contrib/README.md.
+
+[Unit]
+Description=Pantheon gateway (agent runtime daemon)
+Documentation=https://github.com/k1ng0mar/pantheon
+# Start after the network is up; the gateway binds a local port and needs
+# outbound access for providers and channel APIs.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace with the absolute path to your pantheon binary:
+ExecStart=/usr/local/bin/pantheon gateway run
+# The gateway keeps its state here: databases, cursor files, channel
+# health snapshots. ReadWritePaths allows exactly this subtree while
+# ProtectSystem keeps the rest of the filesystem read-only.
+Environment=PANTHEON_HOME=%h/.pantheon
+ReadWritePaths=%h/.pantheon
+
+# Restart policy: always restart on failure, with backoff so a crash loop
+# does not hammer the machine. Give up after 5 restarts in 5 minutes —
+# that pattern means a config error, and retrying will not fix it.
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Hardening (user service): no new privileges, private /tmp, read-only
+# system. The gateway needs no special capabilities.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=default.target

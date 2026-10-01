@@ -19,8 +19,9 @@ pub fn should_notify(completed_run_id: &str, visible_session_id: &str) -> bool {
     !completed_run_id.is_empty() && completed_run_id != visible_session_id
 }
 
+/// Executable-file check shared with the setup wizard's command lookup.
 #[cfg(unix)]
-fn is_runnable(p: &Path) -> bool {
+pub(crate) fn is_executable_file(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
     p.is_file()
         && p.metadata()
@@ -29,7 +30,7 @@ fn is_runnable(p: &Path) -> bool {
 }
 
 #[cfg(not(unix))]
-fn is_runnable(p: &Path) -> bool {
+pub(crate) fn is_executable_file(p: &Path) -> bool {
     p.is_file()
 }
 
@@ -41,7 +42,7 @@ pub fn find_notify_send(search_dirs: &[PathBuf]) -> Option<PathBuf> {
     search_dirs
         .iter()
         .map(|d| d.join("notify-send"))
-        .find(|p| is_runnable(p))
+        .find(|p| is_executable_file(p))
 }
 
 /// PATH directories of this process.

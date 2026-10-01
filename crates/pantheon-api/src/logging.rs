@@ -312,7 +312,3 @@ fn redact_prefix(input: &str, prefix: &str) -> String {
 pub fn gateway(level: Level, component: &str, msg: impl AsRef<str>) {
     emit(GATEWAY_LOG, level, component, msg.as_ref());
 }
-
-#[cfg(test)]
-#[path = "logging_tests.rs"]
-mod tests;

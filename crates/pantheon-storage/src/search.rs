@@ -231,23 +231,6 @@ impl SessionSearch {
         Ok(())
     }
 
-    /// Remove every chunk for one run (used when a run is deleted or
-    /// re-indexed from scratch).
-    pub fn drop_run(&self, run_id: &str) -> Result<(), PantheonError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| err("SEARCH_LOCK", e.to_string()))?;
-        conn.execute(
-            "DELETE FROM session_chunks WHERE run_id = ?1",
-            params![run_id],
-        )
-        .map_err(|e| err("SEARCH_DELETE", e.to_string()))?;
-        conn.execute("DELETE FROM session_fts WHERE run_id = ?1", params![run_id])
-            .map_err(|e| err("SEARCH_FTS_DELETE", e.to_string()))?;
-        Ok(())
-    }
-
     /// Drop chunks (and their FTS rows) older than `cutoff_ts_ms`
     /// (retention policy). Pairs with `Ledger::prune_events_before`: the FTS
     /// sidecar must not retain searchable text for history the ledger has

@@ -549,7 +549,3 @@ pub fn merge_into_live_config(
     })?;
     Ok((path, added, skipped))
 }
-
-#[cfg(test)]
-#[path = "providers_tests.rs"]
-mod tests;

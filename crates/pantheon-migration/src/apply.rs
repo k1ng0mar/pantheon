@@ -25,9 +25,9 @@
 //! - **No silent partial copy.** `copy_tree` records every skipped symlink
 //!   and unreadable entry in the report rather than copying a partial tree.
 //!
-//! Budgets can be tuned with [`StageBudgets::from_env`]
-//! (`PANTHEON_MIGRATE_MAX_BYTES`, `PANTHEON_MIGRATE_MAX_FILES`,
-//! `PANTHEON_MIGRATE_MAX_FILE_BYTES`).
+//! Budgets use the [`StageBudgets`] defaults (1 GiB total, 100k files,
+//! 100 MiB per file); callers that need different limits construct one
+//! explicitly.
 
 use super::{merr, Action, ItemKind, MigrationPlan, PlanItem, Targets};
 use pantheon_api::error::PantheonError;
@@ -64,32 +64,6 @@ impl Default for StageBudgets {
 }
 
 impl StageBudgets {
-    /// Defaults, overridden by the environment when set:
-    /// `PANTHEON_MIGRATE_MAX_BYTES`, `PANTHEON_MIGRATE_MAX_FILES`,
-    /// `PANTHEON_MIGRATE_MAX_FILE_BYTES` (plain byte counts).
-    pub fn from_env() -> Self {
-        let mut b = Self::default();
-        if let Some(v) = std::env::var("PANTHEON_MIGRATE_MAX_BYTES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-        {
-            b.max_total_bytes = v;
-        }
-        if let Some(v) = std::env::var("PANTHEON_MIGRATE_MAX_FILES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-        {
-            b.max_files = v;
-        }
-        if let Some(v) = std::env::var("PANTHEON_MIGRATE_MAX_FILE_BYTES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-        {
-            b.max_single_file_bytes = v;
-        }
-        b
-    }
-
     /// No limits. For tests and for callers that enforce their own budgets.
     pub fn unlimited() -> Self {
         Self {
@@ -168,9 +142,6 @@ pub struct BackupManifest {
 }
 
 impl BackupManifest {
-    pub fn root(&self) -> PathBuf {
-        PathBuf::from(&self.id)
-    }
     pub fn len(&self) -> usize {
         self.entries.len()
     }

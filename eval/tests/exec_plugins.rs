@@ -52,6 +52,7 @@ fn verify_rejects_missing_runner() {
     // Delete the runner file after creation.
     std::fs::remove_file(plugins.join("bad").join("run.sh")).unwrap();
     let found = discover_plugins(&data, d.path());
+    pantheon_exec::plugin_approval::record_approval(&found[0]).unwrap();
     let err = verify_plugin(&found[0]).unwrap_err();
     assert_eq!(err.code, "PLUGIN_NO_RUNNER");
 }
@@ -67,6 +68,7 @@ fn verify_rejects_missing_shebang() {
     let p = plugins.join("noshebang").join("run.sh");
     std::fs::write(&p, "echo no shebang").unwrap();
     let found = discover_plugins(&data, d.path());
+    pantheon_exec::plugin_approval::record_approval(&found[0]).unwrap();
     let err = verify_plugin(&found[0]).unwrap_err();
     assert_eq!(err.code, "PLUGIN_NO_SHEBANG");
 }
@@ -88,8 +90,23 @@ fn verify_rejects_missing_required_env() {
     // Ensure MY_API_KEY is not in the environment.
     std::env::remove_var("MY_API_KEY");
     let found = discover_plugins(&data, d.path());
+    pantheon_exec::plugin_approval::record_approval(&found[0]).unwrap();
     let err = verify_plugin(&found[0]).unwrap_err();
     assert_eq!(err.code, "PLUGIN_MISSING_ENV");
+}
+
+#[test]
+fn verify_rejects_unapproved_plugin() {
+    // The privilege gate itself: a third-party plugin with no recorded
+    // approval is refused with PLUGIN_NOT_APPROVED, even with a valid runner.
+    let d = tempdir().unwrap();
+    let data = d.path().join("data");
+    let plugins = data.join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    write_plugin(&plugins, "shady", "run.sh", vec![]);
+    let found = discover_plugins(&data, d.path());
+    let err = verify_plugin(&found[0]).unwrap_err();
+    assert_eq!(err.code, "PLUGIN_NOT_APPROVED");
 }
 
 #[test]
@@ -158,19 +175,35 @@ fn verify_rejects_symlinked_runner_escape() {
     // The runner is a relative symlink pointing outside the plugin dir:
     // the lexical check passes, the canonical containment check must not.
     let d = tempdir().unwrap();
-    std::os::unix::fs::symlink("/bin/true", d.path().join("link.sh")).unwrap();
-    let err = verify_plugin(&plugin_with_runner(d.path(), "link.sh")).unwrap_err();
+    let plugin = plugin_with_runner(d.path(), "link.sh");
+    std::os::unix::fs::symlink("/bin/true", plugin.root.join("link.sh")).unwrap();
+    let err = verify_plugin(&plugin).unwrap_err();
     assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER");
 }
 
 #[test]
 fn verify_accepts_nested_relative_runner() {
     let d = tempdir().unwrap();
-    let root = d.path();
-    std::fs::create_dir_all(root.join("bin")).unwrap();
-    std::fs::write(root.join("bin").join("run.sh"), "#!/bin/sh\necho hi\n").unwrap();
-    let out = verify_plugin(&plugin_with_runner(root, "bin/run.sh")).unwrap();
-    assert_eq!(out, root.join("bin").join("run.sh"));
+    let plugin = plugin_with_runner(d.path(), "bin/run.sh");
+    std::fs::create_dir_all(plugin.root.join("bin")).unwrap();
+    std::fs::write(
+        plugin.root.join("bin").join("run.sh"),
+        "#!/bin/sh\necho hi\n",
+    )
+    .unwrap();
+    let out = verify_plugin(&plugin).unwrap();
+    // verify_plugin returns the CANONICAL runner path (symlinks resolved):
+    // the containment proof is about this path, so it is the only safe
+    // exec target.
+    assert_eq!(
+        out,
+        plugin
+            .root
+            .canonicalize()
+            .unwrap()
+            .join("bin")
+            .join("run.sh")
+    );
 }
 
 fn write_plugin(dir: &Path, name: &str, runner: &str, caps: Vec<ToolCapability>) {
@@ -198,6 +231,10 @@ fn write_plugin(dir: &Path, name: &str, runner: &str, caps: Vec<ToolCapability>)
 }
 
 fn plugin_with_runner(root: &Path, runner: &str) -> DiscoveredPlugin {
+    // First-party ("bundled") location: skips the third-party approval gate
+    // so these runner-safety tests don't depend on the approval store.
+    let proot = root.join("bundled").join("t");
+    std::fs::create_dir_all(&proot).unwrap();
     DiscoveredPlugin {
         manifest: PluginManifest {
             name: "t".into(),
@@ -211,6 +248,6 @@ fn plugin_with_runner(root: &Path, runner: &str) -> DiscoveredPlugin {
             enabled: false,
         },
         location: PluginLocation::User,
-        root: root.to_path_buf(),
+        root: proot,
     }
 }

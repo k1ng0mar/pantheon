@@ -1,0 +1,94 @@
+name: doc-pack
+description: Create and read Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) documents from structured data.
+version: "1.0.0"
+maintainer: Pantheon
+capabilities:
+  - name: docx_create
+    capability: FilesystemWrite
+    description: Create a .docx Word document from structured blocks (headings, paragraphs, bullet/numbered lists, tables, page breaks).
+    parameters:
+      type: object
+      required: [path, blocks]
+      properties:
+        path:
+          type: string
+          description: Absolute output path for the .docx file.
+        title:
+          type: string
+          description: Document title (also stored in core properties).
+        author:
+          type: string
+          description: Document author (stored in core properties).
+        blocks:
+          type: array
+          description: Ordered content blocks. Each block has a "type" and type-specific fields.
+          items:
+            type: object
+  - name: docx_read_text
+    capability: FilesystemRead
+    description: Read a .docx file and return its paragraphs (with style names) and tables as structured text.
+    parameters:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: Absolute path to the .docx file.
+  - name: xlsx_create
+    capability: FilesystemWrite
+    description: Create an .xlsx workbook from row data, with header styling, formulas, column widths, and freeze panes.
+    parameters:
+      type: object
+      required: [path, sheets]
+      properties:
+        path:
+          type: string
+          description: Absolute output path for the .xlsx file.
+        sheets:
+          type: array
+          description: Sheets to create, each with name, rows, and optional header/col_widths/freeze.
+          items:
+            type: object
+  - name: xlsx_read
+    capability: FilesystemRead
+    description: Read an .xlsx workbook and return sheet names plus rows (formulas are returned as "=..." strings).
+    parameters:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: Absolute path to the .xlsx file.
+        sheet:
+          type: string
+          description: Sheet name to read; defaults to the active sheet.
+  - name: pptx_create
+    capability: FilesystemWrite
+    description: Create a .pptx presentation from slide definitions (title, bullet levels, speaker notes).
+    parameters:
+      type: object
+      required: [path, slides]
+      properties:
+        path:
+          type: string
+          description: Absolute output path for the .pptx file.
+        title:
+          type: string
+          description: Presentation title (stored in core properties).
+        slides:
+          type: array
+          description: Slides in order, each with layout, title, bullets, and optional notes.
+          items:
+            type: object
+  - name: pptx_read_text
+    capability: FilesystemRead
+    description: Read a .pptx file and return per-slide titles, text shapes, and speaker notes.
+    parameters:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: Absolute path to the .pptx file.
+runner: run.sh
+enabled: false

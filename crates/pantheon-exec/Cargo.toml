@@ -12,7 +12,9 @@ pantheon-api = { path = "../pantheon-api" }
 pantheon-storage = { path = "../pantheon-storage" }
 pantheon-secrets = { path = "../pantheon-secrets" }
 serde_yaml = "0.9"
-ureq = { version = "2", features = ["json"] }
+toml = "0.8"
+sha2 = "0.11"
+ureq = { version = "2", features = ["json", "proxy-from-env", "native-certs"] }
 libc = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Context tests exercise provider-backed compression; the tool layer that
@@ -22,6 +24,9 @@ pantheon-providers = { path = "../pantheon-providers" }
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+sha2 = "0.11"
 
 [lints]
 workspace = true

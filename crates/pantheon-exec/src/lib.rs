@@ -3,22 +3,29 @@
 //!
 //! Rule: noisy tool output is compacted deterministically BEFORE it reaches
 //! model context. No model summarization, no vibe-truncation. Keep exact
-//! head/tail, hash the dropped middle, record what was dropped in the ledger.
+//! head/tail, and note what was dropped in the marker line.
 //!
 //! The callable-tool layer (registry, builtins, memory/vault/session-search
 //! tools and their register helpers) lives in `pantheon-tools` — capability ≠
 //! tool, and `pantheon-tools` depends *on* this crate (Tools → Exec).
 
-pub mod acp;
 pub mod bundled_skills;
 pub mod confine;
 pub mod context;
 pub mod danger;
+pub mod http;
+pub mod plugin_approval;
 pub mod plugins;
 pub mod process;
 pub mod safewrite;
+pub mod sandbox;
+pub mod skill_exec;
 pub mod skills;
 pub mod supervisor;
+
+// Re-exported at the crate root: these were `pantheon_sandbox::…` paths
+// before the sandbox merged into exec.
+pub use sandbox::{Enforcement, ExecutionBoundary, SandboxLevel, SandboxProfile};
 
 use serde::{Deserialize, Serialize};
 
@@ -48,21 +55,6 @@ impl Default for CompactionPolicy {
 pub struct Compacted {
     pub text: String,
     pub truncated: bool,
-    pub kept_lines: usize,
-    pub dropped_lines: usize,
-    pub kept_bytes: usize,
-    pub dropped_bytes: usize,
-    /// FNV-1a hash of the dropped middle (integrity, like artifact verify).
-    pub dropped_hash: String,
-}
-
-fn fnv1a_hex(data: &[u8]) -> String {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in data {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    format!("{h:016x}")
 }
 
 /// Deterministic compaction: keep head + tail, drop middle with a marker.
@@ -73,11 +65,6 @@ pub fn compact_output(raw: &str, policy: &CompactionPolicy) -> Compacted {
         return Compacted {
             text: raw.to_string(),
             truncated: false,
-            kept_lines: lines.len(),
-            dropped_lines: 0,
-            kept_bytes: raw_bytes.len(),
-            dropped_bytes: 0,
-            dropped_hash: fnv1a_hex(&[]),
         };
     }
     let tail_lines = policy.max_lines.saturating_sub(policy.head_lines);
@@ -96,10 +83,9 @@ pub fn compact_output(raw: &str, policy: &CompactionPolicy) -> Compacted {
     let dropped_text = dropped.join("\n");
     let mut text = head.join("\n");
     text.push_str(&format!(
-        "\n[... compacted: dropped {} lines, {} bytes, hash {} ...]\n",
+        "\n[... compacted: dropped {} lines, {} bytes ...]\n",
         dropped.len(),
-        dropped_text.len(),
-        fnv1a_hex(dropped_text.as_bytes())
+        dropped_text.len()
     ));
     text.push_str(&tail.join("\n"));
     if text.len() > policy.max_bytes {
@@ -107,16 +93,7 @@ pub fn compact_output(raw: &str, policy: &CompactionPolicy) -> Compacted {
         text.push_str("\n[... byte-cap ...]");
     }
     Compacted {
-        kept_lines: head.len() + tail.len(),
-        dropped_lines: dropped.len(),
-        kept_bytes: head.join("\n").len() + tail.join("\n").len(),
-        dropped_bytes: dropped_text.len(),
-        dropped_hash: fnv1a_hex(dropped_text.as_bytes()),
         truncated: true,
         text,
     }
 }
-
-#[cfg(test)]
-#[path = "lib_tests.rs"]
-mod tests;

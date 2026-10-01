@@ -34,8 +34,10 @@ fn import_skill_rejects_bad_meta_name() {
             name: "../../evil".into(),
             description: String::new(),
             origin: String::new(),
+            exec: Vec::new(),
         },
         path: dir.join("x"),
+        dir: dir.join("x"),
     };
     let err = import_skill(&dir.join("data"), &skill).unwrap_err();
     assert_eq!(err.code, "SKILL_BAD_NAME");

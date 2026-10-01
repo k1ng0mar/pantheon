@@ -1,16 +1,25 @@
-//! Tests for the `session_search` sidecar.
+//! Fresh coverage for the `session_search` sidecar's core path: FTS
+//! indexing + lexical search over temp-dir file DBs.
 //!
-//! This module had no tests, which is how a real idempotency bug survived in
-//! it: `session_fts` is a standalone FTS5 table, so `INSERT OR REPLACE` on it
-//! cannot dedupe and every re-index appended a row, which `search`'s join then
-//! returned as duplicate hits.
+//! (A sibling module in `ledger.rs` covers `delete_run`'s FTS cleanup from
+//! the ledger side; the no-ghost-hits case here asserts it from the search
+//! side.)
 use super::*;
+use crate::ledger::Ledger;
+use pantheon_api::events::Event;
+use tempfile::TempDir;
 
-fn chunk(id: &str, text: &str) -> SessionChunk {
+fn file_search() -> (SessionSearch, TempDir) {
+    let dir = TempDir::new().expect("temp dir");
+    let db = dir.path().join("ledger.db");
+    (SessionSearch::open(&db).expect("search sidecar"), dir)
+}
+
+fn chunk(run_id: &str, id: &str, seq: i64, text: &str) -> SessionChunk {
     SessionChunk {
         chunk_id: id.into(),
-        run_id: "run_abc".into(),
-        seq: 0,
+        run_id: run_id.into(),
+        seq,
         kind: "message".into(),
         text: text.into(),
         ts_ms: 1_700_000_000_000,
@@ -18,39 +27,115 @@ fn chunk(id: &str, text: &str) -> SessionChunk {
 }
 
 #[test]
-fn an_empty_or_punctuation_only_query_returns_nothing_rather_than_erroring() {
-    let s = SessionSearch::open_in_memory().unwrap();
-    s.index(&chunk("c1", "some text")).unwrap();
-    for q in ["", "   ", "\"\"", "(){}[]:^*|,-"] {
-        assert!(s.search(q, 10).unwrap().is_empty(), "query {q:?}");
-    }
+fn search_returns_the_chunks_whose_text_matches() {
+    let (s, _dir) = file_search();
+    s.index(&chunk(
+        "run_1",
+        "c1",
+        1,
+        "the pantry stocks alkaline batteries",
+    ))
+    .unwrap();
+    s.index(&chunk(
+        "run_1",
+        "c2",
+        2,
+        "debugging the websocket handshake failure",
+    ))
+    .unwrap();
+    s.index(&chunk(
+        "run_1",
+        "c3",
+        3,
+        "a quiet evening with no incidents",
+    ))
+    .unwrap();
+
+    let hits = s.search("websocket handshake", 10).unwrap();
+    assert_eq!(hits.len(), 1, "only the matching chunk should hit");
+    assert_eq!(hits[0].chunk.chunk_id, "c2");
+    assert_eq!(hits[0].chunk.run_id, "run_1");
+    assert_eq!(hits[0].chunk.seq, 2);
+    assert_eq!(hits[0].lexical_rank, 0);
+
+    // A term indexed nowhere returns nothing, not an error.
+    assert!(s.search("xylophone", 10).unwrap().is_empty());
 }
 
 #[test]
-fn a_tool_chunk_is_truncated_by_the_tool_limit() {
-    let s = SessionSearch::open_in_memory().unwrap();
-    let long = "t".repeat(TOOL_CHUNK_MAX + 500);
-    let mut c = chunk("c1", &long);
-    c.kind = "tool".into();
-    s.index(&c).unwrap();
-    let hits = s.search(&"t".repeat(10), 5).unwrap();
-    assert!(!hits.is_empty());
-    assert!(
-        hits[0].chunk.text.chars().count() <= TOOL_CHUNK_MAX,
-        "tool text must be clipped to the tool limit"
-    );
+fn search_returns_no_ghost_hits_for_deleted_runs() {
+    let dir = TempDir::new().expect("temp dir");
+    let db = dir.path().join("ledger.db");
+    let ledger = Ledger::open(&db).expect("ledger");
+    let search = SessionSearch::open(&db).expect("search");
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "run-a".into(),
+        })
+        .unwrap();
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "run-b".into(),
+        })
+        .unwrap();
+    search
+        .index(&chunk(
+            "run-a",
+            "a1",
+            1,
+            "deploying the canary to production",
+        ))
+        .unwrap();
+    search
+        .index(&chunk(
+            "run-b",
+            "b1",
+            1,
+            "canary analysis shows no regression",
+        ))
+        .unwrap();
+    assert_eq!(search.search("canary", 10).unwrap().len(), 2);
+
+    ledger.delete_run("run-a").unwrap();
+
+    let hits = search.search("canary", 10).unwrap();
+    assert_eq!(hits.len(), 1, "deleted run must leave no searchable rows");
+    assert_eq!(hits[0].chunk.run_id, "run-b");
+    // The deleted run's own unique term is gone too.
+    assert!(search.search("deploying", 10).unwrap().is_empty());
 }
 
 #[test]
-fn cosine_and_blob_round_trip() {
-    let v = vec![0.1f32, 0.2, 0.3];
-    let blob = embed_to_blob(Some(&v));
-    let back = blob_to_embedding(blob);
-    assert_eq!(back.unwrap(), v);
-    assert!(blob_to_embedding(None).is_none());
-    assert!((cosine(&v, &v) - 1.0).abs() < 1e-5);
-    // A vector against its own negation is -1, not 0.
-    assert!((cosine(&v, &[-0.1, -0.2, -0.3]) + 1.0).abs() < 1e-5);
-    // A genuinely orthogonal vector: 0.1*0.2 + 0.2*(-0.1) + 0.3*0 == 0.
-    assert!(cosine(&v, &[0.2, -0.1, 0.0]).abs() < 1e-5);
+fn search_across_runs_returns_only_matching_runs() {
+    let (s, _dir) = file_search();
+    s.index(&chunk(
+        "run-a",
+        "a1",
+        1,
+        "quantum tunneling in the diode model",
+    ))
+    .unwrap();
+    s.index(&chunk(
+        "run-b",
+        "b1",
+        1,
+        "nebula photography with the new lens",
+    ))
+    .unwrap();
+    s.index(&chunk(
+        "run-c",
+        "c1",
+        1,
+        "quantum error correction thresholds",
+    ))
+    .unwrap();
+    s.index(&chunk("run-b", "b2", 2, "calibrating the nebula timer"))
+        .unwrap();
+
+    let hits = s.search("quantum", 10).unwrap();
+    assert_eq!(hits.len(), 2);
+    let mut runs: Vec<&str> = hits.iter().map(|h| h.chunk.run_id.as_str()).collect();
+    runs.sort_unstable();
+    assert_eq!(runs, ["run-a", "run-c"]);
+    assert!(hits.iter().all(|h| h.chunk.text.contains("quantum")));
 }

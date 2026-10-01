@@ -6,11 +6,11 @@ publish = false
 
 # Behavioral / integration / eval test suite for Pantheon.
 #
-# Policy: only small deterministic unit tests live beside the code
-# (`cargo test -p <crate>`). Everything behavioral — SQLite stores,
-# threads, sockets, subprocesses, timing, filesystem — lives here and
+# Policy: no tests live beside the code — `cargo test -p <crate>` runs
+# zero tests. Everything (unit, behavioral, integration) lives here and
 # runs via `cargo test -p pantheon-eval`. Tautological, decorative,
-# host-dependent-skip, and dead-behavior tests are deleted, not moved.
+# host-dependent-skip, live-network, and dead-behavior tests are deleted,
+# not moved.
 #
 # Each file is one integration target: eval/tests/<crate>_<area>.rs.
 
@@ -20,11 +20,8 @@ pantheon-storage = { path = "../crates/pantheon-storage" }
 pantheon-runtime = { path = "../crates/pantheon-runtime" }
 pantheon-api = { path = "../crates/pantheon-api" }
 pantheon-agent = { path = "../crates/pantheon-agent" }
-pantheon-swarm = { path = "../crates/pantheon-swarm" }
 pantheon-exec = { path = "../crates/pantheon-exec" }
 pantheon-tools = { path = "../crates/pantheon-tools" }
-pantheon-capability = { path = "../crates/pantheon-capability" }
-pantheon-sandbox = { path = "../crates/pantheon-sandbox" }
 pantheon-memory = { path = "../crates/pantheon-memory" }
 pantheon-secrets = { path = "../crates/pantheon-secrets" }
 pantheon-providers = { path = "../crates/pantheon-providers" }
@@ -34,12 +31,16 @@ pantheon-scheduler = { path = "../crates/pantheon-scheduler" }
 pantheon-gateway = { path = "../crates/pantheon-gateway" }
 pantheon-migration = { path = "../crates/pantheon-migration" }
 pantheon-tui = { path = "../crates/pantheon-tui" }
-pantheon-reflect = { path = "../crates/pantheon-reflect" }
-pantheon-consolidate = { path = "../crates/pantheon-consolidate" }
+pantheon-nightly = { path = "../crates/pantheon-nightly" }
 pantheon-dashboard = { path = "../crates/pantheon-dashboard" }
+pantheon-web = { path = "../crates/pantheon-web" }
 serde_json = "1"
+toml = "0.8"
 tempfile = "3"
+tungstenite = "0.30"
 serde_yaml = "0.9"
 chrono = "0.4"
 chrono-tz = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Building fixture zips for the dashboard attachment-extraction tests.
+zip = { version = "2", default-features = false, features = ["deflate"] }

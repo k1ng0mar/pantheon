@@ -26,10 +26,11 @@ fn themes_are_visually_distinct() {
     assert_eq!(primaries.len(), 3);
     assert_ne!(primaries[0], primaries[1]);
     assert_ne!(primaries[0], primaries[2]);
-    // The default theme preserves today's look.
+    // The default theme preserves today's look (post-redesign palette:
+    // muted blue titles per the unified-layout spec).
     let p = Theme::pantheon();
-    assert_eq!(format!("{:?}", p.primary), "Cyan");
-    assert_eq!(format!("{:?}", p.dim), "DarkGray");
+    assert_eq!(format!("{:?}", p.primary), "Rgb(122, 162, 247)");
+    assert_eq!(format!("{:?}", p.dim), "Rgb(107, 114, 128)");
 }
 
 #[test]

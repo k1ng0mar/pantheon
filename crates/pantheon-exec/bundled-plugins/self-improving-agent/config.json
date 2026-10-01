@@ -1,0 +1,1 @@
+{"_comment":"Directory that holds .learnings/. Empty = auto-resolve: $PANTHEON_DATA_DIR, else ~/. Pantheon's workspace files (MEMORY.md, AGENTS.md, SOUL.md, TOOLS.md) live at the home directory, so ~/.learnings is the default.","learnings_dir":""}

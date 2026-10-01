@@ -10,7 +10,8 @@
 //! reads the body via a gated tool. Nothing executes at discovery time.
 use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::collections::HashMap;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 fn serr(code: &str, cause: String) -> PantheonError {
@@ -83,20 +84,33 @@ pub const MAX_BUNDLE_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
 /// Cap for the number of entries in a skill ZIP (zip-bomb guard).
 pub const MAX_ZIP_ENTRIES: usize = 1000;
 
-/// Read at most `cap` bytes from `r`; error if the stream is longer.
-/// Guards against unbounded HTTP bodies.
-fn read_capped<R: std::io::Read>(r: R, cap: u64, what: &str) -> Result<Vec<u8>, PantheonError> {
-    let mut buf = Vec::new();
-    r.take(cap + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| serr("SKILL_FETCH_BODY", format!("{what}: {e}")))?;
-    if buf.len() as u64 > cap {
+/// Read a ureq response body with the shared byte cap, tolerating
+/// servers that close TLS without `close_notify`
+/// (see [`crate::http::read_body_capped`]). Transport failures get a
+/// clean message via [`crate::http::fetch_error_message`] — no raw
+/// rustls internals leak into API error bodies.
+fn read_http_body(resp: ureq::Response, what: &str) -> Result<Vec<u8>, PantheonError> {
+    let bytes = crate::http::read_body_capped(resp, MAX_HTTP_BYTES).map_err(|e| {
+        serr(
+            "SKILL_FETCH_BODY",
+            crate::http::fetch_error_message(what, &e.to_string()),
+        )
+    })?;
+    if bytes.len() as u64 > MAX_HTTP_BYTES {
         return Err(serr(
             "SKILL_FETCH_TOO_LARGE",
-            format!("{what}: exceeds {} MiB cap", cap / (1024 * 1024)),
+            format!("{what}: exceeds {} MiB cap", MAX_HTTP_BYTES / (1024 * 1024)),
         ));
     }
-    Ok(buf)
+    Ok(bytes)
+}
+
+/// Clean user-facing message for a ureq call failure (DNS, TLS, refused).
+fn fetch_call_error(what: &str, e: &ureq::Error) -> PantheonError {
+    serr(
+        "SKILL_FETCH",
+        crate::http::fetch_error_message(what, &e.to_string()),
+    )
 }
 
 /// Limits for inflating a skill ZIP. `unzip_skill` uses the defaults;
@@ -180,6 +194,451 @@ pub struct SkillMeta {
     /// Origin tag for provenance (e.g. "bundled", "user", catalog name).
     #[serde(default)]
     pub origin: String,
+    /// Executables declared in frontmatter (`exec:`). Empty for skills
+    /// that are pure instructions.
+    #[serde(default)]
+    pub exec: Vec<SkillExec>,
+}
+
+/// Name of the agent tool that runs skill-declared executables. Shared
+/// with pantheon-runtime so Plan-mode gating and timeline attribution
+/// key on one constant instead of a string literal in two crates.
+pub const SKILL_EXEC_TOOL_NAME: &str = "skill_exec";
+
+/// Default `timeout_secs` for a declared executable.
+pub const SKILL_EXEC_DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// Hard ceiling for `timeout_secs`: larger values are a parse error.
+pub const SKILL_EXEC_MAX_TIMEOUT_SECS: u64 = 600;
+
+/// Runtime that executes a skill's declared executable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillExecRuntime {
+    Shell,
+    Python3,
+    Node,
+    Npx,
+}
+
+/// Declared side-effect class of a skill executable.
+///
+/// Defaults to `write` (fail closed): a skill that forgets the field is
+/// treated as mutating, so Plan mode blocks it and the capability gate
+/// demands `ShellExecute`. `npx` is always forced to `write` — it fetches
+/// and runs remote code, so a `read` declaration on it is not honored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillExecSideEffects {
+    Read,
+    Write,
+}
+
+impl SkillExecSideEffects {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SkillExecSideEffects::Read => "read",
+            SkillExecSideEffects::Write => "write",
+        }
+    }
+}
+
+/// One executable a skill declares in frontmatter (`exec:`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillExec {
+    /// Kebab-case slug, `[a-z0-9-]{1,64}`.
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Script path relative to the skill dir (shell/python3/node), or an
+    /// npx package spec when `runtime: npx`.
+    pub command: String,
+    /// Usage hint shown to the agent (e.g. `"<youtube-url>"`).
+    #[serde(default)]
+    pub args: String,
+    pub runtime: SkillExecRuntime,
+    pub side_effects: SkillExecSideEffects,
+    /// Wall-clock budget, 1..=600 seconds.
+    pub timeout_secs: u64,
+}
+
+/// What the agent sees for one declared executable: the invocable
+/// surface (`[{name, description, args, side_effects}]`), without the
+/// script path (an implementation detail, not a prompt detail).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillExecSummary {
+    pub name: String,
+    pub description: String,
+    pub args: String,
+    pub side_effects: SkillExecSideEffects,
+}
+
+impl SkillMeta {
+    /// Executables the agent can invoke via `skill_exec`, in declaration
+    /// order.
+    pub fn executables(&self) -> Vec<SkillExecSummary> {
+        self.exec
+            .iter()
+            .map(|e| SkillExecSummary {
+                name: e.name.clone(),
+                description: e.description.clone(),
+                args: e.args.clone(),
+                side_effects: e.side_effects,
+            })
+            .collect()
+    }
+}
+
+/// Executable slug: `[a-z0-9-]{1,64}`. Deliberately stricter than skill
+/// slugs (lowercase only, no `_`): the name becomes part of tool-call
+/// routing, so it stays lowercase kebab-case by contract.
+pub fn valid_exec_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 64
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+}
+
+/// Validate an npx package spec: `^[a-z0-9][a-z0-9._/-]*(@[a-z0-9._-]+)?$`.
+///
+/// Rejects URLs, scopes, and shell metacharacters. The spec is passed to
+/// `npx` as a single argv element (never shell-interpolated), but npx
+/// itself resolves it over the network, so the accepted shape stays
+/// narrow on purpose.
+pub fn valid_npx_spec(spec: &str) -> bool {
+    fn name_char(c: char) -> bool {
+        c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '/' | '-')
+    }
+    fn version_char(c: char) -> bool {
+        c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')
+    }
+    fn tight_segment(s: &str) -> bool {
+        let mut chars = s.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        (first.is_ascii_lowercase() || first.is_ascii_digit()) && chars.all(name_char)
+    }
+    // Optional scope: @scope/name — the canonical scoped-package form
+    // (`npx -y @scope/cli`).
+    let rest = match spec.strip_prefix('@') {
+        Some(after_at) => match after_at.split_once('/') {
+            Some((scope, name)) if tight_segment(scope) => name,
+            _ => return false,
+        },
+        None => spec,
+    };
+    // Optional @version suffix (split_once on the FIRST @ would break
+    // @scope — but the scope was stripped above, so the first @ here is
+    // the version separator).
+    let (name, version) = match rest.split_once('@') {
+        Some((n, v)) => (n, Some(v)),
+        None => (rest, None),
+    };
+    // The name may contain /subpath: every segment tight, none empty.
+    if name.is_empty() || !name.split('/').all(tight_segment) {
+        return false;
+    }
+    match version {
+        None => true,
+        Some(v) => !v.is_empty() && v.chars().all(version_char),
+    }
+}
+
+/// Validate a script `command` for shell/python3/node: a relative path
+/// with no `..`, no absolute path, no empty segments. This is the
+/// parse-time string check; invocation re-proves containment via
+/// canonicalization because the skill dir may be user-writable.
+fn check_script_path(command: &str) -> Result<(), &'static str> {
+    if command.is_empty() {
+        return Err("empty command");
+    }
+    if command.contains('\0') {
+        return Err("NUL byte in command");
+    }
+    if command.starts_with('/') {
+        return Err("absolute path");
+    }
+    if command.contains('\\') {
+        return Err("backslash in command");
+    }
+    for seg in command.split('/') {
+        if seg.is_empty() {
+            return Err("empty path segment");
+        }
+        if seg == ".." {
+            return Err("'..' segment");
+        }
+        if seg == "." {
+            return Err("'.' segment");
+        }
+    }
+    Ok(())
+}
+
+/// One raw `exec:` entry straight from YAML. `parse_skill` converts each
+/// of these with [`SkillExec::validate`], which names the skill and the
+/// entry in every error — a bare serde derive on the final struct would
+/// only say "unknown variant", losing which executable of which skill
+/// broke.
+#[derive(Debug, Deserialize)]
+struct SkillExecRaw {
+    name: Option<String>,
+    #[serde(default)]
+    description: String,
+    command: Option<String>,
+    #[serde(default)]
+    args: String,
+    #[serde(default)]
+    runtime: Option<String>,
+    #[serde(default)]
+    side_effects: Option<String>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+}
+
+/// Frontmatter shape before `exec:` entries are validated.
+#[derive(Debug, Deserialize)]
+struct SkillMetaRaw {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    origin: String,
+    #[serde(default)]
+    exec: Vec<SkillExecRaw>,
+}
+
+impl SkillExec {
+    /// Validate one raw `exec:` entry. Every failure is `SKILL_BAD_EXEC`
+    /// naming the skill and the entry index, so `skills doctor` points at
+    /// the exact declaration.
+    fn validate(skill: &str, index: usize, raw: SkillExecRaw) -> Result<Self, PantheonError> {
+        let entry = format!("skill '{skill}', entry {index}");
+        let name = raw.name.unwrap_or_default();
+        if !valid_exec_name(&name) {
+            return Err(serr(
+                "SKILL_BAD_EXEC",
+                format!("{entry}: name {name:?} must match [a-z0-9-]{{1,64}}"),
+            ));
+        }
+        let at = format!("{entry} '{name}'");
+        let runtime = match raw.runtime.as_deref().unwrap_or("shell") {
+            "shell" => SkillExecRuntime::Shell,
+            "python3" => SkillExecRuntime::Python3,
+            "node" => SkillExecRuntime::Node,
+            "npx" => SkillExecRuntime::Npx,
+            other => {
+                return Err(serr(
+                    "SKILL_BAD_EXEC",
+                    format!("{at}: unknown runtime {other:?} (expected shell|python3|node|npx)"),
+                ));
+            }
+        };
+        // npx fetches and runs remote code: always a write side-effect,
+        // even if the declaration claims `read`.
+        let side_effects = if runtime == SkillExecRuntime::Npx {
+            SkillExecSideEffects::Write
+        } else {
+            match raw.side_effects.as_deref().unwrap_or("write") {
+                "read" => SkillExecSideEffects::Read,
+                "write" => SkillExecSideEffects::Write,
+                other => {
+                    return Err(serr(
+                        "SKILL_BAD_EXEC",
+                        format!("{at}: unknown side_effects {other:?} (expected read|write)"),
+                    ));
+                }
+            }
+        };
+        let command = raw.command.unwrap_or_default();
+        if runtime == SkillExecRuntime::Npx {
+            if !valid_npx_spec(&command) {
+                return Err(serr(
+                    "SKILL_BAD_EXEC",
+                    format!(
+                        "{at}: npx command {command:?} is not a plain package spec \
+                         (no URLs, no scopes, no shell metacharacters)"
+                    ),
+                ));
+            }
+        } else if let Err(reason) = check_script_path(&command) {
+            return Err(serr(
+                "SKILL_BAD_EXEC",
+                format!("{at}: unsafe script path {command:?}: {reason}"),
+            ));
+        }
+        let timeout_secs = raw.timeout_secs.unwrap_or(SKILL_EXEC_DEFAULT_TIMEOUT_SECS);
+        if timeout_secs == 0 || timeout_secs > SKILL_EXEC_MAX_TIMEOUT_SECS {
+            return Err(serr(
+                "SKILL_BAD_EXEC",
+                format!(
+                    "{at}: timeout_secs {timeout_secs} out of range 1..={SKILL_EXEC_MAX_TIMEOUT_SECS}"
+                ),
+            ));
+        }
+        Ok(SkillExec {
+            name,
+            description: raw.description,
+            command,
+            args: raw.args,
+            runtime,
+            side_effects,
+            timeout_secs,
+        })
+    }
+}
+
+/// Where a resolved executable runs from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillExecTarget {
+    /// Canonical script path, proven inside the skill dir.
+    Script(PathBuf),
+    /// Validated npx package spec (re-checked at invocation; no path).
+    Npx(String),
+}
+
+/// Resolve a skill executable to its target, proving confinement.
+///
+/// For shell/python3/node the script path is canonicalized and must stay
+/// inside the skill dir — this defeats `..` tricks that survived the
+/// parse-time string check and symlinks pointing outside the dir (the
+/// skill dir may be user-writable, so the check runs at invocation, not
+/// just at parse). For npx the package spec is re-validated.
+pub fn resolve_skill_exec_target(
+    skill: &Skill,
+    exec: &SkillExec,
+) -> Result<SkillExecTarget, PantheonError> {
+    let who = format!("skill '{}', executable '{}'", skill.meta.name, exec.name);
+    if exec.runtime == SkillExecRuntime::Npx {
+        if !valid_npx_spec(&exec.command) {
+            return Err(serr(
+                "SKILL_EXEC_NPX",
+                format!("{who}: invalid npx package spec {:?}", exec.command),
+            ));
+        }
+        return Ok(SkillExecTarget::Npx(exec.command.clone()));
+    }
+    // The skill dir comes from discovery metadata (`Skill.dir`), not from
+    // re-deriving it here, so there is one source of truth. It is
+    // canonicalized below, which also resolves the `dir` itself when the
+    // skills root is a symlink.
+    let dir = skill_dir(skill);
+    if dir.as_os_str().is_empty() {
+        return Err(serr(
+            "SKILL_EXEC_DIR",
+            format!("{who}: skill has no directory"),
+        ));
+    }
+    let canon_dir = dir.canonicalize().map_err(|e| {
+        serr(
+            "SKILL_EXEC_DIR",
+            format!("{who}: canonicalize {}: {e}", dir.display()),
+        )
+    })?;
+    let joined = canon_dir.join(&exec.command);
+    // canonicalize resolves symlinks: a symlink inside the skill dir
+    // pointing outside fails the containment check below.
+    let canon = joined.canonicalize().map_err(|e| {
+        serr(
+            "SKILL_EXEC_SCRIPT",
+            format!("{who}: canonicalize {}: {e}", joined.display()),
+        )
+    })?;
+    if !canon.starts_with(&canon_dir) {
+        return Err(serr(
+            "SKILL_EXEC_ESCAPE",
+            format!("{who}: script escapes the skill dir"),
+        ));
+    }
+    if !canon.is_file() {
+        return Err(serr(
+            "SKILL_EXEC_SCRIPT",
+            format!("{who}: not a file: {}", canon.display()),
+        ));
+    }
+    Ok(SkillExecTarget::Script(canon))
+}
+
+/// Find a skill by name and one of its declared executables by name.
+pub fn find_skill_exec<'a>(
+    skills: &'a [Skill],
+    skill: &str,
+    name: &str,
+) -> Result<(&'a Skill, &'a SkillExec), PantheonError> {
+    let s = skills
+        .iter()
+        .find(|s| s.meta.name == skill)
+        .ok_or_else(|| serr("SKILL_UNKNOWN", format!("no skill named '{skill}'")))?;
+    let e = s.meta.exec.iter().find(|e| e.name == name).ok_or_else(|| {
+        serr(
+            "SKILL_UNKNOWN_EXEC",
+            format!("skill '{skill}' has no executable named '{name}'"),
+        )
+    })?;
+    Ok((s, e))
+}
+
+/// Parse `skill_exec` tool args: `{skill, name, args?}`. `args` defaults
+/// to `[]` and must be an array of strings when present.
+pub fn parse_skill_exec_args(args: &str) -> Result<(String, String, Vec<String>), PantheonError> {
+    let v: serde_json::Value = if args.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(args)
+            .map_err(|e| serr("TOOL_BAD_ARGS", format!("invalid JSON args: {e}")))?
+    };
+    let str_arg = |key: &str| {
+        v.get(key)
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| serr("TOOL_BAD_ARGS", format!("missing string arg '{key}'")))
+    };
+    let skill = str_arg("skill")?;
+    let name = str_arg("name")?;
+    let exec_args = match v.get("args") {
+        None => Vec::new(),
+        Some(a) => a
+            .as_array()
+            .ok_or_else(|| {
+                serr(
+                    "TOOL_BAD_ARGS",
+                    "'args' must be an array of strings".to_string(),
+                )
+            })?
+            .iter()
+            .map(|x| {
+                x.as_str().map(str::to_string).ok_or_else(|| {
+                    serr(
+                        "TOOL_BAD_ARGS",
+                        "'args' must be an array of strings".to_string(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    Ok((skill, name, exec_args))
+}
+
+/// True when a `skill_exec` call must be treated as mutating for
+/// Plan-mode gating: the named executable declares `side_effects: write`,
+/// or the skill/executable cannot be resolved (fail closed — an
+/// unresolvable call errors at execution, but Plan mode must not wave it
+/// through as "read-only" first).
+pub fn skill_exec_call_is_mutating(skills: &[Skill], args: &str) -> bool {
+    let Ok((skill, name, _)) = parse_skill_exec_args(args) else {
+        return true;
+    };
+    match find_skill_exec(skills, &skill, &name) {
+        Ok((_, exec)) => exec.side_effects == SkillExecSideEffects::Write,
+        Err(_) => true,
+    }
+}
+
+/// The `skill` argument of a `skill_exec` call, for timeline attribution.
+pub fn skill_exec_skill_arg(args: &str) -> Option<String> {
+    parse_skill_exec_args(args).ok().map(|(s, _, _)| s)
 }
 
 /// One discovered skill: metadata plus where its body lives.
@@ -188,6 +647,29 @@ pub struct Skill {
     pub meta: SkillMeta,
     /// Absolute path to the SKILL.md file.
     pub path: PathBuf,
+    /// Absolute path to the skill's directory (parent of SKILL.md).
+    ///
+    /// Third-party skills invoke bundled scripts through prose
+    /// (`${CLAUDE_SKILL_DIR}/scripts/...`); the agent expands the
+    /// placeholder to this dir and runs them via the regular exec tool.
+    /// `skill_exec` only covers `exec:`-declared entries.
+    #[serde(default)]
+    pub dir: PathBuf,
+}
+
+/// Absolute directory of a skill: the `dir` discovery field, falling back
+/// to the SKILL.md parent for metadata deserialized before the field
+/// existed.
+pub fn skill_dir(skill: &Skill) -> PathBuf {
+    if skill.dir.as_os_str().is_empty() {
+        skill
+            .path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default()
+    } else {
+        skill.dir.clone()
+    }
 }
 
 /// Parse frontmatter + body from a SKILL.md. Frontmatter is `---` fenced
@@ -207,20 +689,35 @@ pub fn parse_skill(raw: &str, path: &Path) -> Result<Skill, PantheonError> {
         )
     })?;
     let yaml = &rest[..end];
-    let mut meta: SkillMeta = serde_yaml::from_str(yaml)
+    let raw_meta: SkillMetaRaw = serde_yaml::from_str(yaml)
         .map_err(|e| serr("SKILL_BAD_FRONTMATTER", format!("{}: {e}", path.display())))?;
-    if meta.name.trim().is_empty() {
+    if raw_meta.name.trim().is_empty() {
         return Err(serr(
             "SKILL_NO_NAME",
             format!("{}: frontmatter has no name", path.display()),
         ));
     }
+    // Validate every `exec:` entry with the skill name in scope, so each
+    // rejection names the skill and the entry. A single bad entry fails
+    // the whole skill: a half-declared executable is worse than none.
+    let mut exec = Vec::with_capacity(raw_meta.exec.len());
+    for (i, e) in raw_meta.exec.into_iter().enumerate() {
+        exec.push(SkillExec::validate(&raw_meta.name, i, e)?);
+    }
+    let mut meta = SkillMeta {
+        name: raw_meta.name,
+        description: raw_meta.description,
+        origin: raw_meta.origin,
+        exec,
+    };
     if meta.origin.is_empty() {
         meta.origin = "user".into();
     }
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
     Ok(Skill {
         meta,
         path: path.to_path_buf(),
+        dir,
     })
 }
 
@@ -246,10 +743,6 @@ pub fn skill_body(skill: &Skill) -> Result<String, PantheonError> {
         None => Ok(raw),
     }
 }
-
-#[cfg(test)]
-#[path = "skills_tests.rs"]
-mod tests;
 
 /// Where a skill was discovered from. Carried as provenance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -546,44 +1039,35 @@ fn scan_skills_with_home(
     }
 }
 
-/// Inner discovery parameterized by home dir so tests can fake `HOME`
-/// without mutating the process environment (cargo tests run in parallel).
-#[cfg(test)]
-fn discover_skills_ext_with_home(
-    data_dir: &Path,
-    project_root: &Path,
-    extra_roots: &[PathBuf],
-    home: &Path,
-) -> Vec<Skill> {
-    scan_skills_with_home(data_dir, project_root, extra_roots, home).loaded
-}
-
 /// Fetch a SKILL.md body, trying each candidate URL in order. A 404 on a
 /// bare-repo URL falls through to the next candidate rather than failing.
 fn fetch_skill_md(url: &str) -> Result<String, PantheonError> {
     let candidates = candidate_urls(url);
     let mut last_err: Option<PantheonError> = None;
     for candidate in &candidates {
-        match ureq::get(candidate)
-            .timeout(std::time::Duration::from_secs(15))
-            .set("User-Agent", "pantheon-skill-import")
-            .call()
-        {
-            Ok(resp) => {
-                if !(200..300).contains(&resp.status()) {
-                    last_err = Some(serr(
-                        "SKILL_FETCH_HTTP",
-                        format!("{}: HTTP {}", url, resp.status()),
-                    ));
-                    continue;
-                }
-                let bytes = read_capped(resp.into_reader(), MAX_HTTP_BYTES, url)?;
-                let body = String::from_utf8(bytes)
+        // ureq first, curl fallback on transport failure (see http::get).
+        match crate::http::get(
+            candidate,
+            std::time::Duration::from_secs(15),
+            MAX_HTTP_BYTES,
+            "pantheon-skill-import",
+        ) {
+            Ok(fetched) => {
+                let body = String::from_utf8(fetched.body)
                     .map_err(|e| serr("SKILL_FETCH_BODY", format!("{url}: {e}")))?;
                 return Ok(body);
             }
-            Err(e) => {
-                last_err = Some(serr("SKILL_FETCH", format!("{}: {e}", url)));
+            Err(crate::http::GetError::Status(code)) => {
+                last_err = Some(serr("SKILL_FETCH_HTTP", format!("{url}: HTTP {code}")));
+            }
+            Err(crate::http::GetError::Transport(msg)) => {
+                last_err = Some(serr("SKILL_FETCH", msg));
+            }
+            Err(crate::http::GetError::TooLarge) => {
+                last_err = Some(serr(
+                    "SKILL_FETCH_TOO_LARGE",
+                    format!("{url}: response exceeds the fetch cap"),
+                ));
             }
         }
     }
@@ -721,17 +1205,17 @@ fn fetch_clawhub_json_with_status(url: &str) -> Result<(String, u16), PantheonEr
     {
         Ok(resp) => {
             let status = resp.status();
-            let bytes = read_capped(resp.into_reader(), MAX_HTTP_BYTES, url)?;
+            let bytes = read_http_body(resp, url)?;
             let body = String::from_utf8(bytes)
                 .map_err(|e| serr("SKILL_FETCH_BODY", format!("{url}: {e}")))?;
             Ok((body, status))
         }
         Err(ureq::Error::Status(code, resp)) => {
-            let bytes = read_capped(resp.into_reader(), MAX_HTTP_BYTES, url).unwrap_or_default();
+            let bytes = read_http_body(resp, url).unwrap_or_default();
             let body = String::from_utf8(bytes).unwrap_or_default();
             Ok((body, code))
         }
-        Err(e) => Err(serr("SKILL_FETCH", format!("{url}: {e}"))),
+        Err(e) => Err(fetch_call_error(url, &e)),
     }
 }
 
@@ -828,8 +1312,10 @@ pub fn import_skill_from_clawhub(
             name: name.clone(),
             description: String::new(),
             origin: "openclaw".to_string(),
+            exec: Vec::new(),
         },
         path: dest_dir.join("SKILL.md"),
+        dir: dest_dir.clone(),
     };
     if let Some(loaded) = load_skill(&s.path) {
         s = loaded;
@@ -841,12 +1327,22 @@ pub fn import_skill_from_clawhub(
 /// Fetch raw bytes from a URL (binary-safe; no charset re-encoding).
 /// Capped at MAX_HTTP_BYTES so a hostile endpoint cannot OOM the importer.
 fn fetch_bytes(url: &str) -> Result<Vec<u8>, PantheonError> {
-    let resp = ureq::get(url)
-        .timeout(std::time::Duration::from_secs(30))
-        .set("User-Agent", "pantheon-skill-import")
-        .call()
-        .map_err(|e| serr("SKILL_FETCH", format!("{url}: {e}")))?;
-    read_capped(resp.into_reader(), MAX_HTTP_BYTES, url)
+    match crate::http::get(
+        url,
+        std::time::Duration::from_secs(30),
+        MAX_HTTP_BYTES,
+        "pantheon-skill-import",
+    ) {
+        Ok(fetched) => Ok(fetched.body),
+        Err(crate::http::GetError::Status(code)) => {
+            Err(serr("SKILL_FETCH_HTTP", format!("{url}: HTTP {code}")))
+        }
+        Err(crate::http::GetError::Transport(msg)) => Err(serr("SKILL_FETCH", msg)),
+        Err(crate::http::GetError::TooLarge) => Err(serr(
+            "SKILL_FETCH_TOO_LARGE",
+            format!("{url}: response exceeds the fetch cap"),
+        )),
+    }
 }
 
 /// Inflate a skill ZIP into (relative path, bytes) pairs, dropping the
@@ -1153,46 +1649,137 @@ pub fn import_skill_dirs(
     data_dir: &Path,
     root: &Path,
 ) -> Result<Vec<(String, PathBuf)>, PantheonError> {
-    let mut names: Vec<String> = Vec::new();
-    collect_skill_dirs(root, &mut names);
+    let found = collect_skill_dirs(root);
+    // Group by leaf dir name. On collision the canonical plugin layout
+    // (`plugin/skills/<name>`) keeps the bare name; the rest get stable
+    // path-derived names so nothing silently overwrites anything else.
+    let mut by_leaf: HashMap<String, Vec<&PathBuf>> = HashMap::new();
+    for rel in &found {
+        let leaf = rel
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        by_leaf.entry(leaf).or_default().push(rel);
+    }
     let mut out = Vec::new();
-    for name in &names {
-        let dir = root.join(name);
-        match import_skill_dir(data_dir, &dir, name) {
-            Ok(p) => out.push((name.clone(), p)),
+    for rel in &found {
+        let leaf = rel
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let group = &by_leaf[&leaf];
+        let name = if group.len() == 1 || pick_canonical(group) == rel {
+            leaf
+        } else {
+            path_derived_name(rel)
+        };
+        let dir = root.join(rel);
+        match import_skill_dir(data_dir, &dir, &name) {
+            Ok(p) => out.push((name, p)),
             Err(e) => eprintln!("skill {}: {e}", dir.display()),
         }
     }
     Ok(out)
 }
 
-/// Find immediate subdirectories of `root` that directly contain a
-/// `SKILL.md`. Descends one level for skills nested under a category dir
-/// (e.g. `skills/creative/claude-design`).
-fn collect_skill_dirs(root: &Path, names: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(root) else {
+/// Pick which colliding skill keeps the bare leaf name: the canonical
+/// plugin layout (`plugin/skills/<name>`) wins; ties break by shortest
+/// path, then lexicographic. Deterministic across re-imports.
+fn pick_canonical<'a>(group: &'a [&'a PathBuf]) -> &'a PathBuf {
+    fn score(rel: &PathBuf) -> (bool, usize, String) {
+        let comps: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        let is_plugin = comps
+            .windows(2)
+            .any(|w| w[0] == "plugin" && w[1] == "skills");
+        (!is_plugin, comps.len(), comps.join("/"))
+    }
+    group
+        .iter()
+        .min_by(|a, b| score(a).cmp(&score(b)))
+        .expect("non-empty group")
+}
+
+/// Max recursion depth when walking a repo for skills. Covers real-world
+/// layouts (`plugin/skills/<name>`, `.github/skills/<name>`,
+/// `.agents/skills/<name>`) with headroom while bounding pathological
+/// trees.
+const MAX_SKILL_WALK_DEPTH: usize = 6;
+
+/// Find every directory under `root` that directly contains a `SKILL.md`,
+/// as paths relative to `root`, sorted for determinism.
+///
+/// Recurses (depth-capped) so plugin-style layouts are found. Never
+/// follows symlinks — a crafted repo can neither pull the walker outside
+/// the clone nor loop it. Skips `.git` (a clone's object store is never a
+/// skill) but descends into other dot-dirs (`.github`, `.agents`).
+/// `SKILL.md` itself must be a real file, not a symlink.
+fn collect_skill_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect_skill_dirs_into(root, Path::new(""), &mut out, 0);
+    out.sort();
+    out
+}
+
+fn collect_skill_dirs_into(root: &Path, rel: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    if depth > MAX_SKILL_WALK_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root.join(rel)) else {
         return;
     };
     for e in entries.flatten() {
-        let p = e.path();
-        if !p.is_dir() {
+        // file_type() does not follow symlinks.
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_symlink() || !ft.is_dir() {
             continue;
         }
-        let fname = p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
-        if fname.starts_with('.') {
+        let fname = e.file_name();
+        if fname.to_string_lossy() == ".git" {
             continue;
         }
-        if p.join("SKILL.md").is_file() {
-            names.push(fname);
+        let child_rel = rel.join(&fname);
+        let child_abs = root.join(&child_rel);
+        let skill_md_is_file = std::fs::symlink_metadata(child_abs.join("SKILL.md"))
+            .map(|m| m.file_type().is_file())
+            .unwrap_or(false);
+        if skill_md_is_file {
+            out.push(child_rel);
         } else {
-            // One level of nesting: category dirs like skills/creative/.
-            let sub = p.join("SKILL.md");
-            let _ = &sub;
-            collect_skill_dirs(&p, names);
+            collect_skill_dirs_into(root, &child_rel, out, depth + 1);
         }
     }
+}
+
+/// Fallback skill name from a relative path (`plugin/skills/impeccable`
+/// → `plugin-skills-impeccable`): deterministic across re-imports, so a
+/// re-import refreshes instead of duplicating. Components are
+/// slug-sanitized to satisfy [`valid_slug`].
+fn path_derived_name(rel: &Path) -> String {
+    let mut parts = Vec::new();
+    for c in rel.components() {
+        let s = c.as_os_str().to_string_lossy().to_lowercase();
+        let mut clean = String::new();
+        for ch in s.chars() {
+            if ch.is_ascii_alphanumeric() {
+                clean.push(ch);
+            } else if !clean.ends_with('-') && !clean.is_empty() {
+                clean.push('-');
+            }
+        }
+        let clean = clean.trim_matches('-').to_string();
+        if !clean.is_empty() {
+            parts.push(clean);
+        }
+    }
+    let mut name = parts.join("-");
+    if name.is_empty() {
+        name = "skill".to_string();
+    }
+    while name.len() > 64 {
+        name.pop();
+    }
+    name.trim_matches('-').to_string()
 }

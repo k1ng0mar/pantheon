@@ -82,12 +82,27 @@ pub trait ChatTransport: Send + Sync {
     fn post(&self, req: &WireRequest) -> Result<String, PantheonError>;
     /// POST with `stream: true`. `on_payload` receives each SSE `data:`
     /// payload verbatim (including `[DONE]`). Returning `Err` aborts the
-    /// stream and propagates; the stream ends on `data: [DONE]` or EOF.
+    /// stream and propagates; the stream ends on `data: [DONE]`
+    /// ([`StreamEnd::Done`]) or EOF ([`StreamEnd::Eof`]).
     fn post_stream(
         &self,
         req: &WireRequest,
         on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
-    ) -> Result<(), PantheonError>;
+    ) -> Result<StreamEnd, PantheonError>;
+}
+
+/// How an SSE stream ended. `HttpTransport` reports this; adapters
+/// decide what it means for the turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEnd {
+    /// The provider sent `data: [DONE]`: the turn is complete.
+    Done,
+    /// EOF arrived without `[DONE]`: the stream may be truncated. The
+    /// adapter accepts the turn only when it already saw a finish
+    /// signal (`finish_reason`); otherwise it fails with
+    /// `PROVIDER_TRUNCATED` (retryable) so the chain can retry or fall
+    /// back instead of presenting a silently cut turn as complete.
+    Eof,
 }
 
 /// ureq-based transport.
@@ -218,12 +233,10 @@ fn http_date_to_epoch(value: &str) -> Option<u64> {
 
 /// Re-read the capped `Retry-After` wait a 429 asked for, from the marker
 /// `send()` stamped on the error cause. `None` = no wait requested.
+/// The parser lives in [`error_kind`]; the TUI card reuses it for the
+/// rate-limit "retry in Ns" line.
 pub fn retry_after_secs(err: &PantheonError) -> Option<u64> {
-    let marker = "(retry-after: ";
-    let start = err.cause.rfind(marker)? + marker.len();
-    let rest = err.cause.get(start..)?;
-    let end = rest.find('s')?;
-    rest[..end].parse::<u64>().ok()
+    crate::error_kind::retry_after_secs_from_cause(&err.cause)
 }
 
 fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, PantheonError> {
@@ -311,7 +324,19 @@ pub fn resolve_aux_wire(
 
 /// Build the wire request for one prompt: no tools, no streaming.
 pub fn aux_request(wire: &AuxWire, model: &str, prompt: String) -> WireRequest {
-    let messages = vec![Message::user(prompt)];
+    aux_vision_request(wire, model, prompt, Vec::new())
+}
+
+/// Build the wire request for one prompt plus image parts: no tools, no
+/// streaming. Empty `images` degrades exactly to [`aux_request`] — the
+/// adapters keep text-only rows byte-identical.
+pub fn aux_vision_request(
+    wire: &AuxWire,
+    model: &str,
+    prompt: String,
+    images: Vec<pantheon_api::message::ImagePart>,
+) -> WireRequest {
+    let messages = vec![Message::user(prompt).with_images(images)];
     match wire.api_mode {
         ApiMode::OpenAi => openai::request(
             &wire.base,
@@ -321,6 +346,9 @@ pub fn aux_request(wire: &AuxWire, model: &str, prompt: String) -> WireRequest {
             &messages,
             &[],
             false,
+            // Aux turns carry their own fixed wire budget (resolve_aux_wire);
+            // the session max_tokens directive never reaches them.
+            wire.max_tokens,
             // Aux turns stay fast and cheap: no reasoning effort, ever.
             pantheon_api::model::ReasoningLevel::Off,
             &TurnOptions::default(),
@@ -369,7 +397,7 @@ impl ChatTransport for Box<dyn ChatTransport> {
         &self,
         req: &WireRequest,
         on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
-    ) -> Result<(), PantheonError> {
+    ) -> Result<StreamEnd, PantheonError> {
         (**self).post_stream(req, on_payload)
     }
 }
@@ -386,7 +414,7 @@ impl ChatTransport for HttpTransport {
         &self,
         req: &WireRequest,
         on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
-    ) -> Result<(), PantheonError> {
+    ) -> Result<StreamEnd, PantheonError> {
         // No overall timeout: a stream may run long. Connect stays bounded;
         // the read timeout is a per-chunk idle deadline.
         let agent = ureq::AgentBuilder::new()
@@ -408,14 +436,10 @@ impl ChatTransport for HttpTransport {
                 }
                 on_payload(payload)?;
                 if payload == "[DONE]" {
-                    return Ok(());
+                    return Ok(StreamEnd::Done);
                 }
             }
         }
-        Ok(())
+        Ok(StreamEnd::Eof)
     }
 }
-
-#[cfg(test)]
-#[path = "http_tests.rs"]
-mod tests;

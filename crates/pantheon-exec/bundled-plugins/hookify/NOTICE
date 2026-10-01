@@ -1,0 +1,12 @@
+This plugin adapts rule content and the rule engine from the
+Anthropic Claude Code plugin collection.
+
+Source: https://github.com/anthropics/claude-plugins-official
+Copyright (c) Anthropic — licensed under the Apache License, Version 2.0.
+Bundled verbatim here as LICENSE-APACHE2; the Pantheon adaptations are
+marked in each file's header.
+
+The upstream stop-hook example was dropped (Pantheon has no blocking
+hook at session end), and the upstream LLM suggester agent was replaced
+by deterministic heuristics (see _suggest.py), because a Pantheon hook
+subprocess has no supported path to reach a model.

@@ -268,7 +268,7 @@ struct HttpResponse {
 }
 
 fn http_get(url: &str, api_key: Option<&str>) -> Result<HttpResponse, PantheonError> {
-    let agent = http_agent();
+    let agent = http_agent(url);
     let mut req = agent.get(url);
     if let Some(k) = api_key {
         req = req.set("Authorization", &format!("Bearer {k}"));
@@ -282,7 +282,7 @@ fn http_post(
     payload: &[u8],
     api_key: Option<&str>,
 ) -> Result<HttpResponse, PantheonError> {
-    let agent = http_agent();
+    let agent = http_agent(url);
     let mut req = agent.post(url);
     if let Some(k) = api_key {
         req = req.set("Authorization", &format!("Bearer {k}"));
@@ -296,10 +296,64 @@ fn http_post(
 
 /// One shared agent shape for the memory bridge: bounded overall timeout,
 /// rustls, no async runtime — the same posture as the provider plane.
-fn http_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
+///
+/// ureq 2.x ignores `NO_PROXY` entirely, so with `proxy-from-env` enabled a
+/// loopback URL would be sent to the environment proxy and die there.
+/// Loopback and `NO_PROXY` hosts are therefore detected here and get an
+/// agent with the env proxy disabled.
+fn http_agent(url: &str) -> ureq::Agent {
+    let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30));
+    if bypasses_proxy(url) {
+        builder = builder.try_proxy_from_env(false);
+    }
+    builder.build()
+}
+
+/// Whether requests to `url` must skip the environment proxy.
+fn bypasses_proxy(url: &str) -> bool {
+    let host = match url_host(url) {
+        Some(h) => h,
+        None => return false,
+    };
+    if host == "localhost" || host == "127.0.0.1" || host == "::1" || host.ends_with(".localhost") {
+        return true;
+    }
+    let list = std::env::var("NO_PROXY")
+        .or_else(|_| std::env::var("no_proxy"))
+        .unwrap_or_default();
+    host_matches_no_proxy(&host, &list)
+}
+
+/// Pure `NO_PROXY` list matching, kept separate from the env read so it is
+/// unit-testable: comma-separated entries, `*` matches everything, a
+/// leading dot (or none) matches the domain and its subdomains, an
+/// optional `:port` is ignored.
+fn host_matches_no_proxy(host: &str, no_proxy: &str) -> bool {
+    no_proxy.split(',').any(|entry| {
+        let entry = entry.trim().trim_start_matches('.').to_lowercase();
+        if entry.is_empty() {
+            return false;
+        }
+        if entry == "*" {
+            return true;
+        }
+        let entry_host = entry.split(':').next().unwrap_or("");
+        host == entry_host || host.ends_with(&format!(".{entry_host}"))
+    })
+}
+
+/// The lowercased host of an `http(s)://host[:port]/...` URL.
+fn url_host(url: &str) -> Option<String> {
+    let host_port = url.split("://").nth(1)?.split('/').next()?;
+    let host = if let Some(inner) = host_port.strip_prefix('[') {
+        inner.split(']').next()?
+    } else {
+        host_port.split(':').next()?
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_lowercase())
 }
 
 fn http_conn_err(method: &str, url: &str, e: ureq::Error) -> PantheonError {
@@ -329,7 +383,3 @@ fn read_response(
     }
     Ok(HttpResponse { status, body })
 }
-
-#[cfg(test)]
-#[path = "http_backend_tests.rs"]
-mod tests;

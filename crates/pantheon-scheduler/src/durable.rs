@@ -1,12 +1,13 @@
 //! Crash-safe claim ledger (§21).
 //!
-//! The pure [`ClaimLedger`] decides whether an occurrence may run, but its
-//! memory is lost on restart. [`DurableClaimLedger`] makes the same decision
-//! from `pantheon-storage`'s `ClaimStore`, which is the single source of
-//! truth: every claim is written with an atomic first-wins INSERT before it
-//! is honoured, so a crash mid-run cannot cause a fired job to fire again,
-//! and a recovered process needs no separate rebuild step — it just asks the
-//! store whether the occurrence was already claimed.
+//! Occurrence claims must survive restarts, or a crash mid-run lets a
+//! recovered process fire the same occurrence twice. [`DurableClaimLedger`]
+//! makes the claim decision from `pantheon-storage`'s `ClaimStore`, which is
+//! the single source of truth: every claim is written with an atomic
+//! first-wins INSERT before it is honoured, so a crash mid-run cannot cause
+//! a fired job to fire again, and a recovered process needs no separate
+//! rebuild step — it just asks the store whether the occurrence was already
+//! claimed.
 
 use pantheon_api::error::PantheonError;
 use pantheon_storage::ClaimStore;
@@ -55,6 +56,26 @@ impl DurableClaimLedger {
 
     pub fn prune_before(&self, cutoff_ms: i64) -> Result<usize, PantheonError> {
         self.store.prune_before(cutoff_ms)
+    }
+
+    /// Durably record that `job_id` owes one queued fire (the durable
+    /// twin of the driver's in-memory queue insert).
+    pub fn enqueue_drain(&self, job_id: &str) -> Result<(), PantheonError> {
+        self.store.enqueue_drain(job_id)
+    }
+
+    /// Drop `job_id`'s owed fire, if any. Called when the drain is taken,
+    /// on abandon, and on claim failure — the same points where the
+    /// in-memory queue entry is cleared.
+    pub fn dequeue_drain(&self, job_id: &str) -> Result<bool, PantheonError> {
+        self.store.dequeue_drain(job_id)
+    }
+
+    /// Atomically take `job_id`'s owed fire left by a crashed process.
+    /// See [`ClaimStore::take_pending_drain`] for the take-before-complete
+    /// trade-off.
+    pub fn take_pending_drain(&self, job_id: &str) -> Result<bool, PantheonError> {
+        self.store.take_pending_drain(job_id)
     }
 
     /// Number of occurrences currently claimed.

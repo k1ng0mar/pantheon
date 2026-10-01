@@ -1,14 +1,18 @@
 //! Behavioral tests for the web dashboard control plane.
 //!
-//! Spins up real dashboard servers on ephemeral loopback ports and
-//! exercises auth, endpoint shapes, redaction, and CRUD over raw TCP
-//! (the dashboard is std-only, so the test client is too).
+//! Spins up real gateway listeners on ephemeral loopback ports with a
+//! dashboard-only mount and exercises auth, endpoint shapes, redaction,
+//! and CRUD over raw TCP (the serve surface is std-only, so the test
+//! client is too). The dashboard's own `spawn_test_server` shim is not
+//! used: these tests go through `pantheon_gateway::http::spawn_test_server`
+//! with a `ServerConfig` holding a `DashboardMount`, exactly the path the
+//! CLI's unified listener uses.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 
 use pantheon_api::events::Event;
-use pantheon_dashboard::spawn_test_server;
+use pantheon_dashboard::{App, DashboardMount};
 use pantheon_storage::Ledger;
 
 struct Resp {
@@ -78,7 +82,28 @@ fn auth(token: &str) -> Vec<(String, String)> {
 
 fn boot() -> (u16, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (port, token) = spawn_test_server(dir.path().to_path_buf());
+    let token = pantheon_gateway::http::generate_token();
+    let app = App {
+        data_dir: dir.path().to_path_buf(),
+        token,
+        bind: "127.0.0.1".to_string(),
+        bind_all: false,
+        on_approval: None,
+        send_locks: Default::default(),
+        turn_children: Default::default(),
+        swarm: std::sync::Arc::new(pantheon_runtime::swarm_exec::SwarmOrchestrator::new(
+            std::sync::Arc::new(pantheon_runtime::swarm_exec::ScriptedWorker::new()),
+            None,
+        )),
+    };
+    let mount = DashboardMount::new(app);
+    let auth = mount.auth_ctx();
+    let cfg = pantheon_gateway::http::ServerConfig {
+        bind_addr: "127.0.0.1:0".to_string(),
+        auth,
+        mounts: vec![std::sync::Arc::new(mount)],
+    };
+    let (port, token) = pantheon_gateway::http::spawn_test_server(cfg);
     (port, token, dir)
 }
 
@@ -442,4 +467,323 @@ fn dashboard_runs_list_export_prune() {
     assert_eq!(r.status, 200);
     let r = raw_request(port, "GET", "/api/runs?limit=10", &a, None);
     assert!(!r.body.contains("eval-export-1"), "pruned run must be gone");
+}
+
+#[test]
+fn dashboard_plugins_tool_plugin_approve_disable() {
+    let (port, token, dir) = boot();
+    let a = auth(&token);
+    // Install a fake third-party tool plugin.
+    let plug = dir.path().join("plugins").join("demo-tool");
+    std::fs::create_dir_all(&plug).unwrap();
+    std::fs::write(
+        plug.join("manifest.yaml"),
+        "name: demo-tool\nversion: 1.0.0\ndescription: demo\nenabled: true\n",
+    )
+    .unwrap();
+
+    // List shows it as unapproved.
+    let r = raw_request(port, "GET", "/api/plugins", &a, None);
+    assert_eq!(r.status, 200);
+    let tool = || {
+        let v = json(&raw_request(port, "GET", "/api/plugins", &a, None).body);
+        v["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "demo-tool")
+            .cloned()
+            .expect("demo-tool listed")
+    };
+    assert_eq!(r.status, 200);
+    assert_eq!(tool()["kind"], "tool");
+    assert_eq!(tool()["approved"], false);
+
+    // Approve records it in the unified approval store.
+    let r = raw_request(
+        port,
+        "POST",
+        "/api/plugins/tool/demo-tool/approve",
+        &a,
+        Some("{}"),
+    );
+    assert_eq!(r.status, 200, "approve: {}", r.body);
+    assert_eq!(json(&r.body)["approved"], true);
+    assert_eq!(tool()["approved"], true);
+
+    // Disable revokes the approval and flips the manifest flag.
+    let r = raw_request(
+        port,
+        "POST",
+        "/api/plugins/tool/demo-tool/disable",
+        &a,
+        Some("{}"),
+    );
+    assert_eq!(r.status, 200, "disable: {}", r.body);
+    assert_eq!(tool()["approved"], false);
+    assert_eq!(tool()["enabled"], false);
+
+    // Unknown plugin -> 404, unsafe name -> 400, unknown kind -> 400.
+    let r = raw_request(
+        port,
+        "POST",
+        "/api/plugins/tool/nope/approve",
+        &a,
+        Some("{}"),
+    );
+    assert_eq!(r.status, 404);
+    let r = raw_request(
+        port,
+        "POST",
+        "/api/plugins/tool/..%5cevil/approve",
+        &a,
+        Some("{}"),
+    );
+    assert_eq!(r.status, 400, "unsafe name must be 400, got {}", r.status);
+    let r = raw_request(
+        port,
+        "POST",
+        "/api/plugins/bogus/demo-tool/approve",
+        &a,
+        Some("{}"),
+    );
+    assert_eq!(r.status, 400);
+}
+
+#[test]
+fn dashboard_plugins_hook_plugin_approve_revoke() {
+    let (port, token, dir) = boot();
+    let a = auth(&token);
+    // Install a fake hook plugin.
+    let plug = dir.path().join("extensions").join("demo-hook");
+    std::fs::create_dir_all(&plug).unwrap();
+    std::fs::write(
+        plug.join("plugin.yaml"),
+        "name: demo-hook\nversion: 0.1.0\ndescription: demo hook\n",
+    )
+    .unwrap();
+
+    let hook = || {
+        let v = json(&raw_request(port, "GET", "/api/plugins", &a, None).body);
+        v["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "demo-hook")
+            .cloned()
+            .expect("demo-hook listed")
+    };
+    assert_eq!(hook()["kind"], "hook");
+    assert_eq!(hook()["approved"], false);
+
+    let r = raw_request(
+        port,
+        "POST",
+        "/api/plugins/hook/demo-hook/approve",
+        &a,
+        Some("{}"),
+    );
+    assert_eq!(r.status, 200, "approve hook: {}", r.body);
+    assert_eq!(hook()["approved"], true);
+
+    // Approving twice: no longer pending -> 404.
+    let r = raw_request(
+        port,
+        "POST",
+        "/api/plugins/hook/demo-hook/approve",
+        &a,
+        Some("{}"),
+    );
+    assert_eq!(r.status, 404);
+
+    // Disable revokes the approval; the plugin stays installed.
+    let r = raw_request(
+        port,
+        "POST",
+        "/api/plugins/hook/demo-hook/disable",
+        &a,
+        Some("{}"),
+    );
+    assert_eq!(r.status, 200, "disable hook: {}", r.body);
+    assert_eq!(json(&r.body)["approved"], false);
+    assert_eq!(hook()["approved"], false);
+}
+
+// ------------------------------------------------- nightly toggle ------
+//
+// Enable path 4 (dashboard / mobile-app toggle): `POST
+// /api/nightly/enabled` writes the explicit `[nightly] enabled` flag
+// through the shared config document — the same flag `/nightly on|off`
+// and a manual config edit write. The test round-trips API → config
+// file → `pantheon_api::config::nightly_enabled`.
+
+#[test]
+fn dashboard_nightly_toggle_round_trips() {
+    let (port, token, dir) = boot();
+    let h = auth(&token);
+    let toggle =
+        |payload: &str| raw_request(port, "POST", "/api/nightly/enabled", &h, Some(payload));
+
+    // The two-phase convention: no confirm, no mutation.
+    let r = toggle(r#"{"enabled": true}"#);
+    assert_eq!(r.status, 400, "confirm required: {}", r.body);
+
+    // Bad shape is rejected before touching the config.
+    let r = toggle(r#"{"enabled": "yes", "confirm": true}"#);
+    assert_eq!(r.status, 400, "enabled must be bool: {}", r.body);
+
+    // Toggle on from a fresh data dir (no config.toml yet).
+    let r = toggle(r#"{"enabled": true, "confirm": true}"#);
+    assert_eq!(r.status, 200, "toggle on: {}", r.body);
+    let v = json(&r.body);
+    assert_eq!(v["enabled"].as_bool(), Some(true));
+    assert_eq!(v["reason"].as_str(), Some("explicit flag on"));
+
+    // The flag landed in the shared config file...
+    let raw = std::fs::read_to_string(dir.path().join("config.toml")).expect("config written");
+    assert!(raw.contains("enabled = true"), "flag in file: {raw}");
+    // ...and the single enable rule resolves it.
+    let cfg: pantheon_api::config::Config = toml::from_str(&raw).expect("config parses");
+    let section = cfg.nightly.as_ref().expect("[nightly] present");
+    assert!(pantheon_api::config::nightly_enabled(section));
+
+    // The status endpoint — the mobile app's read surface — agrees.
+    let r = raw_request(port, "GET", "/api/nightly/status", &h, None);
+    assert_eq!(r.status, 200, "status: {}", r.body);
+    let v = json(&r.body);
+    assert_eq!(v["enabled"].as_bool(), Some(true));
+    assert_eq!(v["explicit"].as_bool(), Some(true));
+    assert_eq!(v["model_pin"].as_bool(), Some(false));
+
+    // Toggle off: explicit false, resolved off, file updated.
+    let r = toggle(r#"{"enabled": false, "confirm": true}"#);
+    assert_eq!(r.status, 200, "toggle off: {}", r.body);
+    assert_eq!(json(&r.body)["enabled"].as_bool(), Some(false));
+    let raw = std::fs::read_to_string(dir.path().join("config.toml")).expect("config written");
+    let cfg: pantheon_api::config::Config = toml::from_str(&raw).expect("config parses");
+    let section = cfg.nightly.as_ref().expect("[nightly] present");
+    assert!(!pantheon_api::config::nightly_enabled(section));
+
+    // The legacy status routes report the resolved rule too, not the
+    // raw TOML bool.
+    let r = raw_request(port, "GET", "/api/reflect/status", &h, None);
+    assert_eq!(r.status, 200);
+    assert_eq!(json(&r.body)["enabled"].as_bool(), Some(false));
+    let r = raw_request(port, "GET", "/api/consolidate/status", &h, None);
+    assert_eq!(r.status, 200);
+    assert_eq!(json(&r.body)["enabled"].as_bool(), Some(false));
+}
+
+/// P0 (2026-10-01): percent-encoded / empty-segment variants of `/api/*`
+/// must hit the token gate exactly like the canonical path. Before the
+/// fix `auth_group` matched the RAW request path, so `GET /%61pi/runs`
+/// returned 200 with the full run list and
+/// `PATCH /%61pi/runs/run-1/queue/0` rewrote the queue — no token, no
+/// Host/Origin check. Real HTTP through the real gateway chain on a temp
+/// ledger, the way the audit reproduced it.
+#[test]
+fn dashboard_encoded_api_prefix_requires_token() {
+    let (port, token, dir) = boot();
+    let ledger = Ledger::open(&dir.path().join("ledger.db")).expect("open ledger");
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "run-1".into(),
+        })
+        .expect("run started");
+    ledger
+        .set_queued_message("run-1", Some("original"))
+        .expect("seed queue");
+    drop(ledger);
+
+    let none: Vec<(String, String)> = vec![];
+    // Every bypass shape: 401 without a token (mutations would be 403 on
+    // a bad Host/Origin, but the missing token rejects them first).
+    let bypasses: [(&str, &str, Option<&str>); 9] = [
+        ("GET", "/%61pi/runs", None),
+        ("GET", "//api/runs", None),
+        ("GET", "//%61pi/runs", None),
+        ("GET", "/%61pi//runs", None),
+        ("GET", "/api//runs", None),
+        (
+            "PATCH",
+            "/%61pi/runs/run-1/queue/0",
+            Some(r#"{"text":"PWNED"}"#),
+        ),
+        (
+            "PATCH",
+            "/api/runs/run-1/%71ueue/0",
+            Some(r#"{"text":"PWNED"}"#),
+        ),
+        ("DELETE", "//api/runs/run-1?confirm=true", None),
+        ("DELETE", "/%61pi/runs/run-1?confirm=true", None),
+    ];
+    for (method, path, body) in bypasses {
+        let r = raw_request(port, method, path, &none, body);
+        assert_eq!(r.status, 401, "{method} {path} without token must be 401");
+    }
+
+    // Nothing was mutated through the bypass.
+    let ledger = Ledger::open(&dir.path().join("ledger.db")).expect("open ledger");
+    assert_eq!(
+        ledger.queued_messages("run-1").expect("queue"),
+        vec!["original".to_string()],
+        "queue must be untouched by the bypass"
+    );
+    assert!(
+        !ledger.replay("run-1").expect("replay").is_empty(),
+        "run-1 must still exist after the bypass"
+    );
+    drop(ledger);
+
+    // The canonical paths still work with a valid token (no regression).
+    let a = auth(&token);
+    let r = raw_request(port, "GET", "/api/runs", &a, None);
+    assert_eq!(r.status, 200, "authed GET /api/runs: {}", r.body);
+    let r = raw_request(
+        port,
+        "PATCH",
+        "/api/runs/run-1/queue/0",
+        &a,
+        Some(r#"{"text":"edited"}"#),
+    );
+    assert_eq!(r.status, 200, "authed PATCH queue: {}", r.body);
+    let ledger = Ledger::open(&dir.path().join("ledger.db")).expect("open ledger");
+    assert_eq!(
+        ledger.queued_messages("run-1").expect("queue"),
+        vec!["edited".to_string()],
+        "authed PATCH must still edit the queue"
+    );
+    drop(ledger);
+    let r = raw_request(port, "DELETE", "/api/runs/run-1?confirm=true", &a, None);
+    assert_eq!(r.status, 200, "authed DELETE run: {}", r.body);
+    let ledger = Ledger::open(&dir.path().join("ledger.db")).expect("open ledger");
+    assert!(
+        ledger.replay("run-1").expect("replay").is_empty(),
+        "authed DELETE must still prune the run"
+    );
+}
+
+/// Round-1 closed shapes still fail safe after the P0 fix: paths that do
+/// not decode to `["api", ...]` are never routed to a handler — 404 from
+/// the Public group, or 401 when the first segment really is `api`.
+#[test]
+fn dashboard_closed_path_shapes_still_fail_safe() {
+    let (port, token, _dir) = boot();
+    let a = auth(&token);
+    // With a valid token (so auth can't mask routing): all 404.
+    for path in ["/API/runs", "/api%2f/runs", "/api/../runs", "/%2561pi/runs"] {
+        let r = raw_request(port, "GET", path, &a, None);
+        assert_eq!(r.status, 404, "GET {path} with token must be 404");
+    }
+    // Without a token: still never a 200, and never routed to a handler.
+    let none: Vec<(String, String)> = vec![];
+    for (path, want) in [
+        ("/API/runs", 404),     // Public -> dispatch 404s
+        ("/api%2f/runs", 404),  // one segment "api/runs": Public -> 404
+        ("/%2561pi/runs", 404), // decodes once to "%61pi": Public -> 404
+        ("/api/../runs", 401),  // first segment IS "api": token gate
+    ] {
+        let r = raw_request(port, "GET", path, &none, None);
+        assert_eq!(r.status, want, "GET {path} without token must be {want}");
+    }
 }

@@ -1,8 +1,7 @@
 //! Structured failure information (§20 recovery).
 //!
 //! Every operation failure carries code + layer + retryability + cause +
-//! remediation + evidence. Recovery classes: retry / fallback / degrade /
-//! pause / resume / fail.
+//! remediation + evidence.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,22 +15,8 @@ pub enum Layer {
     Provider,
     Storage,
     Memory,
-    Secrets,
-    Scheduler,
-    Gateway,
     Extension,
     Unknown(String),
-}
-
-/// What the supervisor may do about it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RecoveryClass {
-    Retry,
-    Fallback,
-    Degrade,
-    Pause,
-    Resume,
-    Fail,
 }
 
 /// Structured runtime error.
@@ -43,8 +28,12 @@ pub struct PantheonError {
     pub cause: String,
     pub remediation: String,
     pub evidence: String,
-    pub recovery: RecoveryClass,
 }
+
+/// Recovery guidance lives in the `retryable` flag plus `remediation`:
+/// retryable errors may be retried, everything else fails. A finer
+/// recovery classification (fallback / degrade / pause / resume) is a
+/// §20 supervisor concern, not per-error data.
 
 impl PantheonError {
     pub fn new(
@@ -55,20 +44,13 @@ impl PantheonError {
         remediation: impl Into<String>,
         evidence: impl Into<String>,
     ) -> Self {
-        let code = code.into();
-        let recovery = if retryable {
-            RecoveryClass::Retry
-        } else {
-            RecoveryClass::Fail
-        };
         Self {
-            code,
+            code: code.into(),
             layer,
             retryable,
             cause: cause.into(),
             remediation: remediation.into(),
             evidence: evidence.into(),
-            recovery,
         }
     }
 }

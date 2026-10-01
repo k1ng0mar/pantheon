@@ -1,6 +1,6 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
-use pantheon_sandbox::{SandboxLevel, SandboxProfile};
+use pantheon_exec::sandbox::{SandboxLevel, SandboxProfile};
 use pantheon_tools::builtins::{register_builtins_with, BuiltinOptions};
 use pantheon_tools::tools::ToolRegistry;
 
@@ -29,6 +29,11 @@ fn write_file_routes_through_safewrite_when_state_dir_given() {
     register_builtins_with(
         &mut reg,
         BuiltinOptions {
+            enable_terminal: true,
+            enable_files: true,
+            enable_ask_user: true,
+            enable_plugins: true,
+            data_dir: None,
             safewrite_state_dir: Some(state.clone()),
             workspace_root: Some(work.clone()),
         },
@@ -59,6 +64,11 @@ fn write_file_stale_check_rejects_mismatch() {
     register_builtins_with(
         &mut reg,
         BuiltinOptions {
+            enable_terminal: true,
+            enable_files: true,
+            enable_ask_user: true,
+            enable_plugins: true,
+            data_dir: None,
             safewrite_state_dir: Some(state.clone()),
             workspace_root: Some(work.clone()),
         },
@@ -92,6 +102,11 @@ fn write_file_unsafe_fallback_when_no_state_dir() {
     register_builtins_with(
         &mut reg,
         BuiltinOptions {
+            enable_terminal: true,
+            enable_files: true,
+            enable_ask_user: true,
+            enable_plugins: true,
+            data_dir: None,
             safewrite_state_dir: None,
             workspace_root: Some(work.clone()),
         },
@@ -121,7 +136,7 @@ fn shell_result_states_whether_the_sandbox_actually_ran() {
     pantheon_tools::builtins::register_builtins(&mut reg);
     let args = serde_json::json!({ "command": "echo pantheon-sandbox-probe" }).to_string();
 
-    let probe = pantheon_sandbox::runner::run_sandboxed(
+    let probe = pantheon_exec::sandbox::runner::run_sandboxed(
         &SandboxProfile::from(SandboxLevel::High),
         "sh",
         &["-c", "true"],
@@ -179,6 +194,11 @@ fn reg_in(work: &std::path::Path) -> ToolRegistry {
     register_builtins_with(
         &mut reg,
         BuiltinOptions {
+            enable_terminal: true,
+            enable_files: true,
+            enable_ask_user: true,
+            enable_plugins: true,
+            data_dir: None,
             safewrite_state_dir: None,
             workspace_root: Some(work.to_path_buf()),
         },
@@ -231,6 +251,11 @@ fn write_file_rejects_deny_globs_and_escapes() {
     register_builtins_with(
         &mut reg,
         BuiltinOptions {
+            enable_terminal: true,
+            enable_files: true,
+            enable_ask_user: true,
+            enable_plugins: true,
+            data_dir: None,
             safewrite_state_dir: Some(state),
             workspace_root: Some(work.clone()),
         },

@@ -82,6 +82,8 @@ fn resume_parked_run(data_dir: &Path, run_id: &str) -> Result<String, String> {
         secrets,
     )
     .map_err(|e| e.to_string())?;
+    config::apply_tool_enablement(&session, file_cfg.as_ref());
+    config::apply_budget_tiers(&session, file_cfg.as_ref());
     // An empty turn rebuilds the transcript from the ledger and settles
     // the granted call; never resend the user message (duplicate turn).
     session
@@ -117,8 +119,17 @@ fn push_to_queue(
 
 /// The runtime-backed sink. Maps channel threads to run ids through a
 /// thread→run map so a conversation keeps its run across messages.
+///
+/// `gateway` on every method is the *channel name* (`telegram`/`discord`
+/// in the legacy single-bot shape, any slug for explicit multi-bot
+/// channels) — never the platform. Thread ids are namespaced per channel
+/// before they touch the thread map: two bots on the same platform hand
+/// out overlapping thread ids, and the raw id would let bot B pick up bot
+/// A's conversation (and answer it from the wrong agent).
 struct RuntimeSink {
     data_dir: PathBuf,
+    /// Config-default policy. A channel with an agent may narrow it to
+    /// the agent's resolved preset (see [`RuntimeSink::policy_for`]).
     policy: Policy,
     threads: Mutex<HashMap<String, String>>,
     /// One outbound queue per surface ("telegram"/"discord"). Each
@@ -133,6 +144,17 @@ struct RuntimeSink {
     allow: Option<HashSet<String>>,
     /// Runs after a grant is recorded so the parked run continues.
     resume: ResumeHook,
+    /// Per-channel agent runtimes, by channel name. A message is answered
+    /// by its channel's agent — own profile, own persona, own memory
+    /// namespace. A channel with no entry here runs anonymous, exactly as
+    /// before profiles existed.
+    agents: HashMap<String, pantheon_runtime::AgentRuntime>,
+}
+
+/// Namespace a raw platform thread id under its channel so two bots on
+/// the same platform never share a thread-map entry.
+fn thread_key(channel: &str, thread_id: &str) -> String {
+    format!("{channel}\u{1f}{thread_id}")
 }
 
 impl RuntimeSink {
@@ -150,7 +172,36 @@ impl RuntimeSink {
             queues,
             allow,
             resume,
+            agents: HashMap::new(),
         }
+    }
+
+    /// Attach the per-channel agent runtimes (built once at startup).
+    /// Builder-style so the anonymous single-bot path keeps calling
+    /// `new` unchanged.
+    fn with_agents(mut self, agents: HashMap<String, pantheon_runtime::AgentRuntime>) -> Self {
+        self.agents = agents;
+        self
+    }
+
+    /// The policy for one channel's turn. `PANTHEON_GATEWAY_POLICY` wins
+    /// when set (the historical override); otherwise the channel agent's
+    /// resolved preset; otherwise the config default. Anonymous channels
+    /// get exactly today's behavior.
+    fn policy_for(&self, channel: &str) -> Policy {
+        match std::env::var("PANTHEON_GATEWAY_POLICY").as_deref() {
+            Ok("researcher") => return Policy::researcher_readonly(),
+            Ok("coder") => return Policy::coder(),
+            _ => {}
+        }
+        if let Some(preset) = self
+            .agents
+            .get(channel)
+            .and_then(|a| crate::config_schema::PolicyPreset::parse(a.policy_preset()))
+        {
+            return preset.to_policy();
+        }
+        self.policy.clone()
     }
 }
 
@@ -187,6 +238,10 @@ fn open_session(
     };
     let secrets = crate::config::chat_secrets(cfg.as_ref());
     pantheon_runtime::session::Session::new(data_dir.to_path_buf(), policy, model_policy, secrets)
+        .inspect(|s| {
+            crate::config::apply_tool_enablement(s, cfg.as_ref());
+            crate::config::apply_budget_tiers(s, cfg.as_ref());
+        })
 }
 
 impl RuntimeSink {
@@ -195,12 +250,13 @@ impl RuntimeSink {
     }
 }
 
-/// Tags every event with the surface it arrived on so the shared sink can
-/// route replies into the right per-surface queue. One of these wraps the
-/// `RuntimeSink` per daemon thread.
+/// Tags every event with the channel it arrived on so the shared sink can
+/// route replies into the right per-channel queue. One of these wraps the
+/// `RuntimeSink` per daemon thread. The tag is the channel name (any slug
+/// for explicit multi-bot channels), not a 'static platform string.
 struct SurfaceSink<'a> {
     inner: &'a RuntimeSink,
-    gateway: &'static str,
+    gateway: &'a str,
 }
 
 impl pantheon_gateway::EventSink for SurfaceSink<'_> {
@@ -230,28 +286,56 @@ impl RuntimeSink {
             );
             return;
         }
-        let session = match open_session(&self.data_dir.clone(), self.policy.clone()) {
+        let agent = self.agents.get(gateway).cloned();
+        let session = match open_session(&self.data_dir, self.policy_for(gateway)) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("gateway: session open failed: {e}");
                 return;
             }
         };
+        if let Some(agent) = agent {
+            // Attach the channel's agent before chatting: `chat_turn`
+            // binds the run to this agent, so a run id that another
+            // channel's agent owns is refused instead of answered from
+            // the wrong identity.
+            if let Err(e) = session.with_agent(agent) {
+                self.push_outbound(gateway, thread_id, format!("error: {e}"));
+                return;
+            }
+        }
+        let key = thread_key(gateway, thread_id);
         let run_id = self
             .threads
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .entry(thread_id.to_string())
+            .entry(key)
             .or_insert_with(pantheon_runtime::new_run_id)
             .clone();
         match session.chat(&run_id, text) {
             Ok(outcome) => {
                 let text = match outcome {
                     pantheon_agent::LoopOutcome::Answered { text: t, .. } => t,
-                    pantheon_agent::LoopOutcome::AwaitingApproval { capability, scope } => format!(
-                        "approval needed: {capability:?}. Reply 'grant {run_id} {scope}' to \
-                         allow it, or 'deny {run_id} {scope}' to refuse it."
-                    ),
+                    pantheon_agent::LoopOutcome::AwaitingApproval { capability, scope } => {
+                        // `is_git_push` is advisory detection (see its
+                        // docs), not a security boundary: a push hidden in
+                        // an opaque shell construction may never be flagged.
+                        // Say so on the one approval the detector produces;
+                        // the approval flow and message shape are untouched.
+                        let advisory =
+                            if matches!(&capability, pantheon_api::capability::Capability::GitPush)
+                            {
+                                " Note: git-push detection is advisory; a push \
+                             hidden in an opaque shell construction may not \
+                             be flagged."
+                            } else {
+                                ""
+                            };
+                        format!(
+                            "approval needed: {capability:?}.{advisory} Reply 'grant {run_id} {scope}' to \
+                             allow it, or 'deny {run_id} {scope}' to refuse it."
+                        )
+                    }
                     pantheon_agent::LoopOutcome::Denied { capability } => {
                         format!("denied: {capability:?}")
                     }
@@ -273,7 +357,7 @@ impl RuntimeSink {
         gateway: &str,
         thread_id: &str,
         sender: Option<&str>,
-        callback_run_id: Option<&str>,
+        _callback_run_id: Option<&str>,
         scope: &str,
         grant: bool,
     ) {
@@ -288,18 +372,18 @@ impl RuntimeSink {
                 return;
             }
         };
-        // Phone notifications for locally-started runs carry the run id in
-        // the button callback (the daemon's thread map never saw those
-        // runs). Legacy buttons fall back to the thread map. Either way the
+        // The daemon's thread map only knows runs it initiated itself:
+        // button taps on approval prompts the gateway sent resolve here.
+        // (Phone notifications about locally-started runs were removed;
+        // nothing sends run-id-carrying callbacks anymore.) Either way the
         // supervisor validates the scope against actual pending approvals,
         // so a forged run id grants nothing.
-        let run_id = callback_run_id.map(|s| s.to_string()).or_else(|| {
-            self.threads
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(thread_id)
-                .cloned()
-        });
+        let run_id = self
+            .threads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&thread_key(gateway, thread_id))
+            .cloned();
         let Some(run_id) = run_id else {
             self.push_outbound(
                 gateway,
@@ -377,105 +461,368 @@ pub fn cmd_gateway(args: &[String]) {
     }
 }
 
+/// One gateway chat surface: a named channel bound to a platform, a bot
+/// token, and the agent profile that serves it.
+struct ChannelSpec {
+    /// Channel name — keys outbound queues, cursor files, and thread ids.
+    name: String,
+    /// `"telegram"` or `"discord"`.
+    platform: String,
+    /// Bot token (never logged).
+    token: String,
+    /// Agent profile serving this channel; `None` = default resolution.
+    profile: Option<String>,
+    /// Voice replies on this channel.
+    voice_replies: bool,
+}
+
+/// A `Channel` that answers to a configured name. Two bots on the same
+/// platform are otherwise indistinguishable to the daemon plumbing
+/// (`TelegramChannel::name()` is the hardcoded `"telegram"`); the wrapper
+/// gives each its channel name for routing, claiming, and logs while the
+/// inner channel keeps doing the real transport work.
+struct NamedChannel {
+    name: String,
+    inner: Arc<dyn pantheon_gateway::Channel>,
+}
+
+impl NamedChannel {
+    fn new(name: String, inner: Arc<dyn pantheon_gateway::Channel>) -> Arc<Self> {
+        Arc::new(Self { name, inner })
+    }
+}
+
+impl pantheon_gateway::Channel for NamedChannel {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn send(
+        &self,
+        envelope: pantheon_gateway::ChannelEnvelope,
+    ) -> Result<(), pantheon_gateway::ChannelError> {
+        self.inner.send(envelope)
+    }
+    fn poll(&self) -> Vec<pantheon_gateway::ChannelEvent> {
+        self.inner.poll()
+    }
+}
+
+/// Build the channel plan from config + secrets.
+///
+/// Explicit mode: any `[gateway.channels.<name>]` entry that declares a
+/// platform becomes its own channel — one poller per entry, so two
+/// entries can both be `telegram` with different bot tokens and different
+/// agent profiles. The token comes from `token_secret` through the
+/// secrets broker (process env wins, then `<data_dir>/gateway.env`),
+/// falling back to the platform's standard token.
+///
+/// Legacy mode: no entry declares a platform — today's behavior exactly:
+/// at most one `telegram` and one `discord` channel from the standard
+/// tokens, served by the default profile.
+///
+/// A channel starts only when its token is present AND the allowlist is
+/// non-empty: a token without an allowlist would hand the host to anyone
+/// who finds the bot.
+fn channel_specs(
+    cfg: &Option<crate::config::Config>,
+    data_dir: &Path,
+    discord_token: Option<String>,
+    telegram_token: Option<String>,
+    allow: &HashSet<String>,
+) -> Vec<ChannelSpec> {
+    let gated = !allow.is_empty();
+    let mut explicit: Vec<(&String, &pantheon_api::config::GatewayChannelSection)> = cfg
+        .as_ref()
+        .and_then(|c| c.gateway.as_ref())
+        .map(|g| {
+            g.channels
+                .iter()
+                .filter(|(_, ch)| ch.is_explicit())
+                .collect()
+        })
+        .unwrap_or_default();
+    explicit.sort_by(|a, b| a.0.cmp(b.0));
+    if !explicit.is_empty() {
+        let mut specs = Vec::new();
+        for (name, ch) in explicit {
+            let Some(platform) = ch.resolved_platform(name) else {
+                // validate() flags the bad platform; skip rather than guess.
+                continue;
+            };
+            let token = ch
+                .token_secret
+                .as_deref()
+                .and_then(|s| pantheon_secrets::gateway_token(data_dir, s))
+                .map(|v| v.expose().to_string())
+                .filter(|t| !t.trim().is_empty())
+                .or_else(|| match platform.as_str() {
+                    "telegram" => telegram_token.clone(),
+                    "discord" => discord_token.clone(),
+                    _ => None,
+                });
+            match token {
+                Some(token) if gated => specs.push(ChannelSpec {
+                    name: (*name).clone(),
+                    platform,
+                    token,
+                    profile: ch.profile.clone(),
+                    voice_replies: ch.voice_replies,
+                }),
+                _ => eprintln!(
+                    "gateway: channel '{name}' skipped ({}).",
+                    if !gated {
+                        "the allowlist is empty"
+                    } else {
+                        "no token found"
+                    }
+                ),
+            }
+        }
+        return specs;
+    }
+    // Legacy shape: exactly today's behavior.
+    let plan = pantheon_gateway::ChannelPlan::from_env(
+        discord_token.as_deref(),
+        telegram_token.as_deref(),
+        allow,
+    );
+    if plan.is_empty() {
+        eprintln!("gateway: {}", pantheon_gateway::channels_disabled_note());
+    }
+    let voice_replies = |name: &str| {
+        cfg.as_ref()
+            .and_then(|c| c.gateway.as_ref())
+            .and_then(|g| g.channels.get(name))
+            .map(|c| c.voice_replies)
+            .unwrap_or(false)
+    };
+    let mut specs = Vec::new();
+    if let Some(token) = telegram_token.filter(|_| plan.telegram) {
+        specs.push(ChannelSpec {
+            name: "telegram".to_string(),
+            platform: "telegram".to_string(),
+            token,
+            profile: None,
+            voice_replies: voice_replies("telegram"),
+        });
+    }
+    if let Some(token) = discord_token.filter(|_| plan.discord) {
+        specs.push(ChannelSpec {
+            name: "discord".to_string(),
+            platform: "discord".to_string(),
+            token,
+            profile: None,
+            voice_replies: voice_replies("discord"),
+        });
+    }
+    specs
+}
+
+/// Cursor file for a channel. Legacy channels keep their historical names
+/// so cursors survive the upgrade; explicit channels get `cursor-<name>`.
+fn cursor_file(state_dir: &Path, spec: &ChannelSpec) -> PathBuf {
+    match spec.name.as_str() {
+        "telegram" => state_dir.join("tg-cursor"),
+        "discord" => state_dir.join("discord-cursor"),
+        _ => state_dir.join(format!("cursor-{}", spec.name)),
+    }
+}
+
 fn run_gateway_foreground() {
     // The scheduler loop starts unconditionally: a scheduler-only install
     // (no bot tokens) is the main always-on use case, and a service that
     // exits here would crash-loop under the service manager. Chat surfaces
     // start only when their token and the allowlist are present; otherwise
     // the process warns and keeps running.
-    let (discord_token, telegram_token, allow) = pantheon_gateway::read_channel_env();
-    let plan = pantheon_gateway::ChannelPlan::from_env(
-        discord_token.as_deref(),
-        telegram_token.as_deref(),
-        &allow,
-    );
-    if plan.is_empty() {
-        eprintln!("gateway: {}", pantheon_gateway::channels_disabled_note());
-    }
-    let discord_token = discord_token.filter(|_| plan.discord);
-    let telegram_token = telegram_token.filter(|_| plan.telegram);
     let data_dir = crate::terminal::data_dir();
-    // One outbound queue per surface. The old single shared queue let the
-    // Telegram daemon grab Discord replies (send fails → infinite requeue)
-    // and the Discord daemon swallow Telegram ones; keyed queues make
-    // cross-surface pickup impossible.
-    let mut queues: HashMap<String, Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>> =
-        HashMap::new();
-    if telegram_token.is_some() {
-        queues.insert("telegram".to_string(), Arc::new(Mutex::new(Vec::new())));
-    }
-    if discord_token.is_some() {
-        queues.insert("discord".to_string(), Arc::new(Mutex::new(Vec::new())));
-    }
+    // MCP boot health check: probe enabled MCP servers at startup and log
+    // unreachable ones, so a broken server is visible instead of silently
+    // absent from the tool list.
+    pantheon_gateway::mcp_boot::check_and_log(&data_dir, std::time::Duration::from_secs(10));
+    // Tokens come from the secrets store (<data_dir>/gateway.env, written
+    // by the Full Setup wizard's Gateway screen) with process env vars
+    // winning when both are set.
+    let (discord_token, telegram_token, allow) = pantheon_gateway::read_channel_tokens(&data_dir);
     // The gateway runs the same policy the config names. It used to read
     // PANTHEON_GATEWAY_POLICY only, so a user with a working `policy =
     // "reader"` config still got coder on Discord and Telegram.
     let gw_cfg = crate::config::Config::load_or_report(&data_dir);
-    let policy = match std::env::var("PANTHEON_GATEWAY_POLICY").as_deref() {
-        Ok("researcher") => Policy::researcher_readonly(),
-        Ok("coder") => Policy::coder(),
-        _ => crate::config_schema::policy_for_config(&gw_cfg),
-    };
-    let sink = Arc::new(RuntimeSink::new(
-        data_dir.clone(),
-        policy,
-        queues.clone(),
-        Some(allow),
-    ));
+    // One poller per channel: in explicit mode several channels can share
+    // a platform (two Telegram bots, two profiles); in legacy mode this is
+    // exactly the old telegram/discord pair.
+    let specs = channel_specs(&gw_cfg, &data_dir, discord_token, telegram_token, &allow);
+    // One outbound queue per channel. The old single shared queue let the
+    // Telegram daemon grab Discord replies (send fails → infinite requeue)
+    // and the Discord daemon swallow Telegram ones; keyed queues make
+    // cross-channel pickup impossible.
+    let mut queues: HashMap<String, Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>> =
+        HashMap::new();
+    for spec in &specs {
+        queues.insert(spec.name.clone(), Arc::new(Mutex::new(Vec::new())));
+    }
+    // Voice for the gateway channels: the [stt]/[tts] backends the setup
+    // wizard writes, double-gated by the [tools] voice toggle (see
+    // pantheon_gateway::channel_voice::VoicePipes). voice_replies is
+    // per-channel ([gateway.channels.<name>]), default off — text stays
+    // the default.
+    let secrets = crate::config::chat_secrets(gw_cfg.as_ref());
+    // Voice pipes per channel: the [stt]/[tts] backends the setup wizard
+    // writes, double-gated by the [tools] voice toggle (see
+    // pantheon_gateway::channel_voice::VoicePipes). voice_replies is
+    // per-channel ([gateway.channels.<name>]), default off — text stays
+    // the default.
+    let mut voices: HashMap<String, pantheon_gateway::VoicePipes> = HashMap::new();
+    for spec in &specs {
+        let pipes = pantheon_gateway::VoicePipes::from_config(
+            gw_cfg.as_ref().and_then(|c| c.tools.as_ref()),
+            gw_cfg.as_ref().and_then(|c| c.stt.as_ref()),
+            gw_cfg.as_ref().and_then(|c| c.tts.as_ref()),
+            &secrets,
+            spec.voice_replies,
+        );
+        eprintln!("gateway: voice {}({})", spec.name, pipes.describe());
+        voices.insert(spec.name.clone(), pipes);
+    }
+    // The config-default policy. PANTHEON_GATEWAY_POLICY still wins when
+    // set (see RuntimeSink::policy_for); a channel with an agent otherwise
+    // runs its agent's resolved preset.
+    let policy = crate::config_schema::policy_for_config(&gw_cfg);
+    // One agent runtime per channel: each channel is served by its own
+    // profile, so a message on bot A is answered by profile A with A's
+    // memory, and bot B never sees it. An unknown profile fails fast with
+    // a clear error instead of silently serving the wrong agent. Channels
+    // with no resolvable profile stay anonymous, as before.
+    let mut agents: HashMap<String, pantheon_runtime::AgentRuntime> = HashMap::new();
+    if let Some(cfg) = gw_cfg.as_ref() {
+        match pantheon_runtime::Supervisor::open(data_dir.clone()) {
+            Ok(supervisor) => {
+                for spec in &specs {
+                    match cfg.resolve_profile(spec.profile.as_deref()) {
+                        Ok(Some(effective)) => {
+                            let built = cfg
+                                .profile_registry()
+                                .map_err(pantheon_runtime::profile_err)
+                                .and_then(|reg| {
+                                    pantheon_runtime::AgentRuntime::new(
+                                        supervisor.clone(),
+                                        reg,
+                                        effective,
+                                        data_dir.clone(),
+                                    )
+                                });
+                            match built {
+                                Ok(agent) => {
+                                    agents.insert(spec.name.clone(), agent);
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "gateway: channel '{}': cannot start agent: {e}",
+                                        spec.name
+                                    );
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            eprintln!(
+                                "gateway: channel '{}': {}",
+                                spec.name,
+                                pantheon_runtime::profile_err(e)
+                            );
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("gateway: supervisor open failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    let sink = Arc::new(
+        RuntimeSink::new(data_dir.clone(), policy, queues.clone(), Some(allow)).with_agents(agents),
+    );
     let state_dir = data_dir.join("gateway");
     let _ = std::fs::create_dir_all(&state_dir);
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
-    if let (Some(token), Some(queue)) = (telegram_token, queues.get("telegram").cloned()) {
+    // One poller thread per channel. Two channels on the same platform
+    // are fully independent: separate transports, separate cursors,
+    // separate queues, and (via the sink) separate agents.
+    for spec in specs {
+        let queue = match queues.get(&spec.name).cloned() {
+            Some(q) => q,
+            None => continue,
+        };
+        let voice = voices.remove(&spec.name);
         let sink = sink.clone();
         let stop = stop.clone();
-        let state = state_dir.clone();
+        let state_dir = state_dir.clone();
         handles.push(std::thread::spawn(move || {
-            let channel = Arc::new(pantheon_gateway::TelegramChannel::rest(&token));
-            let transport = Arc::new(pantheon_gateway::TelegramRestTransport::new(&token));
             let surface = SurfaceSink {
                 inner: sink.as_ref(),
-                gateway: "telegram",
+                gateway: &spec.name,
             };
-            let daemon = pantheon_gateway::ChannelDaemon::new(state.join("tg-cursor"));
-            daemon.run(
-                vec![channel],
-                Some((&transport, "https://api.telegram.org", &token)),
-                &surface,
-                queue.as_ref(),
-                &|| stop.load(std::sync::atomic::Ordering::Acquire),
-            );
-        }));
-    }
-    if let (Some(token), Some(queue)) = (discord_token, queues.get("discord").cloned()) {
-        let sink = sink.clone();
-        let stop = stop.clone();
-        handles.push(std::thread::spawn(move || {
-            // The Discord channel owns both directions: the gateway
-            // websocket feeds its inbox, the daemon drains it, and replies
-            // go out over Discord REST. (It used to be a MemoryChannel
-            // whose outbox nobody read — replies accumulated in RAM and
-            // the user got silence.)
-            let discord = Arc::new(pantheon_gateway::DiscordChannel::rest(&token));
-            let gateway = pantheon_gateway::discord_gateway::DiscordGateway::new(&token);
-            let gw_inbox = discord.clone();
-            let gw_stop = stop.clone();
-            let gw = std::thread::spawn(move || {
-                gateway.run(&gw_inbox, &|| {
-                    gw_stop.load(std::sync::atomic::Ordering::Acquire)
-                })
-            });
-            // Drain thread: route inbox events through the daemon plumbing.
-            let surface = SurfaceSink {
-                inner: sink.as_ref(),
-                gateway: "discord",
-            };
-            let daemon = pantheon_gateway::ChannelDaemon::new(state_dir.join("discord-cursor"));
-            daemon.run(vec![discord], None, &surface, queue.as_ref(), &|| {
-                stop.load(std::sync::atomic::Ordering::Acquire)
-            });
-            let _ = gw.join();
+            let cursor = cursor_file(&state_dir, &spec);
+            match spec.platform.as_str() {
+                "telegram" => {
+                    let channel = Arc::new(
+                        pantheon_gateway::TelegramChannel::rest(&spec.token)
+                            .with_voice(voice.unwrap_or_default()),
+                    );
+                    let named = NamedChannel::new(spec.name.clone(), channel.clone() as Arc<_>);
+                    let transport =
+                        Arc::new(pantheon_gateway::TelegramRestTransport::new(&spec.token));
+                    let daemon = pantheon_gateway::ChannelDaemon::new(cursor);
+                    daemon.run(
+                        vec![named as Arc<dyn pantheon_gateway::Channel>],
+                        Some((&channel, &transport)),
+                        &surface,
+                        queue.as_ref(),
+                        &|| stop.load(std::sync::atomic::Ordering::Acquire),
+                    );
+                }
+                "discord" => {
+                    // The Discord channel owns both directions: the gateway
+                    // websocket feeds its inbox, the daemon drains it, and replies
+                    // go out over Discord REST. (It used to be a MemoryChannel
+                    // whose outbox nobody read — replies accumulated in RAM and
+                    // the user got silence.)
+                    let discord = Arc::new(
+                        pantheon_gateway::DiscordChannel::rest(&spec.token)
+                            .with_voice(voice.unwrap_or_default()),
+                    );
+                    let named = NamedChannel::new(spec.name.clone(), discord.clone() as Arc<_>);
+                    let gateway =
+                        pantheon_gateway::discord_gateway::DiscordGateway::new(&spec.token);
+                    let gw_inbox = discord.clone();
+                    let gw_stop = stop.clone();
+                    let gw = std::thread::spawn(move || {
+                        gateway.run(&gw_inbox, &|| {
+                            gw_stop.load(std::sync::atomic::Ordering::Acquire)
+                        })
+                    });
+                    // Drain thread: route inbox events through the daemon plumbing.
+                    let daemon = pantheon_gateway::ChannelDaemon::new(cursor);
+                    daemon.run(
+                        vec![named as Arc<dyn pantheon_gateway::Channel>],
+                        None,
+                        &surface,
+                        queue.as_ref(),
+                        &|| stop.load(std::sync::atomic::Ordering::Acquire),
+                    );
+                    let _ = gw.join();
+                }
+                other => {
+                    eprintln!(
+                        "gateway: channel '{}': unsupported platform '{other}'; skipping",
+                        spec.name
+                    );
+                }
+            }
         }));
     }
 
@@ -799,5 +1146,174 @@ fn print_schedule_queue() {
             );
         }
         Err(e) => println!("schedule queue: unavailable ({e})"),
+    }
+}
+
+#[cfg(test)]
+mod gateway_multi_agent_tests {
+    use super::*;
+    use pantheon_gateway::Channel as _;
+
+    fn explicit_cfg() -> crate::config::Config {
+        let mut cfg = crate::config::Config::default();
+        let mut gw = pantheon_api::config::GatewaySection::default();
+        gw.channels.insert(
+            "bot-a".to_string(),
+            pantheon_api::config::GatewayChannelSection {
+                platform: Some("telegram".to_string()),
+                token_secret: Some("BOT_A_TOKEN".to_string()),
+                profile: Some("support".to_string()),
+                voice_replies: false,
+            },
+        );
+        gw.channels.insert(
+            "bot-b".to_string(),
+            pantheon_api::config::GatewayChannelSection {
+                platform: Some("telegram".to_string()),
+                token_secret: None,
+                profile: Some("coder".to_string()),
+                voice_replies: true,
+            },
+        );
+        cfg.gateway = Some(gw);
+        cfg
+    }
+
+    fn allow_one() -> HashSet<String> {
+        HashSet::from(["123".to_string()])
+    }
+
+    /// Scratch data dir with a gateway.env holding BOT_A_TOKEN.
+    fn data_dir_with_secret() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-gw-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("gateway.env"), "BOT_A_TOKEN=secret-token-a\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn two_telegram_bots_get_separate_specs() {
+        let data_dir = data_dir_with_secret();
+        let specs = channel_specs(
+            &Some(explicit_cfg()),
+            &data_dir,
+            None,
+            Some("fallback-tg-token".to_string()),
+            &allow_one(),
+        );
+        let _ = std::fs::remove_dir_all(&data_dir);
+        assert_eq!(specs.len(), 2, "one poller per explicit channel");
+        // Sorted by channel name for deterministic startup order.
+        assert_eq!(specs[0].name, "bot-a");
+        assert_eq!(specs[1].name, "bot-b");
+        for s in &specs {
+            assert_eq!(s.platform, "telegram");
+        }
+        // bot-a's token comes from its token_secret; bot-b falls back to
+        // the platform's standard token.
+        assert_eq!(specs[0].token, "secret-token-a");
+        assert_eq!(specs[1].token, "fallback-tg-token");
+        assert_ne!(specs[0].token, specs[1].token);
+        // Each bot keeps its own profile.
+        assert_eq!(specs[0].profile.as_deref(), Some("support"));
+        assert_eq!(specs[1].profile.as_deref(), Some("coder"));
+        assert!(!specs[0].voice_replies);
+        assert!(specs[1].voice_replies);
+    }
+
+    #[test]
+    fn legacy_shape_uses_env_tokens_and_default_profile() {
+        let data_dir = std::env::temp_dir();
+        let specs = channel_specs(
+            &Some(crate::config::Config::default()),
+            &data_dir,
+            None,
+            Some("tg-token".to_string()),
+            &allow_one(),
+        );
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "telegram");
+        assert_eq!(specs[0].platform, "telegram");
+        assert_eq!(specs[0].token, "tg-token");
+        assert_eq!(specs[0].profile, None);
+    }
+
+    #[test]
+    fn empty_allowlist_starts_no_channels() {
+        let data_dir = std::env::temp_dir();
+        let specs = channel_specs(
+            &Some(explicit_cfg()),
+            &data_dir,
+            None,
+            Some("tg-token".to_string()),
+            &HashSet::new(),
+        );
+        assert!(
+            specs.is_empty(),
+            "a token without an allowlist starts nothing"
+        );
+    }
+
+    #[test]
+    fn no_tokens_means_no_specs() {
+        let data_dir = std::env::temp_dir();
+        let specs = channel_specs(&None, &data_dir, None, None, &allow_one());
+        assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn thread_key_namespaces_by_channel() {
+        // Two bots on the same platform hand out overlapping thread ids;
+        // the namespaced keys must differ.
+        let a = thread_key("bot-a", "42");
+        let b = thread_key("bot-b", "42");
+        assert_ne!(a, b);
+        assert_eq!(thread_key("bot-a", "42"), thread_key("bot-a", "42"));
+        assert!(a.contains("bot-a"));
+    }
+
+    #[test]
+    fn named_channel_reports_the_configured_name() {
+        let inner = Arc::new(pantheon_gateway::MemoryChannel::new("telegram"));
+        let named = NamedChannel::new("bot-a".to_string(), inner);
+        assert_eq!(named.name(), "bot-a");
+        // The inner channel still does the transport work.
+        assert!(named.poll().is_empty());
+    }
+
+    fn spec(name: &str, platform: &str) -> ChannelSpec {
+        ChannelSpec {
+            name: name.to_string(),
+            platform: platform.to_string(),
+            token: "t".to_string(),
+            profile: None,
+            voice_replies: false,
+        }
+    }
+
+    #[test]
+    fn cursor_files_keep_legacy_names() {
+        let dir = Path::new("/tmp/state");
+        // Legacy channels keep their historical cursor names so cursors
+        // survive the upgrade; explicit channels get cursor-<name>.
+        assert_eq!(
+            cursor_file(dir, &spec("telegram", "telegram")),
+            dir.join("tg-cursor")
+        );
+        assert_eq!(
+            cursor_file(dir, &spec("discord", "discord")),
+            dir.join("discord-cursor")
+        );
+        assert_eq!(
+            cursor_file(dir, &spec("bot-a", "telegram")),
+            dir.join("cursor-bot-a")
+        );
     }
 }

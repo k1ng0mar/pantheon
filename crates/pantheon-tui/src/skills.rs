@@ -16,8 +16,18 @@ use pantheon_exec::skills::{discover_skills_ext, import_skill, scan_skills_ext, 
 use std::path::{Path, PathBuf};
 
 /// Extra discovery roots beyond the built-in cross-tool scopes.
+///
+/// `PANTHEON_REPLAY_SKILL_DIR` (set by the nightly replay runner when
+/// validating a skill proposal) is honored first, so a replayed run
+/// sees exactly the candidate skill under test.
 pub(crate) fn extra_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
+    if let Ok(d) = std::env::var("PANTHEON_REPLAY_SKILL_DIR") {
+        let d = d.trim();
+        if !d.is_empty() {
+            roots.push(PathBuf::from(d));
+        }
+    }
     if let Ok(d) = std::env::var("PANTHEON_SKILLS_DIR") {
         for entry in d.split(':').filter(|s| !s.is_empty()) {
             roots.push(PathBuf::from(entry));

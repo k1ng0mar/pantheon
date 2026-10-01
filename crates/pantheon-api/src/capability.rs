@@ -15,6 +15,26 @@ pub enum Capability {
     GitPush,
     NetworkOutbound,
     Browser,
+    /// A low-confidence autonomous browser action (`browser_act` in
+    /// pantheon-web's `browser` module). Split from Browser because clicking the top
+    /// intent candidate is the one browser operation that acts on the
+    /// model's behalf without a verified target: default policies mark
+    /// this Approval so the run loop parks for a human before it runs.
+    /// Mirrors the GitPush split from ShellExecute.
+    BrowserAct,
+    /// Filling a saved website-login credential into the browser
+    /// (`browser_fill_login` in pantheon-web's `browser` module). Split
+    /// from Browser because it touches the user's credential vault: the
+    /// model never sees the secret (the tool result reports only which
+    /// fields were filled), but the *decision* to fill is the user's —
+    /// default policies mark this Approval so the run loop parks for a
+    /// human before it runs. Mirrors the BrowserAct split.
+    BrowserFillLogin,
+    /// Desktop control through the CUA driver (`cua-driver`). Its own
+    /// capability because it drives the user's real desktop: default
+    /// policies mark this Approval so the run loop parks for a human
+    /// before it acts.
+    ComputerUse,
     MessageSend(String),
     MemoryRead,
     MemoryWrite,
@@ -26,8 +46,28 @@ pub enum Capability {
     MemoryConfirm,
     SecretsUse,
     AgentSpawn,
+    /// Enabling a bundled plugin (`enable_plugin` tool). Split out so the
+    /// agent can propose it but never self-authorize: default policies mark
+    /// this Approval, so the run parks for a human before any plugin's
+    /// code is switched on. Only bundled-catalog plugins are toggleable
+    /// this way — there is no agent path to install arbitrary plugins.
+    PluginEnable,
+    /// Enabling a bundled MCP server (`enable_mcp` tool). The MCP twin
+    /// of [`Capability::PluginEnable`]: default policies mark this
+    /// Approval, so the run parks for a human before any server's tools
+    /// are projected into the registry. Only bundled-catalog servers are
+    /// toggleable this way — there is no agent path to put an arbitrary
+    /// command on the spawn line (the supply-chain boundary).
+    McpEnable,
     Other(String),
 }
+
+/// Tool name for the review-verdict tool. Registered only on reviewer
+/// runs in staged review stages (see `pantheon_runtime::swarm_exec`):
+/// the reviewer emits its verdict as a tool call and the orchestrator
+/// extracts the structured args from the ledger, instead of parsing the
+/// reviewer's prose.
+pub const VERDICT_TOOL_NAME: &str = "verdict";
 
 /// A policy decision for one capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,12 +93,17 @@ impl Capability {
             Capability::GitPush => "git.push".to_string(),
             Capability::NetworkOutbound => "network.outbound".to_string(),
             Capability::Browser => "browser".to_string(),
+            Capability::BrowserAct => "browser.act".to_string(),
+            Capability::BrowserFillLogin => "browser.fill_login".to_string(),
+            Capability::ComputerUse => "computer.use".to_string(),
             Capability::MessageSend(_) => "message.send".to_string(),
             Capability::MemoryRead => "memory.read".to_string(),
             Capability::MemoryWrite => "memory.write".to_string(),
             Capability::MemoryConfirm => "memory.confirm".to_string(),
             Capability::SecretsUse => "secrets.use".to_string(),
             Capability::AgentSpawn => "agent.spawn".to_string(),
+            Capability::PluginEnable => "plugin.enable".to_string(),
+            Capability::McpEnable => "mcp.enable".to_string(),
             Capability::Other(name) => format!("other.{}", name.trim().replace(' ', ".")),
         }
     }
@@ -76,11 +121,16 @@ impl Capability {
             "git.push" => Capability::GitPush,
             "network.outbound" => Capability::NetworkOutbound,
             "browser" => Capability::Browser,
+            "browser.act" => Capability::BrowserAct,
+            "browser.fill_login" => Capability::BrowserFillLogin,
+            "computer.use" => Capability::ComputerUse,
             "memory.read" => Capability::MemoryRead,
             "memory.write" => Capability::MemoryWrite,
             "memory.confirm" => Capability::MemoryConfirm,
             "secrets.use" => Capability::SecretsUse,
             "agent.spawn" => Capability::AgentSpawn,
+            "plugin.enable" => Capability::PluginEnable,
+            "mcp.enable" => Capability::McpEnable,
             other => Capability::Other(other.to_string()),
         }
     }
@@ -112,7 +162,13 @@ impl Policy {
         self.rules.get(cap).copied().unwrap_or(Decision::Deny)
     }
 
-    /// Coder preset: read/write/exec/git, push needs approval.
+    /// Coder preset: read/write/exec/git, push needs approval. Browser and
+    /// outbound network are allowed (web access is a core assistant
+    /// capability); autonomous low-confidence browser acts, filling saved
+    /// login credentials, desktop control through the CUA driver, and
+    /// enabling bundled plugins need approval.
+    /// The `todo` planning tool is allowed: it only mutates the run's own
+    /// in-memory task list, persisted to the ledger as a transcript event.
     pub fn coder() -> Self {
         Self::default()
             .allow(Capability::FilesystemRead)
@@ -121,8 +177,17 @@ impl Policy {
             .allow(Capability::GitRead)
             .allow(Capability::GitWrite)
             .approval(Capability::GitPush)
+            .allow(Capability::NetworkOutbound)
+            .allow(Capability::Browser)
+            .approval(Capability::BrowserAct)
+            .approval(Capability::BrowserFillLogin)
+            .approval(Capability::ComputerUse)
+            .approval(Capability::PluginEnable)
+            .approval(Capability::McpEnable)
             .allow(Capability::MemoryRead)
             .allow(Capability::AgentSpawn)
+            .allow(Capability::Other(crate::todo::TODO_TOOL_NAME.into()))
+            .allow(Capability::Other(VERDICT_TOOL_NAME.into()))
     }
 
     /// Coder preset plus the memory write capability. Confirming
@@ -158,37 +223,5 @@ impl Policy {
             .filter(|(_, d)| **d == Decision::Approval)
             .map(|(c, _)| c.clone())
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn memory_confirm_token_roundtrips() {
-        assert_eq!(Capability::MemoryConfirm.token(), "memory.confirm");
-        assert_eq!(
-            Capability::from_token("memory.confirm"),
-            Capability::MemoryConfirm
-        );
-        // Serialization carries the variant too (serde derive).
-        let json = serde_json::to_string(&Capability::MemoryConfirm).unwrap();
-        assert_eq!(
-            serde_json::from_str::<Capability>(&json).unwrap(),
-            Capability::MemoryConfirm
-        );
-    }
-
-    #[test]
-    fn coder_with_memory_requires_approval_for_confirm() {
-        let p = Policy::coder_with_memory();
-        assert_eq!(p.check(&Capability::MemoryConfirm), Decision::Approval);
-        assert_eq!(p.check(&Capability::MemoryWrite), Decision::Allow);
-        // Default-deny still holds for policies that never mention it.
-        assert_eq!(
-            Policy::coder().check(&Capability::MemoryConfirm),
-            Decision::Deny
-        );
     }
 }

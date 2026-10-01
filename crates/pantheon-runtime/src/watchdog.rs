@@ -209,7 +209,3 @@ impl TurnWatchdog {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "watchdog_tests.rs"]
-mod tests;

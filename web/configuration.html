@@ -138,6 +138,7 @@ max_tool_calls     = 32      # tool uses per run
 max_delegate_depth = 2       # how deep agents can delegate to other agents
 max_iterations     = 3       # pipeline iterations
 # max_tokens       = 50000   # optional cap on tokens per run; unset = no cap
+# delegate_child_max_tokens = 8000  # optional default max tokens for a delegated child's generation; unset = no cap
 
 [goal]
 max_iterations     = 10      # exchanges allowed per /goal before it stops and asks

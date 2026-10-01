@@ -1,11 +1,11 @@
 //! Pantheon config schema (`config.toml` in the data dir).
 //!
-//! The schema primitives ([`SecretRef`], [`PolicyPreset`]) live in
-//! `pantheon_api::config_schema` so non-TUI crates (dashboard, doctor)
-//! can validate against them. This module re-exports them and keeps the
-//! TUI-local resolver that needs [`crate::config::Config`].
+//! The schema primitives ([`PolicyPreset`], and [`SecretRef`](pantheon_api::config_schema::SecretRef))
+//! live in `pantheon_api::config_schema` so non-TUI crates (dashboard,
+//! doctor) can validate against them. This module re-exports the preset
+//! and keeps the TUI-local resolver that needs [`crate::config::Config`].
 
-pub use pantheon_api::config_schema::{PolicyPreset, SecretRef};
+pub use pantheon_api::config_schema::PolicyPreset;
 
 /// Resolve the policy for a session.
 ///

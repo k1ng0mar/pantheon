@@ -1,0 +1,8 @@
+name: noisegate
+version: "1.0.0"
+description: Deterministic tool-output compaction at the tool-result layer. Dedupes repeated lines and blocks, collapses progress-bar spam, and hard-truncates huge outputs before the model sees them. No model calls, no network, fail-open.
+author: "Pantheon"
+license: "MIT"
+enabled: true
+provides_hooks:
+  - transform_tool_result

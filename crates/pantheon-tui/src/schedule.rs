@@ -1,134 +1,69 @@
-//! `pantheon schedule` — durable interval/cron/manual task scheduling.
+//! `pantheon schedule` — durable cron/interval/one-shot task scheduling.
 //!
-//! Jobs are stored as JSON in the data dir. Occurrence idempotency
-//! (§21) is handled by the scheduler's DurableClaimLedger over the
-//! ClaimStore.
+//! Jobs live in the data dir (`schedule.json`) and are read/written through
+//! the scheduler core's [`load_jobs`]/[`save_jobs`]. Occurrence idempotency
+//! is handled by the scheduler's `DurableClaimLedger` over the `ClaimStore`.
+//!
+//! Jobs created with `--template <name>` re-render their prompt from the
+//! template at fire time ([`Job::resolve_task`]), so editing the template
+//! updates every job built from it. The rendered snapshot in `task` stays
+//! as the fallback when the template is deleted or fails to render.
 
+use crate::schedule_self_heal::SelfHealer;
 use pantheon_gateway::schedule_delivery::{self, Deliver};
-use pantheon_gateway::scheduler::{
-    ExecuteFn, FireOutcome, SchedulableJob, SchedulerLoop, TickReport,
-};
+use pantheon_gateway::scheduler::{ExecuteFn, FireOutcome, SchedulerLoop, TaskOutcome, TickReport};
 use pantheon_scheduler::{
-    apply_defaults, render_prompt, DurableClaimLedger, Job, MissedPolicy, OverlapPolicy,
-    ScheduleKind, TemplateSchedule, TemplateStore,
+    after_manual_run, expand_template, job_store_path, load_jobs, load_jobs_with_warnings,
+    parse_duration, update_jobs, DurableClaimLedger, Job, OverlapPolicy, RunOutcome, ScheduleKind,
+    ScheduleTemplate, ScheduledJob, TemplateSchedule, TemplateStore, TemplateVar,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// A stored scheduled job with its run state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredJob {
-    pub id: String,
-    pub task: String,
-    pub kind: ScheduleKind,
-    pub agent: Option<String>,
-    pub missed: MissedPolicy,
-    #[serde(default)]
-    pub paused: bool,
-    #[serde(default)]
-    pub last_run: Option<i64>,
-    /// Per-job model/provider pin (Hermes parity: its jobs carry a model +
-    /// provider snapshot). None = inherit the runtime default at fire time.
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub provider: Option<String>,
-    /// Per-job run ceiling in seconds. None = the scheduler default
-    /// (10 minutes); a run past it is abandoned.
-    #[serde(default)]
-    pub timeout_secs: Option<u64>,
-    /// What a tick does when the job is still running. Default: skip.
-    #[serde(default)]
-    pub overlap: OverlapPolicy,
-    /// Where the job's result goes after the run (`log` | `telegram` |
-    /// `discord` | `notify` | `file:<path>`). `None` = `log`.
-    #[serde(default)]
-    pub deliver: Option<String>,
-}
-
-impl From<StoredJob> for Job {
-    fn from(s: StoredJob) -> Self {
-        Self {
-            id: s.id.clone(),
-            kind: s.kind,
-            idempotency_key: format!("job:{}:", s.id),
-            missed: s.missed,
-            paused: s.paused,
-            target_agent: s.agent.unwrap_or_else(|| "nyx".into()),
-            model: s.model,
-            provider: s.provider,
-            timeout_secs: s.timeout_secs,
-            overlap: s.overlap,
-            deliver: s.deliver,
-        }
-    }
-}
-
-/// Parse a duration string like "30m", "6h", "1d" into milliseconds.
-fn parse_duration(s: &str) -> Result<u64, String> {
+/// Parse `--at <time>` into epoch millis:
+/// - epoch millis (`1790845200000`),
+/// - an RFC3339 datetime (`2026-10-01T09:00:00+01:00`),
+/// - a relative offset from now (`+30m`, `+2h`, `+1d`; same units as
+///   `--every`).
+fn parse_at(s: &str) -> Result<i64, String> {
     let s = s.trim();
-    // Longest suffix first: "ms" must win over "s", and slicing a char
-    // boundary that ends_with already matched is safe.
-    let (num, unit) = if let Some(n) = s.strip_suffix("ms") {
-        (n, 1)
-    } else if let Some(n) = s.strip_suffix('s') {
-        (n, 1000)
-    } else if let Some(n) = s.strip_suffix('m') {
-        (n, 60_000)
-    } else if let Some(n) = s.strip_suffix('h') {
-        (n, 3_600_000)
-    } else if let Some(n) = s.strip_suffix('d') {
-        (n, 86_400_000)
-    } else {
-        return Err(format!("unknown unit in {s} (use ms, s, m, h, d)"));
-    };
-    let n: u64 = num.parse().map_err(|_| format!("not a number: {num}"))?;
-    Ok(n * unit)
-}
-
-fn store_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("schedule.json")
-}
-
-/// Load jobs, treating a corrupt file as an error rather than as "no jobs".
-///
-/// A silent `unwrap_or_default` meant a malformed schedule.json read as an
-/// empty list and the next create overwrote the user's jobs.
-pub fn load_jobs(data_dir: &Path) -> Result<Vec<StoredJob>, String> {
-    let path = store_path(data_dir);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("read {}: {e}", path.display())),
-    };
-    serde_json::from_str(&text).map_err(|e| format!("{} is corrupt: {e}", path.display()))
-}
-
-fn save_jobs(data_dir: &Path, jobs: &[StoredJob]) -> Result<(), String> {
-    let path = store_path(data_dir);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    if let Ok(ms) = s.parse::<i64>() {
+        return Ok(ms);
     }
-    let text = serde_json::to_string_pretty(jobs).map_err(|e| e.to_string())?;
-    std::fs::write(path, text).map_err(|e| e.to_string())?;
-    Ok(())
+    if let Some(rest) = s.strip_prefix('+') {
+        let delta = parse_duration(rest)?;
+        return Ok(now_ms().saturating_add(delta as i64));
+    }
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.timestamp_millis())
+        .map_err(|_| {
+            format!(
+                "expected epoch millis, an RFC3339 datetime, or +<duration> (e.g. +30m), got {s:?}"
+            )
+        })
 }
 
 /// Public wrapper for the TUI's /schedule command. Returns an empty vec
 /// when no schedule file exists; reports corruption as an error string.
-pub fn load_jobs_public(data_dir: &Path) -> Vec<StoredJob> {
+pub fn load_jobs_public(data_dir: &Path) -> Vec<ScheduledJob> {
     load_jobs(data_dir).unwrap_or_default()
 }
 
 /// Load jobs or exit. A corrupt schedule file is a stop, not an empty list.
-fn load_or_exit(data_dir: &Path) -> Vec<StoredJob> {
-    match load_jobs(data_dir) {
+fn load_or_exit(data_dir: &Path) -> Vec<ScheduledJob> {
+    let (result, warnings) = load_jobs_with_warnings(data_dir);
+    for w in warnings {
+        eprintln!("schedule: warning: {w}");
+    }
+    match result {
         Ok(j) => j,
         Err(e) => {
             eprintln!("schedule: {e}");
-            eprintln!("fix: delete or repair {}", store_path(data_dir).display());
+            eprintln!(
+                "fix: delete or repair {}",
+                job_store_path(data_dir).display()
+            );
             std::process::exit(1);
         }
     }
@@ -137,26 +72,22 @@ fn load_or_exit(data_dir: &Path) -> Vec<StoredJob> {
 /// Schedule a task to run repeatedly.
 pub fn cmd_schedule(args: &[String], data_dir: &Path) {
     if args.len() < 3 {
-        eprintln!("usage: pantheon schedule <task> (--every 30m | --cron '0 9 * * *') [--agent nyx] [--timeout 10m] [--overlap skip|replace|queue] [--deliver telegram|discord|notify|file:<path>|log] [--model M] [--provider P]");
-        eprintln!("       pantheon schedule create --template <name> [--var k=v ...] [--deliver ...] [--every ...|--cron ...]");
-        eprintln!("       pantheon schedule template list  — built-in + user templates (<data_dir>/templates/*.toml)");
-        eprintln!("       pantheon schedule reflect (--every 30m | --cron '0 2 * * *')  — scheduled reflection pass");
-        eprintln!("       pantheon schedule consolidate [--every 30m | --cron '0 3 * * *']  — nightly consolidation pass (default: [consolidation] cron; needs [consolidation] enabled = true)");
-        eprintln!("       pantheon schedule list|pause|resume|cancel|run|tick <id>");
-        eprintln!("       pantheon schedule webhook sign|verify --body <text> [--secret <s>]");
+        eprintln!("usage: pantheon schedule <task> (--every 30m | --cron '0 9 * * *' | --at <time>) [--agent nyx] [--timeout 10m] [--overlap skip|replace|queue] [--deliver telegram|discord|notify|file:<path>|log] [--model M] [--provider P]");
+        eprintln!("       pantheon schedule create --template <name> [--var k=v ...] [--deliver ...] [--every ...|--cron ...|--at ...]");
+        eprintln!("       pantheon schedule template list|get <name>|save|delete  — prompt templates (<data_dir>/templates.json)");
+        eprintln!("       pantheon schedule nightly (--every 30m | --cron '0 3 * * *' | --at <time>)  — scheduled nightly self-improvement pass (default: [nightly] cron)");
+        eprintln!("       pantheon schedule reflect ... | pantheon schedule consolidate ...  — legacy aliases for `schedule nightly`");
+        eprintln!("       pantheon schedule list|pause|resume|cancel|run|tick|prune <id>");
         eprintln!();
+        eprintln!("--at <time>: epoch millis, RFC3339 ('2026-10-01T09:00:00+01:00'), or relative +30m/+2h/+1d — fires once, then the job is removed");
         eprintln!("model rule: --model/--provider pin (or the template's `model` var) > the [scheduled] auxiliary model > never the interactive default.");
         eprintln!("deliver targets: log (default) | telegram (needs PANTHEON_TELEGRAM_BOT_TOKEN + PANTHEON_DELIVER_TELEGRAM_TO) | discord (needs PANTHEON_DISCORD_TOKEN + PANTHEON_DELIVER_DISCORD_TO) | notify (notify-send) | file:<path>");
         std::process::exit(2);
     }
 
     let subcommand = args[2].as_str();
-    if subcommand == "reflect" {
-        cmd_schedule_reflect(&args[3..], data_dir);
-        return;
-    }
-    if subcommand == "consolidate" {
-        cmd_schedule_consolidate(&args[3..], data_dir);
+    if subcommand == "nightly" || subcommand == "reflect" || subcommand == "consolidate" {
+        cmd_schedule_nightly(&args[3..], data_dir);
         return;
     }
     if subcommand == "template" {
@@ -178,13 +109,13 @@ pub fn cmd_schedule(args: &[String], data_dir: &Path) {
     }
     if matches!(
         subcommand,
-        "list" | "pause" | "resume" | "cancel" | "run" | "tick" | "webhook" | "prune"
+        "list" | "pause" | "resume" | "cancel" | "run" | "tick" | "prune"
     ) {
         handle_subcommand(&args[2..], data_dir);
         return;
     }
 
-    // Create: pantheon schedule <task> [--every|N<unit>] [--agent NAME] [--cron EXPR]
+    // Create: pantheon schedule <task> [--every|N<unit>] [--agent NAME] [--cron EXPR] [--at TIME]
     //          [--model M] [--provider P] [--timeout 10m] [--overlap skip|replace|queue]
     //          [--deliver T] [--template NAME] [--var k=v]
     match build_create_job(&args[2..], data_dir) {
@@ -199,13 +130,16 @@ pub fn cmd_schedule(args: &[String], data_dir: &Path) {
 
 /// Persist a newly created job and print the confirmation line. Shared by
 /// `schedule <task>` and `schedule create`.
-fn persist_new_job(stored: StoredJob, data_dir: &Path) {
-    let job_id = stored.id.clone();
-    let kind = stored.kind.clone();
-    let deliver = stored.deliver.clone();
-    let mut jobs = load_or_exit(data_dir);
-    jobs.push(stored);
-    if let Err(e) = save_jobs(data_dir, &jobs) {
+fn persist_new_job(stored: ScheduledJob, data_dir: &Path) {
+    let job_id = stored.job.id.clone();
+    let kind = stored.job.kind.clone();
+    let deliver = stored.job.deliver.clone();
+    // Single locked rewrite (load/mutate/save under the store lock) so a
+    // concurrent dashboard edit can't be clobbered by this CLI process.
+    if let Err(e) = update_jobs(data_dir, |jobs| {
+        jobs.push(stored);
+        Ok(())
+    }) {
         eprintln!("save failed: {e}");
         std::process::exit(1);
     }
@@ -222,166 +156,328 @@ fn persist_new_job(stored: StoredJob, data_dir: &Path) {
     );
 }
 
-/// `pantheon schedule template list`: built-ins plus the user's
-/// `<data_dir>/templates/*.toml` overlay.
+/// `pantheon schedule template <list|get|save|delete>`: built-ins plus the
+/// user's `<data_dir>/templates.json` overlay.
 fn cmd_schedule_template(args: &[String], data_dir: &Path) {
-    if args.first().map(String::as_str) != Some("list") {
-        eprintln!("usage: pantheon schedule template list");
-        std::process::exit(2);
-    }
-    let store = TemplateStore::load(data_dir);
-    for t in store.list() {
-        let sched = match &t.schedule {
-            TemplateSchedule::Every(d) => format!("every {d}"),
-            TemplateSchedule::Cron(e) => format!("cron '{e}'"),
-        };
-        let vars = if t.vars.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "  vars: {}",
-                t.vars
-                    .iter()
-                    .map(|v| v.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        println!("{}\n  {}  ({sched}){vars}", t.name, t.description);
+    match args.first().map(String::as_str) {
+        Some("list") => {
+            let store = TemplateStore::open(data_dir);
+            let mut any = false;
+            for t in store.list() {
+                any = true;
+                let sched = format_template_schedule(&t.schedule);
+                let vars = if t.vars.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "  vars: {}",
+                        t.vars
+                            .iter()
+                            .map(|v| v.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                println!("{}\n  {}  ({sched}){vars}", t.name, t.description);
+            }
+            if !any {
+                println!("no templates");
+            }
+        }
+        Some("get") => {
+            let name = args.get(1).unwrap_or_else(|| {
+                eprintln!("usage: pantheon schedule template get <name>");
+                std::process::exit(2);
+            });
+            let store = TemplateStore::open(data_dir);
+            let t = store.get(name).unwrap_or_else(|| {
+                eprintln!("unknown template '{name}'; see `pantheon schedule template list`");
+                std::process::exit(1);
+            });
+            let builtin = if store.is_builtin(name) {
+                " (built-in)"
+            } else {
+                ""
+            };
+            println!(
+                "{name}{builtin}\n  {}\n  schedule: {}",
+                t.description,
+                format_template_schedule(&t.schedule)
+            );
+            println!("  prompt:");
+            for line in t.prompt.lines() {
+                println!("    {line}");
+            }
+            if t.vars.is_empty() {
+                println!("  vars: none");
+            } else {
+                for v in &t.vars {
+                    let def = v
+                        .default
+                        .as_deref()
+                        .map(|d| format!(" [default: {d}]"))
+                        .unwrap_or_default();
+                    println!("  var {}: {}{def}", v.name, v.question);
+                }
+            }
+        }
+        Some("save") => cmd_schedule_template_save(&args[1..], data_dir),
+        Some("delete") => {
+            let name = args.get(1).unwrap_or_else(|| {
+                eprintln!("usage: pantheon schedule template delete <name>");
+                std::process::exit(2);
+            });
+            let mut store = TemplateStore::open(data_dir);
+            match store.delete(name) {
+                Ok(()) => println!("deleted template '{name}'"),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        _ => {
+            eprintln!("usage: pantheon schedule template list");
+            eprintln!("       pantheon schedule template get <name>");
+            eprintln!("       pantheon schedule template save --name <name> [--desc <text>] (--every 30m | --cron '<expr>') --prompt '<text>' [--var name:question[:default] ...]");
+            eprintln!("       pantheon schedule template delete <name>");
+            std::process::exit(2);
+        }
     }
 }
 
-/// `pantheon schedule consolidate [--every 30m | --cron '0 3 * * *']`:
-/// a nightly consolidation pass. Registers a normal stored job whose
-/// task is the consolidate marker; `run_job_now` runs the pass directly
-/// instead of a chat turn. Refuses when `[consolidation] enabled = false`
-/// — a disabled feature must not have a job lying in wait.
-fn cmd_schedule_consolidate(args: &[String], data_dir: &Path) {
-    match build_consolidate_job(data_dir, args) {
+fn format_template_schedule(schedule: &TemplateSchedule) -> String {
+    match schedule {
+        TemplateSchedule::Every(d) => format!("every {d}"),
+        TemplateSchedule::Cron(e) => format!("cron '{e}'"),
+    }
+}
+
+/// `pantheon schedule template save --name <n> [--desc <d>]
+/// (--every 30m | --cron '<expr>') --prompt '<text>'
+/// [--var name:question[:default] ...]`
+///
+/// A bad cron, a bad duration, or a missing required flag is a loud error
+/// here — the template must be usable the moment it is saved.
+fn cmd_schedule_template_save(args: &[String], data_dir: &Path) {
+    let usage = "usage: pantheon schedule template save --name <name> [--desc <text>] (--every 30m | --cron '<expr>') --prompt '<text>' [--var name:question[:default] ...]";
+    let mut name: Option<String> = None;
+    let mut desc = String::new();
+    let mut every: Option<String> = None;
+    let mut cron: Option<String> = None;
+    let mut prompt: Option<String> = None;
+    let mut var_specs: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--name" => {
+                i += 1;
+                if i < args.len() {
+                    name = Some(args[i].clone());
+                }
+            }
+            "--desc" => {
+                i += 1;
+                if i < args.len() {
+                    desc = args[i].clone();
+                }
+            }
+            "--every" => {
+                i += 1;
+                if i < args.len() {
+                    every = Some(args[i].clone());
+                }
+            }
+            "--cron" => {
+                i += 1;
+                if i < args.len() {
+                    cron = Some(args[i].clone());
+                }
+            }
+            "--prompt" => {
+                i += 1;
+                if i < args.len() {
+                    prompt = Some(args[i].clone());
+                }
+            }
+            "--var" => {
+                i += 1;
+                if i < args.len() {
+                    var_specs.push(args[i].clone());
+                }
+            }
+            other => {
+                eprintln!("unknown flag: {other}");
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+    let name = name.unwrap_or_else(|| {
+        eprintln!("{usage}\nerror: --name is required");
+        std::process::exit(2);
+    });
+    let prompt = prompt.unwrap_or_else(|| {
+        eprintln!("{usage}\nerror: --prompt is required");
+        std::process::exit(2);
+    });
+    let schedule = match (cron, every) {
+        (Some(e), _) => TemplateSchedule::Cron(e),
+        (None, Some(d)) => {
+            if let Err(e) = parse_duration(&d) {
+                eprintln!("error: bad --every: {e}");
+                std::process::exit(2);
+            }
+            TemplateSchedule::Every(d)
+        }
+        (None, None) => {
+            eprintln!("{usage}\nerror: need --every <duration> or --cron <expr>");
+            std::process::exit(2);
+        }
+    };
+    let mut vars = Vec::new();
+    for spec in &var_specs {
+        // name:question[:default]; extra colons stay in the default.
+        let mut parts = spec.splitn(3, ':');
+        let vname = parts.next().unwrap_or("").trim();
+        let question = parts.next().unwrap_or("").trim();
+        let default = parts.next().map(str::trim).filter(|d| !d.is_empty());
+        if vname.is_empty() || question.is_empty() {
+            eprintln!("error: bad --var {spec:?}: want name:question[:default]");
+            std::process::exit(2);
+        }
+        vars.push(TemplateVar {
+            name: vname.to_string(),
+            question: question.to_string(),
+            default: default.map(str::to_string),
+        });
+    }
+    let mut store = TemplateStore::open(data_dir);
+    match store.save(ScheduleTemplate {
+        name: name.clone(),
+        description: desc,
+        schedule,
+        prompt,
+        vars,
+    }) {
+        Ok(()) => println!("saved template '{name}'"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `pantheon schedule nightly [--every 30m | --cron '0 3 * * *' | --at <time>]`:
+/// a scheduled unified nightly pass. Registers a normal stored job whose
+/// task is the nightly marker; `run_job_now` runs the pass directly
+/// instead of a chat turn. `schedule reflect` / `schedule consolidate`
+/// are legacy aliases for this command.
+fn cmd_schedule_nightly(args: &[String], data_dir: &Path) {
+    match build_nightly_job(data_dir, args) {
         Err(e) => {
             eprintln!("error: {e}");
             eprintln!("not scheduled: fix the arguments and retry");
             std::process::exit(2);
         }
         Ok(stored) => {
-            let job_id = stored.id.clone();
-            let mut jobs = load_or_exit(data_dir);
-            jobs.push(stored);
-            if let Err(e) = save_jobs(data_dir, &jobs) {
+            let job_id = stored.job.id.clone();
+            // Single locked rewrite (load/mutate/save under the store lock)
+            // so a concurrent dashboard edit can't be clobbered.
+            if let Err(e) = update_jobs(data_dir, |jobs| {
+                jobs.push(stored);
+                Ok(())
+            }) {
                 eprintln!("save failed: {e}");
                 std::process::exit(1);
             }
             println!(
-                "scheduled consolidation {job_id} — runs | cancel: pantheon schedule cancel {job_id}"
+                "scheduled nightly {job_id} — runs | cancel: pantheon schedule cancel {job_id}"
             );
         }
     }
 }
 
-/// Testable core of `pantheon schedule consolidate`: the enabled check
-/// and the default-cron resolution, without the persistence.
-pub fn build_consolidate_job(data_dir: &Path, args: &[String]) -> Result<StoredJob, String> {
+/// Testable core of `pantheon schedule nightly`: the default-cron
+/// resolution, without the persistence.
+pub fn build_nightly_job(data_dir: &Path, args: &[String]) -> Result<ScheduledJob, String> {
     let file_cfg = crate::config::Config::load_or_report(data_dir);
-    let cfg = crate::config::consolidation_config(file_cfg.as_ref());
-    if !cfg.enabled {
-        return Err("consolidation is disabled ([consolidation] enabled = false); enable it before scheduling a pass".into());
-    }
     let mut parsed = parse_create_args(args);
     if !parsed.task.is_empty() {
-        return Err(
-            "`schedule consolidate` takes no task text: it always runs a consolidation pass".into(),
-        );
+        return Err("`schedule nightly` takes no task text: it always runs a nightly pass".into());
     }
-    // No schedule given = the `[consolidation] cron` value (default
+    // No schedule given = the `[nightly] cron` value (default
     // "0 3 * * *").
-    if parsed.every.is_none() && parsed.cron.is_none() {
-        parsed.cron = Some(cfg.cron.clone());
+    if parsed.every.is_none() && parsed.cron.is_none() && parsed.at.is_none() {
+        parsed.cron = Some(crate::config::nightly_cron(file_cfg.as_ref()));
     }
-    parsed.task = CONSOLIDATE_TASK_MARKER.to_string();
+    parsed.task = NIGHTLY_TASK_MARKER.to_string();
     build_job_from_create(&parsed)
 }
 
-/// Build the stored job from `schedule create` arguments, validating
-/// everything before anything is persisted.
-///
-/// A bad cron expression used to be stored without a murmur and then
-/// silently never fire. Now it is rejected here, with the field and the
-/// reason, so a broken schedule is a loud error at registration instead
-/// of a quiet no-show at 3am.
-/// Marker task for reflection jobs. `run_job_now` intercepts it and runs a
-/// bounded reflection pass instead of a chat turn — a scheduled
-/// reflection job never spends an agent turn.
+/// Marker task for nightly jobs. `run_job_now` intercepts it and runs
+/// the unified nightly pass instead of a chat turn — a scheduled
+/// nightly job never spends an agent turn. Re-exported from
+/// [`pantheon_scheduler`] so every client shares one marker string.
+pub use pantheon_scheduler::NIGHTLY_TASK_MARKER;
+
+/// Marker task for reflection jobs (legacy). `run_job_now` intercepts it
+/// and runs the unified nightly pass instead of a chat turn.
 pub const REFLECT_TASK_MARKER: &str = "__pantheon_reflect__";
 
-/// Marker task for consolidation jobs. `run_job_now` intercepts it and
-/// runs a bounded consolidation pass instead of a chat turn — a
-/// scheduled consolidation job never spends an agent turn.
+/// Marker task for consolidation jobs (legacy). `run_job_now`
+/// intercepts it and runs the unified nightly pass instead of a chat
+/// turn.
 pub const CONSOLIDATE_TASK_MARKER: &str = "__pantheon_consolidate__";
 
 /// Build the stored job for `schedule <task>` / `schedule create`, resolving
 /// `--template` first: the template's rendered prompt becomes the task and
-/// its default schedule fills in when no `--every`/`--cron` is given. A
-/// positional task always overrides the template prompt.
-fn build_create_job(args: &[String], data_dir: &Path) -> Result<StoredJob, String> {
+/// its default schedule fills in when no `--every`/`--cron`/`--at` is given.
+/// A positional task always overrides the template prompt.
+fn build_create_job(args: &[String], data_dir: &Path) -> Result<ScheduledJob, String> {
     let mut parsed = parse_create_args(args);
     if let Some(tname) = parsed.template.clone() {
-        let store = TemplateStore::load(data_dir);
+        let store = TemplateStore::open(data_dir);
         let t = store.get(&tname).ok_or_else(|| {
             format!("unknown template '{tname}'; see `pantheon schedule template list`")
         })?;
         let mut vars: HashMap<String, String> = parsed.vars.iter().cloned().collect();
-        // Reserved vars become the job's model pin, not prompt text. An
-        // explicit --model/--provider flag wins over --var.
-        for reserved in ["model", "provider"] {
-            if let Some(v) = vars.remove(reserved) {
-                if v.trim().is_empty() {
-                    continue;
-                }
-                if reserved == "model" && parsed.model.is_none() {
-                    parsed.model = Some(v);
-                } else if reserved == "provider" && parsed.provider.is_none() {
-                    parsed.provider = Some(v);
-                }
-            }
-        }
-        apply_defaults(t, &mut vars);
-        for v in &t.vars {
-            let current = vars.get(&v.name).map(String::as_str).unwrap_or("");
-            // A default (even "") satisfies the var without prompting.
-            if !current.is_empty() || v.default.is_some() {
-                continue;
-            }
-            let answer = prompt_for_var(&v.question, None)
-                .map_err(|_| format!("template '{tname}' needs --var {}=<value>", v.name))?;
+        let has_schedule = parsed.every.is_some() || parsed.cron.is_some() || parsed.at.is_some();
+        // Interactive missing-var resolution: prompt on a TTY, fail loud
+        // otherwise. An empty answer is an error, like before.
+        let mut prompt = |name: &str, question: &str| -> Result<String, String> {
+            let answer = prompt_for_var(question, None)
+                .map_err(|_| format!("template '{tname}' needs --var {name}=<value>"))?;
             if answer.is_empty() {
-                return Err(format!("template '{tname}' needs --var {}=<value>", v.name));
+                return Err(format!("template '{tname}' needs --var {name}=<value>"));
             }
-            vars.insert(v.name.clone(), answer);
-        }
-        let rendered = render_prompt(t, &vars)?;
-        if parsed.task.is_empty() {
-            parsed.task = rendered;
-        }
-        if parsed.every.is_none() && parsed.cron.is_none() {
-            match &t.schedule {
-                TemplateSchedule::Every(d) => parsed.every = Some(d.clone()),
-                TemplateSchedule::Cron(e) => parsed.cron = Some(e.clone()),
-            }
-        }
+            Ok(answer)
+        };
+        expand_template(
+            t,
+            &mut vars,
+            &mut parsed.model,
+            &mut parsed.provider,
+            &mut parsed.task,
+            &mut parsed.every,
+            &mut parsed.cron,
+            has_schedule,
+            &mut prompt,
+        )?;
+        // Remember the template on the job: at fire time the prompt is
+        // re-rendered from it, so editing the template updates the job.
+        // `task` stays as the snapshot for when the template is later
+        // deleted or fails to render.
+        parsed.template = Some(tname);
+        parsed.template_vars = vars;
     }
     if parsed.task.is_empty() {
         return Err(
-            "need a task: pantheon schedule <task> --every 30m|--cron '0 9 * * *' (or --template <name>)"
+            "need a task: pantheon schedule <task> --every 30m|--cron '0 9 * * *'|--at <time> (or --template <name>)"
                 .into(),
         );
     }
-    // Validate the delivery target now: a typo must fail here, not vanish
-    // into a job that never delivers.
-    if let Some(d) = &parsed.deliver {
-        Deliver::parse(d)?;
-    }
-    let stored = build_job_from_create(&parsed)?;
-    Ok(stored)
+    build_job_from_create(&parsed)
 }
 
 /// Ask the operator for a template variable. Uses the default on empty
@@ -408,39 +504,6 @@ fn prompt_for_var(question: &str, default: Option<&str>) -> Result<String, Strin
     Ok(line.trim().to_string())
 }
 
-/// `pantheon schedule reflect (--every 30m | --cron '0 9 * * *')`: a
-/// scheduled reflection pass (e.g. nightly). Registers a normal stored
-/// job whose task is the reflect marker; `run_job_now` runs the pass
-/// directly instead of a chat turn.
-fn cmd_schedule_reflect(args: &[String], data_dir: &Path) {
-    let mut parsed = parse_create_args(args);
-    if !parsed.task.is_empty() {
-        eprintln!("usage: pantheon schedule reflect (--every 30m | --cron '0 9 * * *') [--timeout 10m] [--overlap skip|replace|queue]");
-        eprintln!("`schedule reflect` takes no task text: it always runs a reflection pass");
-        std::process::exit(2);
-    }
-    parsed.task = REFLECT_TASK_MARKER.to_string();
-    match build_job_from_create(&parsed) {
-        Err(e) => {
-            eprintln!("error: {e}");
-            eprintln!("not scheduled: fix the arguments and retry");
-            std::process::exit(2);
-        }
-        Ok(stored) => {
-            let job_id = stored.id.clone();
-            let mut jobs = load_or_exit(data_dir);
-            jobs.push(stored);
-            if let Err(e) = save_jobs(data_dir, &jobs) {
-                eprintln!("save failed: {e}");
-                std::process::exit(1);
-            }
-            println!(
-                "scheduled reflection {job_id} — runs | cancel: pantheon schedule cancel {job_id}"
-            );
-        }
-    }
-}
-
 /// Build the stored job from `schedule create` arguments, validating
 /// everything before anything is persisted.
 ///
@@ -448,42 +511,46 @@ fn cmd_schedule_reflect(args: &[String], data_dir: &Path) {
 /// silently never fire. Now it is rejected here, with the field and the
 /// reason, so a broken schedule is a loud error at registration instead
 /// of a quiet no-show at 3am.
-fn build_job_from_create(parsed: &CreateArgs) -> Result<StoredJob, String> {
-    let task = parsed.task.clone();
-    let every = parsed.every.clone();
-    let agent = parsed.agent.clone();
-    let cron = parsed.cron.clone();
-    let model = parsed.model.clone();
-    let provider = parsed.provider.clone();
-    let timeout = parsed.timeout.clone();
-    let overlap = parsed.overlap.clone();
-    let deliver = parsed.deliver.clone();
-
-    let kind = if let Some(expr) = &cron {
+fn build_job_from_create(parsed: &CreateArgs) -> Result<ScheduledJob, String> {
+    // Kind precedence: --cron > --every > --at. One of them is required:
+    // a job with no schedule could never fire and must not be stored.
+    let kind = if let Some(expr) = &parsed.cron {
         ScheduleKind::Cron { expr: expr.clone() }
-    } else if let Some(dur) = &every {
+    } else if let Some(dur) = &parsed.every {
         match parse_duration(dur) {
             Ok(ms) => ScheduleKind::Interval { every_ms: ms },
-            Err(e) => return Err(format!("bad duration: {e}")),
+            Err(e) => return Err(format!("bad --every: {e}")),
+        }
+    } else if let Some(at) = &parsed.at {
+        match parse_at(at) {
+            Ok(at_ms) => ScheduleKind::OneShot { at_ms },
+            Err(e) => return Err(format!("bad --at: {e}")),
         }
     } else {
-        return Err("need --every <duration> or --cron <expr>".into());
+        return Err("need --every <duration>, --cron <expr>, or --at <time>".into());
     };
 
+    // Validate the delivery target now: a typo must fail here, not vanish
+    // into a job that never delivers.
+    if let Some(d) = &parsed.deliver {
+        Deliver::parse(d).map_err(|e| format!("bad --deliver: {e}"))?;
+    }
+
     let job_id = format!("job_{}", pantheon_runtime::new_run_id());
-    let mut probe = Job::new(&job_id, kind.clone(), "nyx");
+    let mut job = Job::new(&job_id, kind, &parsed.agent);
+    job.task = parsed.task.clone();
+    job.template = parsed.template.clone();
+    job.template_vars = parsed.template_vars.clone();
     // Registration-time validation: reject the broken expression now.
-    probe
-        .validate()
+    job.validate()
         .map_err(|e| format!("invalid --cron expression: {e}"))?;
-    if let Some(m) = model.as_deref() {
-        probe
-            .pin_model(m, provider.as_deref())
+    if let Some(m) = parsed.model.as_deref() {
+        job.pin_model(m, parsed.provider.as_deref())
             .map_err(|e| format!("bad pin: {e}"))?;
-    } else if provider.is_some() {
+    } else if parsed.provider.is_some() {
         return Err("--provider without --model pins nothing; add --model to pin".into());
     }
-    let timeout_secs = match timeout.as_deref() {
+    job.timeout_secs = match parsed.timeout.as_deref() {
         None => None,
         Some(d) => {
             let ms = parse_duration(d).map_err(|e| format!("bad --timeout: {e}"))?;
@@ -494,25 +561,16 @@ fn build_job_from_create(parsed: &CreateArgs) -> Result<StoredJob, String> {
             Some(secs)
         }
     };
-    let overlap = match overlap.as_deref() {
+    job.overlap = match parsed.overlap.as_deref() {
         None => OverlapPolicy::default(),
         Some(o) => o
             .parse::<OverlapPolicy>()
             .map_err(|e| format!("bad --overlap: {e}"))?,
     };
-    Ok(StoredJob {
-        id: job_id,
-        task,
-        kind,
-        agent,
-        missed: MissedPolicy::RunOnce,
-        paused: false,
+    job.deliver = parsed.deliver.clone();
+    Ok(ScheduledJob {
+        job,
         last_run: None,
-        model: probe.model,
-        provider: probe.provider,
-        timeout_secs,
-        overlap,
-        deliver,
     })
 }
 
@@ -525,30 +583,37 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                 return;
             }
             for j in &jobs {
-                let status = if j.paused { "paused" } else { "active" };
-                let pin = match (&j.model, &j.provider) {
+                let job = &j.job;
+                let status = if job.paused { "paused" } else { "active" };
+                let pin = match (&job.model, &job.provider) {
                     (Some(m), Some(p)) => format!("  model: {m} via {p}"),
                     (Some(m), None) => format!("  model: {m}"),
                     _ => String::new(),
                 };
-                let deliver = j
+                let deliver = job
                     .deliver
                     .as_deref()
                     .map(|d| format!("  deliver: {d}"))
                     .unwrap_or_default();
+                let template = job
+                    .template
+                    .as_deref()
+                    .map(|t| format!("  template: {t}"))
+                    .unwrap_or_default();
                 println!(
-                    "{}  {}  {}  [{}]{}{}  last: {}  | cancel: pantheon schedule cancel {}",
+                    "{}  {}  {}  [{}]{}{}{}  last: {}  | cancel: pantheon schedule cancel {}",
                     // Full id, not a byte-prefix: ids are `job_run_<ts>_<n>`,
                     // so the first 8 bytes are the shared `job_run_` and
                     // the truncated form was identical for every job.
-                    j.id.as_str(),
+                    job.id.as_str(),
                     status,
-                    format_kind(&j.kind),
-                    j.task,
+                    format_kind(&job.kind),
+                    job.task,
                     pin,
                     deliver,
+                    template,
                     format_last(j.last_run),
-                    j.id
+                    job.id
                 );
             }
         }
@@ -559,24 +624,31 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                 eprintln!("usage: pantheon schedule {} <id>", parts[0]);
                 std::process::exit(2);
             };
-            let mut jobs = load_or_exit(data_dir);
-            let found = jobs.iter_mut().find(|j| j.id == *id);
-            match found {
-                Some(j) => {
-                    match parts[0].as_str() {
-                        "pause" => j.paused = true,
-                        "resume" => j.paused = false,
-                        // "cancel" removes below; outer guard allows only
-                        // pause|resume|cancel here.
-                        _ => {
-                            jobs.retain(|x| x.id != *id);
-                        }
+            // Single locked rewrite (load/mutate/save under the store lock)
+            // so a concurrent dashboard edit can't be clobbered.
+            let outcome = update_jobs(data_dir, |jobs| -> Result<bool, String> {
+                let Some(pos) = jobs.iter().position(|j| j.job.id == *id) else {
+                    return Ok(false);
+                };
+                match parts[0].as_str() {
+                    "pause" => jobs[pos].job.paused = true,
+                    "resume" => jobs[pos].job.paused = false,
+                    // "cancel" removes; the outer guard allows only
+                    // pause|resume|cancel here.
+                    _ => {
+                        jobs.remove(pos);
                     }
-                    let _ = save_jobs(data_dir, &jobs);
-                    println!("{} {}", parts[0], id);
                 }
-                None => {
+                Ok(true)
+            });
+            match outcome {
+                Ok(true) => println!("{} {}", parts[0], id),
+                Ok(false) => {
                     eprintln!("not found: {id}");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("schedule: {e}");
                     std::process::exit(1);
                 }
             }
@@ -589,28 +661,29 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                 std::process::exit(2);
             };
             let jobs = load_or_exit(data_dir);
-            match jobs.iter().find(|j| j.id == *id) {
+            match jobs.iter().find(|j| j.job.id == *id) {
                 Some(j) => {
+                    // The prompt is re-rendered from the template at fire
+                    // time, so edits to the template apply to already
+                    // scheduled jobs.
+                    let is_oneshot = matches!(j.job.kind, ScheduleKind::OneShot { .. });
+                    let task = j.job.resolve_task(&TemplateStore::open(data_dir));
                     // A manual `run` keeps the old hard-fail behavior: the
                     // tick loop instead logs and continues with other jobs.
-                    if let Err(e) = run_job_now(&j.task, &Job::from(j.clone()), data_dir) {
+                    let report = run_job_now(&task, &j.job, data_dir);
+                    if let Some(e) = report.error {
                         eprintln!("{e}");
                         std::process::exit(1);
                     }
-                    // Record the fire time, otherwise `schedule list` keeps
-                    // reporting "last: never" after a successful run and the
-                    // user cannot tell a working job from a dead one.
-                    let mut jobs = jobs;
-                    if let Some(slot) = jobs.iter_mut().find(|j| j.id == *id) {
-                        slot.last_run = Some(
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis() as i64)
-                                .unwrap_or(0),
-                        );
-                    }
-                    if let Err(e) = save_jobs(data_dir, &jobs) {
-                        eprintln!("warning: could not record last_run: {e}");
+                    // stays for retry. Single locked rewrite so a concurrent
+                    // dashboard edit can't be clobbered.
+                    if let Err(e) = update_jobs(data_dir, |jobs| {
+                        after_manual_run(jobs, id, now_ms());
+                        Ok(())
+                    }) {
+                        eprintln!("warning: could not update job store after run: {e}");
+                    } else if is_oneshot {
+                        println!("removed one-shot job {id}");
                     }
                 }
                 None => {
@@ -636,7 +709,7 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
             // double-executing. A claim that cannot be persisted fails
             // closed: the run does not start.
             let watch = parts.iter().any(|a| a == "--watch");
-            let sched = match SchedulerLoop::open(data_dir, 30) {
+            let mut sched = match SchedulerLoop::open(data_dir, 30) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("tick: {e}");
@@ -644,10 +717,21 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                     std::process::exit(1);
                 }
             };
+            // Record every fired run's outcome and self-heal the failed
+            // ones: investigate, retry once when fixed, alert always.
+            let healer = SelfHealer::new(data_dir);
+            sched.set_outcome_sink(healer.outcome_sink());
+            install_scheduler_hooks(&mut sched, data_dir);
             let dd = data_dir.to_path_buf();
-            let execute: ExecuteFn = Arc::new(move |j: &SchedulableJob| {
-                if let Err(e) = run_job_now(&j.task, &j.job, &dd) {
+            let execute: ExecuteFn = Arc::new(move |j: &ScheduledJob| {
+                let task = j.job.resolve_task(&TemplateStore::open(&dd));
+                let report = run_job_now(&task, &j.job, &dd);
+                if let Some(e) = &report.error {
                     eprintln!("{e}");
+                }
+                TaskOutcome {
+                    run_id: report.run_id,
+                    error: report.error,
                 }
             });
             loop {
@@ -658,12 +742,15 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                     Ok(j) => j,
                     Err(e) => {
                         eprintln!("schedule: {e}");
-                        eprintln!("fix: delete or repair {}", store_path(data_dir).display());
+                        eprintln!(
+                            "fix: delete or repair {}",
+                            job_store_path(data_dir).display()
+                        );
                         std::process::exit(1);
                     }
                 };
                 let now = now_ms();
-                let reports = sched.tick_once(now, &jobs, execute.clone());
+                let (reports, watchers) = sched.tick_once(now, &jobs, execute.clone());
                 let mut any_fired = false;
                 for r in &reports {
                     match &r.outcome {
@@ -685,12 +772,18 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
                 }
                 record_fires(data_dir, &reports, now);
                 if !watch {
+                    // One-shot tick waits for the fired runs' watchers:
+                    // the watcher threads run the outcome sink (run
+                    // history + self-heal) and the process must not exit
+                    // before they finish. Bounded by the jobs' timeouts.
+                    for w in watchers {
+                        let _ = w.join();
+                    }
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_secs(30));
             }
         }
-        "webhook" => handle_webhook_command(&parts[1..]),
         "prune" => {
             // Manual trigger for the retention pass (the tick loop runs it
             // automatically at most once per day). `--days N` overrides the
@@ -744,7 +837,6 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
             eprintln!("usage: pantheon schedule list|pause|resume|cancel|run <id>");
             eprintln!("       pantheon schedule tick [--watch]");
             eprintln!("       pantheon schedule prune [--days N]");
-            eprintln!("       pantheon schedule webhook sign|verify --body <text> [--secret <s>]");
             std::process::exit(2);
         }
     }
@@ -832,7 +924,7 @@ fn record_retention_pass(data_dir: &Path) {
 }
 
 /// The automatic pass, called from the tick loop. No-op when retention is
-/// disabled (`keep_days = 0`) or the last pass is still fresh. Logs what
+/// disabled (`keep_days = 0`) or the last pass is fresh. Logs what
 /// was pruned.
 fn maybe_run_retention(data_dir: &Path) {
     let keep_days = crate::config::Config::load_or_report(data_dir)
@@ -853,127 +945,31 @@ fn maybe_run_retention(data_dir: &Path) {
     }
 }
 
-/// `pantheon schedule webhook sign|verify` — HMAC-SHA256 signing for the
-/// webhook trigger contract (§21, `pantheon_scheduler::webhook`).
-///
-/// The signing primitive lived in the scheduler with no surface: an
-/// operator wiring an external sender (GitHub, Stripe, …) into a webhook
-/// job had no way to mint a valid `X-Pantheon-Signature` or to check that
-/// their sender's signatures verify against the shared secret. `sign`
-/// mints the header value for a body; `verify` checks one. Both go through
-/// the scheduler's primitives, so the contract cannot drift between here
-/// and the trigger path.
-///
-/// Secret precedence: `--secret` flag, then `PANTHEON_WEBHOOK_SECRET`.
-/// Missing or empty fails closed; the secret is never printed or logged.
-fn handle_webhook_command(parts: &[String]) {
-    let action = parts.first().map(String::as_str).unwrap_or("");
-    if !matches!(action, "sign" | "verify") {
-        eprintln!("usage: pantheon schedule webhook sign|verify --body <text> [--body-file <path>] [--secret <s>] [--signature <value>]");
-        eprintln!("       secret: --secret flag or PANTHEON_WEBHOOK_SECRET (never logged)");
-        std::process::exit(2);
-    }
-    let mut body: Option<String> = None;
-    let mut body_file: Option<String> = None;
-    let mut secret_flag: Option<String> = None;
-    let mut signature: Option<String> = None;
-    let mut it = parts[1..].iter().peekable();
-    while let Some(a) = it.next() {
-        let mut v = || {
-            it.next().map(|s| s.to_string()).unwrap_or_else(|| {
-                eprintln!("usage: {a} needs a value");
-                std::process::exit(2);
-            })
-        };
-        match a.as_str() {
-            "--body" => body = Some(v()),
-            "--body-file" => body_file = Some(v()),
-            "--secret" => secret_flag = Some(v()),
-            "--signature" => signature = Some(v()),
-            other => {
-                eprintln!("unknown flag: {other}");
-                std::process::exit(2);
-            }
-        }
-    }
-    // --secret wins over the environment; an empty secret authenticates
-    // nothing, so it fails closed exactly like WebhookAuth::new.
-    let secret = secret_flag
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::env::var(pantheon_scheduler::webhook::SECRET_ENV_VAR)
-                .ok()
-                .filter(|s| !s.is_empty())
-        })
-        .unwrap_or_else(|| {
-            eprintln!(
-                "webhook {action}: no secret — pass --secret or set {}",
-                pantheon_scheduler::webhook::SECRET_ENV_VAR
-            );
-            std::process::exit(2);
-        });
-    if body.is_some() && body_file.is_some() {
-        eprintln!("webhook {action}: --body and --body-file are mutually exclusive");
-        std::process::exit(2);
-    }
-    let body_bytes: Vec<u8> = match (body, body_file) {
-        (Some(t), _) => t.into_bytes(),
-        (None, Some(p)) => std::fs::read(&p).unwrap_or_else(|e| {
-            eprintln!("webhook {action}: cannot read {p}: {e}");
-            std::process::exit(1);
-        }),
-        (None, None) => Vec::new(),
-    };
-    match action {
-        "sign" => {
-            let header = pantheon_scheduler::webhook::sign(secret.as_bytes(), &body_bytes);
-            println!(
-                "{}: {header}",
-                pantheon_scheduler::webhook::SIGNATURE_HEADER
-            );
-        }
-        _ => {
-            let sig = signature.unwrap_or_else(|| {
-                eprintln!("usage: pantheon schedule webhook verify --signature <value> --body <text> [--secret <s>]");
-                std::process::exit(2);
-            });
-            match pantheon_scheduler::webhook::verify_signature(
-                secret.as_bytes(),
-                &body_bytes,
-                Some(&sig),
-            ) {
-                Ok(()) => println!("signature valid"),
-                Err(e) => {
-                    eprintln!("signature invalid: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-    }
-}
-
 /// What `schedule <task> ...` parsed out of the command line. Named because
 /// a six-element tuple gave no clue what any position meant at the call
 /// site.
 struct CreateArgs {
     task: String,
     every: Option<String>,
-    agent: Option<String>,
+    agent: String,
     cron: Option<String>,
+    at: Option<String>,
     model: Option<String>,
     provider: Option<String>,
     timeout: Option<String>,
     overlap: Option<String>,
     deliver: Option<String>,
     template: Option<String>,
+    template_vars: HashMap<String, String>,
     vars: Vec<(String, String)>,
 }
 
 fn parse_create_args(args: &[String]) -> CreateArgs {
     let mut task = String::new();
     let mut every = None;
-    let mut agent = None;
+    let mut agent = "nyx".to_string();
     let mut cron = None;
+    let mut at = None;
     let mut model = None;
     let mut provider = None;
     let mut timeout = None;
@@ -993,13 +989,19 @@ fn parse_create_args(args: &[String]) -> CreateArgs {
             "--agent" => {
                 i += 1;
                 if i < args.len() {
-                    agent = Some(args[i].clone());
+                    agent = args[i].clone();
                 }
             }
             "--cron" => {
                 i += 1;
                 if i < args.len() {
                     cron = Some(args[i].clone());
+                }
+            }
+            "--at" => {
+                i += 1;
+                if i < args.len() {
+                    at = Some(args[i].clone());
                 }
             }
             "--model" => {
@@ -1066,23 +1068,27 @@ fn parse_create_args(args: &[String]) -> CreateArgs {
         every,
         agent,
         cron,
+        at,
         model,
         provider,
         timeout,
         overlap,
         deliver,
         template,
+        template_vars: HashMap::new(),
         vars,
     }
 }
 
 fn format_kind(kind: &ScheduleKind) -> String {
     match kind {
-        ScheduleKind::Interval { every_ms } => {
-            format!("every {}ms", every_ms)
-        }
-        ScheduleKind::Cron { expr } => format!("cron {}", expr),
-        _ => format!("{:?}", kind),
+        ScheduleKind::Interval { every_ms } => format!("every {every_ms}ms"),
+        ScheduleKind::Cron { expr } => format!("cron {expr}"),
+        ScheduleKind::OneShot { at_ms } => match chrono::DateTime::from_timestamp_millis(*at_ms) {
+            Some(t) => format!("at {}", t.to_rfc3339()),
+            None => format!("at {at_ms}ms"),
+        },
+        ScheduleKind::Webhook { path } => format!("webhook {path}"),
     }
 }
 
@@ -1122,47 +1128,47 @@ fn format_last(last: Option<i64>) -> String {
 /// Returns `Err` instead of exiting: the tick loop runs jobs on worker
 /// threads, and a failing job must not take the whole daemon down with it.
 /// Callers that want the old hard-fail behavior (`schedule run`) exit on
+/// What one scheduled job's execution produced: the task-level truth.
+/// `error` is `None` when the task ran cleanly; `Some` when the task
+/// itself failed (or never started, in which case `run_id` is empty).
+/// The outcome sink maps `Some` to [`RunOutcome::Failed`] for run
+/// history, which feeds both the nightly repair loop and self-heal.
+pub(crate) struct JobRunReport {
+    pub run_id: String,
+    pub error: Option<String>,
+}
+
 /// the error themselves.
-/// Execute one scheduled job: a real agent turn, or the bounded reflection
-/// pass for reflection jobs. Shared by `pantheon schedule tick` and the
+/// Execute one scheduled job: a real agent turn, or the bounded nightly
+/// pass for nightly jobs. Shared by `pantheon schedule tick` and the
 /// gateway service's scheduler loop — one execution core, never duplicated.
-pub(crate) fn run_job_now(task: &str, sched: &Job, data_dir: &Path) -> Result<(), String> {
-    // Consolidation jobs run a bounded consolidation pass directly —
-    // no agent turn, no chat model. Scheduled passes are deterministic
-    // unless `[consolidation] enabled = true`, in which case the pass
-    // distills through the Consolidation auxiliary model. A job whose
-    // marker outlived its config opt-out skips loudly instead of firing.
-    if task == CONSOLIDATE_TASK_MARKER {
-        let file_cfg = crate::config::Config::load_or_report(data_dir);
-        let cfg = crate::config::consolidation_config(file_cfg.as_ref());
-        if !cfg.enabled {
-            println!("consolidation: [consolidation] enabled = false — skipping scheduled pass");
-            return Ok(());
-        }
-        return match crate::consolidate_cli::run_one_pass(data_dir, false) {
-            Ok(report) => {
-                println!("{}", report.summary_line());
-                Ok(())
-            }
-            Err(e) => Err(format!("scheduled consolidation failed: {e}")),
-        };
-    }
-    // Reflection jobs run a bounded reflection pass directly — no agent
-    // turn, no chat model. Scheduled passes are deterministic in v1 (no
-    // LlmRefiner wired); `[reflect] enabled` only matters once one is.
-    if task == REFLECT_TASK_MARKER {
-        return match crate::reflect_cli::run_one_pass(data_dir, false) {
+pub(crate) fn run_job_now(task: &str, sched: &Job, data_dir: &Path) -> JobRunReport {
+    // Nightly jobs (the new `__pantheon_nightly__` marker and both old
+    // `__pantheon_reflect__` / `__pantheon_consolidate__` markers) run the
+    // unified nightly pass directly — no agent turn, no chat model. The
+    // pass is off by default; a disabled pass refuses the run loudly via
+    // the `run_one_pass` master gate, so a stale schedule entry can never
+    // silently do nothing — or silently spend model calls.
+    if task == NIGHTLY_TASK_MARKER || task == CONSOLIDATE_TASK_MARKER || task == REFLECT_TASK_MARKER
+    {
+        return match crate::nightly_cli::run_one_pass(data_dir, false) {
             Ok(out) => {
-                println!("{}", crate::reflect_cli::summarize_pass(&out));
-                if !out.pending.is_empty() {
+                println!("{}", crate::nightly_cli::summarize_pass(&out));
+                if out.pending > 0 {
                     println!(
-                        "note: {} proposal(s) await approval — run `pantheon reflect pending`",
-                        out.pending.len()
+                        "note: {} proposal(s) await approval — run `pantheon nightly pending`",
+                        out.pending
                     );
                 }
-                Ok(())
+                JobRunReport {
+                    run_id: String::new(),
+                    error: None,
+                }
             }
-            Err(e) => Err(format!("scheduled reflection failed: {e}")),
+            Err(e) => JobRunReport {
+                run_id: String::new(),
+                error: Some(format!("scheduled nightly pass failed: {e}")),
+            },
         };
     }
     use crate::config;
@@ -1190,15 +1196,24 @@ pub(crate) fn run_job_now(task: &str, sched: &Job, data_dir: &Path) -> Result<()
     let secrets = config::chat_secrets(file_cfg.as_ref());
     let session = match Session::new(data_dir.to_path_buf(), policy, model_policy, secrets) {
         Ok(s) => s,
-        Err(e) => return Err(format!("open session: {e}")),
+        Err(e) => {
+            return JobRunReport {
+                run_id: String::new(),
+                error: Some(format!("open session: {e}")),
+            };
+        }
     };
+    config::apply_tool_enablement(&session, file_cfg.as_ref());
 
     let run_id = pantheon_runtime::new_run_id();
     match session.chat(&run_id, task) {
         Ok(outcome) => {
             println!("ran {task} — run {run_id}");
             deliver_job_result(task, sched, data_dir, &run_id, &outcome);
-            Ok(())
+            JobRunReport {
+                run_id,
+                error: None,
+            }
         }
         Err(e) => {
             // A parked run is a real outcome, not a failure: it needs a
@@ -1209,9 +1224,15 @@ pub(crate) fn run_job_now(task: &str, sched: &Job, data_dir: &Path) -> Result<()
                 // useless: it looked actionable and was not.
                 println!("parked {task}");
                 println!("{e}");
-                Ok(())
+                JobRunReport {
+                    run_id,
+                    error: None,
+                }
             } else {
-                Err(format!("scheduled task failed: {e}"))
+                JobRunReport {
+                    run_id,
+                    error: Some(format!("scheduled task failed: {e}")),
+                }
             }
         }
     }
@@ -1229,7 +1250,15 @@ fn deliver_job_result(
     run_id: &str,
     outcome: &pantheon_agent::LoopOutcome,
 ) {
-    let target = match sched.deliver.as_deref() {
+    let raw = sched.deliver.as_deref();
+    // The home session is the default delivery target: no explicit target
+    // and `--deliver mobile` both land in the pinned session the user
+    // actually opens. `Deliver::parse` itself is untouched.
+    if schedule_delivery::routes_via_home_session(raw) {
+        deliver_job_result_home(task, sched, data_dir, run_id, outcome);
+        return;
+    }
+    let target = match raw {
         // Validated at create; an unknown value here fails open to log.
         Some(s) => schedule_delivery::Deliver::parse(s).unwrap_or(schedule_delivery::Deliver::Log),
         None => return,
@@ -1248,6 +1277,34 @@ fn deliver_job_result(
     if let Some(err) = schedule_delivery::deliver_best_effort(
         &schedule_delivery::RestChannelSender,
         &target,
+        &short_task_label(task, &sched.id),
+        &body,
+    ) {
+        eprintln!("delivery failed (job result kept): {err}");
+    }
+}
+
+/// Route a completed job's summary into the home session: the default
+/// delivery target (and the `--deliver mobile` target). The summary is the
+/// run's final assistant message, redacted and truncated, exactly like the
+/// channel path above. Delivery failure never fails the job.
+fn deliver_job_result_home(
+    task: &str,
+    sched: &Job,
+    data_dir: &Path,
+    run_id: &str,
+    outcome: &pantheon_agent::LoopOutcome,
+) {
+    let summary = match outcome {
+        pantheon_agent::LoopOutcome::Answered { text, .. } => Some(text.clone()),
+        _ => last_assistant_text(data_dir, run_id),
+    };
+    let Some(text) = summary.filter(|t| !t.trim().is_empty()) else {
+        return;
+    };
+    let body = schedule_delivery::build_summary(&text);
+    if let Some(err) = schedule_delivery::deliver_to_home_session(
+        data_dir,
         &short_task_label(task, &sched.id),
         &body,
     ) {
@@ -1286,44 +1343,51 @@ fn last_assistant_text(data_dir: &Path, run_id: &str) -> Option<String> {
         .map(|m| m.content.clone())
 }
 
-/// Load jobs as the scheduler loop sees them. Corruption is an error for
-/// the caller to handle: the CLI tick exits, the service loop logs and
+/// Load jobs as the scheduler loop sees them. This is the core's shared
+/// shape already, so it is a straight pass-through. Corruption is an error
+/// for the caller to handle: the CLI tick exits, the service loop logs and
 /// keeps going (a bad schedule.json must not take the gateway down).
-pub(crate) fn load_schedulable(data_dir: &Path) -> Result<Vec<SchedulableJob>, String> {
-    Ok(load_jobs(data_dir)?
-        .into_iter()
-        .map(|s| SchedulableJob {
-            last_run: s.last_run,
-            task: s.task.clone(),
-            job: Job::from(s),
-        })
-        .collect())
+pub(crate) fn load_schedulable(data_dir: &Path) -> Result<Vec<ScheduledJob>, String> {
+    load_jobs(data_dir)
 }
 
 /// Persist fire times for jobs that fired, so an interval job does not
 /// come due again on the next tick. The durable claim already won is what
 /// makes this crash-safe; last_run just drives the due check.
+///
+/// Only [`FireOutcome::Fired`] stamps `last_run`: a fire means the claim
+/// was won and the run started. [`FireOutcome::Queued`] is a deferred
+/// duplicate of an already-fired occurrence — stamping `last_run` there
+/// would reset the interval clock before anything ran.
+///
+/// One-shot rows are NOT removed here. They are removed by the one-shot
+/// completion observer (installed via
+/// [`SchedulerLoop::set_oneshot_sink`]) only when the run actually
+/// completes: deleting on fire would lose panicked/timed-out runs
+/// silently. A one-shot with `last_run` set is inert (`Job::due` is
+/// false), so keeping the row can never cause a refire.
+///
+/// The load/mutate/save runs under the store's exclusive lock
+/// ([`update_jobs`]) so a concurrent dashboard/CLI edit can't be
+/// clobbered by this pass's stale read.
 pub(crate) fn record_fires(data_dir: &Path, reports: &[TickReport], now_ms: i64) {
     let fired: Vec<&str> = reports
         .iter()
-        .filter(|r| matches!(r.outcome, FireOutcome::Fired | FireOutcome::Queued))
+        .filter(|r| matches!(r.outcome, FireOutcome::Fired))
         .map(|r| r.id.as_str())
         .collect();
     if fired.is_empty() {
         return;
     }
-    match load_jobs(data_dir) {
-        Ok(mut jobs) => {
-            for j in jobs.iter_mut() {
-                if fired.contains(&j.id.as_str()) {
-                    j.last_run = Some(now_ms);
-                }
-            }
-            if let Err(e) = save_jobs(data_dir, &jobs) {
-                eprintln!("warning: could not record last_run: {e}");
+    if let Err(e) = update_jobs(data_dir, |jobs| {
+        for j in jobs.iter_mut() {
+            if fired.contains(&j.job.id.as_str()) {
+                j.last_run = Some(now_ms);
             }
         }
-        Err(e) => eprintln!("warning: could not record last_run: {e}"),
+        Ok(())
+    }) {
+        eprintln!("warning: could not record last_run: {e}");
     }
 }
 
@@ -1337,24 +1401,73 @@ pub(crate) fn scheduler_tick_secs() -> u64 {
         .unwrap_or(60)
 }
 
+/// Install the tick driver's safety hooks on a freshly opened loop:
+/// - a paused-state predicate, so a queued drain re-checks paused fresh
+///   from the store instead of trusting the snapshot taken at fire time;
+/// - a one-shot completion observer, so one-shot rows are removed only
+///   when the run actually completed — never on panic/timeout.
+fn install_scheduler_hooks(sched: &mut SchedulerLoop, data_dir: &Path) {
+    let dd = data_dir.to_path_buf();
+    sched.set_paused_check(Arc::new(move |id: &str| {
+        match load_jobs(&dd) {
+            Ok(jobs) => jobs.iter().any(|j| j.job.id == id && j.job.paused),
+            // Fail closed: if the store can't be read, don't fire blind.
+            Err(_) => true,
+        }
+    }));
+    let dd = data_dir.to_path_buf();
+    sched.set_oneshot_sink(Arc::new(
+        move |id: &str, outcome: RunOutcome, _task: Option<TaskOutcome>| {
+            if outcome != RunOutcome::Completed {
+                eprintln!(
+                "scheduler: one-shot job {id} ended as {outcome:?}; keeping the row for inspection"
+            );
+                return;
+            }
+            let id_owned = id.to_string();
+            if let Err(e) = update_jobs(&dd, |jobs| {
+                jobs.retain(|j| {
+                    !(j.job.id == id_owned && matches!(j.job.kind, ScheduleKind::OneShot { .. }))
+                });
+                Ok(())
+            }) {
+                eprintln!("scheduler: could not remove completed one-shot job {id}: {e}");
+            }
+        },
+    ));
+}
+
 /// The gateway service's scheduler loop: ticks due jobs forever on the
 /// same claim ledger and job store `pantheon schedule tick` uses.
 /// Never returns; a ledger that cannot open is logged and the thread ends
 /// (firing without durable claims is refused).
 pub(crate) fn run_scheduler_loop(data_dir: &Path) {
     let tick_secs = scheduler_tick_secs();
-    let sched = match SchedulerLoop::open(data_dir, tick_secs) {
+    let mut sched = match SchedulerLoop::open(data_dir, tick_secs) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("scheduler: {e}; scheduled jobs will not fire");
             return;
         }
     };
+    // Record every fired run's outcome and self-heal the failed ones:
+    // investigate, retry once when fixed, alert always.
+    let healer = SelfHealer::new(data_dir);
+    sched.set_outcome_sink(healer.outcome_sink());
+    install_scheduler_hooks(&mut sched, data_dir);
     eprintln!("scheduler: ticking every {tick_secs}s");
     let dd = data_dir.to_path_buf();
-    let execute: ExecuteFn = Arc::new(move |j: &SchedulableJob| {
-        if let Err(e) = run_job_now(&j.task, &j.job, &dd) {
+    let execute: ExecuteFn = Arc::new(move |j: &ScheduledJob| {
+        // Re-render the template at fire time: edits to the template
+        // apply to already-scheduled jobs.
+        let task = j.job.resolve_task(&TemplateStore::open(&dd));
+        let report = run_job_now(&task, &j.job, &dd);
+        if let Some(e) = &report.error {
             eprintln!("scheduler: {e}");
+        }
+        TaskOutcome {
+            run_id: report.run_id,
+            error: report.error,
         }
     });
     let dd = data_dir.to_path_buf();

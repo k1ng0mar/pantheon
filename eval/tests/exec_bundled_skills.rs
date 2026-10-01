@@ -74,7 +74,12 @@ fn user_edit_wins_over_reseed() {
     )
     .unwrap();
     let out = seed_bundled_skills(t.path());
-    assert_eq!(out[0].1, SeedOutcome::KeptUserCopy);
+    let outcome = out
+        .iter()
+        .find(|(name, _)| name == "design-references")
+        .map(|(_, o)| *o)
+        .expect("design-references missing from seed output");
+    assert_eq!(outcome, SeedOutcome::KeptUserCopy);
     let body = fs::read_to_string(&path).unwrap();
     assert!(body.contains("User's edit."));
     assert!(

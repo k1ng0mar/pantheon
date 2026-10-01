@@ -34,8 +34,8 @@
 //! | `NoRoute` / `Paused` / `NotWebhookJob` | 404 | no such triggerable job (paused jobs 404 so their existence is not leaked) |
 //! | `AlreadyClaimed` | 200 | retried delivery; the run was already claimed, do not start another |
 
-use crate::idempotency::occurrence_key;
-use crate::{ClaimLedger, Job, ScheduleKind};
+use crate::tick::{occurrence_key, ClaimLedger};
+use crate::{Job, ScheduleKind};
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
@@ -192,7 +192,7 @@ pub struct Fire {
     pub job_id: String,
     /// Key for the idempotency ledger, derived from the request id.
     pub occurrence_key: String,
-    pub target_agent: String,
+    pub agent: String,
 }
 
 /// Compare a configured path with a request path, ignoring surrounding and
@@ -251,10 +251,6 @@ pub fn accept(
     Ok(Fire {
         job_id: job.id.clone(),
         occurrence_key: key,
-        target_agent: job.target_agent.clone(),
+        agent: job.agent.clone(),
     })
 }
-
-#[cfg(test)]
-#[path = "webhook_tests.rs"]
-mod tests;

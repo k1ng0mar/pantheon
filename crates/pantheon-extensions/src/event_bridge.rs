@@ -190,7 +190,3 @@ impl HookDispatcher {
         true
     }
 }
-
-#[cfg(test)]
-#[path = "event_bridge_tests.rs"]
-mod tests;

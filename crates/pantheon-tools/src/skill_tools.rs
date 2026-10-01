@@ -4,7 +4,7 @@
 //! (capability ≠ tool): skill discovery/parse/import stays in
 //! `pantheon-exec`; the callable surface lives here.
 
-use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::error::Layer;
 use pantheon_exec::skills::{skill_body, Skill};
 /// Register `skills_list` and `skill_read` on a registry.
 ///
@@ -52,34 +52,31 @@ pub fn register_skill_tools(reg: &mut crate::tools::ToolRegistry, skills: Vec<Sk
             let v: serde_json::Value =
                 serde_json::from_str(if args.trim().is_empty() { "{}" } else { args }).map_err(
                     |e| {
-                        PantheonError::new(
+                        crate::tools::tool_err(
                             "TOOL_BAD_ARGS",
                             Layer::Execution,
                             false,
                             format!("invalid JSON args: {e}"),
                             "check tool name and arguments",
-                            "",
                         )
                     },
                 )?;
             let name = v.get("name").and_then(|x| x.as_str()).ok_or_else(|| {
-                PantheonError::new(
+                crate::tools::tool_err(
                     "TOOL_BAD_ARGS",
                     Layer::Execution,
                     false,
                     "missing 'name'".to_string(),
                     "check tool name and arguments",
-                    "",
                 )
             })?;
             let skill = read.iter().find(|s| s.meta.name == name).ok_or_else(|| {
-                PantheonError::new(
+                crate::tools::tool_err(
                     "SKILL_UNKNOWN",
                     Layer::Execution,
                     false,
                     format!("no skill named '{name}'"),
                     "call skills_list first",
-                    "",
                 )
             })?;
             skill_body(skill)

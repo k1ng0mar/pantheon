@@ -2,6 +2,7 @@
 //! ``pantheon logs run_X`` replays them. History is append-only.
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::events::Event;
+use pantheon_api::todo::TodoItem;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -57,6 +58,18 @@ pub struct LedgerEntry {
     pub seq: i64,
     pub ts_ms: i64,
     pub event: Event,
+}
+
+/// Latest browser narration for one browser session: the read model behind
+/// `GET /api/browser/status`'s `last_activity`. Written by
+/// [`Ledger::append`] from `Event::BrowserActivity`; keyed by session so
+/// the dashboard can poll it cheaply without scanning the events table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserActivityView {
+    pub session: String,
+    pub action: String,
+    pub detail: String,
+    pub ts_ms: i64,
 }
 
 /// An artifact stored in the ledger database and served through a signed
@@ -141,6 +154,7 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::RunRecovered { run_id }
         | Event::AgentBound { run_id, .. }
         | Event::TurnStarted { run_id, .. }
+        | Event::UserMessage { run_id, .. }
         | Event::TurnParked { run_id, .. }
         | Event::TurnCompleted { run_id, .. }
         | Event::TurnFailed { run_id, .. }
@@ -172,7 +186,11 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::UsageRecorded { run_id, .. }
         | Event::SteeringProvided { run_id, .. }
         | Event::UserInputRequested { run_id, .. }
-        | Event::UserInputProvided { run_id, .. } => run_id,
+        | Event::UserInputProvided { run_id, .. }
+        | Event::BrowserActivity { run_id, .. }
+        | Event::ScheduledTaskFailed { run_id, .. }
+        | Event::ScheduledTaskRecovered { run_id, .. }
+        | Event::TodosUpdated { run_id, .. } => run_id,
     }
 }
 
@@ -181,7 +199,9 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS runs (
   created_ms INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'running',
   title TEXT,
-  agent_id TEXT
+  agent_id TEXT,
+  project TEXT,
+  cancel_intent INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,26 +227,84 @@ CREATE TABLE IF NOT EXISTS run_process_groups (
   lease_id TEXT NOT NULL,
   created_ms INTEGER NOT NULL,
   PRIMARY KEY (run_id, pgid)
+);
+CREATE TABLE IF NOT EXISTS todos (
+  run_id TEXT PRIMARY KEY,
+  todos_json TEXT NOT NULL,
+  updated_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS browser_activity (
+  session TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  ts_ms INTEGER NOT NULL
 );";
 
-/// One row of [`Ledger::list_runs`]: `(run_id, status, created_ms, title)`.
-/// `title` is `None` when the run has never been titled.
-pub type RunListing = (String, String, i64, Option<String>);
+/// One row of [`Ledger::list_runs`]: `(run_id, status, created_ms, title, project)`.
+/// `title` is `None` when the run has never been titled; `project` is
+/// `None` when the run was never assigned to a named project.
+pub type RunListing = (String, String, i64, Option<String>, Option<String>);
+
+/// Well-known id of the permanent home session: the pinned, never-deleted
+/// session that is the default delivery target for scheduled jobs and the
+/// `--deliver mobile` target.
+pub const HOME_SESSION_ID: &str = "home";
+/// Display title written onto the home session's run row at creation.
+const HOME_SESSION_TITLE: &str = "Home";
 
 /// Forward-only column migrations for ledgers created before a column
-/// existed. Fresh databases already carry every column from SCHEMA, so the
-/// ALTER fails harmlessly with "duplicate column name" and is ignored.
+/// existed. "duplicate column name" is ignored so the migration stays
+/// idempotent (fresh databases already carry every column from SCHEMA);
+/// any other failure propagates as LEDGER_MIGRATE.
 fn migrate(conn: &Connection) -> Result<(), PantheonError> {
-    let _ = conn.execute("ALTER TABLE runs ADD COLUMN title TEXT", []);
+    let add = |sql: &str| {
+        crate::add_column_once(conn, sql)
+            .map_err(|e| err("LEDGER_MIGRATE", format!("migration failed ({sql}): {e}")))
+    };
+    add("ALTER TABLE runs ADD COLUMN title TEXT")?;
     // Run -> agent binding. A run belongs to exactly one agent profile for
     // its whole life, so this is written once when the run row is created
     // and never updated. NULL means "pre-binding run" (created before
     // profiles existed) and is read back as such rather than guessed.
-    let _ = conn.execute("ALTER TABLE runs ADD COLUMN agent_id TEXT", []);
-    let _ = conn.execute(
+    add("ALTER TABLE runs ADD COLUMN agent_id TEXT")?;
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent_id, created_ms DESC)",
         [],
-    );
+    )
+    .map_err(|e| {
+        err(
+            "LEDGER_MIGRATE",
+            format!("migration failed (idx_runs_agent): {e}"),
+        )
+    })?;
+    // FIFO queued follow-up messages per run (queue/steer), and the
+    // run's agent mode ("plan"|"build"). The queue column holds a JSON
+    // array of message strings; a pre-migration bare string is treated
+    // as a one-element queue on read (see `parse_queue`). NULL = empty.
+    add("ALTER TABLE runs ADD COLUMN queued_message TEXT")?;
+    add("ALTER TABLE runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'build'")?;
+    // Named projects: user-created buckets that sessions are assigned
+    // to by hand (`/project`). NULL = never assigned.
+    add("ALTER TABLE runs ADD COLUMN project TEXT")?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project, created_ms DESC)",
+        [],
+    )
+    .map_err(|e| {
+        err(
+            "LEDGER_MIGRATE",
+            format!("migration failed (idx_runs_project): {e}"),
+        )
+    })?;
+    // Cooperative cancel flag for worker-thread turns (AG-UI). The
+    // in-process `AtomicBool` on `Session` cannot reach a turn running on
+    // a different `Session` object (the AG-UI server builds a fresh
+    // `Session` per RPC, and the dashboard kills from yet another
+    // process), so cancel intent is recorded on the run row and the
+    // drive loop polls it at every turn boundary. 0 = no intent,
+    // 1 = wind down. `reopen_run` clears it so a continued run never
+    // inherits a stale flag.
+    add("ALTER TABLE runs ADD COLUMN cancel_intent INTEGER NOT NULL DEFAULT 0")?;
     Ok(())
 }
 
@@ -349,6 +427,23 @@ impl Ledger {
             )
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
         }
+        // Derived read model: latest browser narration per session. Powers
+        // `GET /api/browser/status`'s `last_activity` without scanning the
+        // events table (the app polls it every couple of seconds).
+        if let Event::BrowserActivity {
+            session,
+            action,
+            detail,
+            ..
+        } = event
+        {
+            conn.execute(
+                "INSERT INTO browser_activity (session, action, detail, ts_ms) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(session) DO UPDATE SET action = excluded.action, detail = excluded.detail, ts_ms = excluded.ts_ms",
+                params![session, action, detail, ts],
+            )
+            .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
+        }
         if matches!(event, Event::RunFailed { .. } | Event::TurnFailed { .. }) {
             conn.execute(
                 "UPDATE runs SET status = 'failed' WHERE run_id = ?1 AND status NOT IN ('completed','failed','canceled')",
@@ -421,6 +516,33 @@ impl Ledger {
             ts_ms: ts,
             event: event.clone(),
         })
+    }
+
+    /// Latest browser narration for one browser session, from the
+    /// `browser_activity` read model (maintained by [`Ledger::append`]).
+    /// `None` when the session has no recorded activity yet.
+    pub fn browser_activity(
+        &self,
+        session: &str,
+    ) -> Result<Option<BrowserActivityView>, PantheonError> {
+        let raw_conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let row: Option<(String, String, i64)> = raw_conn
+            .query_row(
+                "SELECT action, detail, ts_ms FROM browser_activity WHERE session = ?1",
+                params![session],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| err("LEDGER_READ", e.to_string()))?;
+        Ok(row.map(|(action, detail, ts_ms)| BrowserActivityView {
+            session: session.to_string(),
+            action,
+            detail,
+            ts_ms,
+        }))
     }
 
     /// Replay a run's events in append order, with `TurnRewound` markers
@@ -600,6 +722,47 @@ impl Ledger {
         .map_err(|e| err("LEDGER_ARTIFACT", e.to_string()))
     }
 
+    /// Replace the run's todo snapshot (upsert). The event stream keeps
+    /// every `TodosUpdated` change for the transcript; this table is the
+    /// restart-safe *current* list, reloaded into the session on resume.
+    pub fn set_todos(&self, run_id: &str, items: &[TodoItem]) -> Result<(), PantheonError> {
+        let json = serde_json::to_string(items).map_err(|e| err("LEDGER_TODO", e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let ts = now_ms();
+        conn.execute(
+            "INSERT INTO todos (run_id, todos_json, updated_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT(run_id) DO UPDATE SET todos_json=excluded.todos_json, updated_ms=excluded.updated_ms",
+            params![run_id, json, ts],
+        )
+        .map_err(|e| err("LEDGER_TODO", e.to_string()))?;
+        Ok(())
+    }
+
+    /// The run's persisted todo snapshot. Empty when the run never set
+    /// one; a corrupt row is an error, not a silent empty list, so a
+    /// broken snapshot can never masquerade as "no plan".
+    pub fn todos(&self, run_id: &str) -> Result<Vec<TodoItem>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT todos_json FROM todos WHERE run_id=?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| err("LEDGER_TODO", e.to_string()))?;
+        match json {
+            None => Ok(Vec::new()),
+            Some(j) => serde_json::from_str(&j).map_err(|e| err("LEDGER_TODO", e.to_string())),
+        }
+    }
+
     /// Associate a process group with a run and the lease that owns it.
     pub fn register_process_group(
         &self,
@@ -726,7 +889,7 @@ impl Ledger {
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT run_id, status, created_ms, title FROM runs ORDER BY created_ms DESC, rowid DESC LIMIT ?1",
+                "SELECT run_id, status, created_ms, title, project FROM runs ORDER BY created_ms DESC, rowid DESC LIMIT ?1",
             )
             .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
         let rows = stmt
@@ -736,6 +899,7 @@ impl Ledger {
                     r.get::<_, String>(1)?,
                     r.get::<_, i64>(2)?,
                     r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
                 ))
             })
             .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
@@ -744,6 +908,48 @@ impl Ledger {
             out.push(row.map_err(|e| err("LEDGER_QUERY", e.to_string()))?);
         }
         Ok(out)
+    }
+
+    /// Auto-create the home session on first access. Idempotent: when the
+    /// run row already exists this is a no-op. Every session-list and
+    /// delivery surface calls this before reading, so the permanent
+    /// session exists exactly when something reaches for it — never before.
+    /// The row is created directly (single statement, so two racing first
+    /// accesses cannot both win) and gets a `RunStarted` birth event, which
+    /// keeps `replay("home")` non-empty for the run-detail endpoints.
+    pub fn ensure_home_session(&self) -> Result<(), PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let inserted = conn
+            .execute(
+                "INSERT OR IGNORE INTO runs (run_id, created_ms, status, title) VALUES (?1, ?2, 'running', ?3)",
+                params![HOME_SESSION_ID, now_ms(), HOME_SESSION_TITLE],
+            )
+            .map_err(|e| err("LEDGER_HOME", e.to_string()))?;
+        drop(conn);
+        if inserted > 0 {
+            self.append(&Event::RunStarted {
+                run_id: HOME_SESSION_ID.to_string(),
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Move the home session to the front of a run listing, keeping the
+    /// relative order of everything else. Session-list surfaces call this
+    /// after fetching their (recency-sorted) rows so the pinned session
+    /// always leads, no matter how old its last activity is.
+    pub fn pin_home_first(mut listings: Vec<RunListing>) -> Vec<RunListing> {
+        if let Some(pos) = listings
+            .iter()
+            .position(|(id, _, _, _, _)| id == HOME_SESSION_ID)
+        {
+            let home = listings.remove(pos);
+            listings.insert(0, home);
+        }
+        listings
     }
 
     /// The current display title for one run (latest `SessionTitled`
@@ -763,11 +969,288 @@ impl Ledger {
         .map(|o| o.flatten())
     }
 
+    /// The run's named project, if it was ever assigned one (`/project`).
+    /// `None` = unassigned, which the session picker treats as its own
+    /// implicit group rather than guessing.
+    pub fn run_project(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.query_row(
+            "SELECT project FROM runs WHERE run_id=?1",
+            params![run_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| err("LEDGER_PROJECT", e.to_string()))
+        .map(|o| o.flatten())
+    }
+
+    /// Assign a run to a named project, or pass `None` to unassign it.
+    /// Direct write like `agent_id`: project membership is operator
+    /// metadata, not an agent event.
+    pub fn set_run_project(
+        &self,
+        run_id: &str,
+        project: Option<&str>,
+    ) -> Result<(), PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.execute(
+            "UPDATE runs SET project = ?2 WHERE run_id = ?1",
+            params![run_id, project],
+        )
+        .map_err(|e| err("LEDGER_PROJECT", e.to_string()))?;
+        Ok(())
+    }
+
+    /// Every named project in use, most-recently-active first. Drives
+    /// the `/project` list and the sessions picker's project filter.
+    pub fn list_projects(&self) -> Result<Vec<String>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT project, MAX(created_ms) FROM runs \
+                 WHERE project IS NOT NULL AND project != '' \
+                 GROUP BY project ORDER BY 2 DESC",
+            )
+            .map_err(|e| err("LEDGER_PROJECT", e.to_string()))?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| err("LEDGER_PROJECT", e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| err("LEDGER_PROJECT", e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// Parse the queue column: a JSON array of messages (current
+    /// format), or a bare pre-migration string, which is treated as a
+    /// one-element queue. NULL, empty, or malformed = empty queue.
+    fn parse_queue(raw: Option<String>) -> Vec<String> {
+        let text = raw.map(|t| t.trim().to_string()).unwrap_or_default();
+        if text.is_empty() {
+            return Vec::new();
+        }
+        if let Ok(arr) = serde_json::from_str::<Vec<String>>(&text) {
+            return arr;
+        }
+        vec![text]
+    }
+
+    /// The run's queued follow-up messages, oldest first. `None` =
+    /// nothing queued.
+    pub fn queued_message(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
+        Ok(self.queued_messages(run_id)?.into_iter().next())
+    }
+
+    /// The run's queued follow-up messages as a FIFO list, oldest
+    /// first. Empty = nothing queued. This is the accessor the
+    /// dashboard exposes to clients.
+    pub fn queued_messages(&self, run_id: &str) -> Result<Vec<String>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT queued_message FROM runs WHERE run_id=?1",
+                params![run_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| err("LEDGER_STATUS", e.to_string()))?
+            .flatten();
+        Ok(Self::parse_queue(raw))
+    }
+
+    /// Read-modify-write helper for the queued-message list. The SELECT
+    /// and the UPDATE run inside one IMMEDIATE transaction: the write
+    /// lock is taken up front, so a second process or handle blocks here
+    /// instead of interleaving its own SELECT between our read and our
+    /// write — otherwise concurrent appends would silently lose all but
+    /// the last writer's message. (The in-process `Mutex<Connection>`
+    /// serializes threads of this process; the transaction serializes
+    /// across processes.)
+    ///
+    /// The closure receives the current queue and returns the queue to
+    /// persist (`Some`) or `None` to leave the row untouched — dropping
+    /// the tx rolls back the no-op — plus a caller-chosen return value.
+    fn with_queue<R>(
+        &self,
+        run_id: &str,
+        f: impl FnOnce(Vec<String>) -> (Option<Vec<String>>, R),
+    ) -> Result<R, PantheonError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| err("LEDGER_STATUS", e.to_string()))?;
+        let raw: Option<String> = tx
+            .query_row(
+                "SELECT queued_message FROM runs WHERE run_id=?1",
+                params![run_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| err("LEDGER_STATUS", e.to_string()))?
+            .flatten();
+        let queue = Self::parse_queue(raw);
+        let (new_queue, ret) = f(queue);
+        if let Some(new_queue) = new_queue {
+            let stored: Option<String> = if new_queue.is_empty() {
+                None
+            } else {
+                Some(
+                    serde_json::to_string(&new_queue)
+                        .map_err(|e| err("LEDGER_SER", e.to_string()))?,
+                )
+            };
+            tx.execute(
+                "UPDATE runs SET queued_message=?2 WHERE run_id=?1",
+                params![run_id, stored],
+            )
+            .map_err(|e| err("LEDGER_STATUS", e.to_string()))?;
+            tx.commit()
+                .map_err(|e| err("LEDGER_STATUS", e.to_string()))?;
+        }
+        // `None`: the tx is dropped without commit — a rolled-back no-op.
+        Ok(ret)
+    }
+
+    /// Append to the run's queued-message list (`None` clears the
+    /// whole queue, e.g. for steer/cancel). The read-modify-write is
+    /// atomic across processes (see [`Self::with_queue`]): concurrent
+    /// appends cannot lose each other's messages.
+    pub fn set_queued_message(
+        &self,
+        run_id: &str,
+        message: Option<&str>,
+    ) -> Result<(), PantheonError> {
+        self.with_queue(run_id, |mut queue| {
+            match message {
+                Some(msg) => queue.push(msg.to_string()),
+                None => queue.clear(),
+            }
+            (Some(queue), ())
+        })
+    }
+
+    /// Atomically pop the OLDEST queued message (FIFO): one drain, one
+    /// consumer. Returns the popped message, if any; the rest of the
+    /// queue stays queued for subsequent turns. Atomic across processes
+    /// via [`Self::with_queue`]: each queued message is handed to
+    /// exactly one consumer; none is lost or duplicated.
+    pub fn take_queued_message(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
+        self.with_queue(run_id, |mut queue| {
+            if queue.is_empty() {
+                // Nothing to do; the row stays untouched.
+                (None, None)
+            } else {
+                let head = queue.remove(0);
+                (Some(queue), Some(head))
+            }
+        })
+    }
+
+    /// Remove the queued message at `index` (0 = oldest). Returns
+    /// `false` when the index is out of range (also 404s in the API).
+    /// Atomic across processes via [`Self::with_queue`].
+    pub fn remove_queued_at(&self, run_id: &str, index: usize) -> Result<bool, PantheonError> {
+        self.with_queue(run_id, |mut queue| {
+            if index >= queue.len() {
+                (None, false)
+            } else {
+                queue.remove(index);
+                (Some(queue), true)
+            }
+        })
+    }
+
+    /// Replace the queued message at `index` (0 = oldest) with new
+    /// text. Returns `false` when the index is out of range. An empty
+    /// `text` is a validation error (`QUEUE_EMPTY`), not a removal —
+    /// use [`Self::remove_queued_at`] to delete. Atomic across processes
+    /// via [`Self::with_queue`].
+    pub fn update_queued_at(
+        &self,
+        run_id: &str,
+        index: usize,
+        text: &str,
+    ) -> Result<bool, PantheonError> {
+        if text.trim().is_empty() {
+            return Err(err(
+                "QUEUE_EMPTY",
+                "queued message text must not be empty".to_string(),
+            ));
+        }
+        self.with_queue(run_id, |mut queue| {
+            if index >= queue.len() {
+                (None, false)
+            } else {
+                queue[index] = text.to_string();
+                (Some(queue), true)
+            }
+        })
+    }
+
+    /// The run's agent mode (`"plan"` or `"build"`). A missing row or an
+    /// unexpected value reads as `"build"` — the mode is advisory, and a
+    /// corrupt value must never break a turn.
+    pub fn run_mode(&self, run_id: &str) -> Result<String, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let mode: Option<String> = conn
+            .query_row(
+                "SELECT mode FROM runs WHERE run_id=?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| err("LEDGER_STATUS", e.to_string()))?
+            .flatten();
+        Ok(match mode.as_deref() {
+            Some("plan") => "plan".to_string(),
+            _ => "build".to_string(),
+        })
+    }
+
+    /// Persist the run's agent mode. Only `"plan"`/`"build"` are stored;
+    /// anything else is a caller bug.
+    pub fn set_run_mode(&self, run_id: &str, mode: &str) -> Result<(), PantheonError> {
+        debug_assert!(mode == "plan" || mode == "build");
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.execute(
+            "UPDATE runs SET mode=?2 WHERE run_id=?1",
+            params![run_id, mode],
+        )
+        .map_err(|e| err("LEDGER_STATUS", e.to_string()))?;
+        Ok(())
+    }
+
     /// Reopen a terminal run for continued conversation. Only terminal
     /// statuses flip back to running; a running/awaiting run is untouched
     /// (the caller then follows the normal path). Returns whether a
     /// reopen happened. The event trail keeps its original shape; the
     /// status flip is the continuation marker.
+    ///
+    /// Reopening also clears `cancel_intent`: the flag belongs to the turn
+    /// that was canceled, and a continued run must never inherit a stale
+    /// wind-down order.
     pub fn reopen_run(&self, run_id: &str) -> Result<bool, PantheonError> {
         let conn = self
             .conn
@@ -775,12 +1258,53 @@ impl Ledger {
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         let n = conn
             .execute(
-                "UPDATE runs SET status='running' WHERE run_id=?1
+                "UPDATE runs SET status='running', cancel_intent=0 WHERE run_id=?1
                  AND status IN ('completed','failed','canceled')",
                 params![run_id],
             )
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
         Ok(n > 0)
+    }
+
+    /// Record cooperative-cancel intent for a worker-thread turn.
+    ///
+    /// The in-process cancel token on `Session` is an `Arc<AtomicBool>` that
+    /// only reaches turns running on that same `Session` object. AG-UI
+    /// turns run on a fresh `Session` per RPC (see `agui.rs` `SendMsg`), and
+    /// the dashboard issues kill from yet another process, so neither can
+    /// flip the token. This flag is the cross-thread/process channel: set
+    /// by `Supervisor::cancel_run_intent`, polled by the drive loop at
+    /// every turn boundary, cleared by [`reopen_run`].
+    pub fn set_cancel_intent(&self, run_id: &str, intent: bool) -> Result<(), PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.execute(
+            "UPDATE runs SET cancel_intent=?2 WHERE run_id=?1",
+            params![run_id, intent as i64],
+        )
+        .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
+        Ok(())
+    }
+
+    /// Whether cooperative cancel has been requested for this run. Fail
+    /// closed: a missing row reads as no intent (the run does not exist),
+    /// a DB error propagates.
+    pub fn cancel_intent(&self, run_id: &str) -> Result<bool, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let v: Option<i64> = conn
+            .query_row(
+                "SELECT cancel_intent FROM runs WHERE run_id=?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+        Ok(v.unwrap_or(0) != 0)
     }
     /// Highest global ledger sequence (== highest event id). Checkpoints
     /// anchor to this, so `rollback --seq N` maps to a real position.
@@ -817,20 +1341,60 @@ impl Ledger {
         Ok(pruned)
     }
 
-    /// Delete a run and its events outright. Returns `(events_deleted,
-    /// run_row_deleted)`. Used by the dashboard's prune action; there is no
-    /// soft-delete — the caller confirms first. Deleting a run that does
-    /// not exist is `Ok((0, 0))`, not an error.
+    /// Delete a run outright: its events, its `runs` row, and its
+    /// session-search chunks and FTS rows, all in a single transaction. A
+    /// deleted run must not leave searchable text behind — orphaned FTS
+    /// rows would make `session_search` return hits for a run that no
+    /// longer exists. Returns `(events_deleted, run_row_deleted)`. Used by
+    /// the dashboard's prune action; there is no soft-delete — the caller
+    /// confirms first. Deleting a run that does not exist is `Ok((0, 0))`,
+    /// not an error. The home session can never be deleted: this is a
+    /// hard error, not a silent no-op, so a caller that meant to delete
+    /// something real learns it targeted the wrong id.
     pub fn delete_run(&self, run_id: &str) -> Result<(usize, usize), PantheonError> {
-        let conn = self
+        if run_id == HOME_SESSION_ID {
+            return Err(err(
+                "LEDGER_HOME_PROTECTED",
+                "the home session can never be deleted".to_string(),
+            ));
+        }
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
-        let events = conn
+        let tx = conn
+            .transaction()
+            .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
+        let events = tx
             .execute("DELETE FROM events WHERE run_id = ?1", params![run_id])
             .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
-        let runs = conn
+        let runs = tx
             .execute("DELETE FROM runs WHERE run_id = ?1", params![run_id])
+            .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
+        // The FTS sidecar lives in the same DB file, but its tables are
+        // created by SessionSearch::open, not by the ledger schema: a
+        // ledger opened without the sidecar has no tables to clean, and
+        // the delete must still succeed.
+        let has_fts: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('session_chunks', 'session_fts')",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
+        if has_fts == 2 {
+            // FTS first, then chunks — mirrors prune_before: no dangling
+            // references either way, and one transaction keeps it atomic.
+            tx.execute("DELETE FROM session_fts WHERE run_id = ?1", params![run_id])
+                .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
+            tx.execute(
+                "DELETE FROM session_chunks WHERE run_id = ?1",
+                params![run_id],
+            )
+            .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
+        }
+        tx.commit()
             .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
         Ok((events, runs))
     }
@@ -872,7 +1436,7 @@ impl Ledger {
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT run_id, status, created_ms, title FROM runs \
+                "SELECT run_id, status, created_ms, title, project FROM runs \
                  WHERE status IN ('running','awaiting_approval') \
                  ORDER BY created_ms ASC",
             )
@@ -884,6 +1448,7 @@ impl Ledger {
                     r.get::<_, String>(1)?,
                     r.get::<_, i64>(2)?,
                     r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
                 ))
             })
             .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
@@ -898,6 +1463,11 @@ impl Ledger {
             // `has_active_lease` because this method already holds `conn`, and
             // a second `lock()` on the same std Mutex would deadlock.
             if lease_is_live(&conn, &row.0)? {
+                continue;
+            }
+            // The home session is a permanent session, never a corpse: it
+            // sits at `running` by design, so repair must never settle it.
+            if row.0 == HOME_SESSION_ID {
                 continue;
             }
             out.push(row);
@@ -918,6 +1488,15 @@ impl Ledger {
             .lock()
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         lease_is_live(&conn, run_id)
+    }
+
+    /// Named alias of [`has_active_lease`] for the dashboard compress
+    /// guard: compress must 409 while the run holds a live lease, and the
+    /// dashboard leaf asked for this exact symbol. Same predicate, same
+    /// fail-closed semantics (a lease row outliving a `kill -9` still
+    /// reports busy until the heartbeat-freshness check fails).
+    pub fn run_has_active_lease(&self, run_id: &str) -> Result<bool, PantheonError> {
+        self.has_active_lease(run_id)
     }
 
     /// SQLite's own integrity check, verbatim. Returns the rows it reports,
@@ -982,6 +1561,36 @@ impl Ledger {
         .map(|_| ())
     }
 
+    /// Settle every crash-orphaned run: status `running` with no live
+    /// lease. This is the automatic half of `repair`, meant to run once at
+    /// (gateway) startup so a server crash mid-turn stops showing the run
+    /// as live in the dashboard.
+    ///
+    /// Only `running` runs are settled. `awaiting_approval` parks are
+    /// operator decisions, not crash victims: their `ApprovalRequested`
+    /// rows survive a restart and the operator can still grant or deny
+    /// them, so auto-settling those would destroy a pending decision.
+    /// The home session is already excluded by [`stuck_runs`].
+    ///
+    /// Each settle goes through [`settle_stuck_run`], which re-checks the
+    /// lease fail-closed — a run whose driver came back between the scan
+    /// and the settle is left alone. Returns the settled run ids, oldest
+    /// first.
+    pub fn settle_expired_runs(&self) -> Result<Vec<String>, PantheonError> {
+        let mut settled = Vec::new();
+        for (run_id, status, _, _, _) in self.stuck_runs()? {
+            if status != "running" {
+                continue;
+            }
+            self.settle_stuck_run(
+                &run_id,
+                "startup recovery: lease expired with no live holder; the turn was interrupted",
+            )?;
+            settled.push(run_id);
+        }
+        Ok(settled)
+    }
+
     /// Per-run counters folded from the event log.
     ///
     /// This is where a metrics fold belongs: the ledger is the source of
@@ -1042,6 +1651,9 @@ fn describe(ev: &Event) -> String {
             format!("bound to agent {agent_id} (profile {profile})")
         }
         Event::TurnStarted { turn_id, .. } => format!("turn started: {turn_id}"),
+        Event::UserMessage { text, .. } => {
+            format!("user: {}", text.chars().take(80).collect::<String>())
+        }
         Event::TurnParked {
             turn_id, reason, ..
         } => format!("turn parked: {turn_id} ({reason})"),
@@ -1081,6 +1693,13 @@ fn describe(ev: &Event) -> String {
         Event::ApprovalRequested { scope, .. } => format!("approval requested: {scope}"),
         Event::UserInputRequested { question, .. } => format!("user input requested: {question}"),
         Event::UserInputProvided { answer, .. } => format!("user input provided: {answer}"),
+        Event::TodosUpdated { items, .. } => {
+            let done = items
+                .iter()
+                .filter(|i| i.status == pantheon_api::todo::TodoStatus::Completed)
+                .count();
+            format!("todos updated: {done}/{} done", items.len())
+        }
         Event::ApprovalGranted { scope, .. } => format!("approval granted: {scope}"),
         Event::ApprovalDenied { scope, .. } => format!("approval denied: {scope}"),
         Event::DecisionRequested { point, .. } => {
@@ -1140,12 +1759,26 @@ fn describe(ev: &Event) -> String {
                 text.chars().take(120).collect::<String>()
             )
         }
+        Event::BrowserActivity {
+            session,
+            action,
+            detail,
+            ..
+        } => {
+            if detail.is_empty() {
+                format!("browser [{session}]: {action}")
+            } else {
+                format!("browser [{session}]: {action} ({detail})")
+            }
+        }
+        Event::ScheduledTaskFailed { job_id, error, .. } => {
+            format!("scheduled task {job_id} FAILED ({error})")
+        }
+        Event::ScheduledTaskRecovered { job_id, .. } => {
+            format!("scheduled task {job_id} recovered after self-heal")
+        }
     }
 }
-
-#[cfg(test)]
-#[path = "ledger_tests.rs"]
-mod tests;
 
 /// Whether `run_id` holds a lease that a live process is renewing.
 ///
@@ -1157,14 +1790,23 @@ fn lease_is_live(conn: &rusqlite::Connection, run_id: &str) -> Result<bool, Pant
     // Fail CLOSED on storage errors: a missing row is `Ok(false)` (no live
     // lease), but a genuine DB error must propagate — treating it as
     // "lease dead" would let `settle_stuck_run` repair a possibly-live run.
-    let row: Option<(i64, i64)> = conn
-        .query_row(
-            "SELECT lease_until_ms, heartbeat_ms FROM run_leases WHERE run_id = ?1",
-            params![run_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| err("LEDGER_LEASE_CHECK", e.to_string()))?;
+    //
+    // One exception: a missing `run_leases` table. The table is created by
+    // `RunLeaseStore` before any lease can be acquired, so no table means
+    // no lease ever existed on this database — provably "no live lease",
+    // not corruption. Without this, `has_active_lease` / `stuck_runs` /
+    // `settle_expired_runs` fail on any ledger whose supervisor never
+    // opened the lease store, instead of reporting the true fact.
+    let row: Option<(i64, i64)> = match conn.query_row(
+        "SELECT lease_until_ms, heartbeat_ms FROM run_leases WHERE run_id = ?1",
+        params![run_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ) {
+        Err(e) if e.to_string().contains("no such table: run_leases") => None,
+        other => other
+            .optional()
+            .map_err(|e| err("LEDGER_LEASE_CHECK", e.to_string()))?,
+    };
     let Some((until, beat)) = row else {
         return Ok(false);
     };
@@ -1176,4 +1818,433 @@ fn lease_is_live(conn: &rusqlite::Connection, run_id: &str) -> Result<bool, Pant
     // never mistaken for a corpse.
     let window = (until - beat).max(2_000) / 5;
     Ok(now - beat <= window)
+}
+
+#[cfg(test)]
+mod project_tests {
+    use super::*;
+
+    fn mem() -> Ledger {
+        Ledger::open_in_memory().expect("in-memory ledger")
+    }
+
+    fn start(ledger: &Ledger, run_id: &str) {
+        ledger
+            .append(&Event::RunStarted {
+                run_id: run_id.to_string(),
+            })
+            .expect("append RunStarted");
+    }
+
+    #[test]
+    fn project_assign_roundtrip() {
+        let l = mem();
+        start(&l, "r1");
+        assert_eq!(l.run_project("r1").unwrap(), None);
+        l.set_run_project("r1", Some("alpha")).unwrap();
+        assert_eq!(l.run_project("r1").unwrap(), Some("alpha".to_string()));
+        l.set_run_project("r1", None).unwrap();
+        assert_eq!(l.run_project("r1").unwrap(), None);
+    }
+
+    #[test]
+    fn project_unknown_run_is_none() {
+        let l = mem();
+        assert_eq!(l.run_project("nope").unwrap(), None);
+    }
+
+    #[test]
+    fn list_projects_distinct_most_recent_first() {
+        let l = mem();
+        start(&l, "r1");
+        start(&l, "r2");
+        start(&l, "r3");
+        l.set_run_project("r1", Some("alpha")).unwrap();
+        l.set_run_project("r2", Some("beta")).unwrap();
+        l.set_run_project("r3", Some("alpha")).unwrap();
+        let ps = l.list_projects().unwrap();
+        // r3 (alpha) is the most recently started run carrying a project.
+        assert_eq!(ps, vec!["alpha".to_string(), "beta".to_string()]);
+        // Unassigning the only beta run drops it from the list entirely.
+        l.set_run_project("r2", None).unwrap();
+        assert_eq!(l.list_projects().unwrap(), vec!["alpha".to_string()]);
+    }
+
+    #[test]
+    fn list_runs_carries_project() {
+        let l = mem();
+        start(&l, "r1");
+        l.set_run_project("r1", Some("alpha")).unwrap();
+        let runs = l.list_runs(10).unwrap();
+        assert_eq!(runs.len(), 1);
+        let (id, _status, _ts, _title, project) = &runs[0];
+        assert_eq!(id, "r1");
+        assert_eq!(project.as_deref(), Some("alpha"));
+    }
+}
+
+#[cfg(test)]
+mod delete_run_tests {
+    use super::*;
+    use crate::search::{SessionChunk, SessionSearch};
+
+    fn stores() -> (Ledger, SessionSearch, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let db = dir.path().join("ledger.db");
+        let ledger = Ledger::open(&db).expect("ledger");
+        // Same file, like Supervisor::open: the FTS sidecar lives in the
+        // ledger's own DB.
+        let search = SessionSearch::open(&db).expect("search");
+        (ledger, search, dir)
+    }
+
+    fn chunk(run_id: &str, seq: i64, text: &str) -> SessionChunk {
+        SessionChunk {
+            chunk_id: format!("{run_id}:{seq}:title"),
+            run_id: run_id.to_string(),
+            seq,
+            kind: "title".to_string(),
+            text: text.to_string(),
+            ts_ms: 0,
+        }
+    }
+
+    /// P1 regression: deleting a run must also remove its FTS rows. The
+    /// old `delete_run` left `session_chunks`/`session_fts` rows behind,
+    /// so `session_search` kept returning hits for a run that no longer
+    /// existed. Other runs' rows must be untouched.
+    #[test]
+    fn delete_run_removes_fts_rows_but_keeps_other_runs() {
+        let (ledger, search, _dir) = stores();
+        ledger
+            .append(&Event::RunStarted {
+                run_id: "run-a".into(),
+            })
+            .unwrap();
+        ledger
+            .append(&Event::RunStarted {
+                run_id: "run-b".into(),
+            })
+            .unwrap();
+        search
+            .index(&chunk("run-a", 1, "alpha zzzq unique text"))
+            .unwrap();
+        search
+            .index(&chunk("run-b", 1, "beta zzzq other text"))
+            .unwrap();
+        assert_eq!(search.search("zzzq", 10).unwrap().len(), 2);
+
+        let (events, _rows) = ledger.delete_run("run-a").unwrap();
+        assert_eq!(events, 1);
+
+        let hits = search.search("zzzq", 10).unwrap();
+        assert_eq!(hits.len(), 1, "deleted run's FTS rows must be gone");
+        assert_eq!(hits[0].chunk.run_id, "run-b");
+        assert!(ledger.replay("run-a").unwrap().is_empty());
+    }
+
+    /// A ledger opened without the search sidecar has no FTS tables; the
+    /// FTS cleanup must be skipped, not fail the delete.
+    #[test]
+    fn delete_run_without_search_tables_succeeds() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let ledger = Ledger::open(&dir.path().join("ledger.db")).expect("ledger");
+        ledger
+            .append(&Event::RunStarted {
+                run_id: "r1".into(),
+            })
+            .unwrap();
+        let (events, _) = ledger.delete_run("r1").unwrap();
+        assert_eq!(events, 1);
+    }
+}
+
+#[cfg(test)]
+mod queue_atomicity_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn mem() -> Ledger {
+        Ledger::open_in_memory().expect("in-memory ledger")
+    }
+
+    /// Item 5: a migration that reports `Ok` really migrated. Against a
+    /// connection with no `runs` table the ALTER fails with "no such
+    /// table" — that must propagate as LEDGER_MIGRATE, not be swallowed
+    /// by `let _ =`.
+    #[test]
+    fn migrate_propagates_real_errors() {
+        let conn = Connection::open_in_memory().expect("in-memory conn");
+        let err = migrate(&conn).expect_err("missing runs table must fail loudly");
+        assert!(
+            err.code.starts_with("LEDGER_MIGRATE"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// Item 5: idempotency is preserved — on a fresh SCHEMA database
+    /// every ALTER hits "duplicate column name", which stays ignored.
+    #[test]
+    fn migrate_stays_idempotent_on_fresh_schema() {
+        let conn = Connection::open_in_memory().expect("in-memory conn");
+        conn.execute_batch(SCHEMA).expect("fresh schema");
+        migrate(&conn).expect("first migrate on fresh schema");
+        migrate(&conn).expect("second migrate still ok");
+    }
+
+    /// Item 5: two handles on the same DB file, N queued messages,
+    /// concurrent takes from threads on both handles — each message is
+    /// delivered exactly once, none lost, none duplicated. The
+    /// IMMEDIATE transaction holds the write lock across the
+    /// read-modify-write so a second handle cannot interleave.
+    #[test]
+    fn concurrent_takes_deliver_each_message_exactly_once() {
+        const N: usize = 40;
+        let dir =
+            std::env::temp_dir().join(format!("pantheon-ledger-queue-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("queue.db");
+        let _ = std::fs::remove_file(&db);
+        let seed = Ledger::open(&db).expect("open ledger");
+        seed.append(&Event::RunStarted {
+            run_id: "rq".to_string(),
+        })
+        .expect("RunStarted");
+        for i in 0..N {
+            seed.set_queued_message("rq", Some(&format!("msg-{i}")))
+                .expect("queue message");
+        }
+        drop(seed);
+
+        let a = Arc::new(Ledger::open(&db).expect("handle a"));
+        let b = Arc::new(Ledger::open(&db).expect("handle b"));
+        let taken: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut threads = Vec::new();
+        for t in 0..8 {
+            let (ledger, taken) = if t % 2 == 0 {
+                (Arc::clone(&a), Arc::clone(&taken))
+            } else {
+                (Arc::clone(&b), Arc::clone(&taken))
+            };
+            threads.push(std::thread::spawn(move || loop {
+                match ledger.take_queued_message("rq").expect("take works") {
+                    Some(msg) => taken.lock().unwrap().push(msg),
+                    None => break,
+                }
+            }));
+        }
+        for th in threads {
+            th.join().expect("worker thread");
+        }
+        // Both handles agree the queue is drained.
+        assert_eq!(a.take_queued_message("rq").unwrap(), None);
+        assert_eq!(b.take_queued_message("rq").unwrap(), None);
+
+        let mut got = taken.lock().unwrap().clone();
+        got.sort();
+        let mut want: Vec<String> = (0..N).map(|i| format!("msg-{i}")).collect();
+        want.sort();
+        assert_eq!(got, want, "each message delivered exactly once");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Item 2: two handles on the same DB file, 8 threads hammering
+    /// append — every message survives. The read-modify-write in
+    /// `set_queued_message` runs inside an IMMEDIATE transaction (via
+    /// `with_queue`), so a second handle cannot interleave its SELECT
+    /// between our read and write and silently drop the first append.
+    #[test]
+    fn concurrent_appends_lose_nothing() {
+        const N: usize = 40;
+        const T: usize = 8;
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-ledger-append-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("append.db");
+        let _ = std::fs::remove_file(&db);
+        let seed = Ledger::open(&db).expect("open ledger");
+        seed.append(&Event::RunStarted {
+            run_id: "ra".to_string(),
+        })
+        .expect("RunStarted");
+        drop(seed);
+
+        let a = Arc::new(Ledger::open(&db).expect("handle a"));
+        let b = Arc::new(Ledger::open(&db).expect("handle b"));
+        let mut threads = Vec::new();
+        for t in 0..T {
+            let ledger = if t % 2 == 0 {
+                Arc::clone(&a)
+            } else {
+                Arc::clone(&b)
+            };
+            threads.push(std::thread::spawn(move || {
+                for i in 0..N {
+                    ledger
+                        .set_queued_message("ra", Some(&format!("t{t}-msg-{i}")))
+                        .expect("append works");
+                }
+            }));
+        }
+        for th in threads {
+            th.join().expect("worker thread");
+        }
+
+        // Drain from one handle: all T*N messages must be present.
+        let mut got = Vec::new();
+        while let Some(msg) = a.take_queued_message("ra").expect("take works") {
+            got.push(msg);
+        }
+        let mut want: Vec<String> = (0..T)
+            .flat_map(|t| (0..N).map(move |i| format!("t{t}-msg-{i}")))
+            .collect();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want, "no append lost under concurrency");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod cancel_and_recovery_tests {
+    use super::*;
+    use crate::leases::RunLeaseStore;
+
+    fn tmp_db(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("pantheon-ledger-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("ledger.db");
+        let _ = std::fs::remove_file(&db);
+        (dir, db)
+    }
+
+    fn start(ledger: &Ledger, run_id: &str) {
+        ledger
+            .append(&Event::RunStarted {
+                run_id: run_id.to_string(),
+            })
+            .expect("append RunStarted");
+    }
+
+    /// #7: cancel_intent round-trips, defaults to false, and is cleared by
+    /// reopen_run so a continued run never inherits a stale wind-down order.
+    #[test]
+    fn cancel_intent_roundtrip_and_reopen_clears() {
+        let l = Ledger::open_in_memory().expect("in-memory ledger");
+        start(&l, "r1");
+        assert!(!l.cancel_intent("r1").expect("read flag"));
+        // Missing row reads as no intent (fail closed on the read path).
+        assert!(!l.cancel_intent("nope").expect("missing row"));
+
+        l.set_cancel_intent("r1", true).expect("set flag");
+        assert!(l.cancel_intent("r1").expect("read flag"));
+
+        // Terminal -> reopen clears the flag along with the status flip.
+        l.append(&Event::RunCanceled {
+            run_id: "r1".into(),
+            reason: "test".into(),
+        })
+        .expect("cancel");
+        assert_eq!(l.status("r1").unwrap().as_deref(), Some("canceled"));
+        assert!(l.reopen_run("r1").expect("reopen"));
+        assert_eq!(l.status("r1").unwrap().as_deref(), Some("running"));
+        assert!(!l.cancel_intent("r1").expect("flag cleared on reopen"));
+    }
+
+    /// #10: run_has_active_lease is the same predicate as has_active_lease.
+    #[test]
+    fn run_has_active_lease_matches_has_active_lease() {
+        let (_dir, db) = tmp_db("lease-alias");
+        let l = Ledger::open(&db).expect("open ledger");
+        start(&l, "r1");
+        start(&l, "r2");
+        assert!(!l.run_has_active_lease("r1").unwrap());
+        assert_eq!(
+            l.run_has_active_lease("r1").unwrap(),
+            l.has_active_lease("r1").unwrap()
+        );
+        let leases = RunLeaseStore::open(&db).expect("open lease store");
+        leases
+            .acquire("r2", "lease-1", 30_000)
+            .expect("acquire lease");
+        assert!(l.run_has_active_lease("r2").unwrap());
+        assert_eq!(
+            l.run_has_active_lease("r2").unwrap(),
+            l.has_active_lease("r2").unwrap()
+        );
+        std::fs::remove_dir_all(&_dir).ok();
+    }
+
+    /// #8: settle_expired_runs settles crash-orphaned `running` runs (no
+    /// live lease), leaves live-lease runs alone, and never touches
+    /// `awaiting_approval` parks (those are operator decisions, still
+    /// grantable after a restart).
+    #[test]
+    fn settle_expired_runs_only_settles_running_without_live_lease() {
+        let (_dir, db) = tmp_db("settle-expired");
+        let l = Ledger::open(&db).expect("open ledger");
+        // Crash orphan: running, no lease.
+        start(&l, "orphan");
+        // Live run: running, live lease.
+        start(&l, "live");
+        // Parked run: awaiting approval, no lease (lease dropped at park).
+        start(&l, "parked");
+        l.append(&Event::ApprovalRequested {
+            run_id: "parked".into(),
+            scope: "shell:rm -rf /".into(),
+        })
+        .expect("park");
+        assert_eq!(
+            l.status("parked").unwrap().as_deref(),
+            Some("awaiting_approval")
+        );
+        // Already terminal: must not be touched.
+        start(&l, "done");
+        l.append(&Event::RunCompleted {
+            run_id: "done".into(),
+        })
+        .expect("complete");
+
+        let leases = RunLeaseStore::open(&db).expect("open lease store");
+        leases.acquire("live", "lease-1", 30_000).expect("acquire");
+
+        let settled = l.settle_expired_runs().expect("settle");
+        assert_eq!(settled, vec!["orphan".to_string()]);
+
+        assert_eq!(l.status("orphan").unwrap().as_deref(), Some("failed"));
+        assert_eq!(l.status("live").unwrap().as_deref(), Some("running"));
+        assert_eq!(
+            l.status("parked").unwrap().as_deref(),
+            Some("awaiting_approval")
+        );
+        assert_eq!(l.status("done").unwrap().as_deref(), Some("completed"));
+
+        // The event trail explains itself: a progress note, then the
+        // terminal REPAIRED failure.
+        let events: Vec<String> = l
+            .replay("orphan")
+            .expect("replay")
+            .iter()
+            .map(|e| format!("{:?}", e.event))
+            .collect();
+        assert!(
+            events.iter().any(|e| e.contains("RunProgress")),
+            "expected a repair note, got: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| e.contains("REPAIRED")),
+            "expected REPAIRED, got: {events:?}"
+        );
+        std::fs::remove_dir_all(&_dir).ok();
+    }
+
+    /// #8: nothing to settle -> empty vec, no writes.
+    #[test]
+    fn settle_expired_runs_empty_when_nothing_stuck() {
+        let l = Ledger::open_in_memory().expect("in-memory ledger");
+        assert_eq!(l.settle_expired_runs().unwrap(), Vec::<String>::new());
+    }
 }

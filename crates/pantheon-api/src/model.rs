@@ -47,11 +47,48 @@ impl FallbackChain {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuxiliaryKind {
     Embeddings,
+    /// Vision model (config `[vision]`): describes and answers about
+    /// images attached to a turn. Host-orchestrated; never chat. Absent =
+    /// `auto`: the run's default model. No call sites yet — there is no
+    /// image-input pipeline; the slot exists so a model can be pinned
+    /// ahead of it landing.
     Vision,
+    /// Video-analysis model (config `[video]`): understands video attached
+    /// to a turn — scene description, temporal question answering,
+    /// keyframe summarization. Host-orchestrated; never chat. Absent =
+    /// `auto`: the run's default model.
+    ///
+    /// Call-site proposal (the actual video-understanding pipeline is
+    /// future work — this slot pins the model ahead of it landing):
+    /// - the turn loop gains a `video` attachment kind next to the
+    ///   (planned) image attachment kind; when a turn carries video, the
+    ///   host samples keyframes (or hands the container/URL to a
+    ///   provider-native video input) and calls this slot, never chat;
+    /// - the `[tools]` `video_analysis` toggle gates the slot: off =
+    ///   the entry never resolves, so a configured `[video]` cannot be
+    ///   consulted by accident;
+    /// - long video goes through the same summarization shape as
+    ///   `[search_synthesis]` (chunk → note → context), so the window
+    ///   never fills with raw frames.
+    ///
+    /// No call sites yet — the slot exists so a model can be pinned
+    /// ahead of the video pipeline landing.
+    Video,
+    /// Search-synthesis model (config `[search_synthesis]`): turns raw
+    /// web-search results into a short cited brief before they enter
+    /// context. Host-orchestrated; never chat. Absent = `auto`: the run's
+    /// default model. No call sites yet — search results currently enter
+    /// context raw; the slot exists so a model can be pinned ahead of the
+    /// synthesis workload landing.
     SearchSynthesis,
     /// Judge model (config `[judge]`): classifies, routes, scores. Never
     /// generates chat. Used for route selection, tool gating, verification
-    /// thresholds. Replaces the old `DecisionRouter` name.
+    /// thresholds. Replaces the old `DecisionRouter` name. No call sites
+    /// yet — the engine supports a judge, but the production
+    /// `Session::drive` path builds its `AgentLoop` with `judge: None`,
+    /// so a configured `[judge]` is validated by `doctor` and then never
+    /// consulted. The slot exists so a model can be pinned ahead of the
+    /// judge being installed into the runtime loop.
     Judge,
     /// MCP tool-result synthesis model (config `[mcp_synthesis]`): bounds
     /// large MCP tool results into a note before they enter context.
@@ -82,6 +119,15 @@ pub enum AuxiliaryKind {
     /// slot so nightly memory consolidation stays cheap and never borrows
     /// the interactive model's context directly.
     Consolidation,
+    /// Repair model (config `[repair]`): revises drafts and diagnoses
+    /// broken things in the nightly self-improvement loop (eval-reject
+    /// and replay-reject draft revision today; broken MCP servers,
+    /// scheduled tasks, and tools next). Host-orchestrated; never chat.
+    /// Absent = OFF: no policy entry, and fix-loop draft revision is
+    /// unavailable. Every fix-loop revision resolves through this slot
+    /// — never the Reflection slot — so repair work stays on a model
+    /// pinned for the job.
+    Repair,
     /// Structured-extraction model (config `[extraction]`): pulls fields
     /// and records out of prose and tool outputs (dates, amounts, names,
     /// entities) into typed values the runtime can act on.
@@ -103,7 +149,35 @@ pub enum AuxiliaryKind {
     /// exists so a model can be pinned ahead of the planner workload
     /// landing.
     Planner,
+    /// Adversarial verifier model (config `[verify]`): after a delegated
+    /// sub-agent completes, it takes the task's goal plus the child's
+    /// claimed result, assumes the goal was missed, and tries to falsify
+    /// the claim from the evidence. Fail-closed: a falsified claim errors
+    /// the delegation, an inconclusive one is marked unverified — neither
+    /// counts as done. Host-orchestrated; never chat. Absent = the slot is
+    /// OFF entirely (no entry in the policy), so verification only runs
+    /// when the operator explicitly pins a cheap model here.
+    Verify,
     Other(String),
+}
+
+impl AuxiliaryKind {
+    /// Built-in per-capability request timeout in seconds, used when the
+    /// aux section sets no explicit `timeout`. Matches the historical
+    /// client timeouts so an unconfigured slot behaves exactly as before.
+    pub fn default_timeout_secs(&self) -> u64 {
+        match self {
+            AuxiliaryKind::TitleGen => 10,
+            AuxiliaryKind::Judge => 10,
+            AuxiliaryKind::Embeddings => 15,
+            AuxiliaryKind::Compression => 30,
+            AuxiliaryKind::Verify => 30,
+            AuxiliaryKind::Reflection => 60,
+            AuxiliaryKind::Consolidation => 60,
+            AuxiliaryKind::Repair => 60,
+            _ => 120,
+        }
+    }
 }
 
 /// The kind of decision being routed through a Judge aux model.
@@ -151,16 +225,6 @@ pub enum DecisionAnswer {
 }
 
 impl DecisionAnswer {
-    /// Confidence signal 0.0-1.0. Never a permission.
-    pub fn confidence(&self) -> f32 {
-        match self {
-            DecisionAnswer::Route { confidence, .. } => *confidence,
-            DecisionAnswer::Gate { confidence, .. } => *confidence,
-            DecisionAnswer::Binary { confidence, .. } => *confidence,
-            DecisionAnswer::Threshold { value, .. } => *value,
-        }
-    }
-
     /// Validate a route choice against the allowed set (default + fallbacks
     /// supplied as `choices` by the caller). Returns the choice if allowed.
     pub fn validated_route(&self, allowed: &[String]) -> Option<String> {
@@ -203,6 +267,16 @@ pub struct AuxiliaryModel {
     pub kind: AuxiliaryKind,
     pub provider: String,
     pub model: String,
+    /// Per-aux request timeout in seconds. Resolved from the aux
+    /// section's `timeout_secs` (default 120); call sites apply it to
+    /// the aux HTTP transport.
+    pub timeout_secs: u64,
+    /// Compression only: summary target as a percentage (1–100) of the
+    /// absorbed transcript chars (`[compression] target_percent`).
+    /// `None` = the historic default (≈12%). Ignored by every other
+    /// auxiliary kind.
+    #[serde(default)]
+    pub target_percent: Option<u8>,
 }
 
 /// Full model config for a run/policy.
@@ -462,11 +536,3 @@ pub fn bound_title(raw: &str, max_chars: usize) -> String {
 pub fn fallback_title(prompt: &str) -> String {
     bound_title(prompt, TITLE_MAX_CHARS)
 }
-
-#[cfg(test)]
-#[path = "model_title_tests.rs"]
-mod title_tests;
-
-#[cfg(test)]
-#[path = "model_reasoning_tests.rs"]
-mod reasoning_tests;

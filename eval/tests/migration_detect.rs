@@ -7,6 +7,12 @@ use pantheon_migration::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The old free `plan_json` helper is gone; pretty-print locally (the tests
+/// below assert on the pretty format's `"key": "value"` spacing).
+fn plan_json(p: &MigrationPlan) -> String {
+    serde_json::to_string_pretty(p).unwrap()
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

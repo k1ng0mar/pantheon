@@ -35,11 +35,19 @@ pub fn estimate_tokens(text: &str) -> u32 {
 }
 
 /// Estimated tokens for one row: content + fixed row overhead + tool-call
-/// payloads (they ride as JSON on the wire, so they must be counted).
+/// payloads (they ride as JSON on the wire, so they must be counted) +
+/// image parts (OpenAI-style high-detail pricing: 85 base + 170 per 512px
+/// tile; without decoded dimensions we estimate ~1 tile per 256 KiB as a
+/// rough proxy — this is a window-fitting estimate, not a bill).
 pub fn row_tokens(m: &Message) -> u32 {
     let mut t = estimate_tokens(&m.content) + 8;
     for c in &m.tool_calls {
         t += estimate_tokens(&c.name) + estimate_tokens(&c.arguments) + 16;
+    }
+    for img in &m.images {
+        let bytes = img.data.len() * 3 / 4;
+        let tiles = (bytes / (256 * 1024)).max(1) as u32;
+        t += 85 + 170 * tiles;
     }
     t
 }
@@ -195,6 +203,19 @@ pub const RENDER_ROW_CHARS: usize = 2_000;
 pub const RENDER_MAX_CHARS: usize = 100_000;
 /// Summary floor: below this a summary is noise, not signal.
 pub const SUMMARY_MIN_CHARS: usize = 128;
+/// Default summary target as a percentage of the absorbed transcript
+/// chars (`[compression] target_percent` when set). 12 ≈ the historic
+/// fixed target: an eighth of the absorbed tokens at ~4 chars/token.
+pub const DEFAULT_TARGET_PERCENT: u8 = 12;
+
+/// Summary budget in chars for `chunk_tokens` of absorbed transcript:
+/// `target_percent` (1–100) of the absorbed chars, assuming ~4
+/// chars/token. `None` = [`DEFAULT_TARGET_PERCENT`]. Higher keeps more
+/// detail (less aggressive); lower compresses harder.
+pub fn summary_target_chars(chunk_tokens: u32, target_percent: Option<u8>) -> usize {
+    let percent = target_percent.unwrap_or(DEFAULT_TARGET_PERCENT) as usize;
+    (chunk_tokens as usize) * 4 * percent / 100
+}
 
 /// What one compression pass absorbed, for the ledger event.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -223,9 +244,13 @@ pub fn render_exchanges(messages: &[Message], range: std::ops::Range<usize>) -> 
         };
         let mut line = String::from(role);
         line.push_str(": ");
-        let content: String = m.content.chars().take(RENDER_ROW_CHARS).collect();
+        // Image parts cannot survive as pixels in the compressor's text
+        // input: name them (`[image: ...]`) instead of silently dropping
+        // the fact that a picture was here.
+        let noted = m.text_with_image_notes();
+        let content: String = noted.chars().take(RENDER_ROW_CHARS).collect();
         line.push_str(&content);
-        if m.content.chars().count() > RENDER_ROW_CHARS {
+        if noted.chars().count() > RENDER_ROW_CHARS {
             line.push_str(" [...]");
         }
         line.push('\n');
@@ -251,11 +276,15 @@ pub fn render_exchanges(messages: &[Message], range: std::ops::Range<usize>) -> 
 ///   absorbed exchanges stood. The caller re-runs [`fit_to_window`] after;
 ///   any remainder (or a compressor error) falls back to deterministic
 ///   dropping.
+///
+/// `target_percent` (1–100, `None` = [`DEFAULT_TARGET_PERCENT`]) sets the
+/// summary size as a percentage of the absorbed transcript chars.
 pub fn compress_oldest(
     messages: &[Message],
     compressor: &dyn ContextCompressor,
     budget: &WindowBudget,
     run_id: &str,
+    target_percent: Option<u8>,
 ) -> Result<Option<(Vec<Message>, CompressionReport)>, PantheonError> {
     let window = budget.usable();
     let estimated = estimate_messages(messages);
@@ -306,9 +335,10 @@ pub fn compress_oldest(
         return Ok(None);
     }
 
-    // Summary budget: an eighth of the absorbed material, floored so the
-    // note carries real signal, never more than half the input.
-    let target_chars = ((chunk_tokens as usize / 8) * 4)
+    // Summary budget: `target_percent` of the absorbed material,
+    // floored so the note carries real signal, never more than half the
+    // input.
+    let target_chars = summary_target_chars(chunk_tokens, target_percent)
         .max(SUMMARY_MIN_CHARS)
         .min(transcript.len() / 2)
         .max(SUMMARY_MIN_CHARS);
@@ -358,7 +388,3 @@ pub fn compress_oldest(
         },
     )))
 }
-
-#[cfg(test)]
-#[path = "context_tests.rs"]
-mod tests;

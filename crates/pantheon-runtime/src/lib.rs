@@ -2,20 +2,39 @@
 //! Runs persist every event; a killed run resumes as RunRecovered.
 //!
 //! Owns the **Runtime API** (ARCHITECTURE §18): the JSON-RPC command
-//! surface (`rpc`, `serve`, `transport`) and the AG-UI streaming path
+//! surface (`rpc`, `agui_serve`) and the AG-UI streaming path
 //! (`agui`) moved here from `pantheon-api`, which is now the bottom
 //! protocol-leaf crate (commands, events, types).
+
+/// Best-effort stderr diagnostic. Rust's `eprintln!` panics when the
+/// write fails (closed pipe, full disk); on a long-lived server that
+/// panic lands in a request thread and kills the connection. This
+/// never panics: the message is dropped when stderr is unwritable.
+/// Defined before the modules so every child module sees it.
+macro_rules! log_warn {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 pub mod agent_runtime;
 pub mod agui;
+pub mod agui_serve;
+pub mod computer;
+pub mod delegate_budget;
+pub mod judge;
+pub mod nightly_tools;
 pub mod operation;
 pub mod pipeline;
 pub mod pipeline_runner;
 pub mod rpc;
-pub mod serve;
 pub mod session;
+pub mod skill_exec_tool;
+pub mod swarm;
+pub mod swarm_exec;
 pub mod temporal;
 pub mod tool_config;
-pub mod transport;
 pub mod watchdog;
 
 pub use agent_runtime::{profile_err, AgentRuntime, DEFAULT_PROFILE};
@@ -23,6 +42,7 @@ pub use agui::{
     dispatcher_for, dispatcher_for_with_hint, dispatcher_for_with_hint_and_base,
     dispatcher_for_with_hint_and_host,
 };
+pub use agui_serve::{remember_thread, snapshot_frames};
 pub use operation::{
     run_tool_operation, DurableOperationRunner, JsonToolAdapter, ToolOperationAdapter,
 };
@@ -35,17 +55,41 @@ use pantheon_storage::{
 pub use pipeline::{run_model_stage, StageEvaluator, StageExecutor};
 pub use pipeline_runner::{PipelineOutcome, PipelineRunner};
 pub use rpc::{Dispatcher, Id, MethodHandler, Request, Response, RpcError};
-pub use serve::{remember_thread, serve, snapshot_frames, ServeConfig};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-pub use tool_config::{BrowserToolConfig, WebsearchToolConfig};
-pub use transport::{ApiTransport, UnixSocketTransport};
+pub use tool_config::{
+    browser_backend_config, build_browser_backend, resolve_browser_section, BrowserToolConfig,
+    CamofoxToolConfig, WebsearchToolConfig,
+};
 
 /// A subscriber to the run's event stream. Cheap to clone, shared across threads.
 pub type EventObserver = std::sync::Arc<dyn Fn(&Event) + Send + Sync>;
 pub use watchdog::{TurnWatchdog, WatchdogAction};
+
+/// Default approval time-to-live: a parked approval request expires 24h
+/// after it was raised. Stale decisions are dangerous — the run's context
+/// (files, world state, the operator's intent) has moved on. Override
+/// with `PANTHEON_APPROVAL_TTL_MS`.
+pub const APPROVAL_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// Pure expiry predicate, kept separate so it is unit-testable without a
+/// ledger. `requested_ts_ms` is the ledger ts_ms of the scope's
+/// `ApprovalRequested`; `now_ms` is the current unix millis.
+pub fn approval_request_expired(requested_ts_ms: i64, now_ms: i64, ttl_ms: i64) -> bool {
+    now_ms.saturating_sub(requested_ts_ms) > ttl_ms
+}
+
+/// The configured approval TTL: `PANTHEON_APPROVAL_TTL_MS` when set to a
+/// positive integer, else [`APPROVAL_TTL_MS`].
+pub fn approval_ttl_ms() -> i64 {
+    std::env::var("PANTHEON_APPROVAL_TTL_MS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(APPROVAL_TTL_MS)
+}
 
 fn rerr(code: &str, cause: String) -> PantheonError {
     PantheonError::new(
@@ -56,6 +100,46 @@ fn rerr(code: &str, cause: String) -> PantheonError {
         "check runtime state and ledger",
         "",
     )
+}
+
+/// Confirm `pid` really is the turn child for `run_id`: on Linux its
+/// `/proc` cmdline must contain `--taskID <run_id>`. PID numbers alone
+/// are never treated as ownership — a recycled PID must not be
+/// signaled. The dashboard spawns turn children as
+/// `pantheon run --taskID <run_id> --say ...`, so the flag is always
+/// present on a genuine turn child.
+#[cfg(target_os = "linux")]
+fn verify_turn_child(run_id: &str, pid: u32) -> Result<(), PantheonError> {
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).map_err(|_| {
+        rerr(
+            "RT_NO_TURN",
+            format!("turn process {pid} for run {run_id} is gone"),
+        )
+    })?;
+    let mut args = cmdline.split(|b| *b == 0);
+    let mut owned = false;
+    while let Some(arg) = args.next() {
+        if arg == b"--taskID" {
+            owned = args.next().is_some_and(|v| v == run_id.as_bytes());
+            break;
+        }
+    }
+    if owned {
+        Ok(())
+    } else {
+        Err(rerr(
+            "RT_NO_TURN",
+            format!("pid {pid} is not run {run_id}'s turn child"),
+        ))
+    }
+}
+
+/// Non-Linux: no `/proc` cmdline to check against. The caller recorded
+/// the PID at spawn and the active-lease check in `kill_run_turn`
+/// already gates the kill.
+#[cfg(not(target_os = "linux"))]
+fn verify_turn_child(_run_id: &str, _pid: u32) -> Result<(), PantheonError> {
+    Ok(())
 }
 
 /// Supervisor handle. Cheap to clone, safe to share.
@@ -218,7 +302,7 @@ impl Supervisor {
             &data_dir.join("ledger.db"),
         )?);
         let lease_id = format!("lease_{}_{}", std::process::id(), new_run_id());
-        Ok(Self {
+        let supervisor = Self {
             inner: Arc::new(SupervisorInner {
                 ledger,
                 operations,
@@ -229,7 +313,58 @@ impl Supervisor {
                 embedder: std::sync::Mutex::new(None),
                 observers: std::sync::Mutex::new(Vec::new()),
             }),
-        })
+        };
+        supervisor.startup_recovery();
+        Ok(supervisor)
+    }
+
+    /// Data dirs this process has already run startup recovery for.
+    /// `Supervisor::open` happens per RPC in the AG-UI path and all over
+    /// the TUI; the crash-orphan sweep is a once-per-process-per-dir
+    /// affair, and the sweep itself is idempotent (only `running` runs
+    /// with no live lease are settled), so a re-run would just find
+    /// nothing.
+    fn startup_recovered_dirs(
+    ) -> &'static std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>> {
+        static DIRS: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
+        > = std::sync::OnceLock::new();
+        DIRS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+    }
+
+    /// Settle crash-orphaned runs once per process per data dir: runs
+    /// whose status is still `running` but whose lease has expired
+    /// (the driver died mid-turn) are marked failed with a REPAIRED
+    /// note so they stop showing as live in the dashboard. Live-lease
+    /// runs and `awaiting_approval` parks are never touched (see
+    /// [`Ledger::settle_expired_runs`]).
+    ///
+    /// Best-effort: a failed sweep must never prevent the daemon from
+    /// starting, so errors are logged and dropped. This is the storage
+    /// half of startup recovery; the gateway daemon startup also calls
+    /// [`Supervisor::settle_expired_runs`] directly for an explicit
+    /// once-at-boot sweep.
+    fn startup_recovery(&self) {
+        let already = Self::startup_recovered_dirs()
+            .lock()
+            .map(|mut set| !set.insert(self.inner.data_dir.clone()))
+            .unwrap_or(true);
+        if already {
+            return;
+        }
+        match self.settle_expired_runs() {
+            Ok(settled) if !settled.is_empty() => {
+                eprintln!(
+                    "startup recovery: settled {} crash-orphaned run(s): {}",
+                    settled.len(),
+                    settled.join(", ")
+                );
+            }
+            Err(e) => {
+                eprintln!("startup recovery: settle_expired_runs failed: {e}");
+            }
+            _ => {}
+        }
     }
     /// Shared handle to the session search index (for tool wiring).
     pub fn shared_search(&self) -> std::sync::Arc<pantheon_storage::search::SessionSearch> {
@@ -424,11 +559,14 @@ impl Supervisor {
         Ok(recovered)
     }
     pub fn emit(&self, ev: Event) -> Result<(), PantheonError> {
-        self.ledger().append(&ev)?;
+        let entry = self.ledger().append(&ev)?;
         // Index for session search (best-effort: a failed index write must
-        // never break the run, same contract as observers).
-        if let Err(e) = self.index_for_search(&ev) {
-            eprintln!("session search index: {e}");
+        // never break the run, same contract as observers). The chunk is
+        // indexed under the seq append() returned for this event — never
+        // recomputed via max_seq(), which would race with concurrent
+        // writers and index the text under another chunk's id.
+        if let Err(e) = self.index_for_search(&ev, entry.seq) {
+            log_warn!("session search index: {e}");
         }
         // Fan out to live observers after the durable write. Observer
         // failures must never break the run: the ledger is the contract,
@@ -443,14 +581,19 @@ impl Supervisor {
     /// Chunk-and-index one event into the session search sidecar. Only
     /// content-bearing events are indexed; bookkeeping events (started,
     /// completed, approvals) carry no searchable text.
-    fn index_for_search(&self, ev: &Event) -> Result<(), PantheonError> {
+    ///
+    /// `seq` must be the seq `Ledger::append` returned for this event. It
+    /// is a parameter (not recomputed via `max_seq()`) because recomputing
+    /// races with concurrent writers: another chunk can land between the
+    /// append and the index write, silently indexing the text under the
+    /// wrong chunk id.
+    fn index_for_search(&self, ev: &Event, seq: i64) -> Result<(), PantheonError> {
         use pantheon_api::events::Event as E;
         use pantheon_providers::embeddings::EmbedderClient;
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        let seq = self.ledger().max_seq()?;
         let (run_id, kind, text) = match ev {
             E::AssistantMessage { run_id, message } => (run_id, "message", message.content.clone()),
             E::ToolMessage { run_id, message } => (run_id, "tool", message.content.clone()),
@@ -540,45 +683,103 @@ impl Supervisor {
         })
     }
 
+    /// Atomically read and clear the run's queued message slot: one drain,
+    /// one consumer. Used by the queue auto-drain (CLI `run` loops) and the
+    /// dashboard's idle-path send.
+    pub fn take_queued_message(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
+        self.ledger().take_queued_message(run_id)
+    }
+
+    /// Peek the run's queued-message list (FIFO, oldest first) without
+    /// removing anything. The AG-UI turn worker peeks the head into the
+    /// turn input and pops it via [`Self::take_queued_message`] once the
+    /// turn has started, so a turn that fails to start never eats it.
+    pub fn queued_messages(&self, run_id: &str) -> Result<Vec<String>, PantheonError> {
+        self.ledger().queued_messages(run_id)
+    }
+
+    /// One replay-scan for the approval surface. Returns `(requested,
+    /// resolved)`: every `ApprovalRequested` scope in request order, and
+    /// the set of scopes that have since been granted or denied. A scope
+    /// is pending when requested and never resolved.
+    ///
+    /// Shared by `grant`, `deny`, and `pending_approvals`, which had
+    /// drifted into three copy-pasted scans of the same events.
+    fn approval_scan(
+        entries: &[pantheon_storage::LedgerEntry],
+    ) -> (Vec<&str>, std::collections::HashSet<&str>) {
+        let mut requested: Vec<&str> = Vec::new();
+        let mut resolved: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for e in entries {
+            match &e.event {
+                Event::ApprovalRequested { scope, .. } => requested.push(scope),
+                Event::ApprovalGranted { scope, .. } | Event::ApprovalDenied { scope, .. } => {
+                    resolved.insert(scope);
+                }
+                _ => {}
+            }
+        }
+        (requested, resolved)
+    }
+
+    /// The run must currently be parked on approval. Shared by `grant` and
+    /// `deny`; `pending_approvals` is read-only and intentionally skips it.
+    fn require_parked(&self, run_id: &str) -> Result<(), PantheonError> {
+        match self.ledger().status(run_id)?.as_deref() {
+            Some("awaiting_approval") => Ok(()),
+            Some(other) => Err(rerr(
+                "RT_NOT_PARKED",
+                format!("run {run_id} is {other}, not parked on approval"),
+            )),
+            None => Err(rerr("RT_NO_RUN", format!("no run {run_id} in ledger"))),
+        }
+    }
+
+    /// A parked approval expires `PANTHEON_APPROVAL_TTL_MS` (default
+    /// [`APPROVAL_TTL_MS`]) after it was requested. Deciding on a stale
+    /// scope is refused: the run's context has moved on, so the operator
+    /// must send a new message and let the agent re-request. Called after
+    /// the unknown/resolved checks so the error is specifically "expired".
+    fn require_approval_fresh(
+        run_id: &str,
+        scope: &str,
+        entries: &[pantheon_storage::LedgerEntry],
+    ) -> Result<(), PantheonError> {
+        let requested_ts = entries.iter().rev().find_map(|e| match &e.event {
+            Event::ApprovalRequested { scope: s, .. } if s == scope => Some(e.ts_ms),
+            _ => None,
+        });
+        let now = pantheon_api::logging::now_ms();
+        match requested_ts {
+            Some(ts) if approval_request_expired(ts, now, approval_ttl_ms()) => Err(rerr(
+                "RT_APPROVAL_EXPIRED",
+                format!(
+                    "approval scope {scope} on run {run_id} expired; send a new message so the agent can request approval again"
+                ),
+            )),
+            _ => Ok(()),
+        }
+    }
+
     /// Record an approval grant for a parked run. Emits ApprovalGranted and
     /// flips the run back to running so resume() can continue it.
     pub fn grant(&self, run_id: &str, scope: &str) -> Result<(), PantheonError> {
-        match self.ledger().status(run_id)?.as_deref() {
-            Some("awaiting_approval") => {}
-            Some(other) => {
-                return Err(rerr(
-                    "RT_NOT_PARKED",
-                    format!("run {run_id} is {other}, not parked on approval"),
-                ));
-            }
-            None => {
-                return Err(rerr("RT_NO_RUN", format!("no run {run_id} in ledger")));
-            }
-        }
+        self.require_parked(run_id)?;
         let entries = self.ledger().replay(run_id)?;
-        let mut requested = false;
-        for e in &entries {
-            if let Event::ApprovalRequested { scope: s, .. } = &e.event {
-                if s == scope {
-                    requested = true;
-                    break;
-                }
-            }
-        }
-        if !requested {
+        let (requested, resolved) = Self::approval_scan(&entries);
+        if !requested.iter().any(|s| *s == scope) {
             return Err(rerr(
                 "RT_APPROVAL_UNKNOWN",
                 format!("run {run_id} has no pending approval for scope {scope}"),
             ));
         }
-        if entries.iter().any(|entry| {
-            matches!(&entry.event, Event::ApprovalGranted { scope: s, .. } | Event::ApprovalDenied { scope: s, .. } if s == scope)
-        }) {
+        if resolved.contains(scope) {
             return Err(rerr(
                 "RT_APPROVAL_RESOLVED",
                 format!("approval scope {scope} was already resolved"),
             ));
         }
+        Self::require_approval_fresh(run_id, scope, &entries)?;
         self.ledger().append(&Event::ApprovalGranted {
             run_id: run_id.into(),
             scope: scope.into(),
@@ -602,19 +803,12 @@ impl Supervisor {
     /// exactly what still needs a human.
     pub fn pending_approvals(&self, run_id: &str) -> Result<Vec<String>, PantheonError> {
         let entries = self.ledger().replay(run_id)?;
-        let mut resolved: Vec<&str> = Vec::new();
-        let mut out: Vec<String> = Vec::new();
-        for e in &entries {
-            match &e.event {
-                Event::ApprovalRequested { scope, .. } => out.push(scope.clone()),
-                Event::ApprovalGranted { scope, .. } | Event::ApprovalDenied { scope, .. } => {
-                    resolved.push(scope);
-                }
-                _ => {}
-            }
-        }
-        out.retain(|s| !resolved.contains(&s.as_str()));
-        Ok(out)
+        let (requested, resolved) = Self::approval_scan(&entries);
+        Ok(requested
+            .into_iter()
+            .filter(|s| !resolved.contains(s))
+            .map(str::to_string)
+            .collect())
     }
 
     /// Deny one approval scope and leave the run alive.  This is intentionally
@@ -627,34 +821,22 @@ impl Supervisor {
                 "approval scope is required".into(),
             ));
         }
-        match self.ledger().status(run_id)?.as_deref() {
-            Some("awaiting_approval") => {}
-            Some(other) => {
-                return Err(rerr(
-                    "RT_NOT_PARKED",
-                    format!("run {run_id} is {other}, not parked on approval"),
-                ))
-            }
-            None => return Err(rerr("RT_NO_RUN", format!("no run {run_id} in ledger"))),
-        }
+        self.require_parked(run_id)?;
         let entries = self.ledger().replay(run_id)?;
-        if !entries
-            .iter()
-            .any(|e| matches!(&e.event, Event::ApprovalRequested { scope: s, .. } if s == scope))
-        {
+        let (requested, resolved) = Self::approval_scan(&entries);
+        if !requested.iter().any(|s| *s == scope) {
             return Err(rerr(
                 "RT_APPROVAL_UNKNOWN",
                 format!("run {run_id} has no pending approval for scope {scope}"),
             ));
         }
-        if entries.iter().any(|entry| {
-            matches!(&entry.event, Event::ApprovalGranted { scope: s, .. } | Event::ApprovalDenied { scope: s, .. } if s == scope)
-        }) {
+        if resolved.contains(scope) {
             return Err(rerr(
                 "RT_APPROVAL_RESOLVED",
                 format!("approval scope {scope} was already resolved"),
             ));
         }
+        Self::require_approval_fresh(run_id, scope, &entries)?;
         self.ledger().append(&Event::ApprovalDenied {
             run_id: run_id.into(),
             scope: scope.into(),
@@ -746,6 +928,18 @@ impl Supervisor {
 
     pub fn process_groups(&self, run_id: &str) -> Result<Vec<i32>, PantheonError> {
         self.ledger().process_groups(run_id, &self.inner.lease_id)
+    }
+
+    /// Remove one process-group row the current lease registered (e.g.
+    /// the `shell` tool's Exited hook). Scoped to this supervisor's
+    /// lease like [`Self::register_process_group`]: the ledger's
+    /// ownership check is not optional, and there is no unowned twin.
+    /// Best-effort callers ignore the error — a stale row is reaped by
+    /// the next cancel or overwritten by re-registration.
+    pub fn unregister_process_group(&self, run_id: &str, pgid: i32) -> Result<(), PantheonError> {
+        self.assert_lease_owned(run_id)?;
+        self.ledger()
+            .unregister_process_group_owned(run_id, pgid, &self.inner.lease_id)
     }
 
     fn operation_belongs_to_run(&self, operation: &Operation, run_id: &str) -> bool {
@@ -873,6 +1067,13 @@ impl Supervisor {
             run_id: run_id.into(),
             reason: reason.to_string(),
         })?;
+        // Cross-thread/process channel for worker-thread turns: the AG-UI
+        // server builds a fresh `Session` per RPC, so its Cancel handler
+        // cannot reach the in-process cancel token on the session driving
+        // the turn. The drive loop polls this flag at every turn boundary
+        // and winds down cooperatively. `reopen_run` clears it when the
+        // run is continued.
+        self.ledger().set_cancel_intent(run_id, true)?;
         self.request_run_operation_cancellations(run_id, reason)?;
         Ok(())
     }
@@ -895,6 +1096,39 @@ impl Supervisor {
     pub fn cancel_run(&self, run_id: &str, reason: &str) -> Result<(), PantheonError> {
         self.cancel_run_intent(run_id, reason)?;
         self.finish_cancel(run_id, "process groups terminated")
+    }
+
+    /// Hard-kill the run's in-flight turn child. Unlike `cancel_run`
+    /// (cooperative — the loop winds down at its next boundary), this
+    /// force-terminates the turn process itself: TERM, a short grace,
+    /// then KILL of its whole process group.
+    ///
+    /// `turn_pid` is the PID recorded when the turn child was spawned
+    /// (a process-group leader; see the dashboard's turn spawner). This
+    /// runs in a different process than the turn, so the lease-ownership
+    /// gate in `finish_cancel` cannot be used; instead the PID is
+    /// identity-checked first ([`verify_turn_child`]) so a recycled PID
+    /// is never signaled blindly.
+    ///
+    /// Blocking up to the TERM grace; call from a worker thread.
+    pub fn kill_run_turn(&self, run_id: &str, turn_pid: u32) -> Result<(), PantheonError> {
+        if !self.has_active_lease(run_id).unwrap_or(false) {
+            return Err(rerr(
+                "RT_NO_TURN",
+                format!("run {run_id} has no turn in flight"),
+            ));
+        }
+        verify_turn_child(run_id, turn_pid)?;
+        // Durable intent first, so the ledger is honest even if the
+        // process dies mid-write below. A still-dying canceled turn
+        // passes through: the `canceled` branch of `cancel_run_intent`
+        // settles operations and returns Ok.
+        self.cancel_run_intent(run_id, "killed from dashboard")?;
+        if let Some(group) = pantheon_exec::process::ProcessGroup::new(turn_pid as i32) {
+            group.terminate(std::time::Duration::from_secs(5));
+        }
+        self.settle_run_operation_cancellations(run_id, "turn killed")?;
+        Ok(())
     }
 
     pub fn render_run_log(&self, run_id: &str) -> Result<String, PantheonError> {
@@ -923,10 +1157,38 @@ impl Supervisor {
         self.ledger().has_active_lease(run_id)
     }
 
+    /// Named alias of [`has_active_lease`] for the dashboard compress
+    /// guard: compress must 409 while the run holds a live lease, and the
+    /// dashboard leaf asked for this exact symbol. Same predicate, same
+    /// fail-closed semantics.
+    pub fn run_has_active_lease(&self, run_id: &str) -> Result<bool, PantheonError> {
+        self.ledger().run_has_active_lease(run_id)
+    }
+
+    /// Cooperative-cancel intent for the run row, set by
+    /// [`cancel_run_intent`](Self::cancel_run_intent). Worker-thread turns
+    /// (AG-UI) poll this at every drive-loop turn boundary and wind down
+    /// without needing a PID. Contract for the dashboard kill path: issue
+    /// cancel through `cancel_run_intent` (or `cancel_run`); the flag is
+    /// set there, and the turn observes it on its next boundary. Cleared
+    /// by `reopen_run` when the run is continued.
+    pub fn cancel_intent(&self, run_id: &str) -> Result<bool, PantheonError> {
+        self.ledger().cancel_intent(run_id)
+    }
+
     /// Force a stuck run terminal by appending real events. See
     /// [`Ledger::settle_stuck_run`](pantheon_storage::Ledger::settle_stuck_run).
     pub fn settle_stuck_run(&self, run_id: &str, reason: &str) -> Result<(), PantheonError> {
         self.ledger().settle_stuck_run(run_id, reason)
+    }
+
+    /// Settle every crash-orphaned run (status `running`, no live lease).
+    /// See [`Ledger::settle_expired_runs`](pantheon_storage::Ledger::settle_expired_runs).
+    /// The gateway daemon calls this once at startup so a crash mid-turn
+    /// stops showing the run as live in the dashboard. Returns the settled
+    /// run ids, oldest first.
+    pub fn settle_expired_runs(&self) -> Result<Vec<String>, PantheonError> {
+        self.ledger().settle_expired_runs()
     }
     pub fn ledger_list_runs(
         &self,
@@ -934,9 +1196,20 @@ impl Supervisor {
     ) -> Result<Vec<pantheon_storage::RunListing>, PantheonError> {
         self.ledger().list_runs(limit)
     }
+    /// Auto-create the permanent home session if it has no run row yet
+    /// (idempotent). See
+    /// [`Ledger::ensure_home_session`](pantheon_storage::Ledger::ensure_home_session).
+    pub fn ensure_home_session(&self) -> Result<(), PantheonError> {
+        self.ledger().ensure_home_session()
+    }
     /// Current display title of a run (`None` = never titled).
     pub fn ledger_title(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
         self.ledger().run_title(run_id)
+    }
+    /// The run's stored agent mode (`"plan"`/`"build"`, default `"build"`).
+    /// See [`Ledger::run_mode`](pantheon_storage::Ledger::run_mode).
+    pub fn ledger_run_mode(&self, run_id: &str) -> Result<String, PantheonError> {
+        self.ledger().run_mode(run_id)
     }
     /// The agent profile bound to a run, if any.
     ///
@@ -946,8 +1219,50 @@ impl Supervisor {
     pub fn ledger_run_agent(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
         self.ledger().run_agent(run_id)
     }
+    /// The run's named project (`None` = never assigned). See
+    /// [`Ledger::run_project`](pantheon_storage::Ledger::run_project).
+    pub fn ledger_run_project(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
+        self.ledger().run_project(run_id)
+    }
+    /// Assign a run to a named project (`None` unassigns). See
+    /// [`Ledger::set_run_project`](pantheon_storage::Ledger::set_run_project).
+    pub fn ledger_set_run_project(
+        &self,
+        run_id: &str,
+        project: Option<&str>,
+    ) -> Result<(), PantheonError> {
+        self.ledger().set_run_project(run_id, project)
+    }
+    /// Every named project in use, most-recently-active first. See
+    /// [`Ledger::list_projects`](pantheon_storage::Ledger::list_projects).
+    pub fn ledger_list_projects(&self) -> Result<Vec<String>, PantheonError> {
+        self.ledger().list_projects()
+    }
+    /// Delete a run, its events, and its session-search rows. The home
+    /// session is protected (hard
+    /// error). See [`Ledger::delete_run`](pantheon_storage::Ledger::delete_run).
+    pub fn ledger_delete_run(&self, run_id: &str) -> Result<(usize, usize), PantheonError> {
+        self.ledger().delete_run(run_id)
+    }
     pub fn ledger_reopen_run(&self, run_id: &str) -> Result<bool, PantheonError> {
         self.ledger().reopen_run(run_id)
+    }
+    /// Replace the run's todo snapshot in the ledger's `todos` table. See
+    /// [`Ledger::set_todos`](pantheon_storage::Ledger::set_todos).
+    pub fn save_todos(
+        &self,
+        run_id: &str,
+        items: &[pantheon_api::todo::TodoItem],
+    ) -> Result<(), PantheonError> {
+        self.ledger().set_todos(run_id, items)
+    }
+    /// The run's persisted todo snapshot (empty when never set). See
+    /// [`Ledger::todos`](pantheon_storage::Ledger::todos).
+    pub fn load_todos(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<pantheon_api::todo::TodoItem>, PantheonError> {
+        self.ledger().todos(run_id)
     }
     pub fn replay(
         &self,
@@ -1082,4 +1397,124 @@ pub fn new_run_id() -> String {
 /// Turn IDs are host-assigned and stable across streaming/parking/recovery.
 pub fn new_turn_id() -> String {
     new_scoped_id("turn")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_supervisor() -> (Supervisor, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-fts-race-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let sup = Supervisor::open(dir.clone()).expect("test supervisor opens");
+        (sup, dir)
+    }
+
+    /// Regression test for the FTS `chunk_id` TOCTOU race: the chunk for an
+    /// event must be indexed under the seq returned by `append` for that
+    /// event, not under whatever `max_seq()` returns when indexing runs.
+    /// This test deterministically simulates the interleaving the old code
+    /// was vulnerable to: chunk B lands between A's ledger append and A's
+    /// FTS insert, and the old `max_seq()` recompute indexed A's text under
+    /// B's seq (silent FTS corruption).
+    #[test]
+    fn fts_chunk_indexed_under_append_seq_not_max_seq() {
+        let (sup, dir) = temp_supervisor();
+        let run_id = new_run_id();
+        // A's ledger row; seq captured as append() returned it.
+        let ev_a = Event::SessionTitled {
+            run_id: run_id.clone(),
+            title: "alpha zzzunique chunk".into(),
+            model: "test".into(),
+            source: "test".into(),
+        };
+        let entry_a = sup.ledger().append(&ev_a).expect("append A");
+        // The racing writer: lands after A's append, before A's indexing.
+        let ev_b = Event::SessionTitled {
+            run_id: run_id.clone(),
+            title: "beta zzzother chunk".into(),
+            model: "test".into(),
+            source: "test".into(),
+        };
+        let entry_b = sup.ledger().append(&ev_b).expect("append B");
+        assert!(entry_b.seq > entry_a.seq, "test setup: B must land after A");
+
+        // Index A's chunk using the seq append() returned for A. The buggy
+        // code recomputed seq via max_seq() here and picked up B's seq
+        // instead of A's.
+        sup.index_for_search(&ev_a, entry_a.seq).expect("index A");
+
+        let hits = sup.shared_search().search("zzzunique", 10).expect("search");
+        assert_eq!(hits.len(), 1, "expected exactly the alpha chunk");
+        assert_eq!(
+            hits[0].chunk.seq, entry_a.seq,
+            "FTS chunk indexed under wrong seq (TOCTOU race)"
+        );
+        assert_eq!(
+            hits[0].chunk.chunk_id,
+            format!("{run_id}:{}:title", entry_a.seq)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 8: `Supervisor::open` runs startup recovery once per data
+    /// dir — a crash-orphaned `running` run (no live lease) is settled
+    /// failed with a REPAIRED note, while a live-lease run and an
+    /// `awaiting_approval` park are left alone. The orphan is seeded
+    /// through a raw `Ledger` so it predates the supervisor's open (the
+    /// once-per-dir guard only skips a *second* open of the same dir).
+    #[test]
+    fn supervisor_open_settles_crash_orphaned_running_run() {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-startup-recovery-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("test dir");
+        let db = dir.join("ledger.db");
+        {
+            let ledger = pantheon_storage::ledger::Ledger::open(&db).expect("raw ledger");
+            ledger
+                .append(&Event::RunStarted {
+                    run_id: "orphan".to_string(),
+                })
+                .expect("orphan start");
+            ledger
+                .append(&Event::RunStarted {
+                    run_id: "live".to_string(),
+                })
+                .expect("live start");
+            // A live lease (heartbeat-fresh) must survive the sweep.
+            pantheon_storage::leases::RunLeaseStore::open(&db)
+                .expect("lease store")
+                .acquire("live", "lease-holder", 60_000)
+                .expect("acquire lease");
+        }
+        let sup = Supervisor::open(dir.clone()).expect("supervisor opens");
+        assert_eq!(
+            sup.ledger_status("orphan").expect("status").as_deref(),
+            Some("failed"),
+            "crash-orphaned run settled on startup"
+        );
+        assert_eq!(
+            sup.ledger_status("live").expect("status").as_deref(),
+            Some("running"),
+            "live-lease run untouched"
+        );
+        let entries = sup.ledger().replay("orphan").expect("replay orphan");
+        assert!(
+            entries
+                .iter()
+                .any(|e| format!("{:?}", e.event).contains("REPAIRED")),
+            "settlement carries the REPAIRED note"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

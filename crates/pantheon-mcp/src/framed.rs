@@ -135,72 +135,141 @@ pub fn encode(body: &Value, max_bytes: usize) -> Result<Vec<u8>, FrameError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::io::{BufReader, Cursor};
 
-    fn cur(s: &[u8]) -> BufReader<Cursor<Vec<u8>>> {
-        BufReader::new(Cursor::new(s.to_vec()))
+    /// A `BufRead` adapter that exposes at most `chunk` bytes through
+    /// `fill_buf`, simulating a slow pipe that splits a frame across many
+    /// reads.
+    struct Chunked<R: BufRead> {
+        inner: R,
+        chunk: usize,
+    }
+
+    impl<R: BufRead> std::io::Read for Chunked<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.inner.read(buf)
+        }
+    }
+
+    impl<R: BufRead> BufRead for Chunked<R> {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            let buf = self.inner.fill_buf()?;
+            let n = buf.len().min(self.chunk);
+            Ok(&buf[..n])
+        }
+
+        fn consume(&mut self, amt: usize) {
+            self.inner.consume(amt);
+        }
     }
 
     #[test]
-    fn reads_bare_json_line() {
-        let mut r = cur(b"{\"jsonrpc\":\"2.0\",\"id\":1}\n");
-        let v = read_message(&mut r, 1024).unwrap().unwrap();
-        assert_eq!(v["id"], 1);
+    fn encode_decode_round_trip() {
+        let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "ping"});
+        let bytes = encode(&msg, 1024).unwrap();
+        assert!(bytes.ends_with(b"\n"));
+        let mut r = BufReader::new(Cursor::new(bytes));
+        assert_eq!(read_message(&mut r, 1024).unwrap(), Some(msg));
+        // Clean EOF after the frame: no bytes before close -> Ok(None).
+        assert_eq!(read_message(&mut r, 1024).unwrap(), None);
     }
 
     #[test]
-    fn skips_blank_lines() {
-        let mut r = cur(b"\n\n{\"a\":1}\n");
-        let v = read_message(&mut r, 1024).unwrap().unwrap();
-        assert_eq!(v["a"], 1);
+    fn blank_lines_are_skipped_not_messages() {
+        let mut r = BufReader::new(Cursor::new(b"\n\n  \n{\"id\": 9}\n".to_vec()));
+        assert_eq!(read_message(&mut r, 1024).unwrap(), Some(json!({"id": 9})));
     }
 
     #[test]
-    fn reads_content_length_framing() {
-        let body = r#"{"jsonrpc":"2.0","id":2}"#;
-        let raw = format!("Content-Length: {}\r\n\r\n{body}", body.len());
-        let mut r = cur(raw.as_bytes());
-        let v = read_message(&mut r, 1024).unwrap().unwrap();
-        assert_eq!(v["id"], 2);
+    fn clean_eof_is_not_an_error() {
+        let mut r = BufReader::new(Cursor::new(Vec::new()));
+        assert_eq!(read_message(&mut r, 1024).unwrap(), None);
     }
 
     #[test]
-    fn clean_eof_is_none() {
-        let mut r = cur(b"");
-        assert!(read_message(&mut r, 1024).unwrap().is_none());
+    fn partial_reads_reassemble_a_split_frame() {
+        let msg = json!({"jsonrpc": "2.0", "id": 7, "result": {"ok": true}});
+        let bytes = encode(&msg, 4096).unwrap();
+        // Three bytes per fill_buf: the frame arrives in many fragments.
+        let mut r = Chunked {
+            inner: BufReader::new(Cursor::new(bytes)),
+            chunk: 3,
+        };
+        assert_eq!(read_message(&mut r, 4096).unwrap(), Some(msg));
     }
 
     #[test]
-    fn oversized_line_rejected() {
-        let mut r = cur(b"{\"a\":\"xxxxxxxxxx\"}\n");
-        assert_eq!(
-            read_message(&mut r, 8).unwrap_err(),
-            FrameError::Oversized(19)
-        );
+    fn multiple_frames_in_one_buffer_decode_in_order() {
+        let a = json!({"id": 1});
+        let b = json!({"id": 2});
+        let mut bytes = encode(&a, 1024).unwrap();
+        bytes.extend(encode(&b, 1024).unwrap());
+        let mut r = BufReader::new(Cursor::new(bytes));
+        assert_eq!(read_message(&mut r, 1024).unwrap(), Some(a));
+        assert_eq!(read_message(&mut r, 1024).unwrap(), Some(b));
+        assert_eq!(read_message(&mut r, 1024).unwrap(), None);
     }
 
     #[test]
-    fn oversized_content_length_rejected_before_body() {
-        let raw = b"Content-Length: 999999\r\n\r\n";
-        let mut r = cur(raw);
-        assert_eq!(
-            read_message(&mut r, 1024).unwrap_err(),
-            FrameError::Oversized(999999)
-        );
+    fn content_length_framed_message_round_trips() {
+        let msg = json!({"jsonrpc": "2.0", "id": 3, "result": "pong"});
+        let body = serde_json::to_vec(&msg).unwrap();
+        let mut wire = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        wire.extend(body);
+        let mut r = BufReader::new(Cursor::new(wire));
+        assert_eq!(read_message(&mut r, 4096).unwrap(), Some(msg));
     }
 
     #[test]
-    fn bad_json_is_structured() {
-        let mut r = cur(b"not json\n");
+    fn malformed_json_line_is_bad_json() {
+        let mut r = BufReader::new(Cursor::new(b"{not json}\n".to_vec()));
         assert!(matches!(
-            read_message(&mut r, 1024).unwrap_err(),
-            FrameError::BadJson(_)
+            read_message(&mut r, 1024),
+            Err(FrameError::BadJson(_))
         ));
     }
 
     #[test]
-    fn encode_is_newline_delimited() {
-        let b = encode(&serde_json::json!({"a": 1}), 1024).unwrap();
-        assert_eq!(b, b"{\"a\":1}\n");
+    fn non_numeric_content_length_is_bad_header() {
+        let mut r = BufReader::new(Cursor::new(b"Content-Length: abc\n\n{}\n".to_vec()));
+        assert!(matches!(
+            read_message(&mut r, 1024),
+            Err(FrameError::BadHeader(_))
+        ));
+    }
+
+    #[test]
+    fn truncated_body_is_an_io_error() {
+        // Declares 100 bytes, delivers 10.
+        let mut wire = b"Content-Length: 100\n\n".to_vec();
+        wire.extend(b"{\"id\":1}");
+        let mut r = BufReader::new(Cursor::new(wire));
+        assert!(matches!(read_message(&mut r, 1024), Err(FrameError::Io(_))));
+    }
+
+    #[test]
+    fn oversized_line_is_rejected() {
+        let big = "x".repeat(200);
+        let mut r = BufReader::new(Cursor::new(format!("{big}\n").into_bytes()));
+        assert!(matches!(
+            read_message(&mut r, 64),
+            Err(FrameError::Oversized(_))
+        ));
+    }
+
+    #[test]
+    fn content_length_over_the_cap_is_rejected() {
+        let mut r = BufReader::new(Cursor::new(b"Content-Length: 99999\n\n".to_vec()));
+        assert!(matches!(
+            read_message(&mut r, 64),
+            Err(FrameError::Oversized(_))
+        ));
+    }
+
+    #[test]
+    fn encode_over_the_cap_is_rejected() {
+        let msg = json!({"data": "x".repeat(200)});
+        assert!(matches!(encode(&msg, 64), Err(FrameError::Oversized(_))));
     }
 }

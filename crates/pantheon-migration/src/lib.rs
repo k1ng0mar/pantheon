@@ -20,9 +20,15 @@ use std::path::{Path, PathBuf};
 
 mod apply;
 mod carry;
+pub mod compat;
 mod index;
 mod providers;
 pub mod session_import;
+
+pub use compat::{
+    detect_kind, entry_file, inspect, map_hook, read_manifest, render_plugin_yaml, CompatKind,
+    CompatReport, CredentialRequirement, HookMap,
+};
 
 pub use apply::{
     apply, apply_with, apply_with_budgets, backup, backup_with_budgets, validate, ApplyReport,
@@ -30,12 +36,11 @@ pub use apply::{
     ValidateStatus,
 };
 pub use carry::{
-    classify_credential, count_jsonl_records, credential_manifest, looks_secret, pantheon_env_path,
-    parse_env_names, parse_env_values, parse_hermes_mcp, parse_mcp_json, read_dotenv,
-    read_mcp_declarations, server_readiness, transcript_format, write_credential_manifest,
-    write_mcp_declaration, write_session_import, write_session_import_with_budget,
-    CredentialManifest, CredentialMapping, CredentialTarget, EnvEntry, McpDeclaration, McpServer,
-    SessionImport,
+    classify_credential, credential_manifest, looks_secret, pantheon_env_path, parse_env_names,
+    parse_env_values, parse_hermes_mcp, parse_mcp_json, read_dotenv, read_mcp_declarations,
+    server_readiness, transcript_format, write_credential_manifest, write_mcp_declaration,
+    write_session_import_with_budget, CredentialManifest, CredentialMapping, CredentialTarget,
+    EnvEntry, McpDeclaration, McpServer, SessionImport,
 };
 pub use index::{
     ensure_sessions_indexed, index_quarantine, parse_transcript, quarantine_dir, ImportedChunk,
@@ -81,16 +86,6 @@ impl SourceKind {
         }
     }
 
-    /// Every source the CLI accepts, in help order.
-    pub fn all() -> [SourceKind; 4] {
-        [
-            SourceKind::Hermes,
-            SourceKind::OpenClaw,
-            SourceKind::Omp,
-            SourceKind::ClaudeCode,
-        ]
-    }
-
     /// Parse a user-supplied source name. `omp` also answers to `oh-my-pi`
     /// and `pi` because that is what people type.
     pub fn parse(s: &str) -> Option<SourceKind> {
@@ -101,11 +96,6 @@ impl SourceKind {
             "claude" | "claude-code" | "claudecode" => Some(SourceKind::ClaudeCode),
             _ => None,
         }
-    }
-
-    /// Claude Code's home directory name.
-    pub fn claude_dir_name() -> &'static str {
-        ".claude"
     }
 }
 
@@ -226,13 +216,6 @@ pub struct MigrationFilter {
 }
 
 impl MigrationFilter {
-    /// All categories enabled (the default).
-    pub fn all() -> Self {
-        Self {
-            categories: MigrationCategory::all().to_vec(),
-        }
-    }
-
     /// Only the named categories enabled.
     pub fn only(categories: Vec<MigrationCategory>) -> Self {
         Self { categories }
@@ -354,11 +337,6 @@ impl ItemKind {
             ItemKind::Secret | ItemKind::Opaque => None,
         }
     }
-
-    /// Item kinds that are safe to write to disk. Secrets never are.
-    pub fn is_importable(&self) -> bool {
-        !matches!(self, ItemKind::Secret)
-    }
 }
 
 impl std::fmt::Display for ItemKind {
@@ -382,19 +360,6 @@ pub struct Targets {
 impl Targets {
     pub fn new(data_dir: PathBuf, ext_dir: PathBuf) -> Self {
         Self { data_dir, ext_dir }
-    }
-
-    /// Default layout: skills under `<data_dir>/skills`, extensions under
-    /// `PANTHEON_EXT_DIR` (or `<data_dir>/extensions`), matching
-    /// `pantheon-tui`'s `data_dir()` / `ext_dir()`.
-    pub fn from_data_dir(data_dir: PathBuf) -> Self {
-        let ext = std::env::var("PANTHEON_EXT_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| data_dir.join("extensions"));
-        Self {
-            data_dir,
-            ext_dir: ext,
-        }
     }
 
     /// Resolve the destination for one item kind. `None` for kinds with no
@@ -1148,7 +1113,7 @@ fn analyze_openclaw(root: &Path) -> Vec<Detected> {
 /// compat adapter. A plugin imports only if at least one of its hooks has a
 /// real Pantheon equivalent; the note always names what was lost.
 fn analyze_foreign_extension(dir: &Path) -> Detected {
-    use pantheon_extensions::compat;
+    use crate::compat;
     let path = dir.to_string_lossy().to_string();
     let Some(report) = compat::inspect(dir) else {
         return Detected {
@@ -1545,15 +1510,3 @@ pub fn render(p: &MigrationPlan) -> String {
     }
     s
 }
-
-/// JSON view of a plan, for `pantheon migrate --json`.
-pub fn plan_json(p: &MigrationPlan) -> String {
-    serde_json::to_string_pretty(p).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
-}
-
-#[cfg(test)]
-#[path = "apply_tests.rs"]
-mod apply_tests;
-#[cfg(test)]
-#[path = "lib_tests.rs"]
-mod tests;

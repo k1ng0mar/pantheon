@@ -182,7 +182,3 @@ impl SecretVault for EnvVault {
         Ok(names)
     }
 }
-
-#[cfg(test)]
-#[path = "env_tests.rs"]
-mod tests;

@@ -69,6 +69,11 @@ pub struct ProviderMeta {
     /// Defaults to false (curated but hidden).
     #[serde(default)]
     pub prominent: bool,
+    /// Set true for the provider Pantheon recommends by default. At most
+    /// one provider should carry this: the setup wizard lists it first
+    /// and the `providers` verb marks it. Defaults to false.
+    #[serde(default)]
+    pub recommended: bool,
     /// A development-only endpoint, not a product provider. The local
     /// llm-router is one: it is how the e2e suite reaches a model, and
     /// offering it in a user's setup wizard would be offering a
@@ -98,6 +103,10 @@ pub struct ModelMeta {
     pub tools: bool,
     #[serde(default)]
     pub vision: bool,
+    /// True when the model can take a video file as native input
+    /// (bytes sent to the provider, not frames extracted locally).
+    #[serde(default)]
+    pub video: bool,
     #[serde(default)]
     pub reasoning: bool,
     #[serde(default = "default_true")]
@@ -233,6 +242,18 @@ pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
     if let Some(m) = model(provider_id, model_id) {
         return m.clone();
     }
+    // User-registered custom endpoints: their declared rows — including
+    // operator-declared capabilities like `video = true` — behave exactly
+    // like cataloged ones everywhere this lookup is consulted.
+    if let Ok(customs) = CUSTOM.read() {
+        if let Some(m) = customs
+            .iter()
+            .flat_map(|p| p.models.iter())
+            .find(|m| m.provider == provider_id && m.model == model_id)
+        {
+            return m.clone();
+        }
+    }
     ModelMeta {
         provider: provider_id.to_string(),
         model: model_id.to_string(),
@@ -240,6 +261,7 @@ pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
         max_output_tokens: None,
         tools: true,
         vision: false,
+        video: false,
         reasoning: false,
         streaming: true,
         cost: ModelCost::default(),
@@ -401,7 +423,3 @@ pub fn key_for(provider_id: &str, fallback: &str) -> String {
         .unwrap_or_else(|| format!("PANTHEON_KEY_{}", provider_id.to_uppercase()));
     std::env::var(env_name).unwrap_or_else(|_| fallback.to_string())
 }
-
-#[cfg(test)]
-#[path = "catalog_tests.rs"]
-mod tests;

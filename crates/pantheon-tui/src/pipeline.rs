@@ -110,6 +110,7 @@ fn open_session(
     };
     let secrets = crate::config::chat_secrets(cfg.as_ref());
     pantheon_runtime::session::Session::new(data_dir.to_path_buf(), policy, model_policy, secrets)
+        .inspect(|s| crate::config::apply_tool_enablement(s, cfg.as_ref()))
 }
 
 pub fn cmd_pipeline(args: &[String]) {

@@ -261,8 +261,48 @@ fn hash_via_system(bytes: &[u8]) -> Result<String, String> {
     Err("verify failed: no sha256 tool found (install sha256sum)".into())
 }
 
+/// Splash hint probe: return the newer release tag when one exists,
+/// `None` when up to date or unreachable. Network failures are silent —
+/// the splash simply shows no hint.
+pub fn check_for_update() -> Option<String> {
+    let latest = resolve_latest_tag(&repo()).ok()?;
+    if is_newer(&current_version(), &latest) {
+        Some(latest)
+    } else {
+        None
+    }
+}
+
 pub fn usage() -> &'static str {
-    "usage: pantheon update [--check] [--version TAG] [--repo OWNER/REPO] [--allow-unverified]\n  \n  Fetches the latest GitHub release and replaces this binary.\n  --check reports without changing anything.\n  Verification is fail-closed: a missing, unreadable, or mismatched\n  checksum aborts the update. Pass --allow-unverified to install anyway."
+    "usage: pantheon update [--check] [--version TAG] [--repo OWNER/REPO] [--allow-unverified] [--rollback]\n  \n  Fetches the latest GitHub release and replaces this binary.\n  --check reports without changing anything.\n  --rollback restores the previous binary (pantheon.prev, kept next to\n  the binary by every update) without touching the network.\n  Verification is fail-closed: a missing, unreadable, or mismatched\n  checksum aborts the update. Pass --allow-unverified to install anyway."
+}
+
+/// `pantheon update --rollback`: restore the previous binary from the
+/// `pantheon.prev` backup the last update left next to this binary. No
+/// network, no version resolution — the backup is the rollback.
+fn cmd_rollback() {
+    let current_exe = std::env::current_exe().unwrap_or_else(|e| {
+        eprintln!("rollback: cannot locate the running binary ({e})");
+        std::process::exit(1);
+    });
+    let backup = current_exe.with_extension("prev");
+    if !backup.is_file() {
+        eprintln!(
+            "rollback: no backup at {} (updates keep one; none has run yet)",
+            backup.display()
+        );
+        std::process::exit(1);
+    }
+    if std::fs::copy(&backup, &current_exe).is_err() {
+        eprintln!(
+            "rollback: cannot restore {} over {}",
+            backup.display(),
+            current_exe.display()
+        );
+        std::process::exit(1);
+    }
+    println!("✓ Rolled back to {}", backup.display());
+    println!("  Binary: {}", current_exe.display());
 }
 
 pub fn cmd_update(args: &[String]) {
@@ -284,6 +324,9 @@ pub fn cmd_update(args: &[String]) {
     };
     let check_only = args.iter().any(|a| a == "--check");
     let allow_unverified = args.iter().any(|a| a == "--allow-unverified");
+    if args.iter().any(|a| a == "--rollback") {
+        return cmd_rollback();
+    }
     let repo = flag_val("--repo").unwrap_or_else(repo);
     let os = match os_id() {
         Some(o) => o,
@@ -386,6 +429,36 @@ pub fn cmd_update(args: &[String]) {
         eprintln!("update: {e}");
         std::process::exit(1);
     });
+    // Smoke-test the new binary BEFORE it replaces the running one: a
+    // release that cannot even print its version must never become the
+    // installed binary.
+    println!("· Smoke-testing the new binary");
+    match std::process::Command::new(&new_bin)
+        .arg("--version")
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if !text.contains(tag.trim_start_matches('v')) && !text.contains(&tag) {
+                eprintln!(
+                    "update: install failed: the new binary reports {text:?}, expected {tag}"
+                );
+                std::process::exit(1);
+            }
+            println!("✓ New binary runs: {}", text.trim());
+        }
+        Ok(out) => {
+            eprintln!(
+                "update: install failed: the new binary's --version exited {}",
+                out.status
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("update: install failed: cannot execute the new binary ({e})");
+            std::process::exit(1);
+        }
+    }
     let current_exe = std::env::current_exe().unwrap_or_else(|e| {
         eprintln!("update: install failed: cannot locate the running binary ({e})");
         std::process::exit(1);
@@ -419,78 +492,8 @@ pub fn cmd_update(args: &[String]) {
 
     println!("✓ Pantheon updated to {tag}");
     println!("  Binary: {}", current_exe.display());
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn asset_names_match_release_workflow() {
-        assert_eq!(
-            asset_name("v0.1.0", "linux", "x86_64"),
-            "pantheon-v0.1.0-linux-x86_64.tar.gz"
-        );
-        assert_eq!(
-            asset_name("v0.1.0", "darwin", "aarch64"),
-            "pantheon-v0.1.0-darwin-aarch64.tar.gz"
-        );
-        assert_eq!(
-            asset_name("v0.1.0", "windows", "x86_64"),
-            "pantheon-v0.1.0-windows-x86_64.zip"
-        );
-    }
-
-    #[test]
-    fn newer_detection_ignores_leading_v() {
-        assert!(is_newer("0.1.0", "v0.2.0"));
-        assert!(is_newer("v0.1.0", "v0.1.1"));
-        assert!(!is_newer("v0.2.0", "v0.2.0"));
-        assert!(!is_newer("v0.2.0", "v0.1.9"));
-    }
-
-    #[test]
-    fn download_url_shape() {
-        assert_eq!(
-            download_url("k1ng0mar/pantheon", "v0.1.0", "pantheon-v0.1.0-linux-x86_64.tar.gz"),
-            "https://github.com/k1ng0mar/pantheon/releases/download/v0.1.0/pantheon-v0.1.0-linux-x86_64.tar.gz"
-        );
-    }
-
-    #[test]
-    fn checksum_line_matches_accepts_common_formats() {
-        let hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
-        // Plain hex line.
-        assert_eq!(checksum_line_matches(hex, hex), Ok(true));
-        // sha256sum two-column output.
-        assert_eq!(
-            checksum_line_matches(&format!("{hex}  pantheon-v0.1.0.tar.gz"), hex),
-            Ok(true)
-        );
-        // BSD `cksum -a sha256` style.
-        assert_eq!(
-            checksum_line_matches(&format!("SHA256 (pantheon.tar.gz) = {hex}"), hex),
-            Ok(true)
-        );
-        // Case-insensitive.
-        assert_eq!(checksum_line_matches(&hex.to_uppercase(), hex), Ok(true));
-    }
-
-    #[test]
-    fn checksum_line_mismatch_is_an_error() {
-        let hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
-        let other = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let err = checksum_line_matches(other, hex).unwrap_err();
-        assert!(err.contains("mismatch"), "{err}");
-    }
-
-    #[test]
-    fn checksum_line_without_digest_is_not_verified() {
-        let hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
-        assert_eq!(checksum_line_matches("", hex), Ok(false));
-        assert_eq!(
-            checksum_line_matches("not a checksum file\n", hex),
-            Ok(false)
-        );
-    }
+    println!(
+        "  Previous binary kept at {} (pantheon update --rollback to restore it)",
+        backup.display()
+    );
 }

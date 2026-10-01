@@ -7,7 +7,9 @@
 //! Anthropic's SSE event family (`message_start`, `content_block_delta`,
 //! `message_delta`, `message_stop`, `ping`, `error`).
 
-use crate::http::{perr, AdapterTurn, ChatTransport, ToolChoice, TurnOptions, WireRequest};
+use crate::http::{
+    perr, AdapterTurn, ChatTransport, StreamEnd, ToolChoice, TurnOptions, WireRequest,
+};
 use crate::model_event::{ModelEvent, ModelEventSink, ModelUsage};
 use pantheon_agent::{ToolCall, TurnOutcome};
 use pantheon_api::capability::Capability;
@@ -34,27 +36,50 @@ pub fn request(
     reasoning_budget: Option<u32>,
     opts: &TurnOptions,
 ) -> WireRequest {
-    let system: Vec<&str> = messages
+    // System rows ride top-level `system`, which only takes text: image
+    // parts on a system row degrade to explicit `[image: ...]` notes (the
+    // pictures themselves ride on user rows in practice).
+    let system: Vec<String> = messages
         .iter()
         .filter(|m| m.role == Role::System)
-        .map(|m| m.content.as_str())
+        .map(|m| {
+            if m.images.is_empty() {
+                m.content.clone()
+            } else {
+                m.text_with_image_notes()
+            }
+        })
         .collect();
     let mut rows: Vec<serde_json::Value> = Vec::new();
     for m in messages.iter().filter(|m| m.role != Role::System) {
         // Provenance envelope: same convention as the OpenAI adapter. Rows
         // with untrusted or memory-tier provenance carry a prefix so the
         // model can tell fetched data from instructions.
-        let content = match &m.provenance {
+        let text = match &m.provenance {
             Some(p) if p.trust.rank() <= pantheon_api::provenance::TrustTier::Memory.rank() => {
                 format!("{} {}", p.envelope_prefix(), m.content)
             }
             _ => m.content.clone(),
+        };
+        // Anthropic image block for one image part.
+        let image_block = |img: &pantheon_api::message::ImagePart| {
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.mime,
+                    "data": img.data,
+                },
+            })
         };
         let blocks: Vec<serde_json::Value> = match m.role {
             Role::Assistant => {
                 let mut b = Vec::new();
                 if !m.content.is_empty() {
                     b.push(serde_json::json!({"type": "text", "text": m.content}));
+                }
+                for img in &m.images {
+                    b.push(image_block(img));
                 }
                 for c in &m.tool_calls {
                     let input = serde_json::from_str(&c.arguments)
@@ -65,12 +90,33 @@ pub fn request(
                 }
                 b
             }
-            Role::Tool => vec![serde_json::json!({
-                "type": "tool_result",
-                "tool_use_id": m.tool_call_id.clone().unwrap_or_else(|| "call_0".into()),
-                "content": content,
-            })],
-            _ => vec![serde_json::json!({"type": "text", "text": content})],
+            // tool_result content is a string on this API: image parts on a
+            // tool row degrade to explicit notes rather than vanishing.
+            Role::Tool => {
+                let mut t = text;
+                for img in &m.images {
+                    t.push('\n');
+                    t.push_str(&img.note());
+                }
+                vec![serde_json::json!({
+                    "type": "tool_result",
+                    "tool_use_id": m.tool_call_id.clone().unwrap_or_else(|| "call_0".into()),
+                    "content": t,
+                })]
+            }
+            _ => {
+                let mut b = Vec::new();
+                // Text-only rows keep the unconditional text block
+                // (wire-identical to before); pictures-only rows skip the
+                // empty text block — bare image lists are valid here.
+                if !text.is_empty() || m.images.is_empty() {
+                    b.push(serde_json::json!({"type": "text", "text": text}));
+                }
+                for img in &m.images {
+                    b.push(image_block(img));
+                }
+                b
+            }
         };
         let role = if m.role == Role::Assistant {
             "assistant"
@@ -128,19 +174,40 @@ pub fn request(
             });
         }
     }
+    // Prompt caching: the system prompt and the tool definitions are re-sent
+    // verbatim on every turn of a session, so they are the ideal cache
+    // prefix. One breakpoint on the system block and one on the last tool
+    // caches the whole static prefix (Anthropic caches everything up through
+    // each marker); cache reads bill at roughly a tenth of base input, and
+    // prefixes below the minimum cacheable length simply do not cache, so
+    // there is no extra charge for short prompts. Default-on: no behavior
+    // change, only cost.
     if !system.is_empty() {
-        body["system"] = serde_json::json!(system.join("\n\n"));
+        body["system"] = serde_json::json!([{
+            "type": "text",
+            "text": system.join("\n\n"),
+            "cache_control": { "type": "ephemeral" },
+        }]);
     }
     if !tools.is_empty() {
+        let n = tools.len();
         body["tools"] = serde_json::Value::Array(
             tools
                 .iter()
-                .map(|t| {
-                    serde_json::json!({
+                .enumerate()
+                .map(|(i, t)| {
+                    let mut tool = serde_json::json!({
                         "name": t.name,
                         "description": t.description,
                         "input_schema": t.parameters,
-                    })
+                    });
+                    // The breakpoint on the last tool caches the entire
+                    // array; a changed tool list just invalidates the
+                    // cache, it never breaks the request.
+                    if i + 1 == n {
+                        tool["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+                    }
+                    tool
                 })
                 .collect(),
         );
@@ -525,10 +592,134 @@ pub fn stream(
     sink: &dyn ModelEventSink,
 ) -> Result<AdapterTurn, PantheonError> {
     let mut state = AnthStream::default();
-    transport.post_stream(&req, &mut |payload| state.push(payload, sink))?;
+    let end = transport.post_stream(&req, &mut |payload| state.push(payload, sink))?;
+    if end == StreamEnd::Eof && state.finish_reason.is_none() {
+        // EOF without `data: [DONE]` and no stop_reason: the provider
+        // (or a proxy) cut the stream mid-turn. Fail retryable so the
+        // chain retries or falls back instead of presenting a silently
+        // truncated turn as complete.
+        return Err(perr(
+            "PROVIDER_TRUNCATED",
+            "stream ended without [DONE] and no stop_reason".to_string(),
+            true,
+        ));
+    }
     state.finish(sink)
 }
 
 #[cfg(test)]
-#[path = "anthropic_tests.rs"]
-mod tests;
+mod anthropic_max_tokens_tests {
+    use super::*;
+    use crate::http::TurnOptions;
+
+    /// Item 4: the resolved per-request output cap reaches the Anthropic
+    /// wire body as `max_tokens` (this adapter already sent one; the
+    /// test pins that the *resolved* value — not the old unwrap_or —
+    /// is what goes out).
+    #[test]
+    fn request_body_carries_resolved_max_tokens() {
+        let req = request(
+            "https://api.example.test/v1",
+            "k",
+            "test-model",
+            &[],
+            &[],
+            false,
+            4_321,
+            pantheon_api::model::ReasoningLevel::Off,
+            None,
+            &TurnOptions::default(),
+        );
+        let body: serde_json::Value = serde_json::from_str(&req.body).expect("body is JSON");
+        assert_eq!(body["max_tokens"], serde_json::json!(4_321));
+    }
+}
+
+#[cfg(test)]
+mod stream_truncation_tests {
+    use super::*;
+    use crate::model_event::NoopModelSink;
+
+    /// Scripted transport: feeds `payloads` to the callback, then ends
+    /// with `[DONE]` (`StreamEnd::Done`) or bare EOF (`StreamEnd::Eof`),
+    /// mirroring the real transport.
+    struct StubTransport {
+        payloads: Vec<&'static str>,
+        done: bool,
+    }
+
+    impl ChatTransport for StubTransport {
+        fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
+            Err(perr(
+                "STUB",
+                "single-shot unused in this stub".into(),
+                false,
+            ))
+        }
+        fn post_stream(
+            &self,
+            _req: &WireRequest,
+            on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+        ) -> Result<StreamEnd, PantheonError> {
+            for p in &self.payloads {
+                on_payload(p)?;
+            }
+            if self.done {
+                // Anthropic never emits `[DONE]` (its stream ends with
+                // `message_stop`); a scripted Done just ends here.
+                Ok(StreamEnd::Done)
+            } else {
+                Ok(StreamEnd::Eof)
+            }
+        }
+    }
+
+    fn wire_req() -> WireRequest {
+        WireRequest {
+            url: "https://api.example.test/v1/messages".into(),
+            headers: vec![],
+            body: "{}".into(),
+        }
+    }
+
+    const TEXT_EVENT: &str =
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}"#;
+    const STOP_EVENT: &str = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}"#;
+
+    #[test]
+    fn eof_without_done_and_no_stop_reason_is_truncated() {
+        let t = StubTransport {
+            payloads: vec![TEXT_EVENT],
+            done: false,
+        };
+        let err = match stream(&t, wire_req(), &NoopModelSink) {
+            Ok(_) => panic!("expected PROVIDER_TRUNCATED on truncated stream"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "PROVIDER_TRUNCATED");
+        assert!(
+            err.retryable,
+            "truncation must be retryable so the chain can retry"
+        );
+    }
+
+    #[test]
+    fn eof_with_stop_reason_is_accepted() {
+        let t = StubTransport {
+            payloads: vec![TEXT_EVENT, STOP_EVENT],
+            done: false,
+        };
+        let turn = stream(&t, wire_req(), &NoopModelSink).unwrap();
+        assert!(matches!(turn.outcome, TurnOutcome::Text { .. }));
+        assert_eq!(turn.finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn done_terminator_still_accepted() {
+        let t = StubTransport {
+            payloads: vec![TEXT_EVENT, STOP_EVENT],
+            done: true,
+        };
+        assert!(stream(&t, wire_req(), &NoopModelSink).is_ok());
+    }
+}

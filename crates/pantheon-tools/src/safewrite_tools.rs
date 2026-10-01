@@ -13,34 +13,44 @@ use pantheon_exec::confine::confine;
 use pantheon_exec::safewrite::{json_out, preview_edit, serr, FileEdit, SafeWriter};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
 fn jstr(v: &serde_json::Value, key: &str) -> Option<String> {
     v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
 }
-fn tool_err(code: &str, cause: String) -> PantheonError {
-    PantheonError::new(
-        code,
-        Layer::Execution,
-        false,
-        cause,
-        "check tool arguments",
-        "",
-    )
-}
+
 fn parse_edit_list(v: &serde_json::Value) -> Result<Vec<FileEdit>, PantheonError> {
-    let arr = v
-        .get("edits")
-        .and_then(|x| x.as_array())
-        .ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing array 'edits'".into()))?;
+    let arr = v.get("edits").and_then(|x| x.as_array()).ok_or_else(|| {
+        crate::tools::tool_err(
+            "TOOL_BAD_ARGS",
+            Layer::Execution,
+            false,
+            "missing array 'edits'".into(),
+            "check tool arguments",
+        )
+    })?;
     let mut out = vec![];
     for item in arr {
-        let path = item
-            .get("path")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| tool_err("TOOL_BAD_ARGS", "each edit needs string 'path'".into()))?;
+        let path = item.get("path").and_then(|x| x.as_str()).ok_or_else(|| {
+            crate::tools::tool_err(
+                "TOOL_BAD_ARGS",
+                Layer::Execution,
+                false,
+                "each edit needs string 'path'".into(),
+                "check tool arguments",
+            )
+        })?;
         let content = item
             .get("content")
             .and_then(|x| x.as_str())
-            .ok_or_else(|| tool_err("TOOL_BAD_ARGS", "each edit needs string 'content'".into()))?;
+            .ok_or_else(|| {
+                crate::tools::tool_err(
+                    "TOOL_BAD_ARGS",
+                    Layer::Execution,
+                    false,
+                    "each edit needs string 'content'".into(),
+                    "check tool arguments",
+                )
+            })?;
         out.push(FileEdit {
             path: PathBuf::from(path),
             new_content: content.as_bytes().to_vec(),
@@ -59,9 +69,12 @@ fn state_dir_from(args: &serde_json::Value) -> Result<PathBuf, PantheonError> {
     if let Ok(d) = std::env::var("PANTHEON_DATA_DIR") {
         return Ok(PathBuf::from(d).join("safewrite"));
     }
-    Err(tool_err(
+    Err(crate::tools::tool_err(
         "TOOL_BAD_ARGS",
+        Layer::Execution,
+        false,
         "missing 'state_dir' (or set PANTHEON_DATA_DIR)".into(),
+        "check tool arguments",
     ))
 }
 /// Options for `register_safewrite_with`.
@@ -119,9 +132,9 @@ pub fn register_safewrite_with(reg: &mut ToolRegistry, opts: SafewriteOptions) {
         move |args| {
             let v = parse_args(args)?;
             let path = jstr(&v, "path")
-                .ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing 'path'".into()))?;
+                .ok_or_else(|| crate::tools::tool_err("TOOL_BAD_ARGS", Layer::Execution, false, "missing 'path'".into(), "check tool arguments"))?;
             let content = jstr(&v, "content")
-                .ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing 'content'".into()))?;
+                .ok_or_else(|| crate::tools::tool_err("TOOL_BAD_ARGS", Layer::Execution, false, "missing 'content'".into(), "check tool arguments"))?;
             let _ = &d0;
             let cpath = confine(Path::new(&path), &r0)?;
             let pv = preview_edit(&cpath, content.as_bytes())?;
@@ -166,7 +179,7 @@ pub fn register_safewrite_with(reg: &mut ToolRegistry, opts: SafewriteOptions) {
             let v = parse_args(args)?;
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d3).clone());
             let w = writer(sd, &r3)?;
-            let sid = jstr(&v, "stage_id").ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing 'stage_id'".into()))?;
+            let sid = jstr(&v, "stage_id").ok_or_else(|| crate::tools::tool_err("TOOL_BAD_ARGS", Layer::Execution, false, "missing 'stage_id'".into(), "check tool arguments"))?;
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
             let r = w.apply_staged(&sid, seq)?;
             json_out(&r)
@@ -217,8 +230,15 @@ pub fn register_safewrite_with(reg: &mut ToolRegistry, opts: SafewriteOptions) {
             let v = parse_args(args)?;
             let sd = state_dir_from(&v).unwrap_or_else(|_| (*d6).clone());
             let w = writer(sd, &r6)?;
-            let id = jstr(&v, "checkpoint_id")
-                .ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing 'checkpoint_id'".into()))?;
+            let id = jstr(&v, "checkpoint_id").ok_or_else(|| {
+                crate::tools::tool_err(
+                    "TOOL_BAD_ARGS",
+                    Layer::Execution,
+                    false,
+                    "missing 'checkpoint_id'".into(),
+                    "check tool arguments",
+                )
+            })?;
             let restored = w.restore_checkpoint(&id)?;
             Ok(serde_json::to_string_pretty(
                 &serde_json::json!({"checkpoint": id, "restored": restored}),
@@ -243,7 +263,15 @@ pub fn register_safewrite_with(reg: &mut ToolRegistry, opts: SafewriteOptions) {
             let seq = v
                 .get("ledger_seq")
                 .and_then(|x| x.as_i64())
-                .ok_or_else(|| tool_err("TOOL_BAD_ARGS", "missing integer 'ledger_seq'".into()))?;
+                .ok_or_else(|| {
+                    crate::tools::tool_err(
+                        "TOOL_BAD_ARGS",
+                        Layer::Execution,
+                        false,
+                        "missing integer 'ledger_seq'".into(),
+                        "check tool arguments",
+                    )
+                })?;
             let (id, restored) = w.rollback_to_seq(seq)?;
             Ok(serde_json::to_string_pretty(
                 &serde_json::json!({"checkpoint": id, "restored": restored}),

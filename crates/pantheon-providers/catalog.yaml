@@ -17,6 +17,10 @@
 #   models      curated model rows (see ModelMeta shape). Empty = undiscovered:
 #               `pantheon model` asks the endpoint (GET {base}/models) instead.
 #   prominent   show in the picker UI
+#   recommended the one provider Pantheon recommends by default — listed
+#               first in the setup wizard, marked in `pantheon providers`
+#   dev         development-only endpoint: hidden from every picker, still
+#               resolvable by id
 #   tag         short blurb ("Chinese lab", "fast inference", ...)
 #
 # Any provider id NOT in this list falls back to OpenAI-compatible
@@ -89,6 +93,7 @@ providers:
         max_output_tokens: 8192
         tools: true
         vision: true
+        video: true
         reasoning: true
         streaming: true
         cost: { input_per_mtok_usd: 0.075, output_per_mtok_usd: 0.30 }
@@ -97,18 +102,19 @@ providers:
         max_output_tokens: 20000
         tools: true
         vision: true
+        video: true
         reasoning: true
         streaming: true
         cost: { input_per_mtok_usd: 1.25, output_per_mtok_usd: 5.00 }
 
   - id: vertex
     label: Google Vertex AI
-    base_url: https://aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/endpoints/openapi
+    base_url: https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/endpoints/openapi
     api_mode: openai
     base_env: PANTHEON_BASE_VERTEX
     key_env: GOOGLE_ACCESS_TOKEN
     prominent: true
-    tag: Project/location template — set PANTHEON_BASE_VERTEX to the concrete URL; short-lived GCP access token
+    tag: Project/location template — regional host is required; Bearer token is a short-lived GCP OAuth access token (gcloud auth print-access-token, ~1h); model ids are publisher/model, e.g. google/gemini-2.5-flash
     models: []
 
   - id: bedrock
@@ -118,15 +124,18 @@ providers:
     base_env: PANTHEON_BASE_BEDROCK
     key_env: AWS_BEARER_TOKEN_BEDROCK
     prominent: true
-    tag: Region template — set PANTHEON_BASE_BEDROCK; Bearer key works, SigV4 not yet
+    tag: Region template — Bearer auth only (long-term API key or 12h token from aws-bedrock-token-generator); model ids are inference-profile ids (us.anthropic.claude-sonnet-4-6, global.openai.gpt-5.6-terra); SigV4 not implemented
     models: []
 
   - id: azure
     label: Azure AI Foundry
-    base_url: https://{resource}.openai.azure.com/openai/v1/
+    base_url: https://{resource}.openai.azure.com/openai/v1
     api_mode: openai
     base_env: PANTHEON_BASE_AZURE
     key_env: AZURE_OPENAI_API_KEY
+    # Foundry's /openai/v1 takes the API key in the `api-key` header (Azure
+    # convention), not `Authorization: Bearer` — the OpenAI default.
+    key_header: api-key
     prominent: true
     tag: Resource template — set PANTHEON_BASE_AZURE; model id is the deployment name
     models: []
@@ -180,13 +189,15 @@ providers:
     prominent: true
     tag: Fast inference
     models:
-      - model: llama-3.3-70b-versatile
-        context_limit: 128000
-        max_output_tokens: 16384
+      # llama-3.3-70b-versatile was sunset by Groq 2026-08-16 (their
+      # deprecations table); openai/gpt-oss-120b is their named replacement.
+      - model: openai/gpt-oss-120b
+        context_limit: 131072
         tools: true
         vision: false
         reasoning: true
         streaming: true
+        cost: { input_per_mtok_usd: 0.15, output_per_mtok_usd: 0.60 }
 
   - id: deepseek
     label: DeepSeek
@@ -213,6 +224,14 @@ providers:
         reasoning: true
         streaming: true
         cost: { input_per_mtok_usd: 1.10, output_per_mtok_usd: 4.40 }
+      - model: deepseek-flash
+        context_limit: 1000000
+        max_output_tokens: 384000
+        tools: true
+        vision: true
+        reasoning: true
+        streaming: true
+        cost: { input_per_mtok_usd: 0.15, output_per_mtok_usd: 0.60 }
 
   - id: mistral
     label: Mistral AI
@@ -240,9 +259,9 @@ providers:
     prominent: true
     tag: Grok
     models:
-      - model: grok-2
-        context_limit: 131072
-        max_output_tokens: 8192
+      # grok-2 is legacy in xAI's current lineup; grok-4 is the flagship.
+      - model: grok-4
+        context_limit: 256000
         tools: true
         vision: true
         reasoning: true
@@ -261,7 +280,7 @@ providers:
         context_limit: 64000
         max_output_tokens: 16384
         tools: true
-        vision: true
+        vision: false
         reasoning: true
         streaming: true
         cost: { input_per_mtok_usd: 0.55, output_per_mtok_usd: 1.65 }
@@ -279,9 +298,17 @@ providers:
         context_limit: 128000
         max_output_tokens: 8192
         tools: true
-        vision: true
+        vision: false
         reasoning: false
         streaming: true
+      - model: glm-5.3-flash
+        context_limit: 1000000
+        max_output_tokens: 131072
+        tools: true
+        vision: true
+        reasoning: true
+        streaming: true
+        cost: { input_per_mtok_usd: 0.15, output_per_mtok_usd: 0.50 }
 
   - id: moonshot
     label: Moonshot AI
@@ -308,14 +335,10 @@ providers:
     key_env: MINIMAX_API_KEY
     prominent: true
     tag: Chinese lab, agent models
-    models:
-      - model: minimax-01
-        context_limit: 240000
-        max_output_tokens: 16384
-        tools: true
-        vision: true
-        reasoning: true
-        streaming: true
+    # minimax-01 was deprecated and superseded by the M-series; no
+    # replacement id is pinned here — `pantheon model` discovers via
+    # GET {base}/models instead.
+    models: []
 
   - id: nvidia-nim
     label: NVIDIA NIM
@@ -334,7 +357,7 @@ providers:
     base_env: PANTHEON_BASE_CLOUDFLARE
     key_env: CLOUDFLARE_API_TOKEN
     prominent: true
-    tag: Account template — set PANTHEON_BASE_CLOUDFLARE with your account ID
+    tag: Account template — model ids are full @cf/vendor/model paths, e.g. @cf/meta/llama-3.1-8b-instruct; token needs Workers AI permission
     models: []
 
   - id: deepinfra
@@ -366,12 +389,13 @@ providers:
     prominent: true
     tag: Fast inference
     models:
-      - model: llama-3.3-70b
-        context_limit: 128000
-        max_output_tokens: 16384
+      # llama-3.3-70b is off Cerebras's supported-models list; gpt-oss-120b
+      # is the current free-tier flagship there.
+      - model: gpt-oss-120b
+        context_limit: 131072
         tools: true
         vision: false
-        reasoning: false
+        reasoning: true
         streaming: true
 
   - id: sambanova
@@ -436,21 +460,28 @@ providers:
     models: []
 
   - id: nous
-    label: Nous
+    label: Nous Research
     base_url: https://inference-api.nousresearch.com/v1
     api_mode: openai
     base_env: PANTHEON_BASE_NOUS
-    key_env: PANTHEON_KEY_NOUS
+    key_env: NOUS_API_KEY
     prominent: true
-    tag: Open models
-    models: []
+    recommended: true
+    tag: Nous Portal API key (NOUS_API_KEY); evaluation tier available
+    models:
+      # Official Hermes 4 ids from Nous's own Portal docs
+      # (hermes-agent.nousresearch.com/docs/integrations/nous-portal).
+      - model: Hermes-4-70B
+        reasoning: true
+      - model: Hermes-4-405B
+        reasoning: true
 
   - id: tokenrouter
     label: TokenRouter
     base_url: https://api.tokenrouter.com/v1
     api_mode: openai
     base_env: PANTHEON_BASE_TOKENROUTER
-    key_env: PANTHEON_KEY_TOKENROUTER
+    key_env: TOKENROUTER_API_KEY
     prominent: true
     tag: Aggregator
     models: []
@@ -460,7 +491,7 @@ providers:
     base_url: https://api.gmi-serving.com/v1
     api_mode: openai
     base_env: PANTHEON_BASE_GMI
-    key_env: PANTHEON_KEY_GMI
+    key_env: GMI_API_KEY
     prominent: true
     tag: Inference cloud
     models: []
@@ -470,7 +501,7 @@ providers:
     base_url: https://api.b.ai/v1
     api_mode: openai
     base_env: PANTHEON_BASE_BAI
-    key_env: PANTHEON_KEY_BAI
+    key_env: BAI_API_KEY
     prominent: true
     tag: Inference cloud
     models: []
@@ -480,7 +511,7 @@ providers:
     base_url: https://api.experientiallabs.ai/v1
     api_mode: openai
     base_env: PANTHEON_BASE_EXPERIENTIAL
-    key_env: PANTHEON_KEY_EXPERIENTIAL
+    key_env: EXPLABS_API_KEY
     prominent: true
     tag: Inference cloud
     models: []
@@ -490,7 +521,7 @@ providers:
     base_url: https://apihub.agnes-ai.com/v1
     api_mode: openai
     base_env: PANTHEON_BASE_AGNES
-    key_env: PANTHEON_KEY_AGNES
+    key_env: AGNES_API_KEY
     prominent: true
     tag: Inference cloud
     models: []
@@ -500,7 +531,7 @@ providers:
     base_url: https://api.xkiro.com/v1
     api_mode: openai
     base_env: PANTHEON_BASE_XKIRO
-    key_env: PANTHEON_KEY_XKIRO
+    key_env: XKIRO_API_KEY
     prominent: true
     tag: Inference cloud
     models: []
@@ -510,9 +541,9 @@ providers:
     base_url: http://127.0.0.1:11434/v1
     api_mode: openai
     base_env: PANTHEON_BASE_LOCAL
-    key_env: PANTHEON_KEY_LOCAL
+    key_env: ""
     prominent: true
-    tag: Local
+    tag: Local, no key needed
     models: []
 
   - id: lmstudio
@@ -530,7 +561,7 @@ providers:
     base_url: http://127.0.0.1:8015/v1
     api_mode: openai
     base_env: PANTHEON_BASE_ROUTER
-    key_env: PANTHEON_KEY_ROUTER
+    key_env: ""
     prominent: true
     # Development infrastructure, not a product provider. Resolvable by id
     # so the e2e suite can reach a model through it, and absent from every

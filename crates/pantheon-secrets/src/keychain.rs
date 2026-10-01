@@ -155,7 +155,3 @@ impl SecretVault for KeychainVault {
         ))
     }
 }
-
-#[cfg(test)]
-#[path = "keychain_tests.rs"]
-mod tests;

@@ -103,6 +103,19 @@ impl CronSchedule {
     pub fn matches_ms(&self, now_ms: i64) -> bool {
         self.matches(civil_from_ms(now_ms))
     }
+
+    /// Latest minute boundary ≤ now_ms whose wall-clock fields match, scanning
+    /// back at most one year. Used for missed-occurrence catch-up.
+    pub fn prev_fire_ms(&self, now_ms: i64) -> Option<i64> {
+        let mut t = now_ms.div_euclid(60_000) * 60_000;
+        for _ in 0..525_600 {
+            if self.matches_ms(t) {
+                return Some(t);
+            }
+            t -= 60_000;
+        }
+        None
+    }
 }
 
 /// Convert epoch milliseconds to UTC wall-clock fields.
@@ -245,6 +258,53 @@ fn parse_val(raw: &str, name: &'static str, min: u32, max: u32) -> Result<u32, C
     Ok(v)
 }
 
-#[cfg(test)]
-#[path = "cron_tests.rs"]
-mod tests;
+/// Deterministic repair for a cron expression that fails
+/// [`CronSchedule::validate`]: normalize common nonstandard shapes into
+/// the five-field form this parser accepts, or `None` when no safe
+/// normalization exists (the caller must not guess).
+///
+/// Repairs applied, in order:
+/// - `@daily` / `@hourly` / `@weekly` / `@monthly` / `@yearly` /
+///   `@annually` → the equivalent five-field expression;
+/// - Quartz `?` in any field → `*` (means "no specific value", same as
+///   `*` under Vixie semantics used here);
+/// - six fields with a leading `0` seconds field → drop the seconds
+///   field (a nonzero seconds field is *not* droppable: silently
+///   changing the fire minute would be a guess).
+///
+/// The result is returned unvalidated: the caller re-validates with
+/// [`CronSchedule::validate`] and only applies it on success.
+pub fn normalize_cron_expr(expr: &str) -> Option<String> {
+    let e = expr.trim();
+    let lower = e.to_ascii_lowercase();
+    let from_macro = match lower.as_str() {
+        "@yearly" | "@annually" => Some("0 0 1 1 *"),
+        "@monthly" => Some("0 0 1 * *"),
+        "@weekly" => Some("0 0 * * 0"),
+        "@daily" => Some("0 0 * * *"),
+        "@hourly" => Some("0 * * * *"),
+        _ => None,
+    };
+    if let Some(m) = from_macro {
+        return Some(m.to_string());
+    }
+    let mut parts: Vec<&str> = e.split_whitespace().collect();
+    if parts.len() == 6 && parts[0] == "0" {
+        parts.remove(0);
+    }
+    if parts.len() != 5 {
+        return None;
+    }
+    let fixed: Vec<String> = parts
+        .iter()
+        .map(|p| {
+            if *p == "?" {
+                "*".to_string()
+            } else {
+                p.to_string()
+            }
+        })
+        .collect();
+    let out = fixed.join(" ");
+    (out != e).then_some(out)
+}

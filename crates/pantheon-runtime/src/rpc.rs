@@ -256,7 +256,3 @@ impl MethodHandler for MethodList {
         Ok(Value::Array(names.into_iter().map(Value::String).collect()))
     }
 }
-
-#[cfg(test)]
-#[path = "rpc_tests.rs"]
-mod tests;

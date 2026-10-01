@@ -98,7 +98,7 @@ Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same sessi
 
 **Durable scheduler claims.** Cron (with a fixed Vixie DOM/DOW interpretation), one-shot, and interval jobs register with validation and claim their ticks through a unified claims table — surviving restarts without double-firing. Per-job timeouts (default 600s), overlap policies (skip/replace/queue), and HMAC-SHA256-verified webhooks. *Trust:* scheduled work is a runtime guarantee, not a process that has to stay alive.
 
-**Cost ceilings that trip.** Usage is summed per turn — including cached tokens — and stamped onto the outcome. Run-level budgets (`max_tokens`, `max_cost_cents`, seeded from the ledger) actually halt the run when hit. *Trust:* an agent can't quietly burn $40 while you sleep. The ceiling is enforced by the code that counts, not the model that spends.
+**Output caps that ride the wire.** `/tokens N` (or `[budget].max_tokens` in config) caps how many tokens the model may emit per response — session override beats config beats the model's known maximum output (16k fallback when unknown), clamped to what the model actually supports. *Trust:* a runaway model can't dump a novel into your transcript; the cap is enforced in the request body, not the prompt.
 
 **Trust-tiered memory.** Five memory layers plus runtime state, each with byte budgets and trust-aware eviction. External tiers (remote servers, imported files) are clamped to Untrusted regardless of what they claim; writes are scanned for secret patterns before landing. *Trust:* memory retrieved from outside can't launder itself into a trusted instruction, and your API keys don't end up in the memory store.
 
@@ -129,20 +129,18 @@ Hermes/OpenClaw cells summarize their public docs and positioning as of Septembe
 |---|---|
 | `pantheon` | Façade: re-exports every library crate under `pantheon::…` |
 | `pantheon-tui` | The terminal product — TUI, CLI verbs, session tabs, status bar |
-| `pantheon-runtime` | Supervisor: run lifecycle, quotas, recovery, checkpointing |
-| `pantheon-agent` | Agent engine: the model turn loop with run budgets |
-| `pantheon-api` | Bottom protocol leaf: commands, events, shared types |
-| `pantheon-exec` | Execution engine: process/fs/git surface, danger gate, confinement |
-| `pantheon-sandbox` | Sandbox hierarchy; isolation levels, fail-closed |
-| `pantheon-capability` | Capability plane: enforces policy decisions at execution |
+| `pantheon-runtime` | Supervisor: run lifecycle, quotas, recovery, checkpointing, swarm delegation |
+| `pantheon-agent` | Agent engine: the model turn loop with run budgets, capability policy/role maps |
+| `pantheon-api` | Bottom protocol leaf: commands, events, shared types, config document, plugin approval, agent profiles |
+| `pantheon-exec` | Execution engine: process/fs/git surface, danger gate, confinement, sandbox levels, plugin approval |
 | `pantheon-tools` | Named, schema'd, capability-gated tools (shell, fs, memory, …) |
+| `pantheon-web` | Browser automation + web search |
 | `pantheon-mcp` | MCP client (stdio): `initialize` / `tools/list` / `tools/call` |
 | `pantheon-memory` | Memory plane: five layers + runtime state, trust tiers |
 | `pantheon-secrets` | Secrets broker: values resolved at execution, never in prompts |
 | `pantheon-storage` | SQLite event-sourced execution ledger |
 | `pantheon-scheduler` | Durable jobs: cron, one-shot, interval, webhooks |
 | `pantheon-gateway` | Discord/Telegram gateways: routing, queues, dead-letter |
-| `pantheon-swarm` | Delegation with runtime-owned caps (depth, concurrency, budget) |
 | `pantheon-extensions` | Hooks and plugins: spec, `plugin.yaml` loader, Python/JS runners |
 | `pantheon-migration` | Import flows: detect → plan → approve → apply → validate |
 | `pantheon-providers` | Provider adapters: OpenAI, Anthropic, custom endpoints, fallbacks |

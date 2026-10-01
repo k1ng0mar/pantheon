@@ -46,13 +46,39 @@ pub(crate) fn configure_durability(conn: &Connection, code: &str) -> Result<(), 
     Ok(())
 }
 
+/// Execute one forward-only `ALTER TABLE ... ADD COLUMN` migration step.
+///
+/// The "duplicate column name" error means the database already carries
+/// the column (fresh databases do — the `SCHEMA` constants declare every
+/// column), so it is ignored and the migration stays idempotent. Every
+/// other SQLite error (I/O, locked, no-such-table) is returned to the
+/// caller: a migration that reports `Ok` really migrated.
+///
+/// The match is on the message text because SQLite reports this as a
+/// plain `SQLITE_ERROR` with no distinct extended code; the lowercase
+/// match keeps it robust across rusqlite versions.
+pub(crate) fn add_column_once(conn: &Connection, sql: &str) -> Result<(), rusqlite::Error> {
+    match conn.execute(sql, []) {
+        Ok(_) => Ok(()),
+        Err(e)
+            if e.to_string()
+                .to_lowercase()
+                .contains("duplicate column name") =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+pub mod audit;
+pub mod backup;
 pub mod claims;
+pub mod collaboration;
+pub mod ideas;
 pub mod leases;
 pub mod ledger;
 pub mod operations;
-
-pub mod audit;
-pub mod collaboration;
 pub mod search;
 pub use audit::{audit_line, export_jsonl};
 pub use claims::ClaimStore;
@@ -60,8 +86,11 @@ pub use collaboration::{
     AgentMessage, AgentTask, Collaboration, CollaborationStatus, CollaborationStore, MessageKind,
     TaskConflict, TaskMutationError, TaskStatus,
 };
+pub use ideas::{
+    FeedbackSignal, Idea, IdeaKind, IdeaStatus, IdeaStore, NewIdea, ScheduleSpec, TopicSignals,
+};
 pub use leases::{LostLeaseError, RunLease, RunLeaseStore};
-pub use ledger::{Artifact, Ledger, LedgerEntry, RunListing, RunMetrics};
+pub use ledger::{Artifact, Ledger, LedgerEntry, RunListing, RunMetrics, HOME_SESSION_ID};
 pub use operations::{Operation, OperationConflict, OperationStatus, OperationStore};
 pub use search::{recreate_search_index, search_index_health};
 pub use search::{SearchHit, SessionChunk, SessionSearch};
