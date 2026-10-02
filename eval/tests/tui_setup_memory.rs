@@ -55,6 +55,7 @@ fn native_memory_needs_no_followups_and_leaves_working_state() {
         }),
         computer: None,
         key: None,
+        custom_provider: None,
         skipped_tools: Vec::new(),
         skipped_stt: false,
         skipped_tts: false,

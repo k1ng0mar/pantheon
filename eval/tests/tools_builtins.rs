@@ -36,6 +36,7 @@ fn write_file_routes_through_safewrite_when_state_dir_given() {
             data_dir: None,
             safewrite_state_dir: Some(state.clone()),
             workspace_root: Some(work.clone()),
+            shell_child_hook: None,
         },
     );
     let out = reg
@@ -71,6 +72,7 @@ fn write_file_stale_check_rejects_mismatch() {
             data_dir: None,
             safewrite_state_dir: Some(state.clone()),
             workspace_root: Some(work.clone()),
+            shell_child_hook: None,
         },
     );
     // Pretend the file is still at "v0"; the safe path must reject.
@@ -109,6 +111,7 @@ fn write_file_unsafe_fallback_when_no_state_dir() {
             data_dir: None,
             safewrite_state_dir: None,
             workspace_root: Some(work.clone()),
+            shell_child_hook: None,
         },
     );
     let out = reg
@@ -201,6 +204,7 @@ fn reg_in(work: &std::path::Path) -> ToolRegistry {
             data_dir: None,
             safewrite_state_dir: None,
             workspace_root: Some(work.to_path_buf()),
+            shell_child_hook: None,
         },
     );
     reg
@@ -258,6 +262,7 @@ fn write_file_rejects_deny_globs_and_escapes() {
             data_dir: None,
             safewrite_state_dir: Some(state),
             workspace_root: Some(work.clone()),
+            shell_child_hook: None,
         },
     );
     // /etc/** is denied by glob even though the capability is granted.

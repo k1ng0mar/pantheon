@@ -159,7 +159,13 @@ fn exec_adapter_roundtrip_and_lapse() {
     let plugins = data.join("plugins");
     std::fs::create_dir_all(&plugins).unwrap();
     write_exec_plugin(&plugins, "tp");
-    let found: Vec<DiscoveredPlugin> = discover_plugins(&data, d.path());
+    // Discovery also seeds the bundled first-party plugins into the
+    // data dir, so the roundtrip below tracks only the plugin this
+    // test wrote.
+    let found: Vec<DiscoveredPlugin> = discover_plugins(&data, d.path())
+        .into_iter()
+        .filter(|p| p.manifest.name == "tp")
+        .collect();
     assert_eq!(found.len(), 1);
     let plugin = &found[0];
     assert!(!pa::is_approved(plugin));

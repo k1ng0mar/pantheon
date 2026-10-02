@@ -15,6 +15,8 @@ fn spawn(ledger: &Ledger, run: &str, agent: &str) {
         .append(&Event::AgentSpawned {
             run_id: run.into(),
             agent: agent.into(),
+            child_run_id: None,
+            call_id: None,
         })
         .unwrap();
 }
@@ -24,6 +26,8 @@ fn complete(ledger: &Ledger, run: &str, agent: &str) {
         .append(&Event::AgentCompleted {
             run_id: run.into(),
             agent: agent.into(),
+            child_run_id: None,
+            call_id: None,
         })
         .unwrap();
 }

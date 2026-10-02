@@ -111,6 +111,7 @@ fn recommended_answers() -> SetupAnswers {
         memory: Some(memory),
         computer: Some(computer),
         key: None,
+        custom_provider: None,
         skipped_tools: Vec::new(),
         skipped_stt: false,
         skipped_tts: false,

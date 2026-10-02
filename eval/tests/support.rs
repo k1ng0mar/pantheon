@@ -67,6 +67,7 @@ pub fn boot() -> Dash {
         bind_addr: "127.0.0.1:0".to_string(),
         auth,
         mounts: vec![Arc::new(mount)],
+        label: "pantheon eval".to_string(),
     };
     let (port, token) = pantheon_gateway::http::spawn_test_server(cfg);
     Dash {

@@ -61,7 +61,7 @@ impl ChatTransport for RateLimitStub {
         &self,
         _req: &WireRequest,
         _on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
-    ) -> Result<(), PantheonError> {
+    ) -> Result<pantheon_providers::http::StreamEnd, PantheonError> {
         unimplemented!("single-shot test")
     }
 }

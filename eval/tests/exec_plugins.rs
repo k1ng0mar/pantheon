@@ -10,6 +10,16 @@ use pantheon_exec::plugins::*;
 use std::path::Path;
 use tempfile::tempdir;
 
+/// Discovery also returns the bundled first-party plugins seeded
+/// into the data dir, so tests select the plugin they wrote by name
+/// rather than assuming it is the only (or first) hit.
+fn only_plugin<'a>(found: &'a [DiscoveredPlugin], name: &str) -> &'a DiscoveredPlugin {
+    found
+        .iter()
+        .find(|p| p.manifest.name == name)
+        .unwrap_or_else(|| panic!("plugin {name} not discovered"))
+}
+
 #[test]
 fn discover_finds_user_plugin() {
     let d = tempdir().unwrap();
@@ -28,18 +38,22 @@ fn discover_finds_user_plugin() {
         }],
     );
     let found = discover_plugins(&data, d.path());
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].manifest.name, "demo");
-    assert_eq!(found[0].location, PluginLocation::User);
+    let demo = only_plugin(&found, "demo");
+    assert_eq!(demo.location, PluginLocation::User);
 }
 
 #[test]
 fn discover_ignores_dirs_without_manifest() {
     let d = tempdir().unwrap();
-    let plugins = d.path().join("plugins");
+    let data = d.path().join("data");
+    let plugins = data.join("plugins");
     std::fs::create_dir_all(&plugins).unwrap();
     std::fs::create_dir_all(plugins.join("no-manifest")).unwrap();
-    assert!(discover_plugins(&plugins, d.path()).is_empty());
+    let found = discover_plugins(&data, d.path());
+    assert!(
+        found.iter().all(|p| p.root != plugins.join("no-manifest")),
+        "a directory without a manifest is never discovered as a plugin"
+    );
 }
 
 #[test]
@@ -52,8 +66,9 @@ fn verify_rejects_missing_runner() {
     // Delete the runner file after creation.
     std::fs::remove_file(plugins.join("bad").join("run.sh")).unwrap();
     let found = discover_plugins(&data, d.path());
-    pantheon_exec::plugin_approval::record_approval(&found[0]).unwrap();
-    let err = verify_plugin(&found[0]).unwrap_err();
+    let plugin = only_plugin(&found, "bad");
+    pantheon_exec::plugin_approval::record_approval(plugin).unwrap();
+    let err = verify_plugin(plugin).unwrap_err();
     assert_eq!(err.code, "PLUGIN_NO_RUNNER");
 }
 
@@ -68,8 +83,9 @@ fn verify_rejects_missing_shebang() {
     let p = plugins.join("noshebang").join("run.sh");
     std::fs::write(&p, "echo no shebang").unwrap();
     let found = discover_plugins(&data, d.path());
-    pantheon_exec::plugin_approval::record_approval(&found[0]).unwrap();
-    let err = verify_plugin(&found[0]).unwrap_err();
+    let plugin = only_plugin(&found, "noshebang");
+    pantheon_exec::plugin_approval::record_approval(plugin).unwrap();
+    let err = verify_plugin(plugin).unwrap_err();
     assert_eq!(err.code, "PLUGIN_NO_SHEBANG");
 }
 
@@ -90,8 +106,9 @@ fn verify_rejects_missing_required_env() {
     // Ensure MY_API_KEY is not in the environment.
     std::env::remove_var("MY_API_KEY");
     let found = discover_plugins(&data, d.path());
-    pantheon_exec::plugin_approval::record_approval(&found[0]).unwrap();
-    let err = verify_plugin(&found[0]).unwrap_err();
+    let plugin = only_plugin(&found, "envcheck");
+    pantheon_exec::plugin_approval::record_approval(plugin).unwrap();
+    let err = verify_plugin(plugin).unwrap_err();
     assert_eq!(err.code, "PLUGIN_MISSING_ENV");
 }
 
@@ -105,7 +122,7 @@ fn verify_rejects_unapproved_plugin() {
     std::fs::create_dir_all(&plugins).unwrap();
     write_plugin(&plugins, "shady", "run.sh", vec![]);
     let found = discover_plugins(&data, d.path());
-    let err = verify_plugin(&found[0]).unwrap_err();
+    let err = verify_plugin(only_plugin(&found, "shady")).unwrap_err();
     assert_eq!(err.code, "PLUGIN_NOT_APPROVED");
 }
 
@@ -127,7 +144,7 @@ fn tool_allowed_filters_by_capability() {
         }],
     );
     let found = discover_plugins(&data, d.path());
-    let plugin = &found[0];
+    let plugin = only_plugin(&found, "capprod");
     // default policy denies everything.
     let policy = pantheon_api::capability::Policy::default();
     assert!(!tool_allowed(plugin, "safe_read", &policy));

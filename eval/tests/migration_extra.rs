@@ -89,7 +89,24 @@ fn source_env_is_merged_into_the_key_store_never_copied() {
     // The credential was merged into pantheon's own store; the unclassified
     // name stayed behind; the source file was not copied wholesale.
     let store = fs::read_to_string(t.data_dir.join(".env")).unwrap();
-    assert!(store.contains("OPENAI_API_KEY=sk-sourcevalue12345"));
+    // The canonical dotenv writer quotes values; what must hold is
+    // that the carried value is byte-identical to the source value.
+    let source_value = fs::read_to_string(d.join(".env"))
+        .unwrap()
+        .lines()
+        .find_map(|l| l.strip_prefix("OPENAI_API_KEY="))
+        .expect("fixture carries the key")
+        .trim()
+        .to_string();
+    let carried = store
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("OPENAI_API_KEY="))
+        .map(|v| v.trim().trim_matches('"').to_string());
+    assert_eq!(
+        carried.as_deref(),
+        Some(source_value.as_str()),
+        "the source credential must be merged into the key store"
+    );
     assert!(!store.contains("HOME"), "a non-credential must not carry");
     assert!(!store.contains("a comment"), "comments are not keys");
 
