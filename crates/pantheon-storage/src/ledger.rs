@@ -2109,6 +2109,47 @@ mod queue_atomicity_tests {
         migrate(&conn).expect("second migrate still ok");
     }
 
+    /// A ledger created before the pinned/archived columns existed
+    /// gains them on open; existing rows default to
+    /// unpinned/unarchived and the new flags round-trip.
+    #[test]
+    fn migrate_adds_pinned_archived_to_legacy_schema() {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-ledger-legacy-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("legacy.db");
+        let _ = std::fs::remove_file(&db);
+        {
+            let conn = Connection::open(&db).expect("create legacy db");
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                   run_id TEXT PRIMARY KEY,
+                   created_ms INTEGER NOT NULL,
+                   status TEXT NOT NULL DEFAULT 'running'
+                 );
+                 INSERT INTO runs (run_id, created_ms, status)
+                 VALUES ('legacy-1', 1000, 'completed');",
+            )
+            .expect("seed legacy schema");
+        }
+        let ledger = Ledger::open(&db).expect("open migrated ledger");
+        assert!(
+            !ledger.run_pinned("legacy-1").unwrap(),
+            "legacy rows default unpinned"
+        );
+        assert!(
+            !ledger.run_archived("legacy-1").unwrap(),
+            "legacy rows default unarchived"
+        );
+        ledger.set_run_pinned("legacy-1", true).unwrap();
+        ledger.set_run_archived("legacy-1", true).unwrap();
+        assert!(ledger.run_pinned("legacy-1").unwrap());
+        assert!(ledger.run_archived("legacy-1").unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Item 5: two handles on the same DB file, N queued messages,
     /// concurrent takes from threads on both handles — each message is
     /// delivered exactly once, none lost, none duplicated. The
