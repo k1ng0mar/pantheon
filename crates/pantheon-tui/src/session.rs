@@ -1904,7 +1904,7 @@ impl TuiState {
             RuntimeErrorEvent::RunProgress { detail, .. } => {
                 self.status_line = detail.clone();
             }
-            RuntimeErrorEvent::AgentSpawned { agent, run_id } => {
+            RuntimeErrorEvent::AgentSpawned { agent, run_id, .. } => {
                 // Feed the sidebar activity timeline (dedupe collapses
                 // the engine + runtime double-announce), then the
                 // transcript card as before.
@@ -1922,7 +1922,7 @@ impl TuiState {
             RuntimeErrorEvent::AgentMessage { agent, run_id } => {
                 activity::record_spawned(&mut self.subagents, run_id, agent);
             }
-            RuntimeErrorEvent::AgentCompleted { agent, run_id } => {
+            RuntimeErrorEvent::AgentCompleted { agent, run_id, .. } => {
                 activity::record_completed(&mut self.subagents, run_id, agent);
             }
             // Title generation (aux or /name) lands as a durable event;
@@ -9879,6 +9879,8 @@ mod picker_tests {
             ts,
             Some(title.to_string()),
             project.map(|p| p.to_string()),
+            false,
+            false,
         )
     }
 
@@ -10030,6 +10032,8 @@ mod picker_render_tests {
             ts,
             Some(title.to_string()),
             project.map(|p| p.to_string()),
+            false,
+            false,
         )
     }
 

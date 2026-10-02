@@ -552,7 +552,7 @@ fn reconstruct_from_ledger(sup: &Supervisor, id: &str) -> Option<SwarmRecord> {
         let entries = sup.replay(&r.0).ok()?;
         for e in &entries {
             match &e.event {
-                pantheon_api::events::Event::AgentSpawned { agent, run_id }
+                pantheon_api::events::Event::AgentSpawned { agent, run_id, .. }
                     if agent.starts_with(id) =>
                 {
                     let role = agent.split(':').nth(1).unwrap_or("agent").to_string();

@@ -426,6 +426,26 @@ struct RegistryToolAdapter<'a> {
     /// a call there and could not redact a secret out of tool output.
     hooks: Option<&'a ExtensionManager>,
     run_id: String,
+    /// The call this execution answers; installed as the thread's
+    /// current call context so context-aware tools (delegate) can key
+    /// durable side effects to their own step.
+    call_id: String,
+}
+
+impl<'a> RegistryToolAdapter<'a> {
+    /// Execute the tool with this call's context installed, so
+    /// context-aware tools (delegate) can link their durable side
+    /// effects to this step.
+    fn run_registered(&self, name: &str, args: &str) -> Result<String, PantheonError> {
+        self.registry.execute_with_context(
+            name,
+            args,
+            pantheon_tools::tools::ToolCallContext {
+                run_id: self.run_id.clone(),
+                call_id: self.call_id.clone(),
+            },
+        )
+    }
 }
 
 impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
@@ -445,9 +465,7 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let Some(mgr) = self.hooks else {
-            return Ok(serde_json::Value::String(
-                self.registry.execute(name, args)?,
-            ));
+            return Ok(serde_json::Value::String(self.run_registered(name, args)?));
         };
         // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy plugin
         // blocks the call rather than waving it through. Returned as a
@@ -469,7 +487,7 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
                 "[blocked by extension policy] {reason}"
             )));
         }
-        let out = self.registry.execute(name, args)?;
+        let out = self.run_registered(name, args)?;
         // Transform last: the plugin sees the real output and may replace
         // it. Fails OPEN, so redaction degrades to no-op, never to outage.
         Ok(serde_json::Value::String(
@@ -925,7 +943,18 @@ fn register_delegate_tool(reg: &mut ToolRegistry, driver: Arc<DelegateDriver>) {
                 .and_then(|b| b.as_u64())
                 .and_then(|b| u32::try_from(b).ok());
             let context = v.get("context").and_then(|c| c.as_str());
-            run_delegate_child(&driver, &agent, &task, budget, context)
+            // The delegating call's id, installed by the adapter for
+            // exactly this execution; absent on non-tool paths, where
+            // the lifecycle events simply carry no link.
+            let call_ctx = pantheon_tools::tools::current_call_context();
+            run_delegate_child(
+                &driver,
+                &agent,
+                &task,
+                budget,
+                context,
+                call_ctx.as_ref().map(|c| c.call_id.as_str()),
+            )
         },
     );
 }
@@ -952,6 +981,7 @@ fn run_delegate_child(
     task: &str,
     budget: Option<u32>,
     context: Option<&str>,
+    call_id: Option<&str>,
 ) -> Result<String, PantheonError> {
     // Depth caps first: a refusal here consumes no delegation slot.
     // Mirrors `SubagentRegistry::spawn_child` for the threaded path.
@@ -1033,6 +1063,8 @@ fn run_delegate_child(
     driver.supervisor.emit(Event::AgentSpawned {
         run_id: driver.run_id.clone(),
         agent: agent.to_string(),
+        child_run_id: Some(child_run.clone()),
+        call_id: call_id.map(str::to_string),
     })?;
     // The child is now observable: the delegation counts.
     budget_guard.commit();
@@ -1045,6 +1077,8 @@ fn run_delegate_child(
     driver.supervisor.emit(Event::AgentCompleted {
         run_id: driver.run_id.clone(),
         agent: agent.to_string(),
+        child_run_id: Some(child_run.clone()),
+        call_id: call_id.map(str::to_string),
     })?;
     if let Some(detail) = failed_detail {
         driver.supervisor.emit(Event::RunProgress {
@@ -2298,6 +2332,7 @@ impl Session {
             name: name.to_string(),
             hooks: Some(&self.hooks),
             run_id: run_id.to_string(),
+            call_id: call_id.to_string(),
         };
         let operation_id = format!("{run_id}:{call_id}");
         let op = run_tool_operation(
@@ -3898,9 +3933,14 @@ impl Session {
                 // Parked, not failed.
             }
             LoopOutcome::Delegated { agent } => {
+                // Engine-announced delegation: no child run id or tool
+                // call in hand on this path, so the link stays empty
+                // rather than guessed.
                 self.supervisor.emit(Event::AgentCompleted {
                     run_id: run_id.into(),
                     agent: agent.clone(),
+                    child_run_id: None,
+                    call_id: None,
                 })?;
                 self.supervisor.complete(run_id)?;
             }
@@ -4708,7 +4748,7 @@ impl Session {
                         "",
                     ));
                 };
-                let result = run_delegate_child(&driver, &agent, &task, None, None)?;
+                let result = run_delegate_child(&driver, &agent, &task, None, None, None)?;
                 // The child ran to completion; note the result on the
                 // ledger, then the run completes through the
                 // `LoopOutcome::Delegated` handler below as before.
@@ -5567,6 +5607,7 @@ mod delegate_tool_tests {
             "summarize the logs",
             None,
             Some("focus on errors"),
+            Some("call_7"),
         )
         .expect("delegate");
         assert!(
@@ -5590,6 +5631,19 @@ mod delegate_tool_tests {
             )),
             "AgentCompleted recorded on the parent run"
         );
+        // The durable parent→child link rides both lifecycle events:
+        // the child run id and the delegating call id are stamped.
+        let linked = entries.iter().any(|e| {
+            matches!(
+                &e.event,
+                Event::AgentCompleted {
+                    child_run_id: Some(_),
+                    call_id: Some(id),
+                    ..
+                } if id == "call_7"
+            )
+        });
+        assert!(linked, "AgentCompleted carries the child run link");
     }
 
     /// Every non-Answered child outcome — and a child that errors — is a
@@ -5636,7 +5690,7 @@ mod delegate_tool_tests {
         for (i, (stub, want_code)) in cases.into_iter().enumerate() {
             let run_id = format!("run-fail-{i}");
             let driver = stubbed_driver(&session, &run_id, stub);
-            let err = run_delegate_child(&driver, "child", "doomed task", None, None)
+            let err = run_delegate_child(&driver, "child", "doomed task", None, None, None)
                 .expect_err("child must fail");
             assert_eq!(err.code, want_code, "case {i}");
             // The drive settles tool errors into the model-facing text
@@ -5670,10 +5724,10 @@ mod delegate_tool_tests {
             success_stub(child, _run, _task)
         });
         // No per-call budget: the configured child default applies.
-        run_delegate_child(&driver, "child", "task one", None, None).expect("delegate");
+        run_delegate_child(&driver, "child", "task one", None, None, None).expect("delegate");
         assert_eq!(*seen.lock().expect("seen"), Some(Some(12000)));
         // Per-call budget overrides the configured default.
-        run_delegate_child(&driver, "child", "task two", Some(7000), None).expect("delegate");
+        run_delegate_child(&driver, "child", "task two", Some(7000), None, None).expect("delegate");
         assert_eq!(*seen.lock().expect("seen"), Some(Some(7000)));
         // The parent's own budget is untouched by either delegation.
         assert_eq!(
@@ -5696,15 +5750,15 @@ mod delegate_tool_tests {
             ..Default::default()
         });
         let driver = stubbed_driver(&session, "run-cap", success_stub);
-        run_delegate_child(&driver, "child", "task one", None, None).expect("first");
-        run_delegate_child(&driver, "child", "task two", None, None).expect("second");
-        let err = run_delegate_child(&driver, "child", "task three", None, None)
+        run_delegate_child(&driver, "child", "task one", None, None, None).expect("first");
+        run_delegate_child(&driver, "child", "task two", None, None, None).expect("second");
+        let err = run_delegate_child(&driver, "child", "task three", None, None, None)
             .expect_err("third must be refused");
         assert_eq!(err.code, "DELEGATE_CAP_EXCEEDED");
         assert!(err.cause.contains("2 of 2"));
         // A different run id gets a fresh allowance.
         let driver2 = stubbed_driver(&session, "run-cap-other", success_stub);
-        run_delegate_child(&driver2, "child", "task", None, None).expect("fresh run");
+        run_delegate_child(&driver2, "child", "task", None, None, None).expect("fresh run");
     }
 
     /// #1: delegation knobs travel parent -> child -> grandchild. The
@@ -5770,7 +5824,7 @@ mod delegate_tool_tests {
             );
             success_stub(child, _run, _task)
         });
-        run_delegate_child(&driver, "child", "task", None, None).expect("delegate");
+        run_delegate_child(&driver, "child", "task", None, None, None).expect("delegate");
         assert_eq!(
             *seen.lock().expect("seen"),
             Some((1, false, Some(4))),
@@ -5870,7 +5924,7 @@ mod delegate_tool_tests {
                 scope: "child-scope-1".to_string(),
             })
         });
-        let err = run_delegate_child(&driver, "child", "do the risky thing", None, None)
+        let err = run_delegate_child(&driver, "child", "do the risky thing", None, None, None)
             .expect_err("approval must park the delegation");
         assert_eq!(err.code, "SWARM_CHILD_APPROVAL");
         let child_run = child_run_seen.lock().expect("seen").clone();
@@ -5979,7 +6033,7 @@ mod delegate_tool_tests {
         // Budget::default().max_delegate_depth is 2; depth 5 is over it.
         session.depth = 5;
         let driver = DelegateDriver::for_turn(&session, "run-depth").expect("driver");
-        let err = run_delegate_child(&driver, "child", "task", None, None)
+        let err = run_delegate_child(&driver, "child", "task", None, None, None)
             .expect_err("depth must refuse");
         assert_eq!(err.code, "SWARM_MAX_DEPTH");
         assert_eq!(

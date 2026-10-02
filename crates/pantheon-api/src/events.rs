@@ -219,6 +219,18 @@ pub enum Event {
     AgentSpawned {
         run_id: String,
         agent: String,
+        /// The child run this delegation created, when the spawn path
+        /// knows it: the durable parent→child link transcript clients
+        /// use to fetch the child's own detail. `None` on rows written
+        /// before the link existed and on spawn paths with no child run
+        /// in hand.
+        #[serde(default)]
+        child_run_id: Option<String>,
+        /// The parent tool call that delegated, when the delegation
+        /// came through a tool call: keys the link to one step in the
+        /// parent transcript.
+        #[serde(default)]
+        call_id: Option<String>,
     },
     AgentMessage {
         run_id: String,
@@ -227,6 +239,12 @@ pub enum Event {
     AgentCompleted {
         run_id: String,
         agent: String,
+        /// See [`Event::AgentSpawned`]: the child run that finished.
+        #[serde(default)]
+        child_run_id: Option<String>,
+        /// See [`Event::AgentSpawned`]: the delegating parent tool call.
+        #[serde(default)]
+        call_id: Option<String>,
     },
     MemoryProposed {
         run_id: String,
@@ -550,17 +568,31 @@ impl Event {
                 turn_id,
                 text,
             },
-            Event::AgentSpawned { run_id: _, agent } => Event::AgentSpawned {
+            Event::AgentSpawned {
+                run_id: _,
+                agent,
+                child_run_id,
+                call_id,
+            } => Event::AgentSpawned {
                 run_id: run_id.to_string(),
                 agent,
+                child_run_id,
+                call_id,
             },
             Event::AgentMessage { run_id: _, agent } => Event::AgentMessage {
                 run_id: run_id.to_string(),
                 agent,
             },
-            Event::AgentCompleted { run_id: _, agent } => Event::AgentCompleted {
+            Event::AgentCompleted {
+                run_id: _,
+                agent,
+                child_run_id,
+                call_id,
+            } => Event::AgentCompleted {
                 run_id: run_id.to_string(),
                 agent,
+                child_run_id,
+                call_id,
             },
             Event::MemoryProposed { run_id: _ } => Event::MemoryProposed {
                 run_id: run_id.to_string(),
@@ -715,6 +747,66 @@ impl Event {
                 job_id,
                 detail,
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod agent_link_tests {
+    use super::*;
+
+    /// Ledger rows written before the link fields existed must keep
+    /// deserializing, with the link absent rather than guessed.
+    #[test]
+    fn legacy_agent_events_deserialize_without_link_fields() {
+        let spawned: Event =
+            serde_json::from_str(r#"{"AgentSpawned":{"run_id":"parent","agent":"child"}}"#)
+                .expect("legacy AgentSpawned");
+        assert!(matches!(
+            spawned,
+            Event::AgentSpawned {
+                child_run_id: None,
+                call_id: None,
+                ..
+            }
+        ));
+        let completed: Event =
+            serde_json::from_str(r#"{"AgentCompleted":{"run_id":"parent","agent":"child"}}"#)
+                .expect("legacy AgentCompleted");
+        assert!(matches!(
+            completed,
+            Event::AgentCompleted {
+                child_run_id: None,
+                call_id: None,
+                ..
+            }
+        ));
+    }
+
+    /// Re-homing an event onto another run (fork) keeps the link: the
+    /// forked history is identical, so it still points at the child
+    /// whose work it records.
+    #[test]
+    fn with_run_id_preserves_link_fields() {
+        let e = Event::AgentCompleted {
+            run_id: "old".into(),
+            agent: "child".into(),
+            child_run_id: Some("kid".into()),
+            call_id: Some("call_1".into()),
+        }
+        .with_run_id("parent");
+        match e {
+            Event::AgentCompleted {
+                run_id,
+                child_run_id,
+                call_id,
+                ..
+            } => {
+                assert_eq!(run_id, "parent");
+                assert_eq!(child_run_id.as_deref(), Some("kid"));
+                assert_eq!(call_id.as_deref(), Some("call_1"));
+            }
+            other => panic!("unexpected event: {other:?}"),
         }
     }
 }

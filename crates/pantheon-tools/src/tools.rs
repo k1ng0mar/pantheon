@@ -46,6 +46,29 @@ pub type ArgCapabilities = Box<dyn Fn(&str) -> Vec<Capability> + Send + Sync>;
 /// closure behind the registry.
 pub type ToolFn = Box<dyn Fn(&str) -> Result<String, PantheonError> + Send + Sync>;
 
+/// Identifies the tool call executing on the current thread, when the
+/// host installed one. Tools are plain `Fn(&str)` closures, so a call
+/// that must key durable side effects to its own call (the delegate
+/// tool links the child run it spawns to the parent transcript step)
+/// reads the context from here instead of growing a parameter every
+/// registration site would have to thread. Mirrors the TUI's
+/// `STREAM_RUN` thread-local.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCallContext {
+    pub run_id: String,
+    pub call_id: String,
+}
+
+std::thread_local! {
+    static CURRENT_CALL: std::cell::RefCell<Option<ToolCallContext>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The call context installed on this thread, if any.
+pub fn current_call_context() -> Option<ToolCallContext> {
+    CURRENT_CALL.with(|c| c.borrow().clone())
+}
+
 /// Registry of available tools for a run.
 #[derive(Default)]
 pub struct ToolRegistry {
@@ -117,6 +140,22 @@ impl ToolRegistry {
             )
         })?;
         (tool.run)(args)
+    }
+
+    /// Execute with a [`ToolCallContext`] installed on this thread for
+    /// the duration of the call. The previous context (an outer call on
+    /// the same thread) is restored on return, so nested executions
+    /// never leak their identity into the caller.
+    pub fn execute_with_context(
+        &self,
+        name: &str,
+        args: &str,
+        ctx: ToolCallContext,
+    ) -> Result<String, PantheonError> {
+        let previous = CURRENT_CALL.with(|c| c.replace(Some(ctx)));
+        let result = self.execute(name, args);
+        CURRENT_CALL.with(|c| *c.borrow_mut() = previous);
+        result
     }
 
     /// Capability a tool requires (for the loop's gate).
@@ -210,4 +249,47 @@ pub fn parse_args(args: &str) -> Result<serde_json::Value, PantheonError> {
             "check tool name and arguments",
         )
     })
+}
+
+#[cfg(test)]
+mod call_context_tests {
+    use super::*;
+    use pantheon_api::capability::Capability;
+    use pantheon_api::message::ToolSchema;
+
+    fn probe_registry() -> ToolRegistry {
+        let mut reg = ToolRegistry::new();
+        reg.register(
+            ToolSchema {
+                name: "probe".into(),
+                description: "reports the current call context".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            Capability::Other("probe".into()),
+            |_args| match current_call_context() {
+                Some(c) => Ok(format!("{}:{}", c.run_id, c.call_id)),
+                None => Ok("none".to_string()),
+            },
+        );
+        reg
+    }
+
+    #[test]
+    fn context_is_installed_for_one_call_and_restored_after() {
+        let reg = probe_registry();
+        // No context outside an installed execution.
+        assert_eq!(current_call_context(), None);
+        assert_eq!(reg.execute("probe", "").unwrap(), "none");
+        let ctx = ToolCallContext {
+            run_id: "run-1".into(),
+            call_id: "call_3".into(),
+        };
+        assert_eq!(
+            reg.execute_with_context("probe", "", ctx).unwrap(),
+            "run-1:call_3"
+        );
+        // Restored afterwards: later plain calls see no context.
+        assert_eq!(current_call_context(), None);
+        assert_eq!(reg.execute("probe", "").unwrap(), "none");
+    }
 }
