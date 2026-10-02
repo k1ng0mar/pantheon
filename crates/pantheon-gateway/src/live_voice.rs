@@ -658,7 +658,10 @@ impl Runner {
                 }
                 WorkerMsg::AudioEnd => self.send_text(r#"{"type":"audio_end"}"#),
                 WorkerMsg::ApprovalNeeded(s) => {
-                    self.send_json(&serde_json::json!({"type":"approval_needed","text":s}));
+                    // The scope is `call_id:tool:args` and can carry
+                    // secrets in tool args; redact like every other
+                    // surface (dashboard timeline, live UI frames).
+                    self.send_json(&serde_json::json!({"type":"approval_needed","text":pantheon_api::logging::redact(&s)}));
                 }
                 WorkerMsg::Error(code) => {
                     self.send_json(&serde_json::json!({"type":"error","code":code}));
