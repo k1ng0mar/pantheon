@@ -902,17 +902,39 @@ impl Ledger {
     /// auto-resume. `limit` bounds the row count. The fourth element is the
     /// run's current display title (`None` = never titled).
     pub fn list_runs(&self, limit: usize) -> Result<Vec<RunListing>, PantheonError> {
+        self.list_runs_filtered(limit, false)
+    }
+
+    /// Like [`Ledger::list_runs`], but archived runs are excluded by the
+    /// SQL query itself unless `include_archived` is set. Session-list
+    /// surfaces use this: filtering archived rows in Rust after `LIMIT`
+    /// starved the list whenever the newest window was archive-heavy (the
+    /// dashboard fetched `limit * 4` rows and still underfilled past 75%
+    /// archived, and the home row could fall outside the window entirely).
+    pub fn list_runs_visible(
+        &self,
+        limit: usize,
+        include_archived: bool,
+    ) -> Result<Vec<RunListing>, PantheonError> {
+        self.list_runs_filtered(limit, !include_archived)
+    }
+
+    fn list_runs_filtered(
+        &self,
+        limit: usize,
+        exclude_archived: bool,
+    ) -> Result<Vec<RunListing>, PantheonError> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT run_id, status, created_ms, title, project, pinned, archived FROM runs ORDER BY created_ms DESC, rowid DESC LIMIT ?1",
+                "SELECT run_id, status, created_ms, title, project, pinned, archived FROM runs WHERE (?2 = 0 OR archived = 0) ORDER BY created_ms DESC, rowid DESC LIMIT ?1",
             )
             .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
         let rows = stmt
-            .query_map(params![limit as i64], |r| {
+            .query_map(params![limit as i64, i64::from(exclude_archived)], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -1030,6 +1052,8 @@ impl Ledger {
 
     /// Every named project in use, most-recently-active first. Drives
     /// the `/project` list and the sessions picker's project filter.
+    /// Archived runs do not keep a project listed: the exclusion lives in
+    /// this query so every consumer (dashboard, TUI picker) agrees.
     pub fn list_projects(&self) -> Result<Vec<String>, PantheonError> {
         let conn = self
             .conn
@@ -1038,7 +1062,7 @@ impl Ledger {
         let mut stmt = conn
             .prepare(
                 "SELECT project, MAX(created_ms) FROM runs \
-                 WHERE project IS NOT NULL AND project != '' \
+                 WHERE project IS NOT NULL AND project != '' AND archived = 0 \
                  GROUP BY project ORDER BY 2 DESC",
             )
             .map_err(|e| err("LEDGER_PROJECT", e.to_string()))?;
@@ -1933,6 +1957,47 @@ mod project_tests {
         assert_eq!(l.run_project("r1").unwrap(), Some("alpha".to_string()));
         l.set_run_project("r1", None).unwrap();
         assert_eq!(l.run_project("r1").unwrap(), None);
+    }
+
+    #[test]
+    fn list_runs_visible_survives_archive_heavy_window() {
+        let l = mem();
+        // Newest window of 12 runs: the 9 newest are archived (75%), so a
+        // post-LIMIT Rust filter over a small window would return nothing
+        // visible at all. SQL-side exclusion must still fill the page.
+        for i in 0..12 {
+            start(&l, &format!("r{i}"));
+        }
+        for i in 3..12 {
+            l.set_run_archived(&format!("r{i}"), true).unwrap();
+        }
+        let visible = l.list_runs_visible(3, false).unwrap();
+        let ids: Vec<&str> = visible.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(ids, vec!["r2", "r1", "r0"]);
+        assert!(
+            visible.iter().all(|r| !r.6),
+            "no archived rows leak through"
+        );
+        // include_archived brings the archived rows back, newest first.
+        let all = l.list_runs_visible(3, true).unwrap();
+        let ids: Vec<&str> = all.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(ids, vec!["r11", "r10", "r9"]);
+        // The unfiltered listing is unchanged by the new entry point.
+        assert_eq!(l.list_runs(20).unwrap().len(), 12);
+    }
+
+    #[test]
+    fn list_projects_ignores_archived_runs() {
+        let l = mem();
+        start(&l, "r1");
+        l.set_run_project("r1", Some("alpha")).unwrap();
+        l.set_run_archived("r1", true).unwrap();
+        assert!(
+            l.list_projects().unwrap().is_empty(),
+            "a project whose only run is archived must not be listed"
+        );
+        l.set_run_archived("r1", false).unwrap();
+        assert_eq!(l.list_projects().unwrap(), vec!["alpha".to_string()]);
     }
 
     #[test]
