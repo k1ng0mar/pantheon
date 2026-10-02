@@ -377,8 +377,8 @@ fn timeline_item(
 
 /// Duration of a tool call from the ledger's own timestamps:
 /// ToolCompleted minus ToolStarted by call_id. `None` when either row is
-/// missing — a call that never started (plan-mode refusal) or never
-/// completed (killed mid-call, crash).
+/// missing — a call settled without execution (an ask_user sibling) or
+/// never completed (killed mid-call, crash).
 fn tool_duration_ms(
     call_id: &str,
     tool_starts: &HashMap<String, i64>,
