@@ -354,11 +354,15 @@ fn timeline_item(
             tool.clone()
         }),
         Event::ToolCompleted { tool, call_id, .. } => {
-            let ms = tool_starts
+            // No start row -> no duration at all (matches the
+            // transcript's null), never a fabricated "0ms".
+            match tool_starts
                 .get(call_id)
-                .map(|s| e.ts_ms.saturating_sub(*s))
-                .unwrap_or(0);
-            Some(format!("{tool} · {}", fmt_tool_ms(ms)))
+                .map(|s| e.ts_ms.saturating_sub(*s).max(0))
+            {
+                Some(ms) => Some(format!("{tool} · {}", fmt_tool_ms(ms))),
+                None => Some(tool.clone()),
+            }
         }
         Event::ScheduledTaskFailed { job_id, error, .. } => {
             Some(format!("{job_id}: {}", redact(&cap(error, 300))))
@@ -381,7 +385,9 @@ fn tool_duration_ms(
     tool_ends: &HashMap<String, i64>,
 ) -> Option<i64> {
     match (tool_starts.get(call_id), tool_ends.get(call_id)) {
-        (Some(s), Some(e)) => Some(e.saturating_sub(*s)),
+        // Clamp at zero: skewed ledger stamps (imports, manual writes)
+        // must not surface as negative durations to clients.
+        (Some(s), Some(e)) => Some(e.saturating_sub(*s).max(0)),
         _ => None,
     }
 }
