@@ -276,6 +276,10 @@ pub fn error(component: &str, msg: impl AsRef<str>) {
 /// - `Bearer <value>` (Authorization headers)
 /// - `api-key: <value>` (API key headers)
 /// - `PANTHEON_SECRET_<name>=<value>` (env-style secrets)
+/// - values under sensitive keys (`password`, `token`, `api_key`,
+///   `secret`, `authorization`, and close variants) when the input
+///   parses as JSON — a logged tool-args dump like
+///   `{"password": "…"}` carries no known prefix for the scan above.
 pub fn redact(msg: &str) -> String {
     let mut out = msg.to_string();
     out = redact_prefix(&out, "sk-or-v1-");
@@ -284,7 +288,84 @@ pub fn redact(msg: &str) -> String {
     out = redact_prefix(&out, "api-key: ");
     out = redact_prefix(&out, "api-key=");
     out = redact_prefix(&out, "PANTHEON_SECRET_");
+    out = redact_json_values(&out);
     out
+}
+
+/// True when a JSON object key names a credential. Matching is on the
+/// lowercased key with `-`/space folded to `_`: the known credential
+/// names, plus any `*_token` / `*_secret` / `*_password` compound
+/// (`access_token`, `client_secret`, `db_password`, …). Deliberately
+/// narrower than a substring scan — `token_count` is telemetry, not a
+/// secret, and redacting it would gut usage logs.
+fn is_sensitive_key(key: &str) -> bool {
+    let k = key.to_lowercase().replace(['-', ' '], "_");
+    matches!(
+        k.as_str(),
+        "password"
+            | "passwd"
+            | "pwd"
+            | "token"
+            | "api_key"
+            | "apikey"
+            | "secret"
+            | "authorization"
+            | "auth"
+            | "bearer"
+            | "private_key"
+            | "client_secret"
+            | "access_token"
+            | "refresh_token"
+            | "id_token"
+            | "auth_token"
+            | "session_token"
+            | "webhook_secret"
+            | "signing_secret"
+    ) || k.ends_with("_token")
+        || k.ends_with("_secret")
+        || k.ends_with("_password")
+}
+
+/// Replace every value under a sensitive key, at any depth. Returns
+/// true when anything changed.
+fn redact_json_node(v: &mut serde_json::Value) -> bool {
+    let mut changed = false;
+    match v {
+        serde_json::Value::Object(map) => {
+            for (key, val) in map.iter_mut() {
+                if is_sensitive_key(key) {
+                    if val.as_str() != Some("[REDACTED]") {
+                        *val = serde_json::Value::String("[REDACTED]".to_string());
+                        changed = true;
+                    }
+                } else {
+                    changed |= redact_json_node(val);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                changed |= redact_json_node(item);
+            }
+        }
+        _ => {}
+    }
+    changed
+}
+
+/// JSON-aware pass over [`redact`]: when the whole input parses as
+/// JSON, values under sensitive keys are replaced wholesale. Input
+/// that does not parse, or parses with nothing sensitive in it, is
+/// returned byte-for-byte — clean JSON keeps its original formatting,
+/// and only a message that actually carried a secret is re-serialized.
+fn redact_json_values(input: &str) -> String {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(input) else {
+        return input.to_string();
+    };
+    if !redact_json_node(&mut v) {
+        return input.to_string();
+    }
+    serde_json::to_string(&v).unwrap_or_else(|_| input.to_string())
 }
 
 /// Redact a secret that starts with a known prefix. The secret runs until
@@ -311,4 +392,50 @@ fn redact_prefix(input: &str, prefix: &str) -> String {
 /// agent turns.
 pub fn gateway(level: Level, component: &str, msg: impl AsRef<str>) {
     emit(GATEWAY_LOG, level, component, msg.as_ref());
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::redact;
+
+    #[test]
+    fn prefix_scan_still_redacts_non_json_text() {
+        let out = redact("key sk-or-v1-abcdef and Bearer xyz");
+        assert!(!out.contains("abcdef"), "prefix secret leaked: {out}");
+        assert!(!out.contains("xyz"), "bearer value leaked: {out}");
+        assert_eq!(redact("nothing secret here"), "nothing secret here");
+    }
+
+    #[test]
+    fn json_values_under_sensitive_keys_are_redacted() {
+        let out = redact(r#"{"user": "umar", "password": "hunter2"}"#);
+        let v: serde_json::Value = serde_json::from_str(&out).expect("still valid JSON");
+        assert_eq!(v["password"], "[REDACTED]");
+        assert_eq!(v["user"], "umar", "non-sensitive values pass through");
+        assert!(!out.contains("hunter2"));
+    }
+
+    #[test]
+    fn json_redaction_covers_variants_nesting_and_non_string_values() {
+        let out = redact(
+            r#"{"access_token": "tok-1", "attempts": 2, "nested": {"api-key": "k", "token": 4242}, "list": [{"client_secret": "s"}]}"#,
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).expect("still valid JSON");
+        assert_eq!(v["access_token"], "[REDACTED]");
+        assert_eq!(v["nested"]["api-key"], "[REDACTED]");
+        assert_eq!(v["nested"]["token"], "[REDACTED]");
+        assert_eq!(v["list"][0]["client_secret"], "[REDACTED]");
+        assert_eq!(v["attempts"], 2, "non-sensitive values pass through");
+        for leaked in ["tok-1", "4242", "\"k\"", "client_secret\": \"s"] {
+            assert!(!out.contains(leaked), "leaked {leaked}: {out}");
+        }
+    }
+
+    #[test]
+    fn clean_json_and_telemetry_keys_pass_through_byte_for_byte() {
+        let clean = "{ \"command\": \"ls -la\", \"count\": 3 }";
+        assert_eq!(redact(clean), clean, "clean JSON is not re-serialized");
+        let telemetry = r#"{"token_count": 1200, "model": "gpt"}"#;
+        assert_eq!(redact(telemetry), telemetry);
+    }
 }
