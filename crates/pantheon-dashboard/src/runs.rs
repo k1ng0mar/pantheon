@@ -1540,6 +1540,16 @@ pub fn set_archive(app: &App, run_id: &str, req: &Request) -> Response {
         Some(a) => a,
         None => return bad_json("field \"archived\" must be a boolean"),
     };
+    // The home session can never be hidden either (mirrors prune's
+    // HOME_PROTECTED guard): archiving it would vanish the permanent
+    // session from every default list with no in-UI way back.
+    if archived && run_id == HOME_SESSION_ID {
+        return err_json(
+            403,
+            "HOME_PROTECTED",
+            "the home session can never be archived",
+        );
+    }
     if let Err(r) = known_run(app, run_id) {
         return r;
     }
@@ -1553,6 +1563,10 @@ pub fn set_archive(app: &App, run_id: &str, req: &Request) -> Response {
     }
 }
 
+/// Max project-name length; operator metadata is echoed in every run
+/// list and projects response, so it gets a bound like titles do.
+const PROJECT_MAX_CHARS: usize = 128;
+
 /// `POST /api/runs/:id/project`: assign the run to a named project
 /// (`{"project": "name"}`), or unassign it (`{"project": null}` or
 /// `{"project": ""}`). Projects are operator-created buckets — a run
@@ -1565,7 +1579,12 @@ pub fn set_project(app: &App, run_id: &str, req: &Request) -> Response {
     let project = match body.get("project") {
         None | Some(serde_json::Value::Null) => None,
         Some(v) => match v.as_str().map(str::trim) {
-            Some(s) if !s.is_empty() => Some(s),
+            // Documented contract: an empty name unassigns, like null.
+            Some(s) if s.is_empty() => None,
+            Some(s) if s.chars().count() > PROJECT_MAX_CHARS => {
+                return bad_json("field \"project\" exceeds 128 characters")
+            }
+            Some(s) => Some(s),
             _ => return bad_json("field \"project\" must be a string or null"),
         },
     };
@@ -1595,8 +1614,12 @@ pub fn projects(app: &App) -> Response {
         Ok(n) => n,
         Err(e) => return err_json(500, "LEDGER", &format!("list projects: {e}")),
     };
+    let rows = match ledger.list_runs(MAX_RUNS_SCAN) {
+        Ok(r) => r,
+        Err(e) => return err_json(500, "LEDGER", &format!("list runs: {e}")),
+    };
     let mut members: HashMap<String, Vec<String>> = HashMap::new();
-    for (id, _, _, _, project, _, archived) in ledger.list_runs(MAX_RUNS_SCAN).unwrap_or_default() {
+    for (id, _, _, _, project, _, archived) in rows {
         // Archived runs are hidden work: they neither keep a project
         // listed nor count toward its membership. Archiving a project's
         // last visible run drops the project until a run is restored.

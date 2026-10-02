@@ -1417,6 +1417,58 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Project body contract: an empty name unassigns (as documented,
+    /// like null), an overlong name is rejected, and a non-string value
+    /// is rejected.
+    #[test]
+    fn project_body_contract_edges() {
+        let (app, dir) = test_app();
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/project", r#"{"project": "alpha"}"#),
+        );
+        assert_eq!(status_of(&resp), 200, "project assign must succeed");
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/project", r#"{"project": ""}"#),
+        );
+        assert_eq!(status_of(&resp), 200, "empty name must unassign, not 400");
+        let run = listed_run(&run_list(&app, ""), "run-1").expect("run-1 listed");
+        assert!(
+            run["project"].is_null(),
+            "empty name must clear the project"
+        );
+        let long = "x".repeat(129);
+        let resp = dispatch(
+            &app,
+            &json_req(
+                "POST",
+                "/api/runs/run-1/project",
+                &format!(r#"{{"project": "{long}"}}"#),
+            ),
+        );
+        assert_eq!(status_of(&resp), 400, "overlong project name must 400");
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/run-1/project", r#"{"project": 42}"#),
+        );
+        assert_eq!(status_of(&resp), 400, "non-string project must 400");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The home session cannot be archived (mirrors prune's
+    /// HOME_PROTECTED guard); restoring it is unaffected by the guard.
+    #[test]
+    fn archive_home_session_is_protected() {
+        let (app, dir) = test_app();
+        let resp = dispatch(
+            &app,
+            &json_req("POST", "/api/runs/home/archive", r#"{"archived": true}"#),
+        );
+        assert_eq!(status_of(&resp), 403, "archiving home must be refused");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Pin/archive/project on an unknown run 404s like the other
     /// run-scoped POSTs.
     #[test]
