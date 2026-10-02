@@ -6,9 +6,9 @@ provider vision path? **No.** The pipeline breaks in three places after the
 bytes are safely stored. This doc describes the current state, the target
 architecture, and a sequenced build plan.
 
-## 1. Current state — hop by hop
+## 1. Current state - hop by hop
 
-### Hop 1: upload -> disk — WORKS
+### Hop 1: upload -> disk - WORKS
 
 `POST /api/uploads` (`crates/pantheon-dashboard/src/uploads.rs:149-195`):
 
@@ -20,7 +20,7 @@ architecture, and a sequenced build plan.
   (`uploads.rs:242-252`).
 - Unit-tested: create/resolve/download round trip in `uploads.rs` tests.
 
-### Hop 2: message -> `[attachments]` block — WORKS (text only)
+### Hop 2: message -> `[attachments]` block - WORKS (text only)
 
 `send_message` (`crates/pantheon-dashboard/src/runs.rs:502-544`) resolves each
 `upl_` id to an absolute on-disk path (`uploads::resolve`,
@@ -36,7 +36,7 @@ The block rides the queue/steer paths too (built before the busy branching,
 `runs.rs:497-501`). The block construction itself has **zero tests**
 (`runs.rs` contains no attachment test).
 
-### Hop 3: block -> vision tool — BROKEN
+### Hop 3: block -> vision tool - BROKEN
 
 The block promises a "vision tool" the agent can pass image paths to.
 **No such tool exists.**
@@ -54,7 +54,7 @@ The block promises a "vision tool" the agent can pass image paths to.
 - The agent's only recourse today is its file tools, which return raw bytes.
   A model reading a JPEG through `read`/`cat` gets binary garbage, not pixels.
 
-### Hop 4: `[vision]` aux slot -> provider call — BROKEN (no call sites)
+### Hop 4: `[vision]` aux slot -> provider call - BROKEN (no call sites)
 
 The config surface exists and resolves:
 
@@ -64,11 +64,11 @@ The config surface exists and resolves:
   gated on the (dead) Vision tool-group toggle
   (`crates/pantheon-tui/src/config.rs:812-850`).
 
-But the codebase documents its own gap — `crates/pantheon-api/src/model.rs:50-55`:
+But the codebase documents its own gap - `crates/pantheon-api/src/model.rs:50-55`:
 
 > Vision model (config `[vision]`): describes and answers about images
 > attached to a turn. Host-orchestrated; never chat. Absent = `auto`: the
-> run's default model. **No call sites yet — there is no image-input
+> run's default model. **No call sites yet - there is no image-input
 > pipeline; the slot exists so a model can be pinned ahead of it landing.**
 
 The only runtime consumers of `policy.auxiliary(...)` are `TitleGen`
@@ -76,7 +76,7 @@ The only runtime consumers of `policy.auxiliary(...)` are `TitleGen`
 crate's own test asserts vision aux is absent:
 `crates/pantheon-providers/src/lib_tests.rs:42`.
 
-### Hop 5: provider wire format — BROKEN (text-only)
+### Hop 5: provider wire format - BROKEN (text-only)
 
 - `pantheon_api::message::Message { content: String }`
   (`crates/pantheon-api/src/message.rs:12-14`).
@@ -89,7 +89,7 @@ crate's own test asserts vision aux is absent:
   and routes through both adapters.
 - The catalog's per-model `vision: bool`
   (`crates/pantheon-providers/src/catalog.rs:105`, rows in
-  `crates/pantheon-providers/catalog.yaml`) is **metadata only** — nothing
+  `crates/pantheon-providers/catalog.yaml`) is **metadata only** - nothing
   branches on it for request building. Conservative default: unknown models
   get `vision: false` (`catalog.rs:235-239`).
 
@@ -115,7 +115,7 @@ Two cooperating pieces:
 When a turn's user message carries an `[attachments]` block whose lines name
 `image/*` mimes, the host (runtime, not the agent):
 
-1. Parses the block for `(mime, absolute path)` pairs — reuse the exact format
+1. Parses the block for `(mime, absolute path)` pairs - reuse the exact format
    `runs.rs:537-542` emits.
 2. For each image: validates the path is inside `<data_dir>/uploads`
    (never trust a path the model wrote; the dashboard canonicalizes at
@@ -127,7 +127,7 @@ When a turn's user message carries an `[attachments]` block whose lines name
    answer the user's question about it" prompt + the image part.
 4. Injects the returned description into the transcript as data with an
    untrusted provenance envelope (same framing as `openai.rs:25-33`), e.g.
-   `[vision: /path — description]`, before the main turn runs.
+   `[vision: /path - description]`, before the main turn runs.
 
 Why host-orchestrated instead of an agent tool: deterministic (no wasted
 agent turns negotiating which tool reads the pixels), no prompt-injection
@@ -149,7 +149,7 @@ fetched data.
 
 ## 3. Message/content types
 
-Additive change — `Message` is constructed via constructors
+Additive change - `Message` is constructed via constructors
 (`Message::user/system/assistant`, `message.rs:48-84`) with only one raw
 struct literal in the tree (a test, `pantheon-exec/src/context_tests.rs:9`),
 so a new field is low-blast-radius:
@@ -184,7 +184,7 @@ worth keeping. Rationale: Anthropic caps images at 5 MB each / 100 MB per
 request; OpenAI caps ~20 MB per image; both charge per image token, so
 unbounded phone photos are a cost bug. This needs an image crate
 (`image` with jpeg/png features) in `pantheon-providers` or a small
-`pantheon-vision` helper — decide at build time; the resize must happen in
+`pantheon-vision` helper - decide at build time; the resize must happen in
 one place both piece A and piece B call.
 
 ## 4. Provider-by-provider notes
@@ -193,10 +193,10 @@ The catalog (`crates/pantheon-providers/catalog.yaml`) has two wire modes;
 image support rides the existing `api_mode` dispatch in `aux_request`
 (`http.rs:313-341`), so **only two adapters need the multipart branch**:
 
-- **`api_mode: openai`** (every cataloged provider except Anthropic —
+- **`api_mode: openai`** (every cataloged provider except Anthropic
   openai, google, groq, mistral, xai, deepseek, qwen, openrouter, together,
   fireworks, azure, bedrock, vertex, huggingface, local/lmstudio, and the
-  long tail): OpenAI chat-completions image format —
+  long tail): OpenAI chat-completions image format
   ```json
   "content": [
     {"type": "text", "text": "<prompt>"},
@@ -205,10 +205,10 @@ image support rides the existing `api_mode` dispatch in `aux_request`
   ```
   Nearly all OpenAI-compatible endpoints accept this shape; vision-capable
   models are marked `vision: true` in the catalog. Caveat: some local
-  servers (llama.cpp, older vLLM) accept the shape but ignore images —
+  servers (llama.cpp, older vLLM) accept the shape but ignore images
   nothing to do in code, but the vision call should surface "model
   returned no image-grounded answer" distinctly from a transport error.
-- **`api_mode: anthropic`** (provider id `anthropic`): Messages API format —
+- **`api_mode: anthropic`** (provider id `anthropic`): Messages API format
   ```json
   "content": [
     {"type": "text", "text": "<prompt>"},
@@ -234,27 +234,27 @@ Already exists and stays: the `[vision]` aux slot
 (`api/src/config.rs:2044-2051`, env `VISION_PROVIDER`/`VISION_MODEL`,
 vault `PANTHEON_VISION_API_KEY`, `auto: true`). New knobs, all optional:
 
-- The `[tools]` `vision` toggle (exists, currently dead —
+- The `[tools]` `vision` toggle (exists, currently dead
   `api/src/config.rs:1107`) becomes the master switch for both piece A
   (host pass) and piece B (tool registration), mirroring how the TUI
   already gates the aux entry (`tui/src/config.rs:830-843`).
 - Optional `[vision]` additions (defaults sane, document in
   `docs/user-guide`): `max_image_px = 1568` (downscale cap),
   `max_images_per_turn = 4` (cost guard; extras get "skipped N images"
-  note). Keep it to these two — no new sections.
+  note). Keep it to these two - no new sections.
 
 ## 6. Sequenced build plan
 
 1. **Content model** (`pantheon-api`): add `ImagePart` + `Message.images`
    (`message.rs`), constructor coverage, unit tests that `images` defaults
-   empty and serializes round-trip. No other crate changes needed —
+   empty and serializes round-trip. No other crate changes needed
    additive field.
 2. **Adapter branches** (`pantheon-providers`): multipart `content` in
    `openai::body_value` (`openai.rs:22-60`) and the Anthropic equivalent;
    fixture tests with a golden JSON body for each mode. Verify byte-identical
    output when `images` is empty (existing adapter tests cover this).
 3. **Vision client** (`pantheon-providers/src/vision.rs`, new): `VisionClient`
-   mirroring `TitleGenClient` (`title.rs`) — resolve aux wire via
+   mirroring `TitleGenClient` (`title.rs`) - resolve aux wire via
    `resolve_aux_wire`, catalog `vision`-flag check with fail-closed error,
    timeout ~60 s, hard output bound. Downscale+encode helper lives here or
    beside it; unit-test the resize math and the fail-closed path.
@@ -283,7 +283,7 @@ vault `PANTHEON_VISION_API_KEY`, `auto: true`). New knobs, all optional:
   equivalent (confirmed text-only via zero `image` hits; the precise edit
   site needs a read at build time).
 - Which image-codec dependency the tree prefers (`image` crate vs.
-  shelling to an existing tool) — no image decoding exists anywhere in
+  shelling to an existing tool) - no image decoding exists anywhere in
   the tree today, so this is a new dependency decision.
 - `docs/user-guide/providers.md` documents per-provider key env vars
   referenced by the catalog; the new `[vision]` knobs should be

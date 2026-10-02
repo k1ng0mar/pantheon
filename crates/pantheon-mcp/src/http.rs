@@ -1,11 +1,11 @@
 //! MCP over HTTP: the two remote transports, sharing the [`McpConn`]
 //! pairing rules with the stdio client.
 //!
-//! * `http` — streamable HTTP (2025-03-26): plain JSON-RPC POSTs to one
+//! * `http` - streamable HTTP (2025-03-26): plain JSON-RPC POSTs to one
 //!   endpoint. A response is a single JSON object, or an SSE stream when
 //!   the server batches. A `Mcp-Session-Id` response header, when present,
 //!   is echoed back on later requests.
-//! * `sse` — legacy SSE (2024-11-05): one long-lived GET event stream,
+//! * `sse` - legacy SSE (2024-11-05): one long-lived GET event stream,
 //!   plus a per-session POST endpoint the server announces in an
 //!   `endpoint` event. Responses to POSTs arrive as `message` events on
 //!   the stream.
@@ -13,7 +13,7 @@
 //! Sync, via ureq (the same crate the provider layer uses). For SSE the
 //! stream is read on a background thread and fanned into an mpsc channel,
 //! mirroring the stdio client's reader thread; `request` pairs by id with
-//! a deadline. Server-initiated requests on the SSE stream are ignored —
+//! a deadline. Server-initiated requests on the SSE stream are ignored
 //! they cannot wedge the pairing because responses are matched by id.
 //!
 //! Shutdown note: the SSE reader thread blocks on the socket, so after

@@ -1,5 +1,5 @@
 //! Swarm orchestrator, staged review loop, completion judge, and swarm
-//! caps — behavioral / integration tests per the test-hygiene policy.
+//! caps - behavioral / integration tests per the test-hygiene policy.
 //!
 //! Run with `cargo test -p pantheon-eval --test runtime_swarm`.
 //!

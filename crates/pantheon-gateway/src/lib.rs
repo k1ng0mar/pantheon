@@ -4,7 +4,7 @@
 //! The interactive path (AG-UI) lives here too:
 //! `stream` maps ledger events to UI frames, `sse` encodes frames as
 //! `text/event-stream` bytes, `channel` is the transport seam every
-//! surface (discord/slack/web/…) consumes, and `genui` mints
+//! surface (discord/slack/web/...) consumes, and `genui` mints
 //! task-id + signed-URL references (never embedded payloads).
 use serde::{Deserialize, Serialize};
 
@@ -109,7 +109,7 @@ pub struct OutboundMessage {
     pub to_conversation: String,
     pub text: String,
     /// Surface that owns this reply ("telegram"/"discord"). Each daemon
-    /// drains its own queue, so the tag — not a shared vec — decides who
+    /// drains its own queue, so the tag - not a shared vec - decides who
     /// sends what. Empty means unknown (older queue files).
     #[serde(default)]
     pub gateway: String,

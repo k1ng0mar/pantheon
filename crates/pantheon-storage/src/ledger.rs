@@ -124,7 +124,7 @@ fn err(code: &str, cause: String) -> PantheonError {
 /// Apply `TurnRewound` markers to an ordered event stream. The named turn
 /// and everything after it up to the marker is dropped; the marker itself
 /// is kept so the audit trail shows a rewind happened. Turns started after
-/// the marker replay normally. The `events` table is never rewritten — this
+/// the marker replay normally. The `events` table is never rewritten - this
 /// is a read-time projection, so raw history survives for forensics while
 /// resume and transcript rebuilds see the rewound run as if those turns
 /// never happened.
@@ -403,7 +403,7 @@ impl Ledger {
             ).map_err(|e| err("LEDGER_RUN", e.to_string()))?;
         }
         // Derived read model: the run's owning agent. Written once and
-        // only once — a run that is already bound to a different agent is
+        // only once - a run that is already bound to a different agent is
         // a hard error, not an overwrite. Identity is immutable for the
         // life of a run; that is what makes "resume Nyx's session" safe.
         if let Event::AgentBound { agent_id, .. } = event {
@@ -956,7 +956,7 @@ impl Ledger {
     /// Auto-create the home session on first access. Idempotent: when the
     /// run row already exists this is a no-op. Every session-list and
     /// delivery surface calls this before reading, so the permanent
-    /// session exists exactly when something reaches for it — never before.
+    /// session exists exactly when something reaches for it - never before.
     /// The row is created directly (single statement, so two racing first
     /// accesses cannot both win) and gets a `RunStarted` birth event, which
     /// keeps `replay("home")` non-empty for the run-detail endpoints.
@@ -1120,14 +1120,14 @@ impl Ledger {
     /// and the UPDATE run inside one IMMEDIATE transaction: the write
     /// lock is taken up front, so a second process or handle blocks here
     /// instead of interleaving its own SELECT between our read and our
-    /// write — otherwise concurrent appends would silently lose all but
+    /// write - otherwise concurrent appends would silently lose all but
     /// the last writer's message. (The in-process `Mutex<Connection>`
     /// serializes threads of this process; the transaction serializes
     /// across processes.)
     ///
     /// The closure receives the current queue and returns the queue to
-    /// persist (`Some`) or `None` to leave the row untouched — dropping
-    /// the tx rolls back the no-op — plus a caller-chosen return value.
+    /// persist (`Some`) or `None` to leave the row untouched - dropping
+    /// the tx rolls back the no-op - plus a caller-chosen return value.
     fn with_queue<R>(
         &self,
         run_id: &str,
@@ -1168,7 +1168,7 @@ impl Ledger {
             tx.commit()
                 .map_err(|e| err("LEDGER_STATUS", e.to_string()))?;
         }
-        // `None`: the tx is dropped without commit — a rolled-back no-op.
+        // `None`: the tx is dropped without commit - a rolled-back no-op.
         Ok(ret)
     }
 
@@ -1223,7 +1223,7 @@ impl Ledger {
 
     /// Replace the queued message at `index` (0 = oldest) with new
     /// text. Returns `false` when the index is out of range. An empty
-    /// `text` is a validation error (`QUEUE_EMPTY`), not a removal —
+    /// `text` is a validation error (`QUEUE_EMPTY`), not a removal
     /// use [`Self::remove_queued_at`] to delete. Atomic across processes
     /// via [`Self::with_queue`].
     pub fn update_queued_at(
@@ -1249,7 +1249,7 @@ impl Ledger {
     }
 
     /// The run's agent mode (`"plan"` or `"build"`). A missing row or an
-    /// unexpected value reads as `"build"` — the mode is advisory, and a
+    /// unexpected value reads as `"build"` - the mode is advisory, and a
     /// corrupt value must never break a turn.
     pub fn run_mode(&self, run_id: &str) -> Result<String, PantheonError> {
         let conn = self
@@ -1431,7 +1431,7 @@ impl Ledger {
     ///
     /// The events table is append-only and otherwise grows forever; this is
     /// the explicit retention hook a maintenance cadence (e.g. the scheduler
-    /// worker) calls. Nothing automatic runs on open — see
+    /// worker) calls. Nothing automatic runs on open - see
     /// [`configure_durability`]'s checkpoint note. Returns the number of
     /// event rows pruned.
     ///
@@ -1453,10 +1453,10 @@ impl Ledger {
 
     /// Delete a run outright: its events, its `runs` row, and its
     /// session-search chunks and FTS rows, all in a single transaction. A
-    /// deleted run must not leave searchable text behind — orphaned FTS
+    /// deleted run must not leave searchable text behind - orphaned FTS
     /// rows would make `session_search` return hits for a run that no
     /// longer exists. Returns `(events_deleted, run_row_deleted)`. Used by
-    /// the dashboard's prune action; there is no soft-delete — the caller
+    /// the dashboard's prune action; there is no soft-delete - the caller
     /// confirms first. Deleting a run that does not exist is `Ok((0, 0))`,
     /// not an error. The home session can never be deleted: this is a
     /// hard error, not a silent no-op, so a caller that meant to delete
@@ -1494,7 +1494,7 @@ impl Ledger {
             )
             .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
         if has_fts == 2 {
-            // FTS first, then chunks — mirrors prune_before: no dangling
+            // FTS first, then chunks - mirrors prune_before: no dangling
             // references either way, and one transaction keeps it atomic.
             tx.execute("DELETE FROM session_fts WHERE run_id = ?1", params![run_id])
                 .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
@@ -1511,7 +1511,7 @@ impl Ledger {
 
     /// Retention-safe prune: like [`Self::prune_events_before`], but never
     /// deletes events of runs whose status is not terminal. The active run's
-    /// transcript survives even when its oldest events predate the cutoff —
+    /// transcript survives even when its oldest events predate the cutoff
     /// a run that stays open for months must not lose the history a resume
     /// rebuilds from. Only finished runs (`completed`, `failed`,
     /// `canceled`) lose old history. Returns the number of event rows
@@ -1589,8 +1589,8 @@ impl Ledger {
 
     /// Whether a run lease is held by a process that is actually alive.
     ///
-    /// A lease row outlives a `kill -9` — nothing gets to release it and its
-    /// TTL keeps counting — so testing `lease_until_ms > now` alone reports a
+    /// A lease row outlives a `kill -9` - nothing gets to release it and its
+    /// TTL keeps counting - so testing `lease_until_ms > now` alone reports a
     /// crashed run as busy for a full TTL, precisely when the operator most
     /// needs `repair` to work. See [`lease_is_live`] for the full argument;
     /// this is the `&self` form of the same predicate.
@@ -1685,7 +1685,7 @@ impl Ledger {
     /// The home session is already excluded by [`stuck_runs`].
     ///
     /// Each settle goes through [`settle_stuck_run`], which re-checks the
-    /// lease fail-closed — a run whose driver came back between the scan
+    /// lease fail-closed - a run whose driver came back between the scan
     /// and the settle is left alone. Returns the settled run ids, oldest
     /// first.
     pub fn settle_expired_runs(&self) -> Result<Vec<String>, PantheonError> {
@@ -1900,12 +1900,12 @@ fn describe(ev: &Event) -> String {
 fn lease_is_live(conn: &rusqlite::Connection, run_id: &str) -> Result<bool, PantheonError> {
     let now = now_ms();
     // Fail CLOSED on storage errors: a missing row is `Ok(false)` (no live
-    // lease), but a genuine DB error must propagate — treating it as
+    // lease), but a genuine DB error must propagate - treating it as
     // "lease dead" would let `settle_stuck_run` repair a possibly-live run.
     //
     // One exception: a missing `run_leases` table. The table is created by
     // `RunLeaseStore` before any lease can be acquired, so no table means
-    // no lease ever existed on this database — provably "no live lease",
+    // no lease ever existed on this database - provably "no live lease",
     // not corruption. Without this, `has_active_lease` / `stuck_runs` /
     // `settle_expired_runs` fail on any ledger whose supervisor never
     // opened the lease store, instead of reporting the true fact.
@@ -2152,7 +2152,7 @@ mod queue_atomicity_tests {
 
     /// Item 5: a migration that reports `Ok` really migrated. Against a
     /// connection with no `runs` table the ALTER fails with "no such
-    /// table" — that must propagate as LEDGER_MIGRATE, not be swallowed
+    /// table" - that must propagate as LEDGER_MIGRATE, not be swallowed
     /// by `let _ =`.
     #[test]
     fn migrate_propagates_real_errors() {
@@ -2164,7 +2164,7 @@ mod queue_atomicity_tests {
         );
     }
 
-    /// Item 5: idempotency is preserved — on a fresh SCHEMA database
+    /// Item 5: idempotency is preserved - on a fresh SCHEMA database
     /// every ALTER hits "duplicate column name", which stays ignored.
     #[test]
     fn migrate_stays_idempotent_on_fresh_schema() {
@@ -2216,7 +2216,7 @@ mod queue_atomicity_tests {
     }
 
     /// Item 5: two handles on the same DB file, N queued messages,
-    /// concurrent takes from threads on both handles — each message is
+    /// concurrent takes from threads on both handles - each message is
     /// delivered exactly once, none lost, none duplicated. The
     /// IMMEDIATE transaction holds the write lock across the
     /// read-modify-write so a second handle cannot interleave.
@@ -2272,7 +2272,7 @@ mod queue_atomicity_tests {
     }
 
     /// Item 2: two handles on the same DB file, 8 threads hammering
-    /// append — every message survives. The read-modify-write in
+    /// append - every message survives. The read-modify-write in
     /// `set_queued_message` runs inside an IMMEDIATE transaction (via
     /// `with_queue`), so a second handle cannot interleave its SELECT
     /// between our read and write and silently drop the first append.

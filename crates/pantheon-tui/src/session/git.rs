@@ -1,6 +1,6 @@
 //! Cached git metadata for the status bar.
 //!
-//! [`git_label`] shells out to git only when the caller asks — the TUI
+//! [`git_label`] shells out to git only when the caller asks - the TUI
 //! refreshes it on a coarse interval, never per frame. Anything
 //! unexpected (no git binary, not a checkout, unborn HEAD) yields `None`
 //! and the status bar simply omits the segment.

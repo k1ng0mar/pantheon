@@ -108,7 +108,7 @@ pub fn request(
                 let mut b = Vec::new();
                 // Text-only rows keep the unconditional text block
                 // (wire-identical to before); pictures-only rows skip the
-                // empty text block — bare image lists are valid here.
+                // empty text block - bare image lists are valid here.
                 if !text.is_empty() || m.images.is_empty() {
                     b.push(serde_json::json!({"type": "text", "text": text}));
                 }
@@ -269,7 +269,7 @@ fn map_stop(reason: &str) -> String {
 }
 
 /// Anthropic `tool_choice` wire value. `None` = omit the field (provider
-/// default, `auto`). `Required` maps to `any` — the closest equivalent
+/// default, `auto`). `Required` maps to `any` - the closest equivalent
 /// to OpenAI's `required`: the model must call some tool this turn.
 fn tool_choice_value(choice: &ToolChoice) -> Option<serde_json::Value> {
     match choice {
@@ -614,7 +614,7 @@ mod anthropic_max_tokens_tests {
 
     /// Item 4: the resolved per-request output cap reaches the Anthropic
     /// wire body as `max_tokens` (this adapter already sent one; the
-    /// test pins that the *resolved* value — not the old unwrap_or —
+    /// test pins that the *resolved* value - not the old unwrap_or
     /// is what goes out).
     #[test]
     fn request_body_carries_resolved_max_tokens() {

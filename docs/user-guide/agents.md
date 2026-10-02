@@ -25,7 +25,7 @@ To open the terminal as a different agent for one session without changing the c
 pantheon --profile zeus   # -p zeus and --agent zeus work too
 ```
 
-An unknown name fails before the terminal opens, with the fix spelled out — it never silently falls back to another agent.
+An unknown name fails before the terminal opens, with the fix spelled out - it never silently falls back to another agent.
 
 All the fields are explained in [Configuration](../reference/configuration.md#agents).
 
@@ -39,9 +39,9 @@ The child runs as that agent, with its own personality and memory, and hands bac
 
 There are safety rails: delegation can only nest so deep (configurable, default 2), and too much at once is refused rather than allowed to spiral.
 
-Every spawned child gets a self-contained briefing: its own identity, its persona and instruction files inlined verbatim (nothing arrives as a bare path it may or may not read), your active `/goal`, and a fixed result contract. The child reports back in a machine-parseable envelope — `status` (`completed`, `partial`, `failed`, or `unknown`), files changed, a summary of what it actually did, its decisions, open questions, and follow-ups. Free-text replies that skip the envelope degrade to `unknown` and are never treated as done.
+Every spawned child gets a self-contained briefing: its own identity, its persona and instruction files inlined verbatim (nothing arrives as a bare path it may or may not read), your active `/goal`, and a fixed result contract. The child reports back in a machine-parseable envelope - `status` (`completed`, `partial`, `failed`, or `unknown`), files changed, a summary of what it actually did, its decisions, open questions, and follow-ups. Free-text replies that skip the envelope degrade to `unknown` and are never treated as done.
 
-Optionally, add a `[verify]` section to your config and each child's claimed result is checked by a separate adversarial model before you see it: the verifier assumes the goal was *not* achieved and must be convinced otherwise. A falsified claim fails the delegation outright; an inconclusive one is marked unverified, never accepted as complete. Verification is opt-in — without `[verify]` there is no verifier and results arrive with no verification mark. See [Configuration](../reference/configuration.md) for the section shape.
+Optionally, add a `[verify]` section to your config and each child's claimed result is checked by a separate adversarial model before you see it: the verifier assumes the goal was *not* achieved and must be convinced otherwise. A falsified claim fails the delegation outright; an inconclusive one is marked unverified, never accepted as complete. Verification is opt-in - without `[verify]` there is no verifier and results arrive with no verification mark. See [Configuration](../reference/configuration.md) for the section shape.
 
 ```sh
 pantheon swarm status [<id>] | list   # see past collaborations; this command never starts new work

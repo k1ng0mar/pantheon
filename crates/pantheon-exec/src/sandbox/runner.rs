@@ -6,10 +6,10 @@
 //!   namespaces) + a mount-setup script that remounts the host
 //!   filesystem read-only (or hides un-remountable mounts under a fresh
 //!   tmpfs), gives the child a private tmpfs sandbox root as its cwd,
-//!   and a private `/tmp` + `/dev/shm` — plus rlimits
+//!   and a private `/tmp` + `/dev/shm` - plus rlimits
 //! - `Container`: `bwrap` (bubblewrap) with user/mount/PID namespaces + rlimits
 //! - `StrictNamespaces`: bwrap with `--unshare-all` (every namespace
-//!   unshared) — the strongest boundary this runner offers. There is no
+//!   unshared) - the strongest boundary this runner offers. There is no
 //!   VM backend and none is planned; the name describes the mechanism.
 //!
 //! When the sandbox binary (bwrap/unshare) is unavailable or fails to
@@ -19,7 +19,7 @@
 //! `StrictNamespaces` without `bwrap` refuses rather than falling back
 //! to plain `unshare` and reporting `sandboxed=true`. The old
 //! silent-degrade to a direct host spawn is only available via explicit
-//! opt-in — `SandboxProfile::allow_direct_fallback` or the
+//! opt-in - `SandboxProfile::allow_direct_fallback` or the
 //! `PANTHEON_SANDBOX_FALLBACK=allow` environment variable. The capability
 //! gate is always the first check, so the fallback (when opted in) only
 //! loses the OS-level isolation, never the policy enforcement.
@@ -80,7 +80,7 @@ fn is_executable(p: &std::path::Path) -> bool {
 }
 
 /// Scrub a sandboxed child's environment to an allowlist. The agent's
-/// full environment — API keys, tokens, session secrets — must never
+/// full environment - API keys, tokens, session secrets - must never
 /// cross the boundary implicitly (contrast the old behavior, where a
 /// tool subprocess inherited everything). Callers add back exactly what
 /// the child needs via `cmd.env` *after* [`build_sandboxed`] returns;
@@ -111,14 +111,14 @@ fn scrub_child_env(cmd: &mut Command) {
 /// Runs with positional args: `$1` = sandbox name, `$2` = requested
 /// working directory (host path), `$3` = program, `$4..` = argv.
 /// Everything the script references is a positional parameter or a
-/// fixed literal — no string interpolation, so a hostile program path
+/// fixed literal - no string interpolation, so a hostile program path
 /// or argument cannot inject shell.
 ///
 /// What it builds, inside a fresh user+mount (+optional net) namespace:
 /// - every inherited mount remounted read-only; a mount that refuses
 ///   the remount is hidden under a fresh empty tmpfs instead (fail
 ///   safe: read-only or invisible, never left writable);
-/// - a private tmpfs sandbox root (`/tmp/<name>`, 256MiB, mode 0700) —
+/// - a private tmpfs sandbox root (`/tmp/<name>`, 256MiB, mode 0700)
 ///   the only host-invisible writable spot besides the private `/tmp`
 ///   and `/dev/shm` (bwrap-equivalent scratch semantics);
 /// - the child starts in the requested working directory (visible
@@ -129,7 +129,7 @@ fn scrub_child_env(cmd: &mut Command) {
 ///   land inside it;
 /// - a fresh `/proc` for the PID namespace where the kernel allows it
 ///   (best effort: some containers forbid proc mounts in a user
-///   namespace, in which case the host's /proc stays visible —
+///   namespace, in which case the host's /proc stays visible
 ///   read-only process info, not a write path).
 ///
 /// Requires a user namespace (`unshare --map-root-user`): unprivileged
@@ -170,11 +170,11 @@ static SANDBOX_SEQ: AtomicU64 = AtomicU64::new(0);
 /// `profile` selects the boundary and limit set.
 ///
 /// The child's environment is scrubbed to an allowlist (see
-/// [`scrub_child_env`]) on every boundary except `InProcess` — add back
+/// [`scrub_child_env`]) on every boundary except `InProcess` - add back
 /// what the child needs with `cmd.env` after this returns.
 ///
 /// The timeout is always derived from `SandboxProfile::wall_clock_ms`,
-/// so every tool call is inherently bounded — there is no unbounded wait.
+/// so every tool call is inherently bounded - there is no unbounded wait.
 pub fn build_sandboxed(
     profile: &SandboxProfile,
     program: &str,
@@ -279,13 +279,13 @@ pub fn build_sandboxed(
         super::ExecutionBoundary::StrictNamespaces => {
             // bwrap with --unshare-all + --dev-bind for the program:
             // every namespace (user, pid, net, ipc, uts, cgroup, mount)
-            // unshared. Deliberately not a VM — no hypervisor involved.
+            // unshared. Deliberately not a VM - no hypervisor involved.
             // This level is only reached after interactive approval.
             //
             // bwrap is MANDATORY here: a weaker wrapper must never stand
             // in for this boundary. The old code fell back to plain
             // `unshare --pid --mount` when bwrap was absent and still
-            // reported `sandboxed=true` — a wrong-strength downgrade.
+            // reported `sandboxed=true` - a wrong-strength downgrade.
             // Without bwrap the command builds unwrapped, and
             // `run_sandboxed` fails closed (SANDBOX_UNAVAILABLE) unless
             // the direct fallback is explicitly opted in.
@@ -326,7 +326,7 @@ pub fn build_sandboxed(
     }
 
     // The profile's limits are rlimits on the child itself, set just
-    // before exec — so they hold with or without a namespace wrapper and
+    // before exec - so they hold with or without a namespace wrapper and
     // survive the (opt-in) fallback to a direct spawn.
     #[cfg(unix)]
     confine_child(&mut cmd, profile);
@@ -348,24 +348,24 @@ pub fn build_sandboxed(
 ///
 /// 3. `PR_SET_NO_NEW_PRIVS` when the profile asks for it: once set,
 ///    neither the wrapper nor the program it execs can gain privileges
-///    via setuid/setcap binaries. Linux-only — the profile flag documents
+///    via setuid/setcap binaries. Linux-only - the profile flag documents
 ///    the intent everywhere, the kernel enforces it where supported.
 ///
 /// NPROC needs care: the kernel's accounting is UID-wide, not
 /// per-sandbox, and in containers sharing the host user namespace it
 /// counts processes this container's `/proc` cannot even show. An
-/// absolute cap — or one derived from a `/proc` scan — therefore refuses
+/// absolute cap - or one derived from a `/proc` scan - therefore refuses
 /// every fork the wrapper itself needs, turning the pids cap into a
 /// denial of service. Instead we calibrate against the kernel directly:
 /// binary-search the smallest NPROC limit at which a fork still
 /// succeeds; that boundary is true usage, and the profile's `max_pids`
 /// is granted above it. The probing uses only setrlimit/fork/_exit/
-/// waitpid — async-signal-safe in the pre-exec zone. Where NPROC isn't
+/// waitpid - async-signal-safe in the pre-exec zone. Where NPROC isn't
 /// enforced for this user (some containers), or a calibrated cap can no
 /// longer fork, the pids cap is skipped and every other limit still
 /// applies.
 ///
-/// Limits are only ever lowered, and only in the child — the parent is
+/// Limits are only ever lowered, and only in the child - the parent is
 /// untouched. The wall-clock budget is enforced separately by
 /// [`run_sandboxed`], and the capability gate runs before any of this.
 #[cfg(unix)]
@@ -392,7 +392,7 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
 
     // SAFETY: between fork and exec the closure only issues setsid,
     // prctl, and setrlimit (plus fork/waitpid/_exit inside calibration)
-    // with plain integers — no allocation, no locks. All measuring happens
+    // with plain integers - no allocation, no locks. All measuring happens
     // above, in the parent.
     unsafe {
         cmd.pre_exec(move || {
@@ -401,7 +401,7 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
             }
             // No-new-privs before anything else runs: setuid/setcap
             // binaries the child (or its wrapper) reaches cannot escalate.
-            // Failing closed — a child that cannot take the bit must not
+            // Failing closed - a child that cannot take the bit must not
             // run with the profile's promise unkept.
             #[cfg(target_os = "linux")]
             if no_new_privs && libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
@@ -433,9 +433,9 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
 }
 
 /// A NPROC cap granting `want` processes above the kernel's true current
-/// usage for this UID — or `None` to leave NPROC untouched.
+/// usage for this UID - or `None` to leave NPROC untouched.
 ///
-/// SAFETY: pre-exec context — only setrlimit/fork/_exit/waitpid, no
+/// SAFETY: pre-exec context - only setrlimit/fork/_exit/waitpid, no
 /// allocation.
 #[cfg(unix)]
 unsafe fn calibrate_nproc(want: u64, hard: libc::rlim_t) -> Option<libc::rlim_t> {
@@ -452,7 +452,7 @@ unsafe fn calibrate_nproc(want: u64, hard: libc::rlim_t) -> Option<libc::rlim_t>
         let pid = unsafe { libc::fork() };
         if pid < 0 {
             // Only EAGAIN carries information about NPROC; anything else
-            // (ENOMEM…) must not steer the search.
+            // (ENOMEM...) must not steer the search.
             return std::io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN);
         }
         if pid == 0 {
@@ -478,7 +478,7 @@ unsafe fn calibrate_nproc(want: u64, hard: libc::rlim_t) -> Option<libc::rlim_t>
     let mut lo = 1u64; // known unforkable (usage ≥ 1: we exist)
     let mut hi = top; // assumed forkable (we are running under it)
     if !unsafe { forkable(hi, hard) } {
-        // Usage is at the ceiling — nothing safe to grant.
+        // Usage is at the ceiling - nothing safe to grant.
         return None;
     }
     while hi - lo > 16 {
@@ -491,7 +491,7 @@ unsafe fn calibrate_nproc(want: u64, hard: libc::rlim_t) -> Option<libc::rlim_t>
     }
     // `hi` ≈ usage + 1; grant the profile's headroom above it.
     let cap = hi.saturating_add(want).min(hard);
-    // Belt and braces: never apply a cap that can't fork — degrade to
+    // Belt and braces: never apply a cap that can't fork - degrade to
     // no pids limit instead of breaking the command.
     if !unsafe { forkable(cap, hard) } {
         return None;
@@ -629,8 +629,8 @@ fn kill_child_tree(child: &mut std::process::Child) {
 /// Run a sandboxed command with the profile's wall-clock timeout, plus a
 /// spawn hook: `on_spawn` (when `Some`) is called with the child's pid
 /// right after a successful spawn, on the calling thread, before the
-/// wait loop starts. The pid is also the child's process-group id —
-/// [`confine_child`] runs `setsid()` in `pre_exec` — so a cancel path
+/// wait loop starts. The pid is also the child's process-group id
+/// [`confine_child`] runs `setsid()` in `pre_exec` - so a cancel path
 /// can register it for `killpg` and unregister it when the call ends. A
 /// panicking hook cannot wedge the wait loop: the panic is caught and
 /// the child still runs to its normal completion.
@@ -687,7 +687,7 @@ pub fn run_sandboxed_with_spawn_hook(
 
     // The pid is the process-group id too (setsid in pre-exec): report
     // it now so a cancel path can register the group before the child
-    // does any real work. Panic-caught — a misbehaving hook must not
+    // does any real work. Panic-caught - a misbehaving hook must not
     // wedge the wait loop or leak the child unreaped.
     if let Some(hook) = on_spawn {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook(child.id())));
@@ -751,7 +751,7 @@ pub fn run_sandboxed_with_spawn_hook(
         // The args may carry secrets (API keys, tokens), so they never go
         // into the error text verbatim. Same treatment as the
         // dangerous-pattern gate in pantheon-exec/src/danger.rs: a short
-        // stable digest plus the length — enough to correlate the timeout
+        // stable digest plus the length - enough to correlate the timeout
         // with the request that caused it, without leaking the command.
         let digest = cmd_digest(&args.join(" "));
         return Err(berr(
@@ -802,7 +802,7 @@ fn berr(code: &str, cause: String, recoverable: bool) -> PantheonError {
 /// `cmd:0123abcd len:42` (first 8 hex of an FNV-1a 64 hash, upper bits,
 /// plus the char length). Deterministic across runs so repeated timeouts
 /// of the same command correlate, but irreversible, so an error carrying
-/// it cannot leak the arguments — which may themselves contain secrets.
+/// it cannot leak the arguments - which may themselves contain secrets.
 ///
 /// Mirrors `cmd_digest` in pantheon-exec/src/danger.rs; keep the two in
 /// sync so a digest from either crate identifies the same command.
@@ -853,7 +853,7 @@ mod sandbox_escape_tests {
         s
     }
 
-    /// Item 1a: `Medium` sets `network: false` — the child must land in
+    /// Item 1a: `Medium` sets `network: false` - the child must land in
     /// a DIFFERENT network namespace than the parent. The old unshare
     /// branch never passed a net flag, so the namespaces were identical
     /// (verified live before the fix).
@@ -877,9 +877,9 @@ mod sandbox_escape_tests {
     }
 
     /// Item 1b: the unshare path must confine writes. The child tries to
-    /// write to host paths (`/etc`, and a host-visible probe) — those
-    /// must fail — and to its sandbox root (`$TMPDIR`, exported by the
-    /// setup script) — which must succeed AND stay invisible on the
+    /// write to host paths (`/etc`, and a host-visible probe) - those
+    /// must fail - and to its sandbox root (`$TMPDIR`, exported by the
+    /// setup script) - which must succeed AND stay invisible on the
     /// host (private tmpfs). Before the fix the child wrote to `/etc`
     /// and the host `/tmp` freely.
     #[test]
@@ -931,7 +931,7 @@ mod sandbox_escape_tests {
     /// (`SANDBOX_UNAVAILABLE`), never silently downgrade to plain
     /// unshare while reporting `sandboxed=true`. Simulates the
     /// bwrap-absent host with a PATH dir containing unshare but no
-    /// bwrap — the old code took the unshare fallback and reported
+    /// bwrap - the old code took the unshare fallback and reported
     /// success (verified before the fix).
     #[test]
     fn veryhigh_without_bwrap_fails_closed() {

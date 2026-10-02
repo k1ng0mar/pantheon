@@ -7,7 +7,7 @@
 //! `pantheon-mcp -> pantheon-tools -> pantheon-api`: the agent's
 //! `enable_mcp` tool (in `pantheon-tools`) needs the catalog names, pins,
 //! and the file-persisting [`set_enabled`] write. Placing the canonical
-//! recipe in `pantheon-mcp` would force a `tools -> mcp` edge — a
+//! recipe in `pantheon-mcp` would force a `tools -> mcp` edge - a
 //! dependency cycle, since the edge runs `mcp -> tools`. So the recipe
 //! data lives in the leaf both depend on (`pantheon-api`), and
 //! `pantheon_mcp::bundled` is a thin facade re-exporting
@@ -25,13 +25,13 @@
 //! - [`materialize_recipe_table`]: the single TOML-table writer. Both
 //!   the agent path ([`set_enabled`]) and the dashboard path use it, so
 //!   one canonical recipe always materializes to byte-identical tables
-//!   no matter which surface enabled the server first —
+//!   no matter which surface enabled the server first
 //!   first-writer-wins divergence is impossible. `pinned_version` is
 //!   stamped only when the recipe carries a real package pin; unpinned
-//!   (remote) recipes get no stamp — a fabricated pin would lie about
+//!   (remote) recipes get no stamp - a fabricated pin would lie about
 //!   what code is approved to run.
-//! - [`set_enabled`] / [`is_enabled`]: the single enablement state —
-//!   `[mcp.servers.<name>]` in `<data_dir>/config.toml` — rejecting
+//! - [`set_enabled`] / [`is_enabled`]: the single enablement state
+//!   `[mcp.servers.<name>]` in `<data_dir>/config.toml` - rejecting
 //!   non-catalog names. This is the no-arbitrary-MCP-command boundary
 //!   for the agent path: the agent can never get an unvetted binary onto
 //!   the command line through it.
@@ -41,7 +41,7 @@
 //! (Mirrors `pantheon_extensions::bundled`.) A bundled MCP server is an
 //! out-of-process integration: Pantheon spawns or connects to it and
 //! speaks the MCP protocol. Pantheon never executes the server's code,
-//! which may run on another machine entirely — trust is in the endpoint
+//! which may run on another machine entirely - trust is in the endpoint
 //! and its configuration (command, URL, env), not in shipped code.
 //! Bundled MCPs are first-party, so they skip the third-party approval
 //! store ([`crate::approval`]); they do **not** skip enablement. A custom
@@ -54,7 +54,7 @@
 //! the full argument list for launcher-shim servers (`npx`, `uvx`,
 //! `docker`, ...), so a pin bump or an arg change lapses approval. For
 //! shims the hash binds the *requested* spec, not the bytes the registry
-//! served — registry-fetched code can change under a pin, so treat the
+//! served - registry-fetched code can change under a pin, so treat the
 //! approval as binding intent, not bytes.
 
 use crate::config::{Config, McpServerEntry};
@@ -75,7 +75,7 @@ fn merr(code: &str, cause: String) -> PantheonError {
 }
 
 /// One MCP server Pantheon ships: the canonical bundled recipe. All
-/// entries are disabled by default — [`is_enabled`] is false for a name
+/// entries are disabled by default - [`is_enabled`] is false for a name
 /// with no `[mcp.servers.<name>]` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundledMcpServer {
@@ -87,7 +87,7 @@ pub struct BundledMcpServer {
     /// The true pinned package spec, e.g. `@playwright/mcp@0.0.83`.
     /// `None` when there is no bundleable package (Cloudflare: remote
     /// only, the npm package is stale and deprecated upstream).
-    /// This — and only this — is what `pinned_version` stamps.
+    /// This - and only this - is what `pinned_version` stamps.
     pub package: Option<String>,
     /// One-paragraph operator-facing summary.
     pub description: String,
@@ -103,7 +103,7 @@ pub struct BundledMcpServer {
     pub url: Option<String>,
     /// Environment variable names the server needs. Materialized as
     /// `env = { NAME = "env:NAME" }` so secrets resolve from the
-    /// operator's environment at spawn time — never stored in config.
+    /// operator's environment at spawn time - never stored in config.
     pub requires_env: Vec<String>,
     /// Non-secret env vars Pantheon sets by default when launching the
     /// server (e.g. telemetry opt-outs). Stored as literal values.
@@ -126,7 +126,7 @@ pub struct BundledMcpServer {
 impl BundledMcpServer {
     /// The `[mcp.servers.<name>]` table this catalog row materializes.
     /// Disabled by default: enabling is always an explicit write through
-    /// [`set_enabled`] (agent path) or the dashboard path — both funnel
+    /// [`set_enabled`] (agent path) or the dashboard path - both funnel
     /// through [`materialize_recipe_table`], so the entry is identical
     /// whichever surface wrote it.
     ///
@@ -205,7 +205,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
             privilege_notes: "Spawns a Docker container running GitHub's official \
                 MCP server (pinned image v1.12.2). It can read and act on your \
                 GitHub account with whatever scopes your personal access token \
-                grants — grant only the scopes the task needs. First-party \
+                grants - grant only the scopes the task needs. First-party \
                 bundle entry; the container image is third-party code run by \
                 Docker, not by Pantheon."
                 .to_string(),
@@ -235,10 +235,10 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 tiers: uvx workspace-mcp --tool-tier core|extended|complete, or \
                 cherry-pick --tools gmail drive calendar; --read-only and \
                 per-service --permissions are available. Maintainer caution: \
-                emails/docs can carry hidden prompt-injection instructions — be \
+                emails/docs can carry hidden prompt-injection instructions - be \
                 deliberate with write tools. Google Chat needs a one-time Chat \
                 app configuration and a Workspace account (not free Gmail). Do \
-                NOT install the CLI via `uvx workspace-cli` — that PyPI name is \
+                NOT install the CLI via `uvx workspace-cli` - that PyPI name is \
                 squatted by an abandoned package."
                 .to_string(),
             local_only: true,
@@ -247,7 +247,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 PyPI release 1.30.0) via uvx. It acts on your Google account \
                 through your own OAuth client: mail, calendar, drive files, \
                 and documents are all in reach of its tools. Treat its outputs \
-                as untrusted — emails and docs can carry hidden instructions."
+                as untrusted - emails and docs can carry hidden instructions."
                 .to_string(),
         },
         BundledMcpServer {
@@ -276,7 +276,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
             setup_notes: "Requires a current stable Google Chrome installed on \
                 the same machine plus Node.js LTS; the server auto-starts Chrome \
                 on the first tool call that needs a browser. Privacy: usage \
-                statistics and npm update checks are ON upstream by default — \
+                statistics and npm update checks are ON upstream by default - \
                 Pantheon disables both via the bundled env above. Performance \
                 tools call the Google CrUX API for field data (add --no-performance-crux \
                 to disable). Useful flags: --headless, --slim (3 tools only), \
@@ -298,7 +298,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
             package: None,
             description: "Cloudflare Code Mode MCP: broad Cloudflare API coverage \
                 via Cloudflare's own hosted remote endpoint. Auth is a per-user \
-                browser OAuth flow — there is no static secret to configure."
+                browser OAuth flow - there is no static secret to configure."
                 .to_string(),
             transport: "http".to_string(),
             command: None,
@@ -314,7 +314,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 observability, containers, browser, logs, ai-gateway, autorag, \
                 dns-analytics, dex, casb, radar, blog). The npm package \
                 @cloudflare/mcp-server-cloudflare is stale (0.2.0, March 2025) \
-                and the local server implementations are deprecated upstream — \
+                and the local server implementations are deprecated upstream - \
                 they are deliberately NOT bundled. Clients without remote \
                 support can shim with npx mcp-remote <url>."
                 .to_string(),
@@ -323,7 +323,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
             privilege_notes: "Connects to Cloudflare's hosted MCP endpoint \
                 (streamable HTTP). Browser OAuth on first connect; its tools \
                 act on your Cloudflare account (Workers, DNS, zones). No \
-                local code runs — trust is in the endpoint and your account."
+                local code runs - trust is in the endpoint and your account."
                 .to_string(),
         },
         BundledMcpServer {
@@ -379,7 +379,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
             setup_notes: "Create an internal integration at \
                 notion.so/profile/integrations, then explicitly share pages and \
                 databases with it (integration Access tab, or per-page \
-                \"Connect to integration\") — unshared content is invisible to \
+                \"Connect to integration\") - unshared content is invisible to \
                 the server. v2.0.0 is a breaking release (Notion API \
                 2025-09-03): database tools were renamed to data-source tools, \
                 e.g. post-database-query -> query-data-source; 22 tools total."
@@ -396,7 +396,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 release 2.5.2) via npx. It reads and writes the Notion pages \
                 and databases you shared with its integration, using your \
                 integration token. Note: Notion has marked this repo \
-                unmaintained and may sunset it — plan a remote-Notion path."
+                unmaintained and may sunset it - plan a remote-Notion path."
                 .to_string(),
         },
     ]
@@ -411,7 +411,7 @@ pub fn bundled_catalog() -> Vec<BundledMcpServer> {
 }
 
 /// The catalog entry for `name`, or `None` when it is not bundled.
-/// Only catalog names are toggleable — this is what keeps the agent
+/// Only catalog names are toggleable - this is what keeps the agent
 /// from proposing (or any surface from flipping) an arbitrary command.
 pub fn find(name: &str) -> Option<BundledMcpServer> {
     bundled_catalog().into_iter().find(|s| s.name == name)
@@ -424,7 +424,7 @@ pub fn find(name: &str) -> Option<BundledMcpServer> {
 ///
 /// `pinned_version` is stamped only when the recipe carries a real
 /// package pin ([`BundledMcpServer::package`]); unpinned (remote) recipes
-/// get no stamp — a fabricated pin would lie about what code is approved
+/// get no stamp - a fabricated pin would lie about what code is approved
 /// to run. The stamp is informational (the launcher ignores unknown
 /// keys).
 ///
@@ -472,7 +472,7 @@ pub fn materialize_recipe_table(
 
 /// Is the bundled server `name` enabled? Pure read over the config:
 /// absent `[mcp.servers.<name>]` (or an entry without `enabled`) =
-/// false. Unknown names are false too — inert entries never enable
+/// false. Unknown names are false too - inert entries never enable
 /// anything.
 pub fn is_enabled(config: &Config, name: &str) -> bool {
     config.mcp_server_enabled(name)
@@ -483,7 +483,7 @@ pub fn is_enabled(config: &Config, name: &str) -> bool {
 /// never `exit(2)` the host because the config has a typo. A missing
 /// config means every bundled server is disabled (fail closed); a config
 /// that exists but does not parse is reported on stderr and also fails
-/// closed — a typo must never silently flip a server on.
+/// closed - a typo must never silently flip a server on.
 pub fn load_config(data_dir: &Path) -> Option<Config> {
     match Config::load(data_dir) {
         Ok(c) => Some(c),
@@ -499,12 +499,12 @@ pub fn load_config(data_dir: &Path) -> Option<Config> {
 /// Write the single enablement state: set `[mcp.servers.<name>].enabled`
 /// in `<data_dir>/config.toml`, materializing the canonical catalog row
 /// when the table does not exist yet. Only bundled-catalog names are
-/// accepted (`MCP_UNKNOWN_SERVER` otherwise) — this is the
+/// accepted (`MCP_UNKNOWN_SERVER` otherwise) - this is the
 /// no-arbitrary-command boundary: the agent can never get an unvetted
 /// binary onto the command line through this path.
 ///
 /// Enabling stamps the recipe's real package pin (`pinned_version` is
-/// informational — the launcher ignores unknown keys); unpinned recipes
+/// informational - the launcher ignores unknown keys); unpinned recipes
 /// get no stamp. Disabling keeps the row and flips the flag. The
 /// document is edited as TOML rather than re-serialized from the
 /// [`Config`] struct, so unknown keys survive; comments and original key
@@ -567,7 +567,7 @@ pub fn set_enabled(data_dir: &Path, name: &str, enabled: bool) -> Result<(), Pan
     })?;
     // Materialize the canonical row on first enable so the launcher has
     // a complete shape to spawn: never leave a bare `enabled = true`
-    // with no command behind. This is the one canonical writer — the
+    // with no command behind. This is the one canonical writer - the
     // dashboard path uses it too, so both surfaces produce
     // byte-identical tables.
     if table.is_empty() {

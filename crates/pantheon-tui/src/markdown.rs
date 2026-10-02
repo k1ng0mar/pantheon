@@ -1,11 +1,11 @@
 //! Markdown rendering for the transcript's left panel.
 //!
 //! Pure functions: markdown text in, styled [`Line`]s out. No I/O, no
-//! terminal access — fully unit-testable.
+//! terminal access - fully unit-testable.
 //!
 //! Supported:
-//! - ATX headings (`# …`) → theme heading (muted blue), bold
-//! - Bare section headers (`Root cause`, `Changes`, …): a short plain
+//! - ATX headings (`# ...`) → theme heading (muted blue), bold
+//! - Bare section headers (`Root cause`, `Changes`, ...): a short plain
 //!   line (≤ 48 chars, no trailing colon, no list marker, no backticks)
 //!   preceded by a blank line (or start of text) and followed by a
 //!   non-blank line → theme heading, bold
@@ -17,7 +17,7 @@
 //!   are dropped (no box-drawing anywhere)
 //! - Fenced code blocks: fences hidden, body indented two spaces in
 //!   theme code green, blank line before/after
-//! - Blockquotes (`> …`): dim marker, styled body
+//! - Blockquotes (`> ...`): dim marker, styled body
 //! - Inline: `**bold**` (amber bold), `` `code` `` (theme code green),
 //!   `*em*` / `_em_` (theme emphasis amber italic), `[text](url)`
 //!   (theme primary)
@@ -94,7 +94,7 @@ pub fn render_markdown(text: &str, th: &Theme) -> Vec<Line<'static>> {
 
         let trimmed = line.trim();
 
-        // --- ATX headings (`# …`, space required after the hashes) --------
+        // --- ATX headings (`# ...`, space required after the hashes) --------
         if let Some(heading) = atx_heading(trimmed) {
             out.push(Line::from(Span::styled(
                 heading.to_string(),
@@ -163,7 +163,7 @@ fn is_blank(s: &str) -> bool {
     s.trim().is_empty()
 }
 
-/// `# Title` → `Some("Title")`; requires 1–6 hashes followed by a space.
+/// `# Title` → `Some("Title")`; requires 1-6 hashes followed by a space.
 fn atx_heading(trimmed: &str) -> Option<&str> {
     let hashes = trimmed.chars().take_while(|&c| c == '#').count();
     if !(1..=6).contains(&hashes) {
@@ -190,7 +190,7 @@ fn list_item(trimmed: &str) -> Option<(&str, &str)> {
             return Some(("+ ", body));
         }
     }
-    // Ordered: `1. `, `12. `, …
+    // Ordered: `1. `, `12. `, ...
     let mut digits = 0;
     for c in trimmed.chars() {
         if c.is_ascii_digit() {

@@ -28,7 +28,7 @@ source the agent actually opened and read.
    URL. If you could not verify something, say so in the text instead of
    citing around it.
 
-## Output Contract
+## Output contract
 
 - Answer body with inline numbered citations on every statistic, date,
   quote, and non-obvious factual claim.
@@ -37,7 +37,7 @@ source the agent actually opened and read.
   verification. Absence of a citation means the claim is the agent's own
   reasoning, and the text should read that way.
 
-## Operating Rules
+## Operating rules
 
 1. No citation, no claim. If you cannot source it, cut it or label it.
 2. Quotes must be verbatim and short. Paraphrase the rest.

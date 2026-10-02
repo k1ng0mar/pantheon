@@ -3,7 +3,7 @@
 //!
 //! Keyless: the public endpoint runs on a shared rate budget (expect
 //! occasional 503s when drained). No auth header is sent. Marginalia's
-//! index is the "small web" (blogs, forums, docs, indie sites) — excellent
+//! index is the "small web" (blogs, forums, docs, indie sites) - excellent
 //! for technical/niche queries, weak on mainstream and very-recent results.
 //!
 //! License note: Marginalia results carry **CC-BY-NC-SA 4.0**. Fine for an
@@ -19,7 +19,7 @@ use super::provider::{opt_str, SearchOptions, SearchProvider, SearchResult};
 /// Default API base URL (no trailing path).
 pub const DEFAULT_BASE_URL: &str = "https://api.marginalia.nu";
 
-/// Marginalia search provider. Keyless — no constructor key.
+/// Marginalia search provider. Keyless - no constructor key.
 pub struct MarginaliaProvider {
     base_url: String,
 }

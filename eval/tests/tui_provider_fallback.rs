@@ -143,7 +143,7 @@ fn rate_limit_kind_is_distinct_from_auth_failure() {
     assert!(kind.is_rate_limited(), "429 must be the distinct kind");
     assert_eq!(kind.label(), "rate limited");
 
-    // 401, not retryable: immediate card, auth kind, no retries — but
+    // 401, not retryable: immediate card, auth kind, no retries - but
     // the chain still walks on, so a later verdict finalizes the card
     // in place rather than pushing a second one.
     let mut s = state();
@@ -162,7 +162,7 @@ fn rate_limit_kind_is_distinct_from_auth_failure() {
     assert!(message.contains("HTTP 401"), "message: {message}");
     assert_eq!(fb, FallbackOutcome::NotRetryable);
     // Non-retryable walks to the fallback: the verdict finalizes the
-    // same card — no retries were emitted, no second card appears.
+    // same card - no retries were emitted, no second card appears.
     let cards_before = card_count(&s);
     s.handle_model_event(fallback("deepseek", "deepseek-chat"));
     assert_eq!(card_count(&s), cards_before, "fallback updates the card");

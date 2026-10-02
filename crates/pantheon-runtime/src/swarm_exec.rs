@@ -2,7 +2,7 @@
 //! retry with judge feedback.
 //!
 //! [`SwarmOrchestrator`] is the runtime half of the swarm HTTP API. It
-//! owns swarm records (keyed by `sw_…` ids), drives agents through a
+//! owns swarm records (keyed by `sw_...` ids), drives agents through a
 //! [`SwarmWorker`] seam, and runs the completion judge from
 //! [`crate::judge`] when all agents settle.
 //!
@@ -23,7 +23,7 @@
 //! stages, each stage's members launched in parallel, the next stage
 //! spawning only after the previous one settles. Stage outputs (member
 //! transcripts) are collected and embedded as structured input in the
-//! next stage's task — the orchestrator moves bytes, not schemas: it
+//! next stage's task - the orchestrator moves bytes, not schemas: it
 //! does not parse or validate outputs against the contracts (that would
 //! need a model call per handoff); contracts shape the members' output
 //! through their task text, and the review loop checks the result.
@@ -43,13 +43,13 @@
 //! from any source counts as a failed verification ("no verdict emitted").
 //!
 //! The lead: `create_staged` spawns the lead's coordination run first.
-//! Its run id is the swarm's `lead_run_id` — the single user-facing run,
+//! Its run id is the swarm's `lead_run_id` - the single user-facing run,
 //! which `use team` returns. Member runs are never user-facing: their
 //! tasks instruct them to report to the lead, and their outputs reach
 //! the lead through the stage handoff chain and the swarm's execution
 //! log. What the orchestrator cannot do with the current worker seam:
 //! message a running lead run (no such primitive), so the lead's run
-//! does not receive live stage updates — the full execution log lives
+//! does not receive live stage updates - the full execution log lives
 //! in the swarm record (`transcript()`).
 //!
 //! [`ScriptedWorker`] is the deterministic test double.
@@ -144,7 +144,7 @@ impl SwarmAgentStatus {
 /// `SubprocessWorker` in production (one `pantheon run` child per
 /// agent) and by [`ScriptedWorker`] in tests.
 pub trait SwarmWorker: Send + Sync {
-    /// Spawn the agent's work; returns its run id (`r_…`). The worker
+    /// Spawn the agent's work; returns its run id (`r_...`). The worker
     /// seeds the run's transcript with the task. `profile` is the
     /// `[agents.<name>]` table the agent represents (`"default"` in count
     /// mode); workers surface it in titles/logs. (Per-profile subprocess
@@ -158,7 +158,7 @@ pub trait SwarmWorker: Send + Sync {
         profile: &str,
         task: &str,
     ) -> Result<String, SwarmError>;
-    /// Current agent status. Unknown run ids report `Failed` — a lost
+    /// Current agent status. Unknown run ids report `Failed` - a lost
     /// child is a failed child, never a silent hang.
     fn agent_status(&self, run_id: &str) -> Result<SwarmAgentStatus, SwarmError>;
     /// The agent's transcript so far.
@@ -219,7 +219,7 @@ pub struct AgentSpec {
 
 /// Primary execution pattern of a staged plan. A label for the plan
 /// text: orchestration is always "stages in order, members in parallel
-/// within a stage, review via `loop_back_to`" — the topology names the
+/// within a stage, review via `loop_back_to`" - the topology names the
 /// dominant shape for the crew's benefit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -232,12 +232,12 @@ pub enum PlanTopology {
 impl PlanTopology {
     pub fn describe(&self) -> &'static str {
         match self {
-            PlanTopology::Pipeline => "pipeline — stages run in order, each feeding the next",
+            PlanTopology::Pipeline => "pipeline - stages run in order, each feeding the next",
             PlanTopology::ParallelMerge => {
-                "parallel merge — members work in parallel, then results merge"
+                "parallel merge - members work in parallel, then results merge"
             }
             PlanTopology::ReviewLoop => {
-                "review loop — stages run in order with a bounded verify loop"
+                "review loop - stages run in order with a bounded verify loop"
             }
         }
     }
@@ -330,10 +330,10 @@ pub struct SwarmAgentView {
     pub run_id: String,
     pub status: SwarmAgentStatus,
     pub round: u32,
-    /// True for the lead coordination run of a staged swarm — the single
+    /// True for the lead coordination run of a staged swarm - the single
     /// user-facing run. Member runs are never user-facing.
     pub lead: bool,
-    /// Last non-empty line of the agent's transcript, truncated — a live
+    /// Last non-empty line of the agent's transcript, truncated - a live
     /// one-line pulse for the UI. `None` when there is nothing to show.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
@@ -381,7 +381,7 @@ pub struct SwarmStatusView {
     pub judge: bool,
     pub agents: Vec<SwarmAgentView>,
     pub verdict: Option<JudgeVerdictView>,
-    /// Staged swarms only: the lead's run id — the single user-facing
+    /// Staged swarms only: the lead's run id - the single user-facing
     /// run. Clients open this run for the user; member runs are never
     /// user-facing.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -588,7 +588,7 @@ impl SwarmOrchestrator {
         // degrades to judge-free execution instead of failing. Rationale:
         // the TUI's `/team <id> <task>` always sends `judge: true` and
         // cannot know the server's config, and the dashboard documents
-        // "the caller then runs swarms judge-free" — failing closed here
+        // "the caller then runs swarms judge-free" - failing closed here
         // makes team launch unusable out of the box. The degrade is
         // explicit: the record keeps `judge_enabled: false`, which the
         // status view reports back to the caller, and the absence is
@@ -649,7 +649,7 @@ impl SwarmOrchestrator {
     /// Create a staged swarm from an [`ExecutionPlan`]: validate, spawn
     /// the lead coordination run (the user-facing run), then spawn stage
     /// 1's members. Later stages spawn from [`Self::refresh_locked`] as
-    /// earlier stages settle — advancement is driven by `status()` polls,
+    /// earlier stages settle - advancement is driven by `status()` polls,
     /// the same client-polled lifecycle as classic swarms; there is no
     /// background driver.
     pub fn create_staged(
@@ -780,7 +780,7 @@ impl SwarmOrchestrator {
         // stage's stale records (rejected-iteration transcripts, crashed
         // `Failed` statuses) pollute `advance_staged`'s output
         // collection, its fail-closed check, settle detection in
-        // `refresh_staged_locked`, and the end-of-plan judge summary —
+        // `refresh_staged_locked`, and the end-of-plan judge summary
         // all of which filter records by stage index. Review history
         // itself survives textually in `staged.review_log`; the records
         // are always the current iteration's.
@@ -792,14 +792,14 @@ impl SwarmOrchestrator {
             let st = record.staged.as_ref().expect("staged swarm");
             let plan = &st.plan;
             let sp = &plan.stages[stage_idx];
-            let mut inputs = String::from("None — you start from the task above.");
+            let mut inputs = String::from("None - you start from the task above.");
             if stage_idx > 0 {
                 let mut parts = Vec::new();
                 for j in 0..stage_idx {
                     if let Some(out) = st.stage_outputs.get(&j) {
                         let contract = &plan.stages[j].output_contract;
                         let mut p = format!(
-                            "### From stage \"{}\" — output contract: {}\n",
+                            "### From stage \"{}\" - output contract: {}\n",
                             out.stage_name, contract
                         );
                         for (agent, transcript) in &out.outputs {
@@ -914,7 +914,7 @@ impl SwarmOrchestrator {
                 .name
                 .clone();
             let msg = format!(
-                "stage {} {name:?} failed: member(s) {} failed; swarm marked incomplete — \
+                "stage {} {name:?} failed: member(s) {} failed; swarm marked incomplete - \
                  escalation note recorded on the swarm record (the lead is not notified: \
                  the orchestrator cannot message a running lead run)",
                 stage_idx + 1,
@@ -958,7 +958,7 @@ impl SwarmOrchestrator {
                 },
             );
         if let Some(target) = loop_back_to {
-            // Review stage: extract the verdict — structured tool calls
+            // Review stage: extract the verdict - structured tool calls
             // first, fenced block and keyword scan as fallbacks.
             let (pass, failed_items) = self.extract_review_verdict(record, stage_idx, &outputs);
             if pass {
@@ -1010,7 +1010,7 @@ impl SwarmOrchestrator {
                 } else {
                     let msg = format!(
                         "stage {} {stage_name:?}: verification failed {max} times (bound reached); \
-                         swarm marked incomplete — failed items recorded in the escalation note \
+                         swarm marked incomplete - failed items recorded in the escalation note \
                          on the swarm record (the lead is not notified: the orchestrator cannot \
                          message a running lead run): {}",
                         stage_idx + 1,
@@ -1038,7 +1038,7 @@ impl SwarmOrchestrator {
     ///
     /// 1. Structured tool calls: every `verdict` tool call on a review
     ///    stage agent's run, in call order (last call wins). This is the
-    ///    primary channel — reviewer runs are spawned via
+    ///    primary channel - reviewer runs are spawned via
     ///    [`SwarmWorker::spawn_reviewer`] with the tool registered.
     /// 2. Fenced ```verdict JSON blocks in the transcripts (fallback for
     ///    reviewers that cannot call tools).
@@ -1328,7 +1328,7 @@ impl SwarmOrchestrator {
         }
         const MAX: usize = 200;
         if line.len() > MAX {
-            Some(format!("{}…", &line[..MAX]))
+            Some(format!("{}...", &line[..MAX]))
         } else {
             Some(line.to_string())
         }
@@ -1556,7 +1556,7 @@ fn build_lead_task(base_task: &str, plan: &ExecutionPlan) -> String {
     let mut out = String::new();
     out.push_str(base_task);
     out.push_str(&format!(
-        "\n\n## Your role — {}, lead of the {} crew\n\
+        "\n\n## Your role - {}, lead of the {} crew\n\
          Only you talk to the user. The crew members below never address the user directly.\n\
          \n\
          ## Execution plan\n\
@@ -1568,7 +1568,7 @@ fn build_lead_task(base_task: &str, plan: &ExecutionPlan) -> String {
     for (i, s) in plan.stages.iter().enumerate() {
         let members: Vec<&str> = s.members.iter().map(|m| m.name.as_str()).collect();
         out.push_str(&format!(
-            "### Stage {}: {} — {}\n",
+            "### Stage {}: {} - {}\n",
             i + 1,
             s.name,
             members.join(", ")
@@ -1588,9 +1588,9 @@ fn build_member_task(c: MemberTaskCtx<'_>) -> String {
     let mut out = String::new();
     out.push_str(c.base_task);
     out.push_str(&format!(
-        "\n\n## Execution plan — {}: stage {}/{} \"{}\"\n\
+        "\n\n## Execution plan - {}: stage {}/{} \"{}\"\n\
          {}.\n\
-         Lead: {} — only the lead talks to the user. You are {}, a crew member: \
+         Lead: {} - only the lead talks to the user. You are {}, a crew member: \
          address your output to the lead, never directly to the user.\n",
         c.team_name,
         c.stage_idx + 1,
@@ -1602,7 +1602,7 @@ fn build_member_task(c: MemberTaskCtx<'_>) -> String {
     ));
     if let Some(fb) = c.feedback {
         out.push_str(&format!(
-            "\n## Review feedback — the \"{}\" stage rejected the previous attempt \
+            "\n## Review feedback - the \"{}\" stage rejected the previous attempt \
              (iteration {} of {}):\n",
             fb.reviewer_stage, fb.iteration, fb.max
         ));
@@ -1927,7 +1927,7 @@ mod swarm_exec_p1_tests {
 
     /// #14: the escalation note must describe what actually happens. The
     /// orchestrator has no primitive to message the lead run, so the note
-    /// must not claim the lead was notified — it records the failure on
+    /// must not claim the lead was notified - it records the failure on
     /// the swarm record and marks the swarm incomplete.
     #[test]
     fn review_bound_exhaustion_records_escalation_without_claiming_lead_notification() {
@@ -1980,7 +1980,7 @@ mod swarm_exec_p1_tests {
     }
 
     /// #14, second site: a failed stage member records the same honest
-    /// escalation note — no claim of lead notification.
+    /// escalation note - no claim of lead notification.
     #[test]
     fn stage_failure_records_escalation_without_claiming_lead_notification() {
         let (orch, worker) = orch_no_judge();

@@ -114,7 +114,7 @@ pub(crate) fn post_json(
         HttpError::Status(code, body_snip) => {
             if code == 401 || code == 403 {
                 failed(format!(
-                    "HTTP {code}: authentication rejected — check the API key (response: {body_snip})"
+                    "HTTP {code}: authentication rejected - check the API key (response: {body_snip})"
                 ))
             } else {
                 failed(format!("HTTP {code} from session API: {body_snip}"))

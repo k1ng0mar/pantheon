@@ -2,7 +2,7 @@
 //!
 //! Policy: every test lives under `eval/`; only deterministic checks
 //! against **public** APIs. Each test here guards a real invariant or a
-//! past regression — no source-text lints beyond the stdout layering
+//! past regression - no source-text lints beyond the stdout layering
 //! rule, no host-dependent or live-network behavior.
 
 use pantheon_api::events::Event;
@@ -320,7 +320,7 @@ fn the_runtime_does_not_print_to_stdout() {
 }
 
 /// The temporal preamble tells the model the ephemeral hint is never to
-/// be quoted — the contract the whole hint-ephemerality design relies on.
+/// be quoted - the contract the whole hint-ephemerality design relies on.
 #[test]
 fn temporal_preamble_tells_the_model_never_to_quote_hints() {
     assert!(

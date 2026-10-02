@@ -1,10 +1,10 @@
 //! JSON-RPC 2.0 protocol types and method dispatch (§18).
 //!
 //! The runtime answers commands over a transport; the transport does nothing
-//! but move JSON lines — this module owns the protocol. One request id maps
+//! but move JSON lines - this module owns the protocol. One request id maps
 //! to exactly one response id, notifications (id `null`) are executed but
-//! never answered, and every failure — bad JSON, unknown method, bad params,
-//! handler error — becomes a structured error response, never a crash.
+//! never answered, and every failure - bad JSON, unknown method, bad params,
+//! handler error - becomes a structured error response, never a crash.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -207,7 +207,7 @@ impl Dispatcher {
     /// Covers the protocol-level failures the spec requires to be answers,
     /// not crashes: a line that is not JSON gets a parse-error response with
     /// id `null`; a non-request or wrong-version object gets an
-    /// invalid-request response. Batch arrays are rejected for now — the
+    /// invalid-request response. Batch arrays are rejected for now - the
     /// runtime answers one command per line.
     pub fn handle_line(&self, line: &str) -> Vec<Response> {
         let value: Value = match serde_json::from_str(line) {
@@ -231,7 +231,7 @@ impl Dispatcher {
     }
 }
 
-/// `system.ping` — liveness probe.
+/// `system.ping` - liveness probe.
 struct Ping;
 impl MethodHandler for Ping {
     fn call(&self, _params: Option<Value>) -> Result<Value, RpcError> {
@@ -239,7 +239,7 @@ impl MethodHandler for Ping {
     }
 }
 
-/// `system.methods` — the currently registered command names.
+/// `system.methods` - the currently registered command names.
 struct MethodList {
     methods: Arc<RwLock<HashMap<String, Arc<dyn MethodHandler>>>>,
 }

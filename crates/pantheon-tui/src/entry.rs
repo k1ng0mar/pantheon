@@ -180,7 +180,7 @@ pub fn run_with_resume(resume: Option<String>) {
 /// name fails here with a clear error, because the session path folds
 /// resolution failures into the anonymous fallback and would otherwise
 /// open the wrong agent silently. The validated name is installed as the
-/// process-lifetime override, which `Config::resolve_profile` consults —
+/// process-lifetime override, which `Config::resolve_profile` consults
 /// session construction needs no new parameter.
 pub fn run_with_profile(name: &str) {
     let data_dir = crate::terminal::data_dir();
@@ -211,7 +211,7 @@ pub fn run_with_profile(name: &str) {
 ///
 /// The `local` provider is Ollama (install.sh installs it), and a bare
 /// `pantheon` with Ollama down used to open a session whose first
-/// message died with a bare PROVIDER_HTTP network error — no mention of
+/// message died with a bare PROVIDER_HTTP network error - no mention of
 /// Ollama, no `pantheon setup` hint. Probing before the TUI opens turns
 /// that into the fix: start Ollama, pull the model, or pick another
 /// provider.

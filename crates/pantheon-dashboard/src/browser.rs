@@ -1,22 +1,22 @@
 //! Browser take-control endpoints: live screenshot stream + input forwarding.
 //!
 //! The dashboard drives the *same* configured browser backend the agent
-//! loop uses ([`pantheon_runtime::build_browser_backend`] — identical
+//! loop uses ([`pantheon_runtime::build_browser_backend`] - identical
 //! `[browser]` resolution, identical secret handling), through the
 //! existing canonical tool surface
 //! ([`BrowserBackend::invoke`] with `screenshot` / `eval` / `press` /
-//! `navigate` / … argv). No second browser driver.
+//! `navigate` / ... argv). No second browser driver.
 //!
 //! Endpoints (all under `/api/`, so the dashboard token auth applies):
 //!
 //! * `GET /api/browser/status` → `{enabled, backend, session}`.
 //! * `GET /api/browser/stream?session=<name>&fps=<1-10>` → **WebSocket**.
-//!   Server → client: one `{"type":"ready",…}` text frame, then binary PNG
+//!   Server → client: one `{"type":"ready",...}` text frame, then binary PNG
 //!   frames at the requested rate (default 2 fps). Capture failures
-//!   arrive as `{"type":"error","message":…}` text frames; the stream
-//!   keeps going. Client → server messages are ignored — input goes
+//!   arrive as `{"type":"error","message":...}` text frames; the stream
+//!   keeps going. Client → server messages are ignored - input goes
 //!   through `POST /api/browser/input`.
-//! * `POST /api/browser/input` → `{session?, action, …}`; forwards one
+//! * `POST /api/browser/input` → `{session?, action, ...}`; forwards one
 //!   action into the session. Actions: `tap` (`x`, `y` CSS px),
 //!   `type` (`text` into the focused element), `scroll` (`dx`, `dy`),
 //!   `press` (`key`), `navigate` (`url`), `back`, `forward`, `reload`.
@@ -29,7 +29,7 @@
 //!
 //! Sessions are named (`?session=` / `"session"`, sanitized, default
 //! `"default"`). One caveat the app must know: browser sessions are
-//! per-process. The dashboard drives its *own* backend instance — with
+//! per-process. The dashboard drives its *own* backend instance - with
 //! the `gsd` backend, session names address the shared external daemon
 //! (`--session`), so the dashboard can attach to the agent's session by
 //! name; with `camofox` (in-process shim children) the dashboard's
@@ -52,7 +52,7 @@ const MAX_FPS: u32 = 10;
 
 /// Build the configured browser backend for this dashboard server.
 /// Errors are API responses: 503 when the browser tool is disabled,
-/// 500 when the backend fails to build (bad config, missing binary…).
+/// 500 when the backend fails to build (bad config, missing binary...).
 fn backend_for(app: &App) -> Result<Arc<dyn BrowserBackend>, Response> {
     let cfg = crate::session_factory::load_config(&app.data_dir)
         .map_err(|e| err_json(500, "BROWSER", &format!("load config: {e}")))?;
@@ -77,8 +77,8 @@ fn backend_for(app: &App) -> Result<Arc<dyn BrowserBackend>, Response> {
 /// `GET /api/browser/status?session=<name>` →
 /// `{enabled, backend, note, last_activity}`.
 /// `last_activity` is `{action, detail, at}` (RFC-3339 UTC) for the
-/// session's latest browser narration — what the agent or take-control
-/// last did — or `null` when nothing was recorded yet. Never fails:
+/// session's latest browser narration - what the agent or take-control
+/// last did - or `null` when nothing was recorded yet. Never fails:
 /// reports the configured state even when the backend itself would not
 /// build, and a dead ledger degrades `last_activity` to null.
 pub fn status(app: &App, req: &Request) -> Response {
@@ -98,7 +98,7 @@ pub fn status(app: &App, req: &Request) -> Response {
 }
 
 /// Latest browser narration for `session` as JSON, or null. Ledger
-/// failures degrade to null — status must never fail.
+/// failures degrade to null - status must never fail.
 fn latest_activity(app: &App, session: &str) -> serde_json::Value {
     let view = pantheon_storage::Ledger::open(&app.data_dir.join("ledger.db"))
         .and_then(|l| l.browser_activity(session));
@@ -150,8 +150,8 @@ fn session_name(raw: Option<&str>) -> String {
 
 /// Map a take-control action + body to narration `(action, detail)`.
 /// Mirrors `pantheon_web::browser::tools::activity_of` for the
-/// dashboard's own action vocabulary (tap/type/scroll/…). Typed text
-/// never lands in `detail` — it may contain credentials or other
+/// dashboard's own action vocabulary (tap/type/scroll/...). Typed text
+/// never lands in `detail` - it may contain credentials or other
 /// secrets, so it is replaced with a placeholder.
 fn takeover_activity(action: &str, body: &serde_json::Value) -> (String, String) {
     let field = |key: &str| body.get(key).and_then(|v| v.as_str()).unwrap_or("");
@@ -167,7 +167,7 @@ fn takeover_activity(action: &str, body: &serde_json::Value) -> (String, String)
 /// Record take-control narration into the ledger. Best-effort: a dead
 /// ledger must never fail the input itself. No run context exists on
 /// the take-control path, so `run_id` is empty and consumers key on
-/// `session` — the same contract as the agent path in
+/// `session` - the same contract as the agent path in
 /// `pantheon-runtime`.
 fn record_takeover_activity(app: &App, session: &str, action: &str, detail: String) {
     let ledger = match pantheon_storage::Ledger::open(&app.data_dir.join("ledger.db")) {
@@ -183,7 +183,7 @@ fn record_takeover_activity(app: &App, session: &str, action: &str, detail: Stri
 }
 
 /// Translate one take-control action into the canonical browser argv.
-/// Pure function — unit-tested. Everything goes through
+/// Pure function - unit-tested. Everything goes through
 /// [`BrowserBackend::invoke`]; coordinate actions use the backend's
 /// `eval` command (JS in the page), exactly like the tool surface does.
 pub(crate) fn input_argv(action: &str, body: &serde_json::Value) -> Result<Vec<String>, String> {
@@ -252,10 +252,10 @@ pub(crate) fn input_argv(action: &str, body: &serde_json::Value) -> Result<Vec<S
     }
 }
 
-/// `POST /api/browser/input` — forward one action into the browser session.
+/// `POST /api/browser/input` - forward one action into the browser session.
 ///
 /// Body: `{session?, action, x?, y?, text?, key?, url?, dx?, dy?}`.
-/// Response: `{"ok": true, "action": …, "result": <backend JSON>}`.
+/// Response: `{"ok": true, "action": ..., "result": <backend JSON>}`.
 pub fn input(app: &App, req: &Request) -> Response {
     let body = match body_json(req) {
         Ok(v) => v,
@@ -299,7 +299,7 @@ pub fn input(app: &App, req: &Request) -> Response {
 }
 
 /// Replays the already-consumed HTTP request head, then delegates to the
-/// socket, so `tungstenite::accept` can parse the WS handshake itself —
+/// socket, so `tungstenite::accept` can parse the WS handshake itself
 /// the same trick live voice uses.
 struct HeadReplay {
     head: Vec<u8>,
@@ -334,7 +334,7 @@ impl Write for HeadReplay {
     }
 }
 
-/// `GET /api/browser/stream?session=<name>&fps=<1-10>` — WebSocket
+/// `GET /api/browser/stream?session=<name>&fps=<1-10>` - WebSocket
 /// upgrade; binary PNG frames of the live page.
 pub fn stream(app: &App, req: &Request) -> Response {
     let backend = match backend_for(app) {
@@ -349,7 +349,7 @@ pub fn stream(app: &App, req: &Request) -> Response {
         .unwrap_or(DEFAULT_FPS)
         .clamp(1, MAX_FPS);
     // Rebuild the raw head for the WS handshake (the HTTP layer already
-    // consumed it). Query string included — tungstenite ignores it.
+    // consumed it). Query string included - tungstenite ignores it.
     let qs: Vec<String> = req.query.iter().map(|(k, v)| format!("{k}={v}")).collect();
     let target = if qs.is_empty() {
         req.path.clone()
@@ -364,7 +364,7 @@ pub fn stream(app: &App, req: &Request) -> Response {
     let head = head.into_bytes();
     // One frame dir per viewer connection (never one per process): two
     // concurrent viewers of the same session must not share `frame.png`
-    // — they would read each other's screenshots — and the disconnect
+    // - they would read each other's screenshots - and the disconnect
     // cleanup in `serve_stream` must not nuke a live viewer's directory.
     let frame_dir = frame_dir_for(&session, &pantheon_runtime::new_run_id());
     Response::Takeover {
@@ -484,12 +484,12 @@ fn serve_stream(
     let _ = ws.close(None);
 }
 
-/// First line, capped — error text frames stay small.
+/// First line, capped - error text frames stay small.
 fn short_err(e: &str) -> String {
     let line = e.lines().next().unwrap_or("capture failed");
     const MAX: usize = 300;
     if line.len() > MAX {
-        format!("{}…", &line[..MAX])
+        format!("{}...", &line[..MAX])
     } else {
         line.to_string()
     }

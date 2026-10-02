@@ -2,7 +2,7 @@
 //!
 //! All providers go through [`post_json`] / [`get_json`]: a 30s timeout,
 //! accurate timeout errors, and failure descriptions that name the HTTP
-//! status plus a truncated slice of the response body — never request
+//! status plus a truncated slice of the response body - never request
 //! material (bodies carry API keys, headers carry tokens).
 
 use super::error::SearchError;

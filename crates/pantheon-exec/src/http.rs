@@ -6,15 +6,15 @@
 //!    without sending a TLS `close_notify` alert. rustls treats that as
 //!    an `UnexpectedEof` I/O error once the buffered plaintext is
 //!    consumed; curl and OpenSSL accept the bytes. Since every byte we
-//!    keep arrived in an authenticated TLS record — only the *shutdown*
-//!    was sloppy — we accept the body when the framing says it is
+//!    keep arrived in an authenticated TLS record - only the *shutdown*
+//!    was sloppy - we accept the body when the framing says it is
 //!    already whole, and keep failing hard on genuine truncation.
 //!
 //! 2. **curl fallback.** Some egress proxies drop rustls handshakes
 //!    while OpenSSL succeeds (observed: every HTTPS host through a
 //!    filtering proxy fails pre-status-line with ureq, while curl
-//!    returns 200). rustls exposes no knob for this — there is no
-//!    response to salvage — so on a transport-level ureq failure we
+//!    returns 200). rustls exposes no knob for this - there is no
+//!    response to salvage - so on a transport-level ureq failure we
 //!    retry once via the `curl` CLI (argv-only, no shell) with the same
 //!    timeout/cap posture. HTTP error statuses never trigger it.
 
@@ -64,7 +64,7 @@ pub fn get(
     }
 }
 
-/// GET via ureq only — no curl fallback. Used by callers that must not
+/// GET via ureq only - no curl fallback. Used by callers that must not
 /// inherit the fallback (e.g. paths that need the raw ureq response
 /// handling). Most callers want [`get`].
 fn get_ureq(
@@ -245,8 +245,8 @@ fn teardown_is_benign(framing: Framing, received: u64) -> bool {
 ///
 /// Tolerates an unclean TLS shutdown when the framing says the body is
 /// already whole (close-delimited bodies with bytes received, or a
-/// fully-received declared length). Anything else — zero bytes, a short
-/// length-framed body, a chunked body — still errors: that is genuine
+/// fully-received declared length). Anything else - zero bytes, a short
+/// length-framed body, a chunked body - still errors: that is genuine
 /// truncation, not server sloppiness.
 pub fn read_body_capped(resp: ureq::Response, max_bytes: u64) -> io::Result<Vec<u8>> {
     let framing = framing(
@@ -284,7 +284,7 @@ pub fn fetch_error_message(what: &str, err: &str) -> String {
     if is_unclean_tls_close_text(err) {
         format!(
             "{what}: the server closed the connection without a clean TLS shutdown \
-             (it skipped the TLS closing handshake — a server-side quirk); \
+             (it skipped the TLS closing handshake - a server-side quirk); \
              no complete response was received"
         )
     } else {

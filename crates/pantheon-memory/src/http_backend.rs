@@ -1,7 +1,7 @@
 //! HTTP-based memory backend adapter. Talks to any external memory service
 //! that implements a small JSON API (recall, write, list_agent). This is
 //! the adapter pattern for services like GalaxyMem, Mnemosyne, Honcho, or
-//! Hindsight — they run as a separate process or remote service, Pantheon
+//! Hindsight - they run as a separate process or remote service, Pantheon
 //! holds the capability gate, and the HTTPBackend forwards calls.
 //!
 //! The protocol is deliberately simple:
@@ -295,7 +295,7 @@ fn http_post(
 }
 
 /// One shared agent shape for the memory bridge: bounded overall timeout,
-/// rustls, no async runtime — the same posture as the provider plane.
+/// rustls, no async runtime - the same posture as the provider plane.
 ///
 /// ureq 2.x ignores `NO_PROXY` entirely, so with `proxy-from-env` enabled a
 /// loopback URL would be sent to the environment proxy and die there.

@@ -530,7 +530,7 @@ fn handler_busy_and_silent_drop_during_inflight_turn() {
 #[test]
 fn handler_approval_needed_parks_turn() {
     // (f) The agent parking an approval surfaces `approval_needed`; the
-    // turn pauses — no reply audio, no auto-approve.
+    // turn pauses - no reply audio, no auto-approve.
     let (pipes, _) = test_pipes();
     let cfg = LiveVoiceConfig {
         limits: enabled_limits(),
@@ -566,7 +566,7 @@ fn handler_approval_needed_parks_turn() {
 #[test]
 fn handler_silence_autoclose() {
     // (b) Server-side VAD safety net: speech then silence past
-    // `live_silence_timeout_ms` auto-closes the utterance — no `end` sent.
+    // `live_silence_timeout_ms` auto-closes the utterance - no `end` sent.
     let (pipes, _) = test_pipes();
     let cfg = LiveVoiceConfig {
         limits: LiveVoiceSection {
@@ -585,7 +585,7 @@ fn handler_silence_autoclose() {
     assert_eq!(h.next_text(), json!({"type": "ready"}));
     h.send_text(r#"{"type":"start"}"#);
     h.send_binary(&loud_pcm(3200)); // speech seen
-                                    // No `end` — the silence timeout must close the utterance itself.
+                                    // No `end` - the silence timeout must close the utterance itself.
     assert_eq!(
         h.next_text(),
         json!({"type":"transcript","text":"hello from the fake mic","final":true}),

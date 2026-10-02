@@ -16,8 +16,8 @@
 //! bypass spellings cheaply and deterministically, but it cannot see
 //! through everything: nested quoting, obfuscated expansions, commands
 //! fetched or decoded at runtime, and novel spellings will slip past it.
-//! The sandbox — capability policy, filesystem isolation, network egress
-//! control — is the real enforcement boundary. This gate only fails fast
+//! The sandbox - capability policy, filesystem isolation, network egress
+//! control - is the real enforcement boundary. This gate only fails fast
 //! on the obvious cases and must never be treated as a safety proof.
 
 use pantheon_api::error::{Layer, PantheonError};
@@ -39,7 +39,7 @@ pub struct RuleMatch {
     /// NOT the command. A blocked command may contain secrets (`curl -H
     /// "Authorization: Bearer sk-..." | sh`), and this struct travels into
     /// errors and logs. It carries a stable hash of the normalized command
-    /// plus its length — enough to correlate hits across runs, nothing an
+    /// plus its length - enough to correlate hits across runs, nothing an
     /// attacker can read a secret out of.
     pub snippet: String,
 }
@@ -289,7 +289,7 @@ const PATTERNS: &[Pattern] = &[
 /// shell-word parser that spots git pushes written out in the open, so the
 /// model cannot run `git push` unnoticed through the `shell` tool. A purely
 /// syntactic parser cannot be complete here: opaque shell constructions
-/// can hide a push from it by construction — interpreters (`sh -c`,
+/// can hide a push from it by construction - interpreters (`sh -c`,
 /// `bash -c`, `python -c`, `perl -e`, ...), `find -exec`, scripts arriving
 /// on stdin, function shadowing, git `!`-aliases, launcher wrappers that
 /// forward argv, field-splitting tricks, and anything decoded or fetched
@@ -298,7 +298,7 @@ const PATTERNS: &[Pattern] = &[
 ///
 /// INTENDED FUTURE ARCHITECTURE: authoritative enforcement belongs at the
 /// exec/policy boundary, not in this parser. The plan is a final-argv check
-/// — a `git` argv whose subcommand is `push` requires approval — with
+/// - a `git` argv whose subcommand is `push` requires approval - with
 /// every opaque shell construction (interpreters, `eval`, `sh -c`-style
 /// re-parse, unreadable argv) classified as opaque execution under the
 /// policy, so hiding a push behind opacity is itself the gated event.
@@ -313,7 +313,7 @@ const PATTERNS: &[Pattern] = &[
 ///
 /// This is a REAL shell-word parser, not a substring scan. Detection
 /// semantics (matching is case-insensitive; the conservative direction
-/// applies throughout — when a word's static value cannot be determined,
+/// applies throughout - when a word's static value cannot be determined,
 /// it counts as a push and the operator decides):
 ///
 /// - The command is tokenized quote-aware: single/double quotes, backslash
@@ -343,7 +343,7 @@ const PATTERNS: &[Pattern] = &[
 ///   shapes plus the unknown-stdin-args rule). Layers nest arbitrarily.
 /// - A simple command counts when its command word (basename, after
 ///   expansion) is `git` and the first non-option word after git's global
-///   options is `push` or `push-options` — or is opaque. An opaque command
+///   options is `push` or `push-options` - or is opaque. An opaque command
 ///   word with a `push`/opaque argument counts too.
 /// - `eval <code>` scans `<code>` as shell; `sh`/`bash`/`dash`/`zsh`
 ///   `-c`/`--command <code>` scans `<code>` as shell (opaque code counts).
@@ -352,7 +352,7 @@ const PATTERNS: &[Pattern] = &[
 ///   double quotes do not).
 ///
 /// Documented non-goals: expansions the parser cannot see through
-/// (`${x:0:3}` slicing, `${v//pat/rep}` rewriting, `$?`/`$1`/etc. — all
+/// (`${x:0:3}` slicing, `${v//pat/rep}` rewriting, `$?`/`$1`/etc. - all
 /// opaque, hence flagged when they sit in command/subcommand position),
 /// code fetched or decoded at runtime, and substitution-shaped text inside
 /// quoted heredoc bodies (flagged conservatively).
@@ -1200,7 +1200,7 @@ fn expand_ifs_words(s: &str) -> String {
 }
 
 /// Best-effort static evaluation of a command substitution body's stdout,
-/// without running anything. `None` for anything we cannot evaluate — the
+/// without running anything. `None` for anything we cannot evaluate - the
 /// caller treats unknown output conservatively.
 ///
 /// Handled shapes (matched against the normalized body):
@@ -2083,7 +2083,7 @@ fn analyze_xargs(words: &[String], pos: usize, ctx: &mut PushCtx, depth: usize) 
             break;
         }
         // `-I R` / `--replace[=]R`: capture the replacement string from the
-        // RAW word — placeholders are case-sensitive (`-IQQ` ≠ `-Iqq`).
+        // RAW word - placeholders are case-sensitive (`-IQQ` ≠ `-Iqq`).
         if raw == "-I" || raw == "-i" || raw == "--replace" {
             match words.get(p + 1).and_then(|w| known1(w, ctx)) {
                 Some(r) => replace = Some(r),
@@ -2487,7 +2487,7 @@ pub fn assess(command: &str) -> DangerAssessment {
 /// (first 8 hex of an FNV-1a 64 hash) plus the char length. Deterministic
 /// across runs so repeated blocks of the same command correlate, but
 /// irreversible, so an error or log line carrying it cannot leak the
-/// command text — which may itself contain secrets.
+/// command text - which may itself contain secrets.
 ///
 /// FNV-1a rather than a crypto hash because this is an identifier, not
 /// authentication; it needs to be std-only and fast on the hot path.
@@ -2588,7 +2588,7 @@ mod tests {
     #[test]
     fn git_push_quoted_inside_substitution_not_detected() {
         // The substitution runs, but its payload is just `echo` printing a
-        // string — no git command executes.
+        // string - no git command executes.
         assert!(!is_git_push(r#"echo $(echo "git push")"#));
     }
 

@@ -131,7 +131,7 @@ pub fn doctor(dir: &Path) -> DoctorReport {
                         "USES_NET_OR_EXEC",
                         format!(
                             "__init__.py mentions '{pat}': plugins are NOT sandboxed and run \
-                             with your full privileges — approve only what you trust"
+                             with your full privileges - approve only what you trust"
                         ),
                     ));
                 }

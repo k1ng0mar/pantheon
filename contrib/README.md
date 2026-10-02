@@ -1,11 +1,11 @@
-# contrib/ — deployment helpers
+# contrib/ - deployment helpers
 
 Production-grade extras that do not belong in the binary: service
 definitions, example configs, and similar.
 
 ## Service supervision
 
-### systemd (Linux) — `pantheon-gateway.service`
+### systemd (Linux) - `pantheon-gateway.service`
 
 A user-level unit for `pantheon gateway run` with `Restart=on-failure`,
 restart backoff, a start-limit burst guard, and standard user-service
@@ -25,7 +25,7 @@ systemctl --user enable --now pantheon-gateway.service
 
 Or let Pantheon do it: `pantheon gateway start` installs the service for
 the current user when none is installed yet (same idea, generated for
-your paths) and ensures it is running — use that when you do not want to
+your paths) and ensures it is running - use that when you do not want to
 hand-edit the file.
 
 ### Other process managers
@@ -37,7 +37,7 @@ hand-edit the file.
 - **Windows (Task Scheduler):** create a logon-triggered task running
   `pantheon.exe gateway run`, set to restart on failure.
 - **Anything else (cron, supervisord, s6):** the gateway is a normal
-  foreground process — run `pantheon gateway run` under whatever
+  foreground process - run `pantheon gateway run` under whatever
   supervisor you already use. No forking, no pidfiles.
 
 ### What is deliberately out of scope

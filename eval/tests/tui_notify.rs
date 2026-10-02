@@ -18,14 +18,14 @@ fn should_notify_only_for_background_completions() {
 #[test]
 fn summarize_turn_uses_first_line_capped() {
     let s = summarize_turn(Some("Fixed the bug\nsecond line here"), 3);
-    assert_eq!(s, "turn 3 done — Fixed the bug");
+    assert_eq!(s, "turn 3 done - Fixed the bug");
 }
 
 #[test]
 fn summarize_turn_truncates_long_first_lines() {
     let long = "x".repeat(200);
     let s = summarize_turn(Some(&long), 1);
-    assert!(s.chars().count() <= "turn 1 done — ".chars().count() + 120);
+    assert!(s.chars().count() <= "turn 1 done - ".chars().count() + 120);
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn find_notify_send_rejects_non_executable_and_missing() {
 fn notify_command_argv_is_exact() {
     let dir = tempdir().unwrap();
     let bin = dir.path().join("notify-send");
-    let cmd = notify_command_with(&bin, "Pantheon — tab", "turn 1 done — hi");
+    let cmd = notify_command_with(&bin, "Pantheon - tab", "turn 1 done - hi");
     let args: Vec<_> = cmd
         .get_args()
         .map(|a| a.to_string_lossy().into_owned())
@@ -73,8 +73,8 @@ fn notify_command_argv_is_exact() {
             "Pantheon",
             "--expire-time",
             "8000",
-            "Pantheon — tab",
-            "turn 1 done — hi",
+            "Pantheon - tab",
+            "turn 1 done - hi",
         ]
     );
     assert_eq!(cmd.get_program().to_string_lossy(), bin.to_string_lossy());

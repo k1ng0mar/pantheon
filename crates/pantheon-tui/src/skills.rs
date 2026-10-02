@@ -1,11 +1,11 @@
 //! `pantheon skills`: Tier 1 skill lifecycle.
 //!
 //! Three verbs:
-//!   list    — every discovered skill, with scope and origin provenance.
-//!   import  — copy an external SKILL.md into <data_dir>/skills so it
+//!   list    - every discovered skill, with scope and origin provenance.
+//!   import  - copy an external SKILL.md into <data_dir>/skills so it
 //!             survives across processes (cross-format: Hermes, OpenClaw,
 //!             `.agents`, `.claude`, native).
-//!   doctor  — loud preflight: every discovered skill parsed, every broken
+//!   doctor  - loud preflight: every discovered skill parsed, every broken
 //!             one named with its error code.
 //!
 //! All three are read-only on the source side; `import` is the only op
@@ -74,7 +74,7 @@ pub fn cmd_skills_list(args: &[String]) {
         println!();
         println!("{} skill(s) skipped:", scan.rejected.len());
         for r in &scan.rejected {
-            println!("  {} — {}", r.path.display(), r.reason);
+            println!("  {} - {}", r.path.display(), r.reason);
         }
         println!("run `pantheon skills doctor` for details");
     }
@@ -274,14 +274,14 @@ pub fn cmd_skills_doctor(_args: &[String]) {
         println!("ok   {} ({})", s.meta.name, s.meta.origin);
     }
     for r in &scan.rejected {
-        println!("fail {} — {}", r.path.display(), r.reason);
+        println!("fail {} - {}", r.path.display(), r.reason);
     }
     if scan.loaded.is_empty() && scan.rejected.is_empty() {
         println!("(no skills discovered)");
     }
     if !scan.rejected.is_empty() {
         eprintln!(
-            "{} broken or shadowed skill(s) — fix the SKILL.md, or remove the \
+            "{} broken or shadowed skill(s) - fix the SKILL.md, or remove the \
              duplicate that loses the name collision",
             scan.rejected.len()
         );

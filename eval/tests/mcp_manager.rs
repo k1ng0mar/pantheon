@@ -5,7 +5,7 @@
 //! Covers the full outward path: stdio handshake, tools/list,
 //! namespaced [`ToolRegistry`](pantheon_tools::tools::ToolRegistry)
 //! registration, invocation of a registered tool, and the approval gate
-//! — including that a version or content change invalidates an
+//! - including that a version or content change invalidates an
 //! approval. Each test gets a fresh temp dir as the manager scope, so
 //! approvals never touch the real data dir.
 
@@ -196,7 +196,7 @@ fn tool_names_are_namespaced_and_sanitized() {
 }
 
 /// #5: revoking an approval blocks `call_tool` even while the
-/// connection is still alive — the call must not ride a stale
+/// connection is still alive - the call must not ride a stale
 /// connection past a lapsed/revoked approval. (Fails before the fix:
 /// the call goes through on the live connection.)
 #[test]
@@ -235,7 +235,7 @@ fn revoked_approval_blocks_call_tool_on_live_connection() {
     );
 }
 
-/// #5 happy path: an approved, unchanged server still proceeds — the
+/// #5 happy path: an approved, unchanged server still proceeds - the
 /// per-call gate must not break the normal call flow.
 #[test]
 fn approved_unchanged_server_call_still_proceeds() {
@@ -262,7 +262,7 @@ fn approved_unchanged_server_call_still_proceeds() {
 }
 
 /// #7: for launcher-shim servers (npx/uvx) the content hash binds the
-/// package spec + args — not the shim binary — so bumping the pin
+/// package spec + args - not the shim binary - so bumping the pin
 /// lapses the approval. (Fails before the fix: the hash covers the
 /// npx binary, identical across pins, so the approval never lapses.)
 #[test]

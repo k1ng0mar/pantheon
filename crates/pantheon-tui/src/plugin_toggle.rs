@@ -2,7 +2,7 @@
 //! to toggle.
 //!
 //! Lists every plugin (bundled + third-party) with kind, version,
-//! enabled state, and the trust note — plugins run code with the
+//! enabled state, and the trust note - plugins run code with the
 //! operator's user privileges, which is the distinction the approval UI
 //! must surface (see `pantheon_extensions::bundled` docs): an MCP
 //! server is an integration Pantheon talks to, never code it runs.
@@ -19,7 +19,7 @@ use std::path::Path;
 /// The trust distinction, shown on every render. Condensed from the
 /// `pantheon_extensions::bundled` module docs.
 pub(crate) const TRUST_NOTE: &str =
-    "trust: a plugin is code Pantheon runs on your machine with your user privileges — \
+    "trust: a plugin is code Pantheon runs on your machine with your user privileges - \
 Pantheon does not sandbox plugins, so enabling one is consent to run its code. \
 MCP servers are different: integrations Pantheon talks to, never code it runs.";
 
@@ -101,7 +101,7 @@ pub(crate) fn run_toggle_screen(data_dir: &Path) {
 
         execute!(stdout, cursor::MoveTo(0, 0)).ok();
         let _ = crossterm::terminal::Clear(crossterm::terminal::ClearType::All);
-        println!("Plugins — toggle what the agent may load\r");
+        println!("Plugins - toggle what the agent may load\r");
         println!("  ↑↓ navigate · space/enter toggle · r refresh · q/Esc quit\r");
         println!("\r");
         for (i, row) in rows.iter().enumerate().skip(start).take(visible_rows) {

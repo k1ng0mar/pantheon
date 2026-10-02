@@ -11,7 +11,7 @@ Design notes:
 - Best-effort by contract. Every function swallows its own errors and
   callers additionally guard; a relay failure must degrade to "no
   advisory", never to a crash. (On the ``pre_tool_call`` GATE hook a
-  crash would fail CLOSED and deny the tool call — see __init__.py.)
+  crash would fail CLOSED and deny the tool call - see __init__.py.)
 - Entries carry a timestamp; anything older than ``_TTL`` seconds is
   dropped on read. Files are removed once empty.
 - ``fcntl.flock`` serialises concurrent fires from parallel tool calls.

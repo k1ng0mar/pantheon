@@ -84,7 +84,7 @@ def fnv1a_hex(data: bytes) -> str:
 def audit_check(path: Path) -> tuple[bool, str]:
     """Validate a JSONL trajectory: every line parses, seq strictly increases.
 
-    Returns (ok, detail) — detail is the failure reason or a summary.
+    Returns (ok, detail) - detail is the failure reason or a summary.
     """
     if not path.exists():
         return False, f"trajectory file missing: {path}"
@@ -323,7 +323,7 @@ def main():
         for case in spec["cases"]:
             why = skip_reason(case, bin_path, py3)
             status = f"SKIP ({why})" if why else "RUN"
-            print(f"{case['id']:<40} {status}  — {case['title']}")
+            print(f"{case['id']:<40} {status}  - {case['title']}")
         return 0
 
     # Refuse to run a suite that asserts against verbs the binary no longer

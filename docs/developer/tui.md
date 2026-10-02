@@ -4,10 +4,10 @@
 > Slash commands and verbs listed here describe design targets unless marked
 > shipped; the authoritative surface is `docs/reference/terminal.md`.
 > Shipped today: ASCII splash (embedded logo art + styled wordmark, wide/narrow
-> variants at 64 cols), session tabs across the top (Ctrl+Tab cycle, Alt+1–9
+> variants at 64 cols), session tabs across the top (Ctrl+Tab cycle, Alt+1-9
 > jump, ● marks a background session with a running turn), live status bar
 > (context %, per-turn in/out, tok/s, model, turn count, session prefix,
-> cost; unknown renders as —), reasoning view (◇ Thinking blocks, collapsed
+> cost; unknown renders as - ), reasoning view (◇ Thinking blocks, collapsed
 > summary by default), turn timeline (Ctrl+O or F2, read-only; ↑↓ navigate,
 > Enter jumps to a turn), double-Esc interrupt + double-Esc rewind
 > (first Esc arms, second confirms; rewind is durable via `TurnRewound` and
@@ -44,7 +44,7 @@ Visual primitives shared by every family:
 | RUNNING | turn in flight | status bar ● working, live token counter ticking | WAITING/COMPLETE/ERROR |
 | INTERRUPT ARMED | first Esc mid-run | status bar ⚠ "esc to interrupt" | INTERRUPTED on second Esc; RUNNING on any other key |
 | REWIND ARMED | first Esc while idle (a rewindable turn exists) | status bar ⚠ "esc again: rewind?" | REWIND OFFER on second Esc; INPUT on any other key |
-| REWIND OFFER | second Esc while idle | status bar takes over: `↩ rewind turn N (preview…)? [y] yes [n] no` | [y] → TurnRewound emitted, transcript rolls back, INPUT; [n] → INPUT |
+| REWIND OFFER | second Esc while idle | status bar takes over: `↩ rewind turn N (preview...)? [y] yes [n] no` | [y] → TurnRewound emitted, transcript rolls back, INPUT; [n] → INPUT |
 | COMPLETE | turn done, final text rendered | status bar ✓ ready, summary line | INPUT |
 | WAITING | agent asks clarification | question block with numbered options, [1][2] key hints | INPUT on selection |
 | COMPACTING | context threshold crossed (78%) | compaction progress block: preserving list ticking, discard count | READY with "compacted Nk → Mk" block |
@@ -164,7 +164,7 @@ Removed from the surface: `/memory` (`/remember` covers it), `/policy`,
 - Slash commands: first-class palette with fuzzy search, autocomplete on args
   (`/model cla` → model list). `/models` = full browser, `/model` = quick switcher.
 - Session tabs: opencode-style bar across the top, `[ 1 title ● │ 2 other ]`.
-  Ctrl+Tab cycles, Alt+1–9 jumps (checked before the Char handler; Alt+1
+  Ctrl+Tab cycles, Alt+1-9 jumps (checked before the Char handler; Alt+1
   arrives as Char('1')+ALT). The active tab is bold cyan, inactive tabs dim,
   and a yellow ● marks sessions with a running turn, the "background
   session" indicator: you can switch away mid-run and the tab shows it is
@@ -172,7 +172,7 @@ Removed from the surface: `/memory` (`/remember` covers it), `/policy`,
 - Status bar: live telemetry, real or absent. Ready/working/interrupted word,
   model, context as `{used}k/{window}k` with a fill bar, per-turn in/out,
   tok/s, turn count (shows turn+1 while running), 6-char session prefix,
-  cost when known. Anything the runtime did not expose renders as `—`.
+  cost when known. Anything the runtime did not expose renders as ` - `.
   A pending rewind confirmation takes over the whole bar so the question is
   impossible to miss.
 - Hotkeys: Esc arm/confirm (interrupt mid-run, rewind offer idle) ·

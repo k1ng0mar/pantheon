@@ -27,7 +27,7 @@ fn die(msg: &str) -> ! {
 /// `pantheon dashboard [--port 7171] [--host 127.0.0.1] [--open]`.
 /// Starts the web control plane. The dashboard prints a tokenized URL at
 /// startup; that token is the dashboard's password. Binding a
-/// non-loopback address is allowed but warned about loudly at startup —
+/// non-loopback address is allowed but warned about loudly at startup
 /// public exposure belongs behind a reverse proxy with real
 /// authentication.
 ///
@@ -62,7 +62,7 @@ fn cmd_dashboard(args: &[String]) {
                      \n\
                      Start the web control plane: runs, approvals, schedule,\n\
                      usage stats, memory, config, keys, logs, skills/MCP, and\n\
-                     gateway — over a std-only HTTP server on localhost.\n\
+                     gateway - over a std-only HTTP server on localhost.\n\
                      \n\
                      --host is the canonical bind-address flag; --bind is an\n\
                      alias. Same flags as `pantheon serve`.\n\
@@ -78,7 +78,7 @@ fn cmd_dashboard(args: &[String]) {
         i += 1;
     }
     // Unified serve surface: the dashboard control plane and the AG-UI
-    // routes share one listener and one token — one front door. This
+    // routes share one listener and one token - one front door. This
     // command reuses `pantheon serve`'s builders; it just owns `--open`
     // and keeps the dashboard's historic default port.
     let dir = data_dir();
@@ -282,7 +282,7 @@ fn run_delivered_task(
                 eprintln!("queue for {target}: {e}");
                 std::process::exit(1);
             } else {
-                println!("queued for {target} — run {run_id}");
+                println!("queued for {target} - run {run_id}");
             }
             println!("{run_id}");
         }
@@ -290,7 +290,7 @@ fn run_delivered_task(
             // A parked run is a real outcome, not a failure. The error names
             // the exact grant/deny command with the scope inlined, so it is
             // printed verbatim instead of being restated with a placeholder.
-            println!("parked — run {run_id}");
+            println!("parked - run {run_id}");
             println!("{e}");
         }
         Err(e) => {
@@ -963,7 +963,7 @@ pub fn run() {
                         pantheon_tools::vault_tools::VaultToolOptions { vault_dir },
                     );
                     // Same resolution order the agent loop uses, so
-                    // `pantheon memory vault …` obeys the policy the user
+                    // `pantheon memory vault ...` obeys the policy the user
                     // configured rather than running ungated.
                     let vault_cfg = crate::config::Config::load_or_report(&data_dir());
                     let policy = crate::config_schema::policy_for_config(&vault_cfg);
@@ -976,7 +976,7 @@ pub fn run() {
                             let query = args[4..].join(" ");
                             let json_arg = serde_json::json!({ "query": query }).to_string();
                             // Gated: the vault tools read files, and an interactive `pantheon
-                            // memory vault …` must obey the same policy the agent loop enforces.
+                            // memory vault ...` must obey the same policy the agent loop enforces.
                             match reg.execute_gated(&policy, "vault_search", &json_arg) {
                                 Ok(res) => println!("{res}"),
                                 Err(e) => {
@@ -993,7 +993,7 @@ pub fn run() {
                             let p = &args[4];
                             let json_arg = serde_json::json!({ "path": p }).to_string();
                             // Gated: the vault tools read files, and an interactive `pantheon
-                            // memory vault …` must obey the same policy the agent loop enforces.
+                            // memory vault ...` must obey the same policy the agent loop enforces.
                             match reg.execute_gated(&policy, "vault_read", &json_arg) {
                                 Ok(res) => println!("{res}"),
                                 Err(e) => {
@@ -1006,7 +1006,7 @@ pub fn run() {
                             let cat = args.get(4).map(|s| s.as_str());
                             let json_arg = serde_json::json!({ "category": cat }).to_string();
                             // Gated: the vault tools read files, and an interactive `pantheon
-                            // memory vault …` must obey the same policy the agent loop enforces.
+                            // memory vault ...` must obey the same policy the agent loop enforces.
                             match reg.execute_gated(&policy, "vault_list", &json_arg) {
                                 Ok(res) => println!("{res}"),
                                 Err(e) => {
@@ -1237,7 +1237,7 @@ timeout_ms = 5000
             let say = resolve_say_stdin(say);
             // Out-of-band approval: settle a parked scope, then continue the
             // run unless the caller opted out. The supervisor is scoped so
-            // its SQLite write handle closes before the Session opens — two
+            // its SQLite write handle closes before the Session opens - two
             // live writers on one file make the Session's `BEGIN IMMEDIATE`
             // block on the busy timeout, which presents as a silent hang.
             if grant_scope.is_some() || deny_scope.is_some() {
@@ -1281,7 +1281,7 @@ timeout_ms = 5000
                     std::process::exit(2);
                 }
                 // `session` is the default target, and it is a real model
-                // turn printed to this terminal — not the synthetic ledger
+                // turn printed to this terminal - not the synthetic ledger
                 // writer below. Gating it on `target != "session"` meant the
                 // default path produced an event trace with no model call.
                 return run_delivered_task(&id, &say, &target, verdict_tool);
@@ -1765,7 +1765,7 @@ fn splash_center(line: &str, width: usize) -> String {
 }
 
 /// Splash lines for the welcome screen: the logo art, then the wordmark
-/// "PANTHEON" as styled normal text (bold, accent color) — deliberately not
+/// "PANTHEON" as styled normal text (bold, accent color) - deliberately not
 /// part of the ASCII art. Missing/empty art is skipped; the wordmark always
 /// renders.
 pub fn splash_lines(

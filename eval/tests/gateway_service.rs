@@ -278,7 +278,7 @@ fn queue_summary_counts_and_next_fire() {
         ),
         // Future: daily 09:00 UTC cron, fired on schedule yesterday, so
         // catch-up (default on) sees no missed occurrence and the next
-        // fire is today 09:00 — 9h away.
+        // fire is today 09:00-9h away.
         sched_job(
             "daily",
             ScheduleKind::Cron {

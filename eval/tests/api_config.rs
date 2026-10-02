@@ -2,14 +2,14 @@
 //!
 //! Behavioral / integration tests per the test-hygiene policy.
 //! Everything here goes through `Config::load` against a real
-//! `config.toml` on disk — no struct-literal construction, no
+//! `config.toml` on disk - no struct-literal construction, no
 //! internals. Run with `cargo test -p pantheon-eval --test api_config`.
 use pantheon_api::config::{
     nightly_enabled, nightly_enabled_reason, nightly_model_pin_present, Config,
 };
 
 /// Write `text` to `<dir>/config.toml` (the path `Config::load` reads)
-/// and load it. `name` must be unique per test — the eval binary runs
+/// and load it. `name` must be unique per test - the eval binary runs
 /// tests in parallel.
 fn load_config(name: &str, text: &str) -> Config {
     let dir = std::env::temp_dir().join(format!(
@@ -24,7 +24,7 @@ fn load_config(name: &str, text: &str) -> Config {
     cfg
 }
 
-/// Voice/STT problems reported by `Config::validate` — the user-visible
+/// Voice/STT problems reported by `Config::validate` - the user-visible
 /// config-doctor signal for `[stt]` / `[tts]`.
 fn voice_problems(cfg: &Config) -> Vec<String> {
     cfg.validate()
@@ -108,7 +108,7 @@ fn nightly_explicit_off_wins_over_model_pin() {
 
 #[test]
 fn nightly_default_provider_pin_counts_as_a_pin() {
-    // provider = "default" is an explicit pin to the default model —
+    // provider = "default" is an explicit pin to the default model
     // presence of the pin = enabled.
     let cfg = load_config(
         "nightly-default-pin",

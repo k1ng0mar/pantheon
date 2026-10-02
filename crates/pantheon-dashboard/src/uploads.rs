@@ -3,7 +3,7 @@
 //!
 //! `POST /api/uploads` stores a base64 file under
 //! `<data_dir>/uploads/<id>_<sanitized-name>` plus a tiny `<id>.json`
-//! sidecar (`{name, mime, size_bytes}` — the mime is re-derived from the
+//! sidecar (`{name, mime, size_bytes}` - the mime is re-derived from the
 //! sidecar, never from the filename extension). `GET /api/uploads/:id`
 //! serves the raw bytes back with the stored mime as the content type,
 //! for preview/verify in the client.
@@ -160,7 +160,7 @@ fn valid_id_shape(id: &str) -> bool {
 }
 
 /// Mime values go out as an HTTP content-type header, so they must be
-/// plain token-ish values — no CR/LF smuggling, and a `/` is required.
+/// plain token-ish values - no CR/LF smuggling, and a `/` is required.
 fn valid_mime(mime: &str) -> bool {
     !mime.is_empty()
         && mime.contains('/')
@@ -257,7 +257,7 @@ pub fn resolve(app: &App, id: &str) -> Option<UploadInfo> {
 }
 
 /// Same as [`resolve`], but against an explicit uploads directory instead
-/// of an `App` — for callers (like the turn child) that have a data dir
+/// of an `App` - for callers (like the turn child) that have a data dir
 /// but no dashboard `App`.
 pub fn resolve_in(dir: &Path, id: &str) -> Option<UploadInfo> {
     if !valid_id_shape(id) {
@@ -286,7 +286,7 @@ pub fn resolve_in(dir: &Path, id: &str) -> Option<UploadInfo> {
 }
 
 /// True when `bytes` begins with a zip signature (local file header,
-/// empty archive, or spanned archive). Zip detection sniffs magic bytes —
+/// empty archive, or spanned archive). Zip detection sniffs magic bytes
 /// the stored mime is client-supplied and never trusted.
 pub fn is_zip_bytes(bytes: &[u8]) -> bool {
     bytes.len() >= 4
@@ -296,7 +296,7 @@ pub fn is_zip_bytes(bytes: &[u8]) -> bool {
 }
 
 /// True when the stored upload file looks like a zip archive (first four
-/// bytes only — the whole file is never read for detection).
+/// bytes only - the whole file is never read for detection).
 pub fn is_zip_upload(info: &UploadInfo) -> bool {
     use std::io::Read;
     let mut head = [0u8; 4];

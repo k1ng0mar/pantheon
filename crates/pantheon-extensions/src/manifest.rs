@@ -72,7 +72,7 @@ impl PluginManifest {
     /// Fire-at-most-once-per-session when the manifest says so, or when the
     /// plugin dir's `__init__.py` dedups in-process via `_seen_sessions`
     /// (anti-ai-writing shape). The subprocess runner spawns fresh per fire,
-    /// so the manager must own this — the plugin process cannot.
+    /// so the manager must own this - the plugin process cannot.
     /// `dir` is the plugin dir (for the `__init__.py` sniff); `None` skips sniffing.
     pub fn once_per_session(&self, dir: Option<&Path>) -> bool {
         if self.once_per_session {

@@ -1,11 +1,11 @@
 //! Behavioral / integration tests moved out of the crate's unit suite.
 //!
 //! Policy: only small deterministic unit tests live beside the code
-//! (`cargo test -p <crate>`). Everything behavioral — SQLite stores,
-//! threads, sockets, subprocesses, timing, filesystem — lives here and
+//! (`cargo test -p <crate>`). Everything behavioral - SQLite stores,
+//! threads, sockets, subprocesses, timing, filesystem - lives here and
 //! runs via `cargo test -p pantheon-eval`.
 
-//! Tests for `pantheon_runtime::tests` — sibling file so sources stay test-free.
+//! Tests for `pantheon_runtime::tests` - sibling file so sources stay test-free.
 use pantheon_api::events::Event;
 use pantheon_runtime::*;
 use pantheon_storage::OperationStatus;
@@ -131,7 +131,7 @@ fn run_lifecycle_transitions_reach_observers() {
     // `start_run` / `complete` / `fail` / `cancel` used to append straight to
     // the ledger, so a run could finish durably while every live subscriber
     // (TUI, the hook bridge) still believed it was running. They must fan out
-    // like every other event — `on_session_end` depends on it.
+    // like every other event - `on_session_end` depends on it.
     let dir = std::env::temp_dir().join(format!("pantheon-obs-life-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let sup = Supervisor::open(dir).unwrap();
@@ -327,7 +327,7 @@ fn grant_rejects_duplicate_scope() {
     .unwrap();
     sup.grant("run_dup", "call_0_0").unwrap();
     // First grant unparked the run. Second grant must refuse because
-    // the run is no longer parked — the duplicate is caught by the
+    // the run is no longer parked - the duplicate is caught by the
     // status gate, not the scope check.
     let err = sup.grant("run_dup", "call_0_0").unwrap_err();
     assert_eq!(err.code, "RT_NOT_PARKED");

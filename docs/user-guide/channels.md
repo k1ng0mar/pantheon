@@ -65,7 +65,7 @@ origin checks, and both are gated by the `[tools] voice` group plus the
 `[stt]` / `[tts]` config sections (toggle the group off and the routes
 400 with `voice_not_configured`).
 
-`POST /agui/voice/transcribe` — audio to text:
+`POST /agui/voice/transcribe` - audio to text:
 
 ```json
 { "audio": "<base64-encoded audio>", "language": "en", "prompt": "..." }
@@ -74,7 +74,7 @@ origin checks, and both are gated by the `[tools] voice` group plus the
 `language` and `prompt` are optional hints. Decoded audio is capped at
 1 MiB. Response: `{"transcript": "...", "backend": "<provider>"}`.
 
-`POST /agui/voice/speak` — text to speech:
+`POST /agui/voice/speak` - text to speech:
 
 ```json
 { "text": "...", "voice": "...", "format": "wav" }

@@ -72,7 +72,7 @@ fn snapshot_of(h: &ServerHealth) -> McpServerSnapshot {
 ///
 /// A changed spec drops the live connection (the manager reconnects
 /// lazily on next use); an unchanged spec is a no-op by `configure`'s
-/// idempotence contract — callers that need a real attempt follow up
+/// idempotence contract - callers that need a real attempt follow up
 /// with [`McpManager::retry_now`]. Approval records are untouched: this
 /// never approves, un-approves, or otherwise touches the launcher's
 /// approval logic.
@@ -169,8 +169,8 @@ impl McpRepairTarget for McpRepairAdapter {
     }
 
     fn re_resolve(&mut self, name: &str) -> Result<(), String> {
-        // Re-resolve the server's config — env vars and paths may have
-        // changed since it was configured — then make the retry real
+        // Re-resolve the server's config - env vars and paths may have
+        // changed since it was configured - then make the retry real
         // instead of lazy: the ladder counts this step as
         // re-resolve + retry.
         reresolve_mcp_server(&self.manager, &self.data_dir, name)?;
@@ -348,7 +348,7 @@ impl ToolRepairAdapter {
             if let Some(mcp) = &self.mcp {
                 // Project the servers' tools so allowlisted `mcp_*` names
                 // probe the real thing. This connects to approved servers
-                // — the same thing session startup does — which is why it
+                // - the same thing session startup does - which is why it
                 // stays behind the lazy build.
                 let _ = mcp.register_tools(&mut reg);
             }
@@ -370,7 +370,7 @@ impl ToolRepairTarget for ToolRepairAdapter {
         }
         // Empty-args smoke probe behind the capability gate. The policy is
         // deliberately read-only: a probe must never mutate, and a tool
-        // that cannot run read-only fails closed — the ladder then
+        // that cannot run read-only fails closed - the ladder then
         // contains it instead of trusting it.
         let policy = Policy::researcher_readonly();
         let reg = self.probe_registry();
@@ -383,7 +383,7 @@ impl ToolRepairTarget for ToolRepairAdapter {
         // The only re-resolution path in this host: MCP-projected tools
         // (`mcp_<server>_<tool>`) re-resolve through their owning
         // server's config (env vars and paths may have changed). Anything
-        // else has no backing config to re-resolve — and returning Ok here
+        // else has no backing config to re-resolve - and returning Ok here
         // would be a lie: the ladder treats Ok as "recovered" and would
         // skip containment for a still-broken tool.
         let mcp = self

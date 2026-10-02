@@ -1,7 +1,7 @@
 """Unit tests for hermes-web-search-plus. Stdlib only; run with:
     python3 tests/test_web_search_plus.py
 
-Provider HTTP is monkeypatched — no network is used. The SSRF-guard
+Provider HTTP is monkeypatched - no network is used. The SSRF-guard
 tests resolve only literal/local names and refuse before connecting.
 """
 
@@ -276,7 +276,7 @@ def test_direct_fetch_refuses_private_before_connect():
 def test_protocol_loop_roundtrip():
     # Success path uses a data: URL-free local check: extract via the
     # "direct" provider against a loopback URL fails in the SSRF guard
-    # before connecting — no network, but the full loop runs.
+    # before connecting - no network, but the full loop runs.
     lines = [
         json.dumps({"call_id": "c1", "tool": "extract_page",
                     "args": {"url": "http://127.0.0.1/",

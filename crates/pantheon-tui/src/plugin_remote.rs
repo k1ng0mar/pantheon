@@ -4,7 +4,7 @@
 //! Plugin install/approve/disable already exist as local `pantheon
 //! plugins ...` CLI verbs (`terminal.rs`) and as dashboard endpoints
 //! (`pantheon-dashboard/src/plugins.rs`), but the interactive TUI had no
-//! `/plugins` slash command at all — only the splash footer's hint named
+//! `/plugins` slash command at all - only the splash footer's hint named
 //! it. This module adds it.
 //!
 //! The import + registry endpoints (`POST /api/plugins/import`,
@@ -149,10 +149,10 @@ fn base_or_note(state: &mut TuiState, cmd: &str) -> Option<String> {
 fn render_err(state: &mut TuiState, what: &str, err: ApiErr) {
     match err {
         ApiErr::Unreachable(t) => state.add_status(format!(
-            "{what}: dashboard unreachable ({t}) — is `pantheon serve` running?"
+            "{what}: dashboard unreachable ({t}) - is `pantheon serve` running?"
         )),
         ApiErr::Status(404, _) => state.add_status(format!(
-            "{what}: endpoint not found (404) — the dashboard plugin API has not landed yet"
+            "{what}: endpoint not found (404) - the dashboard plugin API has not landed yet"
         )),
         ApiErr::Status(code, body) => {
             state.add_status(format!("{what}: server error {code}: {body}"));
@@ -214,7 +214,7 @@ fn parse_import(rest: &str) -> Result<ImportArgs, String> {
 ///
 /// The server resolves `clawhub:<slug>` itself
 /// (`plugin_import::parse_source_spec`), so a slug goes in `url` exactly
-/// like a GitHub URL — there is no `{spec}` field on the endpoint.
+/// like a GitHub URL - there is no `{spec}` field on the endpoint.
 fn import_body(args: &ImportArgs) -> serde_json::Value {
     let mut body = serde_json::Map::new();
     body.insert(
@@ -289,17 +289,17 @@ fn import_lines(v: &serde_json::Value) -> Vec<String> {
             lines.push("scan: clean (green)".to_string());
         }
         "suspicious" => {
-            lines.push("scan: SUSPICIOUS (amber) — review before approving".to_string());
+            lines.push("scan: SUSPICIOUS (amber) - review before approving".to_string());
             list_findings(report, &mut lines);
         }
         "malicious" => {
-            lines.push("scan: MALICIOUS (red) — approval is blocked".to_string());
+            lines.push("scan: MALICIOUS (red) - approval is blocked".to_string());
             list_findings(report, &mut lines);
             lines.push("this plugin is quarantined; it cannot be approved or run".to_string());
         }
         other => {
             lines.push(format!(
-                "scan verdict: {other} (unrecognized — treat with care)"
+                "scan verdict: {other} (unrecognized - treat with care)"
             ));
             list_findings(report, &mut lines);
         }
@@ -310,7 +310,7 @@ fn import_lines(v: &serde_json::Value) -> Vec<String> {
         && verdict != "malicious"
     {
         lines.push(
-            "approval required before it can run — use `pantheon plugins approve <name>`"
+            "approval required before it can run - use `pantheon plugins approve <name>`"
                 .to_string(),
         );
     }
@@ -329,7 +329,7 @@ fn list_findings(report: &serde_json::Map<String, serde_json::Value>, lines: &mu
     }
     lines.push("findings:".to_string());
     for f in &findings {
-        lines.push(format!("  - {}", finding_text(f)));
+        lines.push(format!(" - {}", finding_text(f)));
     }
 }
 
@@ -393,11 +393,11 @@ fn search_lines(results: &[serde_json::Value]) -> Vec<String> {
             .take(100)
             .collect();
         let desc = if desc.is_empty() {
-            "—".to_string()
+            " - ".to_string()
         } else {
             desc
         };
-        lines.push(format!("{}. {slug} — {name} v{version}: {desc}", i + 1));
+        lines.push(format!("{}. {slug} - {name} v{version}: {desc}", i + 1));
     }
     lines.push("install one with: /plugins import clawhub:<slug>".to_string());
     lines
@@ -436,7 +436,7 @@ fn do_search(state: &mut TuiState, rest: &str) {
 /// `/plugins search <query>`. Anything else prints usage. Quarantine
 /// notes: the local `pantheon plugins list` shows approval state from
 /// the on-disk manifests, which carry no scan verdict; the dashboard
-/// `GET /api/plugins` list shape likewise has no verdict field — per
+/// `GET /api/plugins` list shape likewise has no verdict field - per
 /// the task, no scan-verdict display was added there.
 pub fn do_plugins(state: &mut TuiState, cmd: &str) {
     let rest = cmd.strip_prefix("/plugins").unwrap_or("").trim();
@@ -471,9 +471,9 @@ pub fn do_plugins(state: &mut TuiState, cmd: &str) {
 mod tests {
     use super::*;
 
-    /// P1 #3: `POST /api/plugins/import` reads only `{url}` — the server
+    /// P1 #3: `POST /api/plugins/import` reads only `{url}` - the server
     /// resolves `clawhub:<slug>` itself (`plugin_import::parse_source_spec`)
-    /// — so the TUI must send the slug as `url`. Sending `{spec}` made the
+    /// - so the TUI must send the slug as `url`. Sending `{spec}` made the
     /// server 400 with "url is required".
     #[test]
     fn clawhub_import_body_uses_url_key() {

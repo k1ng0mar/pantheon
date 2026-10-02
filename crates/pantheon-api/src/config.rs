@@ -4,7 +4,7 @@
 //! the TUI, the web dashboard, and every other client read and write
 //! the same types. Client/composition-specific resolution (auxiliary
 //! model wiring, secrets brokers, runtime budget structs) lives with
-//! the clients, not here — this module never depends on anything
+//! the clients, not here - this module never depends on anything
 //! above the API leaf.
 
 use crate::agent_profile::{EffectiveProfile, ProfileError, ProfileRegistry};
@@ -24,7 +24,7 @@ pub struct ModelSection {
     #[serde(default)]
     pub fallbacks: Vec<FallbackEntry>,
     /// Reasoning effort for chat turns: off|minimal|low|medium|high.
-    /// Absent (or `PANTHEON_REASONING` unset) means off — no effort param
+    /// Absent (or `PANTHEON_REASONING` unset) means off - no effort param
     /// is sent and every provider behaves exactly as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
@@ -45,7 +45,7 @@ pub struct ModelSection {
 /// Hermes-style inheritance: `provider = "default"` (or omitted) inherits
 /// `[model]`'s provider, an empty/omitted `model` inherits `[model]`'s
 /// model, and an omitted `api_key_env` on a default-inheriting provider
-/// inherits `[model].api_key_env`. Each slot stays independent — pin a
+/// inherits `[model].api_key_env`. Each slot stays independent - pin a
 /// different provider/model per slot when you want to, inherit when you
 /// don't.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -70,15 +70,15 @@ pub struct AuxSection {
 }
 
 /// `[judge]`: the auxiliary judge model. Any provider/model the
-/// catalog knows (or a raw base URL as provider) — the runtime resolves
+/// catalog knows (or a raw base URL as provider) - the runtime resolves
 /// wire mode and key env the same way it does for chat. Absent = `auto`:
 /// the run's default model answers judge queries (route select, tool
-/// gate) — judging always runs, it just gets cheaper when configured.
+/// gate) - judging always runs, it just gets cheaper when configured.
 pub type JudgeSection = AuxSection;
 
 /// `[title_gen]`: the auxiliary session-title model. Names a conversation
 /// from its first user prompt (fire-and-forget beside the first turn).
-/// Absent = `auto`: the runtime uses the run's default model instead —
+/// Absent = `auto`: the runtime uses the run's default model instead
 /// titles always work, they just get cheaper/smaller when configured.
 pub type TitleGenSection = AuxSection;
 
@@ -143,8 +143,8 @@ fn default_openai_mode() -> String {
 /// pantheon-providers: `command`, the OpenAI-wire trio, and the bespoke
 /// live backends).
 ///
-/// `pantheon-api` cannot depend on `pantheon-providers` — that would be
-/// circular — so the list is duplicated here. A test in `pantheon-tui`
+/// `pantheon-api` cannot depend on `pantheon-providers` - that would be
+/// circular - so the list is duplicated here. A test in `pantheon-tui`
 /// pins the voice registry against these constants, so a new backend
 /// cannot land in the registry without updating validation.
 pub const STT_BACKENDS: &[&str] = &[
@@ -175,13 +175,13 @@ pub const TTS_BACKENDS: &[&str] = &[
 
 /// `[stt]` / `[tts]`: speech service selection. These are provider-plane
 /// services (a local binary or an HTTP endpoint), never model-policy
-/// entries — same shape as `[memory]`'s backend selection. Absent = the
+/// entries - same shape as `[memory]`'s backend selection. Absent = the
 /// surface simply has no speech capability.
 ///
 /// Backends: `command` (local binary: `cmd`, `args` template with
 /// `{file}`/`{language}` for STT and `{voice}`/`{format}` for TTS,
 /// `timeout_secs`) or a named provider (OpenAI-compatible HTTP:
-/// `provider` — catalog id or base URL — plus `model`, and `api_key_env`
+/// `provider` - catalog id or base URL - plus `model`, and `api_key_env`
 /// naming the env var that holds the key; the key resolves through the
 /// secrets broker, falling back to the catalog row's key env). Named
 /// STT providers: groq, openai, mistral, xai, elevenlabs, deepgram,
@@ -205,7 +205,7 @@ pub struct VoiceSection {
 /// live mode off with default limits.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveVoiceSection {
-    /// Master opt-in for live voice mode. Default false — text chat stays
+    /// Master opt-in for live voice mode. Default false - text chat stays
     /// the default everywhere; this is a feature, never the default.
     #[serde(default)]
     pub live_enabled: bool,
@@ -239,7 +239,7 @@ impl Default for LiveVoiceSection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct GatewayChannelSection {
     /// Speak agent replies as voice messages on this channel (Telegram
-    /// `sendVoice`, Discord audio attachment). Default off — text stays
+    /// `sendVoice`, Discord audio attachment). Default off - text stays
     /// the default. Requires a `[tts]` backend; without one the channel
     /// keeps sending text.
     #[serde(default)]
@@ -302,7 +302,7 @@ pub struct GatewaySection {
 /// `auto`: the run's default model compresses; the deterministic fit
 /// stays the correctness path either way.
 ///
-/// `target_percent` (1–100, default 12) sets the summary size as a
+/// `target_percent` (1-100, default 12) sets the summary size as a
 /// percentage of the absorbed transcript chars: higher keeps more detail
 /// (less aggressive), lower compresses harder. 0 and >100 are config
 /// errors; absent keeps today's fixed eighth-of-material target.
@@ -314,8 +314,8 @@ pub struct CompressionSection {
     pub target_percent: Option<u8>,
 }
 
-/// `target_percent` must be 1–100. `u8` already rejects >255 at parse;
-/// this rejects the remaining invalid values (0 and 101–255) with a
+/// `target_percent` must be 1-100. `u8` already rejects >255 at parse;
+/// this rejects the remaining invalid values (0 and 101-255) with a
 /// config error instead of silently clamping.
 fn de_target_percent<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
 where
@@ -335,28 +335,28 @@ where
 
 /// `[embeddings]`: the vector-search embedding model. The one auxiliary
 /// where `auto` would be wrong: absent = the local hashing embedder,
-/// never the chat model — pin a provider here to embed remotely.
+/// never the chat model - pin a provider here to embed remotely.
 pub type EmbeddingsSection = AuxSection;
 
 /// `[search_synthesis]`: the model that turns retrieved passages into a
 /// synthesized answer. Absent = `auto`: the run's default model writes
-/// the synthesis — configuring it just makes search answers cheaper.
+/// the synthesis - configuring it just makes search answers cheaper.
 pub type SearchSynthesisSection = AuxSection;
 
 /// `[vision]`: the image-understanding model. Absent = `auto`: the run's
-/// default model handles images. Config + client surface only for now —
+/// default model handles images. Config + client surface only for now
 /// message image plumbing lands with multimodal content.
 pub type VisionSection = AuxSection;
 
 /// `[video]`: the video-understanding model. Absent = `auto`: the run's
 /// default model handles video. Mirrors `[vision]` exactly: config +
-/// client surface only for now — the video-understanding pipeline
+/// client surface only for now - the video-understanding pipeline
 /// (keyframe sampling, temporal QA) is future work; the slot exists so a
 /// model can be pinned ahead of it landing.
 pub type VideoSection = AuxSection;
 
 /// `[scheduled]`: the model scheduled (background) runs execute with.
-/// Absent = `auto`: scheduled jobs run on the run's default model —
+/// Absent = `auto`: scheduled jobs run on the run's default model
 /// pin a small/cheap model here so background tasks stop competing with
 /// interactive chat.
 pub type ScheduledSection = AuxSection;
@@ -375,7 +375,7 @@ fn default_reflect_max_proposals() -> usize {
     DEFAULT_REFLECT_MAX_PROPOSALS
 }
 
-/// `[reflect]`: Reflection — Pantheon's ledger-native self-improvement
+/// `[reflect]`: Reflection - Pantheon's ledger-native self-improvement
 /// loop, plus the auxiliary model pin for its LLM-backed steps, in one
 /// table.
 ///
@@ -383,7 +383,7 @@ fn default_reflect_max_proposals() -> usize {
 /// pin share the table the same way `[scheduled]` doubles as both the
 /// schedule-model pin and the background-runs section: one `[reflect]`
 /// table is everything the feature needs. Absent `provider`/`model` =
-/// `auto`: the run's default model answers reflection LLM calls —
+/// `auto`: the run's default model answers reflection LLM calls
 /// configure a small/cheap model here (or
 /// `PANTHEON_REFLECTION_PROVIDER`/`PANTHEON_REFLECTION_MODEL`) so
 /// background self-improvement never competes with interactive chat.
@@ -392,7 +392,7 @@ fn default_reflect_max_proposals() -> usize {
 /// authoritative section for the unified nightly pass. This table still
 /// parses (old configs keep loading) and, when `[nightly]` is absent,
 /// the unified pass honors `enabled` and `auto_turns` from it
-/// field-by-field as a migration fallback — but when `[nightly]` is
+/// field-by-field as a migration fallback - but when `[nightly]` is
 /// present it is ignored entirely. Prefer `[nightly]`; `pantheon
 /// doctor` nudges you to move the knobs across. The auxiliary-model pin
 /// (`provider`/`model`/`api_key_env`/`timeout`) legitimately stays here:
@@ -404,7 +404,7 @@ fn default_reflect_max_proposals() -> usize {
 /// spending model tokens needs explicit opt-in. Every LLM call the
 /// reflection pipeline makes resolves through the
 /// [`AuxiliaryKind::Reflection`](crate::model::AuxiliaryKind)
-/// slot — never the chat model directly.
+/// slot - never the chat model directly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ReflectSection {
     /// Allow LLM-backed reflection steps. Default false.
@@ -438,7 +438,7 @@ pub struct ReflectSection {
     pub timeout: Option<u64>,
 }
 
-/// `[consolidation]`: Consolidation — Pantheon's background memory
+/// `[consolidation]`: Consolidation - Pantheon's background memory
 /// consolidation, plus the auxiliary model pin for its LLM-backed
 /// distill step, in one table.
 ///
@@ -446,7 +446,7 @@ pub struct ReflectSection {
 /// `min_score`, `cron`) and the model pin share the table the same way
 /// `[reflect]` does: one `[consolidation]` table is everything the
 /// feature needs. Absent `provider`/`model` = `auto`: the run's default
-/// model answers consolidation LLM calls — configure a small/cheap
+/// model answers consolidation LLM calls - configure a small/cheap
 /// model here (or `PANTHEON_CONSOLIDATION_PROVIDER` /
 /// `PANTHEON_CONSOLIDATION_MODEL`) so nightly memory consolidation
 /// never competes with interactive chat.
@@ -457,13 +457,13 @@ pub struct ReflectSection {
 /// opt-in. Every LLM call the consolidation pipeline makes resolves
 /// through the
 /// [`AuxiliaryKind::Consolidation`](crate::model::AuxiliaryKind)
-/// slot — never the chat model directly.
+/// slot - never the chat model directly.
 ///
 /// DEPRECATED as a behavior-knob table: `[nightly]` is the single
 /// authoritative section for the unified nightly pass. This table still
 /// parses (old configs keep loading) and, when `[nightly]` is absent,
 /// the unified pass honors `enabled`, `min_sessions`, and `cron` from it
-/// field-by-field as a migration fallback — but when `[nightly]` is
+/// field-by-field as a migration fallback - but when `[nightly]` is
 /// present it is ignored entirely. Prefer `[nightly]`; `pantheon
 /// doctor` nudges you to move the knobs across. The auxiliary-model pin
 /// (`provider`/`model`/`api_key_env`/`timeout`) legitimately stays here:
@@ -547,14 +547,14 @@ pub fn default_consolidation_cron() -> String {
 /// spending model tokens additionally wants a model pin. `enabled` is
 /// the master switch ([`nightly_enabled`]): `Some(false)` turns the pass
 /// off and always wins, even with a model pinned; `Some(true)` turns it
-/// on; `None` (absent) turns it on iff a `[nightly.model]` pin — or the
-/// `PANTHEON_NIGHTLY_PROVIDER` / `PANTHEON_NIGHTLY_MODEL` env overrides —
+/// on; `None` (absent) turns it on iff a `[nightly.model]` pin - or the
+/// `PANTHEON_NIGHTLY_PROVIDER` / `PANTHEON_NIGHTLY_MODEL` env overrides
 /// is present, else off. The pipeline and its repair loop do nothing
 /// unless this resolves on.
 ///
 /// When the pass is on, its LLM-backed steps resolve through the
 /// `[nightly.model]` pin when one is configured (never the chat model
-/// directly) — configure a small/cheap model there so background
+/// directly) - configure a small/cheap model there so background
 /// self-improvement never competes with interactive chat. With
 /// `enabled = true` and no pin, the steps fall back to the Reflection /
 /// Consolidation auxiliary slots.
@@ -562,7 +562,7 @@ pub fn default_consolidation_cron() -> String {
 /// Memory promotion rule: a candidate promotes when seen in at least
 /// `min_sessions` distinct runs with the newest observation inside
 /// `max_age_days`. This replaces the old `[consolidation]`
-/// `half_life_days` / `min_score` decay curve — plain frequency +
+/// `half_life_days` / `min_score` decay curve - plain frequency +
 /// recency, no exponentials.
 ///
 /// Legacy `[reflect]` / `[consolidation]` tables still load; when
@@ -578,7 +578,7 @@ pub struct NightlySection {
     /// the pass is enabled only when a model pin is present (a
     /// `[nightly.model]` table with a non-empty provider or model, or
     /// the `PANTHEON_NIGHTLY_PROVIDER` / `PANTHEON_NIGHTLY_MODEL` env
-    /// overrides) — see [`nightly_enabled`]. `Some(true)` forces the pass
+    /// overrides) - see [`nightly_enabled`]. `Some(true)` forces the pass
     /// on, `Some(false)` forces it off; an explicit `false` always wins,
     /// even with a model pin present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -602,7 +602,7 @@ pub struct NightlySection {
     /// disabled (`enabled = false` always wins). Absent = unpinned: LLM
     /// steps resolve through the Reflection / Consolidation auxiliary
     /// slots like before. `api_key_env` names the env var holding the key
-    /// — never the key itself.
+    /// - never the key itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<AuxSection>,
     /// Completed turns before an automatic nightly pass runs. Default
@@ -623,11 +623,11 @@ pub struct NightlySection {
     pub cron: String,
     /// Headless agent command used to replay held-out validation tasks
     /// (`<command> <prompt>`; stdout is the transcript). Only needed for
-    /// tasks without their own exec spec — tasks defined with
+    /// tasks without their own exec spec - tasks defined with
     /// `replay-tasks add --exec-cmd ...` run on the built-in headless
     /// runner with no configuration. Absent and no exec spec = replays
     /// fail loudly and the replay gate rejects every skill/persona
-    /// proposal — strict improvement cannot be measured without a
+    /// proposal - strict improvement cannot be measured without a
     /// runner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_command: Option<String>,
@@ -643,7 +643,7 @@ pub struct NightlySection {
     /// skipped by the tool-probe pass. Default 3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair_tool_min_calls: Option<usize>,
-    /// Repair-phase bound: tool names exempt from probe escalation —
+    /// Repair-phase bound: tool names exempt from probe escalation
     /// a failing probe on a listed tool escalates instead of disabling.
     /// Default empty (no exemptions).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -652,7 +652,7 @@ pub struct NightlySection {
 
 /// Whether a [`NightlySection`] carries a usable model pin: a
 /// `[nightly.model]` table with a non-empty provider or model. An empty
-/// pin table (`[nightly.model]` with nothing in it) does not count — it
+/// pin table (`[nightly.model]` with nothing in it) does not count - it
 /// is the same as no pin at all. `provider = "default"` counts: the user
 /// explicitly pinned the pass to the default model.
 pub fn nightly_model_pin_present(section: &NightlySection) -> bool {
@@ -679,10 +679,10 @@ pub fn nightly_env_pin_present() -> bool {
 /// 4. dashboard / mobile-app toggle (`POST /api/nightly/enabled`).
 ///
 /// Resolution: `Some(false)` wins over everything (explicit off, even
-/// with a model pin); `Some(true)` forces on (even with no pin —
+/// with a model pin); `Some(true)` forces on (even with no pin
 /// callers should warn that no model is pinned); `None` is on iff a
-/// model pin is present — the `[nightly.model]` table or the
-/// `PANTHEON_NIGHTLY_PROVIDER` / `PANTHEON_NIGHTLY_MODEL` env overrides —
+/// model pin is present - the `[nightly.model]` table or the
+/// `PANTHEON_NIGHTLY_PROVIDER` / `PANTHEON_NIGHTLY_MODEL` env overrides
 /// else off.
 ///
 /// This is the master switch: the nightly pipeline and its repair loop
@@ -758,12 +758,12 @@ fn default_temporal_min_gap_secs() -> u64 {
     7200
 }
 
-/// `[temporal]`: tacit temporal awareness — the model notices when a
+/// `[temporal]`: tacit temporal awareness - the model notices when a
 /// conversation has meaningfully aged, without timestamping every
 /// message. Before a turn's first model call the pipeline measures the
 /// idle gap since the last assistant turn (from the durable ledger, so
 /// it is restart-safe) and, when the gap matters, appends one coarse,
-/// human-friendly hint to the outgoing user message — for the API call
+/// human-friendly hint to the outgoing user message - for the API call
 /// only, never persisted, never on the system prompt.
 ///
 /// Zero tokens by construction (pure string injection), so this defaults
@@ -813,7 +813,7 @@ pub struct RetentionSection {
 
 /// Run budgets (`[budget]` in config.toml). Every key is optional and
 /// every key is overridable per session via `/set` (and `/tokens` for
-/// the token cap). A `0` is treated as unset — a zero cap would end
+/// the token cap). A `0` is treated as unset - a zero cap would end
 /// every run before it starts, so it falls back to the default instead
 /// of silently bricking the session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -834,7 +834,7 @@ pub struct BudgetSection {
     /// model may emit in one response. Precedence is
     /// `/tokens N` > `[budget].max_tokens` > the model's known maximum
     /// output (16k fallback when unknown); the winner is clamped to the
-    /// model's known maximum. This never counted input tokens — it is
+    /// model's known maximum. This never counted input tokens - it is
     /// not a run budget. Absent = uncapped by config; the model/provider
     /// default then applies. Strictly optional: Pantheon never requires it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -846,7 +846,7 @@ pub struct BudgetSection {
     /// budget. `0` is treated as unset (the model default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegate_child_max_tokens: Option<u32>,
-    /// Max total `delegate` tool calls per run. Default 8 — the anti
+    /// Max total `delegate` tool calls per run. Default 8 - the anti
     /// spawn-army cap on total child activity per run. `0` is treated as
     /// unset and falls back to the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -867,7 +867,7 @@ impl BudgetSection {
     /// and unset both mean "no config override" (None): the child
     /// falls back to the model default. A per-call `budget` on the
     /// `delegate` tool overrides this default. The budget returned
-    /// here is the child's own — it never counts against the parent.
+    /// here is the child's own - it never counts against the parent.
     pub fn delegate_child_budget(&self) -> Option<u32> {
         self.delegate_child_max_tokens.filter(|&v| v > 0)
     }
@@ -888,13 +888,13 @@ pub const DEFAULT_MAX_DELEGATIONS: u32 = 8;
 
 /// Fallback per-request output cap, used only when the session model's
 /// maximum output is unknown (no catalog entry and no custom-model
-/// override). Named models contribute their own known cap instead —
+/// override). Named models contribute their own known cap instead
 /// see [`resolve_max_output_tokens`].
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_000;
 
 /// Minimum context window Pantheon will run a session model with, in
 /// tokens. A model whose known window is smaller is refused at chain
-/// build (see [`check_context_window`]) — below this floor the agent
+/// build (see [`check_context_window`]) - below this floor the agent
 /// loop cannot hold a working transcript plus tool traffic. Hardcoded,
 /// not user-configurable: the floor protects the run, not the bill.
 pub const MIN_CONTEXT_WINDOW: u32 = 32_000;
@@ -907,7 +907,7 @@ pub const MIN_CONTEXT_WINDOW: u32 = 32_000;
 /// `CustomModel.max_output_tokens`). [`DEFAULT_MAX_OUTPUT_TOKENS`]
 /// applies only when the model's maximum output is unknown.
 ///
-/// The winner is then clamped to the model's known maximum output —
+/// The winner is then clamped to the model's known maximum output
 /// the clamp applies to user overrides too (`/tokens 20000` on a
 /// model capped at 8192 resolves to 8192, silently, no error). With
 /// no known maximum the winner stands as-is.
@@ -927,7 +927,7 @@ pub fn resolve_max_output_tokens(
 }
 
 /// Refuse a session model whose known context window is below
-/// [`MIN_CONTEXT_WINDOW`]. `None` (unknown window) fails open — the
+/// [`MIN_CONTEXT_WINDOW`]. `None` (unknown window) fails open - the
 /// provider is trusted to enforce its own limit. Called at chain
 /// build so a too-small model is rejected before any request goes out.
 pub fn check_context_window(
@@ -1134,7 +1134,7 @@ pub struct CamofoxSection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct WebsearchSection {
     /// Master switch. Default true. The tool is only registered when a
-    /// key also resolves — a keyless `web_search` would be a tool that
+    /// key also resolves - a keyless `web_search` would be a tool that
     /// can never work, so it stays out of the model's tool list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
@@ -1257,7 +1257,7 @@ impl ToolGroup {
 
 /// Tool-group enablement (`[tools]` in config.toml). Written by the
 /// setup wizard's Tools screen; the runtime only registers enabled
-/// groups — a disabled group never appears in the model's tool list.
+/// groups - a disabled group never appears in the model's tool list.
 ///
 /// Every field is `Option<bool>` with absent = enabled, so a config
 /// written before this section existed behaves exactly as before (all
@@ -1371,7 +1371,7 @@ impl ToolsSection {
 ///
 /// Only the skips are recorded here. A present dependency writes
 /// nothing; a skipped one lands in `skipped` so `pantheon doctor` can
-/// report the gap later — the same "the config records the choice;
+/// report the gap later - the same "the config records the choice;
 /// doctor reports the gap" contract the setup wizard uses for skipped
 /// local provider binaries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -1415,7 +1415,7 @@ impl Default for RetentionSection {
 /// A server launches iff it is **enabled** AND its identity is trusted:
 ///
 /// - **Bundled** catalog servers are first-party: the `enabled` flag is
-///   the only gate. Fresh installs enable zero of them — enabling is
+///   the only gate. Fresh installs enable zero of them - enabling is
 ///   always explicit (this file, the dashboard's Tools & MCPs page, the
 ///   mobile app, or the agent proposing through the approval flow).
 /// - **Custom** servers additionally need operator consent recorded in
@@ -1423,7 +1423,7 @@ impl Default for RetentionSection {
 ///   [`crate::approval`]): an unapproved third-party server never
 ///   connects no matter what the flag says.
 ///
-/// Disabling flips the switch only — a recorded approval persists, so
+/// Disabling flips the switch only - a recorded approval persists, so
 /// re-enabling the same binary/URL resumes without re-consent. The
 /// approval binds the server's content hash: if the binary or URL
 /// changes, the approval lapses and consent is asked again.
@@ -1470,7 +1470,7 @@ pub struct McpServerEntry {
     ///
     /// The default is `false` for **every** server, bundled or custom:
     /// serde defaults cannot see the table's key name, so a bundled-vs-
-    /// custom two-tier default is not expressible at parse time — and a
+    /// custom two-tier default is not expressible at parse time - and a
     /// uniform fail-closed default is what Umar's explicit-enablement
     /// rule wants anyway. Every enablement path (the bundled catalog's
     /// `set_bundled_enabled`, the dashboard/app writes, the agent's
@@ -1479,7 +1479,7 @@ pub struct McpServerEntry {
     ///
     /// Upgrade note: tables written before this default existed omit
     /// `enabled` and previously parsed as *enabled*; they now parse as
-    /// *disabled*. That is deliberate and fail-safe — re-enable once,
+    /// *disabled*. That is deliberate and fail-safe - re-enable once,
     /// explicitly. No automatic migration rewrites user configs to
     /// `enabled = true`: silently switching on process-spawning
     /// integrations the operator never explicitly approved would defeat
@@ -1553,7 +1553,7 @@ impl McpServerEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginEntry {
     /// Master switch for this plugin. When the entry exists, this beats
-    /// the plugin manifest's own `enabled` flag — the config file is the
+    /// the plugin manifest's own `enabled` flag - the config file is the
     /// single enablement state (config file, dashboard, mobile app, or
     /// the agent proposing through the approval flow). When the entry is
     /// absent, the bundled manifest's `enabled` flag is the default
@@ -1580,23 +1580,23 @@ pub type McpSynthesisSection = AuxSection;
 /// `[extraction]`: the structured-extraction model. Pulls fields and
 /// records out of prose and tool outputs into typed values the runtime
 /// can act on. Absent = `auto`: the run's default model extracts. No
-/// call sites yet — pin a model here ahead of the extraction workload.
+/// call sites yet - pin a model here ahead of the extraction workload.
 pub type ExtractionSection = AuxSection;
 
 /// `[rerank]`: the rerank model. Scores and orders search and
 /// memory-retrieval candidates before they enter context. Absent =
-/// `auto`: the run's default model reranks. No call sites yet — pin a
+/// `auto`: the run's default model reranks. No call sites yet - pin a
 /// model here ahead of the reranking workload.
 pub type RerankSection = AuxSection;
 
 /// `[planner]`: the planner model for a future planner/worker split,
 /// where planning and execution run on different models. Absent =
-/// `auto`: the run's default model plans. No call sites yet — pin a
+/// `auto`: the run's default model plans. No call sites yet - pin a
 /// model here ahead of the planner workload.
 pub type PlannerSection = AuxSection;
 
-/// `[repair]`: the repair model for the nightly fix loop — the only
-/// slot that revises drafts (eval-reject and replay-reject paths) —
+/// `[repair]`: the repair model for the nightly fix loop - the only
+/// slot that revises drafts (eval-reject and replay-reject paths)
 /// and for diagnosis/repair of broken MCP servers, scheduled tasks,
 /// and tools. Absent = OFF: the slot adds no policy entry and fix-loop
 /// draft revision is unavailable (the loop falls back to plain retries,
@@ -1670,7 +1670,7 @@ fn default_swarm_max_concurrent() -> u32 {
 /// `[swarm]`: caps for sub-agent delegation and swarm runs. Every key
 /// is optional; absent keys (or an absent section) take the documented
 /// defaults. These are the config-side spelling of
-/// `pantheon_runtime::swarm::Caps` — see `Caps::from_swarm_section`
+/// `pantheon_runtime::swarm::Caps` - see `Caps::from_swarm_section`
 /// for the mapping (`max_subagents` becomes the per-agent spawn cap).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SwarmSection {
@@ -1726,7 +1726,7 @@ pub struct SecretsSection {
     /// exact var names (`"MY_KEY"`) or `PREFIX_*` wildcards
     /// (`"PANTHEON_*"`); `"*"` alone allows all (explicit opt-out).
     ///
-    /// Default: empty — `env:` lookups resolve nothing. Secrets must come
+    /// Default: empty - `env:` lookups resolve nothing. Secrets must come
     /// from `PANTHEON_SECRET_*` or a durable vault, so a name like
     /// `env:AWS_SECRET_ACCESS_KEY` can never be used to exfiltrate an
     /// arbitrary host variable.
@@ -1735,7 +1735,7 @@ pub struct SecretsSection {
     /// Manifest-declared env vars the plugin supervisor may copy from the
     /// host into plugin subprocesses (same entry syntax as above).
     ///
-    /// Default: empty — plugins receive PATH plus Pantheon-set vars only.
+    /// Default: empty - plugins receive PATH plus Pantheon-set vars only.
     /// A project-controlled manifest can declare any name it likes, so a
     /// declared name alone never crosses the boundary; only an entry here
     /// lets a host var (including API keys) reach plugin code.
@@ -1749,7 +1749,7 @@ pub struct SecretsSection {
 ///
 /// The audit's gap: Hermes ships this as `profile.yaml` + `SOUL.md` +
 /// `MEMORY.md`/`USER.md` (the 6 `_PROFILE_IDENTITY_MARKERS` files), while
-/// Pantheon had no identity config at all — every run was anonymous.
+/// Pantheon had no identity config at all - every run was anonymous.
 /// This is the durable half: name, persona source files, memory namespace,
 /// and capability policy live in config; the prompt assembly that reads
 /// them is next. Persona files are referenced by path (repo-relative or
@@ -1796,7 +1796,7 @@ fn agent_table_problems(all: &std::collections::HashMap<String, AgentIdentity>) 
 pub struct Config {
     /// The agent this install runs as (`agent = "zeus"`). Must name a
     /// declared `[agents.<name>]` table. This is the key that selects an
-    /// agent — a legacy free-form `profile` label key was removed; old
+    /// agent - a legacy free-form `profile` label key was removed; old
     /// configs that still carry it load fine, the key is ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -1831,10 +1831,10 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner: Option<PlannerSection>,
     /// `[repair]`: repair model pin. Absent = OFF: the slot adds no
-    /// policy entry and fix-loop draft revision is unavailable — the
+    /// policy entry and fix-loop draft revision is unavailable - the
     /// loop falls back to plain retries, then escalation. The nightly
     /// fix loop's draft revision (eval-reject and replay-reject paths)
-    /// resolves only through this slot — never the Reflection slot.
+    /// resolves only through this slot - never the Reflection slot.
     /// Broken-MCP/schedule/tool diagnosis (workstream 3) will resolve
     /// it too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1871,7 +1871,7 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consolidation: Option<ConsolidationSection>,
     /// `[nightly]`: the unified nightly self-improvement pass
-    /// (`pantheon nightly`). The single authoritative section — it merges
+    /// (`pantheon nightly`). The single authoritative section - it merges
     /// the old `[reflect]` and `[consolidation]` behavior knobs. When
     /// absent, the legacy sections are honored field-by-field as a
     /// deprecated migration fallback (see [`nightly_config`]); when
@@ -1943,7 +1943,7 @@ pub struct Config {
     /// shared by the config file, the dashboard, the mobile app, and the
     /// agent's `enable_plugin` tool. A bundled plugin not named here (or
     /// named without `enabled`) is disabled: bundled plugins ship off.
-    /// Third-party plugins are unaffected — their gate is the approval
+    /// Third-party plugins are unaffected - their gate is the approval
     /// store (`pantheon_api::approval`), not this table. Entries under
     /// names the bundled catalog does not know are inert.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -1965,7 +1965,7 @@ pub struct Config {
 /// (`pantheon --profile <name>` / `-p` / `--agent`) before any session
 /// exists. It slots into [`Config::resolve_profile`] between an explicit
 /// call-site override and the `agent = "..."` config value, so the TUI
-/// launch path — which resolves with `None` — picks it up without any
+/// launch path - which resolves with `None` - picks it up without any
 /// session-construction code needing a new parameter. Set-once: the
 /// second call wins, and it is never read before the CLI has parsed.
 static PROFILE_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
@@ -1988,7 +1988,7 @@ pub fn profile_override() -> Option<String> {
 ///
 /// Load policy for unknown keys: WARN on stderr, non-fatal. A typo'd
 /// section must not nuke a working install (so this is a warning, not
-/// an error), but it must not pass silently either — `doctor` used to
+/// an error), but it must not pass silently either - `doctor` used to
 /// bless configs whose real sections were misspelled. `pantheon config
 /// set` keeps its loud rejection; this is the load path's quieter twin,
 /// applied uniformly in [`Config::load`].
@@ -1996,7 +1996,7 @@ pub fn profile_override() -> Option<String> {
 /// Only top-level keys are checked: tables like `[custom_providers.*]`
 /// and `[agents.*]` take arbitrary names by design, and per-section
 /// key lists would rot. A typo *inside* a section (e.g.
-/// `model.providr`) is still silent — the section structs would need
+/// `model.providr`) is still silent - the section structs would need
 /// `deny_unknown_fields` for that, which is a separate change.
 ///
 /// Kept in sync with the `Config` struct by
@@ -2103,14 +2103,14 @@ impl Config {
     }
     /// Is the bundled plugin `name` enabled? Absent `[plugins.<name>]`
     /// (or an entry without `enabled`) = disabled: bundled plugins are
-    /// all off by default. Unknown names are disabled too — entries for
+    /// all off by default. Unknown names are disabled too - entries for
     /// names outside the bundled catalog are inert.
     pub fn plugin_enabled(&self, name: &str) -> bool {
         self.plugins.get(name).map(|e| e.enabled).unwrap_or(false)
     }
     /// Is the MCP server `name` enabled? Absent `[mcp.servers.<name>]`
     /// (or an entry without `enabled`) = disabled: bundled servers are
-    /// all off by default. Unknown names are disabled too — entries for
+    /// all off by default. Unknown names are disabled too - entries for
     /// names outside the bundled catalog are inert (custom servers are
     /// still read from their declaration files by the launcher; this
     /// helper only answers the config-section question).
@@ -2173,7 +2173,7 @@ impl Config {
                 let unknown = unknown_config_keys(&text);
                 if !unknown.is_empty() {
                     eprintln!(
-                        "pantheon: warning: {} has unknown key(s): {} — ignored; check for typos",
+                        "pantheon: warning: {} has unknown key(s): {} - ignored; check for typos",
                         path.display(),
                         unknown.join(", "),
                     );
@@ -2185,7 +2185,7 @@ impl Config {
     ///
     /// This is the bridge from config text to the runtime's profile layer.
     /// Building it here (rather than at each call site) means every entry
-    /// point — terminal, scheduler, AG-UI — sees the same declarations, and
+    /// point - terminal, scheduler, AG-UI - sees the same declarations, and
     /// an inheritance chain broken by a typo is reported identically
     /// everywhere.
     pub fn profile_registry(&self) -> Result<ProfileRegistry, ProfileError> {
@@ -2215,7 +2215,7 @@ impl Config {
     ///
     /// Selection order: an explicit `--agent`, else `agent = "..."`, else
     /// `default`. A name that is not declared is an error, never a silent
-    /// fallback — an operator who asked for `zeus` and silently got the
+    /// fallback - an operator who asked for `zeus` and silently got the
     /// default agent's memory and persona would have no way to notice.
     ///
     /// A config with no `[agents]` table at all is not an error: that is
@@ -2317,7 +2317,7 @@ impl Config {
         }
         // Every aux section validates identically: a resolvable
         // api_key_env when named, and a non-zero timeout. Empty
-        // provider/model is valid — it inherits the `[model]` target
+        // provider/model is valid - it inherits the `[model]` target
         // (Hermes-style), so there is no "empty field" error anymore.
         fn aux_problem(
             name: &str,
@@ -2507,7 +2507,7 @@ impl Config {
 
 /// One aux slot: everything that varies per capability. The table below
 /// drives target resolution, key seeding, validation, and the
-/// `auxiliaries()` fan-out — adding a capability means adding one row.
+/// `auxiliaries()` fan-out - adding a capability means adding one row.
 pub struct AuxSlot {
     pub kind: crate::model::AuxiliaryKind,
     /// Config section name (for diagnostics).
@@ -2634,7 +2634,7 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         vault_name: "PANTHEON_VERIFY_API_KEY",
         // The documented exception alongside embeddings: absent section
         // = the slot is OFF, never `auto`. Verification only runs when
-        // the operator explicitly pins a model here — an unverified
+        // the operator explicitly pins a model here - an unverified
         // delegation must be a choice, not an accident of defaults.
         auto: false,
         section: |c| c.verify.as_ref(),
@@ -2681,7 +2681,7 @@ mod config_max_tokens_tests {
         );
     }
 
-    /// Item 4: full precedence — session > [budget] > model default.
+    /// Item 4: full precedence - session > [budget] > model default.
     #[test]
     fn resolver_precedence_session_over_budget_over_model() {
         // Budget alone beats the model default.
@@ -2811,7 +2811,7 @@ mod gateway_multi_agent_tests {
     use super::*;
 
     /// Panic-safe guard: the profile override is process-global, so every
-    /// test that sets it must clear it even on failure — a leaked override
+    /// test that sets it must clear it even on failure - a leaked override
     /// would silently change what other tests resolve.
     struct OverrideGuard;
     impl OverrideGuard {
@@ -2923,7 +2923,7 @@ mod gateway_multi_agent_tests {
 
     #[test]
     fn cli_override_with_unknown_name_is_an_error_not_anonymous() {
-        // Asking for a profile that does not exist must fail loudly —
+        // Asking for a profile that does not exist must fail loudly
         // silently running anonymous would attribute the conversation to
         // the wrong identity.
         let _guard = OverrideGuard::set("zeus");
@@ -2999,7 +2999,7 @@ mod fix_pass4_leaf1_tests {
     }
 
     /// Item 1: the wizard's recommended backends (groq, piper-local)
-    /// validate clean — this was the setup/doctor infinite loop.
+    /// validate clean - this was the setup/doctor infinite loop.
     #[test]
     fn validate_accepts_registry_voice_backends() {
         let mut cfg = cfg_with_model();
@@ -3114,7 +3114,7 @@ mod fix_pass4_leaf1_tests {
             "[modle]\nprovider = \"openai\"\n[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\n";
         assert_eq!(unknown_config_keys(text), vec!["modle".to_string()]);
         assert!(unknown_config_keys("[model]\nprovider = \"openai\"\n").is_empty());
-        // Unparseable documents report nothing here — the parse error
+        // Unparseable documents report nothing here - the parse error
         // path owns that case.
         assert!(unknown_config_keys("[model\n").is_empty());
     }

@@ -3,7 +3,7 @@
 //! The gateway background service ticks due scheduled jobs on an interval
 //! using `pantheon-scheduler`'s [`TickDriver`] and [`DurableClaimLedger`].
 //! Job loading and execution are injected as closures so this crate stays
-//! free of runtime/config dependencies — the app crate wires in its job
+//! free of runtime/config dependencies - the app crate wires in its job
 //! store and `run_job_now`.
 //!
 //! The loop and `pantheon schedule tick` open the same claim ledger
@@ -18,7 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// One job the loop knows how to fire: the scheduler core's shared shape —
+/// One job the loop knows how to fire: the scheduler core's shared shape
 /// the [`pantheon_scheduler::Job`] plus the last fire time driving the due
 /// check. Re-exported here so callers (e.g. the app crate building the
 /// `ExecuteFn`) name one type. Task text is resolved by the app crate via
@@ -54,7 +54,7 @@ pub type ExecuteFn = Arc<dyn Fn(&ScheduledJob) -> TaskOutcome + Send + Sync>;
 
 /// What one fired run's task produced, as opposed to what its thread
 /// did. The driver reports [`RunOutcome`]; this travels alongside so
-/// the outcome sink can record the *task's* result — including the
+/// the outcome sink can record the *task's* result - including the
 /// run id (for ledger alerts) and the failure detail when the task
 /// itself failed.
 #[derive(Debug, Clone, Default)]
@@ -69,7 +69,7 @@ pub struct TaskOutcome {
 
 /// Receives one fired run's outcome: called with the job id, the
 /// driver's [`RunOutcome`], and the task-level [`TaskOutcome`] (None
-/// when the executor thread never reported one — panic or timeout
+/// when the executor thread never reported one - panic or timeout
 /// abandon) when the run finishes (or is abandoned on timeout).
 /// Installed via [`SchedulerLoop::set_outcome_sink`]; the run-history
 /// recorder and the self-heal pipeline are the intended consumers.
@@ -152,7 +152,7 @@ pub struct SchedulerLoop {
     interval: Duration,
     outcome_sink: Option<OutcomeSink>,
     /// Completion observer for one-shot jobs. One-shot rows are removed
-    /// only when the run actually completed — deleting on fire would lose
+    /// only when the run actually completed - deleting on fire would lose
     /// panicked/timed-out runs silently. Kept separate from
     /// [`SchedulerLoop::outcome_sink`] so installing a run-history sink
     /// never disables one-shot lifecycle handling.
@@ -161,7 +161,7 @@ pub struct SchedulerLoop {
 
 impl SchedulerLoop {
     /// Open on `<data_dir>/claims.db`. Fails when the ledger cannot be
-    /// opened — a tick loop that cannot claim must not fire.
+    /// opened - a tick loop that cannot claim must not fire.
     pub fn open(data_dir: &Path, tick_secs: u64) -> Result<Self, String> {
         let ledger = DurableClaimLedger::open(&data_dir.join("claims.db"))
             .map_err(|e| format!("cannot open claim ledger: {e}"))?;
@@ -216,7 +216,7 @@ impl SchedulerLoop {
             let ex = execute.clone();
             // Per-fire slot for the task-level outcome. The thunk stores
             // it; the watcher drains it. A panicked or timed-out run
-            // never fills the slot, so the sink sees None — and a late
+            // never fills the slot, so the sink sees None - and a late
             // fill from a detached (abandoned) run lands in a dropped
             // slot, never in a later fire. No cross-fire leakage.
             let slot: Arc<std::sync::Mutex<Option<TaskOutcome>>> =

@@ -1,7 +1,7 @@
 //! Replay validation: the improvement gate.
 //!
 //! Eval-gating ([`crate::gate`]) proves a proposal doesn't break
-//! anything. Replay proves it makes something *better* — the SkillOpt
+//! anything. Replay proves it makes something *better* - the SkillOpt
 //! learning rule: a Skill/Persona proposal ships only if it strictly
 //! improves a held-out task's score, measured by replaying the task with
 //! and without the candidate applied.
@@ -12,7 +12,7 @@
 //! appear here; this set is validation-only.
 //!
 //! When no replay tasks are configured, the gate REJECTS every
-//! skill/persona proposal — loudly, in the audit log. Strict
+//! skill/persona proposal - loudly, in the audit log. Strict
 //! improvement is mandatory; "no tasks to measure against" is not a
 //! pass. Configure tasks with the `replay-tasks` CLI.
 
@@ -31,7 +31,7 @@ pub enum ReplayCheck {
     ToolSequence { tools: Vec<String> },
     /// The transcript must (not) contain this text. Score 1.0 on match.
     Contains { text: String, negate: bool },
-    /// An LLM judge scores the transcript 0.0–1.0 against the rubric.
+    /// An LLM judge scores the transcript 0.0-1.0 against the rubric.
     /// Requires LLM steps enabled; otherwise the task is skipped.
     Judge { rubric: String },
 }
@@ -44,7 +44,7 @@ pub struct ReplayTask {
     pub prompt: String,
     pub check: ReplayCheck,
     /// How this task runs itself. When present, the built-in task runner
-    /// executes it directly — no `[nightly] replay_command` needed.
+    /// executes it directly - no `[nightly] replay_command` needed.
     /// When absent, the task needs the external headless-agent command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec: Option<TaskExec>,
@@ -71,7 +71,7 @@ pub struct TaskExec {
 /// Runs a task and returns the transcript for scoring.
 ///
 /// The `with_proposal` contract: when `Some`, the runner must make the
-/// proposal's effect visible to the replay — for a Skill proposal, the
+/// proposal's effect visible to the replay - for a Skill proposal, the
 /// candidate `SKILL.md` is staged where the replayed agent will load it;
 /// for Persona, the persona note is injected. When `None`, the replay
 /// runs clean. Implementations must be bounded (timeout).
@@ -88,7 +88,7 @@ pub trait ReplayRunner {
 pub enum ReplayVerdict {
     /// Total score with the proposal strictly exceeds the baseline.
     Pass { summary: String },
-    /// No strict improvement — or the improvement couldn't be measured
+    /// No strict improvement - or the improvement couldn't be measured
     /// (no replay tasks configured, a replay errored, a score wasn't
     /// finite). The proposal is rejected; the reason names the cause.
     /// Missing or broken replay infrastructure NEVER degrades to a
@@ -268,7 +268,7 @@ fn score_with_judge(
 ///
 /// For every applicable task, the task is replayed with and without the
 /// proposal. The proposal passes only when the total with-score strictly
-/// exceeds the total baseline score. Equal scores fail — "didn't make it
+/// exceeds the total baseline score. Equal scores fail - "didn't make it
 /// worse" is what eval-gating already proves; this gate proves "made it
 /// better".
 ///
@@ -288,7 +288,7 @@ pub fn replay_gate(
     if tasks.is_empty() {
         return ReplayVerdict::Fail {
             reason: format!(
-                "proposal '{}': no replay tasks configured — strict improvement cannot be measured; add tasks with `pantheon nightly replay-tasks add`",
+                "proposal '{}': no replay tasks configured - strict improvement cannot be measured; add tasks with `pantheon nightly replay-tasks add`",
                 proposal.id
             ),
         };
@@ -404,7 +404,7 @@ impl ReplayRunner for UnconfiguredReplayRunner {
         _with_proposal: Option<&Proposal>,
     ) -> Result<String, String> {
         Err(format!(
-            "no replay command configured ([nightly] replay_command) — cannot replay task '{}'; configure a headless runner to enable replay validation",
+            "no replay command configured ([nightly] replay_command) - cannot replay task '{}'; configure a headless runner to enable replay validation",
             task.id
         ))
     }
@@ -418,7 +418,7 @@ impl ReplayRunner for UnconfiguredReplayRunner {
 /// overlay, so the replayed agent sees exactly the change under test.
 /// (Skill overlays load through Pantheon's normal skill discovery;
 /// persona overlays are staged as `persona.md` for the runner to
-/// inject — the same overlay the runtime applies to live sessions, see
+/// inject - the same overlay the runtime applies to live sessions, see
 /// [`crate::persona`].)
 pub struct SubprocessReplayRunner {
     pub command: String,
@@ -487,8 +487,8 @@ impl ReplayRunner for SubprocessReplayRunner {
 }
 
 /// Stage a proposal as a skill/persona overlay for the replay runner.
-/// Returns the staging dir path. Memory lessons need no overlay — they
-/// are data, not behavior — so this is a no-op dir for them.
+/// Returns the staging dir path. Memory lessons need no overlay - they
+/// are data, not behavior - so this is a no-op dir for them.
 fn stage_proposal_overlay(p: &Proposal) -> Result<String, String> {
     let dir = std::env::temp_dir().join(format!("pantheon-replay-{}", p.id));
     std::fs::create_dir_all(&dir).map_err(|e| format!("create replay staging dir: {e}"))?;
@@ -506,7 +506,7 @@ fn stage_proposal_overlay(p: &Proposal) -> Result<String, String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
-/// A [`ReplayRunner`] that executes the task's own [`TaskExec`] spec —
+/// A [`ReplayRunner`] that executes the task's own [`TaskExec`] spec
 /// the built-in headless runner. No external agent needed: the task
 /// defines exactly how it runs, so a held-out task is a deterministic
 /// command whose stdout is the scored transcript.
@@ -516,7 +516,7 @@ fn stage_proposal_overlay(p: &Proposal) -> Result<String, String> {
 /// task's `env` overrides. When a proposal is under test,
 /// `PANTHEON_REPLAY_SKILL_DIR` points at the staged overlay
 /// ([`stage_proposal_overlay`]). This is process isolation, not a
-/// sandbox — a task spec is trusted code. For untrusted or
+/// sandbox - a task spec is trusted code. For untrusted or
 /// agent-driven replays, point `[nightly] replay_command` at a
 /// sandboxed headless agent instead.
 pub struct TaskSpecReplayRunner {
@@ -540,7 +540,7 @@ impl ReplayRunner for TaskSpecReplayRunner {
 
         let spec = task.exec.as_ref().ok_or_else(|| {
             format!(
-                "replay task '{}' has no exec spec — give it one (`replay-tasks add --exec ...`) or configure [nightly] replay_command",
+                "replay task '{}' has no exec spec - give it one (`replay-tasks add --exec ...`) or configure [nightly] replay_command",
                 task.id
             )
         })?;
@@ -548,7 +548,7 @@ impl ReplayRunner for TaskSpecReplayRunner {
             return Err(format!("replay task '{}': exec command is empty", task.id));
         }
         // Fresh empty working directory per run: the task starts with a
-        // clean slate, but this is NOT a sandbox — it inherits our
+        // clean slate, but this is NOT a sandbox - it inherits our
         // environment and can still reach the filesystem. Task specs
         // are trusted code (see the struct docs).
         let workdir = std::env::temp_dir().join(format!(
@@ -639,7 +639,7 @@ fn sanitize_id(id: &str) -> String {
 /// 2. Else `[nightly] replay_command` is set →
 ///    [`SubprocessReplayRunner`] (headless agent).
 /// 3. Else → [`UnconfiguredReplayRunner`] (loud failure, the gate
-///    rejects — "couldn't measure" is never a pass).
+///    rejects - "couldn't measure" is never a pass).
 pub struct CompositeReplayRunner {
     /// External headless-agent command (`<command> <prompt>`), if any.
     pub command: Option<String>,

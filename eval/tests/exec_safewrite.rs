@@ -1,11 +1,11 @@
 //! Behavioral / integration tests moved out of the crate's unit suite.
 //!
 //! Policy: only small deterministic unit tests live beside the code
-//! (`cargo test -p <crate>`). Everything behavioral — SQLite stores,
-//! threads, sockets, subprocesses, timing, filesystem — lives here and
+//! (`cargo test -p <crate>`). Everything behavioral - SQLite stores,
+//! threads, sockets, subprocesses, timing, filesystem - lives here and
 //! runs via `cargo test -p pantheon-eval`.
 
-//! Tests for `pantheon_exec::safewrite::tests` — sibling file so sources stay test-free.
+//! Tests for `pantheon_exec::safewrite::tests` - sibling file so sources stay test-free.
 use pantheon_exec::safewrite::*;
 use std::path::{Path, PathBuf};
 fn fresh_state(name: &str) -> PathBuf {

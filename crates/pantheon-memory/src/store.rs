@@ -64,7 +64,7 @@ impl Default for LayerBudgets {
 /// [`MemoryStore::open_with_config`] / [`MemoryStore::set_config`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryConfig {
-    /// Max bytes for a single value — the pre-existing `max_bytes` gate,
+    /// Max bytes for a single value - the pre-existing `max_bytes` gate,
     /// now owned by the store config instead of floating at call sites.
     pub max_value_bytes: usize,
     pub budgets: LayerBudgets,
@@ -245,7 +245,7 @@ fn tune_connection(conn: &Connection) -> Result<(), PantheonError> {
 }
 
 /// Delete one row by id, removing its FTS index entry too. `DELETE` on
-/// the content table does not touch the external-content FTS index —
+/// the content table does not touch the external-content FTS index
 /// without the explicit 'delete' command the row stays searchable
 /// forever (the old `forget` had exactly this leak).
 fn delete_row(
@@ -272,7 +272,7 @@ fn delete_row(
 /// Trust-aware eviction for one (layer, namespace): while the total
 /// stored value bytes exceed `budget`, delete the lowest-trust row
 /// (oldest first within a tier), never `exclude_id` (the row just
-/// written). Byte size is `length(CAST(value AS BLOB))` — `length()` on
+/// written). Byte size is `length(CAST(value AS BLOB))` - `length()` on
 /// TEXT counts characters, not bytes.
 fn evict_over_budget(
     conn: &Connection,
@@ -535,8 +535,8 @@ impl MemoryStore {
     }
 
     /// Fetch one record by layer + namespace + key: the full row
-    /// identity. Fetching by (namespace, key) alone was ambiguous —
-    /// the same key can exist in several layers — and returned an
+    /// identity. Fetching by (namespace, key) alone was ambiguous
+    /// the same key can exist in several layers - and returned an
     /// arbitrary row.
     pub fn get(
         &self,
@@ -615,7 +615,7 @@ impl MemoryStore {
             )
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
         // Bound growth: evict lowest-trust, oldest-first until the layer
-        // is back under budget. The row just written is never evicted —
+        // is back under budget. The row just written is never evicted
         // `put` must not delete what it just stored.
         if let Some(budget) = budget {
             evict_over_budget(&conn, p.layer, &p.namespace, budget, id)?;
@@ -868,7 +868,7 @@ pub fn rebuild_fts(db: &std::path::Path) -> Result<u64, PantheonError> {
     Ok(n as u64)
 }
 
-/// Drop the FTS sidecar while leaving the triggers in place — the state a
+/// Drop the FTS sidecar while leaving the triggers in place - the state a
 /// partial write or an interrupted migration leaves behind.
 ///
 /// Takes a path rather than exposing a `Connection`, so a consumer can damage

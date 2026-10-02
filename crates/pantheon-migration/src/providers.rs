@@ -8,7 +8,7 @@
 //!   `[custom_providers.<name>]` section written into `config.toml`.
 //! - **Builtin provider keys** are already covered by the credential carry,
 //!   because Pantheon's catalog names each provider's key env after the same
-//!   `<PROVIDER>_API_KEY` convention the sources use. Nothing needs writing —
+//!   `<PROVIDER>_API_KEY` convention the sources use. Nothing needs writing
 //!   but nothing *verifies* it either, so a key that matches no catalog entry
 //!   looks identical to one that does. [`reconcile_keys`] is that report.
 //!
@@ -62,7 +62,7 @@ pub struct CustomModelRow {
 ///
 /// Line-scanned rather than YAML-deserialised, for the same reason the MCP
 /// parser is: a full deserialise of the source config would pull unrelated
-/// values — including credentials — into a struct, and this function only ever
+/// values - including credentials - into a struct, and this function only ever
 /// needs the endpoint shape. Returns `(id, label, base_url, key_env,
 /// default_model, models)` per entry.
 pub fn parse_hermes_providers(config_yaml: &str) -> Vec<CustomProvider> {
@@ -355,7 +355,7 @@ pub fn render_custom_providers(providers: &[CustomProvider]) -> String {
         }
         // Deliberately no `models = [...]` here. A source agent config's
         // model list is a snapshot of a third-party endpoint taken whenever
-        // that agent last synced — for an aggregator it is stale almost
+        // that agent last synced - for an aggregator it is stale almost
         // immediately. Pantheon fetches the live list from the endpoint on
         // demand (`pantheon provider models <name>`) and records a model only
         // once the operator has actually named one.
@@ -501,7 +501,7 @@ pub fn merge_into_config(
         }
         // See `render_custom_providers`: no harvested model list. A model
         // row appears here only after the operator names one, via
-        // `pantheon model` (which records it) — never copied from a source
+        // `pantheon model` (which records it) - never copied from a source
         // config's stale snapshot.
         added.push(p.id.clone());
     }

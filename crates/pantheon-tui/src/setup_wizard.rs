@@ -8,7 +8,7 @@
 //!
 //! Three entry modes. Recommended asks the fewest questions that give a
 //! working agent: provider, model, then the recommended providers for web
-//! search, browser, memory, and computer use — no Tools screen, no
+//! search, browser, memory, and computer use - no Tools screen, no
 //! STT/TTS. Full Setup runs the Tools screen pre-ticked, and its answers
 //! gate the provider screens (STT+TTS when Voice is on). Full Setup also
 //! has a Gateway screen for the optional Telegram/Discord bot tokens;
@@ -143,7 +143,7 @@ fn pick_model_key_env(provider: &str, custom: Option<&CustomProviderSpec>) -> Op
 }
 
 /// Recommended mode: minimum decisions. The toolset is fixed (every
-/// group except Voice — STT/TTS are skipped entirely), and each
+/// group except Voice - STT/TTS are skipped entirely), and each
 /// provider screen resolves the recommended row with NO picker: only
 /// the kind-driven follow-ups run (key env var, URL, local
 /// detect+install-or-skip).
@@ -282,7 +282,7 @@ fn run_full(
 
     // The Tools screen replaces the old Permissions screen: one
     // multi-select over every capability instead of a policy preset.
-    // Policy stays the default coder preset — there is no permissions
+    // Policy stays the default coder preset - there is no permissions
     // screen anymore. Session search is default-on and hidden from the
     // options.
     let tools = if wants(Section::Tools) {
@@ -343,7 +343,7 @@ fn run_full(
     };
 
     // Speech is one tool group with two backends: STT first, then TTS.
-    // Skip is granular per backend — a skipped backend writes no
+    // Skip is granular per backend - a skipped backend writes no
     // section; the Voice group only comes off when both are skipped.
     // A cancelled pick keeps the old behavior (the shared setup path
     // resolves the recommended default).
@@ -388,7 +388,7 @@ fn run_full(
     };
 
     // Extensions (Full only): MCP servers, plus the bundled-plugin
-    // status line. Skip turns the Plugins group off — same as every
+    // status line. Skip turns the Plugins group off - same as every
     // other provider screen: intentionally unconfigured means the
     // group comes off the enabled set and nothing is written.
     let mcp_servers = if wants(Section::Extensions) {
@@ -526,8 +526,8 @@ fn pick_mode() -> Mode {
 /// widget, because "development endpoints are not offered" is a product
 /// decision and belongs where a reader can see why.
 /// Picker order for model providers: recommended first, stable for the
-/// rest. Defensive pin for Nous Research — Umar's designated recommended
-/// model provider — in case the catalog hasn't landed its marker yet; a
+/// rest. Defensive pin for Nous Research - Umar's designated recommended
+/// model provider - in case the catalog hasn't landed its marker yet; a
 /// catalog marker always wins when present.
 fn order_model_providers(
     mut providers: Vec<pantheon_providers::catalog::ProviderMeta>,
@@ -553,7 +553,7 @@ fn provider_note(provider: &str) -> Option<&'static str> {
 
 /// Pick a model provider. Returns the provider id plus, for the Custom
 /// row, the endpoint spec `run_setup` persists to
-/// `[custom_providers.custom]` — the in-memory registration alone does
+/// `[custom_providers.custom]` - the in-memory registration alone does
 /// not survive the process, so the wizard used to write a config
 /// pointing at an endpoint only it remembered.
 fn pick_provider() -> Option<(String, Option<CustomProviderSpec>)> {
@@ -719,7 +719,7 @@ fn pick_model(provider: &str) -> Option<String> {
         })
         .collect();
     if items.is_empty() {
-        // No rows at all — neither curated nor fetchable. The generic
+        // No rows at all - neither curated nor fetchable. The generic
         // adapter is the path and the model name is a free-text answer.
         // Inventing a list here would be the fake configuration the spec
         // forbids.
@@ -759,8 +759,8 @@ fn pick_tools() -> Vec<ToolGroup> {
         .iter()
         .map(|g| Item::new(g.label(), g.key()).desc(tool_group_desc(*g)))
         .collect();
-    // Every group is preselected: the runtime gates each one — Computer
-    // Use included — behind the ToolGroup toggle, the CUA driver binary,
+    // Every group is preselected: the runtime gates each one - Computer
+    // Use included - behind the ToolGroup toggle, the CUA driver binary,
     // the MCP server approval, and per-call human approval under the
     // default policy. Checking the box offers the capability; the
     // runtime still asks before it acts.
@@ -777,7 +777,7 @@ fn pick_tools() -> Vec<ToolGroup> {
 }
 
 /// One-line blurb per tool group. Groups with a provider screen say
-/// so; Computer Use is a real capability now — the CUA driver registers
+/// so; Computer Use is a real capability now - the CUA driver registers
 /// its tools through the MCP manager when approved, and every desktop
 /// action parks for human approval under the default policy.
 fn tool_group_desc(g: ToolGroup) -> &'static str {
@@ -807,7 +807,7 @@ fn tool_group_desc(g: ToolGroup) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// The Gateway screen: Telegram and Discord bot tokens for `gateway run`.
-/// Both optional — skipping leaves the chat surfaces disabled and the
+/// Both optional - skipping leaves the chat surfaces disabled and the
 /// gateway runs scheduler-only. Tokens go straight into the secrets store
 /// (`<data_dir>/gateway.env`), never into config.toml, never printed or
 /// logged; a process env var always wins at runtime.
@@ -997,8 +997,8 @@ fn install_gateway_service(data_dir: &Path) {
 /// background service.
 ///
 /// The platform's mechanism is shown BEFORE the question is asked, and
-/// the install runs only on explicit confirmation. Declining is clean —
-/// no partial install — and records the marker so the question never
+/// the install runs only on explicit confirmation. Declining is clean
+/// no partial install - and records the marker so the question never
 /// comes back. Skips silently when there is no service manager, when a
 /// decline was recorded, or when the service is already installed.
 fn pick_gateway_service_install(data_dir: &Path) {
@@ -1036,7 +1036,7 @@ fn pick_gateway_service_install(data_dir: &Path) {
 // ---------------------------------------------------------------------------
 
 /// The Extensions screen: MCP servers plus bundled plugins. Returns
-/// `Some(servers)` — possibly empty — on Done/Esc, and `None` when the
+/// `Some(servers)` - possibly empty - on Done/Esc, and `None` when the
 /// user picks Skip. Esc keeps whatever was added and continues: the
 /// wizard's standing contract is that a cancelled screen keeps the
 /// answers gathered so far, and there is no recommended default to
@@ -1045,9 +1045,9 @@ fn pick_gateway_service_install(data_dir: &Path) {
 /// SEAM (bundled-MCP catalog): the sibling catalog
 /// (`pantheon_mcp::bundled`) has landed its recipe types. A catalog row
 /// enters the wizard as `(recipe.name.to_string(),
-/// recipe.to_config_entry(true))` — secrets already materialized as
+/// recipe.to_config_entry(true))` - secrets already materialized as
 /// `env:NAME` placeholders by the catalog, `enabled` flipped on by the
-/// user's choice — and flows through the existing `mcp_servers` answer
+/// user's choice - and flows through the existing `mcp_servers` answer
 /// into `mcp_section`, which writes the same `[mcp.servers.<name>]`
 /// tables (and `enabled` flags) the dashboard/app toggles and
 /// `set_bundled_enabled` operate on. Reconciling the catalog UI is
@@ -1088,8 +1088,8 @@ fn pick_extensions(data_dir: &Path) -> Option<Vec<(String, McpServerEntry)>> {
 
 /// Apply the Extensions screen's Skip: the Plugins group comes off the
 /// enabled set and is recorded, so `run_setup` writes no `[mcp]`
-/// section and the runtime never registers plugin tools. Pure — no
-/// TUI — so the skip contract is unit-testable.
+/// section and the runtime never registers plugin tools. Pure - no
+/// TUI - so the skip contract is unit-testable.
 fn apply_extensions_skip(tools: &mut Vec<ToolGroup>, skipped: &mut Vec<ToolGroup>) {
     tools.retain(|g| *g != ToolGroup::Plugins);
     if !skipped.contains(&ToolGroup::Plugins) {
@@ -1100,8 +1100,8 @@ fn apply_extensions_skip(tools: &mut Vec<ToolGroup>, skipped: &mut Vec<ToolGroup
 /// One-line bundled-plugin status, printed when the Extensions screen
 /// opens. Bundled (first-party) plugins live under
 /// `<data_dir>/extensions/bundled/` and load without approval; there
-/// is no enable/disable switch for them in `pantheon-extensions` —
-/// removing the directory is the disable path — so the screen reports
+/// is no enable/disable switch for them in `pantheon-extensions`
+/// removing the directory is the disable path - so the screen reports
 /// what is there and moves on. Today nothing ships there, and the
 /// screen says so instead of inventing a registry.
 fn print_bundled_status(data_dir: &Path) {
@@ -1133,7 +1133,7 @@ fn bundled_plugin_names(data_dir: &Path) -> Vec<String> {
 }
 
 /// One MCP server's answers: name, transport, command+args or URL, env
-/// vars. Returns `None` on cancel or failed validation — the screen
+/// vars. Returns `None` on cancel or failed validation - the screen
 /// loop then continues without recording anything half-configured.
 fn add_mcp_server(existing: &[(String, McpServerEntry)]) -> Option<(String, McpServerEntry)> {
     let name = crate::prompt::pick_text(
@@ -1215,8 +1215,8 @@ fn add_mcp_server(existing: &[(String, McpServerEntry)]) -> Option<(String, McpS
 }
 
 /// Setup-time validation for one MCP server: the config's own
-/// [`McpServerEntry::problems`] — so the wizard can never disagree
-/// with config validation — plus the two setup checks the config
+/// [`McpServerEntry::problems`] - so the wizard can never disagree
+/// with config validation - plus the two setup checks the config
 /// cannot do: a stdio command must resolve on PATH (or be an
 /// executable path), and an sse/http URL must be an http(s) URL. Pure.
 fn validate_mcp_server(name: &str, entry: &McpServerEntry) -> Vec<String> {
@@ -1273,7 +1273,7 @@ fn validate_server_name(name: &str, existing: &[(String, McpServerEntry)]) -> Op
     }
     // Bundled recipe names are reserved: a custom server borrowing one
     // would run under the bundled name while carrying an arbitrary
-    // command. Mirrors the dashboard add endpoint's rejection — the
+    // command. Mirrors the dashboard add endpoint's rejection - the
     // catalog entry is enabled, never shadowed.
     if pantheon_api::mcp_catalog::find(name).is_some() {
         return Some(format!(

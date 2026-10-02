@@ -8,8 +8,8 @@ description = "Web access: browser automation (gsd-browser subprocess, trait sea
 
 # Merged from pantheon-browser + pantheon-websearch. Browser automation
 # (gsd-browser subprocess wrapper) and web search (Tavily) are distinct
-# tools — the model looks things up with web_search and acts on live
-# sites with browser_* — but one crate: both are consumed only by the
+# tools - the model looks things up with web_search and acts on live
+# sites with browser_* - but one crate: both are consumed only by the
 # runtime's tool registration.
 [dependencies]
 pantheon-api = { path = "../pantheon-api" }

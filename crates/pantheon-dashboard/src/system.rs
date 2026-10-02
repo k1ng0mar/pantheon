@@ -4,7 +4,7 @@
 //! Status reads are the real APIs (`pantheon_gateway::service::status`,
 //! the reflect audit's last-run summary, the consolidation state file).
 //! Triggers call back into the real CLI (`spawn_pantheon`) instead of
-//! reimplementing pass machinery — the dashboard is a control plane, not
+//! reimplementing pass machinery - the dashboard is a control plane, not
 //! a second runtime.
 
 use crate::util::atomic_write;
@@ -13,7 +13,7 @@ use pantheon_gateway::http::{Request, Response};
 use std::path::Path;
 
 /// Resolved nightly enable state from the on-disk config: the single
-/// enable rule ([`pantheon_api::config::nightly_enabled`]) — explicit
+/// enable rule ([`pantheon_api::config::nightly_enabled`]) - explicit
 /// flag wins, else the `[nightly.model]` pin (or
 /// `PANTHEON_NIGHTLY_PROVIDER` / `PANTHEON_NIGHTLY_MODEL` env) implies
 /// on. Replaces the old raw `nightly.enabled` TOML bool read, which
@@ -43,7 +43,7 @@ fn next_nightly_run_ms(data_dir: &Path) -> Option<i64> {
         .min()
 }
 
-/// `GET /api/nightly/status` — the nightly enable state behind the
+/// `GET /api/nightly/status` - the nightly enable state behind the
 /// dashboard toggle and the mobile app's toggle. The shared surface for
 /// enable path 4 (dashboard / mobile-app toggle):
 ///
@@ -88,15 +88,15 @@ pub fn nightly_status(app: &App) -> Response {
     }))
 }
 
-/// `POST /api/nightly/enabled` — `{enabled: bool, confirm: true}`.
+/// `POST /api/nightly/enabled` - `{enabled: bool, confirm: true}`.
 /// The dashboard / mobile-app toggle (enable path 4): writes the
-/// explicit `[nightly] enabled` flag — the same flag `/nightly on|off`
+/// explicit `[nightly] enabled` flag - the same flag `/nightly on|off`
 /// and a manual config edit write. There is no parallel store; the
 /// toggle round-trips API → config file →
 /// [`pantheon_api::config::nightly_enabled`].
 ///
 /// The write is a raw TOML table merge (parse to `toml::Value`, set the
-/// `nightly.enabled` key, write back) — deliberately NOT a
+/// `nightly.enabled` key, write back) - deliberately NOT a
 /// `Config::load` → mutate → `Config::save` round-trip, which silently
 /// deletes keys the typed document does not declare (D-3). Unknown keys
 /// are warned about at load; a toggle must never delete them.
@@ -170,11 +170,11 @@ pub fn gateway_status(_app: &App) -> Response {
     }))
 }
 
-/// `POST /api/gateway/restart` — `{confirm: true}`. Restarts via the real
+/// `POST /api/gateway/restart` - `{confirm: true}`. Restarts via the real
 /// `pantheon gateway restart` path, in the background (200).
 ///
 /// Probes first: on a standalone `pantheon dashboard` there is no
-/// installed service, so the restart would silently no-op — that is a
+/// installed service, so the restart would silently no-op - that is a
 /// plain 409 saying so, not an "accepted" toast. Spawn failures are
 /// surfaced (500) instead of swallowed with `let _ =`.
 pub fn gateway_restart(_app: &App, req: &Request) -> Response {
@@ -202,7 +202,7 @@ pub fn gateway_restart(_app: &App, req: &Request) -> Response {
     }
 }
 
-/// `GET /api/reflect/status` — kept as a legacy route name; reports the
+/// `GET /api/reflect/status` - kept as a legacy route name; reports the
 /// unified nightly pass status.
 pub fn reflect_status(app: &App) -> Response {
     json_ok(serde_json::json!({
@@ -211,7 +211,7 @@ pub fn reflect_status(app: &App) -> Response {
     }))
 }
 
-/// `POST /api/reflect/run` — `{dry_run?, confirm: true}`. Runs the real
+/// `POST /api/reflect/run` - `{dry_run?, confirm: true}`. Runs the real
 /// `pantheon nightly` CLI in the background (200).
 pub fn reflect_run(_app: &App, req: &Request) -> Response {
     let body = match body_json(req) {
@@ -237,7 +237,7 @@ pub fn reflect_run(_app: &App, req: &Request) -> Response {
     json_ok(serde_json::json!({"ok": true, "accepted": true, "dry_run": dry_run}))
 }
 
-/// `GET /api/consolidate/status` — kept as a legacy route name; reports
+/// `GET /api/consolidate/status` - kept as a legacy route name; reports
 /// the unified nightly pass state.
 pub fn consolidate_status(app: &App) -> Response {
     let state = pantheon_nightly::NightlyState::load(&app.data_dir).unwrap_or_default();
@@ -251,7 +251,7 @@ pub fn consolidate_status(app: &App) -> Response {
     }))
 }
 
-/// `POST /api/consolidate/run` — `{dry_run?, confirm: true}`. Runs the
+/// `POST /api/consolidate/run` - `{dry_run?, confirm: true}`. Runs the
 /// real `pantheon nightly` CLI in the background (200).
 pub fn consolidate_run(_app: &App, req: &Request) -> Response {
     let body = match body_json(req) {
@@ -333,7 +333,7 @@ mod tests {
     }
 
     /// D-3: the nightly toggle must flip `nightly.enabled` without
-    /// dropping keys the typed Config document does not declare — the
+    /// dropping keys the typed Config document does not declare - the
     /// old `Config::load` / mutate / `save` path silently erased them.
     #[test]
     fn nightly_toggle_preserves_unknown_keys() {
@@ -363,7 +363,7 @@ mod tests {
     }
 
     /// A missing config.toml starts from an empty document; the toggle
-    /// must create `[nightly] enabled = …` rather than 500.
+    /// must create `[nightly] enabled = ...` rather than 500.
     #[test]
     fn nightly_toggle_on_missing_config() {
         let (app, dir) = test_app();

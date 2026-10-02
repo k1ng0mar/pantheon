@@ -2,9 +2,9 @@
 //! `gateway run` needs.
 //!
 //! Collected by the Full Setup wizard's Gateway screen. The tokens live in
-//! `<data_dir>/gateway.env` — a [`DotenvVault`] namespace deliberately
+//! `<data_dir>/gateway.env` - a [`DotenvVault`] namespace deliberately
 //! separate from `.env`, so bot tokens never surface in the `.env` key
-//! manager — and a process env var always wins over the file when both are
+//! manager - and a process env var always wins over the file when both are
 //! set (an exported rotation must beat a stale stored token).
 //!
 //! Tokens travel only as [`SecretValue`]. The one display helper,
@@ -26,8 +26,8 @@ pub const DISCORD_TOKEN_NAME: &str = "PANTHEON_DISCORD_TOKEN";
 
 /// Broker resolving the two channel tokens: process env first, then
 /// `<data_dir>/gateway.env`. The env values are mirrored into a read-only
-/// front vault — the same trick as
-/// [`SecretsBroker::from_system_env_with_api_key`] — so an exported var
+/// front vault - the same trick as
+/// [`SecretsBroker::from_system_env_with_api_key`] - so an exported var
 /// beats the file on read, while `set`/`delete` fall through to the file
 /// vault and can never touch the process environment.
 pub fn gateway_token_broker(data_dir: &Path) -> SecretsBroker {
@@ -73,7 +73,7 @@ pub fn delete_gateway_token(data_dir: &Path, name: &str) -> Result<(), SecretsEr
     file_broker(data_dir).delete(name)
 }
 
-/// Broker over the secrets file only — no env mirror, so writes and
+/// Broker over the secrets file only - no env mirror, so writes and
 /// deletes land in the file and nothing else.
 fn file_broker(data_dir: &Path) -> SecretsBroker {
     SecretsBroker::new()

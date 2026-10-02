@@ -1,4 +1,4 @@
-//! `pantheon send --to telegram|discord|mobile|home "message"` — push a
+//! `pantheon send --to telegram|discord|mobile|home "message"` - push a
 //! message to a gateway surface. For the user/cron, not the agent's normal
 //! reply path.
 //!
@@ -61,7 +61,7 @@ pub fn parse_send_args(args: &[String]) -> Result<SendArgs, String> {
 
 /// Deliver one user-authored message to its target. Returns the
 /// confirmation line for stdout. Every failure comes back as `Err` with the
-/// exact cause — unknown target, missing token, ledger write failure — so
+/// exact cause - unknown target, missing token, ledger write failure - so
 /// neither the CLI nor `/send` can fail silently.
 pub fn send_to_target(data_dir: &Path, target: &Deliver, message: &str) -> Result<String, String> {
     let message = message.trim();
@@ -100,7 +100,7 @@ pub fn send_to_target(data_dir: &Path, target: &Deliver, message: &str) -> Resul
 
 /// Write a user-authored message into the well-known home session's ledger.
 /// The session auto-creates on first use. Mirrors the gateway's
-/// `deliver_to_home_session` but without the scheduled-job framing — this
+/// `deliver_to_home_session` but without the scheduled-job framing - this
 /// is a message, not a job result.
 fn post_to_home_session(data_dir: &Path, message: &str) -> Result<(), String> {
     let ledger = pantheon_storage::Ledger::open(&data_dir.join("ledger.db"))

@@ -149,7 +149,7 @@ def _transform_tool_result(**kwargs):
         warns = _pop_warns(session_id)
         if not warns:
             return {}
-        banner = ("[hookify] Policy warnings (advisory — the tool already "
+        banner = ("[hookify] Policy warnings (advisory - the tool already "
                   "ran):\n" + "\n".join(warns))
         if len(banner) > 4000:
             banner = banner[:4000] + "\n(...truncated...)"

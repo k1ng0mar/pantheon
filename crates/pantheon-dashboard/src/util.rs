@@ -21,7 +21,7 @@ pub(crate) fn project_root() -> PathBuf {
 
 /// Atomic TOML config write: temp file in the same directory + rename,
 /// so a crash mid-write never leaves a half-written `config.toml`.
-/// (No fsync and no permission changes — both historical call sites in
+/// (No fsync and no permission changes - both historical call sites in
 /// `config.rs` and `mcp.rs` behaved exactly this way; crash-atomicity,
 /// not durability, is the guarantee.)
 pub(crate) fn atomic_write(path: &Path, text: &str) -> Result<(), String> {

@@ -6,7 +6,7 @@
 //! cross-platform notifier (`pantheon_gateway::notify`: notify-send on
 //! Linux, osascript on macOS, PowerShell toast on Windows). Both are
 //! fire-and-forget: a missing helper or a failed spawn never affects the
-//! turn. The visible tab never notifies — the transcript itself is the
+//! turn. The visible tab never notifies - the transcript itself is the
 //! signal there.
 
 use std::path::{Path, PathBuf};
@@ -79,7 +79,7 @@ pub fn summarize_turn(last_assistant_text: Option<&str>, turns_completed: u32) -
     match last_assistant_text.map(str::trim).filter(|s| !s.is_empty()) {
         Some(t) => {
             let first: String = t.lines().next().unwrap_or("").chars().take(120).collect();
-            format!("turn {turns_completed} done — {first}")
+            format!("turn {turns_completed} done - {first}")
         }
         None => format!("turn {turns_completed} done"),
     }
@@ -94,7 +94,7 @@ pub fn emit_turn_notification(tab_label: &str, summary: &str) {
         let _ = write!(std::io::stdout(), "\x07");
         let _ = std::io::stdout().flush();
     }
-    let title = format!("Pantheon — {tab_label}");
+    let title = format!("Pantheon - {tab_label}");
     // Cross-platform desktop notification; a failure is silent by design.
     let _ = pantheon_gateway::notify::desktop_notify(&title, summary);
 }

@@ -58,8 +58,8 @@ pub trait MemoryBackend: Send + Sync + std::fmt::Debug {
         max_bytes: usize,
     ) -> Result<MemoryRecord, PantheonError>;
     fn list_agent(&self, namespace: &str) -> Result<Vec<(String, String)>, PantheonError>;
-    /// Fetch one record by (layer, namespace, key) — the full row
-    /// identity. Default: unsupported — external services are
+    /// Fetch one record by (layer, namespace, key) - the full row
+    /// identity. Default: unsupported - external services are
     /// query-oriented, not key-get oriented.
     fn get(
         &self,
@@ -77,7 +77,7 @@ pub trait MemoryBackend: Send + Sync + std::fmt::Debug {
         Err(unsupported("forget"))
     }
     /// Promote a record to Memory tier (the human-vouch path). Default:
-    /// unsupported — trust tiers live in Pantheon's provenance model and
+    /// unsupported - trust tiers live in Pantheon's provenance model and
     /// not every remote service can represent them.
     fn confirm(
         &self,
@@ -180,7 +180,7 @@ pub enum WriteRefusal {
     EphemeralNotPersisted,
     /// The value trips the secret-pattern scan (`secret_scan`). `class`
     /// names the matched pattern class ("labeled password", "github token
-    /// prefix") — never the secret itself.
+    /// prefix") - never the secret itself.
     SecretDetected {
         class: &'static str,
     },
@@ -244,7 +244,7 @@ pub fn validate(p: &Proposal, max_bytes: usize) -> Result<(), WriteRefusal> {
         return Err(WriteRefusal::Empty);
     }
     // Secret tripwire: a page telling the agent "remember this password"
-    // must not reach the store, the export, or recall. Fail closed — the
+    // must not reach the store, the export, or recall. Fail closed - the
     // error names the pattern class, never the secret.
     if let Some(class) = secret_scan::detect_secret(&p.value) {
         return Err(WriteRefusal::SecretDetected { class });
@@ -294,7 +294,7 @@ pub fn propose_write(
 /// closed. The run loop is the enforcement point that parks
 /// `Approval`-gated `memory_confirm` calls before the tool closure ever
 /// runs, so reaching this check with `Approval` means the loop already
-/// enforced the policy (or the human approved on resume — the closure
+/// enforced the policy (or the human approved on resume - the closure
 /// captures the static policy, which still reads `Approval` after a
 /// grant). Direct callers (CLI, tests) are harness code, not the model.
 pub fn confirm_write(
@@ -347,7 +347,7 @@ pub fn recall(
 }
 
 /// Gated recall against ANY backend. Checks `memory.read` here, before the
-/// backend sees the query — external backends must never be the party that
+/// backend sees the query - external backends must never be the party that
 /// decides whether policy allows a read.
 pub fn recall_via(
     backend: &dyn MemoryBackend,
@@ -386,7 +386,7 @@ pub fn write_via(
 /// backend's promotion path (native implements it; external backends
 /// default to `MEM_BACKEND_UNSUPPORTED`).
 ///
-/// Accepts `Allow` or `Approval` for `memory.confirm` — see
+/// Accepts `Allow` or `Approval` for `memory.confirm` - see
 /// [`confirm_write`]: the run loop parks `Approval`-gated calls before
 /// the tool closure runs, so this check only ever sees `Approval` after
 /// enforcement (or a human grant) already happened.
@@ -517,7 +517,7 @@ fn gate_proposal(
     proposal: Proposal,
     max_bytes: usize,
 ) -> Result<Proposal, PantheonError> {
-    // 1. policy — memory.write must be granted explicitly.
+    // 1. policy - memory.write must be granted explicitly.
     if !matches!(policy.check(&Capability::MemoryWrite), Decision::Allow) {
         let r = WriteRefusal::MissingCapability;
         return Err(merr(
@@ -546,7 +546,7 @@ fn gate_proposal(
     }
     // 3. trust clamp. Anything not authored by an explicit user action
     // lands at Untrusted regardless of the requested tier. `memory.md`
-    // is the MEMORY.md file importer — human-authored (or a v2 file
+    // is the MEMORY.md file importer - human-authored (or a v2 file
     // carrying each record's own tier), so it keeps its tier here; the
     // importer separately caps the tier at the store's existing tier so
     // an import can never upgrade trust.

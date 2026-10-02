@@ -6,7 +6,7 @@
 //! the single source of truth: every claim is written with an atomic
 //! first-wins INSERT before it is honoured, so a crash mid-run cannot cause
 //! a fired job to fire again, and a recovered process needs no separate
-//! rebuild step — it just asks the store whether the occurrence was already
+//! rebuild step - it just asks the store whether the occurrence was already
 //! claimed.
 
 use pantheon_api::error::PantheonError;
@@ -65,7 +65,7 @@ impl DurableClaimLedger {
     }
 
     /// Drop `job_id`'s owed fire, if any. Called when the drain is taken,
-    /// on abandon, and on claim failure — the same points where the
+    /// on abandon, and on claim failure - the same points where the
     /// in-memory queue entry is cleared.
     pub fn dequeue_drain(&self, job_id: &str) -> Result<bool, PantheonError> {
         self.store.dequeue_drain(job_id)

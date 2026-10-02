@@ -1,4 +1,4 @@
-//! Yank: copy the last assistant message — or one of its code blocks —
+//! Yank: copy the last assistant message - or one of its code blocks
 //! to the system clipboard.
 //!
 //! Clipboard backends are probed in order and the first present wins:

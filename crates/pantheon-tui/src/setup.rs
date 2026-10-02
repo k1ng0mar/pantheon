@@ -82,7 +82,7 @@ pub struct SetupAnswers {
     /// A custom endpoint the wizard's provider picker collected. Written
     /// to `[custom_providers.<name>]` on the same save path `pantheon
     /// provider add` uses, so a custom endpoint set up in the wizard is
-    /// durable — not a string only the wizard remembers. `None` = the
+    /// durable - not a string only the wizard remembers. `None` = the
     /// Custom row was never picked.
     pub custom_provider: Option<CustomProviderSpec>,
     /// Tool groups the wizard's Skip row left unconfigured. The wizard
@@ -98,7 +98,7 @@ pub struct SetupAnswers {
     pub skipped_stt: bool,
     pub skipped_tts: bool,
     /// MCP servers from the wizard's Extensions screen, as
-    /// `(name, entry)` pairs — the single seam where hand-typed and
+    /// `(name, entry)` pairs - the single seam where hand-typed and
     /// (later) catalog-backed servers meet. Written to
     /// `[mcp.servers.<name>]`, using the same `enabled` flags the
     /// config/dashboard/app toggles use: the config document is the
@@ -244,7 +244,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         assume_defaults,
     );
     let (stt, tts) = if group_on(ToolGroup::Voice) {
-        // A wizard-skipped backend resolves to nothing — never the
+        // A wizard-skipped backend resolves to nothing - never the
         // recommended default. Without this gate, "STT skipped, TTS
         // configured" would still write a recommended [stt] section the
         // user explicitly declined.
@@ -311,7 +311,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
 
     // Skill dependencies: third-party packages the skill library
     // needs. `--yes` (and the wizard, which already ran the screen)
-    // detects only and records the missing ids — a scripted setup never
+    // detects only and records the missing ids - a scripted setup never
     // installs behind the user's back. The interactive stdin path runs
     // the full install-or-skip screen.
     let skill_deps_skipped = if assume_defaults {
@@ -381,7 +381,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         consolidation: None,
         nightly: None,
         // Nightly repair phase: not configured by the wizard. Absent
-        // keeps LLM diagnosis off — the phase still runs
+        // keeps LLM diagnosis off - the phase still runs
         // deterministically (bounded retry, then disable/pause +
         // escalate) inside an enabled nightly pass; pinning `[repair]`
         // only adds repair-model diagnosis.
@@ -420,17 +420,17 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
 
     // Merge, don't clobber: the wizard manages a fixed set of sections
     // (model, the tool/provider sections, policy, server, skill_deps).
-    // Everything the operator may have added by hand — [budget],
+    // Everything the operator may have added by hand - [budget],
     // [nightly], [agents.*], [custom_providers.*], aux model pins,
-    // [gateway], [voice], [plugins] — survives a re-run of setup, and
+    // [gateway], [voice], [plugins] - survives a re-run of setup, and
     // the wizard names what it kept on stderr. Previously run_setup
     // built a fresh Config and saved it, wiping all of the above every
     // time the wizard ran.
     //
     // stt/tts use explicit-clear semantics: the Voice screen always
     // resolves them (defaults, answers, or explicit skips), so the
-    // wizard's value — including None for "group off / backend
-    // skipped" — is authoritative and overwrites.
+    // wizard's value - including None for "group off / backend
+    // skipped" - is authoritative and overwrites.
     //
     // A config that exists but does not parse aborts setup outright: the
     // old `unwrap_or_default()` fell back to a fresh default and the
@@ -504,7 +504,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
     // The wizard only ever ADDS a custom endpoint row; existing rows
     // are preserved above, never cleared. Models the operator named on
     // this endpoint are kept, mirroring `upsert_custom_row` (the
-    // `pantheon provider add` path) — replacing the row used to empty
+    // `pantheon provider add` path) - replacing the row used to empty
     // its model list on a re-pick.
     if let Some(spec) = &answers.custom_provider {
         let models = cfg
@@ -723,7 +723,7 @@ fn browser_section(a: &ProviderAnswer) -> BrowserSection {
 
 /// `[stt]` / `[tts]`: the backend id plus its options. The key env is
 /// written only when the user named a different one than the catalog
-/// default — the default stays implicit.
+/// default - the default stays implicit.
 fn voice_section(a: &ProviderAnswer) -> VoiceSection {
     let mut options: HashMap<String, String> = a.options.iter().cloned().collect();
     if let Some(env) = &a.key_env {
@@ -739,7 +739,7 @@ fn voice_section(a: &ProviderAnswer) -> VoiceSection {
 }
 
 /// `[mcp]`: one `[mcp.servers.<name>]` table per server from the
-/// wizard's Extensions screen — the single seam every MCP producer
+/// wizard's Extensions screen - the single seam every MCP producer
 /// funnels through (the Extensions screen today, the bundled catalog
 /// tomorrow). Empty = the screen never ran, nothing was added, or
 /// extensions were skipped: no section is written and the master
@@ -776,7 +776,7 @@ fn memory_options(a: &ProviderAnswer) -> HashMap<String, String> {
     if let Some(url) = &a.url {
         if a.id == "http" {
             println!(
-                "pantheon: the http memory backend reads its URL from the environment — export PANTHEON_MEMORY_HTTP_URL={url} in your shell"
+                "pantheon: the http memory backend reads its URL from the environment - export PANTHEON_MEMORY_HTTP_URL={url} in your shell"
             );
         } else {
             options.insert("url".to_string(), url.clone());

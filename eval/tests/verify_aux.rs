@@ -72,7 +72,7 @@ fn verify_is_off_unless_configured() {
     let policy = policy_with(Some(&cfg));
     assert!(
         verify_entry(&policy).is_none(),
-        "absent [verify] must produce no Verify entry — verification is opt-in"
+        "absent [verify] must produce no Verify entry - verification is opt-in"
     );
     assert!(
         VerifyClient::from_policy(&policy, None).is_none(),

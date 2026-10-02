@@ -1,4 +1,4 @@
-//! `/team` — use a team of experts from the Teams gallery.
+//! `/team` - use a team of experts from the Teams gallery.
 //!
 //! Teams are named multi-agent rosters (dashboard `teams.rs`): every member
 //! is an expert from the Experts gallery carrying a team-specific role, and
@@ -6,7 +6,7 @@
 //! linked expert. The dashboard seeds five bundled teams on first access;
 //! users add their own on the dashboard's Teams page.
 //!
-//! Verbs (all against the dashboard HTTP API, mirroring `swarm_remote.rs` —
+//! Verbs (all against the dashboard HTTP API, mirroring `swarm_remote.rs`
 //! the TUI never spawns swarms itself):
 //! - `/team` → list teams: id, name, expert count, one-line description.
 //! - `/team <id>` → roster detail: each expert with its role in the team.
@@ -136,7 +136,7 @@ fn base_or_note(state: &mut TuiState) -> Option<String> {
 fn note_err(state: &mut TuiState, id: Option<&str>, err: ApiErr) {
     match err {
         ApiErr::Unreachable(t) => state.add_status(format!(
-            "/team: dashboard unreachable ({t}) — is `pantheon serve` running?"
+            "/team: dashboard unreachable ({t}) - is `pantheon serve` running?"
         )),
         ApiErr::Status(404, _) => match id {
             Some(id) => state.add_status(format!("/team: no team '{id}'")),
@@ -166,13 +166,13 @@ fn team_summary_line(team: &serde_json::Value) -> String {
         .take(72)
         .collect();
     if desc.is_empty() {
-        format!("{id} — {name} ({count} experts)")
+        format!("{id} - {name} ({count} experts)")
     } else {
-        format!("{id} — {name} ({count} experts): {desc}")
+        format!("{id} - {name} ({count} experts): {desc}")
     }
 }
 
-/// Roster lines for the detail view: `expert name — role`, unresolved
+/// Roster lines for the detail view: `expert name - role`, unresolved
 /// members (expert deleted after the team was written) flagged as such.
 fn roster_lines(team: &serde_json::Value) -> Vec<String> {
     let members = team
@@ -196,7 +196,7 @@ fn roster_lines(team: &serde_json::Value) -> Vec<String> {
                 .and_then(|v| v.as_str());
             match expert_name {
                 Some(name) if role.is_empty() => name.to_string(),
-                Some(name) => format!("{name} — {role}"),
+                Some(name) => format!("{name} - {role}"),
                 None => {
                     let id = m.get("expert_id").and_then(|v| v.as_str()).unwrap_or("?");
                     format!("{id} (expert missing)")
@@ -217,7 +217,7 @@ fn list_teams(state: &mut TuiState, base: &str) {
                 .unwrap_or_default();
             if teams.is_empty() {
                 state.add_status(
-                    "/team: no teams yet — add them on the dashboard's Teams page".into(),
+                    "/team: no teams yet - add them on the dashboard's Teams page".into(),
                 );
                 return;
             }
@@ -225,7 +225,7 @@ fn list_teams(state: &mut TuiState, base: &str) {
                 state.add_status(team_summary_line(t));
             }
             state.add_status(format!(
-                "{} team(s) — /team <id> for the roster, /team <id> <task> to launch",
+                "{} team(s) - /team <id> for the roster, /team <id> <task> to launch",
                 teams.len()
             ));
         }

@@ -1,12 +1,12 @@
-//! `pantheon logs` — read the runtime's log files.
+//! `pantheon logs` - read the runtime's log files.
 //!
 //! The runtime had no logs at all until `pantheon_api::logging` landed, so
 //! this verb was briefly a run trace wearing the name of a log reader. It is
 //! now what its name says: it reads `<data_dir>/logs/*.log`, and the run trace
 //! is back to being a run trace.
 //!
-//! The shape follows `hermes_cli/logs.py` — named files, `--level`, `--follow`,
-//! `--since`, `logs list` — because that reader is the thing being matched. Two
+//! The shape follows `hermes_cli/logs.py` - named files, `--level`, `--follow`,
+//! `--since`, `logs list` - because that reader is the thing being matched. Two
 //! deliberate differences:
 //!
 //! - The file list is a closed set (`pantheon_api::logging::KNOWN_LOGS`) and
@@ -59,7 +59,7 @@ fn resolve(name: &str) -> Result<PathBuf, String> {
 }
 
 /// `1h`, `30m`, `2d`, `90s` into a cutoff. `None` when unparseable, which the
-/// caller turns into an error rather than "no filter" — a silently ignored
+/// caller turns into an error rather than "no filter" - a silently ignored
 /// `--since` is how someone ends up reading a whole file believing it is
 /// recent.
 fn parse_since(s: &str) -> Result<SystemTime, String> {
@@ -231,7 +231,7 @@ fn human_bytes(n: u64) -> String {
 fn tail(path: &Path, opts: &Options) -> Result<(), String> {
     if !path.exists() {
         println!(
-            "no {} yet — it is created on the first turn or warning",
+            "no {} yet - it is created on the first turn or warning",
             path.file_name().unwrap_or_default().to_string_lossy()
         );
         return Ok(());
@@ -242,7 +242,7 @@ fn tail(path: &Path, opts: &Options) -> Result<(), String> {
     if !opts.follow {
         return Ok(());
     }
-    println!("— following {} (ctrl-c to stop) —", opts.name);
+    println!(" - following {} (ctrl-c to stop) - ", opts.name);
     let mut buf = String::new();
     loop {
         std::thread::sleep(Duration::from_millis(400));
@@ -332,7 +332,7 @@ fn timestamp_of(ms: i64) -> SystemTime {
 
 /// Width of the timestamp field: `YYYY-MM-DD HH:MM:SS.mmm` is 23 characters.
 /// Named as a constant because getting it wrong makes every filter a no-op
-/// rather than an error — `line.get(20..)` lands inside the millisecond field
+/// rather than an error - `line.get(20..)` lands inside the millisecond field
 /// and the level parse silently fails, so `--level error` returns the whole
 /// file and looks like the filter is broken rather than the parser.
 const TS_WIDTH: usize = 23;

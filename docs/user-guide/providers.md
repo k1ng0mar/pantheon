@@ -20,8 +20,8 @@ Nous Research (`nous`) is the recommended provider: the setup wizard
 lists it first and `pantheon providers` marks it with ★.
 
 - Endpoint: `https://inference-api.nousresearch.com/v1` (OpenAI-compatible)
-- Key: `NOUS_API_KEY` — create one at [portal.nousresearch.com](https://portal.nousresearch.com). The Portal offers an evaluation tier; which models your key can call depends on your account.
-- Curated models: `Hermes-4-70B` and `Hermes-4-405B` (Hermes 4, hybrid-reasoning chat models). The Portal also proxies frontier models from other labs — `pantheon provider models nous` lists the live catalog.
+- Key: `NOUS_API_KEY` - create one at [portal.nousresearch.com](https://portal.nousresearch.com). The Portal offers an evaluation tier; which models your key can call depends on your account.
+- Curated models: `Hermes-4-70B` and `Hermes-4-405B` (Hermes 4, hybrid-reasoning chat models). The Portal also proxies frontier models from other labs - `pantheon provider models nous` lists the live catalog.
 
 ## Backups and helpers
 
@@ -35,25 +35,25 @@ Backups kick in only when the main model fails, in order. You can also pin small
 
 ## Cloud providers (templated endpoints)
 
-Four cloud providers need account-scoped values before they work —
+Four cloud providers need account-scoped values before they work
 `pantheon model` prompts for them and stores them in `<data_dir>/.env`.
 Model lists are empty for these, so type the model id by hand.
 
 **Google Vertex AI** (`vertex`)
 - Needs `PANTHEON_VERTEX_PROJECT` and `PANTHEON_VERTEX_LOCATION`
   (e.g. `us-central1`).
-- Key: `GOOGLE_ACCESS_TOKEN` — a short-lived GCP OAuth token
+- Key: `GOOGLE_ACCESS_TOKEN` - a short-lived GCP OAuth token
   (`gcloud auth print-access-token`, ~1h). There is no refresh flow:
   when it expires, mint a new one and re-run `pantheon model`.
 - Model ids are `publisher/model`, e.g. `google/gemini-2.5-flash`.
 
 **AWS Bedrock** (`bedrock`)
 - Needs `PANTHEON_BEDROCK_REGION` (e.g. `us-east-1`).
-- Key: `AWS_BEARER_TOKEN_BEDROCK` — a Bedrock API key (long-term key, or
+- Key: `AWS_BEARER_TOKEN_BEDROCK` - a Bedrock API key (long-term key, or
   a 12h token minted with `aws-bedrock-token-generator`). Bearer auth
   only; AWS SigV4 signing is not implemented.
 - Model ids are inference-profile ids, e.g. `us.anthropic.claude-sonnet-4-6`
-  or `global.openai.gpt-5.6-terra` — check `aws bedrock list-inference-profiles`
+  or `global.openai.gpt-5.6-terra` - check `aws bedrock list-inference-profiles`
   for what your account can call.
 
 **Azure AI Foundry** (`azure`)
@@ -64,11 +64,11 @@ Model lists are empty for these, so type the model id by hand.
 
 **Cloudflare Workers AI** (`cloudflare`)
 - Needs `PANTHEON_CLOUDFLARE_ACCOUNT_ID`.
-- Key: `CLOUDFLARE_API_TOKEN` — create it from the Cloudflare dashboard
+- Key: `CLOUDFLARE_API_TOKEN` - create it from the Cloudflare dashboard
   (AI → Workers AI → Use REST API shows your account id and offers the
   Workers AI token template). Sent as `Authorization: Bearer`.
 - Model ids are full `@cf/vendor/model` paths, e.g.
-  `@cf/meta/llama-3.1-8b-instruct` — a bare name will not work.
+  `@cf/meta/llama-3.1-8b-instruct` - a bare name will not work.
 
 Without real credentials none of the four can be exercised end to end:
 endpoint shape, auth headers, and template resolution are covered by

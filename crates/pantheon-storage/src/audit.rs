@@ -1,5 +1,5 @@
 //! JSONL audit log: one line per ledger event, replayable and
-//! sequence-validated. The eval interface — a run's full trajectory in a
+//! sequence-validated. The eval interface - a run's full trajectory in a
 //! plain file that Python (or anything) can score without opening SQLite.
 //!
 //! Line shape:
@@ -103,7 +103,7 @@ fn event_name(e: &pantheon_api::events::Event) -> &'static str {
 }
 
 /// Export a run's ledger entries to a JSONL file. Refuses non-monotonic
-/// or duplicate seq values — a corrupted ledger must fail loudly here.
+/// or duplicate seq values - a corrupted ledger must fail loudly here.
 pub fn export_jsonl(entries: &[LedgerEntry], path: &Path) -> Result<usize, PantheonError> {
     // Validate sequence first: strictly increasing.
     for w in entries.windows(2) {

@@ -3,7 +3,7 @@
 //! auditable. Every proposal carries its provenance (the runs/turns it
 //! learned from).
 //!
-//! Memory promotion uses a plain frequency + recency rule — no decay
+//! Memory promotion uses a plain frequency + recency rule - no decay
 //! curves. A candidate promotes when it was observed in at least
 //! `min_sessions` distinct runs and its newest observation is within
 //! `max_age_days`. The old exponential half-life formula
@@ -101,7 +101,7 @@ fn recurrence_met(turns: &[TurnRef], min_sessions: usize, max_age_days: i64, now
 /// context and re-run held-out tasks; Pantheon ships no such runner, so
 /// recurrence across real sessions is the implemented memory gate
 /// ("replay where meaningful; otherwise recurrence"). Skill and Persona
-/// proposals are NOT recurrence-gated here — their guard is the replay
+/// proposals are NOT recurrence-gated here - their guard is the replay
 /// gate's strict-improvement requirement.
 pub fn from_signals(
     signals: &[Signal],
@@ -209,7 +209,7 @@ pub fn from_signals(
                     continue;
                 }
                 let (runs, turns) = provenance_of(at);
-                let title = format!("lesson: `{tool}` failed {count}× — check preconditions");
+                let title = format!("lesson: `{tool}` failed {count}× - check preconditions");
                 let body = format!(
                     "The tool `{tool}` failed {count} times across recent turns. Before calling it, \
                      verify its preconditions (inputs exist, are well-formed, and the environment is ready) \
@@ -301,7 +301,7 @@ fn bound_fact(text: &str) -> String {
 /// `distill` merges near-duplicate texts when the operator enabled LLM
 /// steps; otherwise grouping is by exact normalized text and the raw
 /// text is kept. Distill output is validated: non-empty, single line,
-/// bounded — the model phrases, it never invents, because promotion
+/// bounded - the model phrases, it never invents, because promotion
 /// still requires the group's staged ledger sources.
 pub fn weigh_candidates(
     candidates: Vec<MemoryCandidate>,

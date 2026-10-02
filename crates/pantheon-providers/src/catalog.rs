@@ -1,5 +1,5 @@
 //! Provider + model catalog (§5 + §14): where a provider lives, which wire
-//! format it speaks, and what a model can do — context limit, tool support,
+//! format it speaks, and what a model can do - context limit, tool support,
 //! vision, reasoning, streaming, cost.
 //!
 //! Loaded from a YAML file at runtime. Default: `catalog.yaml` embedded at
@@ -54,8 +54,8 @@ pub struct ProviderMeta {
     #[serde(default)]
     pub key_env: String,
     /// HTTP header carrying the key. Default `Authorization` (sent as
-    /// `Bearer <key>`). Some vendors differ — Xiaomi MiMo wants the raw
-    /// key in an `api-key` header — so this is per-provider data, not a
+    /// `Bearer <key>`). Some vendors differ - Xiaomi MiMo wants the raw
+    /// key in an `api-key` header - so this is per-provider data, not a
     /// protocol assumption. Any non-Authorization name sends the raw key.
     #[serde(default = "default_auth_header")]
     pub key_header: String,
@@ -242,8 +242,8 @@ pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
     if let Some(m) = model(provider_id, model_id) {
         return m.clone();
     }
-    // User-registered custom endpoints: their declared rows — including
-    // operator-declared capabilities like `video = true` — behave exactly
+    // User-registered custom endpoints: their declared rows - including
+    // operator-declared capabilities like `video = true` - behave exactly
     // like cataloged ones everywhere this lookup is consulted.
     if let Ok(customs) = CUSTOM.read() {
         if let Some(m) = customs
@@ -270,7 +270,7 @@ pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
 
 /// Base URL for a provider: env override → catalog → the provider id
 /// itself (treated as a full base URL, legacy passthrough).
-/// NOTE: may still contain `{var}` template placeholders — use
+/// NOTE: may still contain `{var}` template placeholders - use
 /// [`resolve_base_url`] when building requests.
 pub fn base_url_for(provider_id: &str) -> String {
     if let Some(p) = provider(provider_id) {
@@ -358,7 +358,7 @@ pub fn required_config_vars(provider_id: &str) -> Vec<String> {
 
 /// Resolve a provider's effective base URL, interpolating `{var}`
 /// placeholders from `PANTHEON_<PROVIDER>_<VAR>` env values. Errors name
-/// every missing var and point at `pantheon model` — never let a raw
+/// every missing var and point at `pantheon model` - never let a raw
 /// `{placeholder}` reach the wire.
 pub fn resolve_base_url(provider_id: &str) -> Result<String, String> {
     let base = base_url_for(provider_id);
@@ -373,7 +373,7 @@ pub fn resolve_base_url(provider_id: &str) -> Result<String, String> {
 }
 
 /// Resolve an explicit base string with the provider's env namespace.
-/// Same as [`resolve_base_url`] but for a URL not (yet) in the catalog —
+/// Same as [`resolve_base_url`] but for a URL not (yet) in the catalog
 /// the `pantheon model` flow uses this before the custom row is saved.
 pub fn resolve_template(provider_id: &str, base: &str) -> Result<String, String> {
     let vars = template_vars(base);
@@ -395,7 +395,7 @@ pub fn resolve_template(provider_id: &str, base: &str) -> Result<String, String>
         Ok(out)
     } else {
         Err(format!(
-            "provider {provider_id:?} needs {} — run `pantheon model` to fill them (stored in <data_dir>/.env)",
+            "provider {provider_id:?} needs {} - run `pantheon model` to fill them (stored in <data_dir>/.env)",
             missing.join(", ")
         ))
     }

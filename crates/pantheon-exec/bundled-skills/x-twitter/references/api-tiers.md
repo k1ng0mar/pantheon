@@ -2,7 +2,7 @@
 
 X charges for API access. Tiers and prices change; check the X developer
 pricing page before quoting numbers to anyone. The shape below has been
-stable: a token free allowance, then paid tiers that unlock volume.
+stable: a token free allowance, then paid tiers that buy volume.
 
 ## The tiers
 

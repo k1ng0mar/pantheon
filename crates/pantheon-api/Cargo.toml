@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 # Bottom protocol leaf (commands, events, types). Must never depend on
-# runtime, storage, gateway, tools, or anything above the leaf — every
+# runtime, storage, gateway, tools, or anything above the leaf - every
 # other crate in the workspace may depend on this one.
 [dependencies]
 serde = { version = "1", features = ["derive"] }

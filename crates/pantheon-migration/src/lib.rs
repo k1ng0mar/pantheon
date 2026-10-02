@@ -128,7 +128,7 @@ pub enum MigrationCategory {
     Plugins,
     /// Provider/model endpoint configuration.
     Config,
-    /// Credentials (API keys, tokens — names only, values carried into .env).
+    /// Credentials (API keys, tokens - names only, values carried into .env).
     Credentials,
     /// MCP server declarations.
     Mcp,
@@ -688,7 +688,7 @@ pub fn analyze(root: &Path, kind: SourceKind) -> Vec<Detected> {
 }
 
 /// Shared skill scan: a `SKILL.md` directory imports verbatim, but only once
-/// the frontmatter has been validated — a skill the runtime would reject is
+/// the frontmatter has been validated - a skill the runtime would reject is
 /// archived with the reason instead of imported as a known-broken artifact.
 ///
 /// Recurses rather than sampling one level, because the nesting is not
@@ -1245,12 +1245,12 @@ fn package_declares_extension(pkg: &Path) -> bool {
 /// Claude Code analyzer: sessions, skills, agents, memory, plugins, config.
 ///
 /// Claude Code stores its data under `~/.claude/`:
-/// - `projects/<project-hash>/*.jsonl` — session transcripts
-/// - `skills/<name>/SKILL.md` — portable skills
-/// - `agents/<name>.md` — subagent definitions
-/// - `todos/*.md` — memory/task files
-/// - `plugins/<name>/` — plugin directories
-/// - `settings.json` — config (may hold keys)
+/// - `projects/<project-hash>/*.jsonl` - session transcripts
+/// - `skills/<name>/SKILL.md` - portable skills
+/// - `agents/<name>.md` - subagent definitions
+/// - `todos/*.md` - memory/task files
+/// - `plugins/<name>/` - plugin directories
+/// - `settings.json` - config (may hold keys)
 fn analyze_claude_code(root: &Path) -> Vec<Detected> {
     let mut out = Vec::new();
 
@@ -1314,7 +1314,7 @@ fn analyze_claude_code(root: &Path) -> Vec<Detected> {
 /// Build the plan. Unmappable items are archived with a reason, credentials
 /// are skipped, and nothing is dropped. `targets` decides where imports land.
 ///
-/// Two sources can legitimately offer the same skill name — Hermes mirrors
+/// Two sources can legitimately offer the same skill name - Hermes mirrors
 /// its marketing family into a `marketingskills/` subdirectory. Those collide
 /// on one import target, so the first (in `analyze`'s sort order) wins and
 /// every later one is archived with a reason naming the winner. Silently
@@ -1345,7 +1345,7 @@ pub fn plan(root: &Path, kind: SourceKind, targets: &Targets) -> MigrationPlan {
                 Some(dir) => {
                     let target = match d.kind {
                         // A source `.env` is carried into Pantheon's *own* key
-                        // store, `<data_dir>/.env` — the same file `pantheon
+                        // store, `<data_dir>/.env` - the same file `pantheon
                         // model` writes and `load_dotenv` reads, so an imported
                         // key works with no extra wiring. The names-only
                         // manifest is a sidecar under `credentials/`.
@@ -1503,7 +1503,7 @@ pub fn render(p: &MigrationPlan) -> String {
                 i.kind, i.path, reason
             )),
             Action::Skip { reason } => s.push_str(&format!(
-                "  - {:<10} {} (skip: {})\n",
+                " - {:<10} {} (skip: {})\n",
                 i.kind, i.path, reason
             )),
         }

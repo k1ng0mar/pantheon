@@ -1,9 +1,9 @@
 //! Secrets (§13). Keys never in prompts or logs.
 //!
 //! The broker owns resolution and injection:
-//! - `SecretValue` is a zeroizing wrapper — dropped bytes are scrubbed, and
+//! - `SecretValue` is a zeroizing wrapper - dropped bytes are scrubbed, and
 //!   its `Debug` output never contains the value.
-//! - Vaults are pluggable: OS keychain ([`keychain::KeychainVault`] —
+//! - Vaults are pluggable: OS keychain ([`keychain::KeychainVault`]
 //!   macOS Keychain, Windows CredMan, Linux Secret Service), encrypted
 //!   local vault, env compat.
 //! - `SecretsBroker::inject` is the execution-boundary API. Callers get a

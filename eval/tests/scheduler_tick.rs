@@ -26,7 +26,7 @@ fn every_minute(id: &str) -> Job {
     )
 }
 
-/// 2026-09-20T14:30:00Z — a Sunday.
+/// 2026-09-20T14:30:00Z - a Sunday.
 const NOW: i64 = 1_789_914_600_000;
 
 fn fired_outcome(d: TickDecision) -> mpsc::Receiver<RunOutcome> {

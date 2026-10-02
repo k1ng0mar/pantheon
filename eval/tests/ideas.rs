@@ -511,7 +511,7 @@ fn accept_general_idea_spawns_run() {
     // The run was admitted durably: it is in the ledger.
     // (The turn itself is handed to a `pantheon run` subprocess, which in
     // this test is the test binary re-invoked with CLI args; libtest
-    // rejects the unknown flags and exits — nothing is executed.)
+    // rejects the unknown flags and exits - nothing is executed.)
     let ledger = Ledger::open(&dir.path().join("ledger.db")).unwrap();
     assert!(
         ledger

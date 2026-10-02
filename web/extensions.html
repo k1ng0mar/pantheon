@@ -100,7 +100,7 @@ my-plugin/
 name: my-plugin
 version: &quot;1.0.0&quot;
 provides_hooks:
-  - pre_llm_call
+- pre_llm_call
 </code></pre>
 <p class="my-3 leading-relaxed">Pantheon sends your code one JSON line, your code answers with one JSON line. Answer <code>{&quot;context&quot;: &quot;...&quot;}</code> to add background the model should see, or <code>{}</code> to stay quiet. Hooks have 10 seconds to answer, so do slow work elsewhere.</p>
 <h2 id="how-they-behave" class="text-xl font-bold tracking-tight mt-10 mb-3">How they behave</h2>

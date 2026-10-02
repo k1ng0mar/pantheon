@@ -3,7 +3,7 @@
 //!
 //! This module owns the *model* and the *rendering* of the tab bar, plus the
 //! pure keybinding map. It does not own the event loop or the session switch
-//! itself — that stays in `session.rs`, which drives this module the way it
+//! itself - that stays in `session.rs`, which drives this module the way it
 //! drives the /history overlay: build a [`TabList`] from
 //! `supervisor.ledger_list_runs` (the existing /sessions machinery, no new
 //! store), render it at the top of each frame, and route
@@ -39,7 +39,7 @@ pub struct Tab {
     /// True when this session has a turn running somewhere (a lease on it).
     pub busy: bool,
     /// True when this session is parked on an approval (or a clarify
-    /// question). Renders the amber dot — the "look at me" state.
+    /// question). Renders the amber dot - the "look at me" state.
     pub approval: bool,
 }
 
@@ -73,7 +73,7 @@ pub struct TabList {
 
 impl TabList {
     /// Rebuild from an explicit open-tab list: (run id, title) pairs in
-    /// display order. This is the true open-tab model — the driver owns
+    /// display order. This is the true open-tab model - the driver owns
     /// the list; the ledger is only consulted for titles, never for
     /// membership.
     pub fn refresh_from_explicit(
@@ -131,7 +131,7 @@ impl TabList {
         }
     }
 
-    /// Remove the tab for `run_id`. The run itself is untouched — runs are
+    /// Remove the tab for `run_id`. The run itself is untouched - runs are
     /// durable, so closing a tab parks the session; it stays reopenable
     /// from /sessions or the overview nav.
     pub fn remove(&mut self, run_id: &str) -> bool {
@@ -167,7 +167,7 @@ impl TabList {
         self.tabs.get(self.active_index())
     }
 
-    /// The run id the active tab selects — what the driver writes to
+    /// The run id the active tab selects - what the driver writes to
     /// `state.session_id` through the existing session-selection path.
     pub fn active_run_id(&self) -> Option<&str> {
         self.active().map(|t| t.run_id.as_str())
@@ -229,24 +229,24 @@ pub enum TabAction {
     Jump(usize),
     /// Ctrl+T: open a new session tab (same as `/new`).
     NewTab,
-    /// Ctrl+W: close the active tab. Parks the run — never kills it.
+    /// Ctrl+W: close the active tab. Parks the run - never kills it.
     CloseTab,
 }
 
-/// Map a crossterm key event to a tab action. Pure — no terminal needed.
+/// Map a crossterm key event to a tab action. Pure - no terminal needed.
 ///
 /// Notes on real terminals:
 /// * Ctrl+Tab arrives as `Tab` + CONTROL on most terminals; some send it as
-///   plain Tab or swallow it — those users still have `[`/`]` and Alt+1..9.
+///   plain Tab or swallow it - those users still have `[`/`]` and Alt+1..9.
 /// * Ctrl+Shift+Tab usually arrives as `BackTab` + CONTROL; plain Shift+Tab
 ///   arrives as `BackTab` + SHIFT and is mapped to Prev as a fallback.
 /// * Alt+digit arrives as `Char` + ALT on most setups. A few terminals send
 ///   ESC followed by the digit instead; the driver can add an ESC-prefix
-///   peek if it wants that path — this mapper only handles the ALT form.
+///   peek if it wants that path - this mapper only handles the ALT form.
 /// * `[`/`]` are also the image-preview cyclers, but the preview overlay
 ///   owns the keyboard while open, so there is no conflict.
 /// Map a key event to a tab action. Ctrl+Tab/BackTab cycle, Ctrl+T/W
-/// open/close, Alt+1..9 jump. Plain `[`/`]` step prev/next — but the
+/// open/close, Alt+1..9 jump. Plain `[`/`]` step prev/next - but the
 /// caller gates those to overview-with-empty-composer so a typed bracket
 /// in chat input never switches tabs (see the tab-key site in
 /// session.rs).
@@ -270,7 +270,7 @@ pub fn tab_key_action(code: KeyCode, mods: KeyModifiers) -> Option<TabAction> {
         return Some(TabAction::Prev);
     }
     if mods.is_empty() {
-        // `[` steps left (previous), `]` steps right (next) — the same
+        // `[` steps left (previous), `]` steps right (next) - the same
         // direction as the image-preview cyclers.
         match code {
             KeyCode::Char('[') => return Some(TabAction::Prev),
@@ -293,8 +293,8 @@ const DOT_IDLE: &str = "○";
 ///
 /// Browser-style: the active tab sits on a subtle wash with bright bold
 /// text and a dim `×`; inactive tabs are plain dim text. A colored dot
-/// leads each tab — green for a running turn, amber for a parked
-/// approval — and `+` at the end opens a new session. When the bar is
+/// leads each tab - green for a running turn, amber for a parked
+/// approval - and `+` at the end opens a new session. When the bar is
 /// wider than the area, a window around the active tab is shown so the
 /// selected tab is never the one clipped away.
 pub fn render_tab_bar(

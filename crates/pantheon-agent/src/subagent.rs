@@ -5,10 +5,10 @@
 //! the parent keeps working while children run on their own threads.
 //! The model follows up through three tools:
 //!
-//! - `subagent_read(handle)` — the child's transcript so far; never blocks.
-//! - `subagent_wait(handle)` — blocks until that child finishes, returns
+//! - `subagent_read(handle)` - the child's transcript so far; never blocks.
+//! - `subagent_wait(handle)` - blocks until that child finishes, returns
 //!   its final result.
-//! - `subagent_list()` — every live handle with its status.
+//! - `subagent_list()` - every live handle with its status.
 //!
 //! [`SubagentRegistry`] is the threaded in-process implementation:
 //! children run `FnOnce` work closures on spawned threads, appending to
@@ -132,7 +132,7 @@ struct RegistryState {
 /// closure on a spawned thread, appending progress to a shared
 /// transcript the parent reads live via `subagent_read`.
 ///
-/// The registry itself does not know how to *build* child work — the
+/// The registry itself does not know how to *build* child work - the
 /// `work` closure is supplied per spawn, so hosts (the engine test
 /// harness, the runtime's session spawner) decide what a child runs.
 pub struct SubagentRegistry {

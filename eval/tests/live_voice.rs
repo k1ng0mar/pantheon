@@ -4,8 +4,8 @@
 //! not present when these were written, so the tests drive a minimal
 //! **protocol-contract harness** (`LiveSession` below) instead of the real
 //! handler. The harness implements the wire protocol from the design doc
-//! verbatim — frame types, JSON shapes, the VAD safety net, the double
-//! gate, busy-drop, approval surfacing, and temp-file cleanup — using
+//! verbatim - frame types, JSON shapes, the VAD safety net, the double
+//! gate, busy-drop, approval surfacing, and temp-file cleanup - using
 //! FAKE STT/TTS backends (canned responses, never network).
 //!
 //! When worker A's handler lands, this harness should be retired in favor
@@ -40,7 +40,7 @@ const SILENCE_RMS: f64 = 1_000.0;
 const TTS_FRAME_BYTES: usize = 3_200;
 
 /// Prefix marking a transcript as live-voice-sourced so the agent knows
-/// it came from speech. Harness-local choice — the real handler must pick
+/// it came from speech. Harness-local choice - the real handler must pick
 /// its own marking and document it.
 const LIVE_TRANSCRIPT_PREFIX: &str = "[live voice] ";
 
@@ -82,7 +82,7 @@ impl SttProvider for FakeStt {
 
 /// Fake TTS: returns fixed PCM bytes for any non-empty text, recording
 /// what it was asked to speak. Voice selection must come from the `[tts]`
-/// options map at construction — the request must not override it.
+/// options map at construction - the request must not override it.
 struct FakeTts {
     audio: Vec<u8>,
     spoken: Mutex<Vec<String>>,
@@ -199,7 +199,7 @@ enum OutFrame {
 
 /// Minimal stand-in for worker A's `live_voice.rs` handler: implements the
 /// client→server and server→client protocol from `docs/live-voice-mode.md`
-/// against the fake backends. Virtual clock only — no wall time, no
+/// against the fake backends. Virtual clock only - no wall time, no
 /// threads, no network.
 struct LiveSession {
     cfg: LiveVoiceSection,
@@ -296,7 +296,7 @@ impl LiveSession {
         }
     }
 
-    /// `{"type":"start"}` — begin an utterance, staging audio to a temp
+    /// `{"type":"start"}` - begin an utterance, staging audio to a temp
     /// file the way streaming backends do.
     fn client_start(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
@@ -319,7 +319,7 @@ impl LiveSession {
         if self.closed {
             return;
         }
-        // v1: no barge-in — audio during an in-flight (or approval-parked)
+        // v1: no barge-in - audio during an in-flight (or approval-parked)
         // turn is dropped with a `busy` event, never queued.
         if self.turn_in_flight || self.paused_for_approval {
             self.emit_text(json!({"type": "busy"}));
@@ -348,7 +348,7 @@ impl LiveSession {
         }
     }
 
-    /// `{"type":"end"}` — end utterance, transcribe now.
+    /// `{"type":"end"}` - end utterance, transcribe now.
     fn client_end(&mut self) {
         if self.closed {
             return;
@@ -356,7 +356,7 @@ impl LiveSession {
         self.close_utterance("client end");
     }
 
-    /// `{"type":"stop"}` — end the live session.
+    /// `{"type":"stop"}` - end the live session.
     fn client_stop(&mut self) {
         if self.closed {
             return;
@@ -389,7 +389,7 @@ impl LiveSession {
         }
         let path = staged.expect("open utterance always has a staged file");
         // Transcribe, then delete the staged file on EVERY path (errors
-        // included) — temp hygiene is the whole point of this block.
+        // included) - temp hygiene is the whole point of this block.
         let transcript = self.stt.transcribe(&SttRequest::new(&path));
         let _ = std::fs::remove_file(&path);
         let text = match transcript {
@@ -628,7 +628,7 @@ fn vad_silence_before_speech_does_not_close() {
     }
     assert!(s.utter_open, "silence alone must not close the utterance");
     assert!(s.texts().iter().all(|t| t["type"] != "transcript"));
-    // Closing a silence-only utterance still transcribes (it has bytes —
+    // Closing a silence-only utterance still transcribes (it has bytes
     // STT decides it was silence), but nothing auto-closed it.
     s.client_stop();
     assert_eq!(s.texts().last().unwrap(), &json!({"type": "end"}));
@@ -777,7 +777,7 @@ fn double_gate_refusals() {
 #[test]
 fn busy_drop_during_in_flight_turn() {
     // (e) Audio arriving while a turn is in flight gets `busy` and is
-    // dropped — never queued into the utterance.
+    // dropped - never queued into the utterance.
     let mut s =
         open_session(&LiveGate::open(), live_cfg(), FakeAgent::reply("r")).expect("gate open");
     s.client_start(0);
@@ -801,7 +801,7 @@ fn busy_drop_during_in_flight_turn() {
 #[test]
 fn approval_needed_pauses_turn_no_auto_approve() {
     // (f) The agent parking an approval surfaces `approval_needed`; the
-    // turn pauses — no reply audio, no auto-approve, ever.
+    // turn pauses - no reply audio, no auto-approve, ever.
     let mut s = open_session(
         &LiveGate::open(),
         live_cfg(),

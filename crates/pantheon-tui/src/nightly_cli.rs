@@ -5,17 +5,17 @@
 //! eval-gating, replay validation (strict improvement on held-out
 //! tasks), human approval for skills/personas, and a JSONL audit trail.
 //!
-//! All LLM-backed steps resolve through auxiliary slots — the pass's own
+//! All LLM-backed steps resolve through auxiliary slots - the pass's own
 //! `[nightly.model]` pin when configured, else proposal refinement
 //! through `AuxiliaryKind::Reflection` and memory distillation through
-//! `AuxiliaryKind::Consolidation` — never the chat model directly.
+//! `AuxiliaryKind::Consolidation` - never the chat model directly.
 //! `run_one_pass` builds the model policy from the on-disk config, so the
 //! CLI, the TUI worker thread, and the scheduler share one routing path.
 //!
 //! The pass is **off by default** and does nothing unless enabled: an
 //! explicit `enabled` flag wins, otherwise a `[nightly.model]` pin (or
 //! the `PANTHEON_NIGHTLY_PROVIDER` / `PANTHEON_NIGHTLY_MODEL` env
-//! overrides) implies on — see [`pantheon_api::config::nightly_enabled`].
+//! overrides) implies on - see [`pantheon_api::config::nightly_enabled`].
 //! With no `[nightly]` section, legacy `[reflect]` / `[consolidation]`
 //! With no `[nightly]` section, legacy `[reflect]` / `[consolidation]`
 //! opt-ins are honored as a deprecated fallback.
@@ -44,10 +44,10 @@ pub fn run_one_pass(data_dir: &Path, dry_run: bool) -> Result<PassResult, String
     let file_cfg = crate::config::Config::load_or_report(data_dir);
     // Master switch: the pipeline and its repair loop do nothing unless
     // the pass is enabled (explicit flag, model pin, or legacy opt-in).
-    // This is the single entry every trigger funnels through — the CLI,
-    // the TUI worker thread, and the scheduler — so one gate covers all.
+    // This is the single entry every trigger funnels through - the CLI,
+    // the TUI worker thread, and the scheduler - so one gate covers all.
     if !crate::config::nightly_pass_enabled(file_cfg.as_ref()) {
-        return Err("nightly pass is disabled — enable it with a [nightly.model] pin, `enabled = true` under [nightly], or `/nightly on`"
+        return Err("nightly pass is disabled - enable it with a [nightly.model] pin, `enabled = true` under [nightly], or `/nightly on`"
             .to_string());
     }
     let mut cfg = crate::config::nightly_config(file_cfg.as_ref(), data_dir);
@@ -64,7 +64,7 @@ pub fn run_one_pass(data_dir: &Path, dry_run: bool) -> Result<PassResult, String
     // One runner for every replay strategy: tasks with their own exec
     // spec run on the built-in headless runner; the rest use the
     // configured headless-agent command, or fail loudly when none is
-    // set (the gate rejects — "couldn't measure" is never a pass).
+    // set (the gate rejects - "couldn't measure" is never a pass).
     let replay_runner =
         CompositeReplayRunner::new(cfg.replay_command.clone(), Duration::from_secs(300));
     let replay_runner: &dyn ReplayRunner = &replay_runner;
@@ -166,7 +166,7 @@ pub fn run_one_pass(data_dir: &Path, dry_run: bool) -> Result<PassResult, String
     run_pass(&cfg, &mut deps).map_err(|e| format!("nightly pass failed: {}: {}", e.code, e.cause))
 }
 
-/// Whether the nightly pass is enabled in config — the master switch.
+/// Whether the nightly pass is enabled in config - the master switch.
 /// Explicit `enabled` wins; absent, the `[nightly.model]` pin (or the
 /// `PANTHEON_NIGHTLY_*` env overrides) implies on; with no `[nightly]`
 /// section the legacy `[reflect]` / `[consolidation]` opt-ins are
@@ -178,7 +178,7 @@ pub fn nightly_enabled(data_dir: &Path) -> bool {
 
 /// Persist the nightly LLM toggle to the `[nightly]` config section.
 /// Creates the section when absent; leaves every other key untouched.
-/// Writes the explicit `Some(enabled)` flag — explicit always wins over
+/// Writes the explicit `Some(enabled)` flag - explicit always wins over
 /// the model-pin rule (see [`pantheon_api::config::nightly_enabled`]).
 pub fn persist_nightly_enabled(data_dir: &Path, enabled: bool) -> Result<(), String> {
     let mut cfg = crate::config::Config::load_or_report(data_dir).unwrap_or_default();
@@ -209,7 +209,7 @@ pub fn nightly_model_pin(data_dir: &Path) -> bool {
 /// Whether the nightly pass has any model pin in play: the
 /// `[nightly.model]` table or the `PANTHEON_NIGHTLY_PROVIDER` /
 /// `PANTHEON_NIGHTLY_MODEL` env overrides. Mirrors the pin half of
-/// [`pantheon_api::config::nightly_enabled`] — used to decide whether
+/// [`pantheon_api::config::nightly_enabled`] - used to decide whether
 /// `/nightly on` should print pin guidance.
 pub fn nightly_pin_present(data_dir: &Path) -> bool {
     nightly_model_pin(data_dir) || pantheon_api::config::nightly_env_pin_present()
@@ -219,10 +219,10 @@ pub fn nightly_pin_present(data_dir: &Path) -> bool {
 /// `/nightly on` / `pantheon nightly on` when no `[nightly.model]` pin
 /// is configured. An explicit `enabled = true` turns the pass on, but
 /// without a pin the LLM steps resolve through the Reflection /
-/// Consolidation auxiliary slots (chat-model fallback) — the guidance
+/// Consolidation auxiliary slots (chat-model fallback) - the guidance
 /// shows how to pin a dedicated model instead.
 pub fn pin_guidance() -> String {
-    "note: no [nightly.model] pin — LLM steps use the Reflection/Consolidation aux slots.\n\
+    "note: no [nightly.model] pin - LLM steps use the Reflection/Consolidation aux slots.\n\
      to pin a model for the nightly pass:\n\
      \n  [nightly.model]\n  provider = \"openai\"\n  model = \"gpt-4o-mini\"\n  api_key_env = \"OPENAI_API_KEY\"\n\
      \n(`api_key_env` names the env var holding the key, never the key itself.\n\
@@ -235,7 +235,7 @@ pub fn pin_guidance() -> String {
 /// non-paused `pantheon schedule nightly` jobs (`__pantheon_nightly__`
 /// task marker). Rendered as an RFC 3339 UTC timestamp. `None` when no
 /// nightly job is scheduled (the loop can still fire on the auto-turns
-/// trigger — see `/nightly status`).
+/// trigger - see `/nightly status`).
 pub fn next_nightly_run(data_dir: &Path) -> Option<String> {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -309,7 +309,7 @@ pub fn status_line(data_dir: &Path) -> String {
         format!("nightly pass: on ({reason})")
     } else {
         format!(
-            "nightly pass: off ({reason}) — enable with a [nightly.model] pin, `enabled = true`, or `/nightly on`"
+            "nightly pass: off ({reason}) - enable with a [nightly.model] pin, `enabled = true`, or `/nightly on`"
         )
     };
     let schedule_line = match next_nightly_run(data_dir) {
@@ -318,7 +318,7 @@ pub fn status_line(data_dir: &Path) -> String {
     };
     match NightlyState::load(data_dir) {
         Ok(state) if state.last_run_ms > 0 => format!(
-            "{loop_line}\n{state_line}\n{schedule_line}\nlast pass: {} — {} proposed, {} applied, {} pending approval{}",
+            "{loop_line}\n{state_line}\n{schedule_line}\nlast pass: {} - {} proposed, {} applied, {} pending approval{}",
             state.last_run_ms,
             state.last_proposals,
             state.last_applied,
@@ -373,7 +373,7 @@ pub fn render_pending(pending: &[Proposal]) -> String {
                 p.eval_tags.join(", ")
             },
             if p.provenance_runs.is_empty() {
-                "—".to_string()
+                " - ".to_string()
             } else {
                 p.provenance_runs.join(", ")
             },
@@ -717,7 +717,7 @@ pub fn cmd_nightly(args: &[String], data_dir: &Path) {
             match std::fs::read_to_string(&path) {
                 Ok(md) => println!("{md}"),
                 Err(_) => {
-                    eprintln!("no nightly report yet — run `pantheon nightly` first");
+                    eprintln!("no nightly report yet - run `pantheon nightly` first");
                     std::process::exit(1);
                 }
             }
@@ -729,7 +729,7 @@ pub fn cmd_nightly(args: &[String], data_dir: &Path) {
         }
         None => {
             if dry_run {
-                println!("dry run — nothing will be applied or queued; the pass is still audited and reported");
+                println!("dry run - nothing will be applied or queued; the pass is still audited and reported");
             }
             match run_one_pass(data_dir, dry_run) {
                 Ok(out) => {

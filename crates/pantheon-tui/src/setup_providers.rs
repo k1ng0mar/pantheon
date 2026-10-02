@@ -3,16 +3,16 @@
 //! Every provider-backed tool group (web search, browser, STT, TTS,
 //! memory) enumerates its providers from the owning crate's registry,
 //! normalized into [`ProviderMeta`]. The flow is identical for all
-//! groups — no provider-specific branching:
+//! groups - no provider-specific branching:
 //!
 //! 1. pick a provider: recommended first, preselected on the
 //!    recommended row, provider notes in the descriptions;
 //! 2. follow-up by kind:
-//!    - [`ProviderKind::Keyless`] → nothing to ask;
-//!    - [`ProviderKind::Cloud`] → the ENV VAR NAME holding the key
-//!      (never the value — the wizard never handles secrets);
-//!    - [`ProviderKind::SelfHosted`] → the instance URL;
-//!    - [`ProviderKind::Local`] → detect the binary; when it is missing
+//!   - [`ProviderKind::Keyless`] → nothing to ask;
+//!   - [`ProviderKind::Cloud`] → the ENV VAR NAME holding the key
+//!      (never the value - the wizard never handles secrets);
+//!   - [`ProviderKind::SelfHosted`] → the instance URL;
+//!   - [`ProviderKind::Local`] → detect the binary; when it is missing
 //!      the metadata's dependency notes are shown and the user gets
 //!      install-or-skip (a known `install_cmd` runs on confirmation,
 //!      then detection re-runs);
@@ -26,8 +26,8 @@
 //! the recommended row without a picker screen and goes straight to
 //! the follow-ups. Every screen reports a [`ProviderPick`]: `Chosen`
 //! (an answer to write), `Skipped` (the tool is intentionally left
-//! unconfigured — no section is written and the group comes off the
-//! enabled-tools vec), or `Cancelled` (Esc — the caller keeps its
+//! unconfigured - no section is written and the group comes off the
+//! enabled-tools vec), or `Cancelled` (Esc - the caller keeps its
 //! current behavior, which today means the shared setup path resolves
 //! the recommended default).
 
@@ -117,7 +117,7 @@ pub fn find_provider<'a>(providers: &'a [ProviderMeta], id: &str) -> Option<&'a 
     providers.iter().find(|p| p.id.eq_ignore_ascii_case(id))
 }
 
-/// The recommended row, if any — the default the non-interactive setup
+/// The recommended row, if any - the default the non-interactive setup
 /// path resolves to.
 pub fn recommended_provider(providers: &[ProviderMeta]) -> Option<&ProviderMeta> {
     providers.iter().find(|p| p.recommended)
@@ -133,7 +133,7 @@ pub fn recommended_provider(providers: &[ProviderMeta]) -> Option<&ProviderMeta>
 /// deliberately left the tool unconfigured: the wizard removes the
 /// tool group from the enabled-tools vec, so the shared setup path
 /// writes no provider section and the runtime never registers the
-/// tool — a clean "not configured", never a half-written config.
+/// tool - a clean "not configured", never a half-written config.
 /// `Cancelled` (Esc) keeps its current meaning: the group is untouched
 /// and `run_setup` resolves the recommended default, as before.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,7 +220,7 @@ pub fn pick_provider(title: &str, subtitle: &str, providers: Vec<ProviderMeta>) 
 
 /// The Recommended-mode answer for one provider-backed group: the
 /// recommended row (`recommended_provider`, first row when none is
-/// marked — the same fallback `default_or_prompt` uses), with
+/// marked - the same fallback `default_or_prompt` uses), with
 /// kind-driven follow-ups and the same `crate::prompt` ask/confirm
 /// closures `pick_provider` uses. NO picker screen: this is the
 /// "straight to keys" path, so the user only sees the follow-ups
@@ -229,7 +229,7 @@ pub fn pick_provider(title: &str, subtitle: &str, providers: Vec<ProviderMeta>) 
 /// A non-keyless provider is prefaced with "Set up <name> now?":
 /// No → `Skipped` (the group comes off, no section is written). Note
 /// the `Confirm` widget submits `false` on Esc, so Esc on the preface
-/// is also a skip — a yes/no question's safe answer is no. Keyless
+/// is also a skip - a yes/no question's safe answer is no. Keyless
 /// providers have nothing to ask, so they resolve straight to `Chosen`
 /// with no preface. Cancelling inside a follow-up (or a prompt run
 /// error) → `Cancelled`, which keeps the previous behavior: the group
@@ -276,7 +276,7 @@ pub fn complete_recommended_with(
 }
 
 /// Map one screen's [`ProviderPick`] onto the wizard's downstream
-/// state. Pure — no TUI, no prompts — so the skip/cancel contract is
+/// state. Pure - no TUI, no prompts - so the skip/cancel contract is
 /// unit-testable:
 ///
 /// - `Chosen` → the answer, everything else untouched;
@@ -309,7 +309,7 @@ pub fn apply_pick(
 /// granular per backend: a skipped backend yields no answer and sets
 /// its skip flag (the shared setup path then writes no section for it
 /// instead of resolving the recommended default). The Voice group only
-/// comes off — and is recorded in `skipped` — when BOTH backends are
+/// comes off - and is recorded in `skipped` - when BOTH backends are
 /// skipped. A cancelled pick keeps current behavior: no answer, group
 /// untouched.
 #[derive(Debug, Clone, Default)]
@@ -446,7 +446,7 @@ pub fn complete_answer(
 ///
 /// Bounded by `DETECT_TIMEOUT`: a probe that hangs must not stall
 /// `doctor` or the wizard. A `python3 -m pip --version` once took ~9.5s
-/// on a cold box — with no timeout that single row held the whole
+/// on a cold box - with no timeout that single row held the whole
 /// preflight hostage.
 const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -700,7 +700,7 @@ pub fn stt_providers() -> Vec<ProviderMeta> {
 /// Every registry entry is offered: all of them are constructible via
 /// `open_tts` (the bespoke wires are implemented from public docs and
 /// pinned by fixtures; first live runs are verification runs).
-/// `kokoro-local` needs an explicit `cmd` — community kokoro CLIs differ
+/// `kokoro-local` needs an explicit `cmd` - community kokoro CLIs differ
 /// in arg shape, so the wizard asks for the full invocation.
 pub fn tts_providers() -> Vec<ProviderMeta> {
     use pantheon_providers::{AuthRequirement, VoiceBackendKind};
@@ -745,7 +745,7 @@ pub fn tts_providers() -> Vec<ProviderMeta> {
 /// Memory backends from the `pantheon-memory` registry. `native` needs
 /// nothing; every other backend is a bridge whose URL and key resolve
 /// from `options.url`/`options.key` or the fixed env convention
-/// `PANTHEON_MEMORY_<NAME>_URL` / `PANTHEON_MEMORY_<NAME>_KEY` — the
+/// `PANTHEON_MEMORY_<NAME>_URL` / `PANTHEON_MEMORY_<NAME>_KEY` - the
 /// wizard requires the URL (no compiled default exists; the env var is
 /// a runtime fallback, not a wizard escape hatch) and names the env
 /// vars, but never collects the key value. The `fake` backend is a test

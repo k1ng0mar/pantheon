@@ -2,7 +2,7 @@
 //!
 //! `skill_exec` is the declared path for executing skill content: the
 //! script (or npx spec) comes from the skill's `exec:` frontmatter,
-//! arguments arrive as argv elements — never shell-interpolated — and the
+//! arguments arrive as argv elements - never shell-interpolated - and the
 //! run inherits the HIGH sandbox profile the `shell` tool uses, with the
 //! wall clock set to the executable's declared `timeout_secs`.
 //!
@@ -53,7 +53,7 @@ pub fn skill_exec_profile(exec: &SkillExec) -> SandboxProfile {
 ///   third-party skill docs)
 /// - `${SKILL_DIR}` and `$SKILL_DIR` (short form)
 ///
-/// Expansion is pure string substitution to the skill's absolute dir —
+/// Expansion is pure string substitution to the skill's absolute dir
 /// the value still travels as a single argv element, never through a
 /// shell, so this cannot widen the invocation. A bare `$SKILL_DIR` is
 /// only expanded when not followed by `[A-Za-z0-9_]` (so `$SKILL_DIRECTORY`

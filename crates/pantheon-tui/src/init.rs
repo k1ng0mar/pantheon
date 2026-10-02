@@ -1,9 +1,9 @@
 //! `pantheon init`: idempotent, non-interactive bootstrap of the always-on
 //! gateway service (chat surfaces + scheduler loop).
 //!
-//! Detects the platform's service manager and installs accordingly —
+//! Detects the platform's service manager and installs accordingly
 //! systemd user unit, cron `@reboot` fallback, launchd agent, or Windows
-//! Task Scheduler — sharing the same jobs and durable claim ledger as
+//! Task Scheduler - sharing the same jobs and durable claim ledger as
 //! `pantheon schedule tick`. Re-running converges: it updates the install
 //! and ensures the service is enabled and running, never duplicating it.
 //! With no supported manager it fails open, printing the manual cron line.
@@ -16,11 +16,11 @@ fn print_usage() {
         "usage: pantheon init\n\n\
          Install the Pantheon gateway as an always-on user service\n\
          (chat surfaces + scheduled tasks), idempotently:\n\
-         - Linux + systemd: user unit + `systemctl --user enable --now`\n\
-         - Linux w/o systemd: cron `@reboot` entry\n\
-         - macOS: LaunchAgent + `launchctl bootstrap`\n\
-         - Windows: Task Scheduler logon task\n\
-         - otherwise: prints the manual cron line instead of failing\n\n\
+        - Linux + systemd: user unit + `systemctl --user enable --now`\n\
+        - Linux w/o systemd: cron `@reboot` entry\n\
+        - macOS: LaunchAgent + `launchctl bootstrap`\n\
+        - Windows: Task Scheduler logon task\n\
+        - otherwise: prints the manual cron line instead of failing\n\n\
          Re-running updates the install and ensures it is running.\n\
          See also: pantheon gateway status|restart"
     );

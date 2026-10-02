@@ -31,12 +31,12 @@ fn recommended_row(metas: &[ProviderMeta]) -> ProviderMeta {
 fn native_memory_needs_no_followups_and_leaves_working_state() {
     let _guard = ENV_GUARD.lock().unwrap();
     let dir = tempdir().unwrap();
-    // The native backend id, resolved from the registry — never
+    // The native backend id, resolved from the registry - never
     // hardcoded, so a registry rename updates the expectation here.
     let native_id = recommended_row(&setup_providers::memory_providers()).id;
 
     // The zero-friction answer: the id alone, no key env, no URL, no
-    // options — the shape a Screen 8 "Pantheon Native" pick produces.
+    // options - the shape a Screen 8 "Pantheon Native" pick produces.
     let answers = SetupAnswers {
         provider: Some("nous".to_string()),
         model: Some("Hermes-4-70B".to_string()),

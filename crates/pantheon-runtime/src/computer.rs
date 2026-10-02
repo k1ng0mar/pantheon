@@ -3,8 +3,8 @@
 //! When the ComputerUse tool group is enabled, the runtime treats the CUA
 //! driver (`cua-driver`, trycua/cua) as an MCP server: `cua-driver mcp`
 //! speaks the Model Context Protocol over stdio, and the existing
-//! [`McpManager`](pantheon_mcp::manager::McpManager) machinery — tool
-//! projection, content-hash approval pinning, reconnect handling —
+//! [`McpManager`](pantheon_mcp::manager::McpManager) machinery - tool
+//! projection, content-hash approval pinning, reconnect handling
 //! carries it. MCP is the transport detail here; the driver answers to
 //! the ComputerUse toggle, not the Plugins toggle, and the projected
 //! tools carry the inward `Capability::ComputerUse` (desktop control),

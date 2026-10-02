@@ -561,7 +561,7 @@ fn one_pass_feeds_proposals_and_memory_from_single_scan() {
     )
     .unwrap();
 
-    // Skill reached approval AND the lesson auto-applied — one scan.
+    // Skill reached approval AND the lesson auto-applied - one scan.
     assert_eq!(skill_proposals(&out).len(), 1);
     assert_eq!(load_pending(h.dir.path()).unwrap().len(), 1);
     assert_eq!(nightly_lessons(&h, "imports").len(), 1);
@@ -784,7 +784,7 @@ fn fix_loop_sharpens_draft_on_eval_reject_and_revalidates() {
         1,
     );
     assert!(matches!(outcome, pantheon_nightly::FixOutcome::Validated));
-    // The draft was revised; the tags were NOT pruned — the full set
+    // The draft was revised; the tags were NOT pruned - the full set
     // re-ran against the new body.
     assert_eq!(p.body, "revised draft");
     assert_eq!(p.eval_tags, vec!["good".to_string(), "bad".to_string()]);
@@ -848,7 +848,7 @@ fn draft_failing_every_eval_cannot_validate() {
 }
 
 /// Exhaustion with a repair model: the judge revises but the evals
-/// keep failing — each revision consumes one attempt, then the loop
+/// keep failing - each revision consumes one attempt, then the loop
 /// escalates instead of validating.
 #[test]
 fn exhaustion_after_repair_sharpen_still_escalates() {
@@ -1048,7 +1048,7 @@ fn approved_persona_reaches_overlay_denied_does_not() {
 // ------------------------------------------------- enable-path matrix ---
 //
 // The four enable paths (model pin, `/nightly on`, config edit,
-// dashboard toggle) share one rule — `pantheon_api::config::
+// dashboard toggle) share one rule - `pantheon_api::config::
 // nightly_enabled`: explicit `false` always wins; explicit `true`
 // forces on; an absent flag is on iff a model pin is present (the
 // `[nightly.model]` table or the `PANTHEON_NIGHTLY_PROVIDER` /
@@ -1232,7 +1232,7 @@ fn nightly_status_reports_reason_pin_and_next_run() {
     let s = nightly_cli::status_line(dir.path());
     assert!(s.contains("next scheduled run: 2"), "next run: {s}");
 
-    // Explicit on with no pin: on, with the reason — and the pin
+    // Explicit on with no pin: on, with the reason - and the pin
     // guidance explains how to pin a model.
     nightly_cli::persist_nightly_enabled(dir.path(), true).unwrap();
     let s = nightly_cli::status_line(dir.path());

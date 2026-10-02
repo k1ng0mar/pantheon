@@ -1,8 +1,8 @@
-//! `pantheon repair` — find and fix anything wrong with this install.
+//! `pantheon repair` - find and fix anything wrong with this install.
 //!
 //! `doctor` is diagnosis: it reports every problem and a fix hint per check.
 //! `repair` is the fixing half, and it is deliberately a separate verb so
-//! neither one can quietly do the other's job — a `doctor` that mutated state
+//! neither one can quietly do the other's job - a `doctor` that mutated state
 //! would be unsafe to run in a loop, and a repair that diagnosed would be
 //! useless.
 //!
@@ -209,7 +209,7 @@ pub fn cmd_repair(args: &[String]) {
 
     render(&outcomes, dry_run);
     // Only a genuine failure exits 1. A `manual` finding is something the
-    // operator has to decide about, and `repair` did its job — a registry
+    // operator has to decide about, and `repair` did its job - a registry
     // whose expected outcome set a non-zero exit would be useless in a script.
     if outcomes.iter().any(|o| o.status == "failed") {
         std::process::exit(1);
@@ -218,7 +218,7 @@ pub fn cmd_repair(args: &[String]) {
 
 fn render(outcomes: &[RepairOutcome], dry_run: bool) {
     if outcomes.iter().all(|o| o.status == "clean") {
-        println!("ok — nothing to repair");
+        println!("ok - nothing to repair");
         return;
     }
     for o in outcomes {
@@ -239,7 +239,7 @@ fn render(outcomes: &[RepairOutcome], dry_run: bool) {
     let manual = outcomes.iter().filter(|o| o.status == "manual").count();
     let failed = outcomes.iter().filter(|o| o.status == "failed").count();
     if dry_run {
-        println!("\n{dry_run} dry run — nothing was changed");
+        println!("\n{dry_run} dry run - nothing was changed");
     } else {
         println!("\n{fixed} fixed, {manual} need a human, {failed} failed");
     }
@@ -267,7 +267,7 @@ fn extract_backup(msg: &str) -> Option<PathBuf> {
 /// does not parse may contain anything, and writing over it would destroy a
 /// file the user hand-edited and cannot reconstruct. So the fixer creates a
 /// default when the file is simply missing, and for a parse failure it backs
-/// the file up and reports — never overwrites.
+/// the file up and reports - never overwrites.
 fn config() -> Fixer {
     Fixer {
         check: "config",
@@ -305,7 +305,7 @@ fn config() -> Fixer {
                 cfg.save(dd)
                     .map_err(|e| format!("cannot write {}: {}", path.display(), e.cause))?;
                 // The default has no [model] section, which `validate()`
-                // rejects — a config with no provider cannot run a turn. So
+                // rejects - a config with no provider cannot run a turn. So
                 // this fix is partial by nature and says so, rather than
                 // implying the install is now runnable.
                 return Ok(format!(
@@ -315,7 +315,7 @@ fn config() -> Fixer {
                 ));
             }
             // It exists. If it loads but does not validate, the parse succeeded
-            // and the message must say that, not "does not parse" — the two
+            // and the message must say that, not "does not parse" - the two
             // have completely different fixes (add a model section vs. repair
             // TOML by hand), and conflating them sent the operator to the
             // wrong one.
@@ -587,7 +587,7 @@ fn stranded_runs() -> Fixer {
 /// rebuilds it. A partial write, a restored ledger, or a schema change leaves
 /// it permanently wrong: search silently returns nothing and no command can
 /// fix it. That is a real gap, and the honest report is that a full re-index
-/// is not implemented — not a fix that recreates an empty table and calls the
+/// is not implemented - not a fix that recreates an empty table and calls the
 /// problem solved.
 fn search_index() -> Fixer {
     Fixer {

@@ -1,7 +1,7 @@
 //! Durable pass state: what ran, when, and what changed.
 //!
 //! `<data_dir>/nightly/nightly-state.json` records the last pass so the
-//! TUI and the dashboard can show "nightly last ran at …, proposed N,
+//! TUI and the dashboard can show "nightly last ran at ..., proposed N,
 //! applied M" without re-running the pipeline.
 
 use std::path::{Path, PathBuf};

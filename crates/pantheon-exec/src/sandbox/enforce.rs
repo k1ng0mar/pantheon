@@ -2,7 +2,7 @@
 //!
 //! [`enforce`] is the single bridge between the capability system and the
 //! sandbox hierarchy: policy owns *whether*, this crate owns *how isolated*.
-//! There is deliberately no "run anyway" escape hatch — an ungranted
+//! There is deliberately no "run anyway" escape hatch - an ungranted
 //! capability is denied, not quietly downgraded to a weaker boundary.
 
 use super::level::{profile_for, SandboxProfile};
@@ -74,7 +74,7 @@ pub fn enforce(policy: &Policy, capability: &Capability) -> Enforcement {
 }
 
 /// Stable, log-safe label for a capability, e.g. `shell.execute`.
-/// Delegates to [`Capability::token`] — the single token table lives in
+/// Delegates to [`Capability::token`] - the single token table lives in
 /// core so sandbox labels and MCP parsing can't drift.
 ///
 /// Used for approval scopes and events, so it must never carry payload

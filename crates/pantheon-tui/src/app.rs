@@ -386,7 +386,7 @@ impl TerminalSession {
         }
         // Every prompt builds a fresh ratatui Terminal whose internal
         // buffer starts blank. The diff writer then skips cells it
-        // believes are already blank — but the reused alternate screen
+        // believes are already blank - but the reused alternate screen
         // still holds the previous prompt's content, so stale rows bleed
         // through (a `Clear` widget is a diff no-op for the same reason).
         // Blank the real screen to match the fresh buffer. This is a raw

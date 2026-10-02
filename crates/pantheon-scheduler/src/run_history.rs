@@ -7,7 +7,7 @@
 //! `<data_dir>/schedule-run-history.json`, mapping job id → counters.
 //! `Completed` resets the consecutive-failure count; `TimedOut`,
 //! `Panicked`, and `Failed` (app-level task failure) increment it;
-//! `Replaced` (a superseded generation) is neutral — a replace is not a
+//! `Replaced` (a superseded generation) is neutral - a replace is not a
 //! failure.
 //!
 //! The nightly repair loop reads these counters through its
@@ -47,7 +47,7 @@ pub struct RunHistory {
 
 impl RunHistory {
     /// Open (creating if missing) on `<data_dir>`. A corrupt file is an
-    /// error naming the file — a silently empty history would hide
+    /// error naming the file - a silently empty history would hide
     /// failing jobs from the repair loop.
     pub fn open(data_dir: &Path) -> Result<Self, String> {
         let path = run_history_path(data_dir);

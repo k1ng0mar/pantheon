@@ -6,7 +6,7 @@
 //!
 //! Request shape (verified against <https://docs.tinyfish.ai/api-reference/search-the-web>):
 //! `GET {base}/?query=<urlencoded>` with optional `include_domains` /
-//! `exclude_domains` (comma-separated — supported natively, mapped from
+//! `exclude_domains` (comma-separated - supported natively, mapped from
 //! [`SearchOptions`]), plus `purpose`, `location`, `language`,
 //! `domain_type`, date bounds, and `page` which this provider does not
 //! send. There is no result-count parameter: results are trimmed
@@ -15,11 +15,11 @@
 //! Response shape: `{query, results: [{position, site_name, title,
 //! snippet, url}], total_results, page}`. Third-party integrations also
 //! report a `date` field on results when known; it is mapped into
-//! `published` when present, otherwise `published` is `None` — never
+//! `published` when present, otherwise `published` is `None` - never
 //! fabricated.
 //!
 //! Rate limit: ~30 req/min on the free tier (some integrations report
-//! 5 req/min on the default plan — back off on 429). This provider paces
+//! 5 req/min on the default plan - back off on 429). This provider paces
 //! itself with a conservative default minimum interval of 2s between
 //! requests; tune via [`TinyFishProvider::with_min_interval`] (zero
 //! disables pacing).

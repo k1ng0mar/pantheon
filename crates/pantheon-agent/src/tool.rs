@@ -1,5 +1,5 @@
 //! Tool execution boundary: capability gate, then runner. The gate runs
-//! before the runner, always — there is no path that executes an ungranted
+//! before the runner, always - there is no path that executes an ungranted
 //! capability.
 use crate::capability::{enforce, Verdict};
 use pantheon_api::capability::{Capability, Policy};

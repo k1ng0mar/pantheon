@@ -1,15 +1,15 @@
 //! Client-side config resolution for the TUI.
 //!
 //! The `config.toml` **document** (all section structs, `Config`,
-//! load/save/validate) lives in [`pantheon_api::config`] — the shared,
+//! load/save/validate) lives in [`pantheon_api::config`] - the shared,
 //! client-agnostic home. This module re-exports it so existing
-//! `crate::config::…` paths keep working, and adds what only the TUI
+//! `crate::config::...` paths keep working, and adds what only the TUI
 //! (as a client) needs:
 //!
 //! * resolution of document sections into runtime/agent types
 //!   ([`resolve_budget_section`], [`resolve_browser_section`],
 //!   [`resolve_websearch_section`], [`resolve_mcp_section`],
-//!   [`config_budget`]) — inherent impls can't live here because the
+//!   [`config_budget`]) - inherent impls can't live here because the
 //!   structs are foreign now;
 //! * auxiliary-model wiring, secrets-broker construction, and the other
 //!   composition helpers below.
@@ -56,7 +56,7 @@ pub fn tool_group_enabled(cfg: Option<&Config>, group: pantheon_api::config::Too
 /// run budget (`set_budget`, from [`config_budget`]) plus the
 /// kept-apart configured token cap (`set_budget_max_tokens`), so
 /// `/tokens off` falls back to the config value instead of forgetting
-/// it. Call on every `Session::new` that serves turns — the interactive
+/// it. Call on every `Session::new` that serves turns - the interactive
 /// TUI startup does this inline in session.rs; the /agui, gateway, and
 /// dashboard paths use this helper so they cannot drift apart.
 pub fn apply_budget_tiers(session: &pantheon_runtime::session::Session, cfg: Option<&Config>) {
@@ -89,7 +89,7 @@ pub fn config_budget(cfg: &Config) -> pantheon_agent::Budget {
         .unwrap_or_default()
 }
 
-/// Resolve `[browser]` — now in [`pantheon_runtime::resolve_browser_section`]
+/// Resolve `[browser]` - now in [`pantheon_runtime::resolve_browser_section`]
 /// so the dashboard's browser stream endpoints resolve the section
 /// identically. Kept here as a thin delegate for existing callers.
 pub fn resolve_browser_section(s: &BrowserSection) -> pantheon_runtime::BrowserToolConfig {
@@ -139,7 +139,7 @@ pub fn resolve_websearch_section(s: &WebsearchSection) -> pantheon_runtime::Webs
 
 /// Hermes-style aux inheritance: `provider = "default"` (or absent/empty)
 /// inherits the default model's provider; an absent/empty `model` inherits
-/// the default model's model. Explicit values always win — slots stay
+/// the default model's model. Explicit values always win - slots stay
 /// independent, they just don't have to repeat the default. Pure so tests
 /// don't touch env.
 fn resolve_aux_target(
@@ -189,7 +189,7 @@ fn resolve_aux_key_env(
 /// Hermes-style inheritance against the default model. `PANTHEON_*` env
 /// overrides win field-wise over the section; `"default"`/empty then
 /// inherits. Returns `None` when nothing is pinned at all (no section,
-/// no env) or when even the default target is empty — the `auto`
+/// no env) or when even the default target is empty - the `auto`
 /// fallback in [`auxiliaries`] decides what that means per slot.
 fn slot_target(
     slot: &AuxSlot,
@@ -260,7 +260,7 @@ fn slot_aux(
 /// [`AuxSection`]; the resolution order is identical.
 ///
 /// Every LLM call the reflection pipeline makes resolves through this
-/// slot — never the chat model directly — so pinning a cheap model here
+/// slot - never the chat model directly - so pinning a cheap model here
 /// keeps background self-improvement off the interactive model's bill.
 pub fn reflect_aux_model(
     cfg: Option<&Config>,
@@ -305,7 +305,7 @@ pub fn reflect_aux_model(
 /// pure [`AuxSection`]; the resolution order is identical.
 ///
 /// Every LLM call the consolidation pipeline makes resolves through
-/// this slot — never the chat model directly — so pinning a cheap model
+/// this slot - never the chat model directly - so pinning a cheap model
 /// here keeps nightly memory consolidation off the interactive model's
 /// bill.
 pub fn consolidation_aux_model(
@@ -340,8 +340,8 @@ pub fn consolidation_aux_model(
     }
 }
 
-/// Master gate for the nightly pass over a whole [`Config`]: the pass —
-/// pipeline and repair loop — runs iff this is true.
+/// Master gate for the nightly pass over a whole [`Config`]: the pass
+/// pipeline and repair loop - runs iff this is true.
 ///
 /// `[nightly]` present → the single enable rule
 /// ([`pantheon_api::config::nightly_enabled`]): explicit flag wins, else
@@ -364,7 +364,7 @@ pub fn nightly_pass_enabled(cfg: Option<&Config>) -> bool {
 /// `[nightly]` is the single authoritative section. When it is present,
 /// the legacy `[reflect]` / `[consolidation]` tables are ignored
 /// entirely for the pass; when it is absent they are honored
-/// field-by-field as a deprecated migration fallback — `llm_enabled` =
+/// field-by-field as a deprecated migration fallback - `llm_enabled` =
 /// either legacy flag, `auto_turns` from `[reflect]`, `min_sessions` /
 /// `cron` from `[consolidation]`. `max_age_days` has no legacy equivalent
 /// (the decay curve is gone), so it always takes the `[nightly]` value or
@@ -377,7 +377,7 @@ pub fn nightly_config(
     let r = cfg.and_then(|c| c.reflect.as_ref());
     let c = cfg.and_then(|c| c.consolidation.as_ref());
     // Authoritative-when-present: legacy flags must not leak into a pass
-    // whose `[nightly]` section exists — a legacy `enabled = true` must
+    // whose `[nightly]` section exists - a legacy `enabled = true` must
     // not turn on LLM steps the user thought they turned off.
     let llm_enabled = match n {
         // The single enable rule: explicit flag wins, else the model pin
@@ -501,7 +501,7 @@ pub fn with_aux_keys(
     });
     secrets = seed_env_key(secrets, consolidate_env, "PANTHEON_CONSOLIDATION_API_KEY");
     // `[nightly]` is its own aux slot now (`[nightly.model]`): seed its
-    // key the same way, with inheritance — the pass's key lookup tries
+    // key the same way, with inheritance - the pass's key lookup tries
     // PANTHEON_NIGHTLY_API_KEY first.
     let nightly_env = cfg
         .and_then(|c| c.nightly.as_ref())
@@ -525,14 +525,14 @@ pub fn model_key_env(cfg: Option<&Config>) -> Option<String> {
 }
 
 /// Env-var-safe version of a provider id: `my-llm` → `MY_LLM`.
-/// Delegates to [`pantheon_providers::catalog::env_part`] — one cleaner for
+/// Delegates to [`pantheon_providers::catalog::env_part`] - one cleaner for
 /// every `PANTHEON_*` name.
 pub fn sanitize_env_suffix(id: &str) -> String {
     pantheon_providers::catalog::env_part(id)
 }
 
 /// Effective key env var for a provider id: explicit `key_env` wins,
-/// otherwise `PANTHEON_KEY_<ID>`. Naming only — no env lookup. (The
+/// otherwise `PANTHEON_KEY_<ID>`. Naming only - no env lookup. (The
 /// runtime read path is `catalog::key_for`, which resolves this same name
 /// against the environment; keep the two in agreement via
 /// `catalog::env_part`.)
@@ -785,12 +785,12 @@ pub fn build_model_policy(
 ///
 /// Model rule for scheduled work, in precedence order:
 ///
-/// 1. **Explicit pin** — `--model`/`--provider` on `schedule create`, or a
+/// 1. **Explicit pin** - `--model`/`--provider` on `schedule create`, or a
 ///    template's `model` var (which becomes a pin). Always wins.
-/// 2. **Scheduled auxiliary** — the `[scheduled]` config section (or
+/// 2. **Scheduled auxiliary** - the `[scheduled]` config section (or
 ///    `PANTHEON_SCHEDULED_PROVIDER`/`PANTHEON_SCHEDULED_MODEL`). This is the
 ///    default for unpinned jobs.
-/// 3. **Never the interactive default** — unless the `[scheduled]` slot
+/// 3. **Never the interactive default** - unless the `[scheduled]` slot
 ///    itself resolves to it (`auto` with no pin configured).
 ///
 /// Scheduled work is background work: it burns cheap tokens by default.
@@ -833,7 +833,7 @@ fn resolve_reasoning_budget(cfg: Option<&Config>) -> Option<u32> {
 }
 
 /// Reasoning effort for chat turns: `PANTHEON_REASONING` wins, then
-/// `[model].reasoning`, then off. Unknown strings resolve to off — the
+/// `[model].reasoning`, then off. Unknown strings resolve to off - the
 /// safe direction is sending no param, and `doctor` flags the typo (see
 /// `Config::validate`) rather than failing the session.
 fn resolve_reasoning(cfg: Option<&Config>) -> pantheon_api::model::ReasoningLevel {
@@ -853,15 +853,15 @@ fn resolve_reasoning(cfg: Option<&Config>) -> pantheon_api::model::ReasoningLeve
 /// `[judge]` / `[compression]` / `[title_gen]` / `[search_synthesis]` /
 /// `[vision]` / `[scheduled]` / `[mcp_synthesis]` / `[extraction]` /
 /// `[rerank]` / `[planner]` / `[repair]` / `[verify]` section (or its env
-/// override) wins; otherwise `auto` — the run's default model. Aux
+/// override) wins; otherwise `auto` - the run's default model. Aux
 /// models default to auto, so an absent section never switches a
 /// capability off, it just means "use what you already use for chat".
 ///
 /// The documented exceptions are `Embeddings`, `Repair`, and `Verify`:
 /// absent = the local hashing embedder (never the chat model), the
-/// repair slot OFF (fix-loop draft revision unavailable — plain
+/// repair slot OFF (fix-loop draft revision unavailable - plain
 /// retries, then escalation), and the verifier OFF (never
-/// auto-verified) — so an entry appears only when `[embeddings]` /
+/// auto-verified) - so an entry appears only when `[embeddings]` /
 /// `[repair]` / `[verify]` (or their env) actually pins a target.
 pub fn auxiliaries(
     cfg: Option<&Config>,
@@ -901,7 +901,7 @@ pub fn auxiliaries(
         match slot_aux(slot, cfg, default) {
             Some(pinned) => out.push(pinned),
             // Embeddings is the documented exception: absent = the local
-            // hashing embedder, never the chat model — no `auto` entry.
+            // hashing embedder, never the chat model - no `auto` entry.
             None if slot.auto => out.push(auto(slot.kind.clone())),
             None => {}
         }

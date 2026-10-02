@@ -1,14 +1,14 @@
-//! `pantheon swarm` — spawn a real headless multi-agent run.
+//! `pantheon swarm` - spawn a real headless multi-agent run.
 //!
 //! Spawning is wired: each agent gets its own in-process `Session` (run
-//! sequentially, never threaded — the codebase documents SQLite multi-writer
+//! sequentially, never threaded - the codebase documents SQLite multi-writer
 //! hangs with two live Sessions), attaches its resolved agent profile,
 //! and drives one `chat_turn` under `AgentMode::Build`. The manifest at
 //! `<data_dir>/swarms/<swarm_id>.json` is written with status `"running"`
 //! before any turn starts, so `swarm status`/`swarm list` work mid-run,
 //! then updated to `"complete"` / `"partial"` / `"failed"` after.
 //!
-//! Agent labels are `{swarm_id}:{role}:{i}` — the shape
+//! Agent labels are `{swarm_id}:{role}:{i}` - the shape
 //! `reconstruct_from_ledger` looks for when no manifest exists.
 
 use pantheon_api::agent_profile::EffectiveProfile;
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Arg parsing result for a spawn invocation. Pure data, no process
-/// effects — `parse_swarm_spawn` builds this; the CLI acts on it.
+/// effects - `parse_swarm_spawn` builds this; the CLI acts on it.
 #[derive(Debug, Clone)]
 pub struct SpawnSpec {
     pub n: usize,
@@ -27,7 +27,7 @@ pub struct SpawnSpec {
 }
 
 /// One agent's finished turn: the transcript text, or the failure. An
-/// error is never hidden — it renders under the agent's header.
+/// error is never hidden - it renders under the agent's header.
 #[derive(Debug)]
 pub struct AgentOutcome {
     pub label: String,
@@ -132,7 +132,7 @@ fn resolve_swarm(data_dir: &Path, id: &str) -> Result<Option<SwarmRecord>, Strin
 }
 
 /// Parse a full argv into a `SpawnSpec`. Pure: returns `Err` messages,
-/// never calls `process::exit` — the CLI maps `Err` to exit 2.
+/// never calls `process::exit` - the CLI maps `Err` to exit 2.
 pub fn parse_swarm_spawn(args: &[String]) -> Result<SpawnSpec, String> {
     let n_str = args.get(2).ok_or_else(|| {
         "usage: pantheon swarm <N> \"<task>\" [--roles a,b] [--delivery telegram]".to_string()
@@ -221,7 +221,7 @@ pub fn parse_swarm_spawn(args: &[String]) -> Result<SpawnSpec, String> {
 }
 
 /// Resolve each role against the config's profile registry. A role with no
-/// matching profile is an `Err` naming the missing profile — never a
+/// matching profile is an `Err` naming the missing profile - never a
 /// silent fallback to a default agent (the same hard-error convention the
 /// TUI uses for a named `--agent`).
 pub fn resolve_swarm_profiles(
@@ -325,7 +325,7 @@ pub fn run_swarm_spawn(
 
 /// Render the aggregate report: each agent's result under a
 /// `=== <label> (<role>) ===` header. A failing agent's error prints
-/// here verbatim — it is never hidden.
+/// here verbatim - it is never hidden.
 pub fn render_swarm_report(outcomes: &[AgentOutcome]) -> String {
     let mut s = String::new();
     for o in outcomes {

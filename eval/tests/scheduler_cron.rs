@@ -9,7 +9,7 @@
 use pantheon_scheduler::cron::{civil_from_ms, CivilTime, CronSchedule};
 use pantheon_scheduler::{Job, ScheduleKind};
 
-/// 2026-09-20T14:30:00Z — a Sunday.
+/// 2026-09-20T14:30:00Z - a Sunday.
 fn sunday_1430() -> i64 {
     1_789_914_600_000
 }

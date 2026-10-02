@@ -23,7 +23,7 @@ Baseline before any change: both green.
 | `pantheon-runtime` | **KEEP** (+ receives dispatcher) | `pantheon-runtime` | runtime, lifecycle, turn, context, events, state + the Runtime API surface. |
 | `pantheon-agent` | **KEEP** (+ receives `agent_profile`) | `pantheon-agent` | agent, profile, inheritance, instructions. |
 | `pantheon-swarm` | **KEEP** | `pantheon-swarm` | swarm, delegation, coordination, task. |
-| `pantheon-providers` | **KEEP** (+ receives `catalog`, `model_event`) | `pantheon-providers` | Stays **flat**: `lib/catalog/provider…/model…/request…/response…/streaming`. No per-provider directories. |
+| `pantheon-providers` | **KEEP** (+ receives `catalog`, `model_event`) | `pantheon-providers` | Stays **flat**: `lib/catalog/provider.../model.../request.../response.../streaming`. No per-provider directories. |
 | `pantheon-capability` | **KEEP** | `pantheon-capability` | capability, registry, resolution. Policy/role maps stay here; the *types* (`Capability`, `Policy`, `Decision`) live in `pantheon-api` so the future `capability → tools → exec → memory` edges cannot cycle (see §3). |
 | `pantheon-exec` | **SPLIT** | `pantheon-exec` keeps: `process`, `context`, `supervisor` (process/plugin supervision), `safewrite` (engine), `skills` (discovery/parse), `plugins`, `danger`, `acp`, `bundled_skills`, compaction. **Tools layer MOVE → new `pantheon-tools`** | "Capability ≠ Tool": the callable-operation surface (`ToolRegistry`, builtins, memory/vault/session-search tools, register helpers) is its own crate. |
 | **`pantheon-tools` (NEW)** | **CREATE** | `pantheon-tools` | Deliberate change #1 from the prompt: tools must be distinct from capability. Depends on `pantheon-exec` (diagram `Tools → Exec`). |

@@ -75,7 +75,7 @@ pub fn task_label(prompt: &str) -> String {
     let redacted = pantheon_api::logging::redact(first);
     let mut label: String = redacted.chars().take(LABEL_CHARS).collect();
     if redacted.chars().count() > LABEL_CHARS {
-        label.push('…');
+        label.push_str("...");
     }
     if label.is_empty() {
         label.push_str("(empty prompt)");
@@ -134,7 +134,7 @@ pub fn can_spawn(tasks: &[BgTask]) -> bool {
     active_count(tasks) < MAX_BG_TASKS
 }
 
-/// First line of a result, capped — for notification summaries.
+/// First line of a result, capped - for notification summaries.
 pub fn summary_line(output: &str) -> String {
     output
         .lines()
@@ -167,8 +167,11 @@ pub fn status_segment(tasks: &[BgTask]) -> Option<String> {
 /// Header line for the transcript result block.
 pub fn result_header(task: &BgTask) -> String {
     match task.status {
-        BgStatus::Done => format!("◈ background result bg-{} · “{}”", task.id, task.label),
-        BgStatus::Failed => format!("× background task bg-{} failed · “{}”", task.id, task.label),
-        _ => format!("● background task bg-{} · “{}”", task.id, task.label),
+        BgStatus::Done => format!("◈ background result bg-{} · \"{}\"", task.id, task.label),
+        BgStatus::Failed => format!(
+            "× background task bg-{} failed · \"{}\"",
+            task.id, task.label
+        ),
+        _ => format!("● background task bg-{} · \"{}\"", task.id, task.label),
     }
 }

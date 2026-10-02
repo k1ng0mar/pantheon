@@ -232,7 +232,7 @@ fn pre_title_ledger_files_migrate_on_open() {
 /// A lease row outlives `kill -9`, because nothing gets to release it and its
 /// TTL keeps counting. Treating "unexpired lease" as "a session is working"
 /// means `repair check` reports a crashed run as healthy for a full TTL after
-/// the crash — precisely when the operator needs it most.
+/// the crash - precisely when the operator needs it most.
 ///
 /// A lease counts as live only while it is being heartbeated. This is a
 /// regression test for exactly that: the first implementation of

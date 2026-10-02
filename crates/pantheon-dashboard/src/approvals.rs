@@ -11,7 +11,7 @@ use pantheon_runtime::Supervisor;
 use pantheon_storage::Ledger;
 
 /// Split `call_id:tool:args`. Documented scope shape; args keep their
-/// colons via `splitn(3, …)`.
+/// colons via `splitn(3, ...)`.
 fn split_scope(scope: &str) -> (&str, &str, &str) {
     let mut parts = scope.splitn(3, ':');
     (
@@ -108,7 +108,7 @@ pub fn decide(app: &App, scope: &str, granted: bool) -> Response {
         cb(&run_id, granted);
     }
     // The ledger flips the run back to `running` when the last pending
-    // approval resolves, but no turn is alive to continue it — without a
+    // approval resolves, but no turn is alive to continue it - without a
     // resume the run sits in "running" forever. Spawn one the way
     // `answer_input` does (a denial also resumes: the denied tool call
     // becomes a tool result the agent must react to). Guarded and

@@ -3,7 +3,7 @@
 //! Every database Pantheon writes lives directly under the data dir as
 //! `<name>.db`. A snapshot is taken with SQLite's `VACUUM INTO`, which
 //! writes a transactionally consistent copy while the live database keeps
-//! serving readers and writers — no lock dance, no half-written file.
+//! serving readers and writers - no lock dance, no half-written file.
 //! Restore is a plain file copy back over the live path (done while no
 //! Pantheon process holds the database, which the CLI enforces).
 
@@ -21,7 +21,7 @@ pub const KNOWN_DB_NAMES: &[&str] = &[
 
 /// All `<name>.db` files directly under `data_dir`: the known list first
 /// (stable order), then any other top-level `*.db` a future version adds,
-/// sorted. Subdirectories are not scanned — nothing Pantheon writes puts
+/// sorted. Subdirectories are not scanned - nothing Pantheon writes puts
 /// a database below the top level today, and blindly snapshotting e.g. a
 /// browser profile would be wrong.
 pub fn discover_dbs(data_dir: &Path) -> Vec<PathBuf> {

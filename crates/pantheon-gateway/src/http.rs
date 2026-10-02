@@ -162,7 +162,7 @@ impl Response {
     }
 }
 
-/// Percent-decode a URL component. Invalid sequences are kept literally —
+/// Percent-decode a URL component. Invalid sequences are kept literally
 /// a malformed id must not 500 the request.
 pub fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(s.len());
@@ -772,7 +772,7 @@ pub fn spawn_test_server(cfg: ServerConfig) -> (u16, String) {
 pub const MAX_CONNS: usize = 32;
 /// Request heads over 32 KiB are rejected with 431 before parsing.
 pub const MAX_HEADERS: usize = 32 * 1024;
-/// Bodies over 1 MiB are rejected with 413 before allocation — except
+/// Bodies over 1 MiB are rejected with 413 before allocation - except
 /// `POST /agui/voice/transcribe`, which allows up to
 /// [`crate::voice::MAX_VOICE_BODY_BYTES`] for multi-minute voice notes,
 /// and `POST /api/uploads`, which allows up to [`MAX_UPLOAD_BODY`] to

@@ -6,7 +6,7 @@
 //! published, and swap the running binary.
 //!
 //! Failures name the exact stage (resolve, download, verify, replace) and
-//! a timeout names the probe that timed out — never a generic "update
+//! a timeout names the probe that timed out - never a generic "update
 //! failed".
 
 use std::path::PathBuf;
@@ -262,7 +262,7 @@ fn hash_via_system(bytes: &[u8]) -> Result<String, String> {
 }
 
 /// Splash hint probe: return the newer release tag when one exists,
-/// `None` when up to date or unreachable. Network failures are silent —
+/// `None` when up to date or unreachable. Network failures are silent
 /// the splash simply shows no hint.
 pub fn check_for_update() -> Option<String> {
     let latest = resolve_latest_tag(&repo()).ok()?;
@@ -279,7 +279,7 @@ pub fn usage() -> &'static str {
 
 /// `pantheon update --rollback`: restore the previous binary from the
 /// `pantheon.prev` backup the last update left next to this binary. No
-/// network, no version resolution — the backup is the rollback.
+/// network, no version resolution - the backup is the rollback.
 fn cmd_rollback() {
     let current_exe = std::env::current_exe().unwrap_or_else(|e| {
         eprintln!("rollback: cannot locate the running binary ({e})");
@@ -332,7 +332,7 @@ pub fn cmd_update(args: &[String]) {
         Some(o) => o,
         None => {
             eprintln!(
-                "update: unsupported OS {} — download a release by hand from https://github.com/{repo}/releases",
+                "update: unsupported OS {} - download a release by hand from https://github.com/{repo}/releases",
                 std::env::consts::OS
             );
             std::process::exit(1);
@@ -342,7 +342,7 @@ pub fn cmd_update(args: &[String]) {
         Some(a) => a,
         None => {
             eprintln!(
-                "update: unsupported architecture {} — build from source instead",
+                "update: unsupported architecture {} - build from source instead",
                 std::env::consts::ARCH
             );
             std::process::exit(1);

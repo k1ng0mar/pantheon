@@ -2,7 +2,7 @@
 //!
 //! Renders a demo screen (tab bar, transcript, footer) through
 //! `TestBackend` and writes it as a PNG. Temporary visual-verification
-//! tooling — not shipped.
+//! tooling - not shipped.
 //!
 //! Usage: `cargo run -p pantheon-tui --example transcript_shots OUT.png`
 
@@ -211,7 +211,7 @@ fn demo_lines(th: &Theme) -> Vec<Line<'static>> {
         Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
-        "Done — retry helper added with jittered exponential backoff.",
+        "Done - retry helper added with jittered exponential backoff.",
         Style::default().fg(th.body),
     )));
     lines.push(Line::from(""));

@@ -1,8 +1,8 @@
 //! Behavioral / integration tests moved out of the crate's unit suite.
 //!
 //! Policy: only small deterministic unit tests live beside the code
-//! (`cargo test -p <crate>`). Everything behavioral — SQLite stores,
-//! threads, sockets, subprocesses, timing, filesystem — lives here and
+//! (`cargo test -p <crate>`). Everything behavioral - SQLite stores,
+//! threads, sockets, subprocesses, timing, filesystem - lives here and
 //! runs via `cargo test -p pantheon-eval`.
 
 use pantheon_exec::skills::*;

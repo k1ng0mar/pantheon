@@ -70,7 +70,7 @@ struct AgentRuntimeInner {
     /// accounting, not a private copy. A fresh `Swarm` per call or per
     /// agent would reset `live` and `spawned_total` to zero, so
     /// `max_concurrent` and `max_total_agents` could never fire and a
-    /// peer could never release the coordinator's slot — the cap check
+    /// peer could never release the coordinator's slot - the cap check
     /// would report enforcement that did not exist.
     swarm: Arc<Mutex<crate::swarm::Swarm>>,
     profiles: ProfileRegistry,
@@ -164,7 +164,7 @@ impl AgentRuntime {
     }
 
     /// Persona file path declared by this profile, if any. Read verbatim
-    /// into a delegated child's system prompt — the child cannot inherit
+    /// into a delegated child's system prompt - the child cannot inherit
     /// the parent's context, so the persona must travel with the spawn.
     pub fn soul_file(&self) -> Option<&str> {
         self.inner.effective.soul_file.value.as_deref()
@@ -172,7 +172,7 @@ impl AgentRuntime {
 
     /// User-context file path declared by this profile, if any. Read
     /// verbatim into the main session's system prompt alongside the
-    /// persona — it is part of the identity, not a layer.
+    /// persona - it is part of the identity, not a layer.
     pub fn user_file(&self) -> Option<&str> {
         self.inner.effective.user_file.value.as_deref()
     }
@@ -229,7 +229,7 @@ impl AgentRuntime {
     }
 
     /// Which agent owns a run, if any. `None` is a real answer for runs
-    /// created before agent profiles existed — never default it.
+    /// created before agent profiles existed - never default it.
     pub fn run_agent(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
         self.inner.supervisor.ledger_run_agent(run_id)
     }

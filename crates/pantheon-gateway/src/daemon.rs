@@ -395,7 +395,7 @@ pub fn route_event(sink: &dyn EventSink, event: &ChannelEvent) -> String {
 /// Choose the channel that should deliver `msg`. Pure: unit-tested.
 ///
 /// 1. The channel that claimed the thread (polled an event from it) owns
-///    the reply — first claim wins, so a thread is never stolen.
+///    the reply - first claim wins, so a thread is never stolen.
 /// 2. Otherwise the message's gateway tag names a channel
 ///    ("telegram"/"discord").
 /// 3. Otherwise a lone channel takes it (single-surface daemons).
@@ -469,7 +469,7 @@ impl ChannelDaemon {
     /// `poll()` includes bridge-fed inboxes); `telegram` participates in
     /// true long polling when configured. Outbound delivery is
     /// thread-first (the channel that claimed the thread, else the
-    /// message's gateway tag, else a lone channel — never fan-out, never
+    /// message's gateway tag, else a lone channel - never fan-out, never
     /// a wrong surface) and failed sends are retried at most
     /// [`MAX_SEND_ATTEMPTS`] times before the message is dead-lettered
     /// with a log. Rate-limited sends stay queued for the next tick and

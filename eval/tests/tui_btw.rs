@@ -42,7 +42,7 @@ fn label_uses_first_line_and_truncates() {
         "label too long: {} chars",
         label.chars().count()
     );
-    assert!(label.ends_with('…'));
+    assert!(label.ends_with("..."));
 }
 
 #[test]

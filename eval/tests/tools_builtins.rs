@@ -127,7 +127,7 @@ fn write_file_unsafe_fallback_when_no_state_dir() {
 #[test]
 fn shell_result_states_whether_the_sandbox_actually_ran() {
     // Fail-closed contract: on a host where user namespaces are unavailable
-    // (most EC2/container instances — `bwrap` fails with "setting up uid
+    // (most EC2/container instances - `bwrap` fails with "setting up uid
     // map: Permission denied"), `run_sandboxed` returns SANDBOX_UNAVAILABLE
     // instead of silently running un-isolated. The shell tool surfaces that
     // error; only an explicit opt-in (`PANTHEON_SANDBOX_FALLBACK=allow`)

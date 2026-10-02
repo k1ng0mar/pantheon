@@ -84,7 +84,7 @@ fn tts_rows_cover_every_registry_backend() {
     // openai, elevenlabs, deepgram, gemini, fishaudio, plus `command`.
     // Every registry entry is offered and constructs via `open_tts`;
     // elevenlabs/fishaudio need a voice option, kokoro-local needs an
-    // explicit cmd — all fail closed with VOICE_CONFIG, never a hang.
+    // explicit cmd - all fail closed with VOICE_CONFIG, never a hang.
     let rows = sp::tts_providers();
     let reg: Vec<String> = pantheon_providers::tts_providers()
         .into_iter()
@@ -230,7 +230,7 @@ fn tools_screen_answer_round_trips_to_enablement() {
 #[test]
 fn recommended_mode_shows_fixed_provider_screens() {
     use pantheon_tui::setup_graph::{sections, Answers, Mode, Section};
-    // Recommended mode: fixed provider screens, no Tools screen — the
+    // Recommended mode: fixed provider screens, no Tools screen - the
     // recommended toolset drives the screens, not tool answers. Memory
     // is always present (its screen records silently; the native
     // backend is keyless).

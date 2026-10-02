@@ -1,11 +1,11 @@
 //! Vault abstraction.
 //!
 //! One `SecretVault` = one storage backend. Backends in the skeleton:
-//! - [`crate::env::EnvVault`] — process environment compat (always present).
-//! - [`crate::filevault::EncryptedFileVault`] — AES-256-GCM sealed JSON file.
-//! - [`MemoryVault`] — tests / ephemeral runtime.
+//! - [`crate::env::EnvVault`] - process environment compat (always present).
+//! - [`crate::filevault::EncryptedFileVault`] - AES-256-GCM sealed JSON file.
+//! - [`MemoryVault`] - tests / ephemeral runtime.
 //!
-//! - [`crate::keychain::KeychainVault`] — macOS Keychain, Windows CredMan,
+//! - [`crate::keychain::KeychainVault`] - macOS Keychain, Windows CredMan,
 //!   Linux Secret Service (the preferred durable backend).
 //!
 //! All of these implement [`SecretVault`].
@@ -19,7 +19,7 @@ use std::sync::{Mutex, MutexGuard};
 ///
 /// Implementations guard their state with a [`Mutex`] and take `&self`, so
 /// a broker may share vaults across the runtime. `get` must never block on
-/// network or prompt — it is called on hot paths.
+/// network or prompt - it is called on hot paths.
 pub trait SecretVault: Send + Sync + std::fmt::Debug {
     /// Fetch a secret, or `None` when this backend has no such name.
     fn get(&self, name: &str) -> Result<Option<SecretValue>, SecretsError>;
@@ -31,7 +31,7 @@ pub trait SecretVault: Send + Sync + std::fmt::Debug {
     fn names(&self) -> Result<Vec<String>, SecretsError>;
 }
 
-/// In-memory vault — for tests and ephemeral runtime use. Contents are lost
+/// In-memory vault - for tests and ephemeral runtime use. Contents are lost
 /// on drop and are never persisted.
 #[derive(Debug, Default)]
 pub struct MemoryVault {
@@ -77,7 +77,7 @@ impl SecretVault for MemoryVault {
 ///
 /// An env-var mirror (see
 /// [`crate::broker::SecretsBroker::from_system_env_with_api_key`]) must win
-/// reads — an exported rotation beats a stale stored value — but must never
+/// reads - an exported rotation beats a stale stored value - but must never
 /// absorb writes: a write landing in a process-memory mirror dies with the
 /// process instead of reaching durable storage. `set`/`delete` fail with
 /// [`SecretsError::Backend`] so the broker treats this vault like a

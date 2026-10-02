@@ -1,7 +1,7 @@
 //! [`SubprocessBackend`]: [`BrowserBackend`] implemented by spawning the
 //! `gsd-browser` CLI.
 //!
-//! Deliberately plain `std::process::Command` — NOT
+//! Deliberately plain `std::process::Command` - NOT
 //! `pantheon_exec::sandbox::runner::run_sandboxed` (see the crate docs in
 //! [`crate`] for why the browser daemon needs real network egress and its
 //! Unix socket, and why the `Capability::Browser` gate is the authorization
@@ -9,7 +9,7 @@
 //!
 //! ## gsd-browser CLI shape (verified live against 0.1.24, 2026-09-29)
 //!
-//! * Invocation: `gsd-browser --session <name> --json <cmd> [args]` —
+//! * Invocation: `gsd-browser --session <name> --json <cmd> [args]`
 //!   global flags precede the subcommand. Verified via `--help` and a
 //!   live daemon attached to Chrome over `--cdp-url`.
 //! * `daemon stop` exists (`daemon {start,stop,health}`); GC uses it
@@ -17,7 +17,7 @@
 //! * `extract` **requires** `--schema <json>` shaped as
 //!   `{"properties": {"title": {"_selector": "h1"}, ...}}` (properties
 //!   carry `_selector`/`_attribute` hints); `--selector` only scopes.
-//!   The tool layer builds this shape — see [`crate::tools`].
+//!   The tool layer builds this shape - see [`crate::tools`].
 //! * `wait-for` takes `--condition <enum> [--value <v>] [--timeout
 //!   <ms>]` where the condition is one of `selector_visible`,
 //!   `selector_hidden`, `url_contains`, `network_idle`, `delay`,
@@ -26,10 +26,10 @@
 //! * `act` takes `--intent <enum>` (fixed intents: `submit_form`,
 //!   `close_dialog`, `primary_cta`, `search_field`, `next_step`,
 //!   `dismiss`, `auth_action`, `back_navigation`; optional `--scope`).
-//!   0.1.24 has no natural-language `act-instruction` command —
+//!   0.1.24 has no natural-language `act-instruction` command
 //!   `browser_act` maps to `act --intent`.
 //! * Without Chrome on the host the daemon fails to start and the CLI
-//!   exits 1 with a JSON `{"error": {"message": …}}` object on stderr —
+//!   exits 1 with a JSON `{"error": {"message": ...}}` object on stderr
 //!   surfaced as [`BrowserError::Failed`], never a panic.
 
 use super::backend::BrowserBackend;
@@ -57,7 +57,7 @@ const STALE_REF_MARKERS: &[&str] = &[
 ];
 
 /// `BrowserBackend` over the `gsd-browser` binary on PATH (or at an
-/// explicit path). `extra_env` is applied to every spawn — the tool layer
+/// explicit path). `extra_env` is applied to every spawn - the tool layer
 /// uses it to inject `GSD_BROWSER_VAULT_KEY` without ever logging the
 /// value (env values are never included in any error string here).
 pub struct SubprocessBackend {

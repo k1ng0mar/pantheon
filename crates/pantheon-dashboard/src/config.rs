@@ -5,7 +5,7 @@
 //! inferred types. Validation reuses the real schema primitives from
 //! `pantheon_api::config_schema`: [`PolicyPreset`] for the `policy` enum
 //! and [`SecretRef::validate`](pantheon_api::config_schema::SecretRef)
-//! for `api_key` blocks (raw key values are rejected by design —
+//! for `api_key` blocks (raw key values are rejected by design
 //! `config.toml` stores env-var *names* only).
 //!
 //! Writes are atomic (temp file + rename) and two-phase: without
@@ -58,9 +58,9 @@ fn is_secret_path(path: &str) -> bool {
         || path.ends_with(".api_key_secret")
 }
 
-/// A `{source, name}` table is a secret reference — but only where the
+/// A `{source, name}` table is a secret reference - but only where the
 /// schema expects a secret (see [`is_secret_path`]). Anywhere else (a
-/// backup block, a plugin manifest table, …) it is flattened like a
+/// backup block, a plugin manifest table, ...) it is flattened like a
 /// normal table, so a legitimate plain table can never be swallowed by
 /// the secret machinery. Malformed refs at secret paths (wrong keys,
 /// non-string values, unknown `source`) still fail validation downstream
@@ -134,7 +134,7 @@ fn json_to_toml(v: &serde_json::Value) -> Result<Value, String> {
 /// non-string field: `"true"`/`"false"` (any case, surrounding
 /// whitespace tolerated) for bool fields, ISO-8601 for datetime fields.
 /// The dashboard's bool `<select>` posts strings, and hand-driven API
-/// callers do too — rejecting them with a type error made every bool
+/// callers do too - rejecting them with a type error made every bool
 /// unsavable (TOP-10 #4). Real JSON bools pass through untouched; a
 /// string that does not parse is left alone so `validate_change`
 /// reports the type mismatch as before.
@@ -170,13 +170,13 @@ fn get_path<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
 /// dotted path? Probes by building a minimal TOML doc holding just the
 /// new key, parsing it as `Config`, and serializing back: keys the
 /// document type does not declare are silently dropped by the
-/// round-trip — exactly the "written then ignored" defect this gates
+/// round-trip - exactly the "written then ignored" defect this gates
 /// (D-2). Dynamic namespaces (`agents.<name>`, `plugins.<name>`,
 /// `custom_providers.<name>`, `mcp.servers.<name>`,
-/// `gateway.channels.<name>` — the `HashMap<String, _>` fields of the
+/// `gateway.channels.<name>` - the `HashMap<String, _>` fields of the
 /// document type) round-trip fine, so new entries there stay allowed.
 /// A parse failure means the key is known but the value has the wrong
-/// shape — reported as-is, which doubles as type validation for new
+/// shape - reported as-is, which doubles as type validation for new
 /// keys. Read-only use of the pantheon-api types; pantheon-api itself
 /// is untouched.
 fn key_known_to_config(path: &str, new: &Value) -> Result<bool, String> {
@@ -202,7 +202,7 @@ fn validate_change(
     new: &Value,
 ) -> Result<(), String> {
     // The policy enum comes from the real schema type, not a hand list.
-    // Any `policy` leaf — top-level or under a profile — must be a preset.
+    // Any `policy` leaf - top-level or under a profile - must be a preset.
     if path == "policy" || path.ends_with(".policy") {
         let s = new
             .as_str()
@@ -213,11 +213,11 @@ fn validate_change(
         return Ok(());
     }
     // Secret-bearing paths validate as a unit: the value must be a
-    // well-formed {source, name} reference — a raw secret can never be
+    // well-formed {source, name} reference - a raw secret can never be
     // smuggled in as a plain string, and an unknown `source` is rejected
     // by SecretRef::validate. Shape-only, by design: the typed document
     // types several `*_secret` slots as plain strings, so the round-trip
-    // probe below cannot judge them — the ref shape is the check.
+    // probe below cannot judge them - the ref shape is the check.
     if is_secret_path(path) {
         let r = secret_ref_of(new)
             .ok_or_else(|| format!("'{path}' must be {{source = \"env\", name = \"ENV_VAR\"}}"))?;
@@ -241,7 +241,7 @@ fn validate_change(
     // consults the canonical document type, so sparse on-disk docs stay
     // writable (a missing-but-known section like `[nightly]` is fine)
     // while `budget.bogus_key` 400s naming the key instead of being
-    // written and silently ignored. (Loads only warn — see the
+    // written and silently ignored. (Loads only warn - see the
     // pantheon-api load-time unknown-key warnings; consistent policy:
     // explicit writes reject, loads warn.)
     match key_known_to_config(path, new) {
@@ -328,7 +328,7 @@ pub(crate) fn apply_changes(
     let mut flat = BTreeMap::new();
     flatten("", &doc, &mut flat);
     // Lenient coercion before validation (bool "true"/"false" strings,
-    // ISO-8601 datetime strings) — see `coerce_lax`.
+    // ISO-8601 datetime strings) - see `coerce_lax`.
     let mut changes: BTreeMap<String, Value> = changes.clone();
     for (path, new) in changes.iter_mut() {
         coerce_lax(&flat, path, new);
@@ -463,10 +463,10 @@ pub fn export(app: &App) -> Response {
 /// `POST /api/config/import`: `{toml: "...", confirm?: bool}`. The whole
 /// document is validated leaf-by-leaf against the current schema before
 /// anything is written; unknown keys are rejected (same explicit-write
-/// policy as `PUT /api/config` — dynamic namespaces like `[agents.<name>]`
+/// policy as `PUT /api/config` - dynamic namespaces like `[agents.<name>]`
 /// stay writable). On top of the leaf checks, the incoming TOML is parsed
-/// through the shared [`pantheon_api::config::Config`] document — a shape
-/// the document type rejects is rejected here — and
+/// through the shared [`pantheon_api::config::Config`] document - a shape
+/// the document type rejects is rejected here - and
 /// [`Config::validate`](pantheon_api::config::Config::validate) problems
 /// are returned as warnings.
 pub fn import(app: &App, req: &Request) -> Response {
@@ -498,7 +498,7 @@ pub fn import(app: &App, req: &Request) -> Response {
         }
     };
     // Doctor-level problems (empty provider, unset env var, unknown agent
-    // table…) travel as warnings, not rejections: the leaf checks above
+    // table...) travel as warnings, not rejections: the leaf checks above
     // are the import gate, this is the shared document's second opinion.
     let doc_warnings = typed.validate();
     let (old_doc, _) = match read_doc(&app.data_dir) {

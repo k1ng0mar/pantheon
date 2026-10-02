@@ -4,7 +4,7 @@
 //! task's goal plus the child's claimed result, assumes the goal was
 //! missed, and tries to falsify the claim from the evidence. This is the
 //! gsd-core idea Pantheon's aux set was missing: every other auxiliary
-//! compresses, summarizes, or classifies — none of them *falsifies*.
+//! compresses, summarizes, or classifies - none of them *falsifies*.
 //!
 //! Output protocol (temperature 0, one answer line, prose tolerated):
 //!
@@ -14,11 +14,11 @@
 //!
 //! Parsing fails closed: an unrecognizable verdict becomes `Inconclusive`,
 //! never `Holds`. The host treats `Falsified` as a failed delegation and
-//! `Inconclusive` as unverified — neither counts as done.
+//! `Inconclusive` as unverified - neither counts as done.
 //!
 //! The verifier is read-only by construction: single-shot, non-streaming,
 //! no tools, no ledger writes. It sees the goal, the claim, and the
-//! evidence the child reported — never the parent's live session.
+//! evidence the child reported - never the parent's live session.
 
 use crate::http::{aux_complete, aux_request, aux_transport, resolve_aux_wire, ChatTransport};
 use pantheon_agent::TurnOutcome;
@@ -56,13 +56,13 @@ pub enum VerifyVerdict {
     Holds { confidence: f32 },
     /// Concrete evidence the claim is false.
     Falsified { reason: String },
-    /// Could not decide — treated as unverified, never as done.
+    /// Could not decide - treated as unverified, never as done.
     Inconclusive { reason: String },
 }
 
 impl VerifyVerdict {
-    /// True only for an explicit HOLDS. Everything else — falsified,
-    /// inconclusive, or a child that never returned an envelope — must
+    /// True only for an explicit HOLDS. Everything else - falsified,
+    /// inconclusive, or a child that never returned an envelope - must
     /// not count as a completed delegation.
     pub fn verified(&self) -> bool {
         matches!(self, VerifyVerdict::Holds { .. })
@@ -93,10 +93,10 @@ pub fn prompt_for(req: &VerifyRequest) -> String {
          Reply with exactly one line:\n\
          `ANSWER <HOLDS|FALSIFIED|INCONCLUSIVE> confidence=<0..1> reason=<short reason>`\n\
          \n\
-         - HOLDS: the evidence concretely supports the claim against the goal.\n\
-         - FALSIFIED: you found a concrete gap or contradiction (name it in reason).\n\
-         - INCONCLUSIVE: there is not enough evidence to decide either way. \
-         When in doubt, choose INCONCLUSIVE — an unverified claim is safer than a wrong HOLDS.",
+        - HOLDS: the evidence concretely supports the claim against the goal.\n\
+        - FALSIFIED: you found a concrete gap or contradiction (name it in reason).\n\
+        - INCONCLUSIVE: there is not enough evidence to decide either way. \
+         When in doubt, choose INCONCLUSIVE - an unverified claim is safer than a wrong HOLDS.",
         goal = req.goal.trim(),
         claim = req.claim.trim(),
         evidence = if req.evidence.trim().is_empty() {
@@ -111,7 +111,7 @@ pub fn prompt_for(req: &VerifyRequest) -> String {
 /// line starting with `ANSWER`, fall back to the last non-empty line.
 ///
 /// Matcher (frozen, do not "simplify"): this is the `ANSWER`-PREFIX
-/// matcher — it prefers the last line that starts with `ANSWER`
+/// matcher - it prefers the last line that starts with `ANSWER`
 /// (case-insensitive, so `ANSWERED ...` also matches). The judge's strict
 /// punctuation-tolerant matcher in `judge.rs` differs deliberately; see
 /// `crate::answer_line` for why both are kept.

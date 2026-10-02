@@ -32,13 +32,13 @@ experiment, and record the answer.
    written plan for the rewrite it needs. "Keep it for now" is not a
    disposition.
 
-## Output Contract
+## Output contract
 
 - The question, the timebox, what was built (roughly).
 - The answer: findings, numbers, recommendation.
 - Disposition of the code: deleted or promoted-with-plan.
 
-## Operating Rules
+## Operating rules
 
 1. One question per spike. Two questions is two spikes.
 2. A spike is never merged as-is. If the approach works, the production

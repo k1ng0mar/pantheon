@@ -14,9 +14,9 @@
 
 ## The problem
 
-Models are stateless oracles. You hand one a conversation and it returns the next token — fluent, confident, and amnesiac. Kill the process and the agent dies with it: no record of what it decided, no record of what it touched, no way to resume except replaying the transcript and hoping.
+Models are stateless oracles. You hand one a conversation and it returns the next token - fluent, confident, and amnesiac. Kill the process and the agent dies with it: no record of what it decided, no record of what it touched, no way to resume except replaying the transcript and hoping.
 
-A conversation is not durable state. A prompt is not a policy. And a model that can run shell commands with your UID because it *said so in a tool call* is not an agent you own — it's a very eloquent guest with root.
+A conversation is not durable state. A prompt is not a policy. And a model that can run shell commands with your UID because it *said so in a tool call* is not an agent you own - it's a very eloquent guest with root.
 
 Every agent harness eventually rediscovers this. The ones that don't are demos.
 
@@ -24,8 +24,8 @@ Every agent harness eventually rediscovers this. The ones that don't are demos.
 
 **Runtime authority over model authority.** The model reasons; the runtime decides what happens. Pantheon sits between the model and the world and enforces three separations:
 
-- **Policy is enforced at execution, not at prompt time.** The model never sees a policy it can argue with. Tool calls pass a capability gate in the runtime: allow, deny, or pause for human approval. A jailbroken system prompt changes nothing — the gate isn't in the prompt.
-- **The SQLite event ledger is the source of truth.** Every turn, tool call, approval, and failure is appended to a local, WAL-mode SQLite database. Sessions survive crashes, restarts, and provider outages because the agent's state is the ledger, not the context window. Rewind in the UI never rewrites history — the ledger is append-only.
+- **Policy is enforced at execution, not at prompt time.** The model never sees a policy it can argue with. Tool calls pass a capability gate in the runtime: allow, deny, or pause for human approval. A jailbroken system prompt changes nothing - the gate isn't in the prompt.
+- **The SQLite event ledger is the source of truth.** Every turn, tool call, approval, and failure is appended to a local, WAL-mode SQLite database. Sessions survive crashes, restarts, and provider outages because the agent's state is the ledger, not the context window. Rewind in the UI never rewrites history - the ledger is append-only.
 - **Memory is provenance-aware, not a suggestion box.** Every memory carries its trust tier and origin. External tiers are clamped to Untrusted; writes are scanned for secret patterns before they land. Memory provides context; it never grants authority.
 
 Pantheon is written in Rust, runs as a single binary, and keeps its state in your home directory. No database server. No sidecar. No cloud account required.
@@ -67,7 +67,7 @@ Scripts and automation use `pantheon run "task"`; inspect anything with `pantheo
                    │        ┌──────▼───────┐
                    │        │ Tools (shell,│
                    │        │ fs, memory,  │
-                   │        │ MCP client…)│
+                   │        │ MCP client...)│
                    │        └──────┬───────┘
                    │               │
                    │        ┌──────▼───────┐
@@ -84,40 +84,40 @@ Scripts and automation use `pantheon run "task"`; inspect anything with `pantheo
 
 Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same session runtime. The model proposes tool calls; the capability gate, sandbox, and ledger decide what they become.
 
-## Mechanisms — and what each one buys you
+## Mechanisms - and what each one buys you
 
-**The ledger.** Every lifecycle event — turn started, tool called, approval requested, cost stamped — is appended to a SQLite database in WAL mode with a busy timeout. Ledger writes are redacted at append time: log lines are scrubbed, and blocked-command errors carry a digest and rule name, never raw text. *Trust:* a crashed process loses nothing. `pantheon runs <id>` shows exactly what happened, and resuming a run is replay, not reconstruction.
+**The ledger.** Every lifecycle event - turn started, tool called, approval requested, cost stamped - is appended to a SQLite database in WAL mode with a busy timeout. Ledger writes are redacted at append time: log lines are scrubbed, and blocked-command errors carry a digest and rule name, never raw text. *Trust:* a crashed process loses nothing. `pantheon runs <id>` shows exactly what happened, and resuming a run is replay, not reconstruction.
 
-**Approvals as first-class control.** The capability decision isn't binary: allow, deny, or *ask a human*. Approvals pause the run and resume it — settling the whole batch, not just one call — from the TUI, the web UI, or the messaging gateways. *Trust:* you can hand an agent real capabilities (shell, network, memory writes) and keep a human veto on the dangerous ones, without babysitting every step.
+**Approvals as first-class control.** The capability decision isn't binary: allow, deny, or *ask a human*. Approvals pause the run and resume it - settling the whole batch, not just one call - from the TUI, the web UI, or the messaging gateways. *Trust:* you can hand an agent real capabilities (shell, network, memory writes) and keep a human veto on the dangerous ones, without babysitting every step.
 
-**Fail-closed sandbox.** Tool execution requests an isolation level. If the sandbox wrapper can't establish it, the command does not run — there is no fallback to raw host execution. *Trust:* "the sandbox was unavailable" can never silently become "the agent ran it on your machine anyway."
+**Fail-closed sandbox.** Tool execution requests an isolation level. If the sandbox wrapper can't establish it, the command does not run - there is no fallback to raw host execution. *Trust:* "the sandbox was unavailable" can never silently become "the agent ran it on your machine anyway."
 
-**The danger gate.** Before shell text reaches execution, a pre-gate blocks `sh -c`/`eval` wrappers, `${IFS}` tricks, command substitution, backticks, `find -delete`/`-exec`, and obfuscated `rm`. Blocked errors name the rule, not the command — so a denied command containing a token can't leak it into the ledger. *Trust:* the most common prompt-injection-to-shell paths are dead before they reach your filesystem.
+**The danger gate.** Before shell text reaches execution, a pre-gate blocks `sh -c`/`eval` wrappers, `${IFS}` tricks, command substitution, backticks, `find -delete`/`-exec`, and obfuscated `rm`. Blocked errors name the rule, not the command - so a denied command containing a token can't leak it into the ledger. *Trust:* the most common prompt-injection-to-shell paths are dead before they reach your filesystem.
 
-**Capability-gated tools.** Every tool declares the capability it needs; the runtime policy (`reader`, `coder`, `coder_memory`) decides per operation. File tools are confined to the workspace root with `O_NOFOLLOW`, and plugin names can't squat builtins. *Trust:* a compromised or confused model can't reach `~/.ssh` because the path boundary isn't in the prompt — it's in the syscall-adjacent layer.
+**Capability-gated tools.** Every tool declares the capability it needs; the runtime policy (`reader`, `coder`, `coder_memory`) decides per operation. File tools are confined to the workspace root with `O_NOFOLLOW`, and plugin names can't squat builtins. *Trust:* a compromised or confused model can't reach `~/.ssh` because the path boundary isn't in the prompt - it's in the syscall-adjacent layer.
 
-**Durable scheduler claims.** Cron (with a fixed Vixie DOM/DOW interpretation), one-shot, and interval jobs register with validation and claim their ticks through a unified claims table — surviving restarts without double-firing. Per-job timeouts (default 600s), overlap policies (skip/replace/queue), and HMAC-SHA256-verified webhooks. *Trust:* scheduled work is a runtime guarantee, not a process that has to stay alive.
+**Durable scheduler claims.** Cron (with a fixed Vixie DOM/DOW interpretation), one-shot, and interval jobs register with validation and claim their ticks through a unified claims table - surviving restarts without double-firing. Per-job timeouts (default 600s), overlap policies (skip/replace/queue), and HMAC-SHA256-verified webhooks. *Trust:* scheduled work is a runtime guarantee, not a process that has to stay alive.
 
-**Output caps that ride the wire.** `/tokens N` (or `[budget].max_tokens` in config) caps how many tokens the model may emit per response — session override beats config beats the model's known maximum output (16k fallback when unknown), clamped to what the model actually supports. *Trust:* a runaway model can't dump a novel into your transcript; the cap is enforced in the request body, not the prompt.
+**Output caps that ride the wire.** `/tokens N` (or `[budget].max_tokens` in config) caps how many tokens the model may emit per response - session override beats config beats the model's known maximum output (16k fallback when unknown), clamped to what the model actually supports. *Trust:* a runaway model can't dump a novel into your transcript; the cap is enforced in the request body, not the prompt.
 
 **Trust-tiered memory.** Five memory layers plus runtime state, each with byte budgets and trust-aware eviction. External tiers (remote servers, imported files) are clamped to Untrusted regardless of what they claim; writes are scanned for secret patterns before landing. *Trust:* memory retrieved from outside can't launder itself into a trusted instruction, and your API keys don't end up in the memory store.
 
-**Transactional migration.** Importing state (detect → plan → approve → apply → validate) runs as stage → validate → atomic commit, with automatic rollback and byte/file budgets. *Trust:* migrating from another harness is a transaction, not a hope — a failed import leaves your existing state untouched.
+**Transactional migration.** Importing state (detect → plan → approve → apply → validate) runs as stage → validate → atomic commit, with automatic rollback and byte/file budgets. *Trust:* migrating from another harness is a transaction, not a hope - a failed import leaves your existing state untouched.
 
 ## Honest comparison
 
 | | Pantheon | Hermes Agent | OpenClaw | Claude Code |
 |---|---|---|---|---|
 | Language | Rust, single binary | Python | TypeScript/Node | Proprietary CLI |
-| Core thesis | Runtime authority over model authority | Self-improving loop (agent authors its own skills) | Personal assistant on every channel | Best-in-class coding agent |
+| Core thesis | Runtime authority over model authority | Self-improving loop (agent authors its own skills) | Personal assistant on every channel | Top coding agent |
 | Durable state | SQLite event ledger; runs resume after crashes | SQLite `state.db` + markdown memories with char caps | Local files / gateway state | Session resume within the CLI |
 | Policy enforcement | Capability gate at execution; approvals pause/resume | Deny globs + hardline blocklist (vendor: "not a security boundary") | Allowlist-based tool config | Per-tool permission prompts |
 | Sandbox | Fail-closed isolation | Documented as not containment | Process-level | Sandboxed tool execution |
 | Cost control | Run budgets enforced by the runtime | Usage summaries per model | Varies | Usage dashboard |
 | Memory | Trust-tiered, provenance-aware, secret-scanned | Self-authored skills + curated memory | Persistent memory files | Project memory files |
-| Messaging | Discord + Telegram gateways (real REST outbound, dead-letter) | Telegram gateway | WhatsApp, Telegram, Discord, Slack, Signal, … | None (terminal only) |
+| Messaging | Discord + Telegram gateways (real REST outbound, dead-letter) | Telegram gateway | WhatsApp, Telegram, Discord, Slack, Signal, ... | None (terminal only) |
 | Scheduler | Durable cron/one-shot/interval with claims | Cron jobs | Cron | None built in |
-| MCP | Client (stdio, capability-gated `tools/call`) — **server: planned** | MCP support via skills | MCP support | MCP client |
+| MCP | Client (stdio, capability-gated `tools/call`) - **server: planned** | MCP support via skills | MCP support | MCP client |
 | Browser control | **Planned** | Via skills | First-class browser tool | None |
 | Model choice | OpenAI, Anthropic, custom endpoints + fallbacks | Configurable providers | Local + cloud providers | Anthropic models |
 
@@ -127,13 +127,13 @@ Hermes/OpenClaw cells summarize their public docs and positioning as of Septembe
 
 | Crate | One line |
 |---|---|
-| `pantheon` | Façade: re-exports every library crate under `pantheon::…` |
-| `pantheon-tui` | The terminal product — TUI, CLI verbs, session tabs, status bar |
+| `pantheon` | Façade: re-exports every library crate under `pantheon::...` |
+| `pantheon-tui` | The terminal product - TUI, CLI verbs, session tabs, status bar |
 | `pantheon-runtime` | Supervisor: run lifecycle, quotas, recovery, checkpointing, swarm delegation |
 | `pantheon-agent` | Agent engine: the model turn loop with run budgets, capability policy/role maps |
 | `pantheon-api` | Bottom protocol leaf: commands, events, shared types, config document, plugin approval, agent profiles |
 | `pantheon-exec` | Execution engine: process/fs/git surface, danger gate, confinement, sandbox levels, plugin approval |
-| `pantheon-tools` | Named, schema'd, capability-gated tools (shell, fs, memory, …) |
+| `pantheon-tools` | Named, schema'd, capability-gated tools (shell, fs, memory, ...) |
 | `pantheon-web` | Browser automation + web search |
 | `pantheon-mcp` | MCP client (stdio): `initialize` / `tools/list` / `tools/call` |
 | `pantheon-memory` | Memory plane: five layers + runtime state, trust tiers |
@@ -147,7 +147,7 @@ Hermes/OpenClaw cells summarize their public docs and positioning as of Septembe
 
 ## Configuration
 
-`config.toml` in the data dir (`$PANTHEON_DATA_DIR` or `~/.pantheon/`) is the single source of truth. Setup writes it; every verb reads it. Secrets are never in it — config names env vars, the runtime resolves them at the execution boundary.
+`config.toml` in the data dir (`$PANTHEON_DATA_DIR` or `~/.pantheon/`) is the single source of truth. Setup writes it; every verb reads it. Secrets are never in it - config names env vars, the runtime resolves them at the execution boundary.
 
 ```toml
 [model]
@@ -177,7 +177,7 @@ display_name = "Default"
 policy       = "coder_memory"
 ```
 
-Env overrides: `PANTHEON_PROVIDER`, `PANTHEON_MODEL`, `PANTHEON_REASONING`, `PANTHEON_DATA_DIR`, plus `PANTHEON_<AUX>_PROVIDER`/`_MODEL` for auxiliaries (judge, compression, embeddings, …). Gateway tokens live in `<data_dir>/.env` (`PANTHEON_DISCORD_TOKEN`, `PANTHEON_TELEGRAM_BOT_TOKEN`, `PANTHEON_GATEWAY_ALLOW`), never in config. Full reference: [docs/reference/configuration.md](docs/reference/configuration.md).
+Env overrides: `PANTHEON_PROVIDER`, `PANTHEON_MODEL`, `PANTHEON_REASONING`, `PANTHEON_DATA_DIR`, plus `PANTHEON_<AUX>_PROVIDER`/`_MODEL` for auxiliaries (judge, compression, embeddings, ...). Gateway tokens live in `<data_dir>/.env` (`PANTHEON_DISCORD_TOKEN`, `PANTHEON_TELEGRAM_BOT_TOKEN`, `PANTHEON_GATEWAY_ALLOW`), never in config. Full reference: [docs/reference/configuration.md](docs/reference/configuration.md).
 
 ## Guides
 

@@ -4,7 +4,7 @@
 //! `https://github.com/<owner>/<repo>` URL or a `clawhub:<slug>`. The
 //! SSRF whitelist is enforced in `parse_source_spec` *before* any fetch
 //! happens, so hostile URLs are rejected with 400 without touching the
-//! network — that is what these tests assert.
+//! network - that is what these tests assert.
 //!
 //! ZIP-level parser invariants (path traversal inside archives, zip
 //! bombs) cannot reach the public surface: the endpoint only accepts
@@ -160,7 +160,7 @@ fn import_unreachable_github_url_fails_gracefully() {
     let d = boot();
     // Passes the whitelist, then the fetch fails: with network this is a
     // 404 from GitHub, without network a transport failure. Either way it
-    // must be a graceful 4xx/5xx with a structured error code — never a
+    // must be a graceful 4xx/5xx with a structured error code - never a
     // 500 and never a hang.
     let r = import(&d, "https://github.com/pantheon-nonexistent-owner-zz9/repo");
     assert!(

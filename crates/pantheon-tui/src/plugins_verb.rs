@@ -3,18 +3,18 @@
 //! Four plugin sources feed one merged view:
 //!
 //! 1. The embedded bundled-plugin registry (`pantheon_exec::plugins`,
-//!    tool and hook kinds) — toggled through the `[plugins]` config
+//!    tool and hook kinds) - toggled through the `[plugins]` config
 //!    table via [`pantheon_exec::plugins::set_bundled_enabled`].
 //! 2. The extensions bundled catalog (`pantheon_extensions`, e.g.
-//!    `time-gap`) — toggled through the same `[plugins]` config table
+//!    `time-gap`) - toggled through the same `[plugins]` config table
 //!    via [`pantheon_extensions::set_enabled`]. Both bundled sources
 //!    share one enablement state: the config file wins over any
 //!    manifest flag.
 //! 3. Third-party tool plugins from
-//!    [`pantheon_exec::plugins::discover_plugins`] — toggled by
+//!    [`pantheon_exec::plugins::discover_plugins`] - toggled by
 //!    rewriting the manifest `enabled` flag in place (their gate is the
 //!    approval store, enforced at spawn).
-//! 4. Third-party hook plugins from the extensions dir — approval-gated;
+//! 4. Third-party hook plugins from the extensions dir - approval-gated;
 //!    listed read-only here, toggled with
 //!    `pantheon extensions approve <name>`.
 
@@ -59,13 +59,13 @@ fn one_line(s: &str, max: usize) -> String {
     while cut > 0 && !flat.is_char_boundary(cut) {
         cut -= 1;
     }
-    format!("{}…", flat[..cut].trim_end())
+    format!("{}...", flat[..cut].trim_end())
 }
 
 /// Is the bundled plugin `name` enabled? The `[plugins.<name>]` config
 /// entry wins when present; when absent the bundled manifest's own
 /// `enabled` flag (`manifest_default`) is the default. A missing or
-/// unparsable config fails closed (disabled) — a typo must never
+/// unparsable config fails closed (disabled) - a typo must never
 /// silently flip a plugin on.
 fn config_enabled(data_dir: &Path, name: &str, manifest_default: bool) -> bool {
     pantheon_extensions::bundled::load_config(data_dir)
@@ -109,7 +109,7 @@ pub(crate) fn collect_rows(data_dir: &Path) -> Vec<PluginRow> {
         });
     }
     // 3. Third-party tool plugins. (Discovery also best-effort seeds
-    // the bundled registry first; bundled paths are skipped here —
+    // the bundled registry first; bundled paths are skipped here
     // they are covered by sources 1 and 2 above.)
     let project_root = std::env::current_dir().unwrap_or_else(|_| data_dir.to_path_buf());
     for p in pantheon_exec::plugins::discover_plugins(data_dir, &project_root) {
@@ -361,7 +361,7 @@ mod tests {
         let long = "x".repeat(100);
         let cut = one_line(&long, 60);
         assert!(cut.len() <= 61 + 3, "unexpected length: {}", cut.len());
-        assert!(cut.ends_with('…'));
+        assert!(cut.ends_with("..."));
     }
 
     #[test]

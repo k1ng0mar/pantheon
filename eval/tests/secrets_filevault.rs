@@ -1,6 +1,6 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
-//! Tests for `pantheon_secrets::filevault::tests` — sibling file so sources stay test-free.
+//! Tests for `pantheon_secrets::filevault::tests` - sibling file so sources stay test-free.
 use pantheon_secrets::{EncryptedFileVault, SecretValue, SecretVault, SecretsError};
 use std::fs;
 use tempfile::tempdir;

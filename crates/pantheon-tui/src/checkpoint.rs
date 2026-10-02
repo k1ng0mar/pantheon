@@ -1,4 +1,4 @@
-//! `/checkpoint`, `/checkpoints`, `/restore` — named durable session snapshots.
+//! `/checkpoint`, `/checkpoints`, `/restore` - named durable session snapshots.
 //!
 //! A checkpoint is a `CheckpointCreated { run_id, turn_id, name }` ledger
 //! event: append-only and durable across restarts, following the
@@ -86,7 +86,7 @@ pub fn checkpoint_exists(entries: &[LedgerEntry], name: &str) -> bool {
     list_checkpoints(entries).iter().any(|c| c.name == name)
 }
 
-/// Next free auto-name: `cp-1`, `cp-2`, … (skips names already taken).
+/// Next free auto-name: `cp-1`, `cp-2`, ... (skips names already taken).
 pub fn next_auto_name(entries: &[LedgerEntry]) -> String {
     let mut n = list_checkpoints(entries).len() + 1;
     loop {
@@ -147,7 +147,7 @@ fn replay_entries(state: &mut TuiState, session: &Arc<Session>) -> Option<Vec<Le
     }
 }
 
-/// `/checkpoint [name]` — snapshot the current turn under a durable name.
+/// `/checkpoint [name]` - snapshot the current turn under a durable name.
 pub fn cmd_checkpoint(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
     if !state.ready || state.active_run.is_some() {
         state.add_status("/checkpoint: wait for the turn to finish".into());
@@ -188,7 +188,7 @@ pub fn cmd_checkpoint(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
     state.add_status(format!("checkpoint '{name}' saved at turn {turn_no}"));
 }
 
-/// `/checkpoints` — list checkpoints for this session.
+/// `/checkpoints` - list checkpoints for this session.
 pub fn cmd_checkpoints(state: &mut TuiState, session: &Arc<Session>) {
     let entries = match replay_entries(state, session) {
         Some(e) => e,
@@ -196,23 +196,23 @@ pub fn cmd_checkpoints(state: &mut TuiState, session: &Arc<Session>) {
     };
     let cps = list_checkpoints(&entries);
     if cps.is_empty() {
-        state.add_status("no checkpoints — /checkpoint [name] to save one".into());
+        state.add_status("no checkpoints - /checkpoint [name] to save one".into());
         return;
     }
     state.add_status(format!("checkpoints ({}):", cps.len()));
     for cp in cps {
         if cp.turn_no == 0 {
             state.add_status(format!(
-                "  {} — turn rewound over (cannot restore)",
+                "  {} - turn rewound over (cannot restore)",
                 cp.name
             ));
         } else {
-            state.add_status(format!("  {} — turn {}", cp.name, cp.turn_no));
+            state.add_status(format!("  {} - turn {}", cp.name, cp.turn_no));
         }
     }
 }
 
-/// `/restore <name>` — rewind the session to a checkpoint.
+/// `/restore <name>` - rewind the session to a checkpoint.
 pub fn cmd_restore(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
     if !state.ready || state.active_run.is_some() || state.pending_approval.is_some() {
         state.add_status("/restore: wait for the turn to finish".into());

@@ -97,6 +97,6 @@ pub(crate) fn snip(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}…[truncated {} chars]", &s[..max], s.len() - max)
+        format!("{}...[truncated {} chars]", &s[..max], s.len() - max)
     }
 }

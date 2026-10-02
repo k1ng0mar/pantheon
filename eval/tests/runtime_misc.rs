@@ -102,7 +102,7 @@ fn nightly_re_disabling_updates_in_place() {
 }
 
 /// Fail-open: a missing or corrupt disable file reads as empty, so a
-/// broken list can never brick the registry build — and a later record
+/// broken list can never brick the registry build - and a later record
 /// replaces the corrupt file.
 #[test]
 fn nightly_corrupt_file_reads_as_empty() {

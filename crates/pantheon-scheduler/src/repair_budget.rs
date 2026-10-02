@@ -2,7 +2,7 @@
 //!
 //! The self-heal investigator is bounded per incident (12 turns, 24 tool
 //! calls, 5 minutes), but nothing bounded how many incidents one flapping
-//! task could trigger per day — a task failing every minute would burn API
+//! task could trigger per day - a task failing every minute would burn API
 //! budget on investigator sessions without bound. [`RepairBudget`] caps
 //! repair investigations per task per UTC day (default 3, via
 //! `[repair].max_repairs_per_task_per_day`); counts persist in
@@ -64,7 +64,7 @@ fn day_string(now_ms: i64) -> String {
 
 impl RepairBudget {
     /// Open the budget file under `data_dir` (creating parent dirs on
-    /// first persist). A missing or corrupt file starts empty — the
+    /// first persist). A missing or corrupt file starts empty - the
     /// fail-open here is deliberate and narrow: [`Self::try_consume`]
     /// fails closed on write errors, so a repair never runs uncounted.
     pub fn open(data_dir: &Path) -> Result<Self, String> {
@@ -85,7 +85,7 @@ impl RepairBudget {
     }
 
     /// Try to consume one repair investigation for `job_id` against
-    /// `max_per_day`. Returns true when the investigation may proceed —
+    /// `max_per_day`. Returns true when the investigation may proceed
     /// the consumption is recorded and persisted. Returns false when the
     /// task already spent its daily budget, or the cap is 0 (repair
     /// investigations disabled). A persistence failure fails closed

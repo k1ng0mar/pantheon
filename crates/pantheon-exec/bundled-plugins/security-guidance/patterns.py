@@ -5,16 +5,16 @@ https://github.com/anthropics/claude-plugins-official/tree/main/plugins/security
 file ``hooks/patterns.py`` (Apache-2.0, (c) Anthropic).
 
 Pantheon changes vs upstream:
-  - ``scan_text(path, text)`` helper: run every pattern against a piece of
+- ``scan_text(path, text)`` helper: run every pattern against a piece of
     text and return the matches (upstream wired this into Claude Code's
     PostToolUse hook directly).
-  - ``SECRET_PATTERNS`` / ``scan_secrets(text)``: Pantheon additions for
+- ``SECRET_PATTERNS`` / ``scan_secrets(text)``: Pantheon additions for
     scanning tool *output* for leaked credentials. Never included in the
     upstream file; kept separate so the upstream set stays verbatim.
-  - ``RuleId`` / ``_RULE_NAME_TO_ID`` / ``rule_names_to_mask`` retained
+- ``RuleId`` / ``_RULE_NAME_TO_ID`` / ``rule_names_to_mask`` retained
     unchanged for stable rule identity.
 
-Pure data + pure helpers. No env-var reads, no I/O, no network — kept
+Pure data + pure helpers. No env-var reads, no I/O, no network - kept
 side-effect-free so it can be imported in isolation and run inside the
 per-fire hook subprocess.
 """
@@ -35,7 +35,7 @@ If this is safe or is explicitly needed, briefly document that in a comment befo
 
 _UNSAFE_YAML_LOAD_REMINDER = """⚠️ Security Warning: yaml.load() / yaml.unsafe_load() execute arbitrary Python via !!python/object tags.
 
-Use yaml.safe_load() if the file only contains simple data structures (dicts, lists, strings, numbers). If you need typed objects, parse with safe_load and validate the result against a schema (pydantic, msgspec, marshmallow) — never use a custom Loader that constructs arbitrary types."""
+Use yaml.safe_load() if the file only contains simple data structures (dicts, lists, strings, numbers). If you need typed objects, parse with safe_load and validate the result against a schema (pydantic, msgspec, marshmallow) - never use a custom Loader that constructs arbitrary types."""
 
 _UNSAFE_TORCH_LOAD_REMINDER = """⚠️ Security Warning: torch.load() defaults to weights_only=False, which unpickles arbitrary Python objects and allows arbitrary code execution.
 
@@ -78,14 +78,14 @@ Other risky inputs to be careful with:
 - github.event.pull_request.head.ref
 - github.event.pull_request.head.label
 - github.event.pull_request.head.repo.default_branch
-- github.event.client_payload.* (repository_dispatch events — attacker can set any field)
+- github.event.client_payload.* (repository_dispatch events - attacker can set any field)
 
 4. **Ref injection**: Never use untrusted input in `ref:` parameters of `actions/checkout`. For `client_payload.pr_number`, validate it matches `^[0-9]+$` before using in `ref: refs/pull/${{ ... }}/head`
 - github.head_ref""",
     },
     {
         "ruleName": "child_process_exec",
-        # Gate to JS/TS files — bare `exec(` otherwise fires on Python's
+        # Gate to JS/TS files - bare `exec(` otherwise fires on Python's
         # exec() and on prose/docstrings mentioning exec.
         "path_filter": lambda p: p.endswith(_JS_EXTS),
         "substrings": ["child_process.exec", "execSync("],
@@ -270,7 +270,7 @@ Additionally, validate user inputs:
     {
         "ruleName": "torch_unsafe_load",
         # Suppressed by weights_only=True on the same line (within 200 chars). weights_only=False
-        # still triggers. Multi-line calls false-positive — same known limitation as unsafe_yaml_load.
+        # still triggers. Multi-line calls false-positive - same known limitation as unsafe_yaml_load.
         "regex": r"(?:\btorch\.load|\.torch_load)\s*\((?![^)\n]{0,200}weights_only\s*=\s*True)",
         "reminder": _UNSAFE_TORCH_LOAD_REMINDER,
     },
@@ -413,7 +413,7 @@ def scan_text(path, text):
 
 
 #: Credential/secret shapes for scanning tool *output* (leak detection).
-#: Pantheon addition — not part of the upstream pattern set. Findings must
+#: Pantheon addition - not part of the upstream pattern set. Findings must
 #: NEVER echo the matched text: report the pattern name only.
 SECRET_PATTERNS = [
     ("aws_access_key",

@@ -7,15 +7,15 @@
 //! capability, never an agent tool: nothing in this module touches the
 //! model, the ledger, or tool calls.
 //!
-//! Wire shape (base64 JSON, matching the `/agui` surface's JSON bodies —
+//! Wire shape (base64 JSON, matching the `/agui` surface's JSON bodies
 //! multipart would not fit the transport, which hands handlers a body
 //! capped at 1 MiB except the voice transcribe path at 12 MiB):
 //!
 //! - `POST /agui/voice/transcribe`
-//!   `{ "audio": "<base64>", "language": "en"?, "prompt": "…" ? }`
-//!   → `200 { "transcript": "…", "backend": "groq" }`
+//!   `{ "audio": "<base64>", "language": "en"?, "prompt": "..." ? }`
+//!   → `200 { "transcript": "...", "backend": "groq" }`
 //! - `POST /agui/voice/speak`
-//!   `{ "text": "…", "voice": "…"?, "format": "wav|mp3|ogg"? }`
+//!   `{ "text": "...", "voice": "..."?, "format": "wav|mp3|ogg"? }`
 //!   → `200` raw audio bytes, `Content-Type: audio/wav` (etc.)
 //!
 //! Hygiene, enforced here rather than left to callers:
@@ -23,7 +23,7 @@
 //! - The `[tools] voice` group toggle gates the whole surface (the same
 //!   double gate the browser and the channel voice pipes use): toggle
 //!   off = the backend is never constructed and requests name the toggle.
-//! - Audio lives only in a temp file that deletes itself on drop — every
+//! - Audio lives only in a temp file that deletes itself on drop - every
 //!   exit path, including the request-timeout path (the worker thread
 //!   owns the guard and drops it when it finishes).
 //! - Decoded audio is capped at [`MAX_AUDIO_BYTES`]; each backend call is
@@ -73,7 +73,7 @@ pub const MAX_TEXT_CHARS: usize = 32 * 1024;
 /// `POST /agui/voice/transcribe` body.
 #[derive(Debug, Deserialize)]
 pub struct TranscribeBody {
-    /// Base64 audio (wav/mp3/ogg/flac — whatever the backend accepts).
+    /// Base64 audio (wav/mp3/ogg/flac - whatever the backend accepts).
     pub audio: String,
     /// ISO language hint, when known.
     #[serde(default)]
@@ -115,7 +115,7 @@ impl VoiceHttp {
         }
     }
 
-    /// `{"error":{"code":…,"message":…}}` — the shape every voice error
+    /// `{"error":{"code":...,"message":...}}` - the shape every voice error
     /// takes, so clients can switch on `code` without parsing prose.
     pub fn err(status: u16, code: &'static str, message: impl Into<String>) -> Self {
         Self::json(
@@ -135,7 +135,7 @@ pub fn content_type_for(format: AudioFormat) -> &'static str {
 }
 
 /// One configured direction: absent (no config section), broken (section
-/// present but the backend would not construct — surfaced per request),
+/// present but the backend would not construct - surfaced per request),
 /// or ready.
 enum Backend<T: ?Sized> {
     Unset,
@@ -470,7 +470,7 @@ fn bounded<T: Send + 'static>(
     rx.recv_timeout(timeout).map_err(|_| ())
 }
 
-/// A staged audio file that deletes itself on drop — every exit path
+/// A staged audio file that deletes itself on drop - every exit path
 /// cleans up, including the timeout path (the worker owns the guard).
 struct TempAudio {
     path: PathBuf,

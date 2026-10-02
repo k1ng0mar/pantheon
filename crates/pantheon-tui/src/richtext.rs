@@ -159,7 +159,7 @@ pub fn image_dimensions(path: &Path) -> Option<(Option<u32>, Option<u32>)> {
 pub enum GraphicsSupport {
     /// Kitty graphics protocol (also WezTerm, Ghostty, Konsole 23+).
     Kitty,
-    /// Sixel (mlterm, foot with sixel, xterm -ti 340, iTerm2…).
+    /// Sixel (mlterm, foot with sixel, xterm -ti 340, iTerm2...).
     Sixel,
     /// No inline graphics: transcript shows a text placeholder.
     #[default]
@@ -264,7 +264,7 @@ pub fn kitty_delete(id: u32) -> Vec<u8> {
 // ===========================================================================
 
 /// Decode a PNG to raw RGB. Minimal on purpose: 8-bit RGB/RGBA,
-/// non-interlaced only — enough for screenshots and pasted images, which is
+/// non-interlaced only - enough for screenshots and pasted images, which is
 /// what the transcript ever shows. Returns `(rgb, width, height)`.
 pub fn png_to_rgb(png: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -570,7 +570,7 @@ pub fn render_mermaid(src: &str) -> Option<Vec<String>> {
         if let Some((p, op)) = op_at {
             let left = line[..p].trim();
             let mut right = line[p + op.len()..].trim();
-            // Strip an edge label: `A-->|yes|B` — the label is metadata,
+            // Strip an edge label: `A-->|yes|B` - the label is metadata,
             // not part of the target node.
             if let Some(stripped) = right.strip_prefix('|') {
                 if let Some(end) = stripped.find('|') {
@@ -876,7 +876,7 @@ fn latex_command(name: &str) -> Option<&'static str> {
         "leftrightarrow" => "↔",
         "Rightarrow" => "⇒",
         "to" => "→",
-        "ldots" => "…",
+        "ldots" => "...",
         "cdots" => "⋯",
         "partial" => "∂",
         "forall" => "∀",
@@ -1102,8 +1102,8 @@ fn render_math_span(span: &str, display: bool) -> String {
     out
 }
 
-/// Render LaTeX math in text: display `$$…$$` becomes its own indented
-/// block, inline `$…$` is replaced in place. A `$` needs a matching close
+/// Render LaTeX math in text: display `$$...$$` becomes its own indented
+/// block, inline `$...$` is replaced in place. A `$` needs a matching close
 /// on a later position; unmatched `$` passes through untouched.
 pub fn render_latex(text: &str) -> String {
     let mut out = String::new();
@@ -1357,12 +1357,12 @@ impl ImagePaintState {
     }
 
     /// Text shown when graphics are unavailable (or as the first reserved
-    /// row under a painted thumbnail): `[1] 🖼 name (WxH) — v to view`.
+    /// row under a painted thumbnail): `[1] 🖼 name (WxH) - v to view`.
     pub fn placeholder_text(p: &ImagePlacement, dims: Option<(u32, u32)>, index: usize) -> String {
         let dims = dims
             .map(|(w, h)| format!("{w}×{h}"))
             .unwrap_or_else(|| "unknown size".to_string());
-        format!("[{}] 🖼 {} ({dims}) — press v to view", index + 1, p.name)
+        format!("[{}] 🖼 {} ({dims}) - press v to view", index + 1, p.name)
     }
 
     /// Diff desired placements against what is painted and emit Kitty/Sixel
@@ -1408,7 +1408,7 @@ impl ImagePaintState {
         for id in stale {
             lock.write_all(&kitty_delete(id))?;
         }
-        // Paint new ones (PNG via f=100; anything else skipped — the
+        // Paint new ones (PNG via f=100; anything else skipped - the
         // placeholder text already describes it).
         for (id, path, row, col, cols) in &desired {
             if self.painted.iter().any(|p| p.id == *id) {

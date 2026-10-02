@@ -1,7 +1,7 @@
 //! Hermes-inspired transcript blocks, adapted to Pantheon's look.
 //!
 //! Pure renderers: every block maps to `Vec<Line<'static>>` given the
-//! theme. No terminal types, no session state — the same split as
+//! theme. No terminal types, no session state - the same split as
 //! `widget.rs`/`render.rs`, so tests assert on spans instead of ANSI.
 //!
 //! What this adds over the current transcript:
@@ -16,7 +16,7 @@
 //!
 //! Expansion state (`expanded`) is owned here as plain data. Wiring it to
 //! keys (Enter to expand/collapse) and feeding live durations belongs in
-//! `session.rs`, which the concurrent fix pass is editing — that
+//! `session.rs`, which the concurrent fix pass is editing - that
 //! integration is intentionally left for after it settles.
 
 use std::time::Duration;
@@ -30,7 +30,7 @@ use crate::session::theme::Theme;
 /// How many output lines a collapsed shell card keeps visible.
 pub const SHELL_VISIBLE_LINES: usize = 8;
 
-/// `4.0s`, `0.4s` — the Hermes-style duration suffix.
+/// `4.0s`, `0.4s` - the Hermes-style duration suffix.
 pub fn fmt_duration(d: Duration) -> String {
     format!("{:.1}s", d.as_secs_f64())
 }
@@ -42,7 +42,7 @@ fn dim_span(th: &Theme, text: String) -> Span<'static> {
 /// A reasoning block: `+ Thought · 4.0s` collapsed, full text expanded.
 ///
 /// The `+`/`−` marker is the amber highlight; everything else stays dim so
-/// old reasoning never shouts over answers. Collapsed is the default —
+/// old reasoning never shouts over answers. Collapsed is the default
 /// settled thought should read as one quiet line, not a wall.
 #[derive(Debug, Clone)]
 pub struct ThoughtView {
@@ -238,7 +238,7 @@ impl ShellView {
 /// Footer indicator for background work: `↓ 2 shells`, dim.
 ///
 /// Renders in the footer's right cluster next to the context meter. Zero
-/// jobs renders nothing — the footer stays quiet when there is nothing to
+/// jobs renders nothing - the footer stays quiet when there is nothing to
 /// say. Callers skip the line when `jobs == 0`.
 pub fn background_jobs_line(jobs: usize, th: &Theme) -> Option<Line<'static>> {
     if jobs == 0 {
@@ -250,7 +250,7 @@ pub fn background_jobs_line(jobs: usize, th: &Theme) -> Option<Line<'static>> {
 
 /// Appears when the transcript is scrolled up: `Jump to latest ↓`.
 ///
-/// Muted blue (primary), not amber — it is navigation, not a decision.
+/// Muted blue (primary), not amber - it is navigation, not a decision.
 pub fn jump_to_latest_line(th: &Theme) -> Line<'static> {
     Line::from(Span::styled(
         "Jump to latest ↓",
@@ -550,7 +550,7 @@ fn parse_hunk_header(h: &str) -> Option<(u32, u32)> {
 }
 
 /// [`crate::diffview::unified_diff`] plus file line numbers. `FileHeader`
-/// lines are dropped — [`EditView`] renders the path itself.
+/// lines are dropped - [`EditView`] renders the path itself.
 pub fn numbered_diff(old: &str, new: &str) -> Vec<NumberedDiffLine> {
     let mut out = Vec::new();
     let (mut ao, mut bo) = (0u32, 0u32);
@@ -663,7 +663,7 @@ impl EditView {
                 ),
             ]),
             NumberedKind::Truncated(n) => Line::from(Span::styled(
-                format!("  … {n} more lines"),
+                format!("  ... {n} more lines"),
                 Style::default().fg(th.dim).add_modifier(Modifier::ITALIC),
             )),
         }
@@ -725,7 +725,7 @@ fn plural_object(object: &str, count: usize) -> String {
 /// Condensed activity row for a burst of read-only tool calls:
 /// `→ Explored: 1 search`, `→ Explored: 3 reads`.
 ///
-/// The `→` is dim; the row is deliberately quieter than a tool card —
+/// The `→` is dim; the row is deliberately quieter than a tool card
 /// it summarizes, it does not announce.
 pub fn activity_summary_line(count: usize, object: &str, th: &Theme) -> Line<'static> {
     Line::from(vec![
@@ -747,18 +747,18 @@ pub fn fmt_elapsed(d: Duration) -> String {
     }
 }
 
-/// `27.1 tok/s`; `—` when the turn was instant (no division by zero).
+/// `27.1 tok/s`; ` - ` when the turn was instant (no division by zero).
 pub fn fmt_tok_per_sec(tokens: u64, elapsed: Duration) -> String {
     let s = elapsed.as_secs_f64();
     if s <= 0.0 {
-        return "—".to_string();
+        return " - ".to_string();
     }
     format!("{:.1} tok/s", tokens as f64 / s)
 }
 
 /// Footer suffix for a completed turn: `· 4m 30s · 27.1 tok/s`.
 ///
-/// Pure formatting — splicing this into `render_footer`'s right cluster
+/// Pure formatting - splicing this into `render_footer`'s right cluster
 /// (next to the context meter) needs `session.rs`, which the concurrent
 /// fix pass is editing. Left as a documented integration point.
 pub fn run_stats_segment(elapsed: Duration, tokens: u64) -> String {

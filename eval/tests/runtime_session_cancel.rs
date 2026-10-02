@@ -1,15 +1,15 @@
 //! Behavioral / integration tests moved out of the crate's unit suite.
 //!
 //! Policy: only small deterministic unit tests live beside the code
-//! (`cargo test -p <crate>`). Everything behavioral — SQLite stores,
-//! threads, sockets, subprocesses, timing, filesystem — lives here and
+//! (`cargo test -p <crate>`). Everything behavioral - SQLite stores,
+//! threads, sockets, subprocesses, timing, filesystem - lives here and
 //! runs via `cargo test -p pantheon-eval`.
 
 use pantheon_api::events::Event;
 use pantheon_runtime::session::*;
 
 /// Cancelling a running run records the intent durably and leaves the
-/// run in `canceled` — not `failed` — so replay can tell the difference
+/// run in `canceled` - not `failed` - so replay can tell the difference
 /// and `reopen_run` can bring it back.
 #[test]
 fn cancel_marks_run_canceled_and_recoverable() {

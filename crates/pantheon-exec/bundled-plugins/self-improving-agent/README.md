@@ -13,18 +13,18 @@ Opt-in: disabled by default.
 
 - `on_session_start` (Context hook): ensures `.learnings/` exists, then
   injects the logging protocol (entry formats, pattern-key dedup rules,
-  promotion rules) plus a pending-triage note — counts of untriaged
+  promotion rules) plus a pending-triage note - counts of untriaged
   learnings/errors/feature requests and the high-priority ones.
 - `on_session_end` (Observer hook): ensures `.learnings/` exists and stamps
   a session-end marker so the next session's triage note can reference it.
 
 Log files live in `<learnings_dir>/.learnings/`:
 
-- `LEARNINGS.md` — corrections, insights, knowledge gaps, best practices
-- `ERRORS.md` — command failures and integration errors
-- `FEATURE_REQUESTS.md` — user-requested capabilities
+- `LEARNINGS.md` - corrections, insights, knowledge gaps, best practices
+- `ERRORS.md` - command failures and integration errors
+- `FEATURE_REQUESTS.md` - user-requested capabilities
 
-Entries carry `Pattern-Key: area.symptom` — the stable dedup key. Before
+Entries carry `Pattern-Key: area.symptom` - the stable dedup key. Before
 logging, grep by pattern-key; on a hit, bump `Recurrence-Count` and
 `Last-Seen` instead of duplicating. Broadly-applicable learnings promote
 to the workspace files: behavioral patterns → `SOUL.md`, tool gotchas →
@@ -45,7 +45,7 @@ keep learnings with a project instead.
 
 ## Security
 
-Local files only — no network, no exfiltration. The injected protocol
+Local files only - no network, no exfiltration. The injected protocol
 carries the upstream warning verbatim in spirit: **never log secrets,
 tokens, private keys, environment variables, or full source/config files**
 unless the user explicitly asks for that level of detail; prefer short

@@ -1,7 +1,7 @@
 //! Exa-backed [`SearchProvider`]: `POST https://api.exa.ai/search`.
 //!
 //! Auth is the `x-api-key` header (NOT `Authorization`). The `type` field
-//! accepts only `instant|fast|auto|deep-lite|deep|deep-reasoning` — the old
+//! accepts only `instant|fast|auto|deep-lite|deep|deep-reasoning` - the old
 //! `neural`/`keyword` values were removed server-side and must not be sent.
 //! We always send `auto`: agent-suitable quality without deep-search cost.
 //!

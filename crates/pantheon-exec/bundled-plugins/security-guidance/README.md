@@ -2,7 +2,7 @@
 
 Advisory security review of tool calls. It scans what the agent writes and
 runs, then makes sure the model sees a short advisory when something looks
-off — without ever blocking the tool call itself.
+off - without ever blocking the tool call itself.
 
 Adapted from
 [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official)
@@ -25,7 +25,7 @@ Two hook points, both advisory:
   here would deny every tool call in the session.
 - `transform_tool_result` (transform-class, fail-open): pops the queued
   findings for that tool call and scans the tool *result* for leaked
-  credentials (AWS keys, private keys, tokens, passwords-in-URLs — a
+  credentials (AWS keys, private keys, tokens, passwords-in-URLs - a
   Pantheon addition; matched secret text is never echoed). On any
   finding it prepends a compact banner to the result the model sees;
   otherwise it returns no change.
@@ -45,9 +45,9 @@ continue. Pattern rules produce false positives; treat them as nudges.
 
 ## Files
 
-- `patterns.py` — 25 upstream vulnerability patterns (verbatim) +
+- `patterns.py` - 25 upstream vulnerability patterns (verbatim) +
   `scan_text` / `SECRET_PATTERNS` / `scan_secrets` (Pantheon additions).
-- `_findings.py` — best-effort per-session relay between hook fires.
-- `__init__.py` — `register(ctx)` wiring both hook points.
-- `tests/test_security_guidance.py` — unit tests (stdlib `assert`s,
+- `_findings.py` - best-effort per-session relay between hook fires.
+- `__init__.py` - `register(ctx)` wiring both hook points.
+- `tests/test_security_guidance.py` - unit tests (stdlib `assert`s,
   runnable with plain `python3`).

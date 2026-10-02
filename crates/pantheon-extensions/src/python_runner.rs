@@ -56,7 +56,7 @@ pub struct HookDirective {
     /// Gate: block the action. Fails the turn closed when true.
     #[serde(default)]
     pub deny: bool,
-    /// Human-readable reason for a deny (gate) — surfaced to the model/user.
+    /// Human-readable reason for a deny (gate) - surfaced to the model/user.
     #[serde(default)]
     pub reason: Option<String>,
     /// Transform: replacement payload. Empty/None means "no change".
@@ -124,7 +124,7 @@ impl Default for RunnerConfig {
 
 impl RunnerConfig {
     /// Config with a policy attached (builder-style; the policy gates
-    /// every plugin spawn — see [`fire_hook_full`]).
+    /// every plugin spawn - see [`fire_hook_full`]).
     pub fn with_policy(mut self, policy: Policy) -> Self {
         self.policy = Some(policy);
         self
@@ -138,7 +138,7 @@ impl RunnerConfig {
 /// verified `__init__.py` as argv[4]. The shim reads the entrypoint ONCE,
 /// refuses to run when the bytes differ from what the host verified
 /// (a swap between the host's check and this read fails closed here),
-/// and executes EXACTLY the bytes it hashed — there is no
+/// and executes EXACTLY the bytes it hashed - there is no
 /// check-then-use gap inside the child between hashing and importing.
 const SHIM: &str = r#"
 import hashlib, importlib.util, json, sys
@@ -224,7 +224,7 @@ pub fn fire_hook(
 /// Returns the canonical dir plus the expected sha256 of the verified
 /// `__init__.py`, which the SHIM re-checks inside the child before
 /// importing (see `SHIM`). The entrypoint bytes are sandwiched around the
-/// approval hash — read, hash+approve, re-read and compare — so the
+/// approval hash - read, hash+approve, re-read and compare - so the
 /// expected hash is bound to bytes that were part of an approved tree:
 /// a swap at any point fails closed here, and a swap after this function
 /// returns fails closed in the SHIM. Either way swapped bytes never
@@ -304,8 +304,8 @@ fn verify_hook_spawn(plugin: &PythonPlugin) -> Result<(PathBuf, String), Pantheo
 /// This distinction is the whole point: a context hook can collapse failure
 /// into silence, but a *gate* must be able to tell "the plugin allowed this"
 /// apart from "the plugin never answered". So this returns `Err` on spawn
-/// failure, crash, timeout, and unparseable output; a clean answer — even an
-/// empty one — is `Ok`.
+/// failure, crash, timeout, and unparseable output; a clean answer - even an
+/// empty one - is `Ok`.
 pub fn fire_hook_full(
     plugin: &PythonPlugin,
     hook: Hook,
@@ -341,8 +341,8 @@ pub fn fire_hook_full(
         // Re-verify immediately before spawn: canonicalize, prove
         // containment, re-hash against the approval store with the
         // entrypoint bytes sandwiched around the hash, fail closed on
-        // any divergence since load. The canonical dir — not the raw
-        // configured path — is what the child loads `__init__.py` from,
+        // any divergence since load. The canonical dir - not the raw
+        // configured path - is what the child loads `__init__.py` from,
         // and the SHIM executes exactly the bytes this hash covers.
         let (canon_dir, expected_sha) = verify_hook_spawn(plugin)?;
         (canon_dir.to_string_lossy().to_string(), expected_sha)
@@ -362,14 +362,14 @@ pub fn fire_hook_full(
     let (mut cmd, group_leader) = match &profile {
         // Policy allowed it: the enforcement's sandbox profile decides
         // how isolated the child runs (namespace wrapper + rlimits where
-        // the host supports them; a direct spawn where it does not — the
+        // the host supports them; a direct spawn where it does not - the
         // policy gate above is what restores enforcement, the wrapper is
         // best-effort isolation, see build_sandboxed).
         //
         // build_sandboxed confines the child via pre_exec setsid(), so
         // the child is a process-group leader and run_drained may
         // killpg the group on a stuck drain. A direct spawn is not a
-        // group leader — signalling its pid as a group could hit
+        // group leader - signalling its pid as a group could hit
         // unrelated processes.
         Some(profile) => (build_sandboxed(profile, &cfg.python, &args, &cwd), true),
         None => {
@@ -397,7 +397,7 @@ const PIPE_CAP_BYTES: usize = 1024 * 1024;
 
 /// Grace after the child is gone (exited or killed) for the pipe
 /// drainers to observe EOF before we stop waiting for them. A
-/// grandchild that inherited the pipe can hold it open indefinitely —
+/// grandchild that inherited the pipe can hold it open indefinitely
 /// CPython file descriptors are inheritable by default, so a plugin
 /// that double-forks leaves the write end open after the direct child
 /// is dead. Waiting for the drainers without a bound hangs the caller;
@@ -421,7 +421,7 @@ const POST_KILL_DRAIN_GRACE: Duration = Duration::from_secs(1);
 /// still trips the timeout and is killed.
 ///
 /// `group_leader` must be true exactly when the child was spawned as a
-/// process-group leader — every `build_sandboxed` command is, via
+/// process-group leader - every `build_sandboxed` command is, via
 /// `setsid()` in `pre_exec`; a direct spawn is not. Only then may we
 /// `killpg` the group when a pipe-holding grandchild outlives the child:
 /// signalling a pid that is not a group leader could hit unrelated
@@ -439,7 +439,7 @@ fn run_drained(
     use std::io::Read;
     use std::sync::{Arc, Mutex};
     /// Drain one pipe on a thread, appending into a shared buffer as
-    /// bytes arrive — so the parent can take what has been captured
+    /// bytes arrive - so the parent can take what has been captured
     /// even if EOF never comes. Returns the thread and the buffer.
     fn drain<R: Read + Send + 'static>(
         pipe: R,
@@ -469,7 +469,7 @@ fn run_drained(
     /// SIGKILL the child's process group first (with the same
     /// never-signal-init-or-ourselves guard the sandbox runner uses), so
     /// a pipe-holding grandchild dies and the drainer can still observe
-    /// EOF — then a short tail wait for its last bytes. Never hangs; in
+    /// EOF - then a short tail wait for its last bytes. Never hangs; in
     /// the worst case a blocked reader thread is left behind instead of
     /// the caller.
     fn finish_drain(
@@ -619,8 +619,8 @@ mod tests {
     /// Item 3: a grandchild that inherits the pipe must not hang the
     /// drain. The child calls `os.setsid()` (so it is its own process
     /// group, like every `build_sandboxed` child), spawns `sleep 60`
-    /// with the pipe as its stdout — the grandchild holds the write end
-    /// open — then prints its answer and exits at once. The pipe never
+    /// with the pipe as its stdout - the grandchild holds the write end
+    /// open - then prints its answer and exits at once. The pipe never
     /// hits EOF while the grandchild lives, and CPython fds are
     /// inheritable by default, so a daemonizing plugin does exactly
     /// this. Before the fix `run_drained` joined the drainer
@@ -670,7 +670,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Item 2: a policy that denies `plugin.enable` refuses the spawn —
+    /// Item 2: a policy that denies `plugin.enable` refuses the spawn
     /// no child is ever started (a spawn would surface as a different
     /// error, never EXT_DENIED).
     #[test]
@@ -686,7 +686,7 @@ mod tests {
     }
 
     /// Item 2: a policy that allows `plugin.enable` lets the spawn
-    /// proceed through the sandbox profile — the gate was consulted and
+    /// proceed through the sandbox profile - the gate was consulted and
     /// passed.
     #[test]
     fn hook_full_proceeds_when_policy_allows_plugin_enable() {

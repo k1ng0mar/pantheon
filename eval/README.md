@@ -1,8 +1,8 @@
 # Pantheon eval harness
 
 Regression suite derived from real Pantheon wave-1 features and
-Hermes-history behaviors (WAVE2/TEAMS item: "eval/ — 20-30 Hermes-history
-tasks as regression suite" — this is the seed, wave-3 lane: freebuff).
+Hermes-history behaviors (WAVE2/TEAMS item: "eval/ - 20-30 Hermes-history
+tasks as regression suite" - this is the seed, wave-3 lane: freebuff).
 
 Stdlib-only (`python3 eval/run.py`); drives the real `pantheon` CLI built
 from this workspace. Every case runs in a fresh sandbox
@@ -19,7 +19,7 @@ python3 eval/run.py --only <id>    # run a single case
 python3 eval/run.py --cargo-tests  # gate on `cargo test --workspace` first
 ```
 
-Exit code is 0 only when every non-skipped case passes — wire it into CI
+Exit code is 0 only when every non-skipped case passes - wire it into CI
 or a pre-merge hook as the feature gate.
 
 ## Current cases (10)
@@ -70,7 +70,7 @@ Append to `eval/cases.json`:
   `#GENERATE_LINES:N` content expands to `line 0..N-1`.
 - Placeholders: `<TMP>` = case sandbox dir, `<VENDOR>` = `vendor/`.
 - `skip`: reason string (`needs binary`, `python3`) to skip when the
-  prerequisite is missing — deliberate, so the harness degrades cleanly
+  prerequisite is missing - deliberate, so the harness degrades cleanly
   on a machine without a built binary.
 
 Target: grow this toward the 20-30 Hermes-history tasks called for in

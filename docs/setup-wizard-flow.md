@@ -1,25 +1,25 @@
 # Setup wizard flow
 
 How the TUI setup wizard (`crates/pantheon-tui/src/setup_wizard.rs`) walks
-the user to a config file. Source of truth is the code — this doc mirrors
+the user to a config file. Source of truth is the code - this doc mirrors
 `run_setup_flow` and `setup_graph::sections` as of the `chloe/tui-redesign`
 rework (branch unpushed, nothing committed).
 
 The wizard never writes config itself. It collects answers, then calls
-`setup::run_setup(data_dir, answers, assume_defaults=true)` — the same path
+`setup::run_setup(data_dir, answers, assume_defaults=true)` - the same path
 `pantheon setup --yes` uses. A cancelled provider answer (`None`) therefore
 resolves to the recommended default silently rather than aborting the commit.
 
 ## Screen 1: Setup / "Choose your setup"
 
 Three modes; Quick is gone. Cancelling the first screen (Esc) resolves to
-Recommended — the least presumptuous default.
+Recommended - the least presumptuous default.
 
 | Option | Description | What happens |
 |---|---|---|
 | **Recommended** | "pick your provider and model; everything else gets recommended defaults" | Provider picker → model picker → recommended provider for each tool group, no picker screens, no Tools screen, no STT/TTS |
 | **Full Setup** | "everything, skipping anything that does not apply" | Provider picker → model picker → Tools multi-select (all 15 pre-ticked) → provider screens only for the enabled tool groups |
-| **Blank Slate** | "create the runtime without configuring an agent" | Provisions the runtime, writes a minimal config, stops — no provider, model, or tools questions |
+| **Blank Slate** | "create the runtime without configuring an agent" | Provisions the runtime, writes a minimal config, stops - no provider, model, or tools questions |
 
 ## Screen 2: provider picker ("Model" / "Choose a model provider")
 
@@ -33,21 +33,21 @@ path `pantheon provider add` uses, so it is a real catalog entry.
 
 For OpenAI-compatible providers the screen live-fetches `{base}/models`
 (`model_catalog::fetch_live_models`) and merges it with the curated
-catalog entries (`merge_model_rows`) — curated wins on metadata: a live
+catalog entries (`merge_model_rows`) - curated wins on metadata: a live
 id that already has a curated entry is skipped, so the catalog's context
 limits and pricing survive the merge. Rows show per-model pricing as
 `in $X/M · out $Y/M` (context limit first: `70k · in $0.20/M · out
 $0.60/M`); zero-priced models are tagged `free`; no tag appears where no
-pricing exists — prices are never invented.
+pricing exists - prices are never invented.
 
 Key handling: the API key is collected after the model screen, so the
 fetch is tried keyless first (no auth header is sent). A 401/403 falls
 back to curated entries with a "full list after API key" note in the
-subtitle; other failures show `live list unavailable (…)` instead.
+subtitle; other failures show `live list unavailable (...)` instead.
 Non-OpenAI providers use the curated list only.
 
 Manual model-name entry remains the last resort when a provider has
-neither curated nor fetchable models. Cancelling here writes nothing —
+neither curated nor fetchable models. Cancelling here writes nothing
 the flow returns without committing.
 
 ## Recommended: the "straight to keys" path
@@ -61,12 +61,12 @@ The recommended toolset is every group except Voice:
 
 | Tool group | Recommended provider | What the setup screen asks |
 |---|---|---|
-| Web Search | TinyFish | nothing — keyless |
+| Web Search | TinyFish | nothing - keyless |
 | Browser | GSD | detect `gsd-browser`; when missing: dependency notes, then install-or-skip |
-| Memory | Pantheon Native | nothing — keyless |
+| Memory | Pantheon Native | nothing - keyless |
 | Computer Use | CUA driver | detect `cua-driver`; when missing: dependency notes, then install-or-skip |
-| Terminal, Files, Skills, Tasks, Delegation, Ask User, Vault, Vision, Video Analysis | built-in | nothing — no provider screen exists |
-| Voice (STT + TTS) | off | skipped entirely — not asked |
+| Terminal, Files, Skills, Tasks, Delegation, Ask User, Vault, Vision, Video Analysis | built-in | nothing - no provider screen exists |
+| Voice (STT + TTS) | off | skipped entirely - not asked |
 
 ### Computer use in Recommended: the explicit decision
 
@@ -75,7 +75,7 @@ recommended driver), resolved through detect/install-or-skip. On a headless
 machine the install is skipped gracefully: the answer records
 `skipped=true`, the config still records the choice, and `pantheon doctor`
 reports the gap instead of pretending the capability works. Rationale:
-install-heavy but skip-safe beats silently omitting a flagship capability —
+install-heavy but skip-safe beats silently omitting a flagship capability
 the user learns the option exists and gets a truthful health check.
 
 ### Skipping a provider screen
@@ -83,7 +83,7 @@ the user learns the option exists and gets a truthful health check.
 Every provider screen (browser, web search, STT, TTS, memory, computer
 use) carries an explicit **Skip** row at the bottom. Skip is not Esc:
 
-- **Skip** records the tool as intentionally unconfigured — the tool group
+- **Skip** records the tool as intentionally unconfigured - the tool group
   is dropped from the enabled set, no provider section is written, and the
   runtime never registers it. The done summary lists the skipped tools.
 - **Esc** keeps its prior meaning: fall back to the recommended default
@@ -93,24 +93,24 @@ In Recommended mode there is no picker, so the same skip is offered in
 the follow-ups: `complete_recommended` asks a "Set up <name> now?"
 confirm before running the kind-driven questions. Keyless providers have
 nothing to ask and complete directly. STT/TTS skips are granular per
-backend — skipping STT does not skip TTS.
+backend - skipping STT does not skip TTS.
 
 > Status note (2026-09-29): the Skip row and the "Set up <name> now?"
 > confirm have landed (`SKIP_VALUE` / `skip_item` in `setup_providers`,
-> `apply_pick` / `apply_voice_picks` map Skip to group removal) — the
+> `apply_pick` / `apply_voice_picks` map Skip to group removal) - the
 > paragraph above describes current behavior, verified against the code.
 
-## Full Setup
+## Full setup
 
 The Tools screen replaces the old Permissions screen: one multi-select over
 the 15 tool groups (session search stays on and is not listed; Esc keeps
 every group on; a confirmed empty selection turns everything off). Policy
-stays the coder preset in all modes — there is no permissions screen.
+stays the coder preset in all modes - there is no permissions screen.
 
 Provider screens are tool-gated and use the full picker (`pick_provider`):
 Browser (browser group on), Web search (web search on), STT then TTS
 (voice on), Memory (memory on), Computer use (computer use on), Extensions
-(plugins group on — see below). After that, the fallback provider/model
+(plugins group on - see below). After that, the fallback provider/model
 screens run when the Fallback section applies.
 
 ### Screen: Extensions (Full only)
@@ -134,7 +134,7 @@ Validation is shape-only, never a live handshake:
 - server names are restricted to letters, digits, `-`, `_` (they become
   TOML table keys).
 
-A failed check prints the problems and the server is not recorded — fix
+A failed check prints the problems and the server is not recorded - fix
 it or pick Skip. Recorded servers are verified later: `pantheon doctor`
 runs config validation over `[mcp.servers.<name>]`, and the MCP manager
 reports connection failures at session start. The wizard never opens a
@@ -144,26 +144,26 @@ connection during setup.
 `GITHUB_TOKEN=env:GITHUB_TOKEN`) is preserved verbatim in the config;
 the MCP manager resolves it from the operator's environment at spawn
 time, so the secret itself never lands in `config.toml`. The wizard
-never asks for secret values — only the `env:` reference.
+never asks for secret values - only the `env:` reference.
 
 **Bundled plugins.** The screen prints the bundled-plugin status from
 `<data_dir>/extensions/bundled/` (dirs containing a `plugin.yaml`).
 Bundled plugins load without approval and there is no enable/disable
-switch for them in `pantheon-extensions` — removing the directory is
-the disable path — so the screen reports what is there and moves on.
+switch for them in `pantheon-extensions` - removing the directory is
+the disable path - so the screen reports what is there and moves on.
 Nothing ships there today, and the screen says "no bundled plugins
 installed" instead of inventing a registry.
 
 **Skip.** Same semantics as every other provider screen: Skip is an
-explicit "leave extensions unconfigured" — the Plugins group comes off
+explicit "leave extensions unconfigured" - the Plugins group comes off
 the enabled set (recorded in the done summary), no `[mcp]` section is
 written, and any servers added earlier on this screen are discarded.
 Esc is not Skip: Esc keeps the servers added so far.
 
 **Catalog seam.** The bundled MCP catalog (`pantheon-mcp::bundled`,
 sibling workstream) feeds the same pipeline: a catalog row becomes
-`(name, recipe.to_config_entry(true))` — secrets already as `env:NAME`
-placeholders — and lands in the same `[mcp.servers.<name>]` tables with
+`(name, recipe.to_config_entry(true))` - secrets already as `env:NAME`
+placeholders - and lands in the same `[mcp.servers.<name>]` tables with
 the same `enabled` flags the dashboard/app toggles use. The config
 document is the only enablement state; the wizard keeps no parallel
 record. Catalog recipes are curated, so they bypass the hand-typed
@@ -182,21 +182,21 @@ hardcoded total.
 
 `commit` → `run_setup` → `<data_dir>/config.toml`, plus
 `memory-backend.toml` (the selection file the runtime instantiates from) and
-the model API key into `<data_dir>/.env` (env var name only in the TOML —
+the model API key into `<data_dir>/.env` (env var name only in the TOML
 the wizard never handles secrets).
 
-- **Blank Slate:** minimal config — provider/model/policy/tools all `None`;
+- **Blank Slate:** minimal config - provider/model/policy/tools all `None`;
   no `[model]`, no `[tools]`, no provider sections. Server section only.
 - **Recommended:** `[model]` (provider, model), policy = coder preset,
-  `[tools]` with `voice = false` only — only deviations from the all-on
-  default are written — `[websearch]` (TinyFish, enabled), `[browser]`
+  `[tools]` with `voice = false` only - only deviations from the all-on
+  default are written - `[websearch]` (TinyFish, enabled), `[browser]`
   (GSD), `[computer_use]` (CUA driver). No `[memory]` (native is the
   runtime default), no `[stt]`/`[tts]`.
 - **Full:** same shape; `[tools]` records only the disabled groups, so an
   all-on run writes no `[tools]` at all; `[stt]`/`[tts]` only when Voice is
   on; `[memory]` only when the backend is non-native; `[mcp.servers.<name>]`
   tables for each MCP server added on the Extensions screen (nothing when
-  none were added or the screen was skipped — skipping also writes
+  none were added or the screen was skipped - skipping also writes
   `[tools] plugins = false`).
 
 ## Out of the wizard: auxiliary models
@@ -210,5 +210,5 @@ are managed anytime with `pantheon model`; the wizard's done summary
 Every visible screen writes something the runtime reads; no decorative
 screens. Each section in the graph exists only when its runtime consumer
 exists, and any screen that appears writes a config value (or an explicit
-skip record `doctor` can report) — offering a choice the runtime cannot
+skip record `doctor` can report) - offering a choice the runtime cannot
 honor is forbidden by design.

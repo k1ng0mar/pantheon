@@ -3,7 +3,7 @@
 //! Walks `bundled-skills/*/` and embeds `SKILL.md` + `scripts/**` +
 //! `references/**` (text files) via `include_str!` into a generated
 //! registry source in OUT_DIR. Content workers add skills by adding
-//! directories — no per-skill hand edits, no registry code changes.
+//! directories - no per-skill hand edits, no registry code changes.
 //!
 //! The walk/render logic lives in `build-support/gen.rs`, shared with
 //! unit tests through `include!` (a build script cannot depend on the
@@ -33,7 +33,7 @@ fn main() {
     // --- bundled plugins section (do not touch the skills section above) ---
     // Walks `bundled-plugins/*/` and embeds every text file plus a sha256
     // per plugin into a generated registry in OUT_DIR. Content workers add
-    // plugins by adding directories — no per-plugin hand edits.
+    // plugins by adding directories - no per-plugin hand edits.
     let plugins_root = manifest_dir.join("bundled-plugins");
     println!("cargo:rerun-if-changed={}", plugins_root.display());
     let (pdefs, pskipped) = discover_bundled_plugins(&plugins_root);

@@ -206,7 +206,7 @@ fn broken_user_templates_are_skipped_not_fatal() {
 #[test]
 fn scheduled_model_policy_prefers_pin_then_scheduled_aux() {
     // The old `Job::effective_model` unit is gone: scheduled model resolution
-    // now lives in `build_scheduled_model_policy` — explicit pin wins, then
+    // now lives in `build_scheduled_model_policy` - explicit pin wins, then
     // the `[scheduled]` auxiliary, never the interactive default.
     use pantheon_api::config::{AuxSection, Config};
 

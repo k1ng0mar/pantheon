@@ -2,7 +2,7 @@
 //! browser. Every backend implements [`BrowserBackend`]; the tool layer in
 //! [`crate::tools`] builds backend-agnostic *canonical* argv (the
 //! gsd-browser command vocabulary: `navigate`, `snapshot`, `click-ref`,
-//! …) and each backend translates it to its own transport.
+//! ...) and each backend translates it to its own transport.
 //!
 //! ## The lineup
 //!
@@ -12,9 +12,9 @@
 //! | `ChromiumOxide` | Native CDP via `chromiumoxide` (=0.9.1, pinned) | Local dependency-free fallback: no CLI/subprocess, single-binary friendly |
 //! | `Steel` | REST session management + raw CDP websocket | Hosted or self-hosted sessions; self-host Docker exposes the same API as cloud, so one implementation with a configurable base URL |
 //! | `Browserbase` | `POST /v1/sessions` → raw CDP `wss://` URL | Cloud fallback; driven over the websocket directly, no SDK |
-//! | `Lightpanda` | CDP websocket to `lightpanda serve` | **Extraction only** — fetch/extract workloads; never the interactive backend. Its tool surface exposes fetch/extract, not interactive act |
+//! | `Lightpanda` | CDP websocket to `lightpanda serve` | **Extraction only** - fetch/extract workloads; never the interactive backend. Its tool surface exposes fetch/extract, not interactive act |
 //! | `Playwright` | `playwright-cli` (`@playwright/cli`) subprocess | Mature fallback: industry-standard engine, ref-based snapshots |
-//! | `Camofox` | Long-lived Python shim over JSON-over-stdio (official `camoufox` launcher, Juggler — no CDP) | Anti-detect fallback: patched Firefox; fingerprint config in `[browser.camofox]` |
+//! | `Camofox` | Long-lived Python shim over JSON-over-stdio (official `camoufox` launcher, Juggler - no CDP) | Anti-detect fallback: patched Firefox; fingerprint config in `[browser.camofox]` |
 //!
 //! Backend selection lives in config (`[browser] backend`, resolved to
 //! [`crate::registry::BackendKind`]); see [`crate::registry`] for the
@@ -23,7 +23,7 @@
 //! `browser_act` only on GSD).
 //!
 //! Deliberately NOT backends: competing agent frameworks and sidecar
-//! transports are never wrapped — wrapping them would invert the
+//! transports are never wrapped - wrapping them would invert the
 //! architecture (Pantheon is the agent; the backend is infrastructure).
 
 use super::error::BrowserError;
@@ -38,7 +38,7 @@ use super::error::BrowserError;
 /// On success returns the command's structured output as JSON.
 ///
 /// Backends must NOT hard-fail on transport-level unknowns they can
-/// safely ignore (e.g. unrecognized CDP event types — schema drift is a
+/// safely ignore (e.g. unrecognized CDP event types - schema drift is a
 /// known maintenance tax on the native path); unknown *commands* in
 /// `argv` become [`BrowserError::UnsupportedCommand`].
 pub trait BrowserBackend: Send + Sync {

@@ -11,8 +11,8 @@
 //! - background-task steps from the tool lifecycle events of each task's
 //!   own run id, captured in [`BgTask::steps`].
 //!
-//! Step detail finer than that — e.g. a delegated subagent's inner tool
-//! calls — runs in another session and never reaches this process, so
+//! Step detail finer than that - e.g. a delegated subagent's inner tool
+//! calls - runs in another session and never reaches this process, so
 //! subagent sections honestly show spawn / running / done instead of
 //! fabricated checklists.
 
@@ -174,7 +174,7 @@ pub fn sweep_spans(text: &str, tick: u64, base: Color, peak: Color) -> Vec<Span<
 /// Reusable traveling-highlight sweep over ANY status string: a soft
 /// purplish light sweeping left→right through the string's characters,
 /// looping while the operation is active. Pure function of `text` +
-/// `tick` — no spinners, no cursor characters, no full-line flashing,
+/// `tick` - no spinners, no cursor characters, no full-line flashing,
 /// no layout change. Any status message can use it.
 pub fn render_sweep(text: &str, tick: u64, base: Color, peak: Color) -> Line<'static> {
     Line::from(sweep_spans(text, tick, base, peak))
@@ -184,7 +184,7 @@ pub fn render_sweep(text: &str, tick: u64, base: Color, peak: Color) -> Line<'st
 /// of a single status string, looping while the operation is active.
 ///
 /// Reusable: construct with the string, call [`tick`] once per frame
-/// while the operation is active, [`render`] the spans each frame — or
+/// while the operation is active, [`render`] the spans each frame - or
 /// use the free function [`render_sweep`] for any one-off status
 /// message. The sweep never blinks the line, never moves a cursor
 /// character, never changes the layout. Swap strings mid-flight with
@@ -205,7 +205,7 @@ impl TravelHighlight {
 
     /// Swap the string mid-flight (e.g. the status changed). Resets the
     /// sweep to the left edge so the new string lights up from the
-    /// start. No-op when the string is unchanged — the sweep keeps
+    /// start. No-op when the string is unchanged - the sweep keeps
     /// traveling.
     pub fn set_word(&mut self, word: &str) {
         if self.word != word {
@@ -215,7 +215,7 @@ impl TravelHighlight {
     }
 
     /// The plain string, for width calculations. Render output is always
-    /// exactly this long — the sweep never changes the layout.
+    /// exactly this long - the sweep never changes the layout.
     pub fn text(&self) -> &str {
         &self.word
     }
@@ -266,7 +266,7 @@ fn lerp_color(a: Color, b: Color, t: f64) -> Color {
     }
 }
 
-/// `42.7s` / `850ms` — compact duration for captured background steps.
+/// `42.7s` / `850ms` - compact duration for captured background steps.
 pub fn fmt_ms(ms: u64) -> String {
     if ms >= 1000 {
         format!("{:.1}s", ms as f64 / 1000.0)
@@ -539,7 +539,7 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     }
 
     // Subagent sections, in spawn order. Only what's real: the agent
-    // name plus running/done — never invented step text.
+    // name plus running/done - never invented step text.
     let subs: Vec<&SubAgentRecord> = state
         .subagents
         .iter()

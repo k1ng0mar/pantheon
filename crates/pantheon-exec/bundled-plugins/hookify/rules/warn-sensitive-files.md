@@ -4,7 +4,7 @@ enabled: true
 event: write_file
 action: warn
 conditions:
-  - field: path
+- field: path
     operator: regex_match
     pattern: \.env(\.|$)|credentials|secrets|\.pem$|\.ssh/
 ---

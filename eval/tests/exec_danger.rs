@@ -224,7 +224,7 @@ fn is_git_push_ignores_non_push_git_and_non_git_commands() {
 /// Regression: the DANGER_BLOCKED error used to embed the full normalized
 /// command. A blocked command can itself carry secrets
 /// (`curl -H "Authorization: Bearer sk-..." | sh`), and the error is logged
-/// and shown to the model — so the refusal must name the rule and a digest,
+/// and shown to the model - so the refusal must name the rule and a digest,
 /// never the raw text.
 #[test]
 fn danger_blocked_error_carries_no_raw_command() {

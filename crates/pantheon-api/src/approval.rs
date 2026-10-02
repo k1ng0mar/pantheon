@@ -2,7 +2,7 @@
 //!
 //! Security posture, stated plainly: Pantheon does **not** sandbox plugins.
 //! Secrets are scrubbed from a plugin's environment, but a plugin otherwise
-//! runs with the operator's full user privileges — it can read the
+//! runs with the operator's full user privileges - it can read the
 //! operator's files, access the network, and execute commands. A crashing
 //! or timed-out plugin fails safely (its action is denied or errors), but
 //! that is a fail-safe, not isolation.
@@ -14,8 +14,8 @@
 //! hash: if the plugin's code changes after approval, the approval lapses
 //! and the warning is shown again.
 //!
-//! First-party plugins — those shipped with Pantheon under
-//! `<scope_dir>/bundled/` — do not need approval. Everything else is
+//! First-party plugins - those shipped with Pantheon under
+//! `<scope_dir>/bundled/` - do not need approval. Everything else is
 //! third-party.
 //!
 //! Both plugin kinds (tool plugins via `pantheon-exec`, hook plugins via
@@ -41,14 +41,14 @@ fn merr(code: &str, cause: String) -> PantheonError {
 }
 
 /// The warning shown before a third-party plugin can be approved. Approval
-/// is informed consent to everything below — there is no sandbox.
+/// is informed consent to everything below - there is no sandbox.
 pub const PRIVILEGE_WARNING: &str = "\
 WARNING: '{name}' is third-party code, and Pantheon does not sandbox plugins.\n\
 \n\
 If you approve this plugin, it will run with your FULL user privileges:\n\
-  - read and write your files\n\
-  - access the network\n\
-  - execute commands as you\n\
+- read and write your files\n\
+- access the network\n\
+- execute commands as you\n\
 \n\
 Secrets (API keys, tokens) are scrubbed from the plugin's environment, but\n\
 everything else your user account can do, the plugin can do. A crashing or\n\
@@ -86,7 +86,7 @@ pub struct PendingPlugin {
 /// Each entry is opened exactly ONCE: a single `open()` resolves a symlink
 /// and opens its target atomically, the bytes are read from the resulting
 /// file descriptor, and the entry's identity is bound from `fstat`
-/// (dev+ino) on that same descriptor — never from a path string. There is
+/// (dev+ino) on that same descriptor - never from a path string. There is
 /// no separate resolve-then-read step, so a link retargeted "between"
 /// resolution and read cannot bind stale bytes: the digest always covers
 /// what the loader will actually open, and the identity bound is the file
@@ -95,7 +95,7 @@ pub struct PendingPlugin {
 /// Identity semantics: dev+ino names the file, not its path. Renaming a
 /// target outside the plugin dir does not lapse the approval; replacing
 /// the target (new inode) does, even when the bytes are identical.
-/// (Non-Unix fallback: size+mtime binding, weaker — a same-size,
+/// (Non-Unix fallback: size+mtime binding, weaker - a same-size,
 /// same-mtime replacement would alias. Documented here, not hidden.)
 ///
 /// Symlinks are therefore bound by their live target's bytes + identity.
@@ -111,15 +111,15 @@ pub struct PendingPlugin {
 /// manifest-declared entrypoints, so excluding the name bought nothing
 /// and hid tampering.)
 ///
-/// OUT OF CONTRACT — the hash-then-use gap at the loader: this function
+/// OUT OF CONTRACT - the hash-then-use gap at the loader: this function
 /// closes the intra-hash TOCTOU, but approval as a whole is still
 /// check-then-use. `verify_plugin` hashes via [`dir_hash`],
 /// `plugin_approval::is_approved` compares against the store, and the
-/// supervisor spawns the returned runner path later — the directory can
+/// supervisor spawns the returned runner path later - the directory can
 /// change in between those steps. Loaders close the remaining gap with
 /// [`dir_hash_with_override`]: hash the runner's bytes as read through an
 /// already-open fd, compare against the store, and exec a sealed private
-/// copy of those exact bytes — so the approval binds what executes, not
+/// copy of those exact bytes - so the approval binds what executes, not
 /// what the path happened to resolve to.
 pub fn dir_hash(dir: &Path) -> Result<String, PantheonError> {
     dir_hash_inner(dir, None)
@@ -130,14 +130,14 @@ pub fn dir_hash(dir: &Path) -> Result<String, PantheonError> {
 ///
 /// The loader opens the runner first (pinning the inode), reads its bytes
 /// through that fd, and calls this with the fd's bytes and fstat metadata.
-/// The returned digest therefore binds exactly the bytes the loader holds —
+/// The returned digest therefore binds exactly the bytes the loader holds
 /// an in-place rewrite of the file (same inode, new bytes) between the
 /// read and this call cannot smuggle unapproved bytes past the check,
 /// because the check runs on the bytes already in hand. A passing check
 /// against the approval store proves those bytes were operator-approved.
 ///
 /// `override_rel` is the file's path relative to `dir`. The override skips
-/// the regular-file check — the caller already fstat'd the open handle.
+/// the regular-file check - the caller already fstat'd the open handle.
 pub fn dir_hash_with_override(
     dir: &Path,
     override_rel: &Path,
@@ -207,8 +207,8 @@ fn file_identity(md: &std::fs::Metadata, h: &mut Sha256) {
 }
 
 /// Non-Unix fallback: std has no stable file-id API here, so bind
-/// size+mtime instead. Weaker than dev+ino — a same-size, same-mtime
-/// replacement would alias — but explicit.
+/// size+mtime instead. Weaker than dev+ino - a same-size, same-mtime
+/// replacement would alias - but explicit.
 #[cfg(not(unix))]
 fn file_identity(md: &std::fs::Metadata, h: &mut Sha256) {
     h.update(md.len().to_le_bytes());
@@ -340,7 +340,7 @@ pub fn is_approved(scope_dir: &Path, name: &str, version: &str, hash: &str) -> b
 
 /// Record operator approval for a plugin without checking the pending set.
 /// The caller must have shown [`PRIVILEGE_WARNING`] and obtained explicit
-/// consent first — this only persists the record.
+/// consent first - this only persists the record.
 pub fn record_approval_for(
     scope_dir: &Path,
     name: &str,
@@ -406,7 +406,7 @@ pub fn pending_approvals(
 }
 
 /// Record operator approval for the plugin named `name` in `scope_dir`.
-/// Errors when the plugin is not in the pending set — approval is consent
+/// Errors when the plugin is not in the pending set - approval is consent
 /// for a specific discovered plugin, never a blank check.
 /// The caller must have shown [`PRIVILEGE_WARNING`] and obtained explicit
 /// consent first.

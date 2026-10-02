@@ -2,7 +2,7 @@
 //!
 //! Usage rows are persisted as `Event::UsageRecorded` (the provider-plane
 //! `Usage` event used to be dropped before reaching the ledger). This
-//! command folds them over a time window — default today — and breaks
+//! command folds them over a time window - default today - and breaks
 //! the totals down by model, by session (run), and by day.
 
 use std::collections::BTreeMap;
@@ -222,7 +222,7 @@ pub fn render_human(r: &StatsReport) -> String {
         let label = s
             .title
             .as_deref()
-            .map(|t| format!("{} — {}", short_id(&s.run_id), t))
+            .map(|t| format!("{} - {}", short_id(&s.run_id), t))
             .unwrap_or_else(|| short_id(&s.run_id));
         out.push_str(&format!(
             "  {:<42} {:>6} calls  {:>14}  {}\n",
@@ -248,7 +248,7 @@ pub fn render_human(r: &StatsReport) -> String {
 
 fn short_id(id: &str) -> String {
     if id.len() > 24 {
-        format!("{}…", &id[..23])
+        format!("{}...", &id[..23])
     } else {
         id.to_string()
     }
@@ -296,7 +296,7 @@ fn truncate(s: &str, max: usize) -> String {
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}…", &s[..end])
+    format!("{}...", &s[..end])
 }
 
 /// Machine-readable report.

@@ -42,7 +42,7 @@ The security backbone: fine-grained capabilities (`filesystem.read`, `shell.exec
 
 ## Execution
 
-Tools run inside sandbox boundaries chosen by the policy (process isolation up to containers and strict namespace jails — there is no VM backend). A boundary that cannot start fails closed: the tool reports `SANDBOX_UNAVAILABLE` instead of running unconfined. File writes go through atomic apply with checkpoints and rollback.
+Tools run inside sandbox boundaries chosen by the policy (process isolation up to containers and strict namespace jails - there is no VM backend). A boundary that cannot start fails closed: the tool reports `SANDBOX_UNAVAILABLE` instead of running unconfined. File writes go through atomic apply with checkpoints and rollback.
 
 ## Memory and storage
 

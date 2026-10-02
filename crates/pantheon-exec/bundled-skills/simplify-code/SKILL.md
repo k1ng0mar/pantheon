@@ -35,14 +35,14 @@ comments) across a codebase without changing what it does.
 5. Run the full suite again. Green with the same count as baseline is
    the acceptance bar.
 
-## Output Contract
+## Output contract
 
 - Per target: what was removed or restructured, in concrete terms
   (functions deleted, lines removed, duplications collapsed).
 - Test results before and after.
 - Anything rejected, with the reason.
 
-## Operating Rules
+## Operating rules
 
 1. No behavior change, ever, in a cleanup pass. If an agent proposes
    one, that is a separate task with its own review.

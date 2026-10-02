@@ -52,7 +52,7 @@ pub(crate) fn opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
 /// `published_date`, `score` may be missing or null. A single malformed
 /// result is skipped, never fatal to the whole call; a result without a
 /// usable URL is skipped (there is nothing to cite). A missing or
-/// non-array `results` field is a `BadResponse` — the envelope itself is
+/// non-array `results` field is a `BadResponse` - the envelope itself is
 /// broken, not one hit.
 pub fn parse_tavily_response(body: &str) -> Result<Vec<SearchResult>, SearchError> {
     let v: serde_json::Value = serde_json::from_str(body)

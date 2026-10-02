@@ -6,7 +6,7 @@
 //! the rejection is audited.
 //!
 //! This is the *no-regression* half of validation. The *improvement*
-//! half — proving the proposal makes a held-out task better — lives in
+//! half - proving the proposal makes a held-out task better - lives in
 //! [`crate::replay`]. A proposal ships only when both pass.
 
 use crate::NightlyConfig;
@@ -33,7 +33,7 @@ pub enum EvalVerdict {
     /// audit log and the approval prompt.
     Pass(String),
     /// The gate ran no evals: the proposal had no eval tags. This is NOT
-    /// a pass — an untested proposal must not look validated. The caller
+    /// a pass - an untested proposal must not look validated. The caller
     /// decides whether the proposal's kind is allowlisted to skip
     /// eval-gating; otherwise it escalates.
     Skipped(String),
@@ -125,7 +125,7 @@ pub fn gate(
     if tags.is_empty() {
         // No evals ran: report that explicitly. Callers must treat
         // `Skipped` as *not validated* unless the proposal kind is
-        // allowlisted to skip eval-gating — a vacuous pass here let
+        // allowlisted to skip eval-gating - a vacuous pass here let
         // broken drafts validate green.
         return EvalVerdict::Skipped("no evals tagged".into());
     }

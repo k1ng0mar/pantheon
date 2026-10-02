@@ -1,4 +1,4 @@
-//! `pantheon reflect` — compatibility shim over the unified nightly pass.
+//! `pantheon reflect` - compatibility shim over the unified nightly pass.
 //!
 //! The old standalone reflection pipeline is merged into
 //! [`crate::nightly_cli`]: `pantheon reflect` now runs the full nightly

@@ -80,7 +80,7 @@ pub trait ModelTurn {
 pub struct Budget {
     pub max_turns: u32,
     pub max_tool_calls: u32,
-    /// Per-request OUTPUT cap for chat requests (not a run budget — input
+    /// Per-request OUTPUT cap for chat requests (not a run budget - input
     /// tokens are never counted). Precedence: `/tokens N` > the
     /// `[budget].max_tokens` config value > the session model's known
     /// maximum output (16k fallback when unknown), clamped to the model's
@@ -171,7 +171,7 @@ pub struct SwarmCtx {
 
 /// Parse `ask_user` tool arguments: `{question, options?}`.
 /// Malformed args degrade to the raw text as the question rather than
-/// failing the turn — a confused question is still answerable, a crashed
+/// failing the turn - a confused question is still answerable, a crashed
 /// turn is not.
 /// Used by the production `Session::drive` pre-gate.
 pub fn parse_ask_user_args(args: &str) -> (String, Vec<String>) {
@@ -218,7 +218,7 @@ pub struct AgentLoop<'a> {
     pub judge: Option<&'a dyn pantheon_api::model::Judge>,
     /// Cooperative cancellation token. Set by the user (Ctrl-C / double-Esc);
     /// the loop checks it at every turn and tool boundary and stops cleanly.
-    /// It cannot abort an in-flight provider request — that returns on its own
+    /// It cannot abort an in-flight provider request - that returns on its own
     /// and the flag is observed on the next boundary.
     pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
     /// Current depth in the swarm (0 = primary agent).

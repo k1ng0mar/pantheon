@@ -9,7 +9,7 @@
 //!
 //! Keeping it here (not in the runtime) also keeps the dependency direction
 //! clean: `pantheon-extensions` already depends on `pantheon-api`, and the
-//! runtime depends on extensions — never the reverse.
+//! runtime depends on extensions - never the reverse.
 
 use crate::hooks::Hook;
 use pantheon_api::events::Event;
@@ -38,9 +38,9 @@ fn stream_deltas_enabled() -> bool {
 /// Map one canonical event to the hook it should fire, if any.
 ///
 /// Returns `None` for events with no hook (bookkeeping, approval, decision,
-/// context-trim, …). Observers only: gate and transform hooks are *not*
+/// context-trim, ...). Observers only: gate and transform hooks are *not*
 /// driven from here because they must run inline and their return value
-/// changes control flow — `pre_tool_call` and `transform_tool_result` are
+/// changes control flow - `pre_tool_call` and `transform_tool_result` are
 /// fired from the tool-execution path in `session.rs` instead.
 pub fn dispatch(ev: &Event) -> Option<HookFire> {
     use Event::*;
@@ -78,7 +78,7 @@ pub fn dispatch(ev: &Event) -> Option<HookFire> {
             kv(&[("run_id", run_id), ("agent", agent)]),
         ),
         // Context compaction ran (rows trimmed or summarized). OMP emits
-        // this as a start/end pair; Pantheon fires once, after the fact —
+        // this as a start/end pair; Pantheon fires once, after the fact
         // see `Hook::OnCompaction` for the documented collapse.
         ContextTrimmed { run_id, .. } => (Hook::OnCompaction, kv(&[("run_id", run_id)])),
         ContextCompressed { run_id, .. } => (Hook::OnCompaction, kv(&[("run_id", run_id)])),

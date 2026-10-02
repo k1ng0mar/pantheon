@@ -11,7 +11,7 @@ use std::collections::HashMap;
 /// the evidence slot pinned empty. Every module names its own remediation;
 /// `retryable` marks transient failures.
 ///
-/// This replaces the eight copy-pasted `berr` / `merr` / `name_err` / …
+/// This replaces the eight copy-pasted `berr` / `merr` / `name_err` / ...
 /// constructors (plus ad-hoc `PantheonError::new` calls) that had drifted
 /// across the tool modules.
 pub(crate) fn tool_err(

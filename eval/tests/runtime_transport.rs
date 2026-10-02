@@ -1,8 +1,8 @@
 //! Behavioral tests for the runtime's transport-agnostic JSON-RPC dispatcher.
 //!
 //! Policy: only small deterministic unit tests live beside the code
-//! (`cargo test -p <crate>`). Everything behavioral — SQLite stores,
-//! threads, sockets, subprocesses, timing, filesystem — lives here and
+//! (`cargo test -p <crate>`). Everything behavioral - SQLite stores,
+//! threads, sockets, subprocesses, timing, filesystem - lives here and
 //! runs via `cargo test -p pantheon-eval`.
 //!
 //! The old unix-socket transport (`UnixSocketTransport`) was removed by the

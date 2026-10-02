@@ -7,9 +7,9 @@
 //! broken target:
 //!
 //! 1. a cheap deterministic retry (re-probe the server / re-run the
-//!    check) — the flapping-target second chance;
+//!    check) - the flapping-target second chance;
 //! 2. LLM diagnosis through the `Repair` auxiliary slot
-//!    ([`NightlyLlm::diagnose_repair`]) — advisory only, recorded in the
+//!    ([`NightlyLlm::diagnose_repair`]) - advisory only, recorded in the
 //!    audit log and any escalation; skipped silently when the slot is
 //!    unconfigured or the call fails;
 //! 3. a bounded config repair (re-resolve env/paths; normalize a broken
@@ -19,7 +19,7 @@
 //!    `mcp-server` / `schedule` / `tool`.
 //!
 //! Step 4 is the floor: a target the pass cannot fix is contained and
-//! escalated — never left retrying silently, never repaired into a worse
+//! escalated - never left retrying silently, never repaired into a worse
 //! state. Every attempt is audited with the existing
 //! [`NightlyEvent::FixAttempt`] shape; escalations reuse
 //! [`NightlyEvent::Escalated`] and the fix loop's escalation file.
@@ -33,7 +33,7 @@
 //!
 //! Boundedness: at most two mutating attempts per target (retry, then
 //! re-resolve) before containment; targets are visited in sorted order;
-//! adapters must bound each call (suggested ≤ 30s) — a repair phase that
+//! adapters must bound each call (suggested ≤ 30s) - a repair phase that
 //! hangs the nightly pass is a bug.
 
 use crate::audit::NightlyEvent;
@@ -87,8 +87,8 @@ pub trait McpRepairTarget {
     fn servers(&mut self) -> Vec<McpServerSnapshot>;
     /// One more real connect attempt (the flapping-server second chance).
     fn retry_connect(&mut self, name: &str) -> Result<(), String>;
-    /// Re-resolve the server's config — env vars and paths may have
-    /// changed since it was configured — then retry the connection.
+    /// Re-resolve the server's config - env vars and paths may have
+    /// changed since it was configured - then retry the connection.
     fn re_resolve(&mut self, name: &str) -> Result<(), String>;
     /// Disable the server: stop reconnect attempts, keep the spec for the
     /// operator. The escalation tells the human to mirror the disable in
@@ -160,7 +160,7 @@ pub struct RepairReport {
 ///
 /// Advisory only: the returned text is recorded in the audit log and any
 /// escalation; repair *actions* stay deterministic. `None` when no repair
-/// model is configured, LLM steps are off, or the call fails — the
+/// model is configured, LLM steps are off, or the call fails - the
 /// deterministic ladder proceeds either way. The pass never fails for a
 /// missing repair model.
 fn diagnose(
@@ -199,7 +199,7 @@ fn truncate(s: &str, max: usize) -> String {
     while !s.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}…", &s[..end])
+    format!("{}...", &s[..end])
 }
 
 fn fix_attempt(
@@ -335,7 +335,7 @@ fn repair_mcp(
             });
             continue;
         }
-        // Attempt 1: one more real connect — the flapping-server second
+        // Attempt 1: one more real connect - the flapping-server second
         // chance.
         match mcp.retry_connect(&snap.name) {
             Ok(()) => {
@@ -409,7 +409,7 @@ fn repair_mcp(
                         match mcp.disable(&snap.name, &reason) {
                             Ok(()) => {}
                             Err(e) => {
-                                // Containment failed too: still escalate —
+                                // Containment failed too: still escalate
                                 // the human must know. The audit trail
                                 // carries both failures.
                                 fix_attempt(
@@ -506,7 +506,7 @@ fn repair_schedules(
             continue;
         }
         // No retry-the-job ladder: re-firing a failing job is not the
-        // nightly's job. Diagnose (advisory), then pause + escalate — a
+        // nightly's job. Diagnose (advisory), then pause + escalate - a
         // failing cron spamming errors nightly is worse than a paused one.
         let diagnosis = diagnose(repair, "scheduled-job", &job.id, &ctx);
         if let Some(d) = &diagnosis {

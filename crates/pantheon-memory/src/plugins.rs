@@ -24,7 +24,7 @@
 //! layer+namespace+key); `forget` already did.
 //! Responses: `{"ok":true, ...}` or `{"ok":false,"code":"...","cause":"..."}`.
 //! Process-per-call (same model as hook execution): simple, isolated, and
-//! a hanging plugin cannot poison the runtime — it is killed on timeout.
+//! a hanging plugin cannot poison the runtime - it is killed on timeout.
 //!
 //! Policy note: this crate never asks a plugin whether a write is allowed.
 //! Gate (`write_via` / `recall_via` / `confirm_via`) runs before the plugin
@@ -250,7 +250,7 @@ pub struct StdioBackend {
     args: Vec<String>,
     timeout: Duration,
     /// Max trust tier the plugin may report on a record. Default
-    /// Untrusted — same laundering guard as the HTTP adapter.
+    /// Untrusted - same laundering guard as the HTTP adapter.
     trust_ceiling: TrustTier,
 }
 

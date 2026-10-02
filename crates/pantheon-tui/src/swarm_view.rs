@@ -1,4 +1,4 @@
-//! `/swarm` — an honest snapshot of this session's delegation tree.
+//! `/swarm` - an honest snapshot of this session's delegation tree.
 //!
 //! The ledger records `AgentSpawned { run_id, agent }` on the parent run and
 //! `AgentCompleted { run_id, agent }` when a delegation finishes. What the
@@ -7,7 +7,7 @@
 //! its direct delegations, capped at a fixed depth, and says so plainly
 //! rather than fabricating relationships.
 //!
-//! The empty case renders exactly: `no subagents — this run is working solo`.
+//! The empty case renders exactly: `no subagents - this run is working solo`.
 
 use pantheon_api::events::Event;
 use pantheon_storage::LedgerEntry;
@@ -64,11 +64,11 @@ pub fn delegations(entries: &[LedgerEntry]) -> Vec<Delegation> {
 pub fn render_swarm(entries: &[LedgerEntry], run_id: &str) -> String {
     let dels = delegations(entries);
     if dels.is_empty() {
-        return "no subagents — this run is working solo".to_string();
+        return "no subagents - this run is working solo".to_string();
     }
     let short = run_id.chars().take(8).collect::<String>();
     let mut lines = vec![format!(
-        "swarm {short} (running) — {} delegation{}",
+        "swarm {short} (running) - {} delegation{}",
         dels.len(),
         if dels.len() == 1 { "" } else { "s" }
     )];
@@ -80,7 +80,7 @@ pub fn render_swarm(entries: &[LedgerEntry], run_id: &str) -> String {
     }
     if dels.len() > MAX_DEPTH {
         lines.push(format!(
-            "… {} more (depth cap {})",
+            "... {} more (depth cap {})",
             dels.len() - MAX_DEPTH,
             MAX_DEPTH
         ));
@@ -88,7 +88,7 @@ pub fn render_swarm(entries: &[LedgerEntry], run_id: &str) -> String {
     lines.join("\n")
 }
 
-/// `/swarm` — show this session's delegation tree.
+/// `/swarm` - show this session's delegation tree.
 pub fn cmd_swarm(state: &mut TuiState, session: &Arc<Session>) {
     let entries = match session.supervisor.replay(&state.session_id) {
         Ok(e) => e,

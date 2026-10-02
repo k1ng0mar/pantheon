@@ -4,7 +4,7 @@
 //! [`Ledger::usage_between`](pantheon_storage::Ledger::usage_between)
 //! (`UsageRecorded` rows): totals, by model, by run, by UTC day. The
 //! dashboard cannot depend on the TUI crate, so the fold is mirrored here
-//! against the stable ledger API — the same rows, the same sums.
+//! against the stable ledger API - the same rows, the same sums.
 
 use crate::util::{now_ms, round_cost_usd};
 use crate::{err_json, json_ok, query_usize, App};

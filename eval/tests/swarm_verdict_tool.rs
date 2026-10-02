@@ -81,7 +81,7 @@ fn tool_call_pass_advances_without_loopback() {
         .unwrap();
     reach_review(&worker, &o, &created.id);
 
-    // The reviewer emits its verdict as a structured tool call — no fenced
+    // The reviewer emits its verdict as a structured tool call - no fenced
     // block, no verdict prose in the transcript.
     worker.tool_call("r_3", "verdict", &verdict_args(true, &[]));
     worker.complete("r_3", "looks good");
@@ -184,7 +184,7 @@ fn no_verdict_from_any_source_fails_verification() {
         .unwrap();
     reach_review(&worker, &o, &created.id);
 
-    // No tool call, no fenced block, no verdict keywords — the reviewer
+    // No tool call, no fenced block, no verdict keywords - the reviewer
     // simply never emitted a verdict.
     worker.complete(
         "r_3",

@@ -7,7 +7,7 @@
 #   id          stable key (--provider ID)
 #   label       human name for UI
 #   base_url    full base URL (no trailing slash). May contain {placeholders}
-#               for account/region/resource/project scoping — resolved at
+#               for account/region/resource/project scoping - resolved at
 #               request time from PANTHEON_<PROVIDER>_<VAR> (see docs/user-guide/providers.md).
 #   api_mode    openai | anthropic
 #   base_env    env var overriding base_url (e.g. PANTHEON_BASE_OPENAI)
@@ -17,7 +17,7 @@
 #   models      curated model rows (see ModelMeta shape). Empty = undiscovered:
 #               `pantheon model` asks the endpoint (GET {base}/models) instead.
 #   prominent   show in the picker UI
-#   recommended the one provider Pantheon recommends by default — listed
+#   recommended the one provider Pantheon recommends by default - listed
 #               first in the setup wizard, marked in `pantheon providers`
 #   dev         development-only endpoint: hidden from every picker, still
 #               resolvable by id
@@ -114,7 +114,7 @@ providers:
     base_env: PANTHEON_BASE_VERTEX
     key_env: GOOGLE_ACCESS_TOKEN
     prominent: true
-    tag: Project/location template — regional host is required; Bearer token is a short-lived GCP OAuth access token (gcloud auth print-access-token, ~1h); model ids are publisher/model, e.g. google/gemini-2.5-flash
+    tag: Project/location template - regional host is required; Bearer token is a short-lived GCP OAuth access token (gcloud auth print-access-token, ~1h); model ids are publisher/model, e.g. google/gemini-2.5-flash
     models: []
 
   - id: bedrock
@@ -124,7 +124,7 @@ providers:
     base_env: PANTHEON_BASE_BEDROCK
     key_env: AWS_BEARER_TOKEN_BEDROCK
     prominent: true
-    tag: Region template — Bearer auth only (long-term API key or 12h token from aws-bedrock-token-generator); model ids are inference-profile ids (us.anthropic.claude-sonnet-4-6, global.openai.gpt-5.6-terra); SigV4 not implemented
+    tag: Region template - Bearer auth only (long-term API key or 12h token from aws-bedrock-token-generator); model ids are inference-profile ids (us.anthropic.claude-sonnet-4-6, global.openai.gpt-5.6-terra); SigV4 not implemented
     models: []
 
   - id: azure
@@ -134,10 +134,10 @@ providers:
     base_env: PANTHEON_BASE_AZURE
     key_env: AZURE_OPENAI_API_KEY
     # Foundry's /openai/v1 takes the API key in the `api-key` header (Azure
-    # convention), not `Authorization: Bearer` — the OpenAI default.
+    # convention), not `Authorization: Bearer` - the OpenAI default.
     key_header: api-key
     prominent: true
-    tag: Resource template — set PANTHEON_BASE_AZURE; model id is the deployment name
+    tag: Resource template - set PANTHEON_BASE_AZURE; model id is the deployment name
     models: []
 
   - id: huggingface
@@ -336,7 +336,7 @@ providers:
     prominent: true
     tag: Chinese lab, agent models
     # minimax-01 was deprecated and superseded by the M-series; no
-    # replacement id is pinned here — `pantheon model` discovers via
+    # replacement id is pinned here - `pantheon model` discovers via
     # GET {base}/models instead.
     models: []
 
@@ -357,7 +357,7 @@ providers:
     base_env: PANTHEON_BASE_CLOUDFLARE
     key_env: CLOUDFLARE_API_TOKEN
     prominent: true
-    tag: Account template — model ids are full @cf/vendor/model paths, e.g. @cf/meta/llama-3.1-8b-instruct; token needs Workers AI permission
+    tag: Account template - model ids are full @cf/vendor/model paths, e.g. @cf/meta/llama-3.1-8b-instruct; token needs Workers AI permission
     models: []
 
   - id: deepinfra
@@ -415,7 +415,7 @@ providers:
     base_env: PANTHEON_BASE_NEBIUS
     key_env: NEBIUS_API_KEY
     prominent: true
-    tag: AI Studio is api.studio.nebius.ai/v1 — override to switch
+    tag: AI Studio is api.studio.nebius.ai/v1 - override to switch
     models: []
 
   - id: upstage

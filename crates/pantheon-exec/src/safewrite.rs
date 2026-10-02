@@ -246,7 +246,7 @@ struct JournalEntry {
 ///
 /// When a workspace root is set (via [`SafeWriter::with_workspace_root`]),
 /// every target path is confined with `crate::confine` before any read or
-/// write — deny globs first, then containment. The tool layer always sets
+/// write - deny globs first, then containment. The tool layer always sets
 /// it; direct engine users should too.
 #[derive(Debug, Clone)]
 pub struct SafeWriter {

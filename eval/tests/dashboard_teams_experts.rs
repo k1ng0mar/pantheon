@@ -144,7 +144,7 @@ fn teams_id_escape_rejected() {
     let d = boot();
     // ".." reaches the handler as an id and is rejected before any
     // filesystem access; multi-segment paths never match a route at all.
-    // Either way the outcome must be 400/404 — never a file read.
+    // Either way the outcome must be 400/404 - never a file read.
     assert_eq!(d.get("/api/teams/..").status, 400);
     assert_eq!(d.delete("/api/teams/..").status, 400);
     assert_eq!(d.get("/api/teams/%2e%2e").status, 400);
@@ -302,7 +302,7 @@ fn teams_use_spawns_swarm_with_response_shape() {
     assert_eq!(b["id"], b["swarm_id"]);
     let run_id = b["run_id"].as_str().unwrap();
     assert!(!run_id.is_empty(), "{b}");
-    // Staged: lead plus the current (first) stage's members — the lead
+    // Staged: lead plus the current (first) stage's members - the lead
     // is also the gather member here, so it appears twice.
     let names: Vec<&str> = b["agents"]
         .as_array()

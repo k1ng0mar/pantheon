@@ -3,11 +3,11 @@
 //! Three call sites used to resolve the session's chat model
 //! independently, and they disagreed:
 //!
-//! - `pantheon_runtime::Session::from_env` — environment only, ignoring
+//! - `pantheon_runtime::Session::from_env` - environment only, ignoring
 //!   `config.toml` entirely;
-//! - the TUI's `build_model_policy` — explicit override, then config,
+//! - the TUI's `build_model_policy` - explicit override, then config,
 //!   then environment;
-//! - the dashboard session factory — `[model]` section, then
+//! - the dashboard session factory - `[model]` section, then
 //!   environment.
 //!
 //! The TUI's own doc comment even claimed "environment > config.toml"
@@ -22,7 +22,7 @@
 //! deliberate, visible choice for that process; the config file is the
 //! persistent default. Explicit call arguments (CLI flags, API fields)
 //! beat both. Empty and whitespace-only values are ignored at every
-//! level — an empty env var must not shadow a configured value.
+//! level - an empty env var must not shadow a configured value.
 //!
 //! Follow-ups (other leaves own those crates): migrate the TUI's
 //! `build_model_policy` and the dashboard session factory's

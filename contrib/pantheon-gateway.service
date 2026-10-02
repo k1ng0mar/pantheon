@@ -1,4 +1,4 @@
-# pantheon-gateway.service — user-level systemd unit for the Pantheon gateway.
+# pantheon-gateway.service  -  user-level systemd unit for the Pantheon gateway.
 #
 # This runs `pantheon gateway run` as a supervised user service: restarts on
 # failure with backoff, starts at login, and is hardened with the standard
@@ -20,7 +20,7 @@
 #
 # Watchdog note: systemd's Restart= is the watchdog here. A second,
 # Pantheon-specific watchdog daemon (checking /api/health and restarting)
-# is out of scope — if you need one, see contrib/README.md.
+# is out of scope  -  if you need one, see contrib/README.md.
 
 [Unit]
 Description=Pantheon gateway (agent runtime daemon)
@@ -41,7 +41,7 @@ Environment=PANTHEON_HOME=%h/.pantheon
 ReadWritePaths=%h/.pantheon
 
 # Restart policy: always restart on failure, with backoff so a crash loop
-# does not hammer the machine. Give up after 5 restarts in 5 minutes —
+# does not hammer the machine. Give up after 5 restarts in 5 minutes  - 
 # that pattern means a config error, and retrying will not fix it.
 Restart=on-failure
 RestartSec=5s

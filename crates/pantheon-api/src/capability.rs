@@ -26,7 +26,7 @@ pub enum Capability {
     /// (`browser_fill_login` in pantheon-web's `browser` module). Split
     /// from Browser because it touches the user's credential vault: the
     /// model never sees the secret (the tool result reports only which
-    /// fields were filled), but the *decision* to fill is the user's —
+    /// fields were filled), but the *decision* to fill is the user's
     /// default policies mark this Approval so the run loop parks for a
     /// human before it runs. Mirrors the BrowserAct split.
     BrowserFillLogin,
@@ -50,13 +50,13 @@ pub enum Capability {
     /// agent can propose it but never self-authorize: default policies mark
     /// this Approval, so the run parks for a human before any plugin's
     /// code is switched on. Only bundled-catalog plugins are toggleable
-    /// this way — there is no agent path to install arbitrary plugins.
+    /// this way - there is no agent path to install arbitrary plugins.
     PluginEnable,
     /// Enabling a bundled MCP server (`enable_mcp` tool). The MCP twin
     /// of [`Capability::PluginEnable`]: default policies mark this
     /// Approval, so the run parks for a human before any server's tools
     /// are projected into the registry. Only bundled-catalog servers are
-    /// toggleable this way — there is no agent path to put an arbitrary
+    /// toggleable this way - there is no agent path to put an arbitrary
     /// command on the spawn line (the supply-chain boundary).
     McpEnable,
     Other(String),
@@ -81,7 +81,7 @@ impl Capability {
     /// Stable, log-safe token for a capability, e.g. `shell.execute`.
     /// Used for approval scopes and events, so it never carries payload
     /// values: a `MessageSend` token is the channel class, not the message.
-    /// Single home for the token table — sandbox labels and MCP parsing
+    /// Single home for the token table - sandbox labels and MCP parsing
     /// both delegate here so a new variant touches one match.
     pub fn token(&self) -> String {
         match self {

@@ -2,7 +2,7 @@ This plugin bundles security-pattern content adapted from the
 Anthropic Claude Code plugin collection.
 
 Source: https://github.com/anthropics/claude-plugins-official
-Copyright (c) Anthropic — licensed under the Apache License, Version 2.0.
+Copyright (c) Anthropic  -  licensed under the Apache License, Version 2.0.
 Bundled verbatim here as LICENSE-APACHE2; the Pantheon adaptations are
 marked in each file's header.
 

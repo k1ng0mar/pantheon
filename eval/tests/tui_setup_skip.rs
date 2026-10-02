@@ -128,7 +128,7 @@ fn skipped_browser_screen_removes_group_and_section() {
     // The Skip row on the browser screen removes Browser from the
     // enabled-tools vec: no `[browser]` section is written, the skip is
     // recorded in `[tools]`, and the runtime never registers the
-    // browser tools — while unskipped groups still resolve.
+    // browser tools - while unskipped groups still resolve.
     let _guard = ENV_GUARD.lock().unwrap();
     let dir = tempdir().unwrap();
     let mut answers = recommended_answers();
@@ -217,7 +217,7 @@ fn skipped_voice_screens_turn_voice_off() {
 fn skipped_stt_keeps_tts() {
     // Granular skip: the STT screen is skipped while TTS is answered
     // and Voice stays on. `[tts]` is written with the picked backend;
-    // `[stt]` is absent — the recommended STT default must NOT fill
+    // `[stt]` is absent - the recommended STT default must NOT fill
     // the gap the user explicitly declined.
     let _guard = ENV_GUARD.lock().unwrap();
     let dir = tempdir().unwrap();

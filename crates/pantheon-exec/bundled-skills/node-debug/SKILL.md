@@ -37,19 +37,19 @@ without an interactive terminal.
    `node --unhandled-rejections=strict app.js`,
    `node --trace-event-categories` for perf-adjacent mysteries.
 4. **Memory issues**: `node --heapsnapshot-near-heap-limit=3
-   --heapsnapshot-signal=SIGUSR2 app.js`, then send SIGUSR2 and analyze
+  --heapsnapshot-signal=SIGUSR2 app.js`, then send SIGUSR2 and analyze
    the snapshot offline. Growing heap across scripted runs is the
    signal; the snapshot names the retainer.
 5. Fix the root cause (see `systematic-debugging`), add a regression
    test.
 
-## Output Contract
+## Output contract
 
 - Repro command and stack trace.
 - Scripted inspector session: commands run and the state they revealed.
 - Root cause and fix, with regression test result.
 
-## Operating Rules
+## Operating rules
 
 1. Script every debugger interaction. If you need to react to output
    mid-session, split into passes.

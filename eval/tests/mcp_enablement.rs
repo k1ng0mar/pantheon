@@ -11,12 +11,12 @@
 //!   recipe definition: the `pantheon_mcp::bundled` facade exposes the
 //!   same recipes with byte-identical materialization, and both the
 //!   dashboard write path and the agent-tool write path materialize
-//!   through the one canonical writer — no first-writer-wins divergence.
+//!   through the one canonical writer - no first-writer-wins divergence.
 //! - `pinned_version` is stamped only for recipes with a real package
 //!   pin, never fabricated for unpinned (remote) recipes.
 //!
 //! Policy: only small deterministic unit tests live beside the code.
-//! Everything behavioral — filesystem, config parsing — lives here and
+//! Everything behavioral - filesystem, config parsing - lives here and
 //! runs via `cargo test -p pantheon-eval`.
 
 use pantheon_api::config::{Config, McpSection};
@@ -51,7 +51,7 @@ fn absent_server_is_disabled() {
 
 /// Upgrade behavior, pinned as a deliberate choice: a table written
 /// before the default existed (no `enabled` key, previously parsed as
-/// enabled) now parses as disabled. Fail-safe direction — the operator
+/// enabled) now parses as disabled. Fail-safe direction - the operator
 /// re-enables once, explicitly. No migration rewrites user configs to
 /// `enabled = true`.
 #[test]
@@ -130,7 +130,7 @@ fn sibling_absent_is_disabled() {
 /// #7: one canonical catalog. The `pantheon_mcp::bundled` facade must
 /// expose exactly the canonical recipes, and materializing through the
 /// facade must produce the identical config entry as the canonical
-/// recipe — no drift between the dashboard path and the agent path.
+/// recipe - no drift between the dashboard path and the agent path.
 /// (Fails before the fix: the two copies diverge, e.g. playwright ships
 /// without `-y` in the launcher copy and notion is unpinned there.)
 #[test]
@@ -160,7 +160,7 @@ fn canonical_catalog_materialization_matches() {
 }
 
 /// #7: `pinned_version` is stamped only for recipes with a real package
-/// pin — never fabricated for unpinned (remote) recipes. `cloudflare`
+/// pin - never fabricated for unpinned (remote) recipes. `cloudflare`
 /// is the remote-only recipe: no package exists, so no stamp may be
 /// written. (Fails before the fix: the writer stamps every table,
 /// including the unpinned one.)

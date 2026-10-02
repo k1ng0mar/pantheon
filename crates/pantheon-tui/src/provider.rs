@@ -119,11 +119,11 @@ fn cmd_add(rest: &[String]) {
     if overriding {
         if interactive {
             let a = prompt_line(
-                &format!("'{name}' is a builtin — override it with this endpoint? (y/N)"),
+                &format!("'{name}' is a builtin - override it with this endpoint? (y/N)"),
                 "n",
             );
             if !matches!(a.to_ascii_lowercase().as_str(), "y" | "yes") {
-                println!("cancelled — nothing changed");
+                println!("cancelled - nothing changed");
                 return;
             }
         } else {
@@ -181,7 +181,7 @@ fn cmd_add(rest: &[String]) {
         let keys = prompt_line("API key(s), comma-separated to stack", "");
         let raw = if keys.trim().is_empty() {
             if existing.is_none() {
-                println!("  no key stored — keyless endpoints only");
+                println!("  no key stored - keyless endpoints only");
             }
             None
         } else {
@@ -215,7 +215,7 @@ fn cmd_add(rest: &[String]) {
             dd.join(".env").display()
         ),
         Ok(false) => println!(
-            "added custom provider '{name}': {url}  [keys → {}]  — select it with `pantheon model`",
+            "added custom provider '{name}': {url}  [keys → {}]  - select it with `pantheon model`",
             dd.join(".env").display()
         ),
         Err(e) => {
@@ -253,7 +253,7 @@ fn cmd_remove(rest: &[String]) {
                 })
                 .collect();
             let Some(idx) = pick("remove which custom provider?", &items) else {
-                println!("cancelled — nothing changed");
+                println!("cancelled - nothing changed");
                 return;
             };
             names[idx].clone()
@@ -292,7 +292,7 @@ pub fn cmd_provider(args: &[String]) {
     }
 }
 
-/// `pantheon provider models <name>` — the live model list for one endpoint.
+/// `pantheon provider models <name>` - the live model list for one endpoint.
 ///
 /// Fetched from the endpoint, not read from config. A custom endpoint's models
 /// change without notice (aggregators add and retire dozens a week), so a

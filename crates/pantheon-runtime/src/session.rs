@@ -540,7 +540,7 @@ fn approval_scope(call_id: &str, tool: &str, args: &str) -> String {
 }
 
 /// The call-id half of an approval scope (`call_id:tool:args`). Call ids
-/// never contain `:`, so the first segment is always the id — including
+/// never contain `:`, so the first segment is always the id - including
 /// for scopes written by older runs, whose ids were `call_{turn}_{i}`.
 fn approval_call_id(scope: &str) -> &str {
     scope.split(':').next().unwrap_or(scope)
@@ -572,7 +572,7 @@ pub fn policy_for_preset(preset: &str) -> Result<Policy, PantheonError> {
 ///
 /// A delegated child runs in-process as a fresh `Session`: it never sees
 /// the parent's transcript, memory recall, or assembled prompt. The child
-/// is a clean, dumpable worker — it gets the task, the profile's working
+/// is a clean, dumpable worker - it gets the task, the profile's working
 /// instructions (AGENTS.md files, which are operating rules, not
 /// personality), and the machine-parseable result-envelope contract.
 ///
@@ -628,7 +628,7 @@ fn assemble_child_system_prompt(child: &AgentRuntime) -> String {
 /// Takes the delegated task's goal plus the child's claimed result and
 /// tries to falsify the claim from the evidence the child reported.
 /// Returns the verdict, or `None` when the `[verify]` slot is
-/// unconfigured — verification is OFF by default and only runs when the
+/// unconfigured - verification is OFF by default and only runs when the
 /// operator explicitly pins a cheap model for it.
 ///
 /// Fail-closed: a transport error becomes `Inconclusive` (unverified),
@@ -673,13 +673,13 @@ fn verify_delegation(
 
 /// Build the child session for one delegation request.
 ///
-/// `parent_depth` is the depth of the delegating loop — the engine passes
+/// `parent_depth` is the depth of the delegating loop - the engine passes
 /// `AgentLoop::depth` as `AgentSpawner::spawn`'s `depth` argument, and the
 /// child loop runs one level deeper. This is what the engine's
 /// `Budget::max_delegate_depth` cap binds against: a child rebuilt at
 /// depth 0 would never hit the cap, so delegation could recurse without
 /// bound. The turn bound stays the default `Budget` (16 turns / 32 calls)
-/// at every level — depth limits nesting, never the work a level may do.
+/// at every level - depth limits nesting, never the work a level may do.
 ///
 /// `parent_goal` is the delegating session's active `/goal`, if any. The
 /// child cannot see the parent's context, so a delegation like "finish
@@ -693,7 +693,7 @@ fn verify_delegation(
 /// would still get grandchildren: the child's own turn snapshots its
 /// (default) budget in `DelegateDriver::for_turn`, so the depth and
 /// spawn caps are evaded one level down. Turn and token bounds
-/// intentionally do NOT travel — every level gets the default work
+/// intentionally do NOT travel - every level gets the default work
 /// budget; depth limits nesting, never the work a level may do.
 ///
 /// `max_delegations` accounting is deliberately NOT part of this: the
@@ -744,12 +744,12 @@ fn build_delegate_session(
     // Tool enablement travels with the delegation: the Tools screen is
     // the user's answer to "what may this agent use", and a child that
     // silently re-enabled a group the user turned off would make the
-    // toggle a lie. (The child's *policy preset* stays its own — a
+    // toggle a lie. (The child's *policy preset* stays its own - a
     // reader child of a coder parent must not inherit coder privileges;
     // enablement is which tools exist, policy is what they may do.)
     child_session.set_tool_enablement(parent_tools.clone());
     // The agent mode travels with the delegation: a child spawned while
-    // the parent is in Plan mode plans too — otherwise the Tab toggle
+    // the parent is in Plan mode plans too - otherwise the Tab toggle
     // would be trivially bypassable by delegating the writes away.
     child_session.set_mode(parent_mode);
     // Self-contained spawn prompt: the child gets its persona, its
@@ -835,7 +835,7 @@ struct DelegateDriver {
 
 impl DelegateDriver {
     /// Build the driver for one turn. `None` when the session has no
-    /// agent profile — then there is no `delegate` tool either, and the
+    /// agent profile - then there is no `delegate` tool either, and the
     /// `TurnOutcome::Delegate` arm stays a structured denial.
     fn for_turn(session: &Session, run_id: &str) -> Option<Arc<Self>> {
         let agent = session.agent()?;
@@ -963,7 +963,7 @@ fn register_delegate_tool(reg: &mut ToolRegistry, driver: Arc<DelegateDriver>) {
 /// agent to completion.
 ///
 /// Used by the `delegate` tool and by the `TurnOutcome::Delegate` arm in
-/// `drive` — one path, no hollow row-writes. Lifecycle: enforce the
+/// `drive` - one path, no hollow row-writes. Lifecycle: enforce the
 /// root-owned delegation budget (Decision B, 2026-10-01) and the depth
 /// caps, resolve the child's token budget (per-call `budget`, else
 /// `[budget].delegate_child_max_tokens`, else the model default), build the child session, drive it to a
@@ -973,7 +973,7 @@ fn register_delegate_tool(reg: &mut ToolRegistry, driver: Arc<DelegateDriver>) {
 /// The child's token usage is recorded under the child's own run id, so
 /// it never counts against the parent's budget. A child that parks on
 /// approval parks against the CHILD's run: the error names the child's
-/// run id, capability, and scope, and the parent run cannot grant it —
+/// run id, capability, and scope, and the parent run cannot grant it
 /// grants are matched against the run that requested them.
 fn run_delegate_child(
     driver: &DelegateDriver,
@@ -1013,7 +1013,7 @@ fn run_delegate_child(
         ));
     }
     // The child token budget: per-call override, else the configured
-    // default, else the model default. Scoped to the child session —
+    // default, else the model default. Scoped to the child session
     // the parent's budget slots are never touched.
     let child_tokens = budget.filter(|&b| b > 0).or(driver.child_max_tokens);
     // The parent's mode is read live: a Tab flip between turn start and
@@ -1040,7 +1040,7 @@ fn run_delegate_child(
     let child_run = child_session.current_run_id();
     // Decision B (2026-10-01): the delegation budget is owned by the ROOT
     // run and shared across the whole descendant tree. A delegation counts
-    // only on successful descendant session creation — the guard rolls the
+    // only on successful descendant session creation - the guard rolls the
     // slot back if anything below fails before commit.
     let budget_guard = crate::delegate_budget::DelegateBudgetStore::global()
         .try_consume_delegation(&driver.run_id, &child_run)
@@ -1095,7 +1095,7 @@ fn run_delegate_child(
 ///
 /// `Ok` carries the child's result envelope as canonical JSON (parsed in
 /// Rust, never by LLM; non-conforming text degrades to `status: unknown`).
-/// Every non-Answered outcome — and a child that reports failure — is a
+/// Every non-Answered outcome - and a child that reports failure - is a
 /// structured error: the parent must never mistake them for done.
 ///
 /// Approval and input parks surface the CHILD's run id, capability, and
@@ -1114,7 +1114,7 @@ fn map_child_outcome(
         pantheon_agent::LoopOutcome::Answered { text, .. } => {
             // Parse the child's result envelope in Rust, not
             // by LLM. Non-conforming text degrades to
-            // `status: unknown` — never an error, never a
+            // `status: unknown` - never an error, never a
             // silent pass.
             let result = crate::swarm::parse_child_result(&text);
             // Adversarial verification, when the `[verify]`
@@ -1153,7 +1153,7 @@ fn map_child_outcome(
                         // travels with the result so the
                         // parent cannot mistake it for a
                         // verified completion.
-                        out.push_str("\n[verification: inconclusive — ");
+                        out.push_str("\n[verification: inconclusive - ");
                         out.push_str(&reason);
                         out.push(']');
                     }
@@ -1193,7 +1193,7 @@ fn map_child_outcome(
                 format!(
                     "child agent {agent} parked awaiting approval \
                      (capability {capability:?}, scope {scope}); the approval \
-                     is parked against the CHILD's run {child_run} — grant it with \
+                     is parked against the CHILD's run {child_run} - grant it with \
                      `pantheon run --taskID {child_run} --grant '{scope}'` (or deny it), \
                      then delegate again"
                 ),
@@ -1250,7 +1250,7 @@ pub struct Session {
     /// `[budget].max_tokens` from config.toml, kept separate from the
     /// live `budget`: `/tokens` (and `/set max_tokens`) overwrite
     /// `budget.max_tokens` for the session, and `/tokens off` must not
-    /// erase the configured default — the chain resolves
+    /// erase the configured default - the chain resolves
     /// session > config > model maximum from these two slots.
     /// `None` = the config set no token cap (0 also maps to `None`).
     pub budget_max_tokens: Mutex<Option<u32>>,
@@ -1326,7 +1326,7 @@ pub struct Session {
     /// Keeps the lifecycle-hook observer registered for the session's
     /// lifetime. It must outlive any single turn: `RunCompleted` is emitted
     /// by `Supervisor::complete` *after* `chat_turn` returns, and dropping
-    /// the guard at the end of the turn would miss `on_session_end` — the
+    /// the guard at the end of the turn would miss `on_session_end` - the
     /// hook GalaxyMem-style consolidation depends on.
     pub hook_observer: ObserverGuard,
     /// The agent profile this session runs as. Optional so a pre-profiles
@@ -1343,7 +1343,7 @@ pub struct Session {
     /// Read once per turn, written only by an explicit
     /// `set_temporal_config`, so the lock is never held across model or
     /// tool work. Defaults (enabled, 2h gap) apply until the embedder
-    /// sets it — the TUI does so from the config file at startup.
+    /// sets it - the TUI does so from the config file at startup.
     pub temporal: Mutex<pantheon_api::temporal::TemporalConfig>,
     /// The run this session is currently driving. Set by the TUI at
     /// startup and on resume, so `/agent` can ask the ledger who owns the
@@ -1487,8 +1487,8 @@ impl Session {
             None,
         ));
         // Extensions load once per session. The lifecycle bridge is registered
-        // here (not per turn) so terminal events — emitted after `chat_turn`
-        // returns — still reach `on_session_end`. Each fire is queued onto a
+        // here (not per turn) so terminal events - emitted after `chat_turn`
+        // returns - still reach `on_session_end`. Each fire is queued onto a
         // worker thread by the dispatcher, so this never blocks the emit path.
         let hooks = Arc::new(load_mgr(&policy));
         let hook_observer = {
@@ -1548,7 +1548,7 @@ impl Session {
     /// `config.toml` > local default. `from_env` passes no explicit
     /// args; the data dir's `config.toml` is consulted when the env vars
     /// are unset. A missing or malformed config reads as absent
-    /// (fail-open to env/defaults) — this is a server path, so unlike
+    /// (fail-open to env/defaults) - this is a server path, so unlike
     /// the CLI it never exits the process over a bad config file.
     pub fn from_env(data_dir: std::path::PathBuf) -> Result<Self, PantheonError> {
         use pantheon_api::capability::Policy;
@@ -1619,7 +1619,7 @@ impl Session {
     /// a model. When the `[vision]` auxiliary pins a model *different*
     /// from the run's default, each image is described through that
     /// vision model and the description is injected as
-    /// `[vision: <name> — <description>]` data on the outgoing text —
+    /// `[vision: <name> - <description>]` data on the outgoing text
     /// pixels never reach the chat model. When `[vision]` is
     /// unconfigured (`auto`) or absent, the images pass through
     /// untouched to ride the user row as picture parts (the provider
@@ -1627,9 +1627,9 @@ impl Session {
     ///
     /// Fail-closed on capability: a resolved vision model with no
     /// vision support in the catalog aborts the turn with
-    /// `VISION_NO_CAPABLE_MODEL` (loud, with the remedy) — `?` below.
+    /// `VISION_NO_CAPABLE_MODEL` (loud, with the remedy) - `?` below.
     /// A *transient* describe failure degrades to an honest
-    /// `[vision: <name> — unavailable: <reason>]` note and the turn
+    /// `[vision: <name> - unavailable: <reason>]` note and the turn
     /// continues, because one flaky aux call should not stall the
     /// whole conversation.
     fn vision_aux_pass(
@@ -1673,7 +1673,7 @@ impl Session {
                 Ok(r) => r.description,
                 Err(e) => format!("unavailable: {}", e.cause),
             };
-            text.push_str(&format!("\n[vision: {name} — {desc}]"));
+            text.push_str(&format!("\n[vision: {name} - {desc}]"));
         }
         Ok((text, Vec::new())) // pixels stripped: the chat model only sees text
     }
@@ -1686,8 +1686,8 @@ impl Session {
     ///
     /// Cascade honesty: `VIDEO_UNAVAILABLE` (no video-native and no
     /// vision-capable model either) aborts the turn loudly with the
-    /// remedy; any other failure becomes an honest `[video: … —
-    /// unavailable: …]` note and the turn continues.
+    /// remedy; any other failure becomes an honest `[video: ...
+    /// unavailable: ...]` note and the turn continues.
     fn video_aux_pass(
         &self,
         outgoing: &str,
@@ -1721,14 +1721,14 @@ impl Session {
             };
             match client.describe(&req) {
                 Ok(s) => {
-                    text.push_str(&format!("\n[video: {} — {}]", v.name, s.summary));
+                    text.push_str(&format!("\n[video: {} - {}]", v.name, s.summary));
                     if let Some(note) = s.note {
                         text.push_str(&format!(" ({note})"));
                     }
                 }
                 Err(e) if e.code == "VIDEO_UNAVAILABLE" => return Err(e),
                 Err(e) => {
-                    text.push_str(&format!("\n[video: {} — unavailable: {}]", v.name, e.cause))
+                    text.push_str(&format!("\n[video: {} - unavailable: {}]", v.name, e.cause))
                 }
             }
         }
@@ -1816,7 +1816,7 @@ impl Session {
 
     /// The ephemeral temporal hint for this turn, if the conversation has
     /// meaningfully aged. Read from the durable ledger (restart-safe);
-    /// fails open — `None` on any read problem, so the turn continues
+    /// fails open - `None` on any read problem, so the turn continues
     /// untouched.
     pub fn temporal_hint_for_run(&self, run_id: &str) -> Option<String> {
         let prior = self.supervisor.replay(run_id).ok()?;
@@ -1899,7 +1899,7 @@ impl Session {
     /// turn would run: model-assisted compression first (only when the
     /// transcript exceeds the window), then the deterministic fit. May
     /// emit `ContextCompressed` and may spend one compression-model call,
-    /// exactly as a turn crossing the threshold would — the caller says
+    /// exactly as a turn crossing the threshold would - the caller says
     /// so before invoking. Returns before/after estimates plus whether
     /// anything changed. An uncataloged model has no known window, so
     /// there is nothing to fit against and this reports `unknown_window`.
@@ -2119,7 +2119,7 @@ impl Session {
     ///
     /// Persona proposals never auto-apply: they pass eval-gating and
     /// replay-gating, then wait for explicit human approval, and only
-    /// approval writes them to the memory store's `persona` namespace —
+    /// approval writes them to the memory store's `persona` namespace
     /// so everything read here earned its place. Empty when memory is
     /// absent, when the capability policy denies memory reads, or when
     /// no approved persona exists; read failures degrade to empty
@@ -2141,7 +2141,7 @@ impl Session {
     /// The attached agent profile's persona files, formatted for the main
     /// session's system prompt: `## Persona` (soul_file), then
     /// `## User context` (user_file), then the layered
-    /// `## Instructions from profile <name>` blocks (agents_files) — all
+    /// `## Instructions from profile <name>` blocks (agents_files) - all
     /// read verbatim.
     ///
     /// The profile agent is the one with personality: the user talks to
@@ -2245,7 +2245,7 @@ impl Session {
     /// sees it and keeps planning) with the same event shape as an
     /// executed call, minus the execution.
     ///
-    /// Returns true when the call was refused — the caller must not gate
+    /// Returns true when the call was refused - the caller must not gate
     /// or execute it further, and must not count it against the tool
     /// budget (like denials, refusals are not executed calls).
     /// Provenance for a tool call: `skill_exec` calls are attributed to
@@ -2476,9 +2476,9 @@ impl Session {
     /// Two channels, because a turn can be driven from a different
     /// `Session` object than the one that received the cancel:
     ///
-    /// * the in-process token (`AgentLoop::cancel`) — set by Ctrl-C /
+    /// * the in-process token (`AgentLoop::cancel`) - set by Ctrl-C /
     ///   double-Esc on the session driving the turn;
-    /// * the `cancel_intent` flag on the run row — set by
+    /// * the `cancel_intent` flag on the run row - set by
     ///   `Supervisor::cancel_run_intent`, which is what the AG-UI Cancel
     ///   handler and the dashboard kill path reach. The AG-UI server
     ///   builds a fresh `Session` per RPC, so its handler cannot touch
@@ -2487,7 +2487,7 @@ impl Session {
     /// A ledger read per turn boundary is cheap next to a model call. A
     /// stale flag can never fire here: `reopen_run` clears it whenever
     /// the run is continued. Like the token, this cannot abort an
-    /// in-flight tool call — that returns on its own and the flag is
+    /// in-flight tool call - that returns on its own and the flag is
     /// observed on the next boundary.
     fn cancel_reason(
         &self,
@@ -2558,7 +2558,7 @@ impl Session {
         // boundary wait out the whole command. Spawned fires synchronously
         // right after spawn (pid == pgid: the runner does setsid()); Exited
         // fires when the wait loop ends and the pid is stale. Best-effort
-        // by design — a dead ledger must never break a shell call.
+        // by design - a dead ledger must never break a shell call.
         let shell_child_hook: ShellChildHook = std::sync::Arc::new({
             let sup = self.supervisor.clone();
             let run_id_src = std::sync::Arc::clone(&self.shell_run_id);
@@ -2662,9 +2662,9 @@ impl Session {
         let n_search = reg.names().len();
         // Vision tool: the model's own eyes mid-turn ("look at this
         // screenshot and tell me what it shows"). Gated on the Vision
-        // tool group. The closure reuses the host's vision client — the
+        // tool group. The closure reuses the host's vision client - the
         // pinned `[vision]` aux, else the default model (fail-closed
-        // when the resolved model cannot see) — and the same downscale
+        // when the resolved model cannot see) - and the same downscale
         // + data-dir validation as the attach path. Secrets resolve
         // here, at registration, so they live only in the closure.
         let n_vision = reg.names().len();
@@ -2735,7 +2735,7 @@ impl Session {
         let n_video = reg.names().len() - n_video;
         // Browser automation: the selected backend drives the tools.
         // Secrets resolve here, at registration, so they live only in
-        // the tool closures — never in session state, never in the
+        // the tool closures - never in session state, never in the
         // ledger, never in logs.
         let n_browser = {
             let bcfg = self
@@ -2757,8 +2757,8 @@ impl Session {
                 let before = reg.names().len();
                 // Browser narration: every tool invocation appends a
                 // BrowserActivity event so the dashboard/app can subtitle
-                // what the agent is doing ("Tapping…", "Opening host…").
-                // Best-effort by design — a dead ledger must never break a
+                // what the agent is doing ("Tapping...", "Opening host...").
+                // Best-effort by design - a dead ledger must never break a
                 // browser call, so emit failures are dropped here.
                 let sup_act = self.supervisor.clone();
                 let run_id_act = std::sync::Arc::clone(&self.browser_run_id);
@@ -2859,7 +2859,7 @@ impl Session {
             }
         };
         // MCP servers: third-party tools projected as `mcp_<server>_<tool>`.
-        // Only approved servers connect — the manager enforces the
+        // Only approved servers connect - the manager enforces the
         // unified approval gate, so unapproved servers are skipped and
         // reported as pending (`pantheon mcp approve <name>` approves).
         let n_mcp = {
@@ -2889,8 +2889,8 @@ impl Session {
         };
         // Computer use: the CUA driver is an MCP server like any other,
         // but it answers to its own tool-group toggle, not the Plugins
-        // toggle. The manager's approval gate still applies — an
-        // unapproved driver reports as pending and registers nothing —
+        // toggle. The manager's approval gate still applies - an
+        // unapproved driver reports as pending and registers nothing
         // and the projected tools carry `Capability::ComputerUse`
         // (desktop control), which parks for human approval under the
         // default policy.
@@ -2914,7 +2914,7 @@ impl Session {
                         if cfg.binary.is_some() {
                             log_warn!("computer-use: configured [computer_use] binary not found");
                         } else {
-                            log_warn!("computer-use: cua-driver not found on PATH — install it to enable desktop control");
+                            log_warn!("computer-use: cua-driver not found on PATH - install it to enable desktop control");
                         }
                         0
                     }
@@ -2951,8 +2951,8 @@ impl Session {
         };
         // Tools the nightly repair loop disabled stay disabled. The durable
         // list (`<data_dir>/nightly/disabled-tools.json`) is the
-        // containment record, and this is the one registry constructor —
-        // sessions, `/tools reload`, and the TUI all build through here —
+        // containment record, and this is the one registry constructor
+        // sessions, `/tools reload`, and the TUI all build through here
         // so the skip lives here rather than in every caller. The counts
         // below still describe gross registration; the returned registry
         // is gross minus disabled. A missing or corrupt list reads as
@@ -2979,7 +2979,7 @@ impl Session {
     ///
     /// Needs the turn's run id and ledger poison, so it cannot live in
     /// [`Session::build_tool_registry`]. Every group consults the
-    /// `[tools]` enablement — a disabled group is absent from the turn's
+    /// `[tools]` enablement - a disabled group is absent from the turn's
     /// registry exactly as from the reloaded one.
     ///
     /// Returns the plugin supervisors so the caller group-kills them when
@@ -2992,7 +2992,7 @@ impl Session {
         lease_healthy: &Arc<std::sync::atomic::AtomicBool>,
     ) -> PluginCleanup {
         // Memory tools: the Memory group toggle joins the store's
-        // presence — either absent means no memory tools.
+        // presence - either absent means no memory tools.
         if self.tools_on(pantheon_api::config::ToolGroup::Memory) {
             if let Some(mem) = self.memory.clone() {
                 let mem_sink = LedgerMemorySink {
@@ -3039,7 +3039,7 @@ impl Session {
             );
         }
         // Reviewer verdict tool: staged review stages only. The flag is
-        // the whole gate — it is set exclusively by `pantheon run
+        // the whole gate - it is set exclusively by `pantheon run
         // --verdict-tool`, which only the swarm reviewer spawn path uses.
         // The tool is stateless; the orchestrator reads the verdict from
         // the call's structured args in the run's ledger.
@@ -3061,8 +3061,8 @@ impl Session {
                     pantheon_api::capability::Decision::Allow
                 )
             {
-                // The driver is always `Some` here — the `if let` above
-                // established the profile — but build it through the same
+                // The driver is always `Some` here - the `if let` above
+                // established the profile - but build it through the same
                 // constructor the `TurnOutcome::Delegate` arm uses so the
                 // two paths cannot drift.
                 if let Some(driver) = DelegateDriver::for_turn(self, run_id) {
@@ -3232,8 +3232,8 @@ impl Session {
         match self.supervisor.ledger_status(run_id)?.as_deref() {
             Some("awaiting_approval") => {
                 // Name the scope. This used to point at `pantheon logs` and
-                // leave the operator to copy `call_id:tool:args` — JSON with
-                // embedded quotes — out of a table by hand. An approval flow
+                // leave the operator to copy `call_id:tool:args` - JSON with
+                // embedded quotes - out of a table by hand. An approval flow
                 // cannot ask for that.
                 let pending = self.supervisor.pending_approvals(run_id)?;
                 let how = match pending.first() {
@@ -3306,14 +3306,14 @@ impl Session {
         // conversation has meaningfully aged. Read from the durable ledger
         // (restart-safe, never in-process memory); fails open, so any read
         // problem leaves the turn untouched. The hint rides the outgoing
-        // user message for the API call only — the ledger row below keeps
+        // user message for the API call only - the ledger row below keeps
         // the raw user text, so replay and the transcript never see it.
         let temporal_hint = self.temporal_hint_for_entries(&prior_entries);
         // The first prompt of a conversation is the one place a session
         // title is generated: the title auxiliary (config `[title_gen]`,
         // else `auto` = this run's default model) names the session from
         // this prompt, fire-and-forget beside the turn. "First" means no
-        // prior message rows and no title yet — a run pre-started by the
+        // prior message rows and no title yet - a run pre-started by the
         // TUI or a crashed run with an empty transcript still counts, a
         // resumed/reopened conversation never does.
         let first_prompt = !has_prior_history
@@ -3405,7 +3405,7 @@ impl Session {
         // it is always present, whether or not a list exists yet.
         let system_prompt = format!("{system_prompt}\n\n{TODO_SYSTEM_GUIDANCE}");
         // Nightly persona overlay: approved persona proposals (evals +
-        // replay + explicit human approval — `decide(approve = true)` is
+        // replay + explicit human approval - `decide(approve = true)` is
         // the only writer to the persona namespace) shape the preamble
         // of fresh runs, the same way the base persona does. Fail-open:
         // a broken read leaves the turn untouched.
@@ -3419,7 +3419,7 @@ impl Session {
         };
         // Agent profile persona: the attached profile's SOUL.md, USER.md
         // and AGENTS.md files ride the system prompt verbatim, in that
-        // order. The profile agent is the one with personality — delegated
+        // order. The profile agent is the one with personality - delegated
         // children are clean workers and never see these files. Built
         // here (not stored) so a `/agent` switch or an edited file takes
         // effect on the next turn; unreadable files degrade to explicit
@@ -3435,16 +3435,16 @@ impl Session {
         // Vision: images attached to this turn (the `[attachments]` block
         // the dashboard appends for image uploads) reach the model one
         // of two ways, decided by the vision host pass:
-        //  - `[vision]` pins a *different* model than the default:
+        // - `[vision]` pins a *different* model than the default:
         //    each image is described through that vision model, the
-        //    description is injected as `[vision: <name> — ...]` data,
+        //    description is injected as `[vision: <name> - ...]` data,
         //    and pixels never reach the chat model;
-        //  - unconfigured (`auto`) or no vision entry: images become
+        // - unconfigured (`auto`) or no vision entry: images become
         //    picture parts on the outgoing user row directly, and a
         //    non-vision model fails loudly at the provider chain's
         //    vision gate, never silently.
-        // Parsed here — after the queue/steer/temporal shaping, right
-        // before the transcript is built — so every entry point
+        // Parsed here - after the queue/steer/temporal shaping, right
+        // before the transcript is built - so every entry point
         // (dashboard child, TUI, queued or steered messages) flows
         // through the same path. Paths are re-validated against the
         // uploads dir; oversized bytes are downscaled before attach.
@@ -3492,7 +3492,7 @@ impl Session {
             &_lease_guard.health_flag(),
         );
         // Transport selection: always the real HTTP transport. There is
-        // no fixture or offline mode — `--provider mock` is rejected
+        // no fixture or offline mode - `--provider mock` is rejected
         // below like any other unknown provider id.
         if self.policy_snapshot().default.provider == "mock" {
             return Err(PantheonError::new(
@@ -3565,7 +3565,7 @@ impl Session {
         //
         // The spawner captures the session's policy, model policy, secrets,
         // and data dir so it can build a real child Session for the target
-        // profile — a full Pantheon execution, not a function pretending to
+        // profile - a full Pantheon execution, not a function pretending to
         // be one.
         let agent_opt = self.agent();
         let model_policy = self.policy_snapshot();
@@ -3840,7 +3840,7 @@ impl Session {
         // A ledger failure inside an infallible sink (SupSink, the model
         // sink, the memory sink) cannot travel as a `Result`: it latches in
         // `ledger_poison`. Fail the turn rather than completing a run whose
-        // events never landed — a run that advances with no recoverable
+        // events never landed - a run that advances with no recoverable
         // events looks fine and is unrecoverable.
         if let Some(e) = ledger_poison.take() {
             let _ = self.supervisor.fail(run_id, &e.code);
@@ -3956,7 +3956,7 @@ impl Session {
 
     /// Generate the session title for a fresh conversation on a worker
     /// thread. Target resolution: the explicit `[title_gen]` auxiliary when
-    /// configured, otherwise `auto` — the run's default model (aux models
+    /// configured, otherwise `auto` - the run's default model (aux models
     /// default to auto). Any failure degrades to a deterministic title
     /// derived from the first prompt, so history is never nameless and a
     /// title problem can never fail the turn. Returns `None` when there is
@@ -4015,7 +4015,7 @@ impl Session {
     ///
     /// `None` is the interesting case. `catalog::model_meta` returns
     /// `context_limit: None` for any model it does not know, and an unknown
-    /// limit must mean "do not touch the transcript" — not "assume 4k" and
+    /// limit must mean "do not touch the transcript" - not "assume 4k" and
     /// silently truncate a conversation on a 1M-window model, and not
     /// "assume infinite" and eat a provider 400. So an uncataloged model gets
     /// no fit at all, exactly as it did before this was wired.
@@ -4044,7 +4044,7 @@ impl Session {
     }
 
     /// Fit the transcript to the window: compress, then deterministically
-    /// trim. Never fails the turn — a fit error is logged and the transcript
+    /// trim. Never fails the turn - a fit error is logged and the transcript
     /// is left as it was, because the provider's own error is more
     /// informative than anything this could say, and a run that dies on a
     /// *fixable* overflow is worse than one that reaches the provider.
@@ -4125,12 +4125,12 @@ impl Session {
             }
         }
 
-        // Step 2: deterministic fit. Always runs — it is what bounds the
+        // Step 2: deterministic fit. Always runs - it is what bounds the
         // request when there is no compressor, when compression was not
         // enough, or when compression errored.
         // `fit_to_window` takes ownership, so the transcript leaves `messages`
         // for the duration of the call. It returns `Err` without giving it
-        // back, so the Err arm has to restore it — otherwise a CONTEXT_OVERFLOW
+        // back, so the Err arm has to restore it - otherwise a CONTEXT_OVERFLOW
         // silently empties the transcript and the next turn starts from
         // nothing, which looks exactly like memory loss rather than an
         // oversized prompt.
@@ -4239,7 +4239,7 @@ impl Session {
         // Mid-turn steering: operator guidance pushed via `Session::steer`
         // while the turn ran. Each steers becomes a durable
         // `SteeringProvided` row plus a marked user message the model sees
-        // on its next step. This redirects the turn in place — in-flight
+        // on its next step. This redirects the turn in place - in-flight
         // tool calls already settled into `messages`, the loop is not
         // restarted, and gathered context is untouched.
         self.deliver_steers(messages, run_id)?;
@@ -4474,8 +4474,8 @@ impl Session {
         if let Some(budget) = self.window_budget(chain) {
             let _ = self.fit_context(messages, &budget, run_id);
         }
-        // Chain events (Attempt/Usage/Completed/Fallback/…) project into the
-        // ledger through one sink — no manual model lifecycle emissions here.
+        // Chain events (Attempt/Usage/Completed/Fallback/...) project into the
+        // ledger through one sink - no manual model lifecycle emissions here.
         let outcome = if let Some(cb) = &self.on_event {
             let msink = LedgerModelSink {
                 sup: &self.supervisor,
@@ -4547,7 +4547,7 @@ impl Session {
                 }
                 // Plan mode: partition the batch BEFORE the budget check.
                 // A refused call is never executed and must not consume
-                // budget — otherwise a Plan-mode turn would burn the
+                // budget - otherwise a Plan-mode turn would burn the
                 // whole-run tool budget on calls that never ran.
                 // Classification is pure; the refusal transcript entries
                 // land below, after the assistant message, so transcript
@@ -4733,7 +4733,7 @@ impl Session {
                 // engine no longer yields this variant (providers produce
                 // only Text and Tools), but if it ever does again it takes
                 // the same `run_delegate_child` path as the `delegate`
-                // tool — a real child session driven to completion, never
+                // tool - a real child session driven to completion, never
                 // the old hollow "record a task for a peer profile" write.
                 //
                 // Without an attached profile there is nobody to attribute
@@ -4783,7 +4783,7 @@ impl Session {
     /// the plan-mode partition).
     ///
     /// Fail-closed mixed-batch rule (P0 #10): `ask_user` parks the turn,
-    /// so a sibling call batched with it would never execute — yet its id
+    /// so a sibling call batched with it would never execute - yet its id
     /// is already persisted in the assistant `tool_calls` row. A sibling
     /// with no result row leaves an orphaned `tool_call` id in the resumed
     /// transcript and providers reject the turn. Every sibling is therefore
@@ -4813,7 +4813,7 @@ impl Session {
                 })?;
                 // Fail-closed mixed-batch rule (P0 #10): the turn parks
                 // here, so any sibling batched with `ask_user` would never
-                // execute — yet its id is already persisted in the
+                // execute - yet its id is already persisted in the
                 // assistant `tool_calls` row above. A sibling with no
                 // result row leaves an orphaned `tool_call` id in the
                 // resumed transcript and providers reject the turn.
@@ -4884,7 +4884,7 @@ fn tool_result_text(out: Result<String, PantheonError>) -> String {
 
 /// `vision` tool runner: describe one image file through the host's
 /// vision client (the pinned `[vision]` aux, else the run's default
-/// model — fail-closed with `VISION_NO_CAPABLE_MODEL` when the resolved
+/// model - fail-closed with `VISION_NO_CAPABLE_MODEL` when the resolved
 /// model cannot see). The path is canonicalized and must resolve inside
 /// the session data dir (screenshots, uploads, and other artifacts all
 /// live under it); bytes get the same downscale as the attach path
@@ -4979,7 +4979,7 @@ fn vision_tool_run(
 }
 
 /// `video` tool runner: describe one video file through the host's
-/// video client — native as-is input when the resolved model supports
+/// video client - native as-is input when the resolved model supports
 /// it, else the ffmpeg keyframe fallback, else the honest
 /// `VIDEO_UNAVAILABLE` error naming the remedy. The path is
 /// canonicalized and must resolve inside the session data dir; the
@@ -5138,8 +5138,8 @@ pub const RUNTIME_IDENTITY: &str = "Runtime: you are running inside Pantheon, a 
 /// this tells the model to factor it in naturally and never quote it.
 pub const TEMPORAL_PREAMBLE: &str = "Temporal hints: a user turn may end with a coarse \
      [temporal: ...] note recording how much time has passed since the previous \
-     exchange. Factor it in naturally — greet accordingly, notice when days have \
-     passed — and never quote or mention the note itself.";
+     exchange. Factor it in naturally - greet accordingly, notice when days have \
+     passed - and never quote or mention the note itself.";
 ///
 /// Assemble the message list handed to the model for one turn.
 ///
@@ -5194,7 +5194,7 @@ pub fn assemble_turn(
 /// transcript, and the User-tier provenance (attached at both sites)
 /// marks it as a direct operator instruction.
 pub fn steering_content(text: &str) -> String {
-    format!("[steering: operator guidance for the running turn — follow this over the prior plan]: {text}")
+    format!("[steering: operator guidance for the running turn - follow this over the prior plan]: {text}")
 }
 
 /// Compose the user message the model sees for this turn: the raw prompt
@@ -5234,7 +5234,7 @@ pub fn rebuild_messages(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Mess
 /// One item of a rebuilt transcript: a conversation message, or a reasoning
 /// trace preserved at import time.
 ///
-/// `rebuild_messages` (the model-facing path) drops reasoning — it is not a
+/// `rebuild_messages` (the model-facing path) drops reasoning - it is not a
 /// message and must never reach the provider as one. This sibling keeps it
 /// so display paths (the TUI transcript) can show the imported session's
 /// original deliberation in order.
@@ -5587,7 +5587,7 @@ mod delegate_tool_tests {
     }
 
     /// The `delegate` tool blocks until the child finishes and returns
-    /// the child's result envelope — the call does not resolve early.
+    /// the child's result envelope - the call does not resolve early.
     #[test]
     fn delegate_blocks_until_child_finishes_and_returns_result() {
         let (session, dir) = test_session();
@@ -5646,7 +5646,7 @@ mod delegate_tool_tests {
         assert!(linked, "AgentCompleted carries the child run link");
     }
 
-    /// Every non-Answered child outcome — and a child that errors — is a
+    /// Every non-Answered child outcome - and a child that errors - is a
     /// structured tool error, never mistaken for done.
     #[test]
     fn child_failure_surfaces_as_tool_error() {
@@ -5841,7 +5841,7 @@ mod delegate_tool_tests {
     ///
     /// Needs the direct-spawn fallback: this environment has no bwrap,
     /// so the High container boundary is unavailable. The fallback keeps
-    /// `confine_child` (setsid + rlimits + env scrub) — the pid/pgid
+    /// `confine_child` (setsid + rlimits + env scrub) - the pid/pgid
     /// property the hook relies on is unchanged.
     #[test]
     fn cancel_kills_in_flight_shell() {
@@ -5962,7 +5962,7 @@ mod delegate_tool_tests {
                 .is_err(),
             "parent must not be able to grant the child's scope"
         );
-        // The child run can — proving the park is real and correctly
+        // The child run can - proving the park is real and correctly
         // scoped, not a dead error.
         session
             .supervisor
@@ -6124,7 +6124,7 @@ mod delegate_tool_tests {
     }
 
     /// #7: the drive loop's turn boundary must see cancel intent recorded
-    /// by a *different* `Session`/`Supervisor` — the AG-UI Cancel handler
+    /// by a *different* `Session`/`Supervisor` - the AG-UI Cancel handler
     /// builds a fresh `Session` per RPC and can only reach the run row.
     #[test]
     fn cancel_reason_sees_cross_session_run_row_flag() {

@@ -125,7 +125,7 @@ fn rollup(entries: &[pantheon_storage::LedgerEntry]) -> Rollup {
             Event::RunFailed { code, .. } => Some(format!("Failed: {code}")),
             Event::RunCanceled { .. } => Some("Run canceled".to_string()),
             Event::RunRecovered { .. } => Some("Run recovered".to_string()),
-            Event::TurnStarted { .. } => Some("Working…".to_string()),
+            Event::TurnStarted { .. } => Some("Working...".to_string()),
             Event::ApprovalRequested { .. } => Some("Waiting on approval".to_string()),
             Event::ApprovalGranted { .. } => Some("Approval granted".to_string()),
             Event::ApprovalDenied { .. } => Some("Approval denied".to_string()),
@@ -174,7 +174,7 @@ fn run_json(
     })
 }
 
-/// `GET /api/overview`: KPI cards — totals, costs, pending approvals,
+/// `GET /api/overview`: KPI cards - totals, costs, pending approvals,
 /// scheduler counts, gateway state. Empty ledger = zeros, not an error.
 pub fn overview(app: &App) -> Response {
     let ledger = match ledger(app) {
@@ -234,7 +234,7 @@ pub fn list(app: &App, req: &Request) -> Response {
     let include_archived = req.query.get("include_archived").map(String::as_str) == Some("1");
     let mut out = Vec::new();
     // Archived exclusion happens in the SQL (`list_runs_visible`), so the
-    // LIMIT window only ever holds listable rows — no post-limit filtering
+    // LIMIT window only ever holds listable rows - no post-limit filtering
     // that starved the page when the newest runs were mostly archived.
     let rows = Ledger::pin_home_first(
         ledger
@@ -381,7 +381,7 @@ fn timeline_item(
 
 /// Duration of a tool call from the ledger's own timestamps:
 /// ToolCompleted minus ToolStarted by call_id. `None` when either row is
-/// missing — a call settled without execution (an ask_user sibling) or
+/// missing - a call settled without execution (an ask_user sibling) or
 /// never completed (killed mid-call, crash).
 fn tool_duration_ms(
     call_id: &str,
@@ -398,7 +398,7 @@ fn tool_duration_ms(
 
 /// One transcript message item: the wire fields (`type`, `role`,
 /// `content`) plus the metadata the ledger already persists but the
-/// old serialization dropped — `ts_ms`, the model's tool requests
+/// old serialization dropped - `ts_ms`, the model's tool requests
 /// (`tool_calls`), and the matching tool-result id (`tool_call_id`).
 /// Tool arguments go through the same [`redact`] pass as message
 /// content, so a secret pasted into a tool arg never reaches the
@@ -457,7 +457,7 @@ fn fmt_tool_ms(ms: i64) -> String {
 fn cap(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars).collect();
     if s.chars().count() > max_chars {
-        out.push('…');
+        out.push_str("...");
     }
     out
 }
@@ -587,8 +587,8 @@ fn detail_value(app: &App, run_id: &str) -> Result<serde_json::Value, Response> 
 ///
 /// Body: `{"message": "...", "title": "..."}` (`title` optional). The run
 /// is admitted durably (RunStarted, plus SessionTitled when a title is
-/// given) before the turn is handed to the real CLI path —
-/// `pantheon run --taskID <id> --say <message> --deliver session` —
+/// given) before the turn is handed to the real CLI path
+/// `pantheon run --taskID <id> --say <message> --deliver session`
 /// spawned as a subprocess, the same pattern the dashboard already uses
 /// for schedule/gateway/reflect actions. The turn runs in the background;
 /// the 201 carries the run in detail shape.
@@ -675,7 +675,7 @@ pub fn create(app: &App, req: &Request) -> Response {
 /// message into an existing run.
 ///
 /// Body: `{"message": "..."}`. Terminal runs (completed/failed/canceled)
-/// are reopened — those statuses end the latest turn, not the session.
+/// are reopened - those statuses end the latest turn, not the session.
 /// 409 only for runs parked on approval (grant/deny first) and runs with
 /// a turn already in flight. Otherwise the message goes to the same CLI
 /// turn path as `create`, and the endpoint returns once the turn is
@@ -731,7 +731,7 @@ pub fn send_message(app: &App, run_id: &str, req: &Request) -> Response {
     };
     // Vision attach-site validation: an upload claiming an image mime must
     // actually decode as a sendable image within the wire limits. Loud 400
-    // here — at the attach site — not a silent drop and not a provider 400
+    // here - at the attach site - not a silent drop and not a provider 400
     // mid-turn. The mime sniff re-derives from magic bytes; the stored mime
     // is client-supplied and never trusted.
     for info in &attachments {
@@ -786,7 +786,7 @@ pub fn send_message(app: &App, run_id: &str, req: &Request) -> Response {
                         ));
                         for e in entries.iter().take(uploads::MAX_ZIP_LISTED) {
                             block.push_str(&format!(
-                                "  - {} ({}): {}\n",
+                                " - {} ({}): {}\n",
                                 e.rel_path.display(),
                                 uploads::human_size(e.size_bytes),
                                 z.dest.join(&e.rel_path).display()
@@ -794,7 +794,7 @@ pub fn send_message(app: &App, run_id: &str, req: &Request) -> Response {
                         }
                         if entries.len() > uploads::MAX_ZIP_LISTED {
                             block.push_str(&format!(
-                                "  - … and {} more\n",
+                                " - ... and {} more\n",
                                 entries.len() - uploads::MAX_ZIP_LISTED
                             ));
                         }
@@ -841,7 +841,7 @@ pub fn send_message(app: &App, run_id: &str, req: &Request) -> Response {
     // Serialize turn-starting requests per run: the busy-check → drain →
     // spawn sequence below must be atomic, or two concurrent POSTs both
     // see idle, both spawn, and the loser's turn dies with RT_LEASE_BUSY
-    // after we already returned 200 — silently dropping its message.
+    // after we already returned 200 - silently dropping its message.
     let send_lock = app.send_guard(run_id);
     let _send_guard = send_lock.lock().unwrap_or_else(|e| e.into_inner());
     // One turn at a time per run: without this the spawned turn would
@@ -901,7 +901,7 @@ pub fn send_message(app: &App, run_id: &str, req: &Request) -> Response {
         );
     }
     // Idle: drain the queue head into this turn. A message queued (or
-    // steered) while the run was busy was already accepted with 202 — it
+    // steered) while the run was busy was already accepted with 202 - it
     // must ride the next turn as the earliest input, not vanish.
     //
     // Peek, don't pop: the head is only removed after the child is
@@ -942,7 +942,7 @@ pub fn send_message(app: &App, run_id: &str, req: &Request) -> Response {
     if drained.is_some() {
         let _ = ledger.take_queued_message(run_id);
     }
-    // Idle: the turn is accepted for processing, not complete — 202 like
+    // Idle: the turn is accepted for processing, not complete - 202 like
     // every other accepted turn (queued/steered paths above).
     Response::accepted_json(serde_json::json!({"ok": true, "run_id": run_id}).to_string())
 }
@@ -1013,8 +1013,8 @@ pub fn retry_turn(app: &App, run_id: &str) -> Response {
             &format!("run {run_id} already has a turn running; wait for it to finish"),
         );
     }
-    // The last turn's input: the `UserMessage` row new turns record, or —
-    // for imported sessions — the last user-role message in the
+    // The last turn's input: the `UserMessage` row new turns record, or
+    // for imported sessions - the last user-role message in the
     // transcript. Either way the client never resends the text.
     let from_event = entries
         .iter()
@@ -1183,7 +1183,7 @@ fn known_run(app: &App, run_id: &str) -> Result<(), Response> {
 
 /// `POST /api/runs/:id/cancel`: interrupt the run's in-flight turn.
 /// Cooperative: the turn stops at its next checkpoint. 404 on unknown
-/// runs; a terminal run (completed/failed) 409s with RT_TERMINAL — there
+/// runs; a terminal run (completed/failed) 409s with RT_TERMINAL - there
 /// is no turn left to cancel.
 pub fn cancel_run(app: &App, run_id: &str) -> Response {
     if let Err(r) = known_run(app, run_id) {
@@ -1203,7 +1203,7 @@ pub fn cancel_run(app: &App, run_id: &str) -> Response {
 
 /// `POST /api/runs/:id/kill`: hard-stop the run's in-flight turn.
 ///
-/// Unlike `/cancel` (cooperative — the turn winds down at its next
+/// Unlike `/cancel` (cooperative - the turn winds down at its next
 /// checkpoint), this force-terminates the turn child process: the PID
 /// recorded at spawn is identity-checked against `/proc` (Linux) and
 /// then TERM → grace → KILLed as a process group. The cancel intent is
@@ -1231,7 +1231,7 @@ pub fn kill_run(app: &App, run_id: &str) -> Response {
         Err(e) => return err_json(500, "RUNTIME", &format!("open runtime: {e}")),
     };
     // Synchronous: TERM → grace → KILL can block up to the grace
-    // period, but the response then reports the recorded outcome —
+    // period, but the response then reports the recorded outcome
     // the client knows the turn is actually dead, not just dying.
     match sup.kill_run_turn(run_id, pid) {
         Ok(()) => {
@@ -1358,8 +1358,8 @@ pub fn get_todos(app: &App, run_id: &str) -> Response {
 }
 
 /// `PUT /api/runs/:id/todos`: replace the run's todo snapshot. Body:
-/// `{"todos": [...]}`. Enforces the same invariants the todo tool does —
-/// non-empty content, at most one in progress — 400 otherwise.
+/// `{"todos": [...]}`. Enforces the same invariants the todo tool does
+/// non-empty content, at most one in progress - 400 otherwise.
 pub fn put_todos(app: &App, run_id: &str, req: &Request) -> Response {
     let body = match body_json(req) {
         Ok(b) => b,
@@ -1415,7 +1415,7 @@ pub fn compress(app: &App, run_id: &str) -> Response {
 }
 
 /// `POST /api/runs/:id/fork`: duplicate the run into a new run ID.
-/// Body: `{"turn": n}` — fork from the start of turn `n`; absent forks
+/// Body: `{"turn": n}` - fork from the start of turn `n`; absent forks
 /// the whole run. 201 with the new ID and the copied turn count.
 pub fn fork(app: &App, run_id: &str, req: &Request) -> Response {
     let body = match body_json(req) {
@@ -1594,7 +1594,7 @@ const PROJECT_MAX_CHARS: usize = 128;
 
 /// `POST /api/runs/:id/project`: assign the run to a named project
 /// (`{"project": "name"}`), or unassign it (`{"project": null}` or
-/// `{"project": ""}`). Projects are operator-created buckets — a run
+/// `{"project": ""}`). Projects are operator-created buckets - a run
 /// belongs to at most one.
 pub fn set_project(app: &App, run_id: &str, req: &Request) -> Response {
     let body = match body_json(req) {
@@ -1697,8 +1697,8 @@ pub fn answer_input(app: &App, run_id: &str, req: &Request) -> Response {
     };
     // One turn at a time per run: without this the spawned `--resume`
     // would fail fast with RT_LEASE_BUSY after we already returned 200.
-    // (A run parked awaiting input holds no lease — the turn ended when
-    // it parked — so answering a real question is unaffected.)
+    // (A run parked awaiting input holds no lease - the turn ended when
+    // it parked - so answering a real question is unaffected.)
     if sup.has_active_lease(run_id).unwrap_or(false) {
         return conflict(
             "TURN_IN_FLIGHT",

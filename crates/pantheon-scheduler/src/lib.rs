@@ -1,5 +1,5 @@
-//! Scheduler (spec section 21): durable jobs — cron, one-shot, and
-//! interval — with idempotency keys, missed-occurrence catch-up, locks,
+//! Scheduler (spec section 21): durable jobs - cron, one-shot, and
+//! interval - with idempotency keys, missed-occurrence catch-up, locks,
 //! pause/resume. Jobs enqueue durable run requests; execution itself stays
 //! in pantheon-runtime.
 //!
@@ -45,7 +45,7 @@ pub const DEFAULT_JOB_TIMEOUT_SECS: u64 = 600;
 ///
 /// A zero duration is never a valid schedule: `Interval { every_ms: 0 }`
 /// reads as "due constantly" while producing no occurrence stamp, so the
-/// job would sit "due now" forever without ever firing — reject it here,
+/// job would sit "due now" forever without ever firing - reject it here,
 /// at parse time, not at 3am.
 pub fn parse_duration(s: &str) -> Result<u64, String> {
     let s = s.trim().to_lowercase();
@@ -443,8 +443,8 @@ fn lock_store(data_dir: &Path, exclusive: bool) -> Result<std::fs::File, String>
 
 /// Load jobs, returning skipped-legacy-row warnings alongside. The
 /// warnings name rows dropped because their trigger kind was removed
-/// (webhook/conditional/manual) so a caller with a UI — `schedule list`,
-/// the dashboard — can show them instead of letting jobs vanish silently.
+/// (webhook/conditional/manual) so a caller with a UI - `schedule list`,
+/// the dashboard - can show them instead of letting jobs vanish silently.
 pub fn load_jobs_with_warnings(
     data_dir: &Path,
 ) -> (Result<Vec<ScheduledJob>, String>, Vec<String>) {
@@ -484,7 +484,7 @@ pub fn load_jobs_with_warnings(
 
 /// Load jobs from `<data_dir>/schedule.json`; see
 /// [`load_jobs_with_warnings`] for the migration rules. Skipped-row
-/// warnings are dropped here — use the `_with_warnings` variant when a
+/// warnings are dropped here - use the `_with_warnings` variant when a
 /// human will see the result.
 pub fn load_jobs(data_dir: &Path) -> Result<Vec<ScheduledJob>, String> {
     load_jobs_with_warnings(data_dir).0
@@ -556,7 +556,7 @@ pub fn update_jobs<T>(
 
 /// Post-success store mutation for a manual `schedule run <id>`: one-shot
 /// jobs are removed (single occurrence, now fired); recurring jobs keep
-/// their row with `last_run` refreshed. A failed run never reaches here —
+/// their row with `last_run` refreshed. A failed run never reaches here
 /// the job stays for retry. Pure on the job list; the caller saves.
 pub fn after_manual_run(jobs: &mut Vec<ScheduledJob>, id: &str, now_ms: i64) {
     if let Some(pos) = jobs.iter().position(|j| j.job.id == id) {

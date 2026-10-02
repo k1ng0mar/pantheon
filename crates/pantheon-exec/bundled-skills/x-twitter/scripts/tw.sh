@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# tw.sh — thin curl wrapper around the X API v2.
+# tw.sh - thin curl wrapper around the X API v2.
 # Auth: set X_BEARER_TOKEN. App-only bearer tokens power search/me
 # (read-only). Posting needs a user-context OAuth 2.0 token with the
-# tweet.write scope — an app-only bearer will get a 403 on post.
+# tweet.write scope - an app-only bearer will get a 403 on post.
 # Requires: curl, python3.
 set -euo pipefail
 
@@ -44,7 +44,7 @@ for t in d.get('data', []):
     m = t.get('public_metrics', {})
     print(f"@{u} · {t.get('created_at', '')} · ♥{m.get('like_count', 0)} ↻{m.get('retweet_count', 0)}\n  {t.get('text', '')}\n  id={t.get('id', '')}\n")
 if not d.get('data'):
-    print("(no results — query may be too narrow, or the tier's rate limit was hit)")
+    print("(no results - query may be too narrow, or the tier's rate limit was hit)")
 PY
     ;;
   me)

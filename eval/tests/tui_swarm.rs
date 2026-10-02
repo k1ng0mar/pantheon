@@ -41,7 +41,7 @@ fn empty_run_reports_working_solo() {
 
     assert_eq!(
         sv::render_swarm(&replay(&ledger, "r"), "run-abcdef123456"),
-        "no subagents — this run is working solo"
+        "no subagents - this run is working solo"
     );
 }
 

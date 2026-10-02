@@ -2,12 +2,12 @@
 //!
 //! Two flavors, both deterministic and rule-based:
 //!
-//! - **General ideas** — repair opportunities and observations from the
+//! - **General ideas** - repair opportunities and observations from the
 //!   pass: repair targets the repair phase contained but could not fix,
 //!   and tools that failed repeatedly in the scan window.
-//! - **Suggested scheduled tasks** — mined from repeating session
+//! - **Suggested scheduled tasks** - mined from repeating session
 //!   patterns: a tool sequence run on several separate days becomes a
-//!   "you do X most mornings — want a daily task?" proposal, with the
+//!   "you do X most mornings - want a daily task?" proposal, with the
 //!   cron set to the median hour (UTC) the sequence ran.
 //!
 //! Daily refresh: at most one batch per calendar day (a second pass the
@@ -15,7 +15,7 @@
 //! [`PENDING_KEEP_DAYS`] roll off. Feedback tuning: a topic the user
 //! dismissed twice with no accept is never proposed again.
 //!
-//! This phase runs only inside an enabled pass — `run_pass` is never
+//! This phase runs only inside an enabled pass - `run_pass` is never
 //! invoked when the nightly master switch is off, so no second flag is
 //! invented here.
 
@@ -138,7 +138,7 @@ pub fn distinct_days(timestamps_ms: &[i64]) -> usize {
 }
 
 /// Feedback tuning: the user keeps dismissing this topic and never
-/// accepted it — stop proposing it.
+/// accepted it - stop proposing it.
 pub fn downranked(signals: &TopicSignals) -> bool {
     signals.dismissed >= DISMISS_DOWNRANK && signals.accepted == 0
 }
@@ -167,7 +167,7 @@ fn truncate(s: &str, max: usize) -> String {
     while !s.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}…", &s[..end])
+    format!("{}...", &s[..end])
 }
 
 /// A repair target the pass contained but could not fix: suggest the

@@ -90,7 +90,7 @@ pub fn dispatcher_for_with_hint_and_host(
     d
 }
 fn sup_for(dir: &Path) -> Result<crate::Supervisor, RpcError> {
-    // NOTE (group-C): one fresh Supervisor per RPC call — 3 SQLite
+    // NOTE (group-C): one fresh Supervisor per RPC call - 3 SQLite
     // connections + migrations, then dropped. Fine for a local
     // single-user server (milliseconds); introduce a SupervisorPool
     // if this ever goes multi-user. Do NOT cache across threads
@@ -198,7 +198,7 @@ impl MethodHandler for SendMsg {
                 // FIFO queue drain (dashboard parity): a message queued
                 // while the run was busy rides this turn as the earliest
                 // input instead of sitting until a dashboard/TUI client
-                // drains it. Peek first — the head is popped only after
+                // drains it. Peek first - the head is popped only after
                 // the turn starts, so a turn that fails to start never
                 // eats it. The lock serializes workers, so two turns
                 // cannot drain the same head.

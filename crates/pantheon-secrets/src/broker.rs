@@ -23,7 +23,7 @@ use std::sync::Arc;
 #[derive(Debug, Default)]
 pub struct SecretsBroker {
     /// Durable backends behind `Arc`: every vault guards its state with a
-    /// `Mutex` and takes `&self`, so sharing is sound — and `clone()` keeps
+    /// `Mutex` and takes `&self`, so sharing is sound - and `clone()` keeps
     /// resolving against the same platform stores instead of silently
     /// dropping to memory-only.
     durable: Vec<Arc<dyn SecretVault>>,
@@ -175,7 +175,7 @@ impl SecretsBroker {
     /// Resolve a secret: durable vaults first, then the environment.
     ///
     /// A vault whose platform store cannot answer ([`SecretsError::Backend`])
-    /// is skipped — a broken keyring degrades to the next vault instead of
+    /// is skipped - a broken keyring degrades to the next vault instead of
     /// failing the run. Any other error (tampered encrypted vault, bad
     /// request) propagates immediately.
     pub fn resolve(&self, name: &str) -> Result<Option<SecretValue>, SecretsError> {
@@ -204,8 +204,8 @@ impl SecretsBroker {
     /// none is configured).
     ///
     /// A higher-ranked vault whose platform store cannot answer falls
-    /// through to the next one — a broken keyring must not block a write
-    /// the encrypted file could take — while every other failure
+    /// through to the next one - a broken keyring must not block a write
+    /// the encrypted file could take - while every other failure
     /// propagates.
     pub fn set(&self, name: &str, value: SecretValue) -> Result<(), SecretsError> {
         crate::error::validate_name(name)?;
@@ -240,7 +240,7 @@ impl SecretsBroker {
     }
 
     /// All secret names across durable vaults and the environment, sorted.
-    /// Never returns values — only names, so a caller can list what exists
+    /// Never returns values - only names, so a caller can list what exists
     /// without exposing any secret material.
     pub fn names(&self) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
@@ -262,7 +262,7 @@ impl SecretsBroker {
     /// and it is.
     ///
     /// A vault whose platform store cannot answer
-    /// ([`SecretsError::Backend`]) is skipped, not fatal — the same
+    /// ([`SecretsError::Backend`]) is skipped, not fatal - the same
     /// degraded-store rule as [`Self::resolve`] and [`Self::set`]. Every
     /// other failure propagates: a delete that reports `Ok` really deleted.
     pub fn delete(&self, name: &str) -> Result<(), SecretsError> {
@@ -285,7 +285,7 @@ mod tests {
     /// Item 3: a secret `set` through the durable broker survives a
     /// full drop-and-recreate from the same data dir. On a host with no
     /// OS keychain (this environment), the fallback is the
-    /// EncryptedFileVault — a memory-only fallback would lose the
+    /// EncryptedFileVault - a memory-only fallback would lose the
     /// secret at the second `durable()` call.
     #[test]
     fn durable_broker_secret_survives_restart() {
@@ -310,7 +310,7 @@ mod tests {
     }
 }
 
-/// Item 5: redaction tests — broker descriptions and name listings must
+/// Item 5: redaction tests - broker descriptions and name listings must
 /// never carry secret material.
 #[cfg(test)]
 mod broker_redaction_tests {

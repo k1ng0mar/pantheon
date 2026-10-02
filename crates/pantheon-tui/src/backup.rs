@@ -16,7 +16,7 @@ pub fn usage() -> &'static str {
     "usage: pantheon backup [--dir DIR] [--list] [--restore DIR --yes]\n\
      \n\
      Snapshot every SQLite database under the data dir (ledger, memory,\n\
-     collaboration, claims, ideas, …) into backups/<UTC-timestamp>/ via\n\
+     collaboration, claims, ideas, ...) into backups/<UTC-timestamp>/ via\n\
      atomic VACUUM INTO copies, with a manifest.json per backup.\n\
      \n\
      --dir DIR       backup root (default: <data_dir>/backups)\n\
@@ -116,7 +116,7 @@ fn cmd_restore(dir: &str, yes: bool, data_dir: &Path) {
         std::process::exit(2);
     }
     // Refuse while a live database looks open-for-write by someone else:
-    // a best-effort guard, not a lock — the operator stops the processes.
+    // a best-effort guard, not a lock - the operator stops the processes.
     let manifest_text = std::fs::read_to_string(&manifest_path).unwrap_or_else(|e| {
         eprintln!("backup: cannot read {}: {e}", manifest_path.display());
         std::process::exit(1);

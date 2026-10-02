@@ -111,13 +111,13 @@ pantheon gateway restart|stop|status|run
 <p class="my-3 leading-relaxed">origin checks, and both are gated by the <code>[tools] voice</code> group plus the</p>
 <p class="my-3 leading-relaxed"><code>[stt]</code> / <code>[tts]</code> config sections (toggle the group off and the routes</p>
 <p class="my-3 leading-relaxed">400 with <code>voice_not_configured</code>).</p>
-<p class="my-3 leading-relaxed"><code>POST /agui/voice/transcribe</code> — audio to text:</p>
+<p class="my-3 leading-relaxed"><code>POST /agui/voice/transcribe</code> - audio to text:</p>
 <pre><code>
 { &quot;audio&quot;: &quot;&lt;base64-encoded audio&gt;&quot;, &quot;language&quot;: &quot;en&quot;, &quot;prompt&quot;: &quot;...&quot; }
 </code></pre>
 <p class="my-3 leading-relaxed"><code>language</code> and <code>prompt</code> are optional hints. Decoded audio is capped at</p>
 <p class="my-3 leading-relaxed">1 MiB. Response: <code>{&quot;transcript&quot;: &quot;...&quot;, &quot;backend&quot;: &quot;&lt;provider&gt;&quot;}</code>.</p>
-<p class="my-3 leading-relaxed"><code>POST /agui/voice/speak</code> — text to speech:</p>
+<p class="my-3 leading-relaxed"><code>POST /agui/voice/speak</code> - text to speech:</p>
 <pre><code>
 { &quot;text&quot;: &quot;...&quot;, &quot;voice&quot;: &quot;...&quot;, &quot;format&quot;: &quot;wav&quot; }
 </code></pre>

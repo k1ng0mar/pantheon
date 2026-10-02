@@ -211,7 +211,7 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
             ];
             // Recall is scoped to this agent's own namespace. Recall took
             // no namespace at all before, so `memory_recall` returned
-            // every agent's records from a shared `memory.db` — the write
+            // every agent's records from a shared `memory.db` - the write
             // path was already scoped, which made the read side the leak.
             let namespaces = [recall_opts.namespace.as_str()];
             let hits = match recall_via(
@@ -477,7 +477,7 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
     // User are reserved for harness and human authors.
     //
     // Gated on Capability::MemoryConfirm, which the default policies
-    // mark as requiring approval — NOT on MemoryWrite. The old gate
+    // mark as requiring approval - NOT on MemoryWrite. The old gate
     // (MemoryWrite, Allow) plus the "call only after the user vouched"
     // description was honor-system: a prompt-injected model could
     // propose then confirm its own poisoned record into the trusted

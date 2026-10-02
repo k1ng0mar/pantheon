@@ -121,7 +121,7 @@ fn derive_key(kind: Option<&str>, text: &str) -> String {
 /// Body: `{"text": "...", "kind": "..."}` (`kind` optional). Mirrors
 /// `pantheon memory put`: agent layer, the request namespace (query
 /// `?namespace=`, env, or the default), user-trust provenance stamped by
-/// the API. The key is derived from the text — the CLI's explicit key has
+/// the API. The key is derived from the text - the CLI's explicit key has
 /// no equivalent in this body shape. Returns 201 with the entry in browse
 /// shape.
 pub fn add(app: &App, req: &Request) -> Response {
@@ -183,7 +183,7 @@ pub fn add(app: &App, req: &Request) -> Response {
 }
 
 /// Does `id` name an entry in the namespace? Checked through
-/// `list_agent` — the same read path `browse` uses — because external
+/// `list_agent` - the same read path `browse` uses - because external
 /// backends are query-oriented and may not implement `get`.
 fn entry_exists(backend: &dyn MemoryBackend, ns: &str, id: &str) -> Result<bool, PantheonError> {
     Ok(backend.list_agent(ns)?.iter().any(|(k, _)| k == id))
@@ -220,7 +220,7 @@ pub fn remove(app: &App, req: &Request, id: &str) -> Response {
 }
 
 /// `PUT /api/memory/:id`: correct/replace an entry's text in place (same
-/// key, same layer and namespace). Body: `{"text": "..."}` — 400 on
+/// key, same layer and namespace). Body: `{"text": "..."}` - 400 on
 /// empty text, 404 on unknown id. The replacement is stamped as a user
 /// edit via the API (the same provenance shape `add` uses); the native
 /// store upserts on (layer, namespace, key), and the User trust tier

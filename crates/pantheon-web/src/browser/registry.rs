@@ -3,7 +3,7 @@
 //! [`BackendKind`] is the stable id selected via `[browser] backend` in
 //! config. [`BackendConfig`] carries the resolved per-backend settings
 //! (secrets are resolved by the parent through `pantheon-secrets` and
-//! arrive here as values — never logged, never re-resolved).
+//! arrive here as values - never logged, never re-resolved).
 //! [`build_backend`] is the construction seam the tool layer calls.
 
 use super::backend::BrowserBackend;
@@ -18,7 +18,7 @@ use super::subprocess::SubprocessBackend;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Stable backend ids. These are the `[browser] backend` config values —
+/// Stable backend ids. These are the `[browser] backend` config values
 /// never rename one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BackendKind {
@@ -29,18 +29,18 @@ pub enum BackendKind {
     ChromiumOxide,
     /// REST session management + raw CDP websocket, through the official
     /// `steel-rs` SDK. Cloud (`https://api.steel.dev`) and self-host
-    /// Docker share the API — one implementation, configurable base URL.
+    /// Docker share the API - one implementation, configurable base URL.
     Steel,
     /// Cloud fallback: `POST /v1/sessions` returns a raw CDP `wss://`
     /// URL, driven over that websocket directly.
     Browserbase,
     /// Extraction specialist: CDP to Lightpanda. Fetch/extract workloads
-    /// only — never the interactive backend.
+    /// only - never the interactive backend.
     Lightpanda,
     /// Mature fallback: `playwright-cli` (`@playwright/cli`) subprocess.
     Playwright,
     /// Anti-detect fallback: patched-Firefox (Camoufox) through a
-    /// long-lived Python shim over JSON-over-stdio. No CDP — the
+    /// long-lived Python shim over JSON-over-stdio. No CDP - the
     /// launcher speaks the patched Juggler protocol.
     Camofox,
 }
@@ -201,7 +201,7 @@ impl BackendConfig {
 
     /// Validate the settings for `kind` before construction: fail fast
     /// with an actionable message instead of failing on first tool call.
-    /// Secret *values* are never included in the message — only whether
+    /// Secret *values* are never included in the message - only whether
     /// one was provided.
     pub fn validate(&self, kind: BackendKind) -> Result<(), BrowserError> {
         match kind {
@@ -217,7 +217,7 @@ impl BackendConfig {
 /// Build the backend for `kind`. Validation failures are returned here
 /// (missing API key etc.) so tool registration can report them instead
 /// of registering dead tools. Construction is lazy: no network, no
-/// subprocess, no browser launch happens here — backends connect on
+/// subprocess, no browser launch happens here - backends connect on
 /// first `invoke`.
 pub fn build_backend(
     kind: BackendKind,

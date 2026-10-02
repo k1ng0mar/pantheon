@@ -4,7 +4,7 @@
 //! --watch` (`pantheon-tui/src/schedule.rs`): a gateway daemon that
 //! never runs the TUI tick loop would accumulate ledger events, search
 //! chunks, and idempotency claims forever. This module is the daemon's
-//! copy — same 24h gate (tracked in `retention.json`), same prune
+//! copy - same 24h gate (tracked in `retention.json`), same prune
 //! primitives, same "active runs are never pruned" rule. Kept as a
 //! separate implementation rather than shared with the TUI because the
 //! TUI copy is being retired with the TUI tick loop; until it is, a
@@ -39,7 +39,7 @@ fn now_ms() -> i64 {
 
 /// Run the retention pass now: prune ledger events, the FTS search
 /// sidecar, and idempotency claims older than `keep_days`. Runs whose
-/// status is not terminal are never pruned, however old their events —
+/// status is not terminal are never pruned, however old their events
 /// the active run's transcript is what a resume rebuilds from.
 pub fn run_retention(data_dir: &Path, keep_days: u32) -> Result<RetentionReport, String> {
     let cutoff = now_ms() - keep_days as i64 * 86_400_000;

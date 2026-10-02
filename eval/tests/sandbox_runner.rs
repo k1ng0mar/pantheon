@@ -43,14 +43,14 @@ fn parse_limit(text: &str, what: &str) -> Option<u64> {
         .lines()
         .find(|l| l.trim_start().starts_with(what))
         .unwrap_or_else(|| panic!("no '{what}' line in {text}"));
-    // Trailing shape: "<soft> <hard> <units>" — name words vary
+    // Trailing shape: "<soft> <hard> <units>" - name words vary
     // ("Max processes" vs "Max address space"), so parse from the end.
     let tokens: Vec<&str> = line.split_whitespace().collect();
     assert!(tokens.len() >= 3, "malformed line: {line}");
     tokens[tokens.len() - 3].parse().ok()
 }
 
-/// This test process's own limit — the baseline a child must keep
+/// This test process's own limit - the baseline a child must keep
 /// when the profile imposes nothing.
 #[cfg(target_os = "linux")]
 fn host_limit(what: &str) -> Option<u64> {
@@ -79,7 +79,7 @@ fn proc_limit(profile: &SandboxProfile, what: &str) -> Option<u64> {
 #[cfg(target_os = "linux")]
 fn memory_cap_is_applied_as_rlimit_as() {
     // Whatever the level carries as max_memory_mb must reach the
-    // child as RLIMIT_AS — through the wrapper when it works here,
+    // child as RLIMIT_AS - through the wrapper when it works here,
     // through the (opted-in) direct fallback when it doesn't.
     let mut profile = SandboxLevel::High.profile();
     profile.allow_direct_fallback = true;
@@ -96,7 +96,7 @@ fn memory_cap_is_applied_as_rlimit_as() {
 fn pids_cap_is_applied_as_rlimit_nproc() {
     // NPROC is calibrated against the kernel's true usage and grants
     // max_pids above it: strictly more than the raw cap (usage ≥ 1),
-    // never more than the user's system hard limit — which the parent
+    // never more than the user's system hard limit - which the parent
     // keeps untouched. The direct fallback is opted in so this also
     // passes where the wrapper cannot initialize.
     let mut profile = SandboxLevel::High.profile();
@@ -146,7 +146,7 @@ fn in_process_boundary_also_gets_the_limits() {
 #[cfg(target_os = "linux")]
 fn low_profile_imposes_no_limits() {
     // Low sets neither field: the child must keep the system's own
-    // defaults exactly — proven against this process's limits.
+    // defaults exactly - proven against this process's limits.
     let profile = SandboxLevel::Low.profile();
     assert_eq!(
         proc_limit(&profile, "Max address space"),
@@ -254,7 +254,7 @@ fn direct_fallback_allowed_via_profile_opt_in() {
 #[test]
 fn large_stdout_does_not_deadlock() {
     let _env_lock = ENV_LOCK.lock().unwrap();
-    // 200KiB of stdout — over the 64KiB pipe buffer. The old code only
+    // 200KiB of stdout - over the 64KiB pipe buffer. The old code only
     // read the pipes after try_wait reported exit, so this wedged until
     // the wall-clock timeout; the drainer threads must let it complete.
     let profile = SandboxLevel::Low.profile();

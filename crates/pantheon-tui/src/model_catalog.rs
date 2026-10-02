@@ -28,7 +28,7 @@ pub struct LiveModel {
 /// Why a live fetch failed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FetchError {
-    /// 401/403: the endpoint wants a key. Not fatal — the wizard falls
+    /// 401/403: the endpoint wants a key. Not fatal - the wizard falls
     /// back to curated entries.
     Auth,
     /// Transport failure, timeout, or a non-auth HTTP status.
@@ -83,7 +83,7 @@ fn classify_status(code: u16) -> FetchError {
 /// Parse the OpenAI `{"data":[{"id", ...}]}` shape. OpenRouter-style
 /// `pricing: {prompt, completion}` string fields are per-token prices,
 /// converted to per-million-token USD. Entries without a string id are
-/// skipped — they cannot be displayed or selected.
+/// skipped - they cannot be displayed or selected.
 fn parse_models_body(body: &str) -> Result<Vec<LiveModel>, FetchError> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| FetchError::BadShape(format!("invalid json: {e}")))?;
@@ -190,7 +190,7 @@ fn fmt_price(v: f64) -> String {
 
 /// Price tag for a row: `in $0.20/M · out $0.60/M`; `free` when both
 /// prices are zero (OpenRouter marks free models with zero pricing);
-/// `None` when there is no pricing at all — never invented.
+/// `None` when there is no pricing at all - never invented.
 pub fn price_tag(input: Option<f64>, output: Option<f64>) -> Option<String> {
     match (input, output) {
         (Some(i), Some(o)) if i == 0.0 && o == 0.0 => Some("free".to_string()),

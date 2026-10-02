@@ -19,7 +19,7 @@ fn lagos() -> Tz {
     Tz::Africa__Lagos
 }
 
-/// `2026-09-27 23:55` Lagos time, as epoch millis — deterministic.
+/// `2026-09-27 23:55` Lagos time, as epoch millis - deterministic.
 fn lagos_ms(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
     lagos()
         .with_ymd_and_hms(y, mo, d, h, mi, 0)
@@ -145,7 +145,7 @@ fn disabled_stays_silent() {
         enabled: false,
         ..cfg()
     };
-    let last = now - 30 * 86_400_000; // a month — would otherwise fire
+    let last = now - 30 * 86_400_000; // a month - would otherwise fire
     assert_eq!(temporal_hint(Some(last), now, &Tz::UTC, &c), None);
 }
 
@@ -259,7 +259,7 @@ fn last_assistant_ts_ms_reads_the_latest_assistant_activity() {
 fn hint_is_ephemeral_never_persisted() {
     // The contract: the turn driver hands the *augmented* message to the
     // model (`assemble_turn`) while the ledger row keeps the raw prompt.
-    // Here both sides are exercised — the augmented text carries the
+    // Here both sides are exercised - the augmented text carries the
     // hint, the raw text (what `chat_turn` wraps in `Message::user` for
     // the ledger emit) does not.
     let raw = "what did we decide about the deploy?";
