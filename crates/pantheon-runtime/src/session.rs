@@ -6065,6 +6065,64 @@ mod delegate_tool_tests {
         );
     }
 
+    /// End-to-end linkage: the registered `delegate` tool, executed
+    /// through the production adapter seam, stamps the executing call's
+    /// id onto both lifecycle events. The component tests above pass the
+    /// call id to `run_delegate_child` directly; this one proves the
+    /// adapter → registry → tool-closure plumbing carries it, so a
+    /// regression that dropped the context would fail here.
+    #[test]
+    fn delegate_tool_via_adapter_stamps_call_id_on_lifecycle_events() {
+        let (session, dir) = test_session();
+        attach_parent_agent(&session, &dir);
+        let driver = stubbed_driver(&session, "run-e2e", success_stub);
+        let mut reg = ToolRegistry::new();
+        register_delegate_tool(&mut reg, driver);
+        let adapter = RegistryToolAdapter {
+            registry: &reg,
+            name: "delegate".to_string(),
+            hooks: None,
+            run_id: "run-e2e".to_string(),
+            call_id: "call_e2e".to_string(),
+        };
+        let out = adapter
+            .execute(&serde_json::json!({
+                "name": "delegate",
+                "args": r#"{"agent": "child", "task": "summarize the logs"}"#,
+            }))
+            .expect("adapter executes the delegate tool");
+        let text = out.as_str().expect("tool result is text");
+        assert!(
+            text.contains("\"completed\""),
+            "child result returned: {text}"
+        );
+        // Both lifecycle events carry the adapter's call id and the
+        // child run link, recorded on the parent run.
+        let entries = session.supervisor.replay("run-e2e").expect("replay");
+        let stamped = |want_completed: bool| {
+            entries.iter().any(|e| match &e.event {
+                Event::AgentSpawned {
+                    agent,
+                    child_run_id: Some(_),
+                    call_id: Some(id),
+                    ..
+                } => !want_completed && agent == "child" && id == "call_e2e",
+                Event::AgentCompleted {
+                    agent,
+                    child_run_id: Some(_),
+                    call_id: Some(id),
+                    ..
+                } => want_completed && agent == "child" && id == "call_e2e",
+                _ => false,
+            })
+        };
+        assert!(stamped(false), "AgentSpawned carries the executing call id");
+        assert!(
+            stamped(true),
+            "AgentCompleted carries the executing call id"
+        );
+    }
+
     /// #7: the drive loop's turn boundary must see cancel intent recorded
     /// by a *different* `Session`/`Supervisor` — the AG-UI Cancel handler
     /// builds a fresh `Session` per RPC and can only reach the run row.
