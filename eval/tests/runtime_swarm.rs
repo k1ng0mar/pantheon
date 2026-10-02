@@ -47,11 +47,17 @@ fn create_rejects_empty_task() {
 }
 
 #[test]
-fn create_rejects_judge_without_transport() {
+fn create_degrades_judge_without_transport() {
+    // P1 #8: `judge: true` with no configured [judge] transport
+    // degrades to judge-free execution instead of failing, so TUI
+    // team launches (which always send judge: true) work out of the
+    // box. The degrade is explicit in the returned view.
     let o = SwarmOrchestrator::new(Arc::new(ScriptedWorker::new()), None);
-    let err = o.create("task", 2, true).unwrap_err();
-    assert_eq!(err.http_status, 400);
-    assert!(err.message.contains("judge transport"));
+    let created = o.create("task", 2, true).expect("create degrades");
+    assert!(
+        !created.status.judge,
+        "judge reports off when no transport is configured"
+    );
 }
 
 #[test]
@@ -389,7 +395,7 @@ fn staged_pipeline_advances_in_order_with_handoff() {
 }
 
 #[test]
-fn staged_review_bound_escalates_to_lead() {
+fn staged_review_bound_records_escalation_note() {
     let worker = Arc::new(ScriptedWorker::new());
     let o = SwarmOrchestrator::new(worker.clone(), None);
     let created = o
@@ -416,7 +422,10 @@ fn staged_review_bound_escalates_to_lead() {
     let staged = view.staged.as_ref().unwrap();
     assert_eq!(staged.review_iterations, 1, "bound of 1 respected");
     let escalation = staged.escalation.as_ref().expect("escalation recorded");
-    assert!(escalation.contains("Lead"), "escalation names the lead");
+    assert!(
+        escalation.contains("escalation note") && escalation.contains("lead is not notified"),
+        "the note records the escalation and is honest that the lead is not notified: {escalation}"
+    );
     // Polling again stays settled and does not re-spawn.
     let before = worker.spawns().len();
     let again = o.status(&created.id).unwrap();

@@ -437,6 +437,7 @@ fn boot() -> (u16, String, tempfile::TempDir) {
         bind_addr: "127.0.0.1:0".to_string(),
         auth: auth_ctx,
         mounts: vec![std::sync::Arc::new(mount)],
+        label: "pantheon eval".to_string(),
     };
     let (port, token) = pantheon_gateway::http::spawn_test_server(cfg);
     (port, token, dir)
@@ -517,7 +518,7 @@ fn accept_general_idea_spawns_run() {
             .list_runs(100)
             .unwrap()
             .iter()
-            .any(|(id, _, _, _, _)| id == run_id),
+            .any(|(id, ..)| id == run_id),
         "accepted idea must admit a run"
     );
     // The idea left pending.

@@ -127,7 +127,7 @@ fn tool_call_fail_triggers_loopback_with_feedback() {
 }
 
 #[test]
-fn three_failed_verdicts_escalate_to_lead() {
+fn three_failed_verdicts_escalate_to_note() {
     let worker = Arc::new(ScriptedWorker::new());
     let o = SwarmOrchestrator::new(worker.clone(), None);
     let created = o
@@ -161,7 +161,10 @@ fn three_failed_verdicts_escalate_to_lead() {
     let staged = view.staged.as_ref().unwrap();
     assert_eq!(staged.review_iterations, 2, "bound of 2 respected");
     let escalation = staged.escalation.as_ref().expect("escalation recorded");
-    assert!(escalation.contains("Lead"), "escalation names the lead");
+    assert!(
+        escalation.contains("escalation note") && escalation.contains("lead is not notified"),
+        "the note records the escalation and is honest that the lead is not notified: {escalation}"
+    );
     let before = worker.spawns().len();
     let again = o.status(&created.id).unwrap();
     assert_eq!(again.status, SwarmStatus::Incomplete);

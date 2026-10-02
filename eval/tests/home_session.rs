@@ -100,6 +100,7 @@ fn boot() -> (u16, String, tempfile::TempDir) {
         bind_addr: "127.0.0.1:0".to_string(),
         auth,
         mounts: vec![std::sync::Arc::new(mount)],
+        label: "pantheon eval".to_string(),
     };
     let (port, token) = pantheon_gateway::http::spawn_test_server(cfg);
     (port, token, dir)
@@ -251,7 +252,7 @@ fn home_session_is_never_reported_stuck() {
         .stuck_runs()
         .unwrap()
         .into_iter()
-        .map(|(id, _, _, _, _)| id)
+        .map(|(id, ..)| id)
         .collect();
     assert!(ids.contains(&"run-stuck".to_string()));
     assert!(

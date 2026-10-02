@@ -55,7 +55,7 @@ impl ChatTransport for NeverTransport {
         &self,
         _req: &WireRequest,
         _on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
-    ) -> Result<(), PantheonError> {
+    ) -> Result<pantheon_providers::http::StreamEnd, PantheonError> {
         panic!("transport must not be reached: the vision gate fires first")
     }
 }
@@ -244,6 +244,7 @@ fn boot() -> (u16, String, tempfile::TempDir) {
         bind_addr: "127.0.0.1:0".to_string(),
         auth,
         mounts: vec![std::sync::Arc::new(mount)],
+        label: "pantheon eval".to_string(),
     };
     let (port, token) = pantheon_gateway::http::spawn_test_server(cfg);
     (port, token, dir)
@@ -325,7 +326,7 @@ impl ChatTransport for CaptureTransport {
         &self,
         _req: &WireRequest,
         _on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
-    ) -> Result<(), PantheonError> {
+    ) -> Result<pantheon_providers::http::StreamEnd, PantheonError> {
         unimplemented!("single-shot test")
     }
 }
