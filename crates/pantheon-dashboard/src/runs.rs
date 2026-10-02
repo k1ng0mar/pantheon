@@ -233,11 +233,15 @@ pub fn list(app: &App, req: &Request) -> Response {
     // brings them back (the dashboard restores or prunes them from there).
     let include_archived = req.query.get("include_archived").map(String::as_str) == Some("1");
     let mut out = Vec::new();
-    let rows = Ledger::pin_home_first(ledger.list_runs(limit * 4).unwrap_or_default());
+    // Archived exclusion happens in the SQL (`list_runs_visible`), so the
+    // LIMIT window only ever holds listable rows — no post-limit filtering
+    // that starved the page when the newest runs were mostly archived.
+    let rows = Ledger::pin_home_first(
+        ledger
+            .list_runs_visible(limit, include_archived)
+            .unwrap_or_default(),
+    );
     for (id, status, created_ms, title, project, pinned, archived) in rows {
-        if archived && !include_archived {
-            continue;
-        }
         if let Some(sf) = &status_filter {
             if &status != sf {
                 continue;
