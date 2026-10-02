@@ -69,11 +69,11 @@ pub fn dispatch(ev: &Event) -> Option<HookFire> {
                 kv(&[("run_id", run_id), ("delta", delta)]),
             )
         }
-        AgentSpawned { run_id, agent } => (
+        AgentSpawned { run_id, agent, .. } => (
             Hook::SubagentStart,
             kv(&[("run_id", run_id), ("agent", agent)]),
         ),
-        AgentCompleted { run_id, agent } => (
+        AgentCompleted { run_id, agent, .. } => (
             Hook::SubagentStop,
             kv(&[("run_id", run_id), ("agent", agent)]),
         ),
