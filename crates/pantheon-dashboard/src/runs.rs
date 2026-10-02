@@ -403,6 +403,7 @@ fn transcript_message(
     m: &pantheon_api::message::Message,
     tool_starts: &HashMap<String, i64>,
     tool_ends: &HashMap<String, i64>,
+    child_runs: &HashMap<String, String>,
 ) -> serde_json::Value {
     let tool_calls: Vec<serde_json::Value> = m
         .tool_calls
@@ -414,6 +415,10 @@ fn transcript_message(
                 "arguments": redact(&tc.arguments),
                 "started_ms": tool_starts.get(&tc.id).copied(),
                 "duration_ms": tool_duration_ms(&tc.id, tool_starts, tool_ends),
+                // Delegate calls link to the child run they spawned
+                // (null for every other call, and for delegations
+                // recorded before the link existed).
+                "child_run_id": child_runs.get(&tc.id),
             })
         })
         .collect();
@@ -487,10 +492,26 @@ fn detail_value(app: &App, run_id: &str) -> Result<serde_json::Value, Response> 
             _ => None,
         })
         .collect();
+    // Delegate linkage: AgentCompleted rows record which child run each
+    // delegating call spawned, keyed by the parent call id. Last wins in
+    // ledger order, matching the child whose result actually landed.
+    let child_runs: HashMap<String, String> = entries
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::AgentCompleted {
+                call_id: Some(call),
+                child_run_id: Some(child),
+                ..
+            } => Some((call.clone(), child.clone())),
+            _ => None,
+        })
+        .collect();
     let transcript: Vec<serde_json::Value> = rebuild_transcript(entries.clone())
         .into_iter()
         .map(|item| match item {
-            TranscriptItem::Message(m) => transcript_message(&m, &tool_starts, &tool_ends),
+            TranscriptItem::Message(m) => {
+                transcript_message(&m, &tool_starts, &tool_ends, &child_runs)
+            }
             TranscriptItem::Reasoning(t) => serde_json::json!({
                 "type": "reasoning",
                 "content": redact(&t),

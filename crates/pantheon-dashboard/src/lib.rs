@@ -1152,6 +1152,60 @@ mod route_tests {
     /// ledger-derived `started_ms`/`duration_ms`, and `tool_call_id` /
     /// top-level `duration_ms` on tool-result rows. Arguments stay on the
     /// redaction pass.
+    /// A delegate step's `tool_calls` entry carries the child run it
+    /// spawned, linked from the `AgentCompleted` ledger row; ordinary
+    /// calls carry null. pre-link rows (no fields) stay null.
+    #[test]
+    fn run_detail_transcript_carries_child_run_link() {
+        let (app, dir) = test_app();
+        let ledger = Ledger::open(&dir.join("ledger.db")).expect("open ledger");
+        let mut assistant = Message::assistant_tool_calls(vec![ToolCallRef {
+            id: "call_9_0".to_string(),
+            name: "delegate".to_string(),
+            arguments: "{\"agent\": \"researcher\", \"task\": \"survey sources\"}".to_string(),
+        }]);
+        assistant.ts_ms = Some(1000);
+        ledger
+            .append(&Event::AssistantMessage {
+                run_id: "run-1".to_string(),
+                message: assistant,
+            })
+            .expect("append AssistantMessage");
+        ledger
+            .append(&Event::AgentCompleted {
+                run_id: "run-1".to_string(),
+                agent: "researcher".to_string(),
+                child_run_id: Some("run-1-sub-1".to_string()),
+                call_id: Some("call_9_0".to_string()),
+            })
+            .expect("append AgentCompleted");
+        let mut tool = Message::tool("call_9_0", "done");
+        tool.ts_ms = Some(2000);
+        ledger
+            .append(&Event::ToolMessage {
+                run_id: "run-1".to_string(),
+                message: tool,
+            })
+            .expect("append ToolMessage");
+        drop(ledger);
+        let resp = dispatch(&app, &plain_req("GET", "/api/runs/run-1"));
+        assert_eq!(status_of(&resp), 200, "detail must load");
+        let body = match &resp {
+            Response::Buffered { body, .. } => body.clone(),
+            _ => panic!("expected a buffered response"),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        let transcript = v["transcript"].as_array().expect("transcript array");
+        let calls = transcript[0]["tool_calls"]
+            .as_array()
+            .expect("tool_calls array");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0]["child_run_id"], "run-1-sub-1",
+            "the delegate call links to its child run"
+        );
+    }
+
     #[test]
     fn run_detail_transcript_carries_tool_timing() {
         let (app, dir) = test_app();
