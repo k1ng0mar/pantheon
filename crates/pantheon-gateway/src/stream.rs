@@ -123,15 +123,27 @@ pub fn frame_for_event(
             format!("{tool} {call_id}"),
             false,
         )],
-        Event::ApprovalRequested { scope, .. } => {
-            vec![mk(UiFrameKind::Approval, "requested", scope.clone(), true)]
-        }
-        Event::ApprovalGranted { scope, .. } => {
-            vec![mk(UiFrameKind::Approval, "granted", scope.clone(), false)]
-        }
-        Event::ApprovalDenied { scope, .. } => {
-            vec![mk(UiFrameKind::Approval, "denied", scope.clone(), false)]
-        }
+        // Approval scopes are `call_id:tool:args` and ride out to
+        // gateway clients verbatim here; the dashboard redacts them
+        // (runs.rs timeline/detail), so do the same on this surface.
+        Event::ApprovalRequested { scope, .. } => vec![mk(
+            UiFrameKind::Approval,
+            "requested",
+            pantheon_api::logging::redact(scope),
+            true,
+        )],
+        Event::ApprovalGranted { scope, .. } => vec![mk(
+            UiFrameKind::Approval,
+            "granted",
+            pantheon_api::logging::redact(scope),
+            false,
+        )],
+        Event::ApprovalDenied { scope, .. } => vec![mk(
+            UiFrameKind::Approval,
+            "denied",
+            pantheon_api::logging::redact(scope),
+            false,
+        )],
         _ => vec![],
     }
 }
