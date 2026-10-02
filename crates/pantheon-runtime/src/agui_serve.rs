@@ -4,14 +4,14 @@
 //! `pantheon_gateway::http` server owns the socket, the accept loop, and
 //! the auth/origin layer. Route behavior is unchanged from the old
 //! runtime-owned shim:
-//! - `GET /`, `/agui`, `/agui/` — the token-injected web client
-//! - `GET /agui/stream` — SSE replay + 25 s long-poll, connection-close
+//! - `GET /`, `/agui`, `/agui/` - the token-injected web client
+//! - `GET /agui/stream` - SSE replay + 25 s long-poll, connection-close
 //!   terminated (non-chunked), delivered as `Response::RawStream`
-//! - `POST /agui/rpc` — JSON-RPC
-//! - `GET /agui/blob/<task>` — signed generative-UI bytes
-//! - `GET /agui/health` — `{"ok":true}`
-//! - `POST /agui/voice/transcribe`, `POST /agui/voice/speak` — speech edge
-//! - `GET /agui/voice/live` — websocket takeover into live-voice mode
+//! - `POST /agui/rpc` - JSON-RPC
+//! - `GET /agui/blob/<task>` - signed generative-UI bytes
+//! - `GET /agui/health` - `{"ok":true}`
+//! - `POST /agui/voice/transcribe`, `POST /agui/voice/speak` - speech edge
+//! - `GET /agui/voice/live` - websocket takeover into live-voice mode
 //!
 //! OPERATING NOTES (group-C audit, carried over verbatim):
 //! - Every RPC method opens a fresh `Supervisor` (3 SQLite connections +
@@ -43,7 +43,7 @@ pub struct AguiServeConfig {
     /// the gateway's auth layer (`AuthGroup::Agui`): `Authorization: Bearer`,
     /// `X-Pantheon-Token`, or `?token=` on `/agui/stream` (EventSource
     /// cannot set headers). `None` means the embedder authenticates some
-    /// other way — the old shim generated a one-time token here, which is
+    /// other way - the old shim generated a one-time token here, which is
     /// now the gateway's job.
     pub auth_token: Option<String>,
     /// Speech edge for the mobile app (`/agui/voice/*`), built from the
@@ -53,7 +53,7 @@ pub struct AguiServeConfig {
     pub voice: VoiceEdge,
     /// Live voice mode (`GET /agui/voice/live`): `[voice]` limits plus the
     /// VoicePipes double-gated STT/TTS backends. The per-session gate
-    /// (`LiveVoiceConfig::gate`) decides refusal — a disabled config
+    /// (`LiveVoiceConfig::gate`) decides refusal - a disabled config
     /// refuses every session with an `error` + `end` frame pair, never a
     /// silent hang.
     pub live_voice: Arc<live_voice::LiveVoiceConfig>,
@@ -113,7 +113,7 @@ body{font:16px system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1
 <button id="cancel" disabled>Cancel run</button><button id="live">Live</button><div id="actions"></div><pre id="log"></pre>
 <div id="voice" hidden>
 <div id="voice-card">
-<div id="voice-status">Connecting…</div>
+<div id="voice-status">Connecting...</div>
 <canvas id="voice-meter" width="280" height="24"></canvas>
 <div id="voice-transcript"></div>
 <button id="voice-mic" disabled>🎤</button>
@@ -141,7 +141,7 @@ const lvEl=s=>document.querySelector(s);
 function lvMsg(who,text){const t=lvEl('#voice-transcript');const d=document.createElement('div');const w=document.createElement('span');w.className='who';w.textContent=who+': ';d.appendChild(w);d.appendChild(document.createTextNode(text));t.appendChild(d);t.scrollTop=t.scrollHeight}
 function lvStatus(s){lvEl('#voice-status').textContent=s}
 function lvSend(o){if(lv.ws&&lv.ws.readyState===1)lv.ws.send(JSON.stringify(o))}
-function lvSetBusy(b){lv.busy=b;const m=lvEl('#voice-mic');if(b){m.disabled=true;if(lv.recording===false)lvStatus('Agent is replying…')}else if(!lv.closed){m.disabled=false;if(lv.recording===false)lvStatus('Tap the mic to talk')}}
+function lvSetBusy(b){lv.busy=b;const m=lvEl('#voice-mic');if(b){m.disabled=true;if(lv.recording===false)lvStatus('Agent is replying...')}else if(!lv.closed){m.disabled=false;if(lv.recording===false)lvStatus('Tap the mic to talk')}}
 function lvEmitPCM(samples){
   let buf;
   if(lv.pending.length){const m=new Float32Array(lv.pending.length+samples.length);m.set(lv.pending);m.set(samples,lv.pending.length);buf=m}else buf=samples;
@@ -197,12 +197,12 @@ function lvOnMsg(e){
   let f;try{f=JSON.parse(e.data)}catch(err){return}
   const m=lvEl('#voice-mic');
   switch(f.type){
-    case 'ready':lvStatus('Ready — tap the mic to talk');if(!lv.closed)m.disabled=false;break;
+    case 'ready':lvStatus('Ready - tap the mic to talk');if(!lv.closed)m.disabled=false;break;
     case 'transcript':if(f.final&&f.text)lvMsg('You',f.text);break;
     case 'reply_text':if(f.text)lvMsg('Agent',f.text);break;
     case 'audio_end':lvPlayQueued();lvSetBusy(false);break;
     case 'busy':lvSetBusy(true);break;
-    case 'approval_needed':lvMsg('System','Approval needed — answer it in the text chat, then End this call.');m.disabled=true;lvStatus('Paused for approval');break;
+    case 'approval_needed':lvMsg('System','Approval needed - answer it in the text chat, then End this call.');m.disabled=true;lvStatus('Paused for approval');break;
     case 'error':lvClose('Error: '+(f.code||'unknown'));break;
     case 'end':lvClose('Session ended by server');break;
   }
@@ -213,7 +213,7 @@ async function lvStart(){
   lvEl('#voice-transcript').innerHTML='';
   const m=lvEl('#voice-mic');m.disabled=true;m.classList.remove('on');
   lvEl('#voice-miclabel').textContent='Tap to talk';
-  lvEl('#voice').hidden=false;lvStatus('Connecting…');
+  lvEl('#voice').hidden=false;lvStatus('Connecting...');
   const proto=location.protocol==='https:'?'wss:':'ws:';
   const ws=new WebSocket(proto+'//'+location.host+'/agui/voice/live?token='+encodeURIComponent(TOKEN));
   lv.ws=ws;ws.binaryType='arraybuffer';
@@ -254,7 +254,7 @@ lvEl('#voice-mic').onclick=()=>{
   const m=lvEl('#voice-mic');
   if(!lv.recording){
     lv.recording=true;lvSend({type:'start'});
-    m.classList.add('on');lvEl('#voice-miclabel').textContent='Tap to stop';lvStatus('Listening…');
+    m.classList.add('on');lvEl('#voice-miclabel').textContent='Tap to stop';lvStatus('Listening...');
   }else{
     lv.recording=false;lvSend({type:'end'});
     m.classList.remove('on');lvEl('#voice-miclabel').textContent='Tap to talk';lvSetBusy(true);
@@ -487,7 +487,7 @@ fn handle_live_voice(
 /// Drives one live-voice agent turn through the exact dispatcher path
 /// `/agui/rpc` chat uses: `agui.send` admits the turn (same session
 /// factory, same per-run turn lock), then this polls the ledger for the
-/// terminal outcome — reply text, parked approval, or failure.
+/// terminal outcome - reply text, parked approval, or failure.
 struct LiveVoiceDriver {
     data_dir: PathBuf,
     port: u16,
@@ -560,7 +560,7 @@ impl live_voice::LiveTurnDriver for LiveVoiceDriver {
             match status.as_deref() {
                 Some("awaiting_approval") => {
                     // Parked: surface the pending scope as `approval_needed`.
-                    // Never auto-approved — the operator answers through
+                    // Never auto-approved - the operator answers through
                     // the normal (text) approval path.
                     let scope = snapshot_frames(&self.data_dir, &run_id, &thread_id, 0)
                         .into_iter()

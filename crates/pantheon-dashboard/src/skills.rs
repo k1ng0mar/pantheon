@@ -2,11 +2,11 @@
 //!
 //! Discovery is the real `pantheon_exec::skills` scan (bundled seeding
 //! included). The enabled/disabled flag is the shared
-//! `<data_dir>/skills/disabled.json` registry — the same file the
+//! `<data_dir>/skills/disabled.json` registry - the same file the
 //! session loader reads, so a dashboard toggle genuinely removes the
 //! skill from the model's toolset. Delete is limited to pantheon-scope
 //! skills (under `<data_dir>/skills`); foreign scopes (hermes, claude,
-//! …) can be disabled but never deleted by the dashboard.
+//! ...) can be disabled but never deleted by the dashboard.
 
 use crate::{bad_json, body_json, err_json, json_ok, App};
 use pantheon_exec::skills::{
@@ -49,7 +49,7 @@ pub fn list(app: &App, req: &Request) -> Response {
     json_ok(serde_json::json!({"skills": out}))
 }
 
-/// `POST /api/skills/:name/toggle` — flips the shared disabled flag.
+/// `POST /api/skills/:name/toggle` - flips the shared disabled flag.
 pub fn toggle(app: &App, name: &str) -> Response {
     let enabled = !disabled_skill_names(&app.data_dir)
         .iter()
@@ -65,7 +65,7 @@ pub fn set_enabled(app: &App, name: &str, enabled: bool) -> Response {
     json_ok(serde_json::json!({"ok": true, "name": name, "enabled": enabled}))
 }
 
-/// `DELETE /api/skills/:name` — pantheon-scope only.
+/// `DELETE /api/skills/:name` - pantheon-scope only.
 pub fn delete(app: &App, name: &str) -> Response {
     if name.contains('/') || name.contains('\\') || name.contains("..") || name.trim().is_empty() {
         return bad_json("unsafe skill name");

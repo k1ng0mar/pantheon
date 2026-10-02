@@ -50,7 +50,7 @@ impl PartialEq for SecretValue {
 
 impl Eq for SecretValue {}
 
-/// Item 5: redaction tests — a secret's value must never surface through
+/// Item 5: redaction tests - a secret's value must never surface through
 /// formatting or description paths, only through [`SecretValue::expose`]
 /// at the execution boundary.
 #[cfg(test)]

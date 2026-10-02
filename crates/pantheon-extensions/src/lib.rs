@@ -4,7 +4,7 @@
 //!
 //! Security posture: plugins are third-party code. Secrets are scrubbed from
 //! the child environment, but a plugin otherwise runs with the operator's full
-//! user privileges — it is NOT sandboxed. Enabling a third-party plugin
+//! user privileges - it is NOT sandboxed. Enabling a third-party plugin
 //! requires explicit operator approval (see [`pantheon_api::approval`]);
 //! approval is informed consent to those privileges.
 //!

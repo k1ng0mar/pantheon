@@ -4,7 +4,7 @@
 //! [`super::backend`]) into CDP commands. It is shared by three
 //! backends: the native local backend ([`super::native`], launched
 //! Chrome), Steel ([`super::steel`]) and Browserbase
-//! ([`super::browserbase`]) — both of which hand us a websocket URL —
+//! ([`super::browserbase`]) - both of which hand us a websocket URL
 //! and Lightpanda ([`super::lightpanda`], extraction-only subset).
 //!
 //! ## CDP schema drift
@@ -15,7 +15,7 @@
 //! * the crate version is pinned exact (`=0.9.1` in `Cargo.toml`);
 //! * unknown protocol *events* never hard-fail: chromiumoxide 0.9
 //!   deserializes unrecognized event methods into
-//!   `CdpEvent::Other(serde_json::Value)` and the handler keeps going —
+//!   `CdpEvent::Other(serde_json::Value)` and the handler keeps going
 //!   verified in the vendored source
 //!   (`chromiumoxide_cdp-0.9.1/src/cdp.rs`, the `_ => CdpEvent::Other(..)`
 //!   arm of the `CdpEventMessage` deserializer). Command responses ignore
@@ -194,7 +194,7 @@ impl CdpDriver {
     }
 
     /// Lazy websocket driver (Steel/Browserbase/Lightpanda session URL).
-    /// Returns `Err` immediately when the URL is empty — fail fast at
+    /// Returns `Err` immediately when the URL is empty - fail fast at
     /// construction, not on first tool call.
     pub fn connect_lazy(
         url: String,
@@ -280,7 +280,7 @@ impl CdpDriver {
             let (browser, mut handler) = self.start_browser(argv).await?;
             // chromiumoxide requires the handler future to be polled;
             // park it on a task for the connection's lifetime. Unknown
-            // CDP events arrive as `CdpEvent::Other` and are ignored —
+            // CDP events arrive as `CdpEvent::Other` and are ignored
             // schema drift never wedges the driver.
             inner._handler_task = Some(tokio::spawn(async move {
                 while handler.next().await.is_some() {}
@@ -844,9 +844,9 @@ pub(crate) enum WaitPlan {
 
 /// Build the [`WaitPlan`] for a canonical `wait-for`.
 ///
-/// Conditions the raw-CDP path cannot implement honestly —
+/// Conditions the raw-CDP path cannot implement honestly
 /// `network_idle` (no request tracker), `request_completed`,
-/// `console_message`, `element_count`, `region_stable` — become
+/// `console_message`, `element_count`, `region_stable` - become
 /// [`BrowserError::UnsupportedCommand`] naming the backend, never silent
 /// approximations. `selector_visible` probes *presence* (a true
 /// visibility check needs per-element layout info; the approximation is

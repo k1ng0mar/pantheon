@@ -48,7 +48,7 @@ impl Default for VaultToolOptions {
 ///
 /// A substring check for `..` is not confinement: a symlink planted inside
 /// the vault (`vault/notes -> /etc`) passes it and then reads or writes
-/// wherever it points. The check is therefore structural — canonicalize the
+/// wherever it points. The check is therefore structural - canonicalize the
 /// deepest existing ancestor, then confirm the result is still under the
 /// canonical vault root.
 ///
@@ -262,7 +262,7 @@ pub fn register_vault_tools(reg: &mut ToolRegistry, opts: VaultToolOptions) {
                 if !args.tags.is_empty() {
                     body.push_str("tags:\n");
                     for tag in &args.tags {
-                        body.push_str(&format!("  - {}\n", tag.trim().trim_start_matches('#')));
+                        body.push_str(&format!(" - {}\n", tag.trim().trim_start_matches('#')));
                     }
                 }
                 body.push_str("---\n\n");
@@ -382,7 +382,7 @@ pub fn register_vault_tools(reg: &mut ToolRegistry, opts: VaultToolOptions) {
                     out.push_str(&format!("- **[[{}]]**:\n  > {}\n\n", hit.rel_path, hit.snippet));
                 }
                 if !complete {
-                    out.push_str("\n[note: search hit the time budget on the vault mount; results are partial — narrow with category=]");
+                    out.push_str("\n[note: search hit the time budget on the vault mount; results are partial - narrow with category=]");
                 }
                 Ok(out)
             },
@@ -437,7 +437,7 @@ pub fn register_vault_tools(reg: &mut ToolRegistry, opts: VaultToolOptions) {
                     out.push_str(&format!("- [[{}]]\n", f));
                 }
                 if !complete {
-                    out.push_str("\n[note: listing hit the time budget; partial — narrow with category=]");
+                    out.push_str("\n[note: listing hit the time budget; partial - narrow with category=]");
                 }
                 Ok(out)
             },

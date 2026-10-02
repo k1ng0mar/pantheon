@@ -5,7 +5,7 @@
 //! auxiliary models for helpers (embeddings, rerank, vision, extraction...).
 //! The agent never selects. The runtime does.
 //!
-//! NOTE: this list is for things that ARE models — an endpoint you call
+//! NOTE: this list is for things that ARE models - an endpoint you call
 //! with a prompt or tensors and get inference back. Service capabilities
 //! (STT, TTS, search, browser) belong to the provider plane: they are
 //! swappable services or local binaries selected by capability, not
@@ -49,17 +49,17 @@ pub enum AuxiliaryKind {
     Embeddings,
     /// Vision model (config `[vision]`): describes and answers about
     /// images attached to a turn. Host-orchestrated; never chat. Absent =
-    /// `auto`: the run's default model. No call sites yet — there is no
+    /// `auto`: the run's default model. No call sites yet - there is no
     /// image-input pipeline; the slot exists so a model can be pinned
     /// ahead of it landing.
     Vision,
     /// Video-analysis model (config `[video]`): understands video attached
-    /// to a turn — scene description, temporal question answering,
+    /// to a turn - scene description, temporal question answering,
     /// keyframe summarization. Host-orchestrated; never chat. Absent =
     /// `auto`: the run's default model.
     ///
     /// Call-site proposal (the actual video-understanding pipeline is
-    /// future work — this slot pins the model ahead of it landing):
+    /// future work - this slot pins the model ahead of it landing):
     /// - the turn loop gains a `video` attachment kind next to the
     ///   (planned) image attachment kind; when a turn carries video, the
     ///   host samples keyframes (or hands the container/URL to a
@@ -71,20 +71,20 @@ pub enum AuxiliaryKind {
     ///   `[search_synthesis]` (chunk → note → context), so the window
     ///   never fills with raw frames.
     ///
-    /// No call sites yet — the slot exists so a model can be pinned
+    /// No call sites yet - the slot exists so a model can be pinned
     /// ahead of the video pipeline landing.
     Video,
     /// Search-synthesis model (config `[search_synthesis]`): turns raw
     /// web-search results into a short cited brief before they enter
     /// context. Host-orchestrated; never chat. Absent = `auto`: the run's
-    /// default model. No call sites yet — search results currently enter
+    /// default model. No call sites yet - search results currently enter
     /// context raw; the slot exists so a model can be pinned ahead of the
     /// synthesis workload landing.
     SearchSynthesis,
     /// Judge model (config `[judge]`): classifies, routes, scores. Never
     /// generates chat. Used for route selection, tool gating, verification
     /// thresholds. Replaces the old `DecisionRouter` name. No call sites
-    /// yet — the engine supports a judge, but the production
+    /// yet - the engine supports a judge, but the production
     /// `Session::drive` path builds its `AgentLoop` with `judge: None`,
     /// so a configured `[judge]` is validated by `doctor` and then never
     /// consulted. The slot exists so a model can be pinned ahead of the
@@ -95,7 +95,7 @@ pub enum AuxiliaryKind {
     McpSynthesis,
     /// Model for scheduled (background) runs (config `[scheduled]`): when a
     /// scheduled job executes an agent turn it uses this model instead of
-    /// the interactive default — cheap background runs. `auto` = default.
+    /// the interactive default - cheap background runs. `auto` = default.
     Scheduled,
     /// Context-compression model: summarizes the oldest exchanges when the
     /// transcript overflows the window. Host-orchestrated; never chat.
@@ -112,7 +112,7 @@ pub enum AuxiliaryKind {
     /// never borrows the interactive model's context directly.
     Reflection,
     /// Consolidation-pass model (config `[consolidation]`): the auxiliary
-    /// model for LLM-backed consolidation steps (candidate distillation —
+    /// model for LLM-backed consolidation steps (candidate distillation
     /// merging near-duplicate staged candidates into single well-phrased
     /// facts). Host-orchestrated; never chat. Absent = `auto`: the run's
     /// default model. Every consolidation LLM call resolves through this
@@ -125,27 +125,27 @@ pub enum AuxiliaryKind {
     /// scheduled tasks, and tools next). Host-orchestrated; never chat.
     /// Absent = OFF: no policy entry, and fix-loop draft revision is
     /// unavailable. Every fix-loop revision resolves through this slot
-    /// — never the Reflection slot — so repair work stays on a model
+    /// - never the Reflection slot - so repair work stays on a model
     /// pinned for the job.
     Repair,
     /// Structured-extraction model (config `[extraction]`): pulls fields
     /// and records out of prose and tool outputs (dates, amounts, names,
     /// entities) into typed values the runtime can act on.
     /// Host-orchestrated; never chat. Absent = `auto`: the run's default
-    /// model. No call sites yet — the slot exists so a model can be pinned
+    /// model. No call sites yet - the slot exists so a model can be pinned
     /// ahead of the extraction workload landing.
     Extraction,
     /// Rerank model (config `[rerank]`): scores and orders search and
     /// memory-retrieval candidates before they enter context, so the best
     /// evidence wins the window instead of the loudest keyword match.
     /// Host-orchestrated; never chat. Absent = `auto`: the run's default
-    /// model. No call sites yet — the slot exists so a model can be pinned
+    /// model. No call sites yet - the slot exists so a model can be pinned
     /// ahead of the reranking workload landing.
     Rerank,
     /// Planner model (config `[planner]`): decomposes a goal into a task
     /// plan for a future planner/worker split, where planning and execution
     /// run on different models. Host-orchestrated; never chat. Absent =
-    /// `auto`: the run's default model. No call sites yet — the slot
+    /// `auto`: the run's default model. No call sites yet - the slot
     /// exists so a model can be pinned ahead of the planner workload
     /// landing.
     Planner,
@@ -153,7 +153,7 @@ pub enum AuxiliaryKind {
     /// sub-agent completes, it takes the task's goal plus the child's
     /// claimed result, assumes the goal was missed, and tries to falsify
     /// the claim from the evidence. Fail-closed: a falsified claim errors
-    /// the delegation, an inconclusive one is marked unverified — neither
+    /// the delegation, an inconclusive one is marked unverified - neither
     /// counts as done. Host-orchestrated; never chat. Absent = the slot is
     /// OFF entirely (no entry in the policy), so verification only runs
     /// when the operator explicitly pins a cheap model here.
@@ -271,7 +271,7 @@ pub struct AuxiliaryModel {
     /// section's `timeout_secs` (default 120); call sites apply it to
     /// the aux HTTP transport.
     pub timeout_secs: u64,
-    /// Compression only: summary target as a percentage (1–100) of the
+    /// Compression only: summary target as a percentage (1-100) of the
     /// absorbed transcript chars (`[compression] target_percent`).
     /// `None` = the historic default (≈12%). Ignored by every other
     /// auxiliary kind.
@@ -307,7 +307,7 @@ pub struct ModelPolicy {
 /// Anthropic: a thinking budget). For exact control, pair a level with
 /// `ModelPolicy::reasoning_budget`, which overrides the mapped budget on
 /// budget wires and is ignored elsewhere. Endpoints that do not
-/// understand the param ignore or reject it — setting effort is an
+/// understand the param ignore or reject it - setting effort is an
 /// explicit request, and a rejection surfaces as a structured provider
 /// error naming the endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -386,7 +386,7 @@ pub struct DecisionRequest {
 
 /// Host-side interface for the judge model. Provider-agnostic:
 /// implementations may talk to any typed classifier (hosted API, local
-/// endpoint, small specialized model) — the host picks one via the
+/// endpoint, small specialized model) - the host picks one via the
 /// `Judge` auxiliary and validates every answer against live state
 /// before acting.
 pub trait Judge: Send + Sync {
@@ -429,7 +429,7 @@ pub trait ContextCompressor: Send + Sync {
     }
 
     /// Summarize the transcript. On `Err` the host proceeds with the
-    /// deterministic fit — compression is an optimization, never a
+    /// deterministic fit - compression is an optimization, never a
     /// requirement for correctness.
     fn compress(&self, req: &CompressionRequest) -> Result<CompressionResult, PantheonError>;
 }
@@ -439,7 +439,7 @@ pub trait ContextCompressor: Send + Sync {
 pub const TITLE_MAX_CHARS: usize = 60;
 
 /// What the host asks a title model to do: name the conversation whose
-/// first user prompt is `prompt`. One shot, no transcript — a title is
+/// first user prompt is `prompt`. One shot, no transcript - a title is
 /// derived from the opening message, not the whole exchange.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TitleRequest {
@@ -457,7 +457,7 @@ pub struct TitleResult {
 /// Host-side interface for the session-title model. Provider-agnostic like
 /// `ContextCompressor`: the host picks the target (config `[title_gen]`,
 /// else `auto` = the run's default model), bounds the output, and falls
-/// back to [`fallback_title`] when this errors. Titles are cosmetic — a
+/// back to [`fallback_title`] when this errors. Titles are cosmetic - a
 /// failed call never affects the conversation.
 pub trait TitleGenerator: Send + Sync {
     /// Model identifier for logging/audit.
@@ -483,7 +483,7 @@ pub fn bound_title(raw: &str, max_chars: usize) -> String {
         .unwrap_or("")
         .to_string();
     // Strip one layer of wrapping quotes (ASCII or curly).
-    for (a, b) in [('“', '”'), ('"', '"'), ('\'', '\'')] {
+    for (a, b) in [('"', '"'), ('"', '"'), ('\'', '\'')] {
         if s.chars().count() >= 2 && s.starts_with(a) && s.ends_with(b) {
             let inner = s.strip_prefix(a).and_then(|t| t.strip_suffix(b));
             if let Some(inner) = inner {
@@ -519,7 +519,7 @@ pub fn bound_title(raw: &str, max_chars: usize) -> String {
     if out.chars().count() <= max_chars {
         return out.to_string();
     }
-    // Truncate on a char boundary at `max_chars` characters (not bytes —
+    // Truncate on a char boundary at `max_chars` characters (not bytes
     // a byte cap would butcher multibyte scripts).
     let end = out
         .char_indices()
@@ -530,7 +530,7 @@ pub fn bound_title(raw: &str, max_chars: usize) -> String {
 }
 
 /// Deterministic title for a session: the first prompt, bounded. This is
-/// the fallback when the title aux model is absent, errors, or times out —
+/// the fallback when the title aux model is absent, errors, or times out
 /// history always shows something meaningful, and a later successful call
 /// can replace it (last title wins).
 pub fn fallback_title(prompt: &str) -> String {

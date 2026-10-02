@@ -1,7 +1,7 @@
 //! Perplexity Search-backed [`SearchProvider`]:
 //! `POST https://api.perplexity.ai/search`.
 //!
-//! This is the raw Search API (ranked results, no LLM synthesis) —
+//! This is the raw Search API (ranked results, no LLM synthesis)
 //! separate from Sonar `/chat/completions` and the Agent API. Auth is
 //! `Authorization: Bearer <key>`. There is no free tier: prepaid credits
 //! only ($5/1K requests).
@@ -73,7 +73,7 @@ impl SearchProvider for PerplexityProvider {
 /// Parse a Perplexity `/search` JSON envelope. Pure and unit-testable.
 ///
 /// Hits live at `results` with `title`/`url`/`snippet`. `date` maps to
-/// `published`, falling back to `last_updated` — both are real provider
+/// `published`, falling back to `last_updated` - both are real provider
 /// date fields, never fabricated. A single malformed hit is skipped,
 /// never fatal; a hit without a usable URL is skipped. A missing or
 /// non-array `results` field is a `BadResponse`.

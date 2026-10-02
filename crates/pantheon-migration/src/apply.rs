@@ -16,7 +16,7 @@
 //!   `<dest>/.migrate-stage/<id>/` first. The live tree is untouched until
 //!   every item has staged and validated; commit is a sequence of renames,
 //!   and any commit error triggers an automatic rollback from the backup
-//!   pre-images. A failed apply leaves the target untouched — there are no
+//!   pre-images. A failed apply leaves the target untouched - there are no
 //!   manual-restore instructions because there is nothing manual to do.
 //! - **Budgeted.** Every byte staged or backed up is charged against
 //!   [`StageBudgets`] (default 1 GiB total, 100k files, 100 MiB per file).
@@ -175,7 +175,7 @@ fn io(code: &str, e: std::io::Error, what: String) -> PantheonError {
 
 /// Snapshot every existing import target so an apply can be undone.
 ///
-/// Targets that do not exist yet are not backed up — there is nothing to
+/// Targets that do not exist yet are not backed up - there is nothing to
 /// restore, and an empty placeholder would be noise in the manifest.
 ///
 /// The copy is charged against the default [`StageBudgets`]; see
@@ -313,7 +313,7 @@ fn backup_targets(plan: &MigrationPlan, targets: &Targets) -> Vec<String> {
 ///
 /// These must be excluded from the file copier. `Credentials` is the sharp
 /// case: its target is `<data_dir>/.env`, a real path, so a naive filter would
-/// copy the source `.env` straight over Pantheon's key store — destroying the
+/// copy the source `.env` straight over Pantheon's key store - destroying the
 /// merge, the never-clobber rule, and the 0600 permission in one write.
 pub(crate) fn is_bridged(kind: ItemKind) -> bool {
     matches!(
@@ -935,7 +935,7 @@ fn stage_bridges(
         }
     }
     // Attribute kinds to diff-discovered items from the bridge outcomes that
-    // produced them: match by live target prefix is unnecessary — instead,
+    // produced them: match by live target prefix is unnecessary - instead,
     // walk the outcomes and tag items whose live path equals the outcome
     // target, sits under it, or contains it (the session quarantine commits
     // as one dir while its outcome names the manifest inside it).
@@ -950,7 +950,7 @@ fn stage_bridges(
     Ok(())
 }
 
-/// `imported-sessions/<source>/…` collapses to `imported-sessions/<source>`,
+/// `imported-sessions/<source>/...` collapses to `imported-sessions/<source>`,
 /// so the staged (and backup, and rollback) unit is the whole quarantine
 /// dir rather than individual transcript files.
 fn quarantine_collapse(rel: &Path) -> Option<PathBuf> {
@@ -993,8 +993,8 @@ fn snapshot_files(root: &Path) -> Vec<PathBuf> {
 /// Commit every staged item into place: remove-then-rename, so a replace
 /// never merges into the old tree and leaves stale files behind.
 ///
-/// Any commit error triggers an automatic rollback — committed replaces are
-/// restored from their backup pre-images, committed creates are removed —
+/// Any commit error triggers an automatic rollback - committed replaces are
+/// restored from their backup pre-images, committed creates are removed
 /// and the error is returned. There are no manual-restore instructions
 /// because there is nothing manual to do.
 pub(crate) fn commit_staged(staged: &Staged) -> Result<ApplyReport, PantheonError> {
@@ -1111,7 +1111,7 @@ fn rollback_staged_item(item: &StagedItem, manifest: &BackupManifest) -> Result<
 /// Write every import in the plan, transactionally: stage everything into
 /// `<dest>/.migrate-stage/<id>/`, validate the staged tree, then commit it
 /// with renames. The live tree is untouched until the commit, and any
-/// failure — staging, validation, or commit — leaves it untouched: staging
+/// failure - staging, validation, or commit - leaves it untouched: staging
 /// failures discard the stage, commit failures roll back automatically.
 ///
 /// Three item kinds do not go through the file copier, because their source
@@ -1557,7 +1557,7 @@ fn copy_any(
 ///
 /// Depth-bounded by [`MAX_COPY_DEPTH`], so a pathological or cyclic-looking
 /// source tree cannot make one import recurse without limit. Exceeding the
-/// bound is recorded in `skipped` like any other non-copied entry — the run
+/// bound is recorded in `skipped` like any other non-copied entry - the run
 /// still completes, and the omission is visible.
 const MAX_COPY_DEPTH: usize = 24;
 

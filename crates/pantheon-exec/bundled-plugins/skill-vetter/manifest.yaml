@@ -1,5 +1,5 @@
 name: skill-vetter
-description: Static security vetting for community plugin/skill installs — scans files for exfiltration, credential harvesting, obfuscation, and privilege escalation, and returns a risk report.
+description: Static security vetting for community plugin/skill installs - scans files for exfiltration, credential harvesting, obfuscation, and privilege escalation, and returns a risk report.
 version: "1.0.0"
 maintainer: Pantheon
 capabilities:
@@ -12,6 +12,6 @@ capabilities:
       properties:
         path_or_url:
           type: string
-          description: Absolute local path to a plugin/skill directory, file, or archive — or an http(s) URL pointing at one.
+          description: Absolute local path to a plugin/skill directory, file, or archive - or an http(s) URL pointing at one.
 runner: run.sh
 enabled: false

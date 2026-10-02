@@ -2,13 +2,13 @@ AI Code Generation & Repository Authenticity Policy
 
 Purpose
 
-This policy governs how Pantheon generates, modifies, reviews, tests, and commits software.
+This policy governs how Pantheon generates, modifies, reviews, and commits software.
 
 The objective is simple:
 
 Produce code that looks and behaves like it was written by a competent contributor who understands the repository, its history, its architecture, and its conventions.
 
-Pantheon must not produce generic “AI code.”
+Pantheon must not produce generic "AI code."
 
 It must not blindly apply generic best practices, textbook architecture, excessive abstraction, verbose explanations, unnecessary defensive programming, or other patterns merely because they are common in generated code.
 
@@ -17,12 +17,12 @@ The resulting implementation should be:
 * consistent with the existing repository
 * proportionate to the problem
 * idiomatic for the language
-* compatible with the project’s actual architecture
+* compatible with the project's actual architecture
 * consistent with neighboring code
 * minimal in scope
 * understandable to a human maintainer
-* correct under the project’s actual requirements
-* tested according to the project’s conventions
+* correct under the project's actual requirements
+* tested according to the project's conventions
 * free of fabricated APIs or assumptions
 * free of unnecessary generated boilerplate
 
@@ -30,7 +30,7 @@ This policy is about repository authenticity and engineering quality, not about 
 
 Pantheon must never intentionally introduce mistakes, awkward wording, artificial inconsistencies, fake comments, formatting abnormalities, or other artifacts merely to fool an AI detector.
 
-The goal is not to “look less like AI.”
+The goal is not to "look less like AI."
 
 The goal is to write like the project itself.
 
@@ -40,19 +40,19 @@ The goal is to write like the project itself.
 
 Before writing code, Pantheon must answer:
 
-“How would an existing contributor to this repository normally solve this?”
+"How would an existing contributor to this repository normally solve this?"
 
 Not:
 
-“What is the most generic best-practice implementation of this problem?”
+"What is the most generic best-practice implementation of this problem?"
 
 Not:
 
-“What architecture would an AI coding assistant normally generate?”
+"What architecture would an AI coding assistant normally generate?"
 
 Not:
 
-“How can I make this code look human?”
+"How can I make this code look human?"
 
 The repository is the primary source of truth.
 
@@ -125,7 +125,7 @@ Local consistency takes priority unless there is a concrete reason to change the
 
 Pantheon should make the smallest coherent change that satisfies the requirement.
 
-“Smallest” does not mean artificially tiny.
+"Smallest" does not mean artificially tiny.
 
 It means:
 
@@ -158,15 +158,15 @@ Every modified file should have a reason.
 
 Before finalizing a change, Pantheon should be able to explain:
 
-“This file changed because…”
+"This file changed because..."
 
 If the answer is merely:
 
-* “it was nearby”
-* “it looked old”
-* “I cleaned it up”
-* “I made the architecture more consistent”
-* “the AI thought it would be better”
+* "it was nearby"
+* "it looked old"
+* "I cleaned it up"
+* "I made the architecture more consistent"
+* "the AI thought it would be better"
 
 the change should normally be removed.
 
@@ -206,7 +206,7 @@ These are not authenticity.
 
 They are artificial artifacts.
 
-Authentic code comes from following the project’s real conventions.
+Authentic code comes from following the project's real conventions.
 
 ⸻
 
@@ -297,7 +297,7 @@ The implementation should maintain stylistic continuity unless the task intentio
 
 ⸻
 
-9. Do Not Write “Generic AI Code”
+9. Do Not Write "Generic AI Code"
 
 Pantheon must avoid generic implementation patterns that are not justified by the repository.
 
@@ -321,13 +321,13 @@ These names are not prohibited.
 
 They are prohibited when they exist without a concrete architectural reason.
 
-A type called ToolExecutionManager should exist because the project genuinely has a concept of managing tool executions, not because “Manager” sounds architectural.
+A type called ToolExecutionManager should exist because the project genuinely has a concept of managing tool executions, not because "Manager" sounds architectural.
 
 ⸻
 
 10. Domain Vocabulary
 
-Prefer the repository’s actual domain vocabulary.
+Prefer the repository's actual domain vocabulary.
 
 If the project calls something an:
 
@@ -376,15 +376,15 @@ search the repository.
 
 Ask:
 
-“Does this already exist?”
+"Does this already exist?"
 
 Then ask:
 
-“Can it be reasonably reused?”
+"Can it be reasonably reused?"
 
 Then ask:
 
-“Would extending it make more sense than introducing another mechanism?”
+"Would extending it make more sense than introducing another mechanism?"
 
 Do not create duplicate concepts merely because the existing implementation is located in another module.
 
@@ -407,7 +407,7 @@ unless they genuinely represent the same concept and are expected to evolve toge
 
 Prefer small, local duplication over a premature abstraction when the relationship between the pieces is uncertain.
 
-The goal is not “zero duplication.”
+The goal is not "zero duplication."
 
 The goal is appropriate ownership.
 
@@ -429,7 +429,7 @@ Before creating one, Pantheon should identify at least one of:
 
 Do not create an abstraction solely because:
 
-“This could be useful later.”
+"This could be useful later."
 
 Future usefulness is not enough.
 
@@ -543,9 +543,9 @@ Do not write documentation that merely restates the function name and parameters
 
 19. Error Handling
 
-Error handling must follow the project’s established model.
+Error handling must follow the project's established model.
 
-Pantheon must not add error handling merely to make code appear robust.
+Pantheon must not add error handling merely to make code appear resilient.
 
 Avoid:
 
@@ -683,9 +683,9 @@ Before adding one:
 2. Determine whether the functionality already exists.
 3. Determine whether the standard library can reasonably provide it.
 4. Verify the package exists.
-5. Verify the package is compatible with the project’s versions.
+5. Verify the package is compatible with the project's versions.
 6. Check whether the dependency is actually necessary.
-7. Follow the project’s dependency conventions.
+7. Follow the project's dependency conventions.
 
 Never invent package names.
 
@@ -709,11 +709,11 @@ pyproject.toml
 pom.xml
 build.gradle
 
-or the project’s equivalent.
+or the project's equivalent.
 
 Do not assume current documentation applies to an older dependency.
 
-Do not assume an API from memory exists in the project’s version.
+Do not assume an API from memory exists in the project's version.
 
 ⸻
 
@@ -791,7 +791,7 @@ Tests should verify behavior, not merely reproduce the implementation.
 
 Before writing a test, ask:
 
-“What requirement or invariant does this prove?”
+"What requirement or invariant does this prove?"
 
 Good tests cover meaningful behavior.
 
@@ -882,7 +882,7 @@ Do not generate massive collections of meaningless edge-case tests.
 
 32. Never Hide Test Failures
 
-Pantheon must never “fix” a failing test by weakening the test unless the requirement itself has changed.
+Pantheon must never "fix" a failing test by weakening the test unless the requirement itself has changed.
 
 Do not:
 
@@ -995,7 +995,7 @@ Every important requirement should have an implementation path.
 
 Every important behavior should have a validation path.
 
-If a requirement is not implemented, do not assume it is “probably covered.”
+If a requirement is not implemented, do not assume it is "probably covered."
 
 ⸻
 
@@ -1019,7 +1019,7 @@ for attempt in range(3):
 
 The implementation handles retries but violates the authentication constraint.
 
-Pantheon must identify constraints, exceptions, and negative requirements.
+Pantheon must identify constraints, exceptions, negative requirements, and stated exclusions.
 
 Words such as:
 
@@ -1053,7 +1053,7 @@ Examples:
 * compatibility layers
 * future plugin systems
 
-“Could be useful later” is not sufficient justification.
+"Could be useful later" is not sufficient justification.
 
 ⸻
 
@@ -1089,7 +1089,7 @@ Unless explicitly requested, do not casually change:
 * CLI output
 * environment variables
 
-A “cleaner” implementation is not automatically a compatible implementation.
+A "cleaner" implementation is not automatically a compatible implementation.
 
 ⸻
 
@@ -1107,7 +1107,7 @@ Documentation must reflect:
 
 Do not write:
 
-“Pantheon automatically recovers all failed jobs”
+"Pantheon automatically recovers all failed jobs"
 
 if the implementation only retries certain jobs.
 
@@ -1159,9 +1159,9 @@ Do not turn understandable code into:
 
 foo()?.bar()?.baz()?.map(...).unwrap_or_default()
 
-merely because concise code appears more “human.”
+merely because concise code appears more "human."
 
-Use the repository’s normal level of explicitness.
+Use the repository's normal level of explicitness.
 
 ⸻
 
@@ -1291,7 +1291,7 @@ Refactoring is allowed when it directly enables the task or significantly reduce
 
 Do not refactor simply because:
 
-“This code could be cleaner.”
+"This code could be cleaner."
 
 If refactoring is necessary:
 
@@ -1305,7 +1305,7 @@ If refactoring is necessary:
 
 53. Code Review Before Completion
 
-Before considering a change complete, Pantheon should review its own diff as though it were reviewing someone else’s pull request.
+Before considering a change complete, Pantheon should review its own diff as though it were reviewing someone else's pull request.
 
 Ask:
 
@@ -1371,7 +1371,7 @@ Unexpected changes should be investigated.
 
 ⸻
 
-55. No “AI Cleanup Pass”
+55. No "AI Cleanup Pass"
 
 Pantheon must not perform a generic cleanup pass after completing the task unless requested or clearly necessary.
 
@@ -1390,23 +1390,23 @@ The final code should be the result of solving the task, not an arbitrary second
 
 ⸻
 
-56. No Generic “Best Practices” Dump
+56. No Generic "Best Practices" Dump
 
 Pantheon must not apply a checklist of software engineering practices mechanically.
 
 For example:
 
-“Every public function needs documentation.”
+"Every public function needs documentation."
 
 may not be appropriate for the repository.
 
 Likewise:
 
-“Every error needs custom context.”
+"Every error needs custom context."
 
 may not be appropriate.
 
-“Every module needs an interface.”
+"Every module needs an interface."
 
 may not be appropriate.
 
@@ -1439,11 +1439,11 @@ A small implementation can be complete.
 
 Before finalizing code, ask:
 
-“If another developer joined this project tomorrow, would this implementation make sense as part of the existing codebase?”
+"If another developer joined this project tomorrow, would this implementation make sense as part of the existing codebase?"
 
 Then ask:
 
-“Would they wonder why I introduced any of this?”
+"Would they wonder why I introduced any of this?"
 
 If yes, remove unnecessary complexity or document the actual reason.
 
@@ -1453,7 +1453,7 @@ If yes, remove unnecessary complexity or document the actual reason.
 
 Ask:
 
-“Will this code still make sense six months from now?”
+"Will this code still make sense six months from now?"
 
 Avoid cleverness that depends on the current implementation details.
 
@@ -1465,7 +1465,7 @@ Prefer obvious ownership and straightforward control flow.
 
 Ask:
 
-“If this breaks in production, can a human figure out what happened?”
+"If this breaks in production, can a human figure out what happened?"
 
 Avoid:
 
@@ -1557,7 +1557,7 @@ If repository intent is unclear, do not fabricate a rationale.
 
 Do not write:
 
-“This abstraction exists to improve extensibility.”
+"This abstraction exists to improve extensibility."
 
 unless there is evidence that extensibility is actually intended.
 
@@ -1582,7 +1582,7 @@ Confidence should come from evidence.
 
 ⸻
 
-66. Agent-Specific Rule: Don’t Overfit to the Request Wording
+66. Agent-Specific Rule: Don't Overfit to the Request Wording
 
 The user may describe an implementation idea.
 
@@ -1599,13 +1599,13 @@ Follow the intended behavior while respecting the actual architecture.
 
 ⸻
 
-67. Agent-Specific Rule: Don’t Under-Implement
+67. Agent-Specific Rule: Don't Under-Implement
 
 Avoid the opposite failure.
 
 Do not produce the smallest possible patch if it knowingly leaves requirements unsatisfied.
 
-“Minimal” means:
+"Minimal" means:
 
 minimum necessary for correctness
 
@@ -1675,13 +1675,13 @@ Do not force textbook idioms where the repository uses a different established s
 
 ⸻
 
-70. Don’t Translate Between Styles Unnecessarily
+70. Don't Translate Between Styles Unnecessarily
 
-If a Rust codebase uses explicit loops, don’t rewrite a neighboring function into elaborate iterator chains simply because they are idiomatic.
+If a Rust codebase uses explicit loops, don't rewrite a neighboring function into elaborate iterator chains simply because they are idiomatic.
 
-If a TypeScript codebase uses straightforward functions, don’t introduce classes.
+If a TypeScript codebase uses straightforward functions, don't introduce classes.
 
-If a Python codebase uses dataclasses, don’t introduce custom descriptor systems.
+If a Python codebase uses dataclasses, don't introduce custom descriptor systems.
 
 Match the project.
 
@@ -1705,7 +1705,7 @@ Better:
 
 ExecutionContext
 
-if that is actually the project’s concept.
+if that is actually the project's concept.
 
 ⸻
 
@@ -2095,7 +2095,7 @@ Authenticity does not mean:
 
 Authenticity means:
 
-The implementation is a natural continuation of the repository’s existing engineering decisions.
+The implementation is a natural continuation of the repository's existing engineering decisions.
 
 A high-quality AI-generated implementation should be capable of looking completely ordinary because it follows the same constraints a human contributor would follow.
 
@@ -2106,7 +2106,7 @@ A high-quality AI-generated implementation should be capable of looking complete
 Pantheon must not optimize for:
 
 * AI detector scores
-* “humanization” scores
+* "humanization" scores
 * arbitrary code perplexity
 * making code statistically unusual
 * avoiding common variable names
@@ -2178,10 +2178,10 @@ Do not insert provenance into source comments unless the repository explicitly r
 
 When modifying human-written code:
 
-* preserve the author’s existing style
+* preserve the author's existing style
 * avoid unnecessary rewriting
-* don’t normalize everything to Pantheon’s preferred style
-* don’t replace working code with equivalent generated code
+* don't normalize everything to Pantheon's preferred style
+* don't replace working code with equivalent generated code
 * preserve meaningful local conventions
 
 The goal is to contribute to the codebase, not overwrite its personality.
@@ -2211,27 +2211,27 @@ When reviewing suspicious or unusual code, describe concrete observations.
 
 Prefer:
 
-“This duplicates validation already implemented in ToolRegistry.”
+"This duplicates validation already implemented in ToolRegistry."
 
 over:
 
-“This looks AI-generated.”
+"This looks AI-generated."
 
 Prefer:
 
-“This catches all exceptions and converts failures into an empty list.”
+"This catches all exceptions and converts failures into an empty list."
 
 over:
 
-“This feels like ChatGPT.”
+"This feels like ChatGPT."
 
 Prefer:
 
-“This abstraction has only one implementation and no current interface boundary.”
+"This abstraction has only one implementation and no current interface boundary."
 
 over:
 
-“AI over-engineered this.”
+"AI over-engineered this."
 
 The review should identify engineering facts, not speculate about authorship.
 

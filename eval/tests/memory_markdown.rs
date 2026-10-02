@@ -292,7 +292,7 @@ fn import_caps_file_tier_at_existing_store_tier() {
 }
 
 /// The reverse is also safe: a file claiming a lower tier cannot clobber
-/// a higher-trust row — the store's anti-clobber rule holds the value and
+/// a higher-trust row - the store's anti-clobber rule holds the value and
 /// the tier.
 
 #[test]

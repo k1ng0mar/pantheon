@@ -6,8 +6,8 @@
 //! replaying the same occurrence gets `false` and does not start a second
 //! run.
 //!
-//! Claim unification: this store and [`Ledger::claim`] share ONE table — the
-//! ledger's `claims` table — when opened on the same database file. A key
+//! Claim unification: this store and [`Ledger::claim`] share ONE table - the
+//! ledger's `claims` table - when opened on the same database file. A key
 //! claimed through either API is visible to the other, so exactly-once
 //! semantics no longer depend on which call site claimed first. Older
 //! `ClaimStore` databases used a separate `occurrence_claims` table; its rows
@@ -28,7 +28,7 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS claims (
 
 /// Durable twin of the tick driver's in-memory queue: one row per job id
 /// that owes a queued fire. Set semantics (PRIMARY KEY on job_id) mirror
-/// the driver's `HashSet` — re-queueing while a fire is already owed just
+/// the driver's `HashSet` - re-queueing while a fire is already owed just
 /// refreshes the timestamp. Rows are deleted when the drain is taken, on
 /// abandon, and on claim failure; a row left behind by a crash is
 /// re-driven by the next process at `tick_job` entry.
@@ -186,8 +186,8 @@ impl ClaimStore {
 
     /// Forget claims older than `cutoff_ms` (retention policy).
     ///
-    /// Occurrence keys are never released when a run finishes — a late
-    /// redelivery must still collapse onto the run it already fired — so the
+    /// Occurrence keys are never released when a run finishes - a late
+    /// redelivery must still collapse onto the run it already fired - so the
     /// table only grows. Retention prunes keys nobody can fire again: an
     /// occurrence older than the window is indistinguishable from a new one
     /// for replay purposes, exactly the bounded trade-off the gateway dedup
@@ -258,7 +258,7 @@ impl ClaimStore {
     ///
     /// Take-before-complete trade-off: the row is gone once taken, so a
     /// crash between the take and the drain firing loses the owed run.
-    /// The alternative — deleting only after the drain completes — would
+    /// The alternative - deleting only after the drain completes - would
     /// re-fire a drain whose pre-crash run may already have executed the
     /// job, risking a duplicate run. Under-fire is the safer failure.
     pub fn take_pending_drain(&self, job_id: &str) -> Result<bool, PantheonError> {

@@ -199,7 +199,7 @@ pub fn put_files(app: &App, req: &Request, name: &str) -> Response {
 /// - 409 when `<name>` is the active profile (`agent = "<name>"` in the
 ///   config): the active profile cannot be deleted.
 /// - The profile's persona files under `<data_dir>/profiles/<name>/` are
-///   removed too — and only those. Declared paths pointing anywhere
+///   removed too - and only those. Declared paths pointing anywhere
 ///   outside that directory are left untouched.
 pub fn delete_profile(app: &App, name: &str) -> Response {
     if !valid_name(name) {

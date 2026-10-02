@@ -10,7 +10,7 @@ Swarm page is built against this contract.
 
 All paths are under the dashboard's API root (`/api`).
 
-### `POST /api/swarm` — create a swarm
+### `POST /api/swarm` - create a swarm
 
 Body (JSON):
 
@@ -38,7 +38,7 @@ or, to fan out to specific agent profiles:
   in `"count"` mode. Integer in 1..=8. (The legacy `agents` key is
   accepted as an alias.)
 - `profiles` (required in `"profiles"` mode): 1..=8 profile names.
-  Every name must be declared in the config's `[agents]` table — an
+  Every name must be declared in the config's `[agents]` table - an
   unknown profile is a `400`, never a silent fallback.
 - `judge` (optional, default true): whether a judge model reviews the
   combined transcripts when the round settles. Requires a configured
@@ -56,7 +56,7 @@ Response: `201`
 
 `swarm_id` is the documented key; `id` is an alias kept for
 compatibility. `status_view` is the same shape as
-`GET /api/swarm/status` (below) — it carries run ids, per-agent
+`GET /api/swarm/status` (below) - it carries run ids, per-agent
 profiles, and live summaries for clients that want them without a
 second round-trip.
 
@@ -64,7 +64,7 @@ Errors: `400` (`SWARM_VALIDATION`) for an empty task, a bad `mode`,
 an out-of-range or non-integer `subagent_count`, an empty/too-long or
 unknown `profiles` list, or `judge: true` with no judge transport.
 
-### `GET /api/swarm/status?swarm=<swarm_id>` — poll the swarm
+### `GET /api/swarm/status?swarm=<swarm_id>` - poll the swarm
 
 Refreshes every agent's state from the worker, runs the judge when the
 round settles, then returns the status view:
@@ -95,12 +95,12 @@ round settles, then returns the status view:
 
 `verdict` is `{"done": true|false, "notes": "..."}` once the judge has
 run, otherwise `null`. Poll this endpoint until `status` leaves
-`running` — the refresh-on-read means no separate settle step is needed.
+`running` - the refresh-on-read means no separate settle step is needed.
 
 Errors: `400` when the id param is missing; `404`
 (`SWARM_NOT_FOUND`) for an unknown swarm id.
 
-### `GET /api/swarm/transcript?swarm=<swarm_id>[&agent=<name>]` — transcripts
+### `GET /api/swarm/transcript?swarm=<swarm_id>[&agent=<name>]` - transcripts
 
 Without `agent`, the combined transcript:
 
@@ -130,7 +130,7 @@ Errors: `400` when the id param is missing; `404`
 (`SWARM_NOT_FOUND`) for an unknown swarm id or (with `agent`) an
 unknown agent name in the current round.
 
-### `POST /api/swarm/<id>/retry` — start a new round
+### `POST /api/swarm/<id>/retry` - start a new round
 
 Only incomplete swarms can be retried, at most 3 rounds total, and only
 when a judge verdict exists with `done: false`. The new round's agents
@@ -156,7 +156,7 @@ Swarm `status` (lowercase in JSON):
 | value        | meaning                                              |
 |--------------|------------------------------------------------------|
 | `running`    | at least one agent still working                     |
-| `judging`    | transitional — the judge is being consulted          |
+| `judging`    | transitional - the judge is being consulted          |
 | `complete`   | all agents done (and the judge, if enabled, said done)|
 | `incomplete` | settled but not done: an agent failed, or the judge said not done |
 
@@ -186,18 +186,18 @@ Read by `pantheon-dashboard`'s config handler and surfaced in the
 dashboard config editor. Keys (all with defaults; the section itself
 is optional):
 
-- `max_subagents` (default 4) — per-agent spawn cap: how many
+- `max_subagents` (default 4) - per-agent spawn cap: how many
   subagents one agent may spawn before further spawns are refused
   (`SWARM_PER_AGENT_CAP`). Also settable per profile via
   `AgentProfile::swarm_max_subagents`.
-- `max_depth` (default 2) — maximum delegation depth (primary = 0).
-- `max_concurrent` (default 4) — maximum live subagents across the swarm.
-- `allow_child_spawn` (default true) — when false, a child agent
+- `max_depth` (default 2) - maximum delegation depth (primary = 0).
+- `max_concurrent` (default 4) - maximum live subagents across the swarm.
+- `allow_child_spawn` (default true) - when false, a child agent
   (depth ≥ 1) that attempts to delegate gets a structured refusal
   (`SWARM_CHILD_SPAWN_DENIED`) instead of a grandchild.
 
 These govern the agent loop's delegate path (in-process subagents via
-`SubagentRegistry`), not the dashboard's HTTP swarm fan-out — the HTTP
+`SubagentRegistry`), not the dashboard's HTTP swarm fan-out - the HTTP
 swarm's agent count is validated 1..=8 at the API layer.
 
 ### `[judge]` aux section (config.toml)
@@ -209,7 +209,7 @@ dashboard builds a one-shot `JudgeTransport` from it at startup
 no resolvable transport are rejected with `SWARM_VALIDATION`.
 
 The judge contract: the model must answer with a `VERDICT: done` or
-`VERDICT: not done` line plus free-form notes. Parsing is fail-closed —
+`VERDICT: not done` line plus free-form notes. Parsing is fail-closed
 an unparseable answer or a transport error counts as *not done*, never
 as approval.
 
@@ -224,7 +224,7 @@ Each swarm agent is a real Pantheon turn, not a simulation:
    [--agent <profile>] --deliver session` child is spawned in its own
    process group (the same turn path as `POST /api/runs`). Profiles-mode
    agents pass `--agent <profile>`: the child resolves the profile from
-   config `[agents]` and runs the turn as that profile — its SOUL.md /
+   config `[agents]` and runs the turn as that profile - its SOUL.md /
    USER.md / AGENTS.md ride the session prompt. Unknown profiles fail
    closed at the child with a clear error. Count mode's `"default"`
    sentinel only passes `--agent` when a profile is actually declared

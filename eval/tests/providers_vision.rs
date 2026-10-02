@@ -45,7 +45,7 @@ fn vision_policy(provider: &str, model: &str) -> ModelPolicy {
 }
 
 /// Stub transport: the vision-gate test must fail before any attempt, so
-/// this panics if it is ever called — proving the gate fires first.
+/// this panics if it is ever called - proving the gate fires first.
 struct NeverTransport;
 impl ChatTransport for NeverTransport {
     fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
@@ -124,7 +124,7 @@ fn anthropic_wire_carries_base64_image_block() {
 #[test]
 fn vision_gate_refuses_non_vision_model_before_any_attempt() {
     // deepseek-chat: catalog vision=false. NeverTransport panics if the
-    // chain gets as far as building a request — the gate must fire first.
+    // chain gets as far as building a request - the gate must fire first.
     let chain = ProviderChain::new(
         vision_policy("deepseek", "deepseek-chat"),
         NeverTransport,
@@ -267,7 +267,7 @@ fn upload_attach_serialize_end_to_end() {
         .unwrap()
         .to_string();
 
-    // 2. Resolve from disk (no App handle — the dir-based path the turn
+    // 2. Resolve from disk (no App handle - the dir-based path the turn
     //    child would use) and build the image part.
     let info = uploads::resolve_in(&dir.path().join("uploads"), &id)
         .expect("upload must resolve from disk");
@@ -307,7 +307,7 @@ fn upload_attach_serialize_end_to_end() {
 /// Mock-provider vision round trip: an image part goes out on the wire as
 /// an `image_url` data URL and the model's description comes back.
 ///
-/// No live key needed — the stub transport captures the request body and
+/// No live key needed - the stub transport captures the request body and
 /// returns a canned chat-completion. This exercises the full chain path
 /// (vision gate -> adapter serialization -> response parsing), which the
 /// unit-level `body_value` tests above do not. A live variant (real pixels

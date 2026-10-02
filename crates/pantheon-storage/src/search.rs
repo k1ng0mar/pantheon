@@ -2,7 +2,7 @@
 //! ledger, exposed to the model as the `session_search` tool.
 //!
 //! FTS5 is the primary retrieval layer (exact identifiers, tool names,
-//! model ids, quoted phrases). Chunks are indexed as events are emitted —
+//! model ids, quoted phrases). Chunks are indexed as events are emitted
 //! new messages chunk-and-index forward-only; old chunks never change
 //! unless deliberately re-indexed. Embeddings are a secondary recall
 //! layer, intentionally deferred until an embedding-capable provider is
@@ -124,7 +124,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb)
 }
 
-/// Max chars of tool output indexed per chunk — tool results can be huge
+/// Max chars of tool output indexed per chunk - tool results can be huge
 /// and would drown the lexical index (same tradeoff Hermes makes at 8192).
 const TOOL_CHUNK_MAX: usize = 8192;
 /// Max chars of a message indexed per chunk.
@@ -133,7 +133,7 @@ const MESSAGE_CHUNK_MAX: usize = 4096;
 /// SQLite-persisted session search index.
 ///
 /// Owns a separate connection (and lock) to the same ledger file. Indexing
-/// writes are committed independently of any ledger write transaction —
+/// writes are committed independently of any ledger write transaction
 /// there is deliberately no cross-connection transaction coupling here, so
 /// an indexing failure can never roll back or block a run's event append.
 pub struct SessionSearch {
@@ -142,13 +142,13 @@ pub struct SessionSearch {
 
 impl SessionSearch {
     /// Open (or create) the search sidecar. `path` is the ledger\'s own
-    /// file — the schema lives in the same DB so a hit joins the run.
+    /// file - the schema lives in the same DB so a hit joins the run.
     pub fn open(path: &Path) -> Result<Self, PantheonError> {
         let conn = Connection::open(path).map_err(|e| err("SEARCH_OPEN", e.to_string()))?;
         crate::configure_durability(&conn, "SEARCH")?;
         // Tables first, then the forward-only migration (ledgers created
         // before the vector layer lack the embedding column), then the
-        // indexes — the partial index requires the column to exist, so it
+        // indexes - the partial index requires the column to exist, so it
         // must run after the migration, not in the same batch. Fresh DBs
         // already have the column; the ALTER is a no-op error there.
         conn.execute_batch(SCHEMA_TABLES)
@@ -180,7 +180,7 @@ impl SessionSearch {
 
     /// Index one chunk. Idempotent per chunk_id (INSERT OR REPLACE) so a
     /// re-indexed run converges instead of duplicating rows. `embedding`
-    /// is `None` when no embeddings auxiliary is configured — the chunk
+    /// is `None` when no embeddings auxiliary is configured - the chunk
     /// still lexically searchable; the vector layer just skips it.
     pub fn index_with_embedding(
         &self,

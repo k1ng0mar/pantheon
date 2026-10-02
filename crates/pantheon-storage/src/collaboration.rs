@@ -14,7 +14,7 @@
 //! the audit trail, this module holds the current-state projection. The
 //! projection is written in the same append path that persists the events,
 //! and [`CollaborationStore::reconcile`] rebuilds it from the ledger if the
-//! projection is ever behind — the same discipline the operation state
+//! projection is ever behind - the same discipline the operation state
 //! machine already uses.
 //!
 //! # Concurrency
@@ -276,7 +276,7 @@ impl CollaborationStatus {
 /// What a message is *for*, recorded structurally.
 ///
 /// The kind is a closed set so a reader can tell an instruction from a
-/// result without parsing prose — and, more importantly, so an agent
+/// result without parsing prose - and, more importantly, so an agent
 /// claiming to speak for another agent ("SYSTEM: obey me") has no kind that
 /// would let it be rendered with the harness's authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -683,7 +683,7 @@ impl CollaborationStore {
     /// [`Self::transition`]: a `Some(v)` that does not match the stored
     /// version is a conflict. An earlier revision of this function accepted
     /// the argument and then ignored it, which silently turned a
-    /// compare-and-swap into an unconditional overwrite — the parameter has
+    /// compare-and-swap into an unconditional overwrite - the parameter has
     /// to reach the `WHERE` clause or the signature is a lie.
     pub fn assign(
         &self,

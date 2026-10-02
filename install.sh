@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pantheon installer — GitHub Releases, no toolchain required.
+# Pantheon installer - GitHub Releases, no toolchain required.
 #   curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash
 #
 # Downloads a prebuilt Pantheon binary from GitHub Releases and links it
@@ -96,7 +96,7 @@ ASSET="pantheon-${VERSION}-${OS_ID}-${ARCH_ID}.tar.gz"
 URL="https://github.com/$REPO/releases/download/${VERSION}/${ASSET}"
 
 # I-13: re-running the installer for the version already on disk is a
-# no-op — skip the download instead of fetching it again.
+# no-op - skip the download instead of fetching it again.
 if [ -x "$BIN_DIR/pantheon" ]; then
   INSTALLED_BEFORE="$("$BIN_DIR/pantheon" --version 2>/dev/null | awk '{print $NF}')"
   norm_ver() { printf '%s' "$1" | sed 's/^v//'; }
@@ -143,7 +143,7 @@ if curl -fsSL "${URL}.sha256" -o "$TMPDIR/$ASSET.sha256" 2>/dev/null; then
       if [ "${PANTHEON_ALLOW_UNVERIFIED:-0}" = "1" ]; then
         warn "no sha256 tool found (sha256sum/shasum); skipping verification (PANTHEON_ALLOW_UNVERIFIED=1)"
       else
-        fail "no sha256 tool found (install coreutils on Linux; macOS ships shasum) — refusing to install unverified (PANTHEON_ALLOW_UNVERIFIED=1 to override)"
+        fail "no sha256 tool found (install coreutils on Linux; macOS ships shasum) - refusing to install unverified (PANTHEON_ALLOW_UNVERIFIED=1 to override)"
       fi
     else
       fail "checksum mismatch for $ASSET (download may be corrupt)"
@@ -153,7 +153,7 @@ else
   if [ "${PANTHEON_ALLOW_UNVERIFIED:-0}" = "1" ]; then
     warn "no checksum published for $ASSET; installing unverified (PANTHEON_ALLOW_UNVERIFIED=1)"
   else
-    fail "no checksum published for $ASSET — refusing to install unverified (PANTHEON_ALLOW_UNVERIFIED=1 to override)"
+    fail "no checksum published for $ASSET - refusing to install unverified (PANTHEON_ALLOW_UNVERIFIED=1 to override)"
   fi
 fi
 
@@ -189,7 +189,7 @@ add_to_path() {
 
   local shell_name rc_file marker path_line
   if [ -z "${SHELL:-}" ]; then
-    warn "SHELL is not set; assuming bash for PATH setup — check the rc file below is the one your shell reads"
+    warn "SHELL is not set; assuming bash for PATH setup - check the rc file below is the one your shell reads"
   fi
   shell_name="$(basename "${SHELL:-/bin/bash}")"
   case "$shell_name" in
@@ -209,7 +209,7 @@ add_to_path() {
     path_line="export PATH=\"$BIN_DIR:\$PATH\""
   fi
 
-  # Already handled only if the actual export line is there — a stale
+  # Already handled only if the actual export line is there - a stale
   # marker with the line deleted must not read as "already present" (I-14).
   if [ -f "$rc_file" ] && grep -qF "$path_line" "$rc_file" 2>/dev/null; then
     ok "PATH entry already present in $rc_file"
@@ -284,7 +284,7 @@ else
     fail "pantheon --version failed; the binary at $BIN_DIR/pantheon does not run"
   fi
 
-  # Runtime probe: bounded, and a timeout is reported as exactly that —
+  # Runtime probe: bounded, and a timeout is reported as exactly that
   # never as a failed install.
   if command -v timeout >/dev/null 2>&1; then
     if timeout "$PROBE_TIMEOUT_SECS" "$BIN_DIR/pantheon" doctor >/dev/null 2>&1; then
@@ -298,7 +298,7 @@ else
         printf 'Run `pantheon doctor` to diagnose.\n'
       else
         # doctor exits non-zero when a provider key is missing, which is
-        # the normal fresh-install state — a warning, not a failure.
+        # the normal fresh-install state - a warning, not a failure.
         warn "Runtime check reported issues; run \`pantheon doctor\` for details"
       fi
     fi

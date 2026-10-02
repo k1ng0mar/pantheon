@@ -1,7 +1,7 @@
 //! `session_search` tool: the agent searches its own prior conversation
 //! ledger. FTS5 is the primary retrieval layer (exact identifiers, tool
 //! names, quoted phrases); recency breaks ties. Chunked, not whole
-//! sessions — a hit points at the exact source event (`run_id`, `seq`).
+//! sessions - a hit points at the exact source event (`run_id`, `seq`).
 //!
 //! Gated on `FilesystemRead`: the index is a local SQLite file, same
 //! trust level as reading the ledger directly.

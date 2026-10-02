@@ -4,7 +4,7 @@
 //! each with its own outbound queue and feeding a shared `EventSink` that
 //! starts/resumes runs and answers approvals through the Supervisor.
 //! Replies flow back over the same surfaces via `TelegramChannel` and
-//! `DiscordChannel` (real REST transports) — never a memory buffer nobody
+//! `DiscordChannel` (real REST transports) - never a memory buffer nobody
 //! reads.
 //!
 //! Tokens come from the environment only:
@@ -31,7 +31,7 @@ type ResumeHook = Arc<dyn Fn(ResumeRequest) + Send + Sync>;
 
 /// The production resume hook: continue the parked run on a background
 /// thread and deliver the outcome text back to the originating thread.
-/// Errors are logged, never fatal — a failed resume must not take the
+/// Errors are logged, never fatal - a failed resume must not take the
 /// gateway daemon down with it (unlike the CLI path, which exits).
 fn default_resume_hook(
     data_dir: PathBuf,
@@ -122,7 +122,7 @@ fn push_to_queue(
 ///
 /// `gateway` on every method is the *channel name* (`telegram`/`discord`
 /// in the legacy single-bot shape, any slug for explicit multi-bot
-/// channels) — never the platform. Thread ids are namespaced per channel
+/// channels) - never the platform. Thread ids are namespaced per channel
 /// before they touch the thread map: two bots on the same platform hand
 /// out overlapping thread ids, and the raw id would let bot B pick up bot
 /// A's conversation (and answer it from the wrong agent).
@@ -134,7 +134,7 @@ struct RuntimeSink {
     threads: Mutex<HashMap<String, String>>,
     /// One outbound queue per surface ("telegram"/"discord"). Each
     /// surface's daemon drains only its own queue, so a Telegram reply
-    /// can never be picked up by the Discord daemon and vice versa — the
+    /// can never be picked up by the Discord daemon and vice versa - the
     /// old single shared queue let each daemon grab the other's replies.
     queues: HashMap<String, Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>>,
     /// Allowed platform sender ids (Telegram user id, Discord user id).
@@ -145,7 +145,7 @@ struct RuntimeSink {
     /// Runs after a grant is recorded so the parked run continues.
     resume: ResumeHook,
     /// Per-channel agent runtimes, by channel name. A message is answered
-    /// by its channel's agent — own profile, own persona, own memory
+    /// by its channel's agent - own profile, own persona, own memory
     /// namespace. A channel with no entry here runs anonymous, exactly as
     /// before profiles existed.
     agents: HashMap<String, pantheon_runtime::AgentRuntime>,
@@ -405,7 +405,7 @@ impl RuntimeSink {
 
     /// The decision is recorded: ack the user, and on grant hand the
     /// parked run to the resume hook so it actually continues. (Granting
-    /// without resuming left runs parked forever — the ack lied.)
+    /// without resuming left runs parked forever - the ack lied.)
     fn after_approval(
         &self,
         gateway: &str,
@@ -428,7 +428,7 @@ impl RuntimeSink {
         }
     }
 
-    /// Hand a grant to the resume hook. The hook — not the daemon thread —
+    /// Hand a grant to the resume hook. The hook - not the daemon thread
     /// decides how the resume runs; the default spawns a background thread
     /// so the poll loop never blocks on the model.
     fn resume_run(&self, gateway: &str, thread_id: &str, run_id: &str) {
@@ -464,7 +464,7 @@ pub fn cmd_gateway(args: &[String]) {
 /// One gateway chat surface: a named channel bound to a platform, a bot
 /// token, and the agent profile that serves it.
 struct ChannelSpec {
-    /// Channel name — keys outbound queues, cursor files, and thread ids.
+    /// Channel name - keys outbound queues, cursor files, and thread ids.
     name: String,
     /// `"telegram"` or `"discord"`.
     platform: String,
@@ -510,13 +510,13 @@ impl pantheon_gateway::Channel for NamedChannel {
 /// Build the channel plan from config + secrets.
 ///
 /// Explicit mode: any `[gateway.channels.<name>]` entry that declares a
-/// platform becomes its own channel — one poller per entry, so two
+/// platform becomes its own channel - one poller per entry, so two
 /// entries can both be `telegram` with different bot tokens and different
 /// agent profiles. The token comes from `token_secret` through the
 /// secrets broker (process env wins, then `<data_dir>/gateway.env`),
 /// falling back to the platform's standard token.
 ///
-/// Legacy mode: no entry declares a platform — today's behavior exactly:
+/// Legacy mode: no entry declares a platform - today's behavior exactly:
 /// at most one `telegram` and one `discord` channel from the standard
 /// tokens, served by the default profile.
 ///
@@ -663,13 +663,13 @@ fn run_gateway_foreground() {
     // Voice for the gateway channels: the [stt]/[tts] backends the setup
     // wizard writes, double-gated by the [tools] voice toggle (see
     // pantheon_gateway::channel_voice::VoicePipes). voice_replies is
-    // per-channel ([gateway.channels.<name>]), default off — text stays
+    // per-channel ([gateway.channels.<name>]), default off - text stays
     // the default.
     let secrets = crate::config::chat_secrets(gw_cfg.as_ref());
     // Voice pipes per channel: the [stt]/[tts] backends the setup wizard
     // writes, double-gated by the [tools] voice toggle (see
     // pantheon_gateway::channel_voice::VoicePipes). voice_replies is
-    // per-channel ([gateway.channels.<name>]), default off — text stays
+    // per-channel ([gateway.channels.<name>]), default off - text stays
     // the default.
     let mut voices: HashMap<String, pantheon_gateway::VoicePipes> = HashMap::new();
     for spec in &specs {
@@ -789,7 +789,7 @@ fn run_gateway_foreground() {
                     // The Discord channel owns both directions: the gateway
                     // websocket feeds its inbox, the daemon drains it, and replies
                     // go out over Discord REST. (It used to be a MemoryChannel
-                    // whose outbox nobody read — replies accumulated in RAM and
+                    // whose outbox nobody read - replies accumulated in RAM and
                     // the user got silence.)
                     let discord = Arc::new(
                         pantheon_gateway::DiscordChannel::rest(&spec.token)
@@ -991,7 +991,7 @@ pub fn drain_outbound(data_dir: &Path) -> (Vec<pantheon_gateway::OutboundMessage
     (msgs, bad)
 }
 // ── service supervision ────────────────────────────────────────────────────
-// Thin over the cross-platform machinery in `pantheon_gateway::service` —
+// Thin over the cross-platform machinery in `pantheon_gateway::service`
 // the same code `pantheon init` uses, so the two can never disagree about
 // how the service is installed. systemd on Linux (cron `@reboot`
 // fallback), launchd on macOS, Task Scheduler on Windows.
@@ -1067,7 +1067,7 @@ fn confirm_active(mechanism: pantheon_gateway::ServiceMechanism) {
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     eprintln!(
-        "gateway: installed but not reporting active — it may be crash-looping.\n\
+        "gateway: installed but not reporting active - it may be crash-looping.\n\
          most common cause: the token or allowlist is not visible to the\n\
          service. Check the service logs."
     );

@@ -2,12 +2,12 @@
 //!
 //! Every value here is either measured from events the runtime already
 //! emits (`ModelEvent::Usage`, turn timing) or explicitly unknown. A
-//! missing value renders as `—`, never as a fabricated zero: showing
+//! missing value renders as ` - `, never as a fabricated zero: showing
 //! `0 tok/s` for a provider that never reported usage would be a lie the
 //! user might budget against.
 
 /// Everything the status bar can show. `None` = the runtime did not
-/// expose this; the bar renders `—` for it.
+/// expose this; the bar renders ` - ` for it.
 #[derive(Debug, Clone)]
 pub struct StatusBarData {
     /// e.g. "ready", "working", "esc to interrupt".
@@ -26,7 +26,7 @@ pub struct StatusBarData {
     /// This turn's throughput, tokens/sec.
     pub tokens_per_sec: Option<f64>,
     /// Prompt-cache hit rate. The runtime's `ModelUsage` does not carry
-    /// cache counters, so this is currently always `None` → `—`.
+    /// cache counters, so this is currently always `None` → ` - `.
     pub cache_hit_rate: Option<f64>,
     /// Completed turns + 1 while a turn runs; `None` before the first turn.
     pub turn_no: Option<u32>,
@@ -42,8 +42,8 @@ pub struct StatusBarData {
     pub bg: Option<String>,
 }
 
-/// Missing value glyph. One rule, used everywhere: unknown is `—`.
-pub const UNKNOWN: &str = "—";
+/// Missing value glyph. One rule, used everywhere: unknown is ` - `.
+pub const UNKNOWN: &str = " - ";
 
 /// 1234 → "1.2k", 999 → "999", 2_500_000 → "2.5M".
 pub fn fmt_count(n: u64) -> String {
@@ -112,7 +112,7 @@ pub fn render(data: &StatusBarData, width: usize) -> String {
         let w = line.chars().count();
         if w > width {
             let keep = width.saturating_sub(1);
-            line = line.chars().take(keep).collect::<String>() + "…";
+            line = line.chars().take(keep).collect::<String>() + "...";
         }
     }
     line

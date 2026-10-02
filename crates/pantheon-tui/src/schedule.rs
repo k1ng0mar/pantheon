@@ -1,4 +1,4 @@
-//! `pantheon schedule` — durable cron/interval/one-shot task scheduling.
+//! `pantheon schedule` - durable cron/interval/one-shot task scheduling.
 //!
 //! Jobs live in the data dir (`schedule.json`) and are read/written through
 //! the scheduler core's [`load_jobs`]/[`save_jobs`]. Occurrence idempotency
@@ -74,12 +74,12 @@ pub fn cmd_schedule(args: &[String], data_dir: &Path) {
     if args.len() < 3 {
         eprintln!("usage: pantheon schedule <task> (--every 30m | --cron '0 9 * * *' | --at <time>) [--agent nyx] [--timeout 10m] [--overlap skip|replace|queue] [--deliver telegram|discord|notify|file:<path>|log] [--model M] [--provider P]");
         eprintln!("       pantheon schedule create --template <name> [--var k=v ...] [--deliver ...] [--every ...|--cron ...|--at ...]");
-        eprintln!("       pantheon schedule template list|get <name>|save|delete  — prompt templates (<data_dir>/templates.json)");
-        eprintln!("       pantheon schedule nightly (--every 30m | --cron '0 3 * * *' | --at <time>)  — scheduled nightly self-improvement pass (default: [nightly] cron)");
-        eprintln!("       pantheon schedule reflect ... | pantheon schedule consolidate ...  — legacy aliases for `schedule nightly`");
+        eprintln!("       pantheon schedule template list|get <name>|save|delete  - prompt templates (<data_dir>/templates.json)");
+        eprintln!("       pantheon schedule nightly (--every 30m | --cron '0 3 * * *' | --at <time>)  - scheduled nightly self-improvement pass (default: [nightly] cron)");
+        eprintln!("       pantheon schedule reflect ... | pantheon schedule consolidate ...  - legacy aliases for `schedule nightly`");
         eprintln!("       pantheon schedule list|pause|resume|cancel|run|tick|prune <id>");
         eprintln!();
-        eprintln!("--at <time>: epoch millis, RFC3339 ('2026-10-01T09:00:00+01:00'), or relative +30m/+2h/+1d — fires once, then the job is removed");
+        eprintln!("--at <time>: epoch millis, RFC3339 ('2026-10-01T09:00:00+01:00'), or relative +30m/+2h/+1d - fires once, then the job is removed");
         eprintln!("model rule: --model/--provider pin (or the template's `model` var) > the [scheduled] auxiliary model > never the interactive default.");
         eprintln!("deliver targets: log (default) | telegram (needs PANTHEON_TELEGRAM_BOT_TOKEN + PANTHEON_DELIVER_TELEGRAM_TO) | discord (needs PANTHEON_DISCORD_TOKEN + PANTHEON_DELIVER_DISCORD_TO) | notify (notify-send) | file:<path>");
         std::process::exit(2);
@@ -149,7 +149,7 @@ fn persist_new_job(stored: ScheduledJob, data_dir: &Path) {
         .map(|d| format!(" → {d}"))
         .unwrap_or_default();
     println!(
-        "scheduled {} [{}]{deliver_note} — runs | cancel: pantheon schedule cancel {}",
+        "scheduled {} [{}]{deliver_note} - runs | cancel: pantheon schedule cancel {}",
         job_id,
         format_kind(&kind),
         job_id
@@ -258,7 +258,7 @@ fn format_template_schedule(schedule: &TemplateSchedule) -> String {
 /// [--var name:question[:default] ...]`
 ///
 /// A bad cron, a bad duration, or a missing required flag is a loud error
-/// here — the template must be usable the moment it is saved.
+/// here - the template must be usable the moment it is saved.
 fn cmd_schedule_template_save(args: &[String], data_dir: &Path) {
     let usage = "usage: pantheon schedule template save --name <name> [--desc <text>] (--every 30m | --cron '<expr>') --prompt '<text>' [--var name:question[:default] ...]";
     let mut name: Option<String> = None;
@@ -392,7 +392,7 @@ fn cmd_schedule_nightly(args: &[String], data_dir: &Path) {
                 std::process::exit(1);
             }
             println!(
-                "scheduled nightly {job_id} — runs | cancel: pantheon schedule cancel {job_id}"
+                "scheduled nightly {job_id} - runs | cancel: pantheon schedule cancel {job_id}"
             );
         }
     }
@@ -416,7 +416,7 @@ pub fn build_nightly_job(data_dir: &Path, args: &[String]) -> Result<ScheduledJo
 }
 
 /// Marker task for nightly jobs. `run_job_now` intercepts it and runs
-/// the unified nightly pass instead of a chat turn — a scheduled
+/// the unified nightly pass instead of a chat turn - a scheduled
 /// nightly job never spends an agent turn. Re-exported from
 /// [`pantheon_scheduler`] so every client shares one marker string.
 pub use pantheon_scheduler::NIGHTLY_TASK_MARKER;
@@ -704,8 +704,8 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
             // ledger, same job store, so the two can never double-fire.
             // Every fire goes through the durable claim ledger first: the
             // claim is an atomic first-wins INSERT, so two ticks racing the
-            // same due job — two threads, two processes, or a restart
-            // replaying a minute — agree on exactly one winner instead of
+            // same due job - two threads, two processes, or a restart
+            // replaying a minute - agree on exactly one winner instead of
             // double-executing. A claim that cannot be persisted fails
             // closed: the run does not start.
             let watch = parts.iter().any(|a| a == "--watch");
@@ -847,7 +847,7 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
 /// the gate below keeps a long-running daemon to one pass per day.
 const RETENTION_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// What one retention pass removed. Returned so the caller can log it —
+/// What one retention pass removed. Returned so the caller can log it
 /// pruning must be visible, never silent.
 #[derive(Debug, Default)]
 pub struct RetentionReport {
@@ -866,7 +866,7 @@ fn now_ms() -> i64 {
 
 /// Run the retention pass now: prune ledger events, the FTS search sidecar,
 /// and idempotency claims older than `keep_days`. Runs whose status is not
-/// terminal are never pruned, however old their events — the active run's
+/// terminal are never pruned, however old their events - the active run's
 /// transcript is what a resume rebuilds from.
 pub fn run_retention(data_dir: &Path, keep_days: u32) -> Result<RetentionReport, String> {
     let cutoff = now_ms() - keep_days as i64 * 86_400_000;
@@ -1141,14 +1141,14 @@ pub(crate) struct JobRunReport {
 /// the error themselves.
 /// Execute one scheduled job: a real agent turn, or the bounded nightly
 /// pass for nightly jobs. Shared by `pantheon schedule tick` and the
-/// gateway service's scheduler loop — one execution core, never duplicated.
+/// gateway service's scheduler loop - one execution core, never duplicated.
 pub(crate) fn run_job_now(task: &str, sched: &Job, data_dir: &Path) -> JobRunReport {
     // Nightly jobs (the new `__pantheon_nightly__` marker and both old
     // `__pantheon_reflect__` / `__pantheon_consolidate__` markers) run the
-    // unified nightly pass directly — no agent turn, no chat model. The
+    // unified nightly pass directly - no agent turn, no chat model. The
     // pass is off by default; a disabled pass refuses the run loudly via
     // the `run_one_pass` master gate, so a stale schedule entry can never
-    // silently do nothing — or silently spend model calls.
+    // silently do nothing - or silently spend model calls.
     if task == NIGHTLY_TASK_MARKER || task == CONSOLIDATE_TASK_MARKER || task == REFLECT_TASK_MARKER
     {
         return match crate::nightly_cli::run_one_pass(data_dir, false) {
@@ -1156,7 +1156,7 @@ pub(crate) fn run_job_now(task: &str, sched: &Job, data_dir: &Path) -> JobRunRep
                 println!("{}", crate::nightly_cli::summarize_pass(&out));
                 if out.pending > 0 {
                     println!(
-                        "note: {} proposal(s) await approval — run `pantheon nightly pending`",
+                        "note: {} proposal(s) await approval - run `pantheon nightly pending`",
                         out.pending
                     );
                 }
@@ -1208,7 +1208,7 @@ pub(crate) fn run_job_now(task: &str, sched: &Job, data_dir: &Path) -> JobRunRep
     let run_id = pantheon_runtime::new_run_id();
     match session.chat(&run_id, task) {
         Ok(outcome) => {
-            println!("ran {task} — run {run_id}");
+            println!("ran {task} - run {run_id}");
             deliver_job_result(task, sched, data_dir, &run_id, &outcome);
             JobRunReport {
                 run_id,
@@ -1242,7 +1242,7 @@ pub(crate) fn run_job_now(task: &str, sched: &Job, data_dir: &Path) -> JobRunRep
 ///
 /// The summary is the run's final assistant message, redacted and
 /// truncated. Delivery failure never fails the job: it is a log line, not
-/// an error — the run already completed and sits in the ledger.
+/// an error - the run already completed and sits in the ledger.
 fn deliver_job_result(
     task: &str,
     sched: &Job,
@@ -1357,7 +1357,7 @@ pub(crate) fn load_schedulable(data_dir: &Path) -> Result<Vec<ScheduledJob>, Str
 ///
 /// Only [`FireOutcome::Fired`] stamps `last_run`: a fire means the claim
 /// was won and the run started. [`FireOutcome::Queued`] is a deferred
-/// duplicate of an already-fired occurrence — stamping `last_run` there
+/// duplicate of an already-fired occurrence - stamping `last_run` there
 /// would reset the interval clock before anything ran.
 ///
 /// One-shot rows are NOT removed here. They are removed by the one-shot
@@ -1405,7 +1405,7 @@ pub(crate) fn scheduler_tick_secs() -> u64 {
 /// - a paused-state predicate, so a queued drain re-checks paused fresh
 ///   from the store instead of trusting the snapshot taken at fire time;
 /// - a one-shot completion observer, so one-shot rows are removed only
-///   when the run actually completed — never on panic/timeout.
+///   when the run actually completed - never on panic/timeout.
 fn install_scheduler_hooks(sched: &mut SchedulerLoop, data_dir: &Path) {
     let dd = data_dir.to_path_buf();
     sched.set_paused_check(Arc::new(move |id: &str| {

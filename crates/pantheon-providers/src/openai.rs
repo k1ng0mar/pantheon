@@ -211,7 +211,7 @@ fn usage_of(v: &serde_json::Value) -> Option<ModelUsage> {
     if !u.is_null() {
         // Cached prompt tokens count toward context and are billed: fold
         // them into the input total so cost accounting never understates
-        // a cached turn. Conservative for the cost ceiling — OpenAI
+        // a cached turn. Conservative for the cost ceiling - OpenAI
         // documents `prompt_tokens` as already inclusive of cached
         // tokens, so for first-party OpenAI this slightly overcounts;
         // the ceiling is an upper bound, and overcounting is its safe
@@ -549,7 +549,7 @@ mod stream_truncation_tests {
     use crate::model_event::NoopModelSink;
 
     /// Scripted transport: feeds `payloads` to the callback, then ends
-    /// the way the script says — with `[DONE]` (`StreamEnd::Done`) or
+    /// the way the script says - with `[DONE]` (`StreamEnd::Done`) or
     /// bare EOF (`StreamEnd::Eof`), mirroring the real transport.
     struct StubTransport {
         payloads: Vec<&'static str>,

@@ -1,7 +1,7 @@
 //! Firecrawl-backed [`SearchProvider`]: `POST https://api.firecrawl.dev/v2/search`.
 //!
 //! Auth is `Authorization: Bearer <key>`. Responses include scraped page
-//! content (`markdown`) — deliberately heavy. This provider keeps snippets
+//! content (`markdown`) - deliberately heavy. This provider keeps snippets
 //! only: the snippet comes from `metadata.description` (never the full
 //! page markdown), and no `scrapeOptions` are sent, so the API returns
 //! search hits without full-page scrapes by default.
@@ -69,7 +69,7 @@ impl SearchProvider for FirecrawlProvider {
 
 /// Parse a Firecrawl v2 `/search` JSON envelope. Pure and unit-testable.
 ///
-/// Hits live at `data`. The snippet is `metadata.description` — the full
+/// Hits live at `data`. The snippet is `metadata.description` - the full
 /// `markdown` page content is never used as a snippet. `published` comes
 /// from `metadata.publishedTime` (fallback `metadata.modifiedTime`).
 /// A single malformed hit is skipped, never fatal; a hit without a usable

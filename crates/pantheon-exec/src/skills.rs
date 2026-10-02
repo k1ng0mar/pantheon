@@ -27,7 +27,7 @@ fn serr(code: &str, cause: String) -> PantheonError {
 
 /// A skill or plugin name must be a single safe path segment: ASCII
 /// alphanumerics plus `-`/`_`, 1..=64 chars. This rejects `.`, `..`,
-/// `/`, absolute paths, and unicode tricks — anything that could make a
+/// `/`, absolute paths, and unicode tricks - anything that could make a
 /// `root.join(name)` escape the skills/plugins directory.
 pub fn valid_slug(s: &str) -> bool {
     let b = s.as_bytes();
@@ -87,7 +87,7 @@ pub const MAX_ZIP_ENTRIES: usize = 1000;
 /// Read a ureq response body with the shared byte cap, tolerating
 /// servers that close TLS without `close_notify`
 /// (see [`crate::http::read_body_capped`]). Transport failures get a
-/// clean message via [`crate::http::fetch_error_message`] — no raw
+/// clean message via [`crate::http::fetch_error_message`] - no raw
 /// rustls internals leak into API error bodies.
 fn read_http_body(resp: ureq::Response, what: &str) -> Result<Vec<u8>, PantheonError> {
     let bytes = crate::http::read_body_capped(resp, MAX_HTTP_BYTES).map_err(|e| {
@@ -224,7 +224,7 @@ pub enum SkillExecRuntime {
 ///
 /// Defaults to `write` (fail closed): a skill that forgets the field is
 /// treated as mutating, so Plan mode blocks it and the capability gate
-/// demands `ShellExecute`. `npx` is always forced to `write` — it fetches
+/// demands `ShellExecute`. `npx` is always forced to `write` - it fetches
 /// and runs remote code, so a `read` declaration on it is not honored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -319,7 +319,7 @@ pub fn valid_npx_spec(spec: &str) -> bool {
         };
         (first.is_ascii_lowercase() || first.is_ascii_digit()) && chars.all(name_char)
     }
-    // Optional scope: @scope/name — the canonical scoped-package form
+    // Optional scope: @scope/name - the canonical scoped-package form
     // (`npx -y @scope/cli`).
     let rest = match spec.strip_prefix('@') {
         Some(after_at) => match after_at.split_once('/') {
@@ -329,7 +329,7 @@ pub fn valid_npx_spec(spec: &str) -> bool {
         None => spec,
     };
     // Optional @version suffix (split_once on the FIRST @ would break
-    // @scope — but the scope was stripped above, so the first @ here is
+    // @scope - but the scope was stripped above, so the first @ here is
     // the version separator).
     let (name, version) = match rest.split_once('@') {
         Some((n, v)) => (n, Some(v)),
@@ -378,7 +378,7 @@ fn check_script_path(command: &str) -> Result<(), &'static str> {
 
 /// One raw `exec:` entry straight from YAML. `parse_skill` converts each
 /// of these with [`SkillExec::validate`], which names the skill and the
-/// entry in every error — a bare serde derive on the final struct would
+/// entry in every error - a bare serde derive on the final struct would
 /// only say "unknown variant", losing which executable of which skill
 /// broke.
 #[derive(Debug, Deserialize)]
@@ -501,7 +501,7 @@ pub enum SkillExecTarget {
 /// Resolve a skill executable to its target, proving confinement.
 ///
 /// For shell/python3/node the script path is canonicalized and must stay
-/// inside the skill dir — this defeats `..` tricks that survived the
+/// inside the skill dir - this defeats `..` tricks that survived the
 /// parse-time string check and symlinks pointing outside the dir (the
 /// skill dir may be user-writable, so the check runs at invocation, not
 /// just at parse). For npx the package spec is re-validated.
@@ -623,7 +623,7 @@ pub fn parse_skill_exec_args(args: &str) -> Result<(String, String, Vec<String>)
 
 /// True when a `skill_exec` call must be treated as mutating for
 /// Plan-mode gating: the named executable declares `side_effects: write`,
-/// or the skill/executable cannot be resolved (fail closed — an
+/// or the skill/executable cannot be resolved (fail closed - an
 /// unresolvable call errors at execution, but Plan mode must not wave it
 /// through as "read-only" first).
 pub fn skill_exec_call_is_mutating(skills: &[Skill], args: &str) -> bool {
@@ -930,7 +930,7 @@ pub fn discover_skills_ext(
 
 /// Disabled-skill registry: `<data_dir>/skills/disabled.json`, a JSON
 /// array of skill names. Shared by the dashboard toggle and the session
-/// loader — a disabled skill is not registered as a tool. Reads tolerate
+/// loader - a disabled skill is not registered as a tool. Reads tolerate
 /// a missing or malformed file (nothing disabled) rather than failing
 /// discovery; a failed *write* is an error, because a toggle that did
 /// not persist would be a lie.
@@ -1221,9 +1221,9 @@ fn fetch_clawhub_json_with_status(url: &str) -> Result<(String, u16), PantheonEr
 
 /// Import a skill from the OpenClaw ClawHub registry.
 ///
-/// Uses the public, unauthenticated `GET /api/v1/download?slug=…` ZIP
+/// Uses the public, unauthenticated `GET /api/v1/download?slug=...` ZIP
 /// endpoint, which serves the full skill bundle (SKILL.md plus any
-/// references/, scripts/, assets/ files) — so bundled materials arrive
+/// references/, scripts/, assets/ files) - so bundled materials arrive
 /// with the skill, not just the instructions. The ZIP's SKILL.md is
 /// validated by `parse_skill` before anything is written, so a malformed
 /// entry fails closed and leaves no file behind.
@@ -1468,8 +1468,8 @@ pub fn hermes_docs_path(url: &str) -> Result<String, PantheonError> {
 /// Import a skill directory from the Hermes agent GitHub repo.
 ///
 /// `repo_path` is the path inside the repo (e.g.
-/// `skills/creative/claude-design`). The whole directory — SKILL.md plus
-/// any references/, scripts/, assets/ files — is copied into
+/// `skills/creative/claude-design`). The whole directory - SKILL.md plus
+/// any references/, scripts/, assets/ files - is copied into
 /// <data_dir>/skills/<name>/, preserving structure. Uses raw
 ///.githubusercontent.com so no clone is needed for a single skill.
 pub fn import_skill_from_hermes(
@@ -1565,7 +1565,7 @@ fn fetch_hermes_tree(
 /// survives across processes. Returns the new path. Idempotent: if the
 /// skill is already present locally it is left untouched.
 ///
-/// Copies the raw file verbatim — frontmatter + body — so the imported
+/// Copies the raw file verbatim - frontmatter + body - so the imported
 /// skill round-trips through `parse_skill` on the next discovery pass.
 pub fn import_skill(data_dir: &Path, skill: &Skill) -> Result<PathBuf, PantheonError> {
     let dest_dir = contained_skill_dir(&data_dir.join("skills"), &skill.meta.name)?;
@@ -1584,7 +1584,7 @@ pub fn import_skill(data_dir: &Path, skill: &Skill) -> Result<PathBuf, PantheonE
     Ok(dest)
 }
 
-/// Copy a whole skill directory (SKILL.md + references/ + scripts/ + …)
+/// Copy a whole skill directory (SKILL.md + references/ + scripts/ + ...)
 /// into <data_dir>/skills/<name>/, preserving relative structure.
 ///
 /// Skills are data, not code: the SKILL.md is the contract, but bundled
@@ -1608,7 +1608,7 @@ pub fn import_skill_dir(data_dir: &Path, src: &Path, name: &str) -> Result<PathB
 }
 
 /// Recursively copy `src` into `dest`, skipping hidden dirs (`.git`).
-/// Existing files are overwritten — a re-import refreshes bundled files.
+/// Existing files are overwritten - a re-import refreshes bundled files.
 fn copy_tree(src: &Path, dest: &Path) -> Result<(), PantheonError> {
     std::fs::create_dir_all(dest)
         .map_err(|e| serr("SKILL_IMPORT_IO", format!("create {}: {e}", dest.display())))?;
@@ -1712,7 +1712,7 @@ const MAX_SKILL_WALK_DEPTH: usize = 6;
 /// as paths relative to `root`, sorted for determinism.
 ///
 /// Recurses (depth-capped) so plugin-style layouts are found. Never
-/// follows symlinks — a crafted repo can neither pull the walker outside
+/// follows symlinks - a crafted repo can neither pull the walker outside
 /// the clone nor loop it. Skips `.git` (a clone's object store is never a
 /// skill) but descends into other dot-dirs (`.github`, `.agents`).
 /// `SKILL.md` itself must be a real file, not a symlink.

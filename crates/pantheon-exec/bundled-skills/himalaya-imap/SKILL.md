@@ -21,13 +21,13 @@ mail work auditable and out of long-lived sessions.
 Assume the account is configured as `himalaya account configure`. Common
 operations (prefix every command with `himalaya`):
 
-- `folders` — list folders.
-- `list -f INBOX -p 10` — newest 10 messages in INBOX.
-- `read <uid> -f INBOX` — read one message body.
-- `search -f INBOX "from:example.com"` — server-side search.
-- `write -s "subject" -t to@example.com -b "body"` — compose; use
+- `folders` - list folders.
+- `list -f INBOX -p 10` - newest 10 messages in INBOX.
+- `read <uid> -f INBOX` - read one message body.
+- `search -f INBOX "from:example.com"` - server-side search.
+- `write -s "subject" -t to@example.com -b "body"` - compose; use
   `--send` only when the user has explicitly approved the exact content.
-- `flag add seen <uid> -f INBOX`, `move <uid> archive -f INBOX` — mutation;
+- `flag add seen <uid> -f INBOX`, `move <uid> archive -f INBOX` - mutation;
   approval-gated, always.
 
 If `himalaya` is missing or the account auth fails, stop. Say which one
@@ -43,8 +43,8 @@ rather than trying workarounds.
 
 ## Operating rules
 
-- Read-only commands are free. Anything that changes mailbox state — send,
-  flag, move, delete — needs the user's explicit approval first, naming the
+- Read-only commands are free. Anything that changes mailbox state - send,
+  flag, move, delete - needs the user's explicit approval first, naming the
   exact message and the exact action.
 - Drafts are produced as text and shown to the user before any `--send`.
 - Never paste full message bodies into other tools or logs. Quote only the

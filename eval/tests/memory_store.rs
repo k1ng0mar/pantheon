@@ -1,6 +1,6 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
-//! Tests for `pantheon_memory::tests` — sibling file so sources stay test-free.
+//! Tests for `pantheon_memory::tests` - sibling file so sources stay test-free.
 use pantheon_api::capability::{Capability, Policy};
 use pantheon_api::provenance::TrustTier;
 use pantheon_memory::Provenance;
@@ -653,7 +653,7 @@ fn put_evicts_lowest_trust_oldest_first_when_over_budget() {
         .unwrap();
     assert!(gone.is_empty(), "evicted row still searchable: {gone:?}");
     // Next over-budget write evicts k4 (untrusted, now the oldest of the
-    // lowest tier) — never the row just written.
+    // lowest tier) - never the row just written.
     store
         .put(&tiered_proposal("k5", TrustTier::Memory, 5))
         .unwrap();

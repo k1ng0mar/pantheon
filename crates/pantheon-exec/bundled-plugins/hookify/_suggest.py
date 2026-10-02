@@ -7,7 +7,7 @@ instead: it looks at the session's recorded tool calls and drafts
 rules for patterns the user repeats, *unless* a rule already covers
 them.
 
-Data source: the same relay approach as security-guidance — a
+Data source: the same relay approach as security-guidance - a
 per-session JSON log of tool calls written at ``pre_tool_call`` time
 and consumed here at ``on_session_end``. The ``__init__`` module owns
 the logging; this module only drafts and writes.
@@ -215,7 +215,7 @@ def suggest(session_id, rules):
                         ["name: %s" % name, "enabled: false",
                          "event: write_file", "action: warn",
                          "conditions:",
-                         "  - field: path", "    operator: regex_match",
+                         " - field: path", "    operator: regex_match",
                          "    pattern: %s" % rx],
                         msg):
             written += 1

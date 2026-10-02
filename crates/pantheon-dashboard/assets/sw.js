@@ -1,4 +1,4 @@
-/* Pantheon dashboard service worker — vanilla, no build step.
+/* Pantheon dashboard service worker - vanilla, no build step.
    Strategy: cache-first for the static shell (offline-capable UI),
    network-only for /api/* (never serve stale data, never persist
    auth-gated payloads in Cache Storage). */

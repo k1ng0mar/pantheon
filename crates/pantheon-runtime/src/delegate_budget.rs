@@ -4,7 +4,7 @@
 //! `RunBudget { max_delegations: 8, delegations_used: 0 }`. Every
 //! `delegate()` resolves the root for the calling run and atomically
 //! increments `delegations_used`; when `used >= max` the delegation is
-//! rejected. The budget is never reset when a child run is created —
+//! rejected. The budget is never reset when a child run is created
 //! children share the root's counter.
 //!
 //! A "delegation" counts only on **successful descendant session
@@ -16,7 +16,7 @@
 //! 2. It returns a [`DelegationGuard`]. Keep the guard alive while the
 //!    remaining spawn wiring runs.
 //! 3. When the child is observable/running, call
-//!    [`DelegationGuard::commit`] — the budget stays consumed.
+//!    [`DelegationGuard::commit`] - the budget stays consumed.
 //! 4. If anything between creation and commit fails, just let the guard
 //!    drop (or call [`DelegateBudgetStore::release_delegation`]): the
 //!    increment is rolled back and the child→root link is removed.
@@ -33,8 +33,8 @@
 //! `runs` table. Rationale:
 //!
 //! * The budget is a live-process atomic-enforcement concern. A
-//!   delegation tree cannot survive a process restart — child sessions
-//!   run on live threads — so a persisted counter has no coherent
+//!   delegation tree cannot survive a process restart - child sessions
+//!   run on live threads - so a persisted counter has no coherent
 //!   cross-restart semantics; the first run after a restart would read a
 //!   stale `delegations_used` for a tree that no longer exists.
 //! * Atomicity here means a CAS loop on an [`AtomicU64`]: concurrent
@@ -50,7 +50,7 @@
 //! * Durable observability already exists: the ledger records
 //!   `AgentSpawned` / `AgentCompleted` per run. If a durable
 //!   parent→root link is ever wanted, a `parent_run_id` ledger column
-//!   could mirror [`DelegateBudgetStore`]'s in-memory linkage —
+//!   could mirror [`DelegateBudgetStore`]'s in-memory linkage
 //!   enforcement would still read the root budget here.
 //!
 //! ## Wiring (done by the parent orchestrator, NOT this module)
@@ -66,7 +66,7 @@
 //! * In the threaded path (`SessionSpawner::spawn_handle` in
 //!   `session.rs`): same, right after `build_delegate_session(...)?;`,
 //!   and `guard.commit()` after `self.registry.spawn_child(...)` returns
-//!   `Ok` — a registry rejection rolls the budget back via `Drop`.
+//!   `Ok` - a registry rejection rolls the budget back via `Drop`.
 //! * Ensure the root budget exists before the first delegation of a run:
 //!   `store.ensure_budget(&run_id, max_delegations)` at turn/driver
 //!   setup. Re-ensuring never resets an existing budget.
@@ -152,7 +152,7 @@ pub struct RunBudgetStats {
 /// [`DelegateBudgetStore::try_consume_delegation`].
 ///
 /// Dropping the guard without calling [`DelegationGuard::commit`]
-/// releases the consumed slot and removes the child→root link — the
+/// releases the consumed slot and removes the child→root link - the
 /// "child creation failed partway" path. Call [`DelegationGuard::commit`]
 /// once the child session is running/observable; the budget then stays
 /// consumed even if the child later fails its task (a failed *task* is
@@ -261,8 +261,8 @@ impl DelegateBudgetStore {
     }
 
     /// Resolve the root run for any run id by walking the child→root
-    /// links. A run with no recorded parent — a root, or a run the
-    /// store has never seen — resolves to itself. Cycle-safe.
+    /// links. A run with no recorded parent - a root, or a run the
+    /// store has never seen - resolves to itself. Cycle-safe.
     pub fn resolve_root(&self, run_id: &str) -> String {
         let links = self.parent_of.lock().unwrap_or_else(|e| e.into_inner());
         let mut current = run_id.to_string();
@@ -286,7 +286,7 @@ impl DelegateBudgetStore {
     /// Call this AFTER the descendant session is successfully created.
     /// The increment is a CAS loop on the root's counter: concurrent
     /// delegates can never overshoot `max`. When `used >= max` at claim
-    /// time, nothing is consumed and [`BudgetExceeded`] is returned —
+    /// time, nothing is consumed and [`BudgetExceeded`] is returned
     /// failed/rejected attempts never burn budget.
     ///
     /// On success the child→root link is recorded (per-run observability;
@@ -350,8 +350,8 @@ impl DelegateBudgetStore {
     /// Roll back one consumed slot: decrement the root's
     /// `delegations_used` (saturating at zero) and remove the
     /// child→root link. Called automatically when a
-    /// [`DelegationGuard`] drops uncommitted — "child creation failed
-    /// partway" — and available for manual use.
+    /// [`DelegationGuard`] drops uncommitted - "child creation failed
+    /// partway" - and available for manual use.
     ///
     /// A no-op for unknown child run ids.
     pub fn release_delegation(&self, child_run_id: &str) {
@@ -384,7 +384,7 @@ impl DelegateBudgetStore {
 
     /// Observability snapshot for one run: its root, the recorded
     /// parent link, and the root budget's `(used, max)`. Returns `None`
-    /// only when the run is unknown AND no budget row exists for it —
+    /// only when the run is unknown AND no budget row exists for it
     /// i.e. the store has never seen this run id at all.
     pub fn stats(&self, run_id: &str) -> Option<RunBudgetStats> {
         let parent_run_id = self

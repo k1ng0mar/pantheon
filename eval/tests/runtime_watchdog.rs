@@ -2,8 +2,8 @@
 //! the crate's unit suite.
 //!
 //! Policy: only small deterministic unit tests live beside the code
-//! (`cargo test -p <crate>`). Everything behavioral — SQLite stores,
-//! threads, subprocesses, timing, filesystem — lives here and runs via
+//! (`cargo test -p <crate>`). Everything behavioral - SQLite stores,
+//! threads, subprocesses, timing, filesystem - lives here and runs via
 //! `cargo test -p pantheon-eval`.
 //!
 //! The watchdog tests drive `poll_at` with an explicit `Instant` rather
@@ -113,7 +113,7 @@ fn stall_for_matches_the_window_poll_decides_on() {
 // ── kill_run_turn ─────────────────────────────────────────────────────
 
 /// A run row plus a live lease, as if a turn were in flight. The lease
-/// row's TTL (30s default) keeps it live for the test — no heartbeat
+/// row's TTL (30s default) keeps it live for the test - no heartbeat
 /// thread needed.
 fn busy_supervisor(dir: &std::path::Path, run_id: &str) -> pantheon_runtime::Supervisor {
     let sup = pantheon_runtime::Supervisor::open(dir.to_path_buf()).unwrap();
@@ -154,7 +154,7 @@ fn kill_bogus_pid_is_no_turn() {
 /// (the test binary was started as a process-group leader), the spawned
 /// PID is a reaped intermediate, so the PID must come from the stand-in
 /// itself. `read` blocks on piped stdin with no children, so the cmdline
-/// argv is never exec'd away — dash replaces `sh -c 'sleep 60'` with
+/// argv is never exec'd away - dash replaces `sh -c 'sleep 60'` with
 /// `sleep`, which would lose the `--taskID` marker.
 #[cfg(target_os = "linux")]
 fn spawn_turn_standin(pidfile: &std::path::Path, run_id: &str) -> std::process::Child {
@@ -174,7 +174,7 @@ fn spawn_turn_standin(pidfile: &std::path::Path, run_id: &str) -> std::process::
 }
 
 /// Read the stand-in's self-reported PID, bounded. Panics if the
-/// stand-in never starts — the fixture failed, not the kill.
+/// stand-in never starts - the fixture failed, not the kill.
 #[cfg(target_os = "linux")]
 fn standin_pid(pidfile: &std::path::Path) -> u32 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -195,7 +195,7 @@ fn standin_pid(pidfile: &std::path::Path) -> u32 {
 /// Poll until the stand-in is gone, bounded. The child handle may be a
 /// reaped setsid intermediate, so `/proc/<pid>` is the source of truth;
 /// `try_wait` reaps the direct child in the common no-fork case.
-/// Panics if the process survives — the kill failed.
+/// Panics if the process survives - the kill failed.
 #[cfg(target_os = "linux")]
 fn wait_dead(child: &mut std::process::Child, pid: u32) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);

@@ -1,8 +1,8 @@
 //! Build a [`Session`](pantheon_runtime::session::Session) for dashboard
 //! maintenance endpoints (compress) without depending on the TUI crate.
 //!
-//! This mirrors `pantheon-tui`'s `resume_after_grant` construction — coder
-//! policy, resolved model policy, secrets broker, tool enablement —
+//! This mirrors `pantheon-tui`'s `resume_after_grant` construction - coder
+//! policy, resolved model policy, secrets broker, tool enablement
 //! reusing the shared config document types from `pantheon-api` and the
 //! TUI's resolution rules. Only the pieces `compress_now` consults are
 //! resolved (default model, the compression and vision auxiliaries and
@@ -40,7 +40,7 @@ fn env_nonempty(name: &str) -> Option<String> {
 }
 
 /// Resolve the default chat model: `[model]` section wins, then
-/// `PANTHEON_PROVIDER`/`PANTHEON_MODEL`, then the local default —
+/// `PANTHEON_PROVIDER`/`PANTHEON_MODEL`, then the local default
 /// the TUI's `build_model_policy` order.
 fn default_model(cfg: Option<&Config>) -> DefaultModel {
     let section = cfg.and_then(|c| c.model.as_ref());
@@ -63,7 +63,7 @@ fn default_model(cfg: Option<&Config>) -> DefaultModel {
 
 /// Resolve the compression auxiliary: `PANTHEON_COMPRESSION_PROVIDER` /
 /// `PANTHEON_COMPRESSION_MODEL` win field-wise, then the `[compression]`
-/// section; `"default"`/absent inherits the default model — the TUI's
+/// section; `"default"`/absent inherits the default model - the TUI's
 /// `resolve_aux_target` rule.
 fn compression_aux(cfg: Option<&Config>, default: &DefaultModel) -> AuxiliaryModel {
     let section = cfg.and_then(|c| c.compression.as_ref());
@@ -100,7 +100,7 @@ fn compression_aux(cfg: Option<&Config>, default: &DefaultModel) -> AuxiliaryMod
 
 /// Resolve the vision auxiliary: `PANTHEON_VISION_PROVIDER` /
 /// `PANTHEON_VISION_MODEL` win field-wise, then the `[vision]` section;
-/// `"default"`/absent inherits the default model — the TUI's
+/// `"default"`/absent inherits the default model - the TUI's
 /// `resolve_aux_target` rule. Returns `None` when nothing pins a
 /// vision model: the runtime treats that as `auto` (attached images
 /// ride the user row to the default model directly).
@@ -184,7 +184,7 @@ fn model_policy(cfg: Option<&Config>) -> ModelPolicy {
         }
     }
     // `PANTHEON_REASONING_BUDGET` / `PANTHEON_REASONING` win, then the
-    // `[model]` fields, then off — the TUI's resolution.
+    // `[model]` fields, then off - the TUI's resolution.
     let reasoning_budget = env_nonempty("PANTHEON_REASONING_BUDGET")
         .and_then(|v| v.parse::<u32>().ok())
         .or_else(|| section.and_then(|m| m.reasoning_budget));
@@ -270,7 +270,7 @@ fn budget_for(cfg: Option<&Config>) -> pantheon_agent::Budget {
 }
 
 /// The `[budget].max_tokens` config tier, kept apart from the live
-/// budget — the TUI's `set_budget_max_tokens` block: `/tokens`
+/// budget - the TUI's `set_budget_max_tokens` block: `/tokens`
 /// overwrites `budget.max_tokens` for the session, and `/tokens off`
 /// must fall back to this configured value rather than forget it.
 /// (0 = unset, same as `budget_for`.)
@@ -310,7 +310,7 @@ pub fn open_maintenance_session(data_dir: &Path) -> Result<Session, String> {
     session.set_tool_enablement(enablement);
     // Run budgets from `[budget]` in config.toml (max turns, tool calls,
     // delegate depth, token cap): the TUI threads these at startup
-    // (`config_budget`) and dashboard sessions must behave the same —
+    // (`config_budget`) and dashboard sessions must behave the same
     // without this the `[budget].max_tokens` tier silently fell through
     // to the model max / 16k fallback.
     session.set_budget(budget_for(cfg_ref));

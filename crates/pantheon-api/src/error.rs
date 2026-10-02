@@ -59,7 +59,7 @@ impl std::fmt::Display for PantheonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "[{}:{:?}] {} — fix: {}",
+            "[{}:{:?}] {} - fix: {}",
             self.code, self.layer, self.cause, self.remediation
         )
     }

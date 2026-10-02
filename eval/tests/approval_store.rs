@@ -3,7 +3,7 @@
 //! plugins, `pantheon-extensions` for hook plugins).
 //!
 //! Policy: only small deterministic unit tests live beside the code.
-//! Everything behavioral — filesystem, stores, processes — lives here and
+//! Everything behavioral - filesystem, stores, processes - lives here and
 //! runs via `cargo test -p pantheon-eval`.
 
 use pantheon_api::approval::{self, ApprovalStore};

@@ -3,7 +3,7 @@
 //! ledger, and every failure is loud. Run with `cargo test -p pantheon-eval`.
 //!
 //! Network sends (telegram/discord) are exercised through the missing-token
-//! path only — the real HTTP calls are covered by the `run.py` eval cases,
+//! path only - the real HTTP calls are covered by the `run.py` eval cases,
 //! which run the built binary in a clean sandbox.
 
 use pantheon_api::events::Event;

@@ -3,7 +3,7 @@
 //! Registration lives here (pantheon-runtime) because the tool registry
 //! type belongs to pantheon-tools, which pantheon-exec cannot depend on
 //! (Tools → Exec is the layering; Exec knows nothing of the registry).
-//! All execution mechanics — parsing, confinement, sandboxing — stay in
+//! All execution mechanics - parsing, confinement, sandboxing - stay in
 //! pantheon-exec (`skills`, `skill_exec`).
 //!
 //! Two worlds, one tool list:
@@ -27,8 +27,8 @@ use std::sync::Arc;
 
 /// Register `skill_exec` on a registry.
 ///
-/// Registered whenever at least one skill is installed — even when none
-/// declares an executable — because the description carries the
+/// Registered whenever at least one skill is installed - even when none
+/// declares an executable - because the description carries the
 /// skill-directory mapping third-party prose-invoked scripts need. An
 /// empty skill list registers nothing.
 pub fn register_skill_exec_tool(reg: &mut ToolRegistry, skills: Vec<Skill>) {
@@ -74,7 +74,7 @@ pub fn register_skill_exec_tool(reg: &mut ToolRegistry, skills: Vec<Skill>) {
 /// read-side-effect executables need nothing more (they run like
 /// read-only tools); write-side-effect ones additionally need
 /// ShellExecute, so they flow through the normal approval path.
-/// Unresolvable calls add nothing — the executor fails them closed.
+/// Unresolvable calls add nothing - the executor fails them closed.
 fn extra_capabilities(skills: &[Skill], args: &str) -> Vec<Capability> {
     let Ok((skill, name, _)) = parse_skill_exec_args(args) else {
         return Vec::new();
@@ -122,7 +122,7 @@ fn describe_skill_exec(skills: &[Skill]) -> String {
                 e.side_effects.as_str(),
             ));
             if !e.description.is_empty() {
-                d.push_str(&format!(" — {}", e.description));
+                d.push_str(&format!(" - {}", e.description));
             }
         }
     }

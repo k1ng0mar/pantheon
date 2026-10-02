@@ -1,7 +1,7 @@
 //! Website-login credentials for browser sessions.
 //!
 //! A login is `(id, site, username, password)`. The password lives in a
-//! [`SecretsBroker`] vault (`logins.env` inside the data dir — deliberately
+//! [`SecretsBroker`] vault (`logins.env` inside the data dir - deliberately
 //! NOT `.env`, so login passwords never surface in the `.env` key
 //! manager); the metadata (site, username, the secret's broker name) lives
 //! in `logins.json` next to it. The password is only ever exposed through
@@ -28,7 +28,7 @@ pub const MASKED: &str = "••••";
 pub struct LoginCredential {
     /// Stable id, derived from the site at creation (`github-com-3f9a`).
     pub id: String,
-    /// Site this login is for (`github.com`, `https://x.com/login` —
+    /// Site this login is for (`github.com`, `https://x.com/login`
     /// stored as given, matched by substring at login time).
     pub site: String,
     /// Login username / email.
@@ -86,7 +86,7 @@ impl LoginStore {
     }
 
     /// Read the metadata file. Missing/empty is a clean empty list;
-    /// present-but-unparseable is an error — never silently treated as
+    /// present-but-unparseable is an error - never silently treated as
     /// empty, because the next write would then overwrite (wipe) the
     /// corrupt file.
     fn read_meta(&self) -> Result<Vec<LoginCredential>, SecretsError> {

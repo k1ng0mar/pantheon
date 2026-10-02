@@ -6,15 +6,15 @@
 //! Rules (all deterministic, no model in the loop):
 //! 1. Under budget: nothing changes.
 //! 2. Re-compact the oldest oversized tool rows to a hard floor (data goes,
-//!    instructions stay — same head+tail rule as `compact_output`).
+//!    instructions stay - same head+tail rule as `compact_output`).
 //! 3. Drop oldest *whole exchanges* (a user row plus every row up to the
 //!    next user row). System rows, the preamble before the first user row,
-//!    and the final exchange are never dropped — dropping whole exchanges
+//!    and the final exchange are never dropped - dropping whole exchanges
 //!    keeps assistant/tool_call pairing valid on the wire.
 //! 4. Still over with only essential rows left: structured
 //!    `CONTEXT_OVERFLOW` (host fixes the prompt or picks a bigger window).
 //!
-//! The estimate is bytes/4 plus per-row overhead — an estimate, padded by a
+//! The estimate is bytes/4 plus per-row overhead - an estimate, padded by a
 //! safety factor. It is not a tokenizer; it only has to trigger trimming
 //! before the provider rejects the request.
 
@@ -38,7 +38,7 @@ pub fn estimate_tokens(text: &str) -> u32 {
 /// payloads (they ride as JSON on the wire, so they must be counted) +
 /// image parts (OpenAI-style high-detail pricing: 85 base + 170 per 512px
 /// tile; without decoded dimensions we estimate ~1 tile per 256 KiB as a
-/// rough proxy — this is a window-fitting estimate, not a bill).
+/// rough proxy - this is a window-fitting estimate, not a bill).
 pub fn row_tokens(m: &Message) -> u32 {
     let mut t = estimate_tokens(&m.content) + 8;
     for c in &m.tool_calls {
@@ -209,7 +209,7 @@ pub const SUMMARY_MIN_CHARS: usize = 128;
 pub const DEFAULT_TARGET_PERCENT: u8 = 12;
 
 /// Summary budget in chars for `chunk_tokens` of absorbed transcript:
-/// `target_percent` (1–100) of the absorbed chars, assuming ~4
+/// `target_percent` (1-100) of the absorbed chars, assuming ~4
 /// chars/token. `None` = [`DEFAULT_TARGET_PERCENT`]. Higher keeps more
 /// detail (less aggressive); lower compresses harder.
 pub fn summary_target_chars(chunk_tokens: u32, target_percent: Option<u8>) -> usize {
@@ -266,7 +266,7 @@ pub fn render_exchanges(messages: &[Message], range: std::ops::Range<usize>) -> 
 }
 
 /// Overflow-triggered compression of the oldest exchanges via the host's
-/// compression aux model — the model-assisted step BETWEEN deterministic
+/// compression aux model - the model-assisted step BETWEEN deterministic
 /// tool compaction and deterministic dropping (exec itself never talks to
 /// a model; the host passes a `ContextCompressor` implementation).
 ///
@@ -277,7 +277,7 @@ pub fn render_exchanges(messages: &[Message], range: std::ops::Range<usize>) -> 
 ///   any remainder (or a compressor error) falls back to deterministic
 ///   dropping.
 ///
-/// `target_percent` (1–100, `None` = [`DEFAULT_TARGET_PERCENT`]) sets the
+/// `target_percent` (1-100, `None` = [`DEFAULT_TARGET_PERCENT`]) sets the
 /// summary size as a percentage of the absorbed transcript chars.
 pub fn compress_oldest(
     messages: &[Message],
@@ -293,8 +293,8 @@ pub fn compress_oldest(
     }
 
     // Exchange boundaries: a user row through the row before the next user
-    // row. The final exchange is the live turn — never absorbed. Anything
-    // before the first user row is the system preamble — never absorbed.
+    // row. The final exchange is the live turn - never absorbed. Anything
+    // before the first user row is the system preamble - never absorbed.
     let starts: Vec<usize> = messages
         .iter()
         .enumerate()

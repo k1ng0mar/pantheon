@@ -42,7 +42,7 @@ checking what exists on a topic before building.
 5. Cite papers as `arXiv:YYMM.NNNNN` with title and authors, never from
    memory of what the paper "probably" says.
 
-## Output Contract
+## Output contract
 
 - Search results: arXiv id, title, authors, publication date, short
   abstract, PDF link.
@@ -50,7 +50,7 @@ checking what exists on a topic before building.
 - Anything you claim about a paper's contents must come from the abstract
   or the PDF you actually read.
 
-## Operating Rules
+## Operating rules
 
 1. Use the helper for every query. Do not hand-build API URLs in chat.
 2. The helper enforces arXiv's politeness rule (~3s between requests).

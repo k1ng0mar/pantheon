@@ -5,7 +5,7 @@
 //!
 //! - Name `db.password` resolves to env var `PANTHEON_SECRET_DB_PASSWORD`
 //!   (uppercase, `.`/`-` become `_`).
-//! - Name `env:FOO` resolves to the literal env var `FOO` — but ONLY when
+//! - Name `env:FOO` resolves to the literal env var `FOO` - but ONLY when
 //!   `FOO` matches the vault's allowlist (see
 //!   [`EnvVault::with_env_allowlist`]). Without an allowlist entry the
 //!   lookup fails closed (`Ok(None)`), so a name can never be used to

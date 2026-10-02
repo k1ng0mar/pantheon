@@ -12,7 +12,7 @@
 //!   `imported:<source>:<parent-dir>:<file-stem>`. Re-running an import
 //!   converges: a run that already exists is skipped, never duplicated.
 //! - **Native shapes.** User and assistant records become
-//!   `AssistantMessage` events — the same shape the runtime uses for live
+//!   `AssistantMessage` events - the same shape the runtime uses for live
 //!   sessions (user prompts ride `AssistantMessage` with `Role::User`), so
 //!   `rebuild_messages` and resume work unchanged.
 //! - **Reasoning survives.** Thinking traces become `ImportedReasoning`
@@ -89,7 +89,7 @@ struct Record {
 /// Flatten a `content` value to text, collecting reasoning parts separately.
 ///
 /// Returns `(text, reasoning)`: display text first, thinking traces second.
-/// Tool payloads (`tool_use`, `tool_result`, `function_call`, …) contribute
+/// Tool payloads (`tool_use`, `tool_result`, `function_call`, ...) contribute
 /// nothing and are counted by the caller via `dropped`.
 fn content_to_text(
     v: &serde_json::Value,
@@ -376,7 +376,7 @@ fn records_to_turns(raw: Vec<String>) -> (Vec<ImportedTurn>, usize) {
 
 /// Deterministic run id for one imported transcript.
 ///
-/// `imported:<source>:<parent-dir>:<file-stem>` — stable across re-runs
+/// `imported:<source>:<parent-dir>:<file-stem>` - stable across re-runs
 /// and across machines, and the parent dir keeps two same-named files in
 /// different session directories from colliding. Residual edge: two
 /// different directories with the *same* name (hermes' `sessions/` vs
@@ -675,7 +675,7 @@ fn first_line(s: &str, max: usize) -> String {
     let line = s.lines().next().unwrap_or("").trim();
     let cut: String = line.chars().take(max).collect();
     if line.chars().count() > max {
-        format!("{cut}…")
+        format!("{cut}...")
     } else {
         cut
     }

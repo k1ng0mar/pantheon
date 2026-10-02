@@ -10,7 +10,7 @@
 //! `enable_mcp` tool. Migration declaration files
 //! (`<data_dir>/mcp/*.json`) are legacy: they are still *read* (a name
 //! the config section does not define keeps its declaration), but every
-//! write — add, enable, disable, toggle, delete — lands in `config.toml`.
+//! write - add, enable, disable, toggle, delete - lands in `config.toml`.
 //! A config entry shadows a declaration of the same name everywhere.
 //!
 //! ## Which gate wins: `enabled` vs approval
@@ -29,7 +29,7 @@
 //! A server launches iff it is enabled AND (bundled OR approved).
 //! Bundled catalog servers are first-party: they skip the consent store,
 //! so for them the `enabled` flag is the only gate. Disabling flips the
-//! switch only — a recorded approval persists, so re-enabling the same
+//! switch only - a recorded approval persists, so re-enabling the same
 //! binary/URL resumes without re-consent; if the binary or URL changes,
 //! the approval lapses and consent is asked again.
 //!
@@ -38,7 +38,7 @@
 //! `POST /api/mcp/servers` validates the *shape* without a live
 //! handshake: a stdio command must resolve on PATH (or be an existing
 //! path), an sse/http URL must parse (http/https scheme, non-empty
-//! host). No process is spawned, no TCP connection is opened — that is
+//! host). No process is spawned, no TCP connection is opened - that is
 //! `pantheon doctor`'s job, and the `test` probe's. New servers are
 //! added disabled; consent (for custom servers) and enabling are
 //! separate explicit acts.
@@ -51,7 +51,7 @@
 //! ## Catalog source
 //!
 //! Bundled-catalog types come from the canonical
-//! `pantheon_api::mcp_catalog` — consumed directly, never redefined here.
+//! `pantheon_api::mcp_catalog` - consumed directly, never redefined here.
 //! (`pantheon_api::mcp_catalog` remains only for `pantheon-tools`' agent
 //! `enable_mcp` tool, which cannot depend on `pantheon-mcp` without a
 //! dependency cycle.)
@@ -63,8 +63,8 @@ use pantheon_gateway::http::{Request, Response};
 
 /// Bundled-catalog membership: the canonical catalog in
 /// `pantheon_api::mcp_catalog` is the only list of first-party servers.
-/// Bundled servers are first-party — the `enabled` flag is their only
-/// gate — so this exemption mirrors the launcher's manager and the
+/// Bundled servers are first-party - the `enabled` flag is their only
+/// gate - so this exemption mirrors the launcher's manager and the
 /// dashboard's "enabled AND (bundled OR approved)" model.
 fn is_bundled(name: &str) -> bool {
     mcp_catalog::find(name).is_some()
@@ -99,7 +99,7 @@ fn live_map(data_dir: &Path) -> HashMap<String, serde_json::Value> {
     out
 }
 
-/// Approved server names (names only — records never leave the vault path).
+/// Approved server names (names only - records never leave the vault path).
 fn approved_names(data_dir: &Path) -> Vec<String> {
     ApprovalStore::open(&mcp_dir(data_dir)).names()
 }
@@ -114,7 +114,7 @@ fn safe_name(name: &str) -> bool {
 
 /// Parse `config.toml` as a TOML document for surgical edits. A missing
 /// file is an empty document; a file that exists but does not parse is
-/// an error (fail closed — never guess at enablement).
+/// an error (fail closed - never guess at enablement).
 fn read_config_doc(data_dir: &Path) -> Result<toml::Value, String> {
     let path = config_path(data_dir);
     match std::fs::read_to_string(&path) {
@@ -311,7 +311,7 @@ fn url_shape_ok(url: &str) -> bool {
 /// True when `command` is a launcher shim rather than the server
 /// itself: the program on the command line fetches (npx/uvx/bunx) or
 /// runs (docker/podman) a packaged server instead of being the server
-/// code. Mirrors `pantheon_mcp::manager`'s fingerprint — the two must
+/// code. Mirrors `pantheon_mcp::manager`'s fingerprint - the two must
 /// stay in lockstep, because the approve endpoint records the hash and
 /// the launcher's approval gate checks it.
 fn is_launcher_shim(command: &str) -> bool {
@@ -324,14 +324,14 @@ fn is_launcher_shim(command: &str) -> bool {
 
 /// Content hash the approval binds, mirroring
 /// `pantheon_mcp::manager`'s fingerprint: the server binary (plus script
-/// args) for stdio — except when the command is a launcher shim
+/// args) for stdio - except when the command is a launcher shim
 /// (`npx`, `uvx`, `docker`, ...), where the hash covers the command
 /// plus the full argument list instead, so a pin bump or an arg change
-/// lapses the approval — or the endpoint URL for remote transports.
-/// Computed locally — no process spawned, no connection opened.
+/// lapses the approval - or the endpoint URL for remote transports.
+/// Computed locally - no process spawned, no connection opened.
 ///
 /// Honest limit: for launcher shims this binds the *requested* package
-/// spec, not the bytes the registry served — registry-fetched code can
+/// spec, not the bytes the registry served - registry-fetched code can
 /// change under a pin, so the approval binds intent, not bytes.
 fn content_hash(shape: &ServerShape) -> Result<String, String> {
     match shape.transport.as_str() {
@@ -476,7 +476,7 @@ fn config_servers(data_dir: &Path) -> Vec<(String, pantheon_api::config::McpServ
     .unwrap_or_default()
 }
 
-/// `GET /api/mcp/servers` — bundled catalog entries, config-section
+/// `GET /api/mcp/servers` - bundled catalog entries, config-section
 /// servers, and legacy declarations, each merged with its live health
 /// snapshot and approval state. The config entry is the enablement
 /// state; declarations shadowed by the config show under the config
@@ -551,7 +551,7 @@ fn list_json(app: &App) -> serde_json::Value {
     })
 }
 
-/// `GET /api/mcp/health` — the launcher's live snapshot verbatim
+/// `GET /api/mcp/health` - the launcher's live snapshot verbatim
 /// (status, tool counts, connects, failures, backoff errors), plus a
 /// freshness note. No session has run yet = empty servers with a note.
 pub fn health(app: &App) -> Response {
@@ -566,7 +566,7 @@ pub fn health(app: &App) -> Response {
     json_ok(serde_json::json!({
         "live": v,
         "note": if empty {
-            "no live MCP state yet — start a session to launch servers"
+            "no live MCP state yet - start a session to launch servers"
         } else {
             "snapshot written by the session's MCP manager"
         },
@@ -595,8 +595,8 @@ fn find_shape(data_dir: &Path, name: &str) -> Option<(ServerShape, &'static str)
 
 /// Write the bundled-catalog enablement state. Materialization funnels
 /// through the canonical writer
-/// [`pantheon_api::mcp_catalog::materialize_recipe_table`] — the same
-/// writer the agent's `enable_mcp` tool uses — so both surfaces produce
+/// [`pantheon_api::mcp_catalog::materialize_recipe_table`] - the same
+/// writer the agent's `enable_mcp` tool uses - so both surfaces produce
 /// byte-identical tables and first-writer-wins divergence is impossible.
 /// This is the no-arbitrary-command boundary: only catalog names are
 /// ever written. An empty table is materialized from the canonical
@@ -618,7 +618,7 @@ fn write_bundled_enabled(data_dir: &Path, name: &str, enabled: bool) -> Result<(
 
 /// Write the ONE enablement state: `[mcp.servers.<name>].enabled` in
 /// `config.toml`. A name unknown to the config, the bundled catalog,
-/// and the declarations is a 404 — there is no path that enables an
+/// and the declarations is a 404 - there is no path that enables an
 /// arbitrary command. Enabling a bundled or declaration-only server
 /// materializes its full shape into the config table first, so the
 /// launcher never sees a bare `enabled = true` with no command.
@@ -669,7 +669,7 @@ pub fn set_enabled(app: &App, name: &str, enabled: bool) -> Response {
     }
 }
 
-/// `POST /api/mcp/servers/:name/toggle` — flip the effective enabled
+/// `POST /api/mcp/servers/:name/toggle` - flip the effective enabled
 /// state, whatever source currently defines it.
 pub fn toggle(app: &App, name: &str) -> Response {
     if !safe_name(name) {
@@ -752,7 +752,7 @@ fn parse_new_server(body: &serde_json::Value) -> Result<ServerShape, String> {
     };
     // Validate the shape WITHOUT a live handshake: a stdio command must
     // resolve on PATH (or be an existing path); an sse/http URL must
-    // parse. No process is spawned and no connection is opened — deeper
+    // parse. No process is spawned and no connection is opened - deeper
     // verification is `pantheon doctor`'s job.
     if let Some(problem) = shape.problems(name).into_iter().next() {
         return Err(problem);
@@ -760,7 +760,7 @@ fn parse_new_server(body: &serde_json::Value) -> Result<ServerShape, String> {
     Ok(shape)
 }
 
-/// `POST /api/mcp/servers` — `{name, transport, command?, args?, url?,
+/// `POST /api/mcp/servers` - `{name, transport, command?, args?, url?,
 /// requires_env?, confirm: true}`.
 ///
 /// Custom servers are added **disabled** into `[mcp.servers.<name>]` in
@@ -818,7 +818,7 @@ pub fn add(app: &App, req: &Request) -> Response {
     json_ok(body)
 }
 
-/// `POST /api/mcp/servers/:name/approve` — `{confirm: true}`.
+/// `POST /api/mcp/servers/:name/approve` - `{confirm: true}`.
 ///
 /// Record operator consent for a **custom** server in the unified
 /// approval store, binding the server's name to its content hash (the
@@ -827,7 +827,7 @@ pub fn add(app: &App, req: &Request) -> Response {
 /// The UI shows the privilege warning before calling; the endpoint only
 /// persists the record.
 ///
-/// Bundled servers are first-party and skip consent (409) — enabling is
+/// Bundled servers are first-party and skip consent (409) - enabling is
 /// their only gate. Approval is consent, not enablement: an approved
 /// server still needs `enabled`.
 pub fn approve(app: &App, name: &str, req: &Request) -> Response {
@@ -891,7 +891,7 @@ pub fn approve(app: &App, name: &str, req: &Request) -> Response {
     }))
 }
 
-/// `DELETE /api/mcp/servers/:name` — remove a custom server. Config
+/// `DELETE /api/mcp/servers/:name` - remove a custom server. Config
 /// entries are deleted from `config.toml`; legacy declaration entries
 /// from their declaration file. Bundled catalog entries cannot be
 /// deleted (disable them instead).
@@ -964,12 +964,12 @@ pub fn delete(app: &App, name: &str) -> Response {
     }
 }
 
-/// `POST /api/mcp/reload` — re-read the servers from disk.
+/// `POST /api/mcp/reload` - re-read the servers from disk.
 pub fn reload(app: &App) -> Response {
     list(app)
 }
 
-/// `POST /api/mcp/servers/:name/test` — a real probe: for stdio, resolve
+/// `POST /api/mcp/servers/:name/test` - a real probe: for stdio, resolve
 /// the command on PATH (or as an absolute path); for http/sse, attempt a
 /// TCP connect to the URL's host:port with a 3s timeout. The readiness
 /// blocker, if any, is reported alongside.
@@ -1127,10 +1127,10 @@ mod tests {
 
     /// #7: enabling the same bundled server through the dashboard write
     /// path and through the agent-tool write path must produce
-    /// byte-identical `[mcp.servers.<name>]` tables — one canonical
+    /// byte-identical `[mcp.servers.<name>]` tables - one canonical
     /// recipe, no first-writer-wins divergence. (Fails before the fix:
-    /// the dashboard materializes the launcher copy — e.g. playwright
-    /// without `-y`, notion unpinned — while the agent tool materializes
+    /// the dashboard materializes the launcher copy - e.g. playwright
+    /// without `-y`, notion unpinned - while the agent tool materializes
     /// the api copy.)
     #[test]
     fn bundled_enablement_paths_materialize_identically() {

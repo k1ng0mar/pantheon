@@ -2,7 +2,7 @@
 //!
 //! The full `config.toml` document lives in `pantheon-tui::config`; this
 //! module holds the schema pieces other crates may validate against:
-//! [`SecretRef`] (env-sourced API keys — raw values are rejected by
+//! [`SecretRef`] (env-sourced API keys - raw values are rejected by
 //! design) and [`PolicyPreset`] (the execution-policy enum).
 //!
 //! Moved out of `pantheon-tui` so the dashboard and other control-plane

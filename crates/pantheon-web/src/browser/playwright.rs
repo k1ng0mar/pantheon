@@ -56,7 +56,7 @@ impl PlaywrightConfig {
 
 /// Translate a canonical argv (without the program name) to
 /// `playwright-cli` command args. `None` means the command needs special
-/// handling (`wait-for`) or is unsupported (`act*`) — see [`invoke_kind`].
+/// handling (`wait-for`) or is unsupported (`act*`) - see [`invoke_kind`].
 fn translate(argv: &[String]) -> Result<Vec<String>, InvokeKind> {
     let s = |i: usize| argv.get(i).cloned().unwrap_or_default();
     let flag = |name: &str| {

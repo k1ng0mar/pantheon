@@ -2,7 +2,7 @@
 //!
 //! Policy: deterministic invariants live in-crate (`cargo test -p
 //! pantheon-web`). This file exercises the real `gsd-browser` binary
-//! when it is on PATH; otherwise it prints a skip notice and passes —
+//! when it is on PATH; otherwise it prints a skip notice and passes
 //! the binary is optional, so a missing binary must not fail CI.
 
 use pantheon_tools::tools::ToolRegistry;
@@ -39,7 +39,7 @@ fn browser_tools_live_or_skip() {
         return;
     };
 
-    // The binary exists: prove the whole path works — registry, session
+    // The binary exists: prove the whole path works - registry, session
     // naming, subprocess spawn, JSON parsing.
     let mut reg = ToolRegistry::new();
     register_browser_tools(

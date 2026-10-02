@@ -13,7 +13,7 @@ tool_matcher: write_file   # optional override, takes precedence over event
 pattern: \.env(\.|$)       # optional shorthand regex over the natural field
 action: warn               # block | warn
 conditions:                # optional, all must match
-  - field: path            # command | path | content | tool | args_json
+- field: path            # command | path | content | tool | args_json
     operator: regex_match  # regex_match | contains | not_contains |
                            # equals | starts_with | ends_with
     pattern: \.pem$
@@ -39,7 +39,7 @@ shell`) or give a regex matched against the tool name.
 - `enabled: false` skips the rule.
 - Files in `rules/suggested/` are drafts written by the session-end
   suggester; they are never loaded. Review a draft, then move it into
-  `rules/` (or enable it in place by copying it — the loader reads
+  `rules/` (or enable it in place by copying it - the loader reads
   `rules/*.md` only, one level, no recursion).
 - Malformed rule files are skipped silently. A failing rule engine can
   never deny tool calls: evaluation errors are swallowed per rule.

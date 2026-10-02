@@ -1,6 +1,6 @@
 //! Wire-format fixture tests for the bespoke STT/TTS providers: request
 //! builders and response parsers are pure, so their documented shapes are
-//! pinned here with fixtures. No network, no keys — live calls are NOT
+//! pinned here with fixtures. No network, no keys - live calls are NOT
 //! performed (see docs/stt-providers.md, docs/tts-providers.md).
 use pantheon_providers::voice::{
     assemblyai_transcript_body, assemblyai_transcript_status, b64decode, deepgram_listen_url,
@@ -106,7 +106,7 @@ fn assemblyai_async_flow_shapes() {
     );
     assert_eq!(v["audio_url"], "https://cdn.assemblyai.com/up/abc");
     assert_eq!(v["speech_models"][0], "universal");
-    // Auth is the raw key — no Bearer prefix.
+    // Auth is the raw key - no Bearer prefix.
     assert_eq!(ASSEMBLYAI_AUTH_SCHEME, "raw-key");
     // Step 3: poll until completed.
     assert_eq!(

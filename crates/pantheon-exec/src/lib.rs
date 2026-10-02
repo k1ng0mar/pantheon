@@ -6,7 +6,7 @@
 //! head/tail, and note what was dropped in the marker line.
 //!
 //! The callable-tool layer (registry, builtins, memory/vault/session-search
-//! tools and their register helpers) lives in `pantheon-tools` — capability ≠
+//! tools and their register helpers) lives in `pantheon-tools` - capability ≠
 //! tool, and `pantheon-tools` depends *on* this crate (Tools → Exec).
 
 pub mod bundled_skills;
@@ -23,7 +23,7 @@ pub mod skill_exec;
 pub mod skills;
 pub mod supervisor;
 
-// Re-exported at the crate root: these were `pantheon_sandbox::…` paths
+// Re-exported at the crate root: these were `pantheon_sandbox::...` paths
 // before the sandbox merged into exec.
 pub use sandbox::{Enforcement, ExecutionBoundary, SandboxLevel, SandboxProfile};
 

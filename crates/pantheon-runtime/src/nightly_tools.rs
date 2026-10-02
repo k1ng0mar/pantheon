@@ -4,7 +4,7 @@
 //! live registry *and* records the name here
 //! (`<data_dir>/nightly/disabled-tools.json`), so the next registry build
 //! skips it. [`crate::session::Session::build_tool_registry`] consults this
-//! list — the registry build is the one constructor, so the skip lives
+//! list - the registry build is the one constructor, so the skip lives
 //! there, not in every caller.
 //!
 //! The file is a JSON array of `{name, reason, at_ms}` records. Reads are

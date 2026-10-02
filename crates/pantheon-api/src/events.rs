@@ -36,7 +36,7 @@ pub enum DecisionAnswerSummary {
 #[serde(tag = "type")]
 pub enum DecisionActionSummary {
     Accepted,
-    /// Parked awaiting an operator decision (approval or input) — the
+    /// Parked awaiting an operator decision (approval or input) - the
     /// run is neither accepted nor denied. Recording a park as
     /// `Accepted` hid blocked runs from every ledger consumer.
     Parked {
@@ -51,7 +51,7 @@ pub enum DecisionActionSummary {
 }
 
 /// Canonical runtime events (§2 agent engine + §18 runtime API).
-/// NOTE: no Eq derive — DecisionMade events carry f32 confidence scores.
+/// NOTE: no Eq derive - DecisionMade events carry f32 confidence scores.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     RunStarted {
@@ -132,7 +132,7 @@ pub enum Event {
     /// A durable, named marker: `/checkpoints` lists them and `/restore`
     /// rewinds to one by emitting `TurnRewound` at the turn that follows
     /// the checkpoint's turn. Like rewind markers, this is a read-time
-    /// projection aid — raw history is never rewritten.
+    /// projection aid - raw history is never rewritten.
     CheckpointCreated {
         run_id: String,
         turn_id: String,
@@ -267,7 +267,7 @@ pub enum Event {
     /// Parks the turn exactly like an approval: the run waits for
     /// [`Event::UserInputProvided`] and resumes with the answer available
     /// as the tool result. Rendered as the clarify card (cyan `?`, never
-    /// amber) — visually distinct from approvals.
+    /// amber) - visually distinct from approvals.
     UserInputRequested {
         run_id: String,
         call_id: String,
@@ -304,7 +304,7 @@ pub enum Event {
     },
     /// The assembled context exceeded the model's window; the host trimmed
     /// it before the provider call (oldest tool rows re-compacted, oldest
-    /// exchanges dropped). Ephemeral — ledger history is untouched, only
+    /// exchanges dropped). Ephemeral - ledger history is untouched, only
     /// what the model sees this turn. Persisted so `pantheon logs` shows why
     /// earlier turns are absent from the prompt.
     ContextTrimmed {
@@ -337,7 +337,7 @@ pub enum Event {
     },
     /// The title-gen auxiliary (or the deterministic fallback) named this
     /// conversation from its first user prompt. The latest `SessionTitled`
-    /// event is the run's display title — a later `/name` (manual) or a
+    /// event is the run's display title - a later `/name` (manual) or a
     /// successful model call simply overwrites the previous one. Cosmetic:
     /// never affects execution, replay, or the transcript.
     SessionTitled {
@@ -370,12 +370,12 @@ pub enum Event {
         cost_usd: Option<f64>,
     },
     /// Browser narration: what the agent (or dashboard take-control) just
-    /// did in a browser session. Powers the live "Tapping… / Typing… /
-    /// Opening example.com…" subtitle in the app's browser screen.
+    /// did in a browser session. Powers the live "Tapping... / Typing... /
+    /// Opening example.com..." subtitle in the app's browser screen.
     ///
     /// `action` is the canonical command (`navigate`, `snapshot`,
-    /// `click`, `type`, `press`, `scroll`, `tap`, `back`, …); `detail`
-    /// is display-safe by construction — a host for `navigate`, a ref or
+    /// `click`, `type`, `press`, `scroll`, `tap`, `back`, ...); `detail`
+    /// is display-safe by construction - a host for `navigate`, a ref or
     /// key for `click`/`press`, and never typed text (it may contain
     /// secrets). The dashboard's take-control path uses an empty `run_id`
     /// (no run context there); consumers key on `session`.
@@ -386,7 +386,7 @@ pub enum Event {
         detail: String,
     },
     /// A scheduled task's run failed. Emitted by the scheduler's
-    /// outcome sink — the durable, user-visible alert for a failed
+    /// outcome sink - the durable, user-visible alert for a failed
     /// scheduled run. `error` is the failure detail; `detail` carries
     /// what was found and done (investigation summary when self-heal
     /// ran, otherwise a note that self-heal is disabled or was skipped).

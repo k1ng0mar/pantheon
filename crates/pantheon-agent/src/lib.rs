@@ -6,7 +6,7 @@
 //!
 //! Every transition emits a pantheon_api::events::Event through an
 //! `EventSink`, so replay, debugging, and crash recovery come for free.
-//! The model is behind `ModelTurn` — swapping providers never touches
+//! The model is behind `ModelTurn` - swapping providers never touches
 //! this loop. Tools are behind `ToolRunner` and gated by
 //! `crate::capability::enforce` before anything executes.
 //!
@@ -23,7 +23,7 @@
 //! Agent profiles (`[agents.*]` config tables) live at the API layer:
 //! they are config-document types, and the runtime consumes them without
 //! going through the agent crate. Re-exported here so
-//! `pantheon_agent::agent_profile::…` paths keep resolving.
+//! `pantheon_agent::agent_profile::...` paths keep resolving.
 pub use pantheon_api::agent_profile;
 pub mod capability;
 pub mod engine;

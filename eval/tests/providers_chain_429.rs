@@ -159,7 +159,7 @@ fn rate_limit_retry_after_floors_backoff_and_paces_rotation() {
         vec![1, 1, 2],
         "retry waits must floor at the 1s Retry-After"
     );
-    // Every recorded wait — rotation and backoff alike — honors the
+    // Every recorded wait - rotation and backoff alike - honors the
     // provider's asked-for second.
     let waits = clock.waits.lock().unwrap().clone();
     assert_eq!(waits.len(), 7, "4 rotation waits + 3 retry waits");

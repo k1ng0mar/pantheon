@@ -88,7 +88,7 @@ pub fn todo_card_lines(items: &[TodoCardItem]) -> Vec<Line<'_>> {
 }
 
 /// Render the card into `area`: a bold "⬢ Working on N to-dos" header
-/// (N = not-yet-done), then one row per item — ☒ dimmed for done, ⊞
+/// (N = not-yet-done), then one row per item - ☒ dimmed for done, ⊞
 /// highlighted for in-progress, ☐ dimmed for pending.
 ///
 /// The card takes `1 + items.len()` rows; anything taller is left blank,

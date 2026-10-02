@@ -89,7 +89,7 @@
 
   <main class="doc max-w-3xl mx-auto px-6 pt-24 pb-16">
 <h1 id="mcp-servers" class="text-3xl font-bold tracking-tight mb-2">MCP servers</h1><div class="hairline my-6"></div>
-<p class="my-3 leading-relaxed">MCP (Model Context Protocol) servers are third-party programs that give the agent extra tools: a GitHub server, a database server, a codebase index, anything that speaks the protocol. Pantheon launches them (or connects to them over the network) and hands each of their tools to the model as <code>mcp_&lt;server&gt;_&lt;tool&gt;</code> — so the <code>echo</code> tool on a server you named <code>github</code> becomes <code>mcp_github_echo</code>.</p>
+<p class="my-3 leading-relaxed">MCP (Model Context Protocol) servers are third-party programs that give the agent extra tools: a GitHub server, a database server, a codebase index, anything that speaks the protocol. Pantheon launches them (or connects to them over the network) and hands each of their tools to the model as <code>mcp_&lt;server&gt;_&lt;tool&gt;</code> - so the <code>echo</code> tool on a server you named <code>github</code> becomes <code>mcp_github_echo</code>.</p>
 <h2 id="declaring-servers" class="text-xl font-bold tracking-tight mt-10 mb-3">Declaring servers</h2>
 <p class="my-3 leading-relaxed">Add them to <code>config.toml</code> (see <a href="configuration.html#mcp-servers">Configuration</a>):</p>
 <pre><code>
@@ -107,14 +107,14 @@ GITHUB_TOKEN = &quot;env:GITHUB_TOKEN&quot;
 <pre><code>
 pantheon mcp approve github
 </code></pre>
-<p class="my-3 leading-relaxed">The approval is bound to three things: the server&#x27;s name, the version it reports, and a hash of what would run (the binary and its script arguments for <code>stdio</code>, the endpoint URL for remote servers). Upgrade the server or change its arguments and the approval stops matching — you&#x27;re asked again. To see what&#x27;s declared and whether it&#x27;s approved: <code>pantheon mcp list</code>.</p>
-<p class="my-3 leading-relaxed">Secrets a server needs go in its <code>env</code> map as <code>&quot;env:NAME&quot;</code> references. They resolve from your vault (or environment) when the server launches and are never printed — <code>mcp list</code> and the dashboard only ever show variable *names*.</p>
+<p class="my-3 leading-relaxed">The approval is bound to three things: the server&#x27;s name, the version it reports, and a hash of what would run (the binary and its script arguments for <code>stdio</code>, the endpoint URL for remote servers). Upgrade the server or change its arguments and the approval stops matching - you&#x27;re asked again. To see what&#x27;s declared and whether it&#x27;s approved: <code>pantheon mcp list</code>.</p>
+<p class="my-3 leading-relaxed">Secrets a server needs go in its <code>env</code> map as <code>&quot;env:NAME&quot;</code> references. They resolve from your vault (or environment) when the server launches and are never printed - <code>mcp list</code> and the dashboard only ever show variable *names*.</p>
 <h2 id="watching-them-run" class="text-xl font-bold tracking-tight mt-10 mb-3">Watching them run</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li><code>pantheon mcp list</code> — declared servers, transports, approval state.</li>
-<li><code>pantheon mcp status</code> — live snapshot: status, tool counts, connects, failures.</li>
-<li><code>pantheon mcp health &lt;name&gt;</code> — detail for one server, including the last error.</li>
-<li><code>pantheon mcp enable|disable &lt;name&gt;</code> — toggle a declared server (config-defined servers are toggled in <code>config.toml</code>).</li>
+<li><code>pantheon mcp list</code> - declared servers, transports, approval state.</li>
+<li><code>pantheon mcp status</code> - live snapshot: status, tool counts, connects, failures.</li>
+<li><code>pantheon mcp health &lt;name&gt;</code> - detail for one server, including the last error.</li>
+<li><code>pantheon mcp enable|disable &lt;name&gt;</code> - toggle a declared server (config-defined servers are toggled in <code>config.toml</code>).</li>
 <li>Inside the TUI: <code>/mcp reload</code> re-reads config + declarations and hands the new specs to the launcher without dropping your session.</li>
 </ul>
 <p class="my-3 leading-relaxed">The dashboard&#x27;s MCP page shows the same merged view with live health. A server that keeps failing backs off (1s, doubling, capped at 5 minutes) instead of hammering retries; a server that dies mid-call gets one reconnect and one retry, then the error goes to the model like any other tool failure.</p>

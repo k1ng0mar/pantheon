@@ -8,7 +8,7 @@
 //!
 //! Bundled (first-party) plugins are different: they skip the approval
 //! store, and their enablement lives in the config file
-//! (`[plugins.<name>]`) — the single enablement state shared with the
+//! (`[plugins.<name>]`) - the single enablement state shared with the
 //! mobile app (which calls these same endpoints), the TUI, and the
 //! agent's `enable_plugin` tool. The config entry wins when present;
 //! when absent, the bundled manifest's own `enabled` flag is the default
@@ -17,27 +17,27 @@
 //! remains the gate and the manifest flag is a per-install switch. `bundled: true` in the list
 //! output tells the UI which semantics apply.
 //!
-//! - `GET /api/plugins` — every discovered plugin plus every bundled
+//! - `GET /api/plugins` - every discovered plugin plus every bundled
 //!   catalog entry, with kind, version, approval status, the config-
 //!   derived `enabled` flag for bundled plugins, and privilege notes.
-//! - `POST /api/plugins/import` ← `{url, ref?}` — fetch a plugin from a
+//! - `POST /api/plugins/import` ← `{url, ref?}` - fetch a plugin from a
 //!   GitHub repo URL (or `clawhub:<slug>`, which 422s with a pointer to
-//!   the skills importer — ClawHub is skills-only), detect its format
+//!   the skills importer - ClawHub is skills-only), detect its format
 //!   (native tool/hook, Claude Code conversion; unknown layouts 422),
 //!   run the heuristic static scanner, and quarantine it under
-//!   `<data_dir>/plugins/.quarantine/<name>/` — unapproved by default,
+//!   `<data_dir>/plugins/.quarantine/<name>/` - unapproved by default,
 //!   never on a load path. 201 with the scan report.
-//! - `GET /api/plugins/registry/search?q=&source=clawhub` — search the
+//! - `GET /api/plugins/registry/search?q=&source=clawhub` - search the
 //!   ClawHub skill registry for the import picker UI.
-//! - `POST /api/plugins/:kind/:name/approve` — third-party: record
+//! - `POST /api/plugins/:kind/:name/approve` - third-party: record
 //!   operator approval (informed consent; the UI shows the privilege
-//!   warning first). Bundled: write `enabled = true` to the config —
+//!   warning first). Bundled: write `enabled = true` to the config
 //!   the operator's explicit enable is the consent record for
 //!   first-party code. Quarantined imports additionally gate on the
 //!   scan verdict: `malicious` is never approvable, `suspicious`
 //!   requires `{"acknowledge_risk": true}`; approval promotes the tree
 //!   into the live dir.
-//! - `POST /api/plugins/:kind/:name/disable` — third-party: revoke the
+//! - `POST /api/plugins/:kind/:name/disable` - third-party: revoke the
 //!   approval (the plugin stays installed but will not verify/load);
 //!   tool plugins additionally get `enabled = false` written to their
 //!   manifest. Bundled: write `enabled = false` to the config.
@@ -228,7 +228,7 @@ fn find_tool_plugin(app: &App, name: &str) -> Option<DiscoveredPlugin> {
         .find(|p| p.manifest.name == name)
 }
 
-/// Enable a bundled plugin through the config file — the single
+/// Enable a bundled plugin through the config file - the single
 /// enablement state. Bundled plugins are first-party, so there is no
 /// third-party approval record to write; the operator's explicit enable
 /// is the consent record.
@@ -249,7 +249,7 @@ fn enable_bundled(app: &App, kind: &str, name: &str, enabled: bool) -> Option<Re
 /// `POST /api/plugins/:kind/:name/approve` ← optional `{"acknowledge_risk": true}`.
 ///
 /// Quarantine gate (scan/quarantine design): a quarantined import carries
-/// a persisted scan verdict —
+/// a persisted scan verdict
 /// - `malicious` → 409 SCAN_BLOCKED, always;
 /// - `suspicious` → 409 RISK_ACK_REQUIRED unless the body carries
 ///   `{"acknowledge_risk": true}`;
@@ -451,7 +451,7 @@ fn import_error(e: plugin_import::ImportError) -> Response {
 /// `url` is a GitHub repo URL (optional `ref`: branch/tag/commit,
 /// defaults to `main` with one `master` retry) or `clawhub:<slug>`.
 /// The bundle is downloaded, format-detected, statically scanned, and
-/// quarantined — never installed live, never approved by default.
+/// quarantined - never installed live, never approved by default.
 /// 201 with the import report (including `scan_report`).
 pub fn import(app: &App, req: &Request) -> Response {
     let body = match body_json(req) {
@@ -536,7 +536,7 @@ mod tests {
     }
 
     /// Fresh install (no `[plugins]` entries): noisegate ships on, the
-    /// rest ship off — matching the runtime, TUI, and CLI resolution.
+    /// rest ship off - matching the runtime, TUI, and CLI resolution.
     #[test]
     fn bundled_enabled_honors_manifest_default_on_fresh_config() {
         let dir = fresh_dir("fresh");
@@ -548,7 +548,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An explicit config entry always wins over the manifest default —
+    /// An explicit config entry always wins over the manifest default
     /// including an explicit `false` for a default-on plugin.
     #[test]
     fn bundled_enabled_config_entry_overrides_manifest_default() {
@@ -567,7 +567,7 @@ mod tests {
     }
 
     /// A missing config file fails closed (disabled), even for a
-    /// default-on plugin — a missing config must never flip anything on.
+    /// default-on plugin - a missing config must never flip anything on.
     #[test]
     fn bundled_enabled_missing_config_fails_closed() {
         let dir = fresh_dir("missing");

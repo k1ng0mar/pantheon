@@ -1,11 +1,11 @@
 //! Provider-agnostic judge-model adapter.
 //!
-//! The judge layer is an auxiliary model the *host* chooses — nothing in
+//! The judge layer is an auxiliary model the *host* chooses - nothing in
 //! here is provider-specific. Config `[judge]` (or the
 //! `PANTHEON_JUDGE_PROVIDER` / `PANTHEON_JUDGE_MODEL` env pair) becomes
 //! an `AuxiliaryKind::Judge` entry in `ModelPolicy`; the client
 //! resolves base URL, wire mode, and API key from the core catalog, so any
-//! OpenAI-compatible or Anthropic endpoint works — GPT-4o mini, a local
+//! OpenAI-compatible or Anthropic endpoint works - GPT-4o mini, a local
 //! llama, Claude Haiku, or a small local classifier such as Laya pointed at
 //! its own catalog row.
 //!
@@ -19,7 +19,7 @@
 //!
 //! Parsing fails closed: an unrecognizable gate verdict becomes
 //! `NeedsApproval`, never `Allow`. The host validates every answer against
-//! live state before acting — confidence is a signal, not permission.
+//! live state before acting - confidence is a signal, not permission.
 
 use crate::http::{aux_complete, aux_request, aux_transport, resolve_aux_wire, ChatTransport};
 use pantheon_agent::TurnOutcome;
@@ -95,7 +95,7 @@ pub fn prompt_for(req: &DecisionRequest) -> String {
 /// Reduce a model reply to the answer line: strip code fences, prefer a
 /// line starting with `ANSWER`, fall back to the last non-empty line.
 ///
-/// Matcher (frozen, do not "simplify"): this is the STRICT matcher — it
+/// Matcher (frozen, do not "simplify"): this is the STRICT matcher - it
 /// only fires on a bare `ANSWER` line (optionally wrapped in bullets,
 /// quotes, or punctuation) or an `answer:`-prefixed line. A plain
 /// `ANSWER <payload>` line is NOT specially preferred; it wins only via

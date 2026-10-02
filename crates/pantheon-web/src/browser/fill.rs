@@ -216,7 +216,7 @@ pub fn find_login_fields(snapshot: &Value) -> Result<LoginFields, FillError> {
     }
     let mut username = un.first().copied().map(field);
 
-    // Fallback: the nearest text input *before* the password field —
+    // Fallback: the nearest text input *before* the password field
     // unlabeled inputs are common on real login forms.
     if username.is_none() {
         if let Some(p) = pw_idx {
@@ -239,7 +239,7 @@ pub fn find_login_fields(snapshot: &Value) -> Result<LoginFields, FillError> {
 /// True when `site` (a vault login's stored site: bare host or full
 /// URL) matches `host` (the current page's host): exact match or a
 /// subdomain in either direction. Deliberately *not* a substring
-/// match — `evilgithub.com` must never match a `github.com` login.
+/// match - `evilgithub.com` must never match a `github.com` login.
 pub fn host_matches_site(site: &str, host: &str) -> bool {
     let s = super::tools::host_of(site).to_ascii_lowercase();
     let h = host.trim().to_ascii_lowercase();

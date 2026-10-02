@@ -29,7 +29,7 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 
 /// The listener's single token: `PANTHEON_SERVE_TOKEN` when non-empty,
 /// else a fresh 256-bit token, printed once at startup. The dashboard
-/// control plane and the AG-UI routes share it — one front door.
+/// control plane and the AG-UI routes share it - one front door.
 ///
 /// INVARIANT: the dashboard `App.token` and the gateway `AuthCtx.token`
 /// are the same value. Callers resolve the token once and pass it to

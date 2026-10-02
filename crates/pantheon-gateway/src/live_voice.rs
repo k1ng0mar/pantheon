@@ -10,7 +10,7 @@
 //!   (STT result, `final: true`); `reply_text` (the agent's reply as text,
 //!   always sent); binary PCM chunks of the spoken reply; `audio_end`;
 //!   `busy` when audio arrives while a turn is in flight (dropped, never
-//!   queued — no barge-in in v1); `approval_needed` when a tool approval
+//!   queued - no barge-in in v1); `approval_needed` when a tool approval
 //!   parks the turn (never auto-approved); `error` with a machine-readable
 //!   `code`; `end` when the server closes the session.
 //!
@@ -105,7 +105,7 @@ impl LiveVoiceConfig {
 
     /// Up-front gate: the session is refused unless `[voice] live_enabled`
     /// is true AND both backends constructed. `Err` is the machine-readable
-    /// `error` code sent before `end` — never key material.
+    /// `error` code sent before `end` - never key material.
     pub fn gate(&self) -> Result<(), &'static str> {
         if !self.limits.live_enabled {
             return Err("live_disabled");
@@ -303,7 +303,7 @@ fn resample_linear(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
     out
 }
 
-/// Staged utterance WAV. `Drop` removes the file on every path — STT
+/// Staged utterance WAV. `Drop` removes the file on every path - STT
 /// errors, aborts, and client disconnects included.
 struct TempWav {
     path: PathBuf,

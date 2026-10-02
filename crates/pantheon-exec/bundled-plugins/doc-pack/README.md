@@ -2,7 +2,7 @@
 
 Create and read Microsoft Office documents from the agent: Word (`.docx`),
 Excel (`.xlsx`), and PowerPoint (`.pptx`). Real implementation on top of
-`python-docx`, `openpyxl`, and `python-pptx` — Pantheon's first
+`python-docx`, `openpyxl`, and `python-pptx` - Pantheon's first
 document-production capability.
 
 Opt-in: disabled by default. Enable with `[plugins.doc-pack] enabled = true`
@@ -18,7 +18,7 @@ pip install python-docx openpyxl python-pptx
 
 The runner checks at startup and prints a clear notice to stderr for any
 missing library. A tool whose library is missing fails with
-`DOC_PACK_MISSING_DEP` naming the exact pip package — the other tools keep
+`DOC_PACK_MISSING_DEP` naming the exact pip package - the other tools keep
 working, so a partial install is usable.
 
 No network access, no credentials, no state: every call is a pure
@@ -32,10 +32,10 @@ All paths must be absolute. Parent directories are created as needed.
 
 Build a Word document from ordered blocks. Block types:
 
-- `{"type": "heading", "text": "...", "level": 1}` — levels 0–9
-- `{"type": "paragraph", "text": "...", "style": "Normal"}` — any named style
-- `{"type": "bullet", "text": "...", "level": 0}` — levels 0–8 indent
-- `{"type": "number", "text": "...", "level": 0}` — numbered list items
+- `{"type": "heading", "text": "...", "level": 1}` - levels 0-9
+- `{"type": "paragraph", "text": "...", "style": "Normal"}` - any named style
+- `{"type": "bullet", "text": "...", "level": 0}` - levels 0-8 indent
+- `{"type": "number", "text": "...", "level": 0}` - numbered list items
 - `{"type": "table", "rows": [[...], ...], "header": true, "style": "Table Grid"}`
 - `{"type": "page_break"}`
 
@@ -65,7 +65,7 @@ Returns sheet names and rows. Formulas are returned as `"=..."` strings
 `slides` is a list of `{"layout", "title", "bullets", "notes"?}`. Layouts:
 `title_slide`, `title_content`, `section_header`, `two_content`,
 `comparison`, `title_only`, `blank`. Bullets are strings or
-`{"text", "level"}` with levels 0–8.
+`{"text", "level"}` with levels 0-8.
 
 ### pptx_read_text(path)
 
@@ -80,4 +80,4 @@ Per-slide title, text shapes, and speaker notes.
 | `DOC_PACK_BAD_PATH` | Path is not absolute |
 | `DOC_PACK_IO` | File not found / unreadable |
 | `DOC_PACK_UNKNOWN_TOOL` | Unknown tool name |
-| `DOC_PACK_INTERNAL` | Unexpected failure (bug — please report) |
+| `DOC_PACK_INTERNAL` | Unexpected failure (bug - please report) |

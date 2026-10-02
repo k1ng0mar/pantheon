@@ -1,6 +1,6 @@
 //! Providers (spec section 5 + 14): default model, ordered fallbacks
 //! (failure-only, runtime-controlled), auxiliary models for scoped
-//! capabilities. NO routing — locked decision.
+//! capabilities. NO routing - locked decision.
 
 mod answer_line;
 pub mod anthropic;

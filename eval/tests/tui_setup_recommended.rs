@@ -8,7 +8,7 @@
 //!   Tools screen and STT/TTS skipped: `tools` = every [`ToolGroup`]
 //!   except `Voice`;
 //! - recommended provider ids always resolve from the owning registries
-//!   via `recommended_provider` — never hardcoded, so a registry change
+//!   via `recommended_provider` - never hardcoded, so a registry change
 //!   updates the expectations here instead of silently testing stale ids;
 //! - the `--yes` default for a local provider (missing binary) records
 //!   `skipped` and never runs an installer; installs are interactive-only.
@@ -36,7 +36,7 @@ fn recommended_row(metas: &[ProviderMeta]) -> ProviderMeta {
 }
 
 /// Mirror of the private `--yes` default inside `pantheon_tui::setup`:
-/// kind-driven defaults, no prompts, and — critically — no installs.
+/// kind-driven defaults, no prompts, and - critically - no installs.
 /// Detection shells out read-only (`sh -c <detect_cmd>`); the install
 /// path (`offer_install`) is only reachable from the interactive flow
 /// after a confirm, so it cannot fire here.
@@ -226,7 +226,7 @@ fn assume_defaults_resolves_recommended_without_installs() {
     // Let setup.rs resolve every provider answer itself (all `None`
     // under assume-defaults): this drives the private `default_answer`
     // for the local computer-use driver. The PATH below contains only
-    // tripwire installers — if setup.rs ever ran an install_cmd, the
+    // tripwire installers - if setup.rs ever ran an install_cmd, the
     // marker file would exist afterwards.
     let _guard = ENV_GUARD.lock().unwrap();
     let dir = tempdir().unwrap();

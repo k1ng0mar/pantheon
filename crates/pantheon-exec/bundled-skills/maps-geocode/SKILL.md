@@ -17,13 +17,13 @@ exec:
 Nominatim (OpenStreetMap) needs no API key and covers forward/reverse
 geocoding plus place search. Routing uses OSRM's public demo server;
 timezones use GeoNames' free endpoint (no key needed for the basic
-`timezoneJSON` call). All three are public shared infrastructure — treat
+`timezoneJSON` call). All three are public shared infrastructure - treat
 them politely.
 
 Usage policy, non-negotiable: max 1 request/second to Nominatim, a real
 `User-Agent` identifying Pantheon, no bulk geocoding. The helper sets the
 User-Agent and sleeps between chained calls. For production or bulk work,
-self-host Nominatim or buy a commercial plan — say this, do not just hammer
+self-host Nominatim or buy a commercial plan - say this, do not just hammer
 the public server.
 
 ## Tooling
@@ -49,7 +49,7 @@ time as guaranteed.
   sub-question.
 - Ambiguous names ("Springfield") get a disambiguation question, not a
   guess.
-- `nearby` searches a category keyword, not a brand — "cafe" works,
+- `nearby` searches a category keyword, not a brand - "cafe" works,
   a specific chain name may not.
 - If Nominatim rate-limits (429/403), stop and report it. Do not retry in
   a loop.

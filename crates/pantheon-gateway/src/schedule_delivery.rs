@@ -2,7 +2,7 @@
 //!
 //! A job declares `deliver` (`log` | `telegram` | `discord` | `notify` |
 //! `file:<path>` | `mobile` | `home`); after the run completes, the
-//! run's final summary — the last assistant message, redacted and truncated —
+//! run's final summary - the last assistant message, redacted and truncated
 //! is sent there. The Telegram/Discord senders are the gateway's existing
 //! REST transports, reused rather than reinvented; `notify` uses the
 //! cross-platform desktop notifier ([`crate::notify`]: notify-send on Linux,
@@ -36,7 +36,7 @@ pub enum Deliver {
     /// session auto-creates and is pinned by the gateway; senders just
     /// target the id. A session id is not a channel transport, so this is
     /// resolved by the gateway's default-delivery routing, not by
-    /// [`ChannelSender`] — see [`deliver_summary`].
+    /// [`ChannelSender`] - see [`deliver_summary`].
     Home,
     /// Deliver to the user's mobile device, with the home session as the
     /// conversation context. Same session-targeted routing as [`Deliver::Home`].
@@ -85,7 +85,7 @@ pub fn build_summary(raw: &str) -> String {
         redacted
     } else {
         let mut s: String = redacted.chars().take(MAX_CHARS - 1).collect();
-        s.push('…');
+        s.push_str("...");
         s
     }
 }
@@ -156,7 +156,7 @@ fn append_file(path: &Path, job_label: &str, summary: &str) -> Result<(), String
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let entry = format!("## {job_label} — {now_ms}\n\n{summary}\n\n");
+    let entry = format!("## {job_label} - {now_ms}\n\n{summary}\n\n");
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -190,7 +190,7 @@ pub fn deliver_summary(
         // inventing one here would silently misroute. The gateway's
         // default-delivery routing resolves the home session id to a
         // surface; until a caller goes through that routing, this is a
-        // loud error — never a silent no-delivery.
+        // loud error - never a silent no-delivery.
         Deliver::Home | Deliver::Mobile => Err(format!(
             "'{}' is a session target, not a channel transport: it needs the \
              gateway's default-delivery routing to resolve the home session",
@@ -200,7 +200,7 @@ pub fn deliver_summary(
 }
 
 /// Never-failing delivery: returns `Some(error)` instead of propagating.
-/// A failed delivery must never fail the job itself — the caller logs the
+/// A failed delivery must never fail the job itself - the caller logs the
 /// message and moves on.
 pub fn deliver_best_effort(
     sender: &dyn ChannelSender,
@@ -218,7 +218,7 @@ pub fn deliver_best_effort(
 /// Whether a job's raw `deliver` value routes through the home session:
 /// no explicit target (`None`), `"mobile"`, and `"home"` all do. Matched
 /// against the raw string rather than the parsed [`Deliver`] so this works
-/// whether or not `Deliver::parse` knows a `mobile` spelling — `parse`
+/// whether or not `Deliver::parse` knows a `mobile` spelling - `parse`
 /// itself is owned elsewhere and stays untouched.
 pub fn routes_via_home_session(raw: Option<&str>) -> bool {
     match raw {
@@ -235,7 +235,7 @@ pub fn routes_via_home_session(raw: Option<&str>) -> bool {
 /// Write a job result into the home session's ledger so the user finds it
 /// in the pinned session (dashboard, mobile app, TUI picker). The home
 /// session is auto-created on first use. Never fails: returns
-/// `Some(error)` instead, mirroring [`deliver_best_effort`] — a delivery
+/// `Some(error)` instead, mirroring [`deliver_best_effort`] - a delivery
 /// failure must never fail the job.
 pub fn deliver_to_home_session(data_dir: &Path, job_label: &str, summary: &str) -> Option<String> {
     let ledger = match pantheon_storage::Ledger::open(&data_dir.join("ledger.db")) {

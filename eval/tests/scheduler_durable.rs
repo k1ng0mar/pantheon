@@ -44,7 +44,7 @@ fn a_claim_survives_a_crash_restart_without_any_rebuild() {
         assert!(ledger.claim(key).unwrap());
         // Process dies here, mid-run.
     }
-    // Restart: no hydrate needed — the store answers directly.
+    // Restart: no hydrate needed - the store answers directly.
     let ledger = DurableClaimLedger::open(&path).unwrap();
     assert!(ledger.is_claimed(key).unwrap());
     assert!(!ledger.claim(key).unwrap());
@@ -70,7 +70,7 @@ fn the_tick_loop_never_releases_so_replays_keep_collapsing() {
     let ledger = DurableClaimLedger::new(ClaimStore::open_in_memory().unwrap());
     // A webhook sender delivers, gets no 2xx, retries the same request id.
     assert!(ledger.claim("job:hook:req-42").unwrap());
-    // "Run ends" — nothing releases the claim.
+    // "Run ends" - nothing releases the claim.
     assert!(ledger.is_claimed("job:hook:req-42").unwrap());
     // The retry still collapses onto the already-run occurrence.
     assert!(!ledger.claim("job:hook:req-42").unwrap());

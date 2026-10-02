@@ -9,12 +9,12 @@
 //! `GET /api/mcp/health` (the session launcher's live snapshot) stays the
 //! live view; dashboard surfacing of this boot report is another leaf's job.
 //!
-//! Hook (one line, in the gateway's boot path — `pantheon gateway run`):
+//! Hook (one line, in the gateway's boot path - `pantheon gateway run`):
 //! ```ignore
 //! pantheon_gateway::mcp_boot::check_and_log(&data_dir, std::time::Duration::from_secs(10));
 //! ```
 //!
-//! Safety: only servers the operator already consented to are probed —
+//! Safety: only servers the operator already consented to are probed
 //! bundled (first-party) servers and servers with an approval record. An
 //! unapproved third-party server is never spawned by a health check; it is
 //! reported as waiting for approval.
@@ -203,7 +203,7 @@ pub fn check(data_dir: &Path, per_server_timeout: Duration) -> Vec<McpBootHealth
                 transport: spec.transport.as_str(),
                 target: spec.target(),
                 ok: false,
-                detail: "not approved — skipped at boot (approve in the dashboard)".to_string(),
+                detail: "not approved - skipped at boot (approve in the dashboard)".to_string(),
             });
             continue;
         }
@@ -241,7 +241,7 @@ pub fn check_and_log(data_dir: &Path, per_server_timeout: Duration) -> Vec<McpBo
     }
     if bad > 0 {
         eprintln!(
-            "mcp boot: {bad} of {} servers unhealthy — they will fail at tool-call time; fix or disable them in [mcp.servers]",
+            "mcp boot: {bad} of {} servers unhealthy - they will fail at tool-call time; fix or disable them in [mcp.servers]",
             results.len()
         );
     }
@@ -291,7 +291,7 @@ mod tests {
         let d = std::env::temp_dir().join("pantheon-mcp-boot-test-probe");
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        // "broken" is bundled-approved? No — use a name the bundled check
+        // "broken" is bundled-approved? No - use a name the bundled check
         // will not know, but approve it via the approval store dir so the
         // probe actually runs and fails on the bogus command.
         std::fs::write(

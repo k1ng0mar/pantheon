@@ -2,8 +2,8 @@
 //! optional live Tavily run. Run with `cargo test -p pantheon-eval`.
 //!
 //! The mock test drives the same registration path the production tool uses
-//! (`register_search_tools`), so the contract it asserts — schema, arg
-//! parsing, capability, result shape — is the real one.
+//! (`register_search_tools`), so the contract it asserts - schema, arg
+//! parsing, capability, result shape - is the real one.
 use pantheon_tools::tools::ToolRegistry;
 use pantheon_web::websearch::error::SearchError;
 use pantheon_web::websearch::provider::{SearchOptions, SearchProvider, SearchResult};
@@ -131,7 +131,7 @@ fn websearch_tools_not_registered_without_key() {
     }
 }
 
-/// Live Tavily run. Skips with a notice unless TAVILY_API_KEY is set —
+/// Live Tavily run. Skips with a notice unless TAVILY_API_KEY is set
 /// no key on CI means no network call, by construction.
 #[test]
 fn live_tavily_search_when_key_present() {

@@ -14,7 +14,7 @@ pub struct Message {
     pub content: String,
     /// Image parts riding alongside `content` (vision). Empty on every row
     /// written before vision existed (`#[serde(default)]`), and skipped on
-    /// the wire when empty — so text-only rows serialize byte-identically
+    /// the wire when empty - so text-only rows serialize byte-identically
     /// to before, and every existing `.content` accessor keeps working.
     /// The base64 payload is stored on the ledger row itself so history
     /// replay re-sends the picture, not a stale disk path.
@@ -169,7 +169,7 @@ impl Message {
 }
 
 /// Hard cap on one image's raw bytes: 10 MiB. Base64 inflates stored rows
-/// by ~4/3 on top of this, and providers cap per-image payloads too — so
+/// by ~4/3 on top of this, and providers cap per-image payloads too - so
 /// anything bigger is rejected at the attach site, not mid-request.
 pub const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 /// Mimes the wire encoders know how to label. Sniffed from magic bytes,
@@ -220,7 +220,7 @@ impl std::fmt::Display for ImageError {
 impl ImagePart {
     /// Build from raw bytes: sniffs the mime from magic bytes, enforces
     /// [`MAX_IMAGE_BYTES`], and base64-encodes. The claimed mime is never
-    /// trusted — a renamed `.exe` fails the sniff and is rejected loudly.
+    /// trusted - a renamed `.exe` fails the sniff and is rejected loudly.
     pub fn from_bytes(name: &str, bytes: &[u8]) -> Result<Self, ImageError> {
         if bytes.len() > MAX_IMAGE_BYTES {
             return Err(ImageError::TooLarge(bytes.len()));
@@ -250,7 +250,7 @@ impl ImagePart {
     }
 }
 
-/// Mime from magic bytes. PNG / JPEG / GIF / WEBP only — anything else is
+/// Mime from magic bytes. PNG / JPEG / GIF / WEBP only - anything else is
 /// not an image Pantheon will put on the wire.
 fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
@@ -279,7 +279,7 @@ const DOWNSCALE_JPEG_QUALITY: u8 = 85;
 /// Shrink `raw` image bytes so the longest edge fits
 /// [`VISION_DOWNSCALE_MAX_EDGE`], returning the re-encoded bytes.
 /// Returns `None` when no work is needed (already small enough) or the
-/// bytes cannot be decoded with the available codecs (JPEG/PNG) — the
+/// bytes cannot be decoded with the available codecs (JPEG/PNG) - the
 /// caller passes the original bytes through; magic sniffing in
 /// [`ImagePart::from_bytes`] already validated the shape.
 ///
@@ -348,11 +348,11 @@ pub fn b64encode(bytes: &[u8]) -> String {
 ///
 /// Each entry has the shape `- <name> (<mime>, <size>, id: <upl_...>): <abs path>`.
 /// Only entries whose mime starts with `image/` are considered. Every path
-/// is canonicalized and must stay inside `uploads_dir` — the block is text
+/// is canonicalized and must stay inside `uploads_dir` - the block is text
 /// the model can influence, so a `../` escape or an absolute path to
 /// anywhere else is skipped, never read. Files that fail to read or sniff
 /// are skipped too: the block text still names them, so the model sees the
-/// filename and can try its file tools — nothing is silently hidden.
+/// filename and can try its file tools - nothing is silently hidden.
 /// Capped at [`MAX_IMAGES_PER_MESSAGE`].
 pub fn attachment_images(text: &str, uploads_dir: &std::path::Path) -> Vec<ImagePart> {
     let uploads_dir = match uploads_dir.canonicalize() {
@@ -413,7 +413,7 @@ pub fn attachment_images(text: &str, uploads_dir: &std::path::Path) -> Vec<Image
 pub const MAX_VIDEOS_PER_MESSAGE: usize = 2;
 
 /// One video referenced by an `[attachments]` block: validated path only,
-/// never bytes — a 25 MiB upload must not be read fully into memory.
+/// never bytes - a 25 MiB upload must not be read fully into memory.
 /// Frame extraction (ffmpeg) streams what it needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoAttachment {
@@ -431,7 +431,7 @@ pub struct VideoAttachment {
 /// Entry shape and trust rules mirror [`attachment_images`]: `- <name>
 /// (<mime>, <size>, id: <upl_...>): <abs path>`, canonicalized, must stay
 /// inside `uploads_dir`, capped at [`MAX_VIDEOS_PER_MESSAGE`]. Bytes are
-/// never read here — extraction happens downstream via ffmpeg.
+/// never read here - extraction happens downstream via ffmpeg.
 pub fn attachment_videos(text: &str, uploads_dir: &std::path::Path) -> Vec<VideoAttachment> {
     let uploads_dir = match uploads_dir.canonicalize() {
         Ok(d) => d,

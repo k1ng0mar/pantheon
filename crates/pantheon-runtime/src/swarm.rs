@@ -185,7 +185,7 @@ pub struct Swarm {
     live: Vec<AgentHandle>,
     spawned_total: u32,
     /// Children spawned per parent agent name: enforces the per-agent
-    /// `max_subagents` cap. Counts *live* children only — `complete`
+    /// `max_subagents` cap. Counts *live* children only - `complete`
     /// releases the parent's slot, so a long session delegating many
     /// small tasks cannot deadlock against its own history.
     spawned_by: std::collections::HashMap<String, u32>,
@@ -333,7 +333,7 @@ impl Swarm {
 
 /// How a sub-agent's work ended, from the child's own report.
 ///
-/// Parsed in Rust from the child's return text — never by the LLM. When
+/// Parsed in Rust from the child's return text - never by the LLM. When
 /// the child does not return the envelope, the status is `Unknown` and
 /// the parent must treat the result as unverified, not as done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
@@ -356,7 +356,7 @@ impl<'de> serde::Deserialize<'de> for ChildStatus {
         let s = String::deserialize(d)?;
         // Lenient on purpose: a child that writes "done" or "COMPLETE"
         // still degrades to a known status instead of failing the parse.
-        // Anything unrecognized is Unknown — never Completed.
+        // Anything unrecognized is Unknown - never Completed.
         Ok(match s.trim().to_ascii_lowercase().as_str() {
             "completed" | "complete" | "done" | "success" => ChildStatus::Completed,
             "partial" | "partly" | "incomplete" => ChildStatus::Partial,
@@ -371,7 +371,7 @@ impl<'de> serde::Deserialize<'de> for ChildStatus {
 /// The spawn prompt tells the child to wrap its final answer in a
 /// ```child-result fenced JSON block with exactly these fields.
 /// `parse_child_result` extracts it; anything else degrades to
-/// `status: unknown` with the raw text as `summary` — never an error,
+/// `status: unknown` with the raw text as `summary` - never an error,
 /// never a silent pass.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChildResult {
@@ -414,7 +414,7 @@ impl ChildResult {
     }
 
     /// True only when the child positively reported completion. Every
-    /// other status — including `Unknown` — means the parent must not
+    /// other status - including `Unknown` - means the parent must not
     /// treat the delegation as done.
     pub fn is_completed(&self) -> bool {
         self.status == ChildStatus::Completed
@@ -429,7 +429,7 @@ pub const RESULT_FENCE: &str = "child-result";
 /// Accepts (in order): a fenced ```child-result block, a fenced
 /// ```json block, or the whole text as bare JSON. Missing fields take
 /// their defaults; an unrecognized `status` string degrades to
-/// `Unknown`. Anything unparseable becomes `ChildResult::unknown` —
+/// `Unknown`. Anything unparseable becomes `ChildResult::unknown`
 /// the raw text preserved as `summary`, never dropped, never an error.
 pub fn parse_child_result(text: &str) -> ChildResult {
     if let Some(block) = fenced_block(text, RESULT_FENCE)
@@ -463,7 +463,7 @@ pub fn result_contract() -> &'static str {
      `status` is one of: completed | partial | failed | unknown. \
      Use completed ONLY if the task is fully done; partial if part remains \
      (say what in open_questions/followups); failed if you could not do it. \
-     If you cannot produce this envelope, write your answer normally — \
+     If you cannot produce this envelope, write your answer normally - \
      it will be treated as unverified, not as done."
 }
 

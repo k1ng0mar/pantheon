@@ -1,4 +1,4 @@
-//! `pantheon fallback <add|list|remove>` — the ordered provider/model
+//! `pantheon fallback <add|list|remove>` - the ordered provider/model
 //! fallback chain.
 //!
 //! The chain already exists in config as `[model].fallbacks` and is honoured
@@ -8,7 +8,7 @@
 //!
 //! Order is the contract: the runtime walks the list in order and only moves
 //! to the next entry when the previous one fails. So `add` appends and
-//! `remove` takes an index, not a name — two entries can legitimately name
+//! `remove` takes an index, not a name - two entries can legitimately name
 //! the same provider with different models.
 
 use crate::config::{Config, FallbackEntry};
@@ -36,7 +36,7 @@ pub fn cmd_fallback(args: &[String]) {
     let mut cfg = match Config::load(&dd) {
         Ok(c) => c,
         Err(e) if e.code == "CONFIG_OPEN" => {
-            eprintln!("no config at {} — run `pantheon setup` first", dd.display());
+            eprintln!("no config at {} - run `pantheon setup` first", dd.display());
             std::process::exit(1);
         }
         Err(e) => {

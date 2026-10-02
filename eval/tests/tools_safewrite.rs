@@ -1,6 +1,6 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
-//! Tests for the safe-write tool registrations — sibling file so sources stay test-free.
+//! Tests for the safe-write tool registrations - sibling file so sources stay test-free.
 use pantheon_tools::safewrite_tools::{register_safewrite_with, SafewriteOptions};
 use pantheon_tools::tools::ToolRegistry;
 

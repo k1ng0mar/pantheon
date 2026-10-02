@@ -303,7 +303,7 @@ fn recall_flags_untrusted_records() {
 
 /// Regression (P0): `memory_confirm` is gated on the dedicated
 /// `MemoryConfirm` capability, which `coder_with_memory` marks as
-/// requiring approval — not on `MemoryWrite`. A prompt-injected model
+/// requiring approval - not on `MemoryWrite`. A prompt-injected model
 /// that can `memory_propose` must not be able to confirm its own
 /// poisoned record into the trusted tier: without a human grant the
 /// call is denied (gated execute) and the run loop parks it (approval

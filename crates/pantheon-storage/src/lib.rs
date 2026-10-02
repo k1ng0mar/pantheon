@@ -17,7 +17,7 @@ use std::time::Duration;
 /// Checkpoint policy (deliberately NOT enforced here): SQLite's default
 /// `wal_autocheckpoint` (1000 pages) bounds WAL growth in normal use. Long
 /// write bursts should issue `PRAGMA wal_checkpoint(TRUNCATE)` from an idle
-/// hook or maintenance pass instead — auto-checkpointing on close would turn a
+/// hook or maintenance pass instead - auto-checkpointing on close would turn a
 /// cheap disconnect into a latency spike, and doing it here would hide the
 /// cost inside every store open. Retention likewise stays an explicit API
 /// (e.g. [`ledger::Ledger::prune_events_before`]); nothing in this crate wires
@@ -38,7 +38,7 @@ pub(crate) fn configure_durability(conn: &Connection, code: &str) -> Result<(), 
     conn.busy_timeout(Duration::from_secs(5))
         .map_err(|e| err("BUSY_TIMEOUT", e.to_string()))?;
     // `PRAGMA journal_mode = WAL` returns the resulting mode as a row;
-    // ignore it — on :memory: connections it reports "memory" (a no-op).
+    // ignore it - on :memory: connections it reports "memory" (a no-op).
     conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get::<_, String>(0))
         .map_err(|e| err("WAL", e.to_string()))?;
     conn.execute_batch("PRAGMA synchronous = NORMAL")
@@ -49,7 +49,7 @@ pub(crate) fn configure_durability(conn: &Connection, code: &str) -> Result<(), 
 /// Execute one forward-only `ALTER TABLE ... ADD COLUMN` migration step.
 ///
 /// The "duplicate column name" error means the database already carries
-/// the column (fresh databases do — the `SCHEMA` constants declare every
+/// the column (fresh databases do - the `SCHEMA` constants declare every
 /// column), so it is ignored and the migration stays idempotent. Every
 /// other SQLite error (I/O, locked, no-such-table) is returned to the
 /// caller: a migration that reports `Ok` really migrated.

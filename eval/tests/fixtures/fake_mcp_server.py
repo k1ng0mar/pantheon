@@ -7,10 +7,10 @@ dependencies beyond the stdlib.
 Usage: fake_mcp_server.py <mode> [method-log-path]
 
 Modes:
-  normal    - answers initialize/tools/list/tools/call correctly
-  hang      - never answers tools/call (tests the client's timeout kill)
-  oversize  - answers tools/list with an 11MiB Content-Length-framed body
-  garbage   - answers tools/list with a non-JSON line
+  normal   - answers initialize/tools/list/tools/call correctly
+  hang     - never answers tools/call (tests the client's timeout kill)
+  oversize - answers tools/list with an 11MiB Content-Length-framed body
+  garbage  - answers tools/list with a non-JSON line
   badversion- answers initialize with an unknown protocol version
 """
 

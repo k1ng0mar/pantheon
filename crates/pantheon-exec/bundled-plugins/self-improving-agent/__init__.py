@@ -7,9 +7,9 @@ and OpenClaw session tools are stripped; paths are remapped to Pantheon
 SOUL.md / TOOLS.md live).
 
 Hooks:
-  on_session_start (Context) — ensure .learnings/ exists, then inject the
+  on_session_start (Context) - ensure .learnings/ exists, then inject the
       logging protocol quick reference plus a pending-triage note.
-  on_session_end (Observer) — ensure .learnings/ exists and record a
+  on_session_end (Observer) - ensure .learnings/ exists and record a
       session-end marker for the next session's triage note.
 
 Deviation from upstream, stated plainly: the OpenClaw version swept the
@@ -20,7 +20,7 @@ possible here. Learning *content* comes from the agent following the
 injected protocol; these hooks supply the reminder and the bookkeeping.
 
 Security: local files only. The protocol text carries the upstream
-warning — never log secrets, tokens, private keys, environment
+warning - never log secrets, tokens, private keys, environment
 variables, or full source/config files. This module never reads the
 process environment beyond PATH/HOME resolution and never exfiltrates.
 """

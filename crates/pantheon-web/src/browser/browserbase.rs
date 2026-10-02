@@ -23,7 +23,7 @@ pub const BROWSERBASE_API_KEY_ENV: &str = "BROWSERBASE_API_KEY";
 pub struct BrowserbaseConfig {
     /// Resolved API key (never logged). `None` means unset.
     pub api_key: Option<String>,
-    /// Browserbase project id — required by `POST /v1/sessions`.
+    /// Browserbase project id - required by `POST /v1/sessions`.
     pub project_id: Option<String>,
     /// Override for tests/proxies. `None`/empty = [`DEFAULT_BASE_URL`].
     pub base_url: Option<String>,
@@ -142,7 +142,7 @@ fn map_http_err(e: HttpError) -> BrowserError {
         stderr: match e {
             HttpError::Status(code, body) => {
                 if code == 401 || code == 403 {
-                    format!("HTTP {code}: authentication rejected — check the API key")
+                    format!("HTTP {code}: authentication rejected - check the API key")
                 } else {
                     format!("HTTP {code} from session API: {body}")
                 }

@@ -27,7 +27,7 @@ impl DotenvVault {
 
     /// Vault over a different dotenv file inside `data_dir` (same
     /// atomic/permission semantics). Used for secret namespaces that
-    /// must not appear in the `.env` key manager — e.g. website-login
+    /// must not appear in the `.env` key manager - e.g. website-login
     /// passwords live in `logins.env`, never in `.env`.
     pub fn new_file(data_dir: impl AsRef<Path>, file_name: &str) -> Self {
         Self {

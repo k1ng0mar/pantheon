@@ -1,4 +1,4 @@
-//! Pantheon — façade crate.
+//! Pantheon - façade crate.
 //!
 //! One dependency for "give me Pantheon": every library crate re-exported
 //! under a stable, namespaced path. The names mirror the target

@@ -1,6 +1,6 @@
 //! Schedule CRUD over the reworked scheduler core.
 //!
-//! Jobs live in `<data_dir>/schedule.json` — the same file the
+//! Jobs live in `<data_dir>/schedule.json` - the same file the
 //! `pantheon schedule` CLI reads and writes. The dashboard does not keep
 //! its own store mirror: the shared [`ScheduledJob`] shape is read and
 //! written with the core's [`load_jobs`]/[`save_jobs`], so legacy rows
@@ -454,7 +454,7 @@ pub fn update_job(app: &App, req: &Request, id: &str) -> Response {
             for (k, v) in template_vars {
                 new_vars.insert(k, v);
             }
-            // Reserved vars become the model pin, not prompt text — like
+            // Reserved vars become the model pin, not prompt text - like
             // creation. An explicit model/provider in the body wins. Applied
             // once, before the template/vars branches below.
             let mut var_model: Option<String> = None;

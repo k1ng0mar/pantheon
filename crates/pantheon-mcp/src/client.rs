@@ -1,13 +1,13 @@
 //! Minimal real MCP client over stdio.
 //!
 //! Protocol subset: `initialize` (with protocol-version negotiation),
-//! `tools/list`, `tools/call`. Everything else — resources, prompts,
-//! sampling, roots, elicitation — is out of scope for this pass.
+//! `tools/list`, `tools/call`. Everything else - resources, prompts,
+//! sampling, roots, elicitation - is out of scope for this pass.
 //!
 //! # Call direction
 //!
 //! This client only initiates calls **to** the server. Calls **from** the
-//! server to the client (`sampling/createMessage`, `roots/list`, …) are out
+//! server to the client (`sampling/createMessage`, `roots/list`, ...) are out
 //! of scope: the reader answers any server-initiated request with JSON-RPC
 //! `-32601 Method not found` and moves on, so a chatty server cannot wedge
 //! the request/response pairing.
@@ -59,7 +59,7 @@ pub struct McpServerConfig {
     /// Max bytes for one JSON-RPC message, either direction.
     pub max_message_bytes: usize,
     /// Extra environment for the child, applied on top of the cleared
-    /// environment (plus PATH). Values are already resolved — the
+    /// environment (plus PATH). Values are already resolved - the
     /// manager turns `env:NAME` refs into values before building this,
     /// so this struct never sees a ref it cannot resolve. Never logged:
     /// only the variable names travel in errors.
@@ -274,7 +274,7 @@ impl McpClient {
             // Policy allowed it: the enforcement's sandbox profile decides
             // how isolated the child runs (namespace wrapper + rlimits
             // where the host supports them; a direct spawn where it does
-            // not — the policy gate above is what restores enforcement).
+            // not - the policy gate above is what restores enforcement).
             Some(profile) => build_sandboxed(profile, &config.command, &args, &cwd),
             None => {
                 let mut cmd = Command::new(&config.command);
@@ -458,7 +458,7 @@ impl McpClient {
                         return Ok(result.unwrap_or(Value::Null));
                     }
                     Wire::Request { id: rid, .. } => {
-                        // Server-to-client calls (sampling, roots, …) are
+                        // Server-to-client calls (sampling, roots, ...) are
                         // out of scope: answer "method not found" and carry
                         // on waiting for our response.
                         let _ = self.send(&serde_json::json!({
@@ -501,7 +501,7 @@ impl McpClient {
             .collect()
     }
 
-    /// `tools/call`: the gate runs **first** — a denial aborts the call
+    /// `tools/call`: the gate runs **first** - a denial aborts the call
     /// before anything is written to the server. On success returns the raw
     /// `result` object; when the server reports `isError: true` this is
     /// [`McpError::ServerToolError`] carrying the server's text.
@@ -576,7 +576,7 @@ mod client_policy_tests {
     use super::*;
     use pantheon_api::capability::{Capability, Policy};
 
-    /// Item 2: a policy that denies `mcp.enable` refuses the spawn —
+    /// Item 2: a policy that denies `mcp.enable` refuses the spawn
     /// the server process is never started (the command below does not
     /// exist; a spawn attempt would surface as `Spawn`, never
     /// `PolicyDenied`).
@@ -591,7 +591,7 @@ mod client_policy_tests {
     }
 
     /// Item 2: a policy that allows `mcp.enable` lets the spawn proceed
-    /// through the sandbox profile — the gate was consulted and passed,
+    /// through the sandbox profile - the gate was consulted and passed,
     /// and the server completes the `initialize` handshake.
     #[test]
     fn connect_proceeds_when_policy_allows_mcp_enable() {

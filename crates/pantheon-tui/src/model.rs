@@ -1,18 +1,18 @@
 //! `pantheon model`: point pantheon at a provider and pick the model.
 //!
 //! Interactive (a TTY picker):
-//!   1. provider list (builtins + customs) — scroll or type to filter,
+//!   1. provider list (builtins + customs) - scroll or type to filter,
 //!      Enter to select. New endpoints are created in `pantheon provider
 //!      add`; URL edits that diverge from a builtin are saved as explicit
 //!      override rows.
 //!   2. base URL (prefilled from the catalog, `:port` = localhost) + wire
 //!      mode (OpenAI-compatible vs Anthropic) picker.
-//!   3. API key prompt — comma-separated to stack multiple keys. Stored in
+//!   3. API key prompt - comma-separated to stack multiple keys. Stored in
 //!      `<data_dir>/.env` (`PANTHEON_KEY_X=k1,k2`), never in config.toml.
 //!      The chain rotates stacked keys on 401/403/429.
 //!   4. models are fetched live from `{base}/models`; pick one (or type an
 //!      id manually when the endpoint has no `/models`).
-//!   5. bottom step: a deliberate bottom row — `Set auxiliary` opens the
+//!   5. bottom step: a deliberate bottom row - `Set auxiliary` opens the
 //!      slot list, `Done` (or Esc) finishes.
 //!
 //! Bare `pantheon model` configures the default chat model;
@@ -325,7 +325,7 @@ pub fn mask_key(key: &str) -> String {
     }
     let head: String = chars[..3].iter().collect();
     let tail: String = chars[chars.len() - 4..].iter().collect();
-    format!("{head}…{tail}")
+    format!("{head}...{tail}")
 }
 
 // ---------------------------------------------------------------------------
@@ -333,13 +333,13 @@ pub fn mask_key(key: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Canonical auxiliary-slot names pinnable via `--auxiliary` and the
-/// bottom step, in presentation order. Driven from [`AUX_SLOTS`] — the
-/// single source of truth in `pantheon_api::config` — plus the three
+/// bottom step, in presentation order. Driven from [`AUX_SLOTS`] - the
+/// single source of truth in `pantheon_api::config` - plus the three
 /// model pins that live outside it, so the list cannot drift again.
 ///
-/// * `reflect` — the model pin inside the `[reflect]` table;
-/// * `consolidation` — the model pin inside the `[consolidation]` table;
-/// * `nightly` — the `[nightly.model]` pin (pinning it enables the
+/// * `reflect` - the model pin inside the `[reflect]` table;
+/// * `consolidation` - the model pin inside the `[consolidation]` table;
+/// * `nightly` - the `[nightly.model]` pin (pinning it enables the
 ///   nightly pass unless `enabled = false`).
 pub(crate) fn aux_slot_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = config::AUX_SLOTS.iter().map(|s| s.name).collect();
@@ -349,7 +349,7 @@ pub(crate) fn aux_slot_names() -> Vec<&'static str> {
 
 /// One-line description per slot, from the `AuxiliaryKind` docs. Every
 /// name from [`aux_slot_names`] has an explicit arm; an unknown name
-/// panics loudly naming the valid set — never a silent wrong label.
+/// panics loudly naming the valid set - never a silent wrong label.
 pub(crate) fn aux_slot_desc(name: &str) -> &'static str {
     match name {
         "judge" => "auxiliary judge model (route select + tool gates)",
@@ -418,7 +418,7 @@ pub(crate) struct ProviderRow {
 
 /// Candidate env vars that could hold `provider_id`'s key: the provider
 /// row's own `key_env` first (`PANTHEON_KEY_<NAME>` when the row names
-/// none — mirroring the interactive flow's default), then any
+/// none - mirroring the interactive flow's default), then any
 /// `api_key_env` already recorded in config (`[model]`, an aux section,
 /// or `[custom_providers.*]`) for that provider. Order is stable and
 /// duplicates are dropped.
@@ -478,7 +478,7 @@ pub(crate) fn provider_key_candidates(
     out
 }
 
-/// First candidate env var that actually has a key stored — process
+/// First candidate env var that actually has a key stored - process
 /// environment or `<data_dir>/.env`. `None` = no key on file.
 pub(crate) fn stored_key_env(data_dir: &std::path::Path, candidates: &[String]) -> Option<String> {
     candidates
@@ -495,7 +495,7 @@ pub(crate) fn stored_key_env(data_dir: &std::path::Path, candidates: &[String]) 
 }
 
 /// Read the stored key itself (env first, then `.env`); `None` when the
-/// var is unset or blank. Values are never written to config — only the
+/// var is unset or blank. Values are never written to config - only the
 /// var name is saved as `api_key_env`.
 fn read_stored_key(data_dir: &std::path::Path, env: &str) -> Option<String> {
     std::env::var(env)
@@ -508,7 +508,7 @@ fn read_stored_key(data_dir: &std::path::Path, env: &str) -> Option<String> {
 
 /// Order provider rows for the aux picker: providers with a key on
 /// file first (tagged `key on file`), then the rest in catalog order
-/// (recommended first — `all_providers` already yields that order).
+/// (recommended first - `all_providers` already yields that order).
 pub(crate) fn order_providers_key_first(
     data_dir: &std::path::Path,
     cfg: &Config,
@@ -537,7 +537,7 @@ pub(crate) fn order_providers_key_first(
 
 /// The outcome of the interactive key step.
 pub(crate) struct KeySelection {
-    /// Env var that will hold (or already holds) the key — the value
+    /// Env var that will hold (or already holds) the key - the value
     /// saved as `api_key_env`, never the key itself.
     pub key_env: String,
     /// Freshly entered keys to persist to `.env` (`None` = keep stored).
@@ -574,7 +574,7 @@ fn select_keys(
     let keys = prompt("API key(s), comma-separated to stack", "");
     // Empty input keeps an existing key, or means keyless when none exists.
     if keys.trim().is_empty() && existing.is_none() {
-        println!("  no key stored — keyless endpoints only");
+        println!("  no key stored - keyless endpoints only");
     }
     let raw_keys = if keys.trim().is_empty() {
         None
@@ -742,9 +742,9 @@ pub(crate) fn ensure_template_vars(
                 }
                 tries += 1;
                 if tries >= 3 {
-                    return Err(format!("{v} is required — re-run and provide it"));
+                    return Err(format!("{v} is required - re-run and provide it"));
                 }
-                eprintln!("  {v} is required — the endpoint URL contains {{{v}}}");
+                eprintln!("  {v} is required - the endpoint URL contains {{{v}}}");
             }
             continue;
         }
@@ -758,12 +758,12 @@ pub(crate) fn ensure_template_vars(
 }
 /// Pin an auxiliary slot to the chosen provider/model. Every slot has
 /// an explicit arm; an unknown name is a loud error naming the valid
-/// set — never a silent write to the wrong section.
+/// set - never a silent write to the wrong section.
 ///
 /// The 14 [`AUX_SLOTS`] slots are plain `[section]` tables and are
 /// replaced wholesale (like before). `reflect` / `consolidation` mix
 /// behavior knobs with the model pin, so the pin fields are updated in
-/// place and the knobs (`enabled`, `auto_turns`, `cron`, …) survive.
+/// place and the knobs (`enabled`, `auto_turns`, `cron`, ...) survive.
 /// `nightly` writes the `[nightly.model]` sub-table; a fresh `[nightly]`
 /// comes from its `Default` impl (off unless the pin is present).
 fn pin_aux_slot(cfg: &mut Config, kind: &str, choice: &ModelChoice) -> Result<(), String> {
@@ -806,7 +806,7 @@ fn pin_aux_slot(cfg: &mut Config, kind: &str, choice: &ModelChoice) -> Result<()
             let mut r = cfg.reflect.clone().unwrap_or(ReflectSection {
                 // Documented serde defaults (config.rs); doctor.rs uses
                 // the same values. Only used when no [reflect] table
-                // exists yet — an existing table is updated in place.
+                // exists yet - an existing table is updated in place.
                 enabled: false,
                 auto_turns: 20,
                 max_proposals: 5,
@@ -945,7 +945,7 @@ fn cmd_list() {
             m.model,
             key_status(m.api_key_env.as_deref())
         ),
-        None => println!("default:   (unset — run `pantheon model`)"),
+        None => println!("default:   (unset - run `pantheon model`)"),
     }
     let aux = |name: &str, sec: Option<(String, String, Option<String>)>| match sec {
         Some((p, m, k)) => println!("{name:<16} {p} / {m}  [{}]", key_status(k.as_deref())),
@@ -1079,7 +1079,7 @@ pub(crate) fn wire_mode_items() -> Vec<PickItem> {
 /// The full interactive flow for one scope: provider → base URL + wire
 /// mode → API key → live `/models` fetch → model pick. The auxiliary
 /// flow reuses this exact path (never a degraded variant); only the
-/// provider list differs — it is key-aware for auxiliaries (providers
+/// provider list differs - it is key-aware for auxiliaries (providers
 /// with a key on file sort first, tagged `key on file`, and offer to
 /// reuse the stored key instead of re-prompting).
 ///
@@ -1138,7 +1138,7 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
             })
             .collect();
         let prov_idx = pick(
-            &format!("pantheon model — {scope}: pick a provider"),
+            &format!("pantheon model - {scope}: pick a provider"),
             &items,
         )?;
         if prov_idx >= rows.len() {
@@ -1464,7 +1464,7 @@ pub(crate) fn remove_custom_provider(
     let deps = dependents_of(&cfg, name);
     if !deps.is_empty() {
         return Err(format!(
-            "{name:?} is still in use by {} — re-point them first (`pantheon model`)",
+            "{name:?} is still in use by {} - re-point them first (`pantheon model`)",
             deps.join(", ")
         ));
     }
@@ -1479,7 +1479,7 @@ pub(crate) fn remove_custom_provider(
             None => {
                 if std::io::stdin().is_terminal() {
                     let a = prompt_line(
-                        &format!("key {key_env} is now unused — delete it from .env? (y/N)"),
+                        &format!("key {key_env} is now unused - delete it from .env? (y/N)"),
                         "n",
                     );
                     matches!(a.to_ascii_lowercase().as_str(), "y" | "yes")
@@ -1549,7 +1549,7 @@ fn usage() -> ! {
 
 /// `--help` short-circuit: print the usage text and exit 0 before
 /// anything else runs. The interactive provider picker is the default
-/// path, so without this `--help` would prompt — help must never
+/// path, so without this `--help` would prompt - help must never
 /// prompt or mutate.
 fn model_help() -> ! {
     print_usage();
@@ -1723,7 +1723,7 @@ pub fn cmd_model(args: &[String]) {
                 run_aux_bottom(&dd);
             }
         }
-        None => println!("cancelled — nothing changed"),
+        None => println!("cancelled - nothing changed"),
     }
 }
 
@@ -1769,7 +1769,7 @@ fn run_aux_slot_list(dd: &std::path::Path) {
         })
         .collect();
     loop {
-        let Some(idx) = pick("set auxiliary — pick a slot (Esc: back)", &items) else {
+        let Some(idx) = pick("set auxiliary - pick a slot (Esc: back)", &items) else {
             return;
         };
         let kind = slots[idx].to_string();

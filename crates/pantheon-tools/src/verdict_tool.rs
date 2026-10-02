@@ -4,7 +4,7 @@
 //! `pantheon_runtime::swarm_exec`): the reviewer calls `verdict` once at
 //! the end of its review, and the orchestrator extracts the verdict from
 //! the call's structured args instead of parsing the reviewer's prose.
-//! The tool itself is stateless — the run's ledger `ToolStarted` event
+//! The tool itself is stateless - the run's ledger `ToolStarted` event
 //! persists the args, which is what the orchestrator reads back after
 //! the stage settles.
 

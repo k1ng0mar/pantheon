@@ -2,7 +2,7 @@
 //!
 //! Every parser below turns a model/provider reply into a typed value, and
 //! every one must fail closed: an unrecognizable reply escalates (judge
-//! gate), degrades (verifier), or errors — it never silently passes as a
+//! gate), degrades (verifier), or errors - it never silently passes as a
 //! success. These are the distilled, public-API-only versions of the
 //! in-crate parse tests.
 

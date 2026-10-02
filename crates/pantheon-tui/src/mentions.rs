@@ -3,7 +3,7 @@
 //!
 //! The picker lists files under the working directory, respecting
 //! `.gitignore` and always skipping VCS/build noise (`.git`, `target`,
-//! `node_modules`, …). On submit, `resolve_mentions` reads each mentioned
+//! `node_modules`, ...). On submit, `resolve_mentions` reads each mentioned
 //! file: text goes to the model inside a delimited block, binaries and
 //! unreadable files are reported and skipped, and total attached bytes are
 //! capped so one `@` cannot blow the context window.
@@ -37,7 +37,7 @@ const ALWAYS_SKIP: &[&str] = &[
 /// Extract `@path` mentions from prompt text, in order of appearance.
 ///
 /// A mention starts at `@` and runs to the next whitespace. A lone `@`
-/// (end of input, or followed by whitespace) is not a mention — it is the
+/// (end of input, or followed by whitespace) is not a mention - it is the
 /// trigger that opens the picker.
 pub fn extract_mentions(text: &str) -> Vec<String> {
     let mut out = Vec::new();

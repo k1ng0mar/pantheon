@@ -2,13 +2,13 @@
 //! subprocess turns, driven by
 //! [`pantheon_runtime::swarm_exec::SwarmOrchestrator`].
 //!
-//! - `POST /api/swarm` — body `{"task": "...", "agents": 3, "judge": false}`
+//! - `POST /api/swarm` - body `{"task": "...", "agents": 3, "judge": false}`
 //!   (agents defaults to 3, must be 1..=8). Returns 201 with the status view.
-//! - `GET /api/swarm/status?id=<swarm_id>` — poll until the run settles;
+//! - `GET /api/swarm/status?id=<swarm_id>` - poll until the run settles;
 //!   the orchestrator refreshes agent states and runs the judge on each
 //!   call, so polling is the only client loop needed.
-//! - `GET /api/swarm/transcript?id=<swarm_id>` — combined transcript text.
-//! - `POST /api/swarm/<id>/retry` — start a new round on an incomplete
+//! - `GET /api/swarm/transcript?id=<swarm_id>` - combined transcript text.
+//! - `POST /api/swarm/<id>/retry` - start a new round on an incomplete
 //!   swarm (judge feedback is appended to each agent's task).
 //!
 //! Production agents run as real `pantheon run --taskID <run_id> --say
@@ -83,7 +83,7 @@ impl SubprocessWorker {
 ///
 /// Profiles-mode agents always run as their declared profile. Count
 /// mode's `"default"` sentinel only passes `--agent` when a profile is
-/// actually declared under that name — otherwise the child would fail
+/// actually declared under that name - otherwise the child would fail
 /// closed and every count-mode swarm would break on installs that
 /// predate profiles.
 fn agent_flag_for(data_dir: &Path, profile: &str) -> Option<String> {
@@ -131,7 +131,7 @@ fn swarm_child_argv<'a>(
 
 impl SubprocessWorker {
     /// Spawn one child turn. `verdict_tool` registers the reviewer
-    /// `verdict` tool on the turn — set only for staged review stages
+    /// `verdict` tool on the turn - set only for staged review stages
     /// via [`SwarmWorker::spawn_reviewer`].
     fn spawn_agent_inner(
         &self,
@@ -215,7 +215,7 @@ impl SwarmWorker for SubprocessWorker {
             _ => {
                 // Non-terminal (or unknown) ledger status: the child may
                 // have died without settling. A dead recorded PID means
-                // the turn is gone for good — report failure so the swarm
+                // the turn is gone for good - report failure so the swarm
                 // can judge on what's there instead of polling forever.
                 let pid = self.pids.lock().unwrap().get(run_id).copied();
                 match pid {
@@ -331,7 +331,7 @@ impl JudgeTransport for ConfigJudgeTransport {
 }
 
 /// Build the judge transport from `[judge]` in the dashboard's config.toml.
-/// `None` when the section is absent or the provider can't be resolved —
+/// `None` when the section is absent or the provider can't be resolved
 /// the caller then runs swarms judge-free.
 pub fn judge_transport_for(data_dir: &Path) -> Option<ConfigJudgeTransport> {
     let cfg = crate::session_factory::load_config(data_dir).ok()??;
@@ -383,7 +383,7 @@ fn status_json(view: &SwarmStatusView) -> serde_json::Value {
     serde_json::to_value(view).unwrap_or(serde_json::Value::Null)
 }
 
-/// `POST /api/swarm`: create a swarm — body
+/// `POST /api/swarm`: create a swarm - body
 /// `{"task": "...", "mode": "count"|"profiles", "subagent_count": 4,
 ///   "profiles": ["nyx"], "judge": true}`.
 /// `mode` defaults to `"count"`; `subagent_count` 1..=8 defaults to 4
@@ -420,7 +420,7 @@ pub fn create(app: &App, req: &Request) -> Response {
         if profiles.is_empty() || profiles.len() > 8 {
             return bad_json("field \"profiles\" must be 1..=8 profile names");
         }
-        // Every named profile must be declared — never silently run a
+        // Every named profile must be declared - never silently run a
         // profile that does not exist.
         let cfg = crate::session_factory::load_config(&app.data_dir)
             .ok()

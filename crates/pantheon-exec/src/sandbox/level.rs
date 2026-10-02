@@ -3,7 +3,7 @@
 //! The level is a policy value; the boundary is the mechanism that enforces
 //! it on this host, and the profile is the concrete limit set handed to the
 //! executor. Pattern we follow: capability-dropped containers, no-new-privs,
-//! per-boundary rlimits — sandboxing as a runtime primitive, not a Docker
+//! per-boundary rlimits - sandboxing as a runtime primitive, not a Docker
 //! wrapper.
 
 use super::SandboxLevel;
@@ -23,7 +23,7 @@ pub enum ExecutionBoundary {
     Container,
     /// Strict namespace isolation (bwrap with every namespace unshared).
     /// VERY HIGH. Honest naming: this is the strongest OS-level boundary
-    /// the runner offers — no hypervisor, no guest kernel, no VM semantics
+    /// the runner offers - no hypervisor, no guest kernel, no VM semantics
     /// of any kind. (A real VM backend was considered and rejected.)
     StrictNamespaces,
 }
@@ -47,7 +47,7 @@ impl SandboxLevel {
 
 /// Concrete limits handed to the executor for one execution.
 ///
-/// `None` means "this level does not impose that limit" — never "unlimited
+/// `None` means "this level does not impose that limit" - never "unlimited
 /// by design". The runtime may tighten any field, never loosen it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxProfile {
@@ -66,7 +66,7 @@ pub struct SandboxProfile {
     pub wall_clock_ms: u64,
     /// Opt-in to the direct-spawn fallback: when the boundary's wrapper
     /// (bwrap/unshare) cannot initialize, run the command directly on the
-    /// host instead of failing. Default is `false` — the runner fails
+    /// host instead of failing. Default is `false` - the runner fails
     /// closed. The `PANTHEON_SANDBOX_FALLBACK=allow` environment variable
     /// enables the same fallback at run time without touching profiles.
     #[serde(default)]

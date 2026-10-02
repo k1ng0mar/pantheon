@@ -37,7 +37,7 @@
 //!
 //! An earlier shape had a TUI, a REPL, a model picker, a session picker, and
 //! a text setup wizard, with two of them able to answer the same command
-//! differently — and for a while a whole second terminal crate
+//! differently - and for a while a whole second terminal crate
 //! (`pantheon-cli`) holding a duplicate session implementation. That crate
 //! is gone: its dispatch and command modules moved here unchanged in
 //! behavior, and its session implementation became `session.rs`. What

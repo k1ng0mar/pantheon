@@ -7,14 +7,14 @@
 //!
 //! This is deliberately dependency-free. The workspace has no logging crate and
 //! adding one means a global subscriber, per-crate span instrumentation, and a
-//! subscriber that has to be initialised before anything can log — all of it
+//! subscriber that has to be initialised before anything can log - all of it
 //! invisible in review. A writer behind one function, called where the
 //! interesting thing happens, is greppable and cannot silently no-op.
 //!
 //! Two files, split by severity, because they answer different questions:
 //!
-//! - `agent.log` (DEBUG+) — what the runtime did, in order.
-//! - `errors.log` (WARNING+) — what went wrong, for grepping.
+//! - `agent.log` (DEBUG+) - what the runtime did, in order.
+//! - `errors.log` (WARNING+) - what went wrong, for grepping.
 //!
 //! Each line is `TIMESTAMP LEVEL [component] message`, which is the shape
 //! `hermes logs` parses back out with a regex. Keeping the two in agreement is
@@ -163,7 +163,7 @@ pub(crate) fn append(file: &Path, level: Level, component: &str, msg: &str) {
     let redacted = redact(msg);
     // Escape newlines before writing. A caller passing a multi-line tool
     // result is the ordinary case, and an unescaped one would let the message
-    // forge additional log lines — including ones that look like a different
+    // forge additional log lines - including ones that look like a different
     // component's ERROR. The reader is line-oriented, so this is what keeps a
     // record one record.
     let flat = redacted.replace('\r', "\\r").replace('\n', "\\n");
@@ -268,7 +268,7 @@ pub fn error(component: &str, msg: impl AsRef<str>) {
 ///
 /// The redaction pipeline is fail-closed: when a secret pattern is detected,
 /// the entire match is replaced with `[REDACTED]`. This is deliberately
-/// aggressive — a partial leak is still a leak.
+/// aggressive - a partial leak is still a leak.
 ///
 /// Patterns redacted:
 /// - `sk-or-v1-...` (OpenRouter keys)
@@ -278,8 +278,8 @@ pub fn error(component: &str, msg: impl AsRef<str>) {
 /// - `PANTHEON_SECRET_<name>=<value>` (env-style secrets)
 /// - values under sensitive keys (`password`, `token`, `api_key`,
 ///   `secret`, `authorization`, and close variants) when the input
-///   parses as JSON — a logged tool-args dump like
-///   `{"password": "…"}` carries no known prefix for the scan above.
+///   parses as JSON - a logged tool-args dump like
+///   `{"password": "..."}` carries no known prefix for the scan above.
 pub fn redact(msg: &str) -> String {
     let mut out = msg.to_string();
     out = redact_prefix(&out, "sk-or-v1-");
@@ -295,8 +295,8 @@ pub fn redact(msg: &str) -> String {
 /// True when a JSON object key names a credential. Matching is on the
 /// lowercased key with `-`/space folded to `_`: the known credential
 /// names, plus any `*_token` / `*_secret` / `*_password` compound
-/// (`access_token`, `client_secret`, `db_password`, …). Deliberately
-/// narrower than a substring scan — `token_count` is telemetry, not a
+/// (`access_token`, `client_secret`, `db_password`, ...). Deliberately
+/// narrower than a substring scan - `token_count` is telemetry, not a
 /// secret, and redacting it would gut usage logs.
 fn is_sensitive_key(key: &str) -> bool {
     let k = key.to_lowercase().replace(['-', ' '], "_");
@@ -356,7 +356,7 @@ fn redact_json_node(v: &mut serde_json::Value) -> bool {
 /// JSON-aware pass over [`redact`]: when the whole input parses as
 /// JSON, values under sensitive keys are replaced wholesale. Input
 /// that does not parse, or parses with nothing sensitive in it, is
-/// returned byte-for-byte — clean JSON keeps its original formatting,
+/// returned byte-for-byte - clean JSON keeps its original formatting,
 /// and only a message that actually carried a secret is re-serialized.
 fn redact_json_values(input: &str) -> String {
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(input) else {

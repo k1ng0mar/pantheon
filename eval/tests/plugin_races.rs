@@ -6,7 +6,7 @@
 //!     start could get unapproved bytes executed.
 //! (b) CONTAINMENT: verification canonicalized the runner for the
 //!     starts_with containment check, discarded the result, and spawned the
-//!     raw path — a symlink swap between canonicalize and exec escaped the
+//!     raw path - a symlink swap between canonicalize and exec escaped the
 //!     plugin dir.
 //!
 //! Deterministic tests below fail before the fix and pass after it; the
@@ -51,7 +51,7 @@ fn tool_manifest(name: &str) -> PluginManifest {
     }
 }
 
-/// A complete tool-plugin dir whose runner answers `who:<TAG>` — the tag
+/// A complete tool-plugin dir whose runner answers `who:<TAG>` - the tag
 /// is baked into the script at write time, so it reports which variant's
 /// bytes actually executed (reading an external file at call time would
 /// misattribute across a swap).

@@ -101,7 +101,7 @@ struct SealedRunner {
 
 /// 128 bits of randomness as hex, for unguessable sealed-file names.
 /// Same-uid attackers share our file permissions, so the name is the only
-/// thing keeping a racing writer out of the sealed file — and O_EXCL
+/// thing keeping a racing writer out of the sealed file - and O_EXCL
 /// creation fails closed on a pre-created plant regardless.
 fn random_hex32() -> String {
     static CTR: AtomicU64 = AtomicU64::new(0);
@@ -152,12 +152,12 @@ pub struct PluginSupervisor {
 
 impl PluginSupervisor {
     /// Spawn the plugin runner. `runner` must already be verified by
-    /// `verify_plugin` — pass its RETURNED (canonicalized) path, not a
+    /// `verify_plugin` - pass its RETURNED (canonicalized) path, not a
     /// re-joined raw path.
     ///
     /// Defense in depth: the runner is canonicalized again here, then its
     /// bytes are read through the pinned fd and written to a private
-    /// sealed copy ([`Self::seal_runner_bytes`]) that the child execs — so
+    /// sealed copy ([`Self::seal_runner_bytes`]) that the child execs - so
     /// a symlink swap or in-place rewrite between verification and execve
     /// cannot redirect execution or smuggle in new bytes. The canonical
     /// path is used for argv[0] and diagnostics only, never re-opened.
@@ -166,7 +166,7 @@ impl PluginSupervisor {
     /// manifest-declared vars that ALSO match `env_allowlist` (exact names
     /// or `PREFIX_*`, see [`pantheon_secrets::env::env_var_allowed`]) are
     /// copied from the host. A project-controlled manifest can declare any
-    /// name it likes, so a declared name alone never crosses the boundary —
+    /// name it likes, so a declared name alone never crosses the boundary
     /// the operator's allowlist is the second, mandatory gate. Empty
     /// allowlist (default) = no host vars reach the plugin. Pantheon
     /// secrets never cross the boundary; they travel through the secrets
@@ -188,7 +188,7 @@ impl PluginSupervisor {
             )
         })?;
         // Read through the pinned fd: from here on the exact bytes in
-        // hand are what get sealed and exec'd — no path component is
+        // hand are what get sealed and exec'd - no path component is
         // re-resolved.
         let (runner_bytes, _) = Self::read_runner_bytes(&runner)?;
         Self::spawn_inner(
@@ -211,7 +211,7 @@ impl PluginSupervisor {
     ///  3. Recompute the approval hash with the runner's bytes+identity
     ///     taken from the pinned read, and compare against the approval
     ///     store. A pass proves the exact bytes in hand were
-    ///     operator-approved — an in-place same-inode rewrite racing this
+    ///     operator-approved - an in-place same-inode rewrite racing this
     ///     spawn cannot smuggle unapproved bytes past the check, because
     ///     the check runs on the bytes already read, not on whatever the
     ///     path resolves to now.
@@ -305,7 +305,7 @@ impl PluginSupervisor {
 
     /// Open `runner`, pinning the inode, and read its full contents through
     /// the open fd, returning the bytes and the fd's fstat metadata. The
-    /// returned bytes are exactly what the caller holds — a rename swap or
+    /// returned bytes are exactly what the caller holds - a rename swap or
     /// in-place rewrite after this point cannot change them.
     fn read_runner_bytes(runner: &Path) -> Result<(Vec<u8>, std::fs::Metadata), PantheonError> {
         let pin = Self::open_runner(runner)?;
@@ -330,7 +330,7 @@ impl PluginSupervisor {
     }
 
     /// Shared spawn implementation. `runner` must already be canonical; it
-    /// is used for argv[0] and diagnostics only — never re-opened.
+    /// is used for argv[0] and diagnostics only - never re-opened.
     /// `runner_bytes` are the exact bytes to execute: they are written to
     /// a private sealed file (see [`Self::seal_runner_bytes`]) and the
     /// child execs that, so nothing under the plugin dir is re-resolved or
@@ -365,7 +365,7 @@ impl PluginSupervisor {
         // The sealed file served its purpose once the child exists: on
         // Linux the child execs the sealed fd directly (O_TMPFILE files
         // never had a name at all), and the named fallback path is swept
-        // by sealed_dir() on the next seal — so drop our copy here.
+        // by sealed_dir() on the next seal - so drop our copy here.
         drop(sealed);
         let pgid = child.id() as i32;
         // Refuse to supervise PID 1 or our own process, defensively.
@@ -480,8 +480,8 @@ impl PluginSupervisor {
         }
         // Re-open read-only through /proc/self/fd BEFORE closing the
         // write handle: execve refuses (ETXTBSY) any file that is open for
-        // writing, so the handle the child execs — and every handle we
-        // keep — must be read-only.
+        // writing, so the handle the child execs - and every handle we
+        // keep - must be read-only.
         let rpath = CString::new(format!("/proc/self/fd/{wfd}"))
             .map_err(|e| merr("PLUGIN_SPAWN", format!("sealed fd path: {e}")))?;
         let rfd = unsafe { libc::open(rpath.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
@@ -553,7 +553,7 @@ impl PluginSupervisor {
     /// Build the Command that execs the sealed runner. On Linux the child
     /// execs the already-open sealed fd via /proc/self/fd/N with argv[0]
     /// set to the canonical runner path (so `$0`/shebang behavior is
-    /// unchanged) — no path component is re-resolved at exec time, and the
+    /// unchanged) - no path component is re-resolved at exec time, and the
     /// sealed file holds exactly the bytes the approval check bound, so a
     /// rename swap, symlink swap, or in-place rewrite between the check
     /// and execve cannot affect what executes.
@@ -578,7 +578,7 @@ impl PluginSupervisor {
     #[cfg(not(target_os = "linux"))]
     fn exec_command(runner: &Path, sealed: &SealedRunner) -> Command {
         // Best effort only: fd-exec is a Linux facility. Exec the sealed
-        // private path — the plugin dir itself is never re-resolved — but
+        // private path - the plugin dir itself is never re-resolved - but
         // a same-uid writer that guesses the unguessable name inside the
         // seal/exec window is not fully closed on this platform.
         match &sealed.path {
@@ -612,7 +612,7 @@ impl PluginSupervisor {
                 cmd.env(&decl.name, v);
             }
         }
-        // Pantheon-provided vars MUST come after env_clear() — the clear
+        // Pantheon-provided vars MUST come after env_clear() - the clear
         // wipes everything set before it.
         cmd.env("PANTHEON_PLUGIN_NAME", &manifest.name)
             .env("PANTHEON_DATA_DIR", data_dir.to_string_lossy().to_string());
@@ -848,7 +848,7 @@ impl PluginSupervisor {
 
 impl Drop for PluginSupervisor {
     fn drop(&mut self) {
-        // Never leave orphans: group-kill on drop. KILL, not TERM — drop
+        // Never leave orphans: group-kill on drop. KILL, not TERM - drop
         // cannot wait for a graceful exit, so the guaranteed signal is the
         // stop() is the graceful path when the caller can wait. A stale
         // supervisor calls abandon() so Drop never signals a reused PGID.
@@ -899,7 +899,7 @@ mod tests {
 
     /// Write `bytes` to the runner IN PLACE (same inode): open with
     /// truncate + write, no rename. This is the attack the old loader lost
-    /// to — the open fd pins identity, not bytes.
+    /// to - the open fd pins identity, not bytes.
     fn inplace_write(path: &Path, bytes: &[u8]) {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
@@ -990,7 +990,7 @@ mod tests {
         }
         stop.store(true, Ordering::Relaxed);
         churner.join().unwrap();
-        // Sanity: the race actually happened — both outcomes observed.
+        // Sanity: the race actually happened - both outcomes observed.
         assert!(
             refused > 0,
             "expected some fail-closed refusals under churn"
@@ -1006,7 +1006,7 @@ mod tests {
         // Approval recorded for GOOD bytes. An in-place rewrite (same
         // inode) must NOT pass the pinned-runner check with the new bytes,
         // and the check with the old bytes must fail too once the dir
-        // changed — the binding is on bytes, not identity.
+        // changed - the binding is on bytes, not identity.
         let tmp = tempfile::tempdir().unwrap();
         let plugin_root = tmp.path().join("plugins").join("bindtest");
         std::fs::create_dir_all(&plugin_root).unwrap();
@@ -1049,7 +1049,7 @@ mod tests {
             &md
         ));
 
-        // In-place rewrite to EVIL (same inode — identity unchanged).
+        // In-place rewrite to EVIL (same inode - identity unchanged).
         let ino_before = md.ino();
         inplace_write(&runner_path, EVIL_SCRIPT);
         let (b2, md2) = read_pinned();
@@ -1062,11 +1062,11 @@ mod tests {
             &b2,
             &md2
         ));
-        // Stale GOOD bytes still pass — and that is CORRECT, not a hole:
+        // Stale GOOD bytes still pass - and that is CORRECT, not a hole:
         // the check binds the bytes in hand, and the loader execs a
         // sealed copy of exactly those bytes. GOOD bytes were
         // operator-approved whenever they were read, so executing them
-        // is safe. The dangerous direction — unapproved bytes passing —
+        // is safe. The dangerous direction - unapproved bytes passing
         // is what the assertion above rules out.
         assert!(crate::plugin_approval::is_approved_with_pinned_runner(
             &plugin,

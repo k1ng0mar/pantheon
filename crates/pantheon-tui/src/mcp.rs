@@ -9,7 +9,7 @@
 //! A server never runs without an explicit approval: `pantheon mcp
 //! approve <name>` prints exactly what the server is, shows the warning,
 //! and asks for confirmation. The approval binds the server's name,
-//! reported version, and a content hash — any upgrade or change
+//! reported version, and a content hash - any upgrade or change
 //! invalidates it and the operator is asked again.
 
 use crate::config;
@@ -155,7 +155,7 @@ fn transport_name(t: &McpTransport) -> &'static str {
 
 /// Approval state for the list view: a stored record exists. Whether it
 /// still matches the live version + content hash is verified at connect
-/// time — that check is authoritative, this column is a hint.
+/// time - that check is authoritative, this column is a hint.
 fn approved_names(dd: &Path) -> Vec<String> {
     ApprovalStore::open(&dd.join("mcp")).names()
 }
@@ -218,7 +218,7 @@ fn list(args: &[String]) {
     }
     if rows.is_empty() {
         println!(
-            "no MCP servers declared — add `[mcp.servers.<name>]` to {} or run `pantheon migrate apply`",
+            "no MCP servers declared - add `[mcp.servers.<name>]` to {} or run `pantheon migrate apply`",
             dd.join("config.toml").display()
         );
         return;
@@ -248,7 +248,7 @@ fn list(args: &[String]) {
     }
     println!();
     println!(
-        "{} server(s); unapproved servers never launch — `pantheon mcp approve <name>`",
+        "{} server(s); unapproved servers never launch - `pantheon mcp approve <name>`",
         rows.len()
     );
 }
@@ -271,7 +271,7 @@ fn status(args: &[String]) {
         return;
     }
     let Some(servers) = servers else {
-        println!("no live MCP state yet — start a session to launch servers");
+        println!("no live MCP state yet - start a session to launch servers");
         return;
     };
     if servers.is_empty() {
@@ -350,7 +350,7 @@ fn health(args: &[String]) {
         return;
     }
     let Some(e) = entry else {
-        eprintln!("mcp: no live state for '{name}' — is it configured? (`mcp list`)");
+        eprintln!("mcp: no live state for '{name}' - is it configured? (`mcp list`)");
         std::process::exit(1);
     };
     let get = |k: &str| e.get(k).map(|v| v.to_string()).unwrap_or_default();
@@ -366,14 +366,14 @@ fn health(args: &[String]) {
 }
 
 /// `approve <name> [--yes]`: the explicit approval flow. Prints exactly
-/// what the server is, shows the warning, and requires confirmation —
+/// what the server is, shows the warning, and requires confirmation
 /// interactive (type the server name) unless `--yes` is passed.
 fn approve(args: &[String]) {
     let name = need_name(args, "approve");
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let dd = data_dir();
     let m = manager_for(&dd);
-    // The CUA driver is not declared in `[mcp.servers]` — the runtime
+    // The CUA driver is not declared in `[mcp.servers]` - the runtime
     // synthesizes its spec from `[computer_use]` when the ComputerUse
     // group is on. Approval must see the same spec, or the driver could
     // never be approved.
@@ -382,7 +382,7 @@ fn approve(args: &[String]) {
         Some(s) => s,
         None => {
             eprintln!(
-                "mcp: no server named '{name}' — `pantheon mcp list` shows the declared ones"
+                "mcp: no server named '{name}' - `pantheon mcp list` shows the declared ones"
             );
             std::process::exit(1);
         }
@@ -438,7 +438,7 @@ fn approve(args: &[String]) {
         Ok(rec) => {
             let hash12: String = rec.dir_hash.chars().take(12).collect();
             println!(
-                "approved '{name}' (version {}, hash {hash12}…)",
+                "approved '{name}' (version {}, hash {hash12}...)",
                 rec.version
             );
         }
@@ -508,7 +508,7 @@ fn read_live(dd: &Path) -> Option<serde_json::Value> {
 /// session's manager, and report readiness. Called by `/mcp reload` in
 /// the TUI: the manager drops live clients for changed specs and
 /// reconnects lazily on the next registry build, so a reload can never
-/// drop the session — the worst case is an unchanged report.
+/// drop the session - the worst case is an unchanged report.
 pub fn reload_report(
     session: &pantheon_runtime::session::Session,
     dd: &std::path::Path,

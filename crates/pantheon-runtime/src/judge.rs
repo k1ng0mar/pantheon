@@ -2,7 +2,7 @@
 //! combined work actually satisfies the original task.
 //!
 //! The judge is deliberately narrow. It does not re-run anything and
-//! does not see the world — it reads the agents' work summaries plus
+//! does not see the world - it reads the agents' work summaries plus
 //! the original task and returns a verdict: done or not, with notes.
 //! Parsing is fail-closed: an unrecognized verdict means
 //! `done: false`, never a silent pass.
@@ -11,7 +11,7 @@
 //!
 //! - [`judge_completion_with`]: run the judge through a
 //!   [`JudgeTransport`]. This is what the swarm orchestrator uses.
-//! - [`judge_completion`]: no transport configured. Fail-closed —
+//! - [`judge_completion`]: no transport configured. Fail-closed
 //!   returns `done: false` with a note saying to wire a transport.
 //!
 //! The production transport lives in the dashboard crate
@@ -46,8 +46,8 @@ pub fn judge_prompt(work_summary: &str, original_task: &str) -> String {
          Decide whether the combined work fully satisfies the original task.\n\
          Be strict: partial work, missing pieces, or unverified claims mean not done.\n\
          Reply with exactly two parts:\n\
-         - a verdict line that is exactly `VERDICT: done` or `VERDICT: not done`\n\
-         - then `NOTES:` followed by your reasoning and what is still missing, if anything.\n"
+        - a verdict line that is exactly `VERDICT: done` or `VERDICT: not done`\n\
+        - then `NOTES:` followed by your reasoning and what is still missing, if anything.\n"
     )
 }
 

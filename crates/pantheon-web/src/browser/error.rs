@@ -8,20 +8,20 @@
 //! | `BROWSER_FAILED`        | backend ran, command failed (stderr attached)    | no        |
 //! | `BROWSER_TIMEOUT`       | child killed after the timeout                   | yes       |
 //! | `BROWSER_BAD_OUTPUT`    | stdout was not the expected JSON                 | no        |
-//! | `BROWSER_STALE_REF`     | ref version mismatch — re-snapshot, don't retry  | no        |
+//! | `BROWSER_STALE_REF`     | ref version mismatch - re-snapshot, don't retry  | no        |
 //! | `BROWSER_UNSUPPORTED_COMMAND` | backend doesn't implement this command      | no        |
 
 use pantheon_api::error::{Layer, PantheonError};
 
 /// Install instructions surfaced whenever the binary is missing. Never
-/// crash or panic on a missing optional binary — tell the user how to get
+/// crash or panic on a missing optional binary - tell the user how to get
 /// it and let the run continue.
 ///
 /// Verified 2026-09-29 against the real project (open-gsd/gsd-browser):
 /// the npm package is `@opengsd/gsd-browser` (npm registry, latest 0.2.2
 /// at verification time) and the repo is `github.com/open-gsd/gsd-browser`
 /// (GitHub API). An earlier revision of this string named
-/// `install.gsd.build` and the `gsd-build` org — both wrong.
+/// `install.gsd.build` and the `gsd-build` org - both wrong.
 pub const INSTALL_INSTRUCTIONS: &str = "gsd-browser is not installed or not executable. \
 Install it with `npm install -g @opengsd/gsd-browser` \
 or build from source: https://github.com/open-gsd/gsd-browser. \
@@ -54,7 +54,7 @@ pub enum BrowserError {
     /// The active backend does not implement this canonical command
     /// (e.g. `act-instruction` on the raw-CDP backends, or any
     /// interactive command on the extraction-only Lightpanda backend).
-    /// Not a failure of the page or session — pick a different command
+    /// Not a failure of the page or session - pick a different command
     /// or backend.
     UnsupportedCommand { command: String, backend: String },
 }
@@ -104,7 +104,7 @@ impl From<BrowserError> for PantheonError {
         match e {
             // The gsd-specific install block only applies to the gsd
             // backend's binary. Other backends (e.g. camofox's Python
-            // shim) carry their own install guidance in `detail` — the
+            // shim) carry their own install guidance in `detail` - the
             // gsd text would be actively misleading there.
             BrowserError::BinaryMissing { binary, detail } if binary.contains("gsd") => perr(
                 "BROWSER_BINARY_MISSING",
@@ -124,13 +124,13 @@ impl From<BrowserError> for PantheonError {
                 "BROWSER_FAILED",
                 format!("gsd-browser {:?} exited {exit:?}: {stderr}", argv),
                 false,
-                "check the command arguments; the browser session may be in an unexpected state — re-snapshot before interacting",
+                "check the command arguments; the browser session may be in an unexpected state - re-snapshot before interacting",
             ),
             BrowserError::Timeout { argv, secs } => perr(
                 "BROWSER_TIMEOUT",
                 format!("gsd-browser {argv:?} exceeded {secs}s and was killed"),
                 true,
-                "retry once; if it times out again the page or daemon is likely wedged — stop the session and start over",
+                "retry once; if it times out again the page or daemon is likely wedged - stop the session and start over",
             ),
             BrowserError::BadOutput { argv, detail } => perr(
                 "BROWSER_BAD_OUTPUT",

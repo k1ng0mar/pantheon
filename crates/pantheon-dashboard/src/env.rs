@@ -6,9 +6,9 @@
 //! validation and contracts as every other secret backend.
 //!
 //! Values are write-only from the UI: `GET` returns names with a fully
-//! masked placeholder (`••••`) — never secret material, not even partial.
+//! masked placeholder (`••••`) - never secret material, not even partial.
 //! `PUT` takes a two-phase confirm (name-only preview first). Values are
-//! never logged — the server logs nothing per request at all.
+//! never logged - the server logs nothing per request at all.
 
 use crate::{bad_json, body_json, err_json, json_ok, App};
 use pantheon_api::dotenv::valid_key;
@@ -159,7 +159,7 @@ pub fn delete(app: &App, key: &str) -> Response {
     }
 }
 
-/// Item 5: redaction tests — the `.env` key manager never lets secret
+/// Item 5: redaction tests - the `.env` key manager never lets secret
 /// material leave the server. `GET /api/env` returns names with a fully
 /// masked placeholder; `PUT` previews (and confirms) with key names
 /// only.

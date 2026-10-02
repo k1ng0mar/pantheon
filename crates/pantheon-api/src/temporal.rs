@@ -1,8 +1,8 @@
 //! Tacit temporal awareness: time, but only when it matters.
 //!
 //! The model is never timestamped per message. Before a turn's first model
-//! call, the pipeline measures how long the conversation has been idle —
-//! from the durable ledger, so the reading is restart-safe by construction —
+//! call, the pipeline measures how long the conversation has been idle
+//! from the durable ledger, so the reading is restart-safe by construction
 //! and when the gap is meaningful it appends one coarse, human-friendly
 //! hint to the outgoing user message. The hint is ephemeral: it rides the
 //! API call only, is never written to the ledger or the transcript, rides
@@ -26,8 +26,8 @@ fn default_min_gap_secs() -> u64 {
     7200
 }
 
-/// `[temporal]` behavior knobs. Zero tokens by construction — the hint is
-/// pure string injection — so the feature defaults to on.
+/// `[temporal]` behavior knobs. Zero tokens by construction - the hint is
+/// pure string injection - so the feature defaults to on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TemporalConfig {
     /// Master switch. Default true.
@@ -60,7 +60,7 @@ impl Default for TemporalConfig {
 }
 
 /// Resolve the effective timezone: the explicit config name wins, then
-/// the OS local zone, then UTC. Total — never fails, never panics.
+/// the OS local zone, then UTC. Total - never fails, never panics.
 pub fn resolve_tz(cfg: &TemporalConfig) -> Tz {
     if let Some(name) = cfg.timezone.as_deref() {
         if let Ok(tz) = name.parse::<Tz>() {
@@ -76,7 +76,7 @@ pub fn resolve_tz(cfg: &TemporalConfig) -> Tz {
 }
 
 /// Coarse inner sentence for an elapsed gap, e.g.
-/// `"about 5 hours have passed"`. Deliberately imprecise — never exact
+/// `"about 5 hours have passed"`. Deliberately imprecise - never exact
 /// wall-clock time, and coarser as the gap grows.
 fn gap_sentence(gap_secs: i64) -> String {
     const MIN: i64 = 60;
@@ -112,7 +112,7 @@ fn gap_sentence(gap_secs: i64) -> String {
 /// hint. Pure: no I/O, no clock reads, trivially testable.
 ///
 /// `last_assistant_ts_ms` is `None` for a new session (or when the caller
-/// could not find a prior assistant turn) — always silent. A non-positive
+/// could not find a prior assistant turn) - always silent. A non-positive
 /// gap (clock skew, same-millisecond turns) is silent too.
 ///
 /// When both triggers fire, the elapsed-gap wording wins: a multi-day gap

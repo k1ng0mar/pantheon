@@ -22,12 +22,12 @@ fine" is not one of them.
    you, or spot-check them. A handoff that says "tests pass" without
    naming the tests gets the tests run by you.
 4. **Route the outcome.** Exactly one of:
-   - **Approve**: the spec is met and the evidence checks out. Say what
+  - **Approve**: the spec is met and the evidence checks out. Say what
      you verified, in one line each.
-   - **Request changes**: specific, actionable, and tied to the spec.
+  - **Request changes**: specific, actionable, and tied to the spec.
      "Fix the retry logic to cap at three attempts per the spec" is a
      change request. "This could be cleaner" is not.
-   - **Escalate**: the spec is ambiguous, the work conflicts with other
+  - **Escalate**: the spec is ambiguous, the work conflicts with other
      work, or the right call needs the user's judgment. Say what decision
      is needed and from whom. Do not escalate vagueness; escalate a named
      decision.

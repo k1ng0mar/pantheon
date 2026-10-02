@@ -1,13 +1,13 @@
 """Time-gap awareness for Hermes.
 
 Appends an implicit "elapsed time" note to the current user turn *only* when the
-gap since the last exchange crosses a threshold — silence is the default, so a
+gap since the last exchange crosses a threshold - silence is the default, so a
 continuous conversation is never interrupted.
 
 Via the ``pre_llm_call`` hook the note rides on the user message at API-call
 time only (never persisted, never touches the cached system prompt). The gap is
 read from ``state.db`` (read-only) using the last persisted *assistant* message
-— the moment the prior turn completed, which naturally excludes the current user
+- the moment the prior turn completed, which naturally excludes the current user
 row. No in-process state; fails open on any error.
 
 Set ``plugins.entries.time-gap.debug: true`` in config.yaml to append decisions
@@ -26,7 +26,7 @@ _DEFAULT_MIN_GAP_SECONDS = 120 * _MINUTE
 _DEFAULT_EXCLUDE_PLATFORMS = ("cron",)
 _LOG_PATH = Path(__file__).resolve().parent / "debug.log"
 
-# config.yaml doesn't change mid-run and load_config does file I/O — resolve once.
+# config.yaml doesn't change mid-run and load_config does file I/O - resolve once.
 _config_cache: Optional[Dict[str, Any]] = None
 
 
@@ -156,7 +156,7 @@ def _humanize(gap: float) -> str:
         return "about a day" if days <= 1 else f"about {days} days"
     if gap >= _HOUR:
         hours = round(gap / _HOUR)
-        if hours >= 24:  # 23.5h+ rounds up — call it a day, not "24 hours".
+        if hours >= 24:  # 23.5h+ rounds up - call it a day, not "24 hours".
             return "about a day"
         return "about an hour" if hours <= 1 else f"about {hours} hours"
     minutes = round(gap / _MINUTE)
@@ -177,7 +177,7 @@ def _build_context(gap: float, days_crossed: int, now: float) -> str:
     else:
         head += "]"
     return (
-        f"{head} (Your own sense of time — never quote or mention it. Just factor it in: "
+        f"{head} (Your own sense of time - never quote or mention it. Just factor it in: "
         "earlier context or the current date may be stale; re-ground if needed.)"
     )
 

@@ -5,7 +5,7 @@
 //! and the dashboard timeline show. Rate limits get their own kind on
 //! purpose: a quota failure needs a visibly different state from a dead
 //! key or a down endpoint, and `PROVIDER_HTTP` alone cannot tell them
-//! apart — the HTTP status lives in the cause string.
+//! apart - the HTTP status lives in the cause string.
 
 use std::fmt;
 
@@ -59,7 +59,7 @@ impl fmt::Display for ProviderErrorKind {
 }
 
 /// Classify a provider failure from its `(code, cause)`. The HTTP status
-/// is embedded in the cause (`send()` writes `"{url}: HTTP {code} …"`),
+/// is embedded in the cause (`send()` writes `"{url}: HTTP {code} ..."`),
 /// so the cause is matched first; the code only disambiguates the
 /// non-HTTP shapes.
 pub fn classify_provider_error(code: &str, cause: &str) -> ProviderErrorKind {
@@ -115,7 +115,7 @@ pub fn display_message(cause: &str) -> String {
     if let Some(i) = msg.find("HTTP ") {
         msg = &msg[i..];
     } else {
-        // Strip leading "scheme://…" prefixes; transport causes repeat it.
+        // Strip leading "scheme://..." prefixes; transport causes repeat it.
         loop {
             let Some(colon) = msg.find(": ") else { break };
             let head = &msg[..colon];

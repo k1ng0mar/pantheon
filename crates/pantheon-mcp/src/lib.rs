@@ -5,7 +5,7 @@
 //! Three halves: [`client`] is the real stdio MCP client (`initialize`,
 //! `tools/list`, `tools/call`) with call-time capability enforcement;
 //! [`http`] is the same protocol over the two remote transports (legacy
-//! SSE and streamable HTTP); [`manager`] is the production wiring —
+//! SSE and streamable HTTP); [`manager`] is the production wiring
 //! lifecycle, reconnect backoff, operator approval, and `ToolRegistry`
 //! projection. [`bundled`] is the curated catalog of opt-in recipes
 //! (packages, commands, secret names) the setup wizard and surfaces
@@ -153,7 +153,7 @@ pub struct ProjectedTool {
 
 /// Map a policy token string to a capability. Unknown tokens become
 /// `Other(name)` so policy can still gate them explicitly.
-/// Delegates to [`Capability::from_token`] — the single token table.
+/// Delegates to [`Capability::from_token`] - the single token table.
 pub fn capability_from_token(token: &str) -> Capability {
     Capability::from_token(token)
 }

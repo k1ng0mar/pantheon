@@ -2,7 +2,7 @@
 //! enablement state (`pantheon-extensions::bundled`).
 //!
 //! Policy: only small deterministic unit tests live beside the code.
-//! Everything behavioral — filesystem, config round-trips — lives here
+//! Everything behavioral - filesystem, config round-trips - lives here
 //! and runs via `cargo test -p pantheon-eval`.
 
 use pantheon_api::capability::{Capability, Policy};

@@ -9,8 +9,8 @@
 //! # Approval
 //!
 //! MCP servers are third-party code: a server is never spawned or
-//! connected until the operator has approved its identity — name,
-//! self-reported version, and content hash — through the unified
+//! connected until the operator has approved its identity - name,
+//! self-reported version, and content hash - through the unified
 //! [`pantheon_api::approval`] store (the same store and privilege warning
 //! the plugin kinds use). The hash is the server binary (plus any arg
 //! that resolves to a file, so `python3 server.py` binds `server.py`)
@@ -29,7 +29,7 @@
 //! alive (the store is consulted, so a revoked approval blocks execution
 //! instead of riding a stale connection).
 //!
-//! Bundled catalog servers are first-party, not third-party — but only
+//! Bundled catalog servers are first-party, not third-party - but only
 //! when the spec matches the canonical recipe exactly (transport,
 //! command, args, env, url). For those the `enabled` flag is the only
 //! gate: the server launches iff it is enabled, and it never appears in
@@ -47,7 +47,7 @@
 //! The manager is meant to live in an `Arc`: projected tool closures
 //! hold one and call back into [`McpManager::call_tool`]. All interior
 //! state sits behind one mutex, and blocking server I/O happens while it
-//! is held — one in-flight call per manager, which matches the agent
+//! is held - one in-flight call per manager, which matches the agent
 //! loop's sequential tool execution.
 
 use crate::{
@@ -103,7 +103,7 @@ impl McpTransport {
 /// `env` values are raw: a value starting with `env:` is a secret ref
 /// resolved at connect time, anything else is a literal.
 ///
-/// `Debug` prints env variable *names* only — values (which may be
+/// `Debug` prints env variable *names* only - values (which may be
 /// secrets) never appear in logs.
 #[derive(Clone, PartialEq, Eq)]
 pub struct McpServerSpec {
@@ -163,7 +163,7 @@ impl McpServerSpec {
 ///
 /// A spec is exempt from the consent store only when its name is a
 /// bundled catalog name AND the spec matches the canonical recipe
-/// exactly (transport, command, args, env, url) — i.e. it is what
+/// exactly (transport, command, args, env, url) - i.e. it is what
 /// [`BundledMcpServer`](crate::bundled::BundledMcpServer)::to_config_entry
 /// materializes via the single canonical writer. `enabled` and the
 /// timeout are operator-controlled and excluded from the comparison;
@@ -303,7 +303,7 @@ fn is_transport_error(e: &McpError) -> bool {
     )
 }
 
-/// Backoff after `failures` consecutive failures: 2s, 4s, 8s … capped
+/// Backoff after `failures` consecutive failures: 2s, 4s, 8s ... capped
 /// at 5 minutes.
 fn backoff_delay(failures: u32) -> Duration {
     // 1s, 2s, 4s, 8s, ... capped at 300s. saturating_pow never panics
@@ -340,7 +340,7 @@ fn is_launcher_shim(command: &str) -> bool {
 /// Content hash the approval binds for one spec.
 ///
 /// For stdio the hash is the server binary (plus any argument that
-/// resolves to a file, so `python3 server.py` binds `server.py` too) —
+/// resolves to a file, so `python3 server.py` binds `server.py` too)
 /// except when the command is a launcher shim (`npx`, `uvx`, `docker`,
 /// ...), where the shim binary says nothing about the server code that
 /// actually runs. For shims the hash covers the command plus the full
@@ -350,7 +350,7 @@ fn is_launcher_shim(command: &str) -> bool {
 /// URL. Names only, never values, in errors.
 ///
 /// Honest limit: for launcher shims this binds the *requested* package
-/// spec, not the bytes the registry served — registry-fetched code can
+/// spec, not the bytes the registry served - registry-fetched code can
 /// change under a pin (mutable tags, cache poisoning), so the approval
 /// binds intent, not bytes. A local binary's hash binds the actual bytes
 /// on disk.
@@ -606,7 +606,7 @@ impl McpManager {
     /// Fingerprint the server (connect + handshake) and record the
     /// operator's approval of its exact identity. The caller must have
     /// shown [`approval::warning_text`] and obtained explicit consent
-    /// first — this only persists the record, like the plugin flow.
+    /// first - this only persists the record, like the plugin flow.
     pub fn approve_server(&self, name: &str) -> Result<ApprovalRecord, McpError> {
         let mut inner = self
             .inner
@@ -672,7 +672,7 @@ impl McpManager {
     /// Project one server's tools into the registry, with the same gates
     /// as [`McpManager::register_tools`] but restricted to `server`. Used
     /// for servers gated by their own toggle rather than the Plugins
-    /// group — today, the CUA driver behind the ComputerUse group.
+    /// group - today, the CUA driver behind the ComputerUse group.
     ///
     /// `capability` overrides the projected tools' capability (default
     /// [`Capability::NetworkOutbound`]). The CUA driver passes
@@ -815,7 +815,7 @@ impl McpManager {
                 // (name + version + content hash); `NetworkOutbound` is
                 // the honest "talks to the outside world" mapping, which
                 // the default policies allow for approved servers. A
-                // `Other("mcp…")` token would deny every MCP tool under
+                // `Other("mcp...")` token would deny every MCP tool under
                 // `Policy::coder()`, silently.) A caller may override the
                 // capability for a server it knows: the CUA driver
                 // projects as `ComputerUse`, the inward desktop-control
@@ -881,7 +881,7 @@ impl McpManager {
                 st.not_before = Some(Instant::now() + backoff_delay(st.failures));
                 st.last_error = Some(msg);
                 let spec = st.spec.clone();
-                // #5: the mid-call reconnect is a (re)connect — gate it
+                // #5: the mid-call reconnect is a (re)connect - gate it
                 // like every other connect path, so a lapsed or revoked
                 // approval blocks the retry instead of silently
                 // re-executing.
@@ -998,7 +998,7 @@ impl McpManager {
     /// like the other connect paths.
     ///
     /// A forced reconnect is still a (re)connect: the approval gate runs
-    /// (#5) — a missing, lapsed, or revoked approval refuses the attempt
+    /// (#5) - a missing, lapsed, or revoked approval refuses the attempt
     /// with an error naming the server.
     pub fn retry_now(&self, name: &str) -> Result<(), McpError> {
         let mut inner = self
@@ -1105,8 +1105,8 @@ impl McpManager {
 
     /// Approval gate for every path that can execute server code (#5).
     ///
-    /// Consults the approval store — the same store and record shape
-    /// `register_names` uses at registration time, no parallel store —
+    /// Consults the approval store - the same store and record shape
+    /// `register_names` uses at registration time, no parallel store
     /// and refuses with an error naming the server when the approval is
     /// missing, lapsed, or revoked.
     ///
@@ -1120,7 +1120,7 @@ impl McpManager {
     /// When `reverify` is true (the (re)connect path) the content hash is
     /// recomputed from the current spec first, so a content change lapses
     /// the approval even if the cached hash is stale. Otherwise the
-    /// configure-time hash is reused (cheap) — revocation is still caught
+    /// configure-time hash is reused (cheap) - revocation is still caught
     /// by the store lookup below.
     ///
     /// On refusal the server is marked `Unapproved` and any live
@@ -1289,7 +1289,7 @@ impl McpManager {
     }
 
     /// Connect one spec: resolve `env:NAME` refs, then dispatch on
-    /// transport. Env *values* never appear in errors — only names.
+    /// transport. Env *values* never appear in errors - only names.
     fn connect_new(
         spec: &McpServerSpec,
         resolver: &Option<EnvResolver>,

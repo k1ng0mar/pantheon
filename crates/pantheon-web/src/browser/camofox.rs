@@ -3,7 +3,7 @@
 //!
 //! Camoufox (upstream spelling; the `camofox` backend id is Pantheon's
 //! stable config name) is driven by its official Python launcher API,
-//! which speaks the patched **Juggler** protocol — there is no CDP
+//! which speaks the patched **Juggler** protocol - there is no CDP
 //! transport, so the raw-`chromiumoxide` backends cannot talk to it.
 //! Instead this backend spawns `python3` running the embedded shim
 //! ([`SHIM_SOURCE`], materialized to a temp file on first use), holds
@@ -11,19 +11,19 @@
 //! command object per stdin line / one JSON response per stdout line.
 //!
 //! The shim speaks Pantheon's canonical command vocabulary (the same
-//! `navigate`/`snapshot`/`click-ref`/… argv the gsd-browser and
+//! `navigate`/`snapshot`/`click-ref`/... argv the gsd-browser and
 //! playwright-cli backends speak), so the tool layer needs no new
 //! surface. `wait-for` is implemented Rust-side by polling a JS probe
 //! through the shim's `eval` (sharing [`wait_plan`](super::cdp::wait_plan)
 //! with the Playwright backend); `act`/`act-instruction` are
-//! unsupported (no semantic-intent engine in this loop — same as
+//! unsupported (no semantic-intent engine in this loop - same as
 //! Playwright).
 //!
 //! ## Graceful degradation
 //!
 //! Construction is lazy (no subprocess until first `invoke`). When the
-//! `camoufox` Python package — or its fetched browser binary
-//! (`python -m camoufox fetch`) — is absent, the shim's handshake
+//! `camoufox` Python package - or its fetched browser binary
+//! (`python -m camoufox fetch`) - is absent, the shim's handshake
 //! reports `{"ready": false, "kind": "missing"}` and the backend
 //! returns [`BrowserError::BinaryMissing`] carrying
 //! [`CAMOFOX_INSTALL_INSTRUCTIONS`]. It never crashes and never fails
@@ -36,7 +36,7 @@
 //! (`windows`|`macos`|`linux`), `humanize_secs`, `geoip`, `locale`,
 //! `timezone`, `proxy_*`, `block_images`, `block_webrtc`,
 //! `fingerprint_preset`. Unset properties are auto-filled from
-//! BrowserForge fingerprints by the launcher itself — prefer leaving
+//! BrowserForge fingerprints by the launcher itself - prefer leaving
 //! them unset over inventing inconsistent values.
 
 use super::backend::BrowserBackend;
@@ -55,7 +55,7 @@ use std::time::Duration;
 
 /// Install instructions surfaced when the `camoufox` package or its
 /// browser binary is missing. Never crash on a missing optional
-/// dependency — tell the user how to get it.
+/// dependency - tell the user how to get it.
 pub const CAMOFOX_INSTALL_INSTRUCTIONS: &str =
     "the Camoufox browser backend needs the `camoufox` Python package and its \
 fetched browser binary. Install with `pip install \"camoufox[geoip]\"` then \
@@ -82,7 +82,7 @@ pub struct CamofoxConfig {
     /// shim, materialized to a temp file on first spawn.
     pub shim_path: Option<PathBuf>,
     /// Launch headless. Default true. (`headless="virtual"` when
-    /// [`CamofoxConfig::headless_virtual`] is set — needs `xvfb`.)
+    /// [`CamofoxConfig::headless_virtual`] is set - needs `xvfb`.)
     pub headless: bool,
     /// Use the Xvfb "virtual" headless mode instead of true headless.
     pub headless_virtual: bool,
@@ -102,7 +102,7 @@ pub struct CamofoxConfig {
     pub proxy_server: Option<String>,
     /// Proxy username (optional).
     pub proxy_username: Option<String>,
-    /// Proxy password (secret — never logged).
+    /// Proxy password (secret - never logged).
     pub proxy_password: Option<String>,
     /// Block image loads (perf).
     pub block_images: bool,
@@ -338,7 +338,7 @@ fn invoke_kind(argv: &[String]) -> InvokeKind {
         "wait-for" => InvokeKind::WaitFor,
         "act" | "act-instruction" => InvokeKind::Unsupported(cmd.to_string()),
         // `extract` reuses the shared extraction arrow JS, evaluated in
-        // the page through the shim's `eval` — same as the Playwright
+        // the page through the shim's `eval` - same as the Playwright
         // backend's `eval` mapping, minus the CLI.
         "extract" => InvokeKind::Shim(vec![
             "eval".to_string(),
@@ -408,7 +408,7 @@ impl CamofoxBackend {
 
     /// Spawn the shim, run the launch handshake, and return the live
     /// session. A missing `camoufox` package / unfetched binary becomes
-    /// [`BrowserError::BinaryMissing`] with install instructions —
+    /// [`BrowserError::BinaryMissing`] with install instructions
     /// never a panic.
     fn spawn_session(&self, _session: &str) -> Result<ShimSession, BrowserError> {
         let shim = materialize_shim(self.config.shim_path.as_deref())?;

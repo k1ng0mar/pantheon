@@ -1,14 +1,14 @@
 //! Lightpanda backend: extraction and fetch only, never interactive.
 //!
 //! Lightpanda is a from-scratch headless browser engine (own HTML
-//! parser/DOM, V8 for JS — not Chromium) built for scraping at ~10x
+//! parser/DOM, V8 for JS - not Chromium) built for scraping at ~10x
 //! lower memory than Chrome. Pantheon uses it strictly for page
 //! fetch/extraction through the shared raw-CDP
 //! [`CdpDriver`](super::cdp::CdpDriver): `navigate`, `extract`,
 //! `page-source`, and `screenshot`. Any interactive command (`click`,
 //! `fill`, `type`, `press`, `act`, waits, history) is rejected up front
 //! with [`BrowserError::UnsupportedCommand`] before any connection is
-//! made — this is an architectural guardrail, not a runtime limitation.
+//! made - this is an architectural guardrail, not a runtime limitation.
 //!
 //! Transport: connect to an already-running Lightpanda CDP server
 //! (`lightpanda serve`). Binary launch is deliberately NOT supported:

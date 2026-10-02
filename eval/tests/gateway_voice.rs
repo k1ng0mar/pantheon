@@ -35,7 +35,7 @@ impl TtsProvider for FakeTts {
     fn synthesize(&self, req: &TtsRequest) -> Result<TtsResult, PantheonError> {
         assert!(!req.text.trim().is_empty());
         // Voice selection comes from the [tts] options map, read by the
-        // backend at construction — the request must not override it.
+        // backend at construction - the request must not override it.
         assert!(
             req.voice.is_none(),
             "channel must not override the configured voice"

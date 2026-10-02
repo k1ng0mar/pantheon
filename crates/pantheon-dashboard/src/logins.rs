@@ -2,8 +2,8 @@
 //! `<data_dir>/logins.env`.
 //!
 //! Mirrors the `.env` key manager's contract ([`super::env`]): values are
-//! write-only from the UI, `GET` returns masked placeholders (`••••`) —
-//! never secret material, not even partial — and writes take a two-phase
+//! write-only from the UI, `GET` returns masked placeholders (`••••`)
+//! never secret material, not even partial - and writes take a two-phase
 //! confirm (preview first, `confirm: true` to apply). Passwords live in
 //! `logins.env` (never in `.env`, so they don't surface in the env key
 //! list); site/username metadata lives in `logins.json`. The server logs
@@ -17,7 +17,7 @@ fn store_for(app: &App) -> LoginStore {
     LoginStore::open(&app.data_dir)
 }
 
-/// `GET /api/logins`: every login masked — `{id, site, username,
+/// `GET /api/logins`: every login masked - `{id, site, username,
 /// password: "••••"}`. Passwords never leave the server.
 pub fn list(app: &App) -> Response {
     let logins = match store_for(app).list() {

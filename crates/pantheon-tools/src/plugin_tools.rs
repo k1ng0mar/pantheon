@@ -60,7 +60,7 @@ const RESERVED_TOOL_PREFIXES: &[&str] = &["pantheon.", "builtin.", "memory."];
 /// Validate a plugin tool name before registration. Rejects:
 /// - empty names
 /// - names containing whitespace or path separators (`/`, `\`)
-/// - names that collide (case-insensitively) with a built-in tool —
+/// - names that collide (case-insensitively) with a built-in tool
 ///   a plugin must not be able to shadow (squat) `shell` and friends
 /// - names under the reserved prefixes `pantheon.`, `builtin.`, `memory.`
 ///

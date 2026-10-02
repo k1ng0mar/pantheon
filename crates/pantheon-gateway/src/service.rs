@@ -1,7 +1,7 @@
 //! Silent user-scope service install for the gateway.
 //!
 //! Hermes installs its gateway service unconditionally at setup, in user
-//! scope, without prompting — "always safe to call". This module is
+//! scope, without prompting - "always safe to call". This module is
 //! Pantheon's equivalent. [`install`] detects the platform's service
 //! manager at runtime and installs accordingly:
 //!
@@ -621,14 +621,14 @@ pub fn status_with(env: &InstallEnv) -> ServiceStatus {
 
 // ── gateway run startup ─────────────────────────────────────────────────
 // `gateway run` is both the chat gateway and the always-on scheduler. The
-// scheduler loop starts unconditionally — a scheduler-only install (no bot
-// tokens) is the main always-on use case — while each chat surface starts
+// scheduler loop starts unconditionally - a scheduler-only install (no bot
+// tokens) is the main always-on use case - while each chat surface starts
 // only when its token and the allowlist are present. The old behavior was
 // exit(2) when anything was missing, which turned a scheduler-only service
 // into a crash-loop under the service manager.
 
 /// Which chat surfaces `gateway run` should start, decided purely from env
-/// values. Pure: no process I/O, no exits — testable without spawning
+/// values. Pure: no process I/O, no exits - testable without spawning
 /// anything. The scheduler loop is deliberately NOT part of this plan: it
 /// always starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -776,7 +776,7 @@ pub fn stop_with(env: &InstallEnv) -> StopOutcome {
             return StopOutcome::Noop {
                 mechanism: installed,
                 note: "the cron @reboot entry starts the gateway at boot; there is \
-                       no running service to stop — kill any foreground \
+                       no running service to stop - kill any foreground \
                        `pantheon gateway run` yourself"
                     .to_string(),
             }

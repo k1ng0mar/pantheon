@@ -1,9 +1,9 @@
 //! `pantheon migrate`: the section 23 pipeline, exposed.
 //!
-//!   detect    — which sources are on this machine, and where
-//!   plan      — dry run: what would import, what archives, what is a secret
-//!   apply     — backup, then import, then validate (the only writer)
-//!   validate  — re-check the current targets without writing
+//!   detect    - which sources are on this machine, and where
+//!   plan      - dry run: what would import, what archives, what is a secret
+//!   apply     - backup, then import, then validate (the only writer)
+//!   validate  - re-check the current targets without writing
 //!
 //! The default for every verb is read-only. `apply` is the single verb that
 //! touches the data dir, and it refuses to run without either an explicit
@@ -11,7 +11,7 @@
 //!
 //! Secrets are never a candidate for import. A `.env`, `auth.json`,
 //! `models.yml`, `agent.db`, `broker.token`, or any `*.pem` / `*.key` is
-//! reported and skipped — archiving a credential would turn this verb into
+//! reported and skipped - archiving a credential would turn this verb into
 //! an exfil path, so it does not.
 
 use crate::terminal::data_dir;
@@ -77,7 +77,7 @@ fn resolve_root(kind: SourceKind, args: &[String]) -> PathBuf {
         .unwrap_or_default()
 }
 
-/// `--kind skill,agent` — restrict the plan to these item kinds.
+/// `--kind skill,agent` - restrict the plan to these item kinds.
 fn kind_filter(args: &[String]) -> Option<Vec<ItemKind>> {
     let raw = flag_value(args, "--kind")?;
     let mut out = Vec::new();
@@ -113,7 +113,7 @@ fn kind_filter(args: &[String]) -> Option<Vec<ItemKind>> {
     Some(out)
 }
 
-/// `--categories sessions,skills,config` — restrict the plan to these
+/// `--categories sessions,skills,config` - restrict the plan to these
 /// user-facing categories. This is the high-level filter; `--kind` is the
 /// low-level one. When both are given, the intersection is used.
 fn category_filter(args: &[String]) -> Option<MigrationFilter> {
@@ -351,7 +351,7 @@ pub fn cmd_migrate_apply(args: &[String]) {
 
     if !report.complete || !v.complete {
         eprintln!(
-            "migrate: import incomplete — {} failure(s), {} validation problem(s)",
+            "migrate: import incomplete - {} failure(s), {} validation problem(s)",
             report.failures(),
             v.problems()
         );
@@ -360,7 +360,7 @@ pub fn cmd_migrate_apply(args: &[String]) {
         std::process::exit(1);
     }
     println!(
-        "migrated {} from {} — {} imported, {} archived, {} credentials skipped",
+        "migrated {} from {} - {} imported, {} archived, {} credentials skipped",
         kind,
         root.display(),
         report.ok(),
@@ -376,7 +376,7 @@ pub fn cmd_migrate_apply(args: &[String]) {
 ///
 /// Runs after the file apply so the quarantine copy lands first. Each
 /// transcript becomes one run with a deterministic
-/// `imported:<source>:<dir>:<session>` id — re-running converges instead of
+/// `imported:<source>:<dir>:<session>` id - re-running converges instead of
 /// duplicating. The runs show up in `/resume` and continue like any native
 /// conversation; tool traffic is dropped with a note on the run.
 fn import_session_runs(t: &Targets, plan: &MigrationPlan, kind: SourceKind) {
@@ -434,7 +434,7 @@ fn import_session_runs(t: &Targets, plan: &MigrationPlan, kind: SourceKind) {
     );
     for r in &imported {
         println!(
-            "  + {} — {} ({} turn(s), {} reasoning trace(s))",
+            "  + {} - {} ({} turn(s), {} reasoning trace(s))",
             r.run_id,
             r.title,
             r.turns(),
@@ -458,7 +458,7 @@ fn import_session_runs(t: &Targets, plan: &MigrationPlan, kind: SourceKind) {
 /// (source, file, line), so re-running converges instead of duplicating.
 ///
 /// Part of the migration contract: an import is not complete until the
-/// imported sessions are searchable. A failure here exits 1 — the
+/// imported sessions are searchable. A failure here exits 1 - the
 /// transcripts are on disk but not findable, and the operator must see it.
 fn index_imported_sessions(t: &Targets, root: &Path, kind: SourceKind) {
     let index_path = t.data_dir.join("ledger.db");
@@ -502,7 +502,7 @@ fn index_imported_sessions(t: &Targets, root: &Path, kind: SourceKind) {
 /// The credential carry moves any provider/channel/mcp key whose name looks
 /// right, and pantheon's catalog names each provider's `key_env` after the
 /// same `<PROVIDER>_API_KEY` convention. That alignment usually works, but
-/// nothing verified it — so a key that matches no catalog entry used to look
+/// nothing verified it - so a key that matches no catalog entry used to look
 /// identical to one that does. This is that check.
 fn print_key_reconciliation(t: &Targets) {
     let Ok(text) = std::fs::read_to_string(pantheon_migration::pantheon_env_path(&t.data_dir))
@@ -546,7 +546,7 @@ fn print_key_reconciliation(t: &Targets) {
     for r in &rename {
         if let KeyMatch::NeedsRename { catalog_env } = &r.match_kind {
             println!(
-                "    {} matches provider {} but pantheon reads {} — rename it to be picked up",
+                "    {} matches provider {} but pantheon reads {} - rename it to be picked up",
                 r.env_var,
                 r.provider.as_deref().unwrap_or("?"),
                 catalog_env
@@ -575,7 +575,7 @@ pub fn cmd_migrate_validate(args: &[String]) {
     }
 }
 
-/// `pantheon migrate show <source> [path]` — the detected items with their
+/// `pantheon migrate show <source> [path]` - the detected items with their
 /// disposition, without building import targets. Read-only, no plan.
 pub fn cmd_migrate_show(args: &[String]) {
     let Some(kind) = source_arg(args) else {

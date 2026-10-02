@@ -1,6 +1,6 @@
 name: self-improving-agent
 version: "1.0.0"
-description: Disciplined learning loop — keeps .learnings/ logs with pattern-key dedup, injects the logging protocol plus pending-triage notes at session start, and books session ends.
+description: Disciplined learning loop - keeps .learnings/ logs with pattern-key dedup, injects the logging protocol plus pending-triage notes at session start, and books session ends.
 author: pskoett (adapted for Pantheon)
 license: MIT-0
 provides_hooks:

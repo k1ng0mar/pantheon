@@ -1,7 +1,7 @@
 //! Carrying the three surfaces a "just copy the files" migration misses:
 //! MCP servers, credentials, and session transcripts.
 //!
-//! Each one has the same shape of problem — the source representation cannot
+//! Each one has the same shape of problem - the source representation cannot
 //! be dropped into the data dir, but *abandoning* it loses real state. So
 //! each gets a bridge: a declaration Pantheon can act on, written in
 //! Pantheon's own terms.
@@ -9,13 +9,13 @@
 //! - **MCP** (`mcp_servers` in a Hermes `config.yaml`, an `mcp.json`, a
 //!   `.mcp.json`): parsed into a Pantheon-shaped server list. Transport,
 //!   command, args, and url carry over. Headers, tokens, and env values do
-//!   not — they become a declared requirement instead.
+//!   not - they become a declared requirement instead.
 //! - **Credentials** (`.env`, `auth.json`, provider blocks): read as *names*.
 //!   The bridge emits a manifest saying which env var feeds which Pantheon
 //!   provider, so the operator can fill them through `pantheon model` rather
 //!   than inheriting a foreign vault. With `carry_credentials: true` the
 //!   values are written into Pantheon's own encrypted vault, which is the
-//!   only way a value moves — never a raw copy of the source `.env`.
+//!   only way a value moves - never a raw copy of the source `.env`.
 //! - **Sessions** (transcript dirs): copied into a quarantine path with a
 //!   manifest, so they can be indexed into `session_search` deliberately
 //!   rather than silently shadowing ledger-owned transcripts.
@@ -79,7 +79,7 @@ fn mcp_enabled_default() -> bool {
 /// "Ready" means the launcher knows how to attach it (stdio with a
 /// command, http/sse with a url) and no credential is missing that only
 /// the operator can supply. Registration additionally needs an explicit
-/// `pantheon mcp approve <name>` — readiness is not approval.
+/// `pantheon mcp approve <name>` - readiness is not approval.
 pub fn server_readiness(s: &McpServer) -> Option<String> {
     let blocker = match s.transport.as_str() {
         "stdio" => match s.command.as_deref() {
@@ -488,7 +488,7 @@ pub fn classify_credential(name: &str) -> CredentialTarget {
 }
 
 /// One parsed `.env` entry: the name, and whether it carried a real value.
-/// The value itself is deliberately not returned — reading it is the
+/// The value itself is deliberately not returned - reading it is the
 /// caller's business, and it goes straight into a vault if anywhere.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvEntry {
@@ -623,7 +623,7 @@ pub fn transcript_format(path: &Path) -> Option<&'static str> {
 }
 
 // ===========================================================================
-// Writers — the bridge artefacts
+// Writers - the bridge artefacts
 // ===========================================================================
 
 fn werr(code: &str, cause: String) -> PantheonError {
@@ -658,7 +658,7 @@ pub fn write_mcp_declaration(
     Ok(path)
 }
 
-/// Write the credential manifest. **Names and targets only** — the file
+/// Write the credential manifest. **Names and targets only** - the file
 /// deliberately has no field a value could occupy.
 pub fn write_credential_manifest(
     targets_data_dir: &Path,
@@ -684,7 +684,7 @@ pub fn write_credential_manifest(
 // .env  ->  <data_dir>/.env
 // ===========================================================================
 
-/// Where a credential value landed, per key. **Names only** — this struct has
+/// Where a credential value landed, per key. **Names only** - this struct has
 /// no field a value could occupy, deliberately.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnvMergeReport {
@@ -1031,7 +1031,7 @@ mod carry_env_tests {
     /// Adversarial source values must land in `<data_dir>/.env` and read
     /// back byte-identical through the canonical parser. Before the quoting
     /// fix, a source `"sk-abc # def"` was written back raw and read back as
-    /// `sk-abc` — silent truncation.
+    /// `sk-abc` - silent truncation.
     #[test]
     fn merge_env_into_round_trips_adversarial_values() {
         let dir = scratch("roundtrip");

@@ -1,8 +1,8 @@
 //! Shared scaffolding for dashboard HTTP eval tests.
 //!
 //! Boots a real gateway listener on an ephemeral loopback port with a
-//! [`pantheon_dashboard::DashboardMount`] — exactly the path the CLI's
-//! unified listener uses — and drives it with a std-only raw TCP client
+//! [`pantheon_dashboard::DashboardMount`] - exactly the path the CLI's
+//! unified listener uses - and drives it with a std-only raw TCP client
 //! (the serve surface is std-only, so the test client is too).
 //!
 //! Each consumer includes this file with:

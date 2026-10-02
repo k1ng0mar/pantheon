@@ -614,7 +614,7 @@ fn dashboard_plugins_hook_plugin_approve_revoke() {
 //
 // Enable path 4 (dashboard / mobile-app toggle): `POST
 // /api/nightly/enabled` writes the explicit `[nightly] enabled` flag
-// through the shared config document — the same flag `/nightly on|off`
+// through the shared config document - the same flag `/nightly on|off`
 // and a manual config edit write. The test round-trips API → config
 // file → `pantheon_api::config::nightly_enabled`.
 
@@ -648,7 +648,7 @@ fn dashboard_nightly_toggle_round_trips() {
     let section = cfg.nightly.as_ref().expect("[nightly] present");
     assert!(pantheon_api::config::nightly_enabled(section));
 
-    // The status endpoint — the mobile app's read surface — agrees.
+    // The status endpoint - the mobile app's read surface - agrees.
     let r = raw_request(port, "GET", "/api/nightly/status", &h, None);
     assert_eq!(r.status, 200, "status: {}", r.body);
     let v = json(&r.body);
@@ -679,7 +679,7 @@ fn dashboard_nightly_toggle_round_trips() {
 /// must hit the token gate exactly like the canonical path. Before the
 /// fix `auth_group` matched the RAW request path, so `GET /%61pi/runs`
 /// returned 200 with the full run list and
-/// `PATCH /%61pi/runs/run-1/queue/0` rewrote the queue — no token, no
+/// `PATCH /%61pi/runs/run-1/queue/0` rewrote the queue - no token, no
 /// Host/Origin check. Real HTTP through the real gateway chain on a temp
 /// ledger, the way the audit reproduced it.
 #[test]
@@ -765,7 +765,7 @@ fn dashboard_encoded_api_prefix_requires_token() {
 }
 
 /// Round-1 closed shapes still fail safe after the P0 fix: paths that do
-/// not decode to `["api", ...]` are never routed to a handler — 404 from
+/// not decode to `["api", ...]` are never routed to a handler - 404 from
 /// the Public group, or 401 when the first segment really is `api`.
 #[test]
 fn dashboard_closed_path_shapes_still_fail_safe() {

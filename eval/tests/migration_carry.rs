@@ -113,8 +113,8 @@ mcp_servers:
   aws-mcp:
     command: /home/u/.hermes/bin/uvx
     args:
-      - mcp-proxy-for-aws@latest
-      - https://aws-mcp.us-east-1.api.aws/mcp
+     - mcp-proxy-for-aws@latest
+     - https://aws-mcp.us-east-1.api.aws/mcp
     env:
       AWS_REGION: us-east-1
   cloudflare-docs:
@@ -155,15 +155,15 @@ mcp_servers:
   aws-mcp:
     command: /bin/uvx
     args:
-      - mcp-proxy-for-aws@latest
-      - --metadata
+     - mcp-proxy-for-aws@latest
+     - --metadata
     env:
-      - AWS_REGION=us-east-1
-      - AWS_DEFAULT_REGION=us-east-1
+     - AWS_REGION=us-east-1
+     - AWS_DEFAULT_REGION=us-east-1
   other:
     command: /bin/other
     args:
-      - only-real-arg
+     - only-real-arg
 "#;
     let s = parse_hermes_mcp(yaml);
     let aws = s.iter().find(|x| x.name == "aws-mcp").unwrap();
@@ -257,10 +257,10 @@ mcp_servers:
   aws-mcp:
     command: /home/u/.hermes/bin/uvx
     args:
-      - mcp-proxy-for-aws@latest
-      - https://aws-mcp.us-east-1.api.aws/mcp
-      - --metadata
-      - INSTALL_SOURCE=aws-cli
+     - mcp-proxy-for-aws@latest
+     - https://aws-mcp.us-east-1.api.aws/mcp
+     - --metadata
+     - INSTALL_SOURCE=aws-cli
     env:
       AWS_MCP_PROXY_PROFILES: default
       AWS_REGION: us-east-1

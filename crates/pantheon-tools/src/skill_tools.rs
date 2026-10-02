@@ -9,7 +9,7 @@ use pantheon_exec::skills::{skill_body, Skill};
 /// Register `skills_list` and `skill_read` on a registry.
 ///
 /// `skills_list` is read-only (FilesystemRead): names + descriptions.
-/// `skill_read` loads one skill's body, gated on FilesystemRead too —
+/// `skill_read` loads one skill's body, gated on FilesystemRead too
 /// skills are data, not executable capability. A skill that wanted to
 /// grant powers would be a plugin, not a skill.
 pub fn register_skill_tools(reg: &mut crate::tools::ToolRegistry, skills: Vec<Skill>) {

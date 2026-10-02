@@ -15,7 +15,7 @@
 //!
 //! Kill switch: `PANTHEON_SCHEDULER_SELF_HEAL=0` (or `false`/`no`/`off`)
 //! disables the investigate+retry pipeline. Failure recording and the
-//! user-visible alert stay on — a silenced failure with no alert would
+//! user-visible alert stay on - a silenced failure with no alert would
 //! be worse than no self-heal at all.
 
 use std::path::{Path, PathBuf};
@@ -256,7 +256,7 @@ impl SelfHealer {
         };
 
         // The investigation itself is fallible: a broken model config,
-        // a parked-on-approval turn, a panic — all become the not-fixed
+        // a parked-on-approval turn, a panic - all become the not-fixed
         // alert, never a silent skip.
         let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (self.investigator)(&InvestigateInput {
@@ -280,8 +280,8 @@ impl SelfHealer {
             return HealOutcome::not_fixed(verdict.summary, run_id);
         }
 
-        // Exactly one retry, as a direct call — not through the tick
-        // driver — so the retry can never re-enter self-heal.
+        // Exactly one retry, as a direct call - not through the tick
+        // driver - so the retry can never re-enter self-heal.
         let report = (self.retry)(job, &task_text, &self.data_dir);
         let retry_outcome = if report.error.is_none() {
             RunOutcome::Completed
@@ -367,7 +367,7 @@ fn pick_run_id(original: &str, investigator_run: &str) -> String {
 fn truncate(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars).collect();
     if s.chars().count() > max_chars {
-        out.push('…');
+        out.push_str("...");
     }
     out
 }
@@ -402,7 +402,7 @@ impl HealOutcome {
 /// The production investigator: a bounded, non-spawning agent session
 /// over the failing job's context. Verdict comes from a trailing
 /// `VERDICT: FIXED` / `VERDICT: NOT_FIXED` line; anything unparseable
-/// or erroring is NOT_FIXED — fail closed.
+/// or erroring is NOT_FIXED - fail closed.
 fn investigate_real(input: &InvestigateInput) -> HealVerdict {
     let file_cfg = config::Config::load_or_report(input.data_dir);
     let model_policy = config::build_scheduled_model_policy(
@@ -457,7 +457,7 @@ The event ledger is queryable through the `pantheon` CLI; do not write it direct
 \n\
 Rules:\n\
 1. Diagnose before fixing. Only fix the root cause you actually found.\n\
-2. You may repair config files, restart MCP servers, or correct schedule state — whatever the diagnosis supports.\n\
+2. You may repair config files, restart MCP servers, or correct schedule state - whatever the diagnosis supports.\n\
 3. Do NOT create, modify, pause, or delete any OTHER scheduled jobs. Do NOT start schedulers, daemons, or background services. \
 Do NOT approve anything on the user's behalf.\n\
 4. End your final message with exactly one line `VERDICT: FIXED` or `VERDICT: NOT_FIXED`, then a short paragraph: \

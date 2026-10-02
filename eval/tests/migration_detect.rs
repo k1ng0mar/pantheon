@@ -407,7 +407,7 @@ fn credential_names_import_but_the_env_file_itself_does_not() {
     assert!(cred.note.contains("1 channel"), "{}", cred.note);
 
     // The target is pantheon's own key store, and no value appears in the
-    // plan itself — the plan describes the carry, it does not perform it.
+    // plan itself - the plan describes the carry, it does not perform it.
     let target = cred.target().unwrap();
     assert_eq!(target, t.data_dir.join(".env").to_string_lossy());
     for i in &p.items {

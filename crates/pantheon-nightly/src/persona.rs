@@ -21,7 +21,7 @@ pub const PERSONA_NAMESPACE: &str = "persona";
 pub const PERSONA_KEY_PREFIX: &str = "nightly-persona-";
 
 /// Approved persona notes in stable write order: (key, text). Empty
-/// notes are dropped; a read failure degrades to empty (fail-open —
+/// notes are dropped; a read failure degrades to empty (fail-open
 /// a broken memory read must never block a turn). Reads through the
 /// session's active backend, whatever it is.
 pub fn approved_notes(store: &dyn MemoryBackend) -> Vec<(String, String)> {
@@ -35,7 +35,7 @@ pub fn approved_notes(store: &dyn MemoryBackend) -> Vec<(String, String)> {
 }
 
 /// Format approved persona notes as a system-prompt block. Empty string
-/// when there are no notes — the caller appends nothing.
+/// when there are no notes - the caller appends nothing.
 pub fn overlay_block(notes: &[(String, String)]) -> String {
     if notes.is_empty() {
         return String::new();

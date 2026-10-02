@@ -69,7 +69,7 @@ pub type EventObserver = std::sync::Arc<dyn Fn(&Event) + Send + Sync>;
 pub use watchdog::{TurnWatchdog, WatchdogAction};
 
 /// Default approval time-to-live: a parked approval request expires 24h
-/// after it was raised. Stale decisions are dangerous — the run's context
+/// after it was raised. Stale decisions are dangerous - the run's context
 /// (files, world state, the operator's intent) has moved on. Override
 /// with `PANTHEON_APPROVAL_TTL_MS`.
 pub const APPROVAL_TTL_MS: i64 = 24 * 60 * 60 * 1000;
@@ -104,7 +104,7 @@ fn rerr(code: &str, cause: String) -> PantheonError {
 
 /// Confirm `pid` really is the turn child for `run_id`: on Linux its
 /// `/proc` cmdline must contain `--taskID <run_id>`. PID numbers alone
-/// are never treated as ownership — a recycled PID must not be
+/// are never treated as ownership - a recycled PID must not be
 /// signaled. The dashboard spawns turn children as
 /// `pantheon run --taskID <run_id> --say ...`, so the flag is always
 /// present on a genuine turn child.
@@ -543,7 +543,7 @@ impl Supervisor {
     ///
     /// Goes through `emit`, not a bare ledger append, so live observers (TUI,
     /// the hook bridge) see the run boundary. Appending directly would make
-    /// `RunStarted` invisible to every subscriber while still durable — the
+    /// `RunStarted` invisible to every subscriber while still durable - the
     /// exact "durable but unobserved" split the observer contract forbids.
     pub fn start_run(&self, run_id: &str) -> Result<bool, PantheonError> {
         let status = self.ledger().status(run_id)?;
@@ -562,7 +562,7 @@ impl Supervisor {
         let entry = self.ledger().append(&ev)?;
         // Index for session search (best-effort: a failed index write must
         // never break the run, same contract as observers). The chunk is
-        // indexed under the seq append() returned for this event — never
+        // indexed under the seq append() returned for this event - never
         // recomputed via max_seq(), which would race with concurrent
         // writers and index the text under another chunk's id.
         if let Err(e) = self.index_for_search(&ev, entry.seq) {
@@ -611,7 +611,7 @@ impl Supervisor {
         // Embed via the attached client (policy-resolved auxiliary), or
         // the local hashing embedder when none is set. Either way the
         // vector layer gets real vectors; a failed embed degrades this
-        // chunk to lexical-only — indexing never breaks the run.
+        // chunk to lexical-only - indexing never breaks the run.
         let attached = self
             .inner
             .embedder
@@ -638,7 +638,7 @@ impl Supervisor {
     /// Register a live event observer (TUI, gateway). Returns a handle
     /// that removes the observer when dropped.
     ///
-    /// # Locking contract — read before writing an observer
+    /// # Locking contract - read before writing an observer
     ///
     /// Observers are invoked **while the supervisor's observer lock is
     /// held** (see `emit`). An observer callback therefore MUST:
@@ -647,7 +647,7 @@ impl Supervisor {
     ///   non-blocking `mpsc::Sender::send` into the TUI event loop),
     /// * never block on a mutex another thread holds,
     /// * never call back into the `Supervisor` (`emit`, `register_observer`,
-    ///   dropping its own `ObserverGuard`, ...) — `std::sync::Mutex` is not
+    ///   dropping its own `ObserverGuard`, ...) - `std::sync::Mutex` is not
     ///   reentrant, so this self-deadlocks,
     /// * never panic across the FFI-free boundary in a way that poisons the
     ///   lock for every later emit.
@@ -895,7 +895,7 @@ impl Supervisor {
     }
 
     /// Questions still awaiting an operator answer, in request order.
-    /// Exists so a re-entered session re-renders the clarify card —
+    /// Exists so a re-entered session re-renders the clarify card
     /// the approval equivalent is [`Supervisor::pending_approvals`].
     pub fn pending_input(
         &self,
@@ -934,7 +934,7 @@ impl Supervisor {
     /// the `shell` tool's Exited hook). Scoped to this supervisor's
     /// lease like [`Self::register_process_group`]: the ledger's
     /// ownership check is not optional, and there is no unowned twin.
-    /// Best-effort callers ignore the error — a stale row is reaped by
+    /// Best-effort callers ignore the error - a stale row is reaped by
     /// the next cancel or overwritten by re-registration.
     pub fn unregister_process_group(&self, run_id: &str, pgid: i32) -> Result<(), PantheonError> {
         self.assert_lease_owned(run_id)?;
@@ -1099,7 +1099,7 @@ impl Supervisor {
     }
 
     /// Hard-kill the run's in-flight turn child. Unlike `cancel_run`
-    /// (cooperative — the loop winds down at its next boundary), this
+    /// (cooperative - the loop winds down at its next boundary), this
     /// force-terminates the turn process itself: TERM, a short grace,
     /// then KILL of its whole process group.
     ///
@@ -1274,7 +1274,7 @@ impl Supervisor {
     /// the new run id and the number of turns it contains.
     ///
     /// `turn` is 1-based; `None` forks at the latest turn. The fork copies
-    /// the durable event prefix — everything through the end of that turn —
+    /// the durable event prefix - everything through the end of that turn
     /// verbatim into a fresh run, re-addressed via
     /// [`Event::with_run_id`](pantheon_api::events::Event::with_run_id).
     /// The source run is untouched. Replay already honors `TurnRewound`,
@@ -1463,7 +1463,7 @@ mod tests {
     }
 
     /// Item 8: `Supervisor::open` runs startup recovery once per data
-    /// dir — a crash-orphaned `running` run (no live lease) is settled
+    /// dir - a crash-orphaned `running` run (no live lease) is settled
     /// failed with a REPAIRED note, while a live-lease run and an
     /// `awaiting_approval` park are left alone. The orphan is seeded
     /// through a raw `Ledger` so it predates the supervisor's open (the

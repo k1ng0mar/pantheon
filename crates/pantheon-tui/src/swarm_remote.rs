@@ -166,7 +166,7 @@ fn base_or_note(state: &mut TuiState, cmd: &str) -> Option<String> {
 fn render_err(state: &mut TuiState, what: &str, backend: &str, err: ApiErr) {
     match err {
         ApiErr::Unreachable(t) => state.add_status(format!(
-            "{what}: {backend} unreachable ({t}) — is `pantheon serve` running?"
+            "{what}: {backend} unreachable ({t}) - is `pantheon serve` running?"
         )),
         ApiErr::Status(404, _) => state.add_status(format!("{what}: not found (404)")),
         ApiErr::Status(code, body) => {
@@ -321,7 +321,7 @@ fn spawn_swarm(state: &mut TuiState, rest: &str) {
             } else {
                 format!(" ({})", names.join(", "))
             };
-            state.add_status(format!("swarm {id} started{who} — /swarm {id} to watch"));
+            state.add_status(format!("swarm {id} started{who} - /swarm {id} to watch"));
         }
         Err(e) => render_err(state, "/swarm new", "swarm backend", e),
     }
@@ -409,7 +409,7 @@ fn show_swarm(state: &mut TuiState, id: &str) {
                 for a in &agents {
                     let name = a.get("name").and_then(|n| n.as_str()).unwrap_or("?");
                     let st = a.get("status").and_then(|s| s.as_str()).unwrap_or("?");
-                    state.add_status(format!("  {name} — {st}"));
+                    state.add_status(format!("  {name} - {st}"));
                 }
             }
             match v.get("verdict") {
@@ -419,7 +419,7 @@ fn show_swarm(state: &mut TuiState, id: &str) {
                         .and_then(|d| d.as_bool())
                         .unwrap_or(false);
                     let notes = verdict.get("notes").and_then(|n| n.as_str()).unwrap_or("");
-                    state.add_status(format!("verdict: done={done} — {notes}"));
+                    state.add_status(format!("verdict: done={done} - {notes}"));
                 }
                 _ => state.add_status("verdict: none yet".into()),
             }
@@ -488,10 +488,10 @@ pub fn do_swarm(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
 // /collab (deprecated in favor of /swarm)
 // ---------------------------------------------------------------------------
 
-/// One-line deprecation note. Stored collaboration data is untouched —
+/// One-line deprecation note. Stored collaboration data is untouched
 /// nothing here deletes from `collaboration.db`.
 pub const COLLAB_DEPRECATION: &str =
-    "/collab is deprecated — multi-profile tasks moved to the swarm system; use /swarm (see the Swarm page). Stored collaboration data is untouched.";
+    "/collab is deprecated - multi-profile tasks moved to the swarm system; use /swarm (see the Swarm page). Stored collaboration data is untouched.";
 
 pub fn do_collab(state: &mut TuiState) {
     match server_base(&data_dir()) {
@@ -526,7 +526,7 @@ fn list_swarms_via(state: &mut TuiState, base: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// /soul, /userfile, /agentsfile — persona files of the active profile
+// /soul, /userfile, /agentsfile - persona files of the active profile
 // ---------------------------------------------------------------------------
 
 /// Persona-file slot: the API discriminator plus the config field and
@@ -560,7 +560,7 @@ fn active_profile(state: &TuiState, session: &Arc<Session>) -> Option<String> {
 
 /// Declared persona-file paths for a profile: the *own* `[agents.<name>]`
 /// table values, exactly what the dashboard `GET /api/profiles/:name/files`
-/// endpoint reads — not the resolved inheritance chain. Keeping the two
+/// endpoint reads - not the resolved inheritance chain. Keeping the two
 /// paths identical means `/soul` prints the same thing whether the
 /// server is running or the TUI reads the file directly.
 fn declared_paths(name: &str) -> Result<BTreeMap<String, Option<String>>, String> {
@@ -588,7 +588,10 @@ fn print_file(state: &mut TuiState, label: &str, path: Option<&str>, content: &s
         state.add_status((*line).to_string());
     }
     if lines.len() > MAX_PRINT_LINES {
-        state.add_status(format!("… ({} more lines)", lines.len() - MAX_PRINT_LINES));
+        state.add_status(format!(
+            "... ({} more lines)",
+            lines.len() - MAX_PRINT_LINES
+        ));
     }
 }
 
@@ -642,7 +645,7 @@ fn read_persona(state: &mut TuiState, session: &Arc<Session>, kind: &str, label:
 /// Write a persona file: HTTP first, direct declared-path write when the
 /// server is not running. When the profile declares no path, the file is
 /// created under `<data_dir>/profiles/<name>/` and the profile field is
-/// pointed at it — the same semantics as the dashboard endpoint.
+/// pointed at it - the same semantics as the dashboard endpoint.
 fn write_persona(
     state: &mut TuiState,
     session: &Arc<Session>,
@@ -774,7 +777,7 @@ pub fn do_persona(
 }
 
 // ---------------------------------------------------------------------------
-// /agent new <name> / /agents create <name> — profile creation
+// /agent new <name> / /agents create <name> - profile creation
 // ---------------------------------------------------------------------------
 
 /// Parsed `/agent new` invocation: the name plus the three creation flags.
@@ -838,7 +841,7 @@ pub fn do_agent_new(state: &mut TuiState, rest: &str) {
     let mut cfg = crate::config::Config::load(&dd).unwrap_or_default();
     if cfg.agents.contains_key(&args.name) {
         state.add_status(format!(
-            "/agent new: [agents.{}] already declared — switch with /agent {}",
+            "/agent new: [agents.{}] already declared - switch with /agent {}",
             args.name, args.name
         ));
         return;
@@ -859,7 +862,7 @@ pub fn do_agent_new(state: &mut TuiState, rest: &str) {
     }
     match cfg.save(&dd) {
         Ok(()) => state.add_status(format!(
-            "profile [agents.{}] created — switch with /agent {}",
+            "profile [agents.{}] created - switch with /agent {}",
             args.name, args.name
         )),
         Err(e) => state.add_status(format!("/agent new: save failed: {}", e.cause)),

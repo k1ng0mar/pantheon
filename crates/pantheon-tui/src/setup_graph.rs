@@ -163,7 +163,7 @@ pub fn sections(a: &Answers) -> Vec<Section> {
     }
     // The Tools screen always runs in Full: it is the one place the user
     // sees every capability, and its answers gate the provider screens
-    // below. Policy stays the default coder preset — there is no
+    // below. Policy stays the default coder preset - there is no
     // permissions screen anymore.
     out.push(Section::Tools);
     // Skill dependencies come right after the Tools screen: the skills

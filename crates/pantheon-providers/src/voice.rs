@@ -9,7 +9,7 @@
 //!
 //! Backend families:
 //!
-//! - `command` (Subprocess): local binaries — whisper.cpp, piper,
+//! - `command` (Subprocess): local binaries - whisper.cpp, piper,
 //!   espeak-ng. STT reads text from stdout (`{file}`/`{language}`
 //!   placeholders); TTS pipes text in on stdin and takes audio from
 //!   stdout. Every run is wall-clock bounded.
@@ -58,7 +58,7 @@ pub const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 120;
 /// One transcription ask.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SttRequest {
-    /// Audio file on disk (ogg/wav/mp3/flac — whatever the backend takes).
+    /// Audio file on disk (ogg/wav/mp3/flac - whatever the backend takes).
     pub path: PathBuf,
     /// ISO language hint, when known.
     pub language: Option<String>,
@@ -146,7 +146,7 @@ pub struct TtsResult {
 // Traits
 // ---------------------------------------------------------------------------
 
-/// Speech-to-text service. Providers are services or local binaries —
+/// Speech-to-text service. Providers are services or local binaries
 /// never selected through `ModelPolicy`.
 pub trait SttProvider: Send + Sync {
     fn name(&self) -> &str;
@@ -164,7 +164,7 @@ pub trait TtsProvider: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Run a command with optional stdin, capturing stdout/stderr with a hard
-/// wall-clock bound. std threads, no async — same posture as the sandbox.
+/// wall-clock bound. std threads, no async - same posture as the sandbox.
 fn run_bounded(
     program: &str,
     args: &[String],
@@ -500,7 +500,7 @@ pub fn stt_multipart(
 /// JSON body for `POST {base}/audio/speech`. Pure.
 ///
 /// `response_format` is provider-specific: the OpenAI wire accepts
-/// `mp3`/`opus`/`aac`/`flac`/`wav`/`pcm` — notably NOT `ogg`, so an Ogg
+/// `mp3`/`opus`/`aac`/`flac`/`wav`/`pcm` - notably NOT `ogg`, so an Ogg
 /// request maps to `opus` (the same codec, a container the API accepts).
 pub fn speech_payload(req: &TtsRequest, model: &str) -> serde_json::Value {
     let response_format = match req.format {
@@ -542,9 +542,9 @@ pub fn audio_mime(filename: &str) -> &'static str {
 /// Default STT model per OpenAI-wire provider (overridable via the
 /// `model` option). Groq and Mistral share `HttpStt`'s implementation:
 /// both endpoints accept OpenAI-shaped multipart (`file`, `model`,
-/// `language` — the only fields `stt_multipart` sends) and answer in the
+/// `language` - the only fields `stt_multipart` sends) and answer in the
 /// OpenAI `{text, ...}` shape, so one code path covers all three.
-/// Auth note: Mistral's own docs are inconsistent here — the newest
+/// Auth note: Mistral's own docs are inconsistent here - the newest
 /// endpoint reference uses `Authorization: Bearer` (which is what the
 /// catalog sends), while an older transcription guide shows `x-api-key`;
 /// if transcription 401s on Mistral, the header is the first suspect.
@@ -805,8 +805,8 @@ impl TtsProvider for HttpTts {
 // ---------------------------------------------------------------------------
 // Bespoke provider wire helpers (pure, offline-testable)
 //
-// These helpers capture the documented wire shape — request builders and
-// response parsers — and the live backends below are built on them (each
+// These helpers capture the documented wire shape - request builders and
+// response parsers - and the live backends below are built on them (each
 // backend's section cites its vendor docs). Fixtures in
 // `eval/tests/providers_voice_wire.rs` pin the shapes. Nothing here touches
 // the network or reads secrets. The live wires have not been exercised
@@ -855,12 +855,12 @@ pub fn b64decode(input: &str) -> Result<Vec<u8>, String> {
 
 // --- Deepgram STT: raw audio body + query params, `Authorization: Token` ---
 
-/// Deepgram auth scheme: `Authorization: Token <key>` — Bearer does NOT work.
+/// Deepgram auth scheme: `Authorization: Token <key>` - Bearer does NOT work.
 pub const DEEPGRAM_AUTH_SCHEME: &str = "Token";
 pub const DEEPGRAM_LISTEN_URL: &str = "https://api.deepgram.com/v1/listen";
 
 /// Build the `/v1/listen` URL: every option is a query param. Always pass
-/// an explicit model — the API default is the weaker `base` model.
+/// an explicit model - the API default is the weaker `base` model.
 pub fn deepgram_listen_url(model: &str, language: Option<&str>, diarize: bool) -> String {
     let mut url = format!("{DEEPGRAM_LISTEN_URL}?model={model}&smart_format=true");
     if let Some(l) = language {
@@ -872,7 +872,7 @@ pub fn deepgram_listen_url(model: &str, language: Option<&str>, diarize: bool) -
     url
 }
 
-/// `results.channels[0].alternatives[0].transcript` — not `text`.
+/// `results.channels[0].alternatives[0].transcript` - not `text`.
 pub fn parse_deepgram_transcript(body: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
     v.get("results")?
@@ -911,7 +911,7 @@ pub fn parse_deepgram_meta(body: &str) -> (Option<String>, Option<f64>) {
 // --- ElevenLabs STT: bespoke multipart, `xi-api-key` header ---
 
 pub const ELEVENLABS_STT_URL: &str = "https://api.elevenlabs.io/v1/speech-to-text";
-/// ElevenLabs auth header name — NOT `Authorization: Bearer`.
+/// ElevenLabs auth header name - NOT `Authorization: Bearer`.
 pub const ELEVENLABS_API_KEY_HEADER: &str = "xi-api-key";
 
 /// Bespoke multipart: field names differ from OpenAI (`model_id`, not
@@ -956,7 +956,7 @@ pub fn parse_elevenlabs_transcript(body: &str) -> Option<String> {
 }
 
 /// Extract `(language_code, audio_duration_secs)` from an ElevenLabs STT
-/// response. Pure; pinned by fixtures. Both are best-effort metadata —
+/// response. Pure; pinned by fixtures. Both are best-effort metadata
 /// absent fields are `None`, never an error.
 pub fn parse_elevenlabs_meta(body: &str) -> (Option<String>, Option<f64>) {
     let v: serde_json::Value = match serde_json::from_str(body) {
@@ -1011,7 +1011,7 @@ pub fn xai_stt_multipart(
 
 /// Parse an xAI STT response into `(text, language, duration_secs)`.
 /// The docs shape is `{text, language, duration}` at the top level.
-/// Returns `None` when `text` is missing or malformed — a missing
+/// Returns `None` when `text` is missing or malformed - a missing
 /// transcript is an error, never an empty success. Pure; pinned by
 /// fixtures.
 pub fn parse_xai_transcript(body: &str) -> Option<(String, Option<String>, Option<f64>)> {
@@ -1028,11 +1028,11 @@ pub fn parse_xai_transcript(body: &str) -> Option<(String, Option<String>, Optio
 // --- AssemblyAI STT: async 3-step (upload -> transcript -> poll) ---
 
 pub const ASSEMBLYAI_BASE_URL: &str = "https://api.assemblyai.com";
-/// Async auth is the RAW key — no `Bearer` prefix (401 otherwise).
+/// Async auth is the RAW key - no `Bearer` prefix (401 otherwise).
 pub const ASSEMBLYAI_AUTH_SCHEME: &str = "raw-key";
 
 /// Step 2 body: `POST /v2/transcript` with the `upload_url` from step 1.
-/// The singular `speech_model` is deprecated — the current API takes the
+/// The singular `speech_model` is deprecated - the current API takes the
 /// plural `speech_models` array (priority-ordered fallback list). When
 /// `speech_models` is empty the param is omitted entirely and the API
 /// default applies (`universal-3-5-pro`, falling back to `universal-2`).
@@ -1068,7 +1068,7 @@ pub fn parse_assemblyai_transcript(body: &str) -> Option<String> {
 }
 
 /// Extract `audio_duration` (seconds) from a completed AssemblyAI
-/// transcript response. Pure; pinned by fixtures. Best-effort — absent
+/// transcript response. Pure; pinned by fixtures. Best-effort - absent
 /// fields are `None`, never an error.
 pub fn parse_assemblyai_duration(body: &str) -> Option<f64> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
@@ -1079,7 +1079,7 @@ pub fn parse_assemblyai_duration(body: &str) -> Option<f64> {
 
 /// Build the `/v1/speak` URL: the voice is a `model` query param
 /// (`aura-2-thalia-en`). Omitting it silently defaults to the weaker
-/// Aura-1 voice — always set it.
+/// Aura-1 voice - always set it.
 pub fn deepgram_speak_url(model: &str, encoding: &str) -> String {
     format!("https://api.deepgram.com/v1/speak?model={model}&encoding={encoding}")
 }
@@ -1128,14 +1128,14 @@ pub fn gemini_tts_body(text: &str, voice_name: &str) -> serde_json::Value {
 }
 
 /// Extract `candidates[0].content.parts[0].inlineData.data`: base64 PCM,
-/// 16-bit signed LE, 24 kHz mono — no container.
+/// 16-bit signed LE, 24 kHz mono - no container.
 pub fn gemini_extract_pcm(body: &str) -> Result<Vec<u8>, PantheonError> {
     let v: serde_json::Value = serde_json::from_str(body).map_err(|e| {
         verr(
             "TTS_PARSE",
             format!("gemini TTS response: {e}"),
             false,
-            "check the model id — preview ids churn",
+            "check the model id - preview ids churn",
         )
     })?;
     let b64 = v
@@ -1153,7 +1153,7 @@ pub fn gemini_extract_pcm(body: &str) -> Result<Vec<u8>, PantheonError> {
                 "gemini TTS response has no candidates[0].content.parts[0].inlineData.data"
                     .to_string(),
                 false,
-                "the model may have answered in text instead of audio — retry once",
+                "the model may have answered in text instead of audio - retry once",
             )
         })?;
     b64decode(b64).map_err(|e| {
@@ -1208,7 +1208,7 @@ pub fn gemini_pcm_to_wav(pcm: &[u8]) -> Vec<u8> {
 
 pub const FISHAUDIO_TTS_URL: &str = "https://api.fish.audio/v1/tts";
 /// The backend model is selected with a `model` HTTP header, not a body
-/// field — the classic integration bug.
+/// field - the classic integration bug.
 pub const FISHAUDIO_MODEL_HEADER: &str = "model";
 
 /// FishAudio `/v1/tts` body. `reference_id` is optional in the API
@@ -1228,7 +1228,7 @@ pub fn fishaudio_tts_body(text: &str, reference_id: &str) -> serde_json::Value {
 }
 
 /// Map the requested [`AudioFormat`] to FishAudio's `format` body field.
-/// FishAudio supports `wav`/`pcm`/`mp3`/`opus` — an Ogg request maps to
+/// FishAudio supports `wav`/`pcm`/`mp3`/`opus` - an Ogg request maps to
 /// Opus (same codec family as Ogg Vorbis is not offered). Pure.
 pub fn fishaudio_output_format(format: AudioFormat) -> &'static str {
     match format {
@@ -1246,7 +1246,7 @@ pub fn elevenlabs_tts_url(voice_id: &str) -> String {
 
 /// Map the requested [`AudioFormat`] to ElevenLabs' `output_format` query
 /// param, returning the param value and the actual format of the bytes.
-/// ElevenLabs has no ogg/opus output — Ogg requests fall back to MP3 and
+/// ElevenLabs has no ogg/opus output - Ogg requests fall back to MP3 and
 /// the result says so honestly. `pcm_44100` is raw PCM, so the backend
 /// wraps it in a WAV header at the matching 44.1 kHz sample rate.
 pub fn elevenlabs_output_format(format: AudioFormat) -> (&'static str, AudioFormat) {
@@ -1270,8 +1270,8 @@ pub fn elevenlabs_tts_body(text: &str, model_id: &str) -> serde_json::Value {
 //
 // The providers below are implemented from their public documented wire
 // shapes (helpers above; fixtures in `eval/tests/providers_voice_wire.rs`
-// pin the shapes). They have NOT been exercised against the live APIs —
-// no keys were available in this environment — so each backend documents
+// pin the shapes). They have NOT been exercised against the live APIs
+// no keys were available in this environment - so each backend documents
 // its source doc. Wiring a key and running one transcription/synthesis is
 // the remaining verification step, not more code.
 // ---------------------------------------------------------------------------
@@ -1396,7 +1396,7 @@ fn post_json(
 
 /// Parse a JSON string body into transcript text via `parser`. A missing
 /// or malformed transcript field is `STT_PARSE`, never a silent empty
-/// transcript — an empty success hides vendor errors and broken wires.
+/// transcript - an empty success hides vendor errors and broken wires.
 fn parse_text_body(
     body: &[u8],
     parser: fn(&str) -> Option<String>,
@@ -1407,7 +1407,7 @@ fn parse_text_body(
             "STT_PARSE",
             "transcription response has no usable transcript text".to_string(),
             false,
-            "check the backend's model name — vendors rename models without warning",
+            "check the backend's model name - vendors rename models without warning",
         )
     })
 }
@@ -1578,7 +1578,7 @@ impl SttProvider for XaiStt {
                     "STT_PARSE",
                     "xai STT response has no usable `text` field".to_string(),
                     false,
-                    "check the model id — xAI model ids churn",
+                    "check the model id - xAI model ids churn",
                 )
             })?;
         Ok(SttResult {
@@ -1649,7 +1649,7 @@ impl SttProvider for AssemblyAiStt {
 
         // Step 2: submit the transcript job. The plural `speech_models`
         // array is the current API shape (the singular `speech_model` is
-        // deprecated); it is omitted unless configured — the API then
+        // deprecated); it is omitted unless configured - the API then
         // defaults to `universal-3-5-pro`, falling back to `universal-2`.
         // The request language is forwarded as `language_code`.
         let models: Vec<&str> = self
@@ -1804,7 +1804,7 @@ impl TtsProvider for ElevenLabsTts {
                 "check the voice id",
             ));
         }
-        // `pcm_*` output formats are raw PCM — wrap in a WAV header so
+        // `pcm_*` output formats are raw PCM - wrap in a WAV header so
         // the bytes match the reported format.
         let bytes = match actual_format {
             AudioFormat::Wav => pcm_to_wav(&bytes, 44_100),
@@ -1881,7 +1881,7 @@ impl TtsProvider for DeepgramTts {
 
 // --- Gemini TTS: `generateContent` with audio modality, base64 raw PCM ---
 // --- in the response, wrapped in a WAV header. `x-goog-api-key` header. ---
-// --- Source: Gemini docs (TTS). Preview model ids churn — ---
+// --- Source: Gemini docs (TTS). Preview model ids churn - ---
 // --- verify the current id if synthesis 404s. ---
 // NOTE: built from Gemini docs, not live-tested.
 //
@@ -2023,7 +2023,7 @@ impl KokoroTts {
         if options_get(options, "args").is_none() {
             return Err(verr(
                 "VOICE_CONFIG",
-                "kokoro-local: community kokoro CLIs differ in arg shape — set `args` explicitly".to_string(),
+                "kokoro-local: community kokoro CLIs differ in arg shape - set `args` explicitly".to_string(),
                 false,
                 "set args in [tts] options, e.g. the flags your kokoro CLI expects for text-on-stdin / wav-on-stdout",
             ));
@@ -2059,9 +2059,9 @@ impl TtsProvider for KokoroTts {
 // --- Fish Speech (local, self-hosted) --------------------------------------
 // Fish Speech is the open model behind FishAudio (fishaudio/fish-speech).
 // GPU-class: ~24 GB VRAM recommended; CPU-only works but slowly. Local
-// inference is a multi-step Python workflow (see the fish-speech docs —
+// inference is a multi-step Python workflow (see the fish-speech docs
 // CLI flags move fast), so like kokoro the command is explicit and the
-// runtime never guesses args. License caution: 1.5 was CC-BY-NC-SA 4.0 —
+// runtime never guesses args. License caution: 1.5 was CC-BY-NC-SA 4.0
 // verify the S2/S2-Pro license before any commercial use.
 
 pub struct FishSpeechTts {
@@ -2084,7 +2084,7 @@ impl FishSpeechTts {
         if options_get(options, "args").is_none() {
             return Err(verr(
                 "VOICE_CONFIG",
-                "fishspeech-local: fish-speech CLI flags move fast — set `args` explicitly".to_string(),
+                "fishspeech-local: fish-speech CLI flags move fast - set `args` explicitly".to_string(),
                 false,
                 "set args in [tts] options, e.g. `infer --reference-audio ref.wav --reference-text \"...\"` for your install",
             ));
@@ -2123,7 +2123,7 @@ impl TtsProvider for FishSpeechTts {
 // `open_*` uses these to fill in defaults (piper binary, kokoro CLI,
 // fish_speech CLI) when no explicit command is configured; the setup
 // wizard instead runs the registry's `detect_cmd` shell snippets through
-// its own probe. Filesystem probes only — never keys.
+// its own probe. Filesystem probes only - never keys.
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
@@ -2316,7 +2316,7 @@ pub enum VoiceBackendKind {
 
 /// How a backend authenticates, for the setup wizard's key prompt.
 /// The key itself is always resolved by the caller via the secrets
-/// broker/env — this crate never reads it and never logs it.
+/// broker/env - this crate never reads it and never logs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthRequirement {
@@ -2337,13 +2337,13 @@ pub struct VoiceBackendInfo {
     /// Key requirement; `ApiKey` names the env var the wizard prompts for.
     pub auth: AuthRequirement,
     /// One-line setup hint for the wizard (voice selection, key source,
-    /// wire quirks). Sticks to research-verified facts — no unverified
+    /// wire quirks). Sticks to research-verified facts - no unverified
     /// pricing or free-tier claims.
     pub setup_note: &'static str,
     /// Local-install metadata for `Subprocess` backends: drives the
     /// wizard's detect → install-or-skip flow. `None` for cloud backends.
     pub local: Option<VoiceLocalInstall>,
-    /// Extra `[stt]`/`[tts]` options the wizard collects, in order —
+    /// Extra `[stt]`/`[tts]` options the wizard collects, in order
     /// voice selection, command invocations, model ids. The wizard asks
     /// these verbatim, so a new provider never needs a wizard change.
     pub setup_fields: Vec<VoiceSetupField>,
@@ -2374,7 +2374,7 @@ pub struct VoiceSetupField {
 }
 
 /// Registered STT backends (for `doctor` / `providers` listings), ranked
-/// with the OpenAI-wire family (groq, openai, mistral — one shared
+/// with the OpenAI-wire family (groq, openai, mistral - one shared
 /// implementation, base URL + key config) first, then the bespoke-wire
 /// providers (implemented from public docs; not yet exercised against
 /// the live APIs), then the local `command` backend.
@@ -2512,7 +2512,7 @@ pub fn tts_backends() -> Vec<VoiceBackendInfo> {
             setup_note: "Free, offline, no key. Needs the piper binary + a voice (.onnx + .onnx.json); espeak-ng ships bundled as the phonemizer. Vetted default voice: en_US-lessac-high.",
             local: Some(VoiceLocalInstall {
                 detect_cmd: "command -v piper",
-                install_hint: "install piper (github.com/rhasspy/piper), then download a voice model (<voice>.onnx + <voice>.onnx.json) from huggingface.co/rhasspy/piper-voices — vetted default: en_US-lessac-high",
+                install_hint: "install piper (github.com/rhasspy/piper), then download a voice model (<voice>.onnx + <voice>.onnx.json) from huggingface.co/rhasspy/piper-voices - vetted default: en_US-lessac-high",
                 // No verified one-liner across distros: the hint is the
                 // install path.
                 install_cmd: None,
@@ -2565,7 +2565,7 @@ pub fn tts_backends() -> Vec<VoiceBackendInfo> {
             kind: VoiceBackendKind::Subprocess,
             recommended: false,
             auth: AuthRequirement::None,
-            setup_note: "The open model behind FishAudio (S2/S2-Pro, 80+ languages, zero-shot cloning). GPU-class (~24 GB VRAM recommended); CLI flags move fast, so takes an explicit `cmd`. License caution: 1.5 was CC-BY-NC-SA — verify before commercial use.",
+            setup_note: "The open model behind FishAudio (S2/S2-Pro, 80+ languages, zero-shot cloning). GPU-class (~24 GB VRAM recommended); CLI flags move fast, so takes an explicit `cmd`. License caution: 1.5 was CC-BY-NC-SA - verify before commercial use.",
             local: Some(VoiceLocalInstall {
                 detect_cmd: "command -v fish_speech",
                 install_hint: "pip install fish-speech, then huggingface-cli download fishaudio/s2-pro; needs portaudio19-dev libsox-dev ffmpeg; ~24 GB GPU recommended. License: verify the S2/S2-Pro terms (1.5 was CC-BY-NC-SA 4.0).",
@@ -2619,12 +2619,12 @@ pub fn tts_backends() -> Vec<VoiceBackendInfo> {
             auth: AuthRequirement::ApiKey {
                 env_var: "ELEVENLABS_API_KEY",
             },
-            setup_note: "Best cloud voices + cloning; `xi-api-key` header (not Bearer). Voices are UUIDs — pick live from GET /v1/voices. Wire implemented from public docs; not yet exercised against the live API.",
+            setup_note: "Best cloud voices + cloning; `xi-api-key` header (not Bearer). Voices are UUIDs - pick live from GET /v1/voices. Wire implemented from public docs; not yet exercised against the live API.",
             local: None,
             setup_fields: vec![
                 VoiceSetupField {
                     key: "voice",
-                    prompt: "ElevenLabs voice ID (UUID — pick from GET /v1/voices)",
+                    prompt: "ElevenLabs voice ID (UUID - pick from GET /v1/voices)",
                     default: "",
                     required: true,
                 },
@@ -2663,7 +2663,7 @@ pub fn tts_backends() -> Vec<VoiceBackendInfo> {
             auth: AuthRequirement::ApiKey {
                 env_var: "GEMINI_API_KEY",
             },
-            setup_note: "Shares your Gemini key (`x-goog-api-key`); returns base64 raw PCM (16-bit/24 kHz mono) — we wrap it as WAV. ~30 fixed voices (Kore, ...); preview model ids change. Wire implemented from public docs; not yet exercised against the live API.",
+            setup_note: "Shares your Gemini key (`x-goog-api-key`); returns base64 raw PCM (16-bit/24 kHz mono) - we wrap it as WAV. ~30 fixed voices (Kore, ...); preview model ids change. Wire implemented from public docs; not yet exercised against the live API.",
             local: None,
             setup_fields: vec![
                 VoiceSetupField {
@@ -2688,7 +2688,7 @@ pub fn tts_backends() -> Vec<VoiceBackendInfo> {
             auth: AuthRequirement::ApiKey {
                 env_var: "FISH_API_KEY",
             },
-            setup_note: "Cloning-first; the backend model goes in the `model` HTTP header, not the body. Billed per UTF-8 byte — CJK costs 3-4x per character. Wire implemented from public docs; not yet exercised against the live API.",
+            setup_note: "Cloning-first; the backend model goes in the `model` HTTP header, not the body. Billed per UTF-8 byte - CJK costs 3-4x per character. Wire implemented from public docs; not yet exercised against the live API.",
             local: None,
             setup_fields: vec![
                 VoiceSetupField {
@@ -2726,7 +2726,7 @@ pub fn tts_backends() -> Vec<VoiceBackendInfo> {
 }
 
 /// Wizard-facing STT catalog: the registered backends, recommended first
-/// (stable — the documented rank order is preserved within each tier).
+/// (stable - the documented rank order is preserved within each tier).
 pub fn stt_providers() -> Vec<VoiceBackendInfo> {
     let mut v = stt_backends();
     v.sort_by_key(|b| !b.recommended);
@@ -2760,8 +2760,8 @@ pub fn voice_key_env(name: &str) -> Option<&'static str> {
 /// implementation (base URL + key config); `deepgram`, `elevenlabs`,
 /// `xai`, and `assemblyai` have bespoke live backends built from their
 /// documented wire shapes (see the helpers above). None of the bespoke
-/// wires has been exercised against the live API yet — no keys were
-/// available — so treat first runs as verification runs.
+/// wires has been exercised against the live API yet - no keys were
+/// available - so treat first runs as verification runs.
 pub fn open_stt(
     backend: &str,
     options: &HashMap<String, String>,
@@ -2848,7 +2848,7 @@ fn open_piper_tts(options: &HashMap<String, String>) -> Result<CommandTts, Panth
 /// live backends; `kokoro-local` and `fishspeech-local` shell out to an
 /// explicit `cmd` (community CLI argument shapes were not reliably
 /// verified). The bespoke cloud wires have not been exercised against
-/// the live APIs yet — no keys were available — so treat first runs
+/// the live APIs yet - no keys were available - so treat first runs
 /// as verification runs.
 pub fn open_tts(
     backend: &str,
@@ -2930,7 +2930,7 @@ pub fn voice_api_key(
 
 /// Instantiate the STT backend from `[stt]`. `None` = section absent
 /// (speech off). `Some(Err)` = the section exists but the backend cannot
-/// be constructed — surfaced as "STT unavailable", never a model error.
+/// be constructed - surfaced as "STT unavailable", never a model error.
 ///
 /// The OpenAI-wire backends (`openai`, `groq`, `mistral`) resolve their
 /// key through the secrets broker; a named backend is its own provider

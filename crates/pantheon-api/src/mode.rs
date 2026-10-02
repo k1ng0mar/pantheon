@@ -51,7 +51,7 @@ pub const PLAN_MODE_REFUSAL: &str = "Plan mode is active: write/execute tools ar
 /// an earlier prefix rule lived here, but a prefix cannot tell
 /// `read_file` from `read_write`, so any name merely starting with a
 /// read-only word slipped through as read-only. Unknown names are
-/// mutating, full stop — a provider-registered tool earns its entry by
+/// mutating, full stop - a provider-registered tool earns its entry by
 /// being known read-only, not by naming luck.
 const READ_ONLY_TOOLS: &[&str] = &[
     "read_file",
@@ -84,7 +84,7 @@ const READ_ONLY_TOOLS: &[&str] = &[
 /// True when the named tool can mutate state and must be refused while
 /// [`AgentMode::Plan`] is active.
 ///
-/// Classification is by name only — deliberately. Allowing `shell` for
+/// Classification is by name only - deliberately. Allowing `shell` for
 /// "read-only" commands would require parsing arbitrary shell, which is
 /// exactly the hole Plan mode closes: **all** exec is blocked in Plan
 /// mode, including `ls`. Unknown names are treated as mutating (fail

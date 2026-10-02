@@ -40,10 +40,10 @@ All calls go through `scripts/tw.sh`, a thin curl wrapper. It reads the
 credential from the `X_BEARER_TOKEN` environment variable and needs nothing
 else installed besides `curl` and `python3`.
 
-- `tw.sh search "<query>" [max]` — recent search, newest first. Supports
+- `tw.sh search "<query>" [max]` - recent search, newest first. Supports
   X search operators (`from:`, `lang:`, `-is:retweet`, etc.).
-- `tw.sh me` — verifies the credential and shows the connected account.
-- `tw.sh post "<text>"` — publishes one tweet.
+- `tw.sh me` - verifies the credential and shows the connected account.
+- `tw.sh post "<text>"` - publishes one tweet.
 
 ## Auth
 
@@ -58,7 +58,7 @@ Two different tokens, two different powers:
 Set `X_BEARER_TOKEN` to whichever token the task needs. Never print the
 token, never write it into a file, never put it in a URL.
 
-## Operating Rules
+## Operating rules
 
 1. `tw.sh me` first on any new session. If it fails, the credential is
    the problem, not the query.
@@ -70,4 +70,4 @@ token, never write it into a file, never put it in a URL.
 4. Search returns recent posts (last ~7 days on most tiers). It is not an
    archive and not a firehose. Say so when the results are thin.
 5. DMs are out of scope for this skill: the script does not implement
-   them, and DM access needs Elevated tier approval from X.
+   them, and DM access needs a higher-tier approval from X.

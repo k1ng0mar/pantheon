@@ -10,7 +10,7 @@
 //! - every subdirectory of the data dir (backups, gateway state, skills,
 //!   extensions, mcp state, logs)
 //! - `<data_dir>/.env` and `<data_dir>/.secrets.key` ONLY with
-//!   `--include-secrets` (default: kept — secrets are the one thing an
+//!   `--include-secrets` (default: kept - secrets are the one thing an
 //!   uninstall must not surprise-delete)
 //!
 //! What it does NOT do (printed as instructions instead):
@@ -118,7 +118,7 @@ pub fn cmd_uninstall(args: &[String]) {
             for secret in [".env", ".secrets.key"] {
                 if data_dir.join(secret).is_file() {
                     println!(
-                        "  (keeping {} — pass --include-secrets to remove it)",
+                        "  (keeping {} - pass --include-secrets to remove it)",
                         data_dir.join(secret).display()
                     );
                 }

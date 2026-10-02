@@ -32,7 +32,7 @@ If you are scripting the install (CI, a fresh machine), you can answer the quest
 
 ```sh
 pantheon setup --yes --provider openai --model gpt-4o-mini \
-  --api-key-env OPENAI_API_KEY --policy coder
+ --api-key-env OPENAI_API_KEY --policy coder
 ```
 
 Your API key itself is never stored in the config file. Only the *name* of the environment variable holding it. Set that variable before you run Pantheon:

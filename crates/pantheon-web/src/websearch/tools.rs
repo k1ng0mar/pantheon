@@ -45,7 +45,7 @@ impl Default for WebsearchOptions {
 /// Register the Tavily-backed `web_search` tool.
 ///
 /// Returns the number of tools registered. When `enabled` is false or the
-/// key is missing/blank, registers **nothing** and returns `Ok(0)` — the
+/// key is missing/blank, registers **nothing** and returns `Ok(0)` - the
 /// parent logs why; the model must not see a tool that can never work.
 pub fn register_websearch_tools(
     reg: &mut ToolRegistry,
@@ -77,14 +77,14 @@ pub fn register_search_tools(
             description: "Look something up on the web: facts, news, docs, prices, \"what is X\". \
                 Returns a compact JSON array of {title, url, snippet, published?} results.\n\
                 \n\
-                LOOKUP vs AUTOMATION — pick the right tool:\n\
-                - web_search is for KNOWING something: search the open web for information.\n\
-                - browser_* tools are for DOING something on a live site: filling forms, clicking \
+                LOOKUP vs AUTOMATION - pick the right tool:\n\
+               - web_search is for KNOWING something: search the open web for information.\n\
+               - browser_* tools are for DOING something on a live site: filling forms, clicking \
                 through JS-heavy pages, working inside authenticated flows, or extracting content \
                 from a specific page you already have the URL for.\n\
                 \n\
                 web_search cannot interact with pages (no clicks, no forms, no login). The browser_* \
-                tools are not a search engine — search here first, then open a result's URL with a \
+                tools are not a search engine - search here first, then open a result's URL with a \
                 browser tool only if you need that page's full content or must act on the site.".into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -169,5 +169,5 @@ fn truncate(s: &str, max_chars: usize) -> String {
         .map(|(i, _)| i)
         .nth(max_chars)
         .unwrap_or(s.len());
-    format!("{}…", &s[..end])
+    format!("{}...", &s[..end])
 }

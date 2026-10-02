@@ -59,8 +59,8 @@ pub fn is_approved(plugin: &DiscoveredPlugin) -> bool {
 /// holds were operator-approved: an in-place rewrite of the runner file
 /// (same inode, new bytes) after the read cannot pass, because the check
 /// runs on the bytes already read, not on whatever the path resolves to
-/// now. The caller must exec a sealed copy of `runner_bytes` — never
-/// re-open the path — for the guarantee to hold.
+/// now. The caller must exec a sealed copy of `runner_bytes` - never
+/// re-open the path - for the guarantee to hold.
 ///
 /// `canon_root` / `canon_runner` must be the canonicalized plugin root and
 /// runner path (the same pair `spawn_verified` containment-checked).

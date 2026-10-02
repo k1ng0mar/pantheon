@@ -44,10 +44,10 @@ pub struct ChannelEvent {
 /// `(answer, run_id, scope)`.
 ///
 /// Two formats are accepted:
-/// - `grant:{run_id}:{scope}` / `deny:{run_id}:{scope}` — sent by phone
+/// - `grant:{run_id}:{scope}` / `deny:{run_id}:{scope}` - sent by phone
 ///   approval notifications for locally-started runs. The run id lets the
 ///   daemon resolve the pending approval directly.
-/// - legacy `grant:{scope}` / `deny:{scope}` — no run id; the daemon
+/// - legacy `grant:{scope}` / `deny:{scope}` - no run id; the daemon
 ///   falls back to its thread→run map.
 ///
 /// The first segment after the verb is unambiguous: run ids always start
@@ -128,7 +128,7 @@ impl ChannelError {
     pub fn from_ureq(prefix: &str, err: ureq::Error) -> Self {
         match &err {
             // The status arm owns the response, so the `Retry-After` header
-            // is still readable here — once converted to a string it is gone.
+            // is still readable here - once converted to a string it is gone.
             ureq::Error::Status(429, resp) => Self::rate_limited(
                 prefix,
                 err.to_string(),
@@ -155,7 +155,7 @@ impl ChannelError {
     }
 }
 /// Parse a `Retry-After` header value (delta-seconds). HTTP-date form is
-/// not parsed — a platform clock we cannot verify is worse than our own
+/// not parsed - a platform clock we cannot verify is worse than our own
 /// backoff, so it falls back to `None` and the caller uses exponential
 /// backoff instead. Capped at 10 minutes: a larger hint is honored as 10
 /// minutes rather than sleeping the daemon into irrelevance.
@@ -243,7 +243,7 @@ pub fn format_text(frame: &UiFrame) -> String {
         crate::stream::UiFrameKind::State => frame.text.clone(),
         crate::stream::UiFrameKind::Approval => {
             if frame.name == "requested" {
-                format!("approval needed: `{}` — reply grant/deny", frame.text)
+                format!("approval needed: `{}` - reply grant/deny", frame.text)
             } else if frame.name == "denied" {
                 format!("approval denied: `{}`", frame.text)
             } else {

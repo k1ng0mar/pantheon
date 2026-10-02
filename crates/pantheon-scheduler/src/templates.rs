@@ -22,7 +22,7 @@
 //!
 //! A user template with a built-in's name overrides it for [`TemplateStore::get`]
 //! and [`TemplateStore::list`]; built-ins themselves cannot be deleted.
-//! Templates created through [`TemplateStore::save`] are validated loudly —
+//! Templates created through [`TemplateStore::save`] are validated loudly
 //! a bad schedule is an error at save time, never a silent no-show at fire
 //! time. A job names a template in [`Job::template`](crate::Job::template);
 //! [`Job::resolve_task`](crate::Job::resolve_task) re-renders it at fire time.
@@ -78,11 +78,11 @@ pub fn builtin_templates() -> Vec<ScheduleTemplate> {
                 .into(),
             schedule: TemplateSchedule::Cron("0 7 * * *".into()),
             prompt: "Write my morning briefing, three sections, tight:\n\n\
-                1. GitHub — notifications and activity from the last ~12h on my repos: new issues, \
+                1. GitHub - notifications and activity from the last ~12h on my repos: new issues, \
                 PRs needing review, failing CI. Use `gh` (gh api notifications, gh run list).\n\
-                2. {{topic}} news — what happened in the last 24h: releases, papers, notable launches \
+                2. {{topic}} news - what happened in the last 24h: releases, papers, notable launches \
                 and discussions. Search the web; link sources.\n\
-                3. Today — what's on the calendar: meetings, deadlines, focus blocks. Use the \
+                3. Today - what's on the calendar: meetings, deadlines, focus blocks. Use the \
                 connected calendar tools.\n\n\
                 End with a 3-bullet \"today's priorities\" distilled from all three. \
                 Under 400 words total. No preamble.".into(),
@@ -99,7 +99,7 @@ pub fn builtin_templates() -> Vec<ScheduleTemplate> {
             schedule: TemplateSchedule::Every("2h".into()),
             prompt: "Triage unread messages across {{channels}} from the last few hours. For each \
                 thread with unread activity: one line on what it is, who it's from, and a suggested \
-                action — draft the reply, defer, or ignore. Skip newsletters, CI bots, and automated \
+                action - draft the reply, defer, or ignore. Skip newsletters, CI bots, and automated \
                 noise entirely. End with a prioritized action list, most urgent first. If there's \
                 genuinely nothing new, say so in one line and stop.".into(),
             vars: vec![var(
@@ -115,7 +115,7 @@ pub fn builtin_templates() -> Vec<ScheduleTemplate> {
             prompt: "Watch {{repo}} for problems. Check: CI status on the default branch and open \
                 PRs (failing checks first), open PRs and issues sorted by staleness, and branches \
                 untouched for 30+ days that look merged or abandoned. Use `gh` for GitHub remotes, \
-                git locally. Report as: RED — needs action / YELLOW — watch / GREEN — healthy. \
+                git locally. Report as: RED - needs action / YELLOW - watch / GREEN - healthy. \
                 One line per item, no fluff.".into(),
             vars: vec![var(
                 "repo",
@@ -148,7 +148,7 @@ pub fn builtin_templates() -> Vec<ScheduleTemplate> {
                 `pantheon stats --week --json` and the run history: total runs, success vs failure \
                 rate, token and cost totals by model, the most expensive runs, and what shipped \
                 (completed runs with real output). Then: biggest win, biggest time sink, one concrete \
-                thing to change next week. Honest and specific — cite run ids and numbers, no filler."
+                thing to change next week. Honest and specific - cite run ids and numbers, no filler."
                 .into(),
             vars: vec![],
         },
@@ -159,7 +159,7 @@ pub fn builtin_templates() -> Vec<ScheduleTemplate> {
             prompt: "Report Pantheon spend over the last {{range}}. Run `pantheon stats --json` for \
                 the range (use --week for 7d, --month for 30d): total cost in USD, breakdown by model \
                 and by project, per-run cost outliers, and trend vs the previous equal-length period \
-                if the data exists. Flag anything anomalous — a single run at 10x the median cost, a \
+                if the data exists. Flag anything anomalous - a single run at 10x the median cost, a \
                 new expensive model appearing, a project suddenly burning tokens. Concrete numbers, \
                 no padding.".into(),
             vars: vec![var("range", "Over what range?", Some("7d"))],
@@ -171,7 +171,7 @@ pub fn builtin_templates() -> Vec<ScheduleTemplate> {
             schedule: TemplateSchedule::Every("30m".into()),
             prompt: "Watch Gmail for new mail matching: {{query}}. Use the Gmail skill: search for \
                 unread messages matching the query from the last check window, and summarize each \
-                hit — sender, subject, one-line gist, and why it matched. End with suggested actions \
+                hit - sender, subject, one-line gist, and why it matched. End with suggested actions \
                 for anything needing a response. If nothing new matches, say so in one line and stop. \
                 This job is usually created with a --deliver target so hits reach me.".into(),
             vars: vec![var(
@@ -188,10 +188,10 @@ pub fn builtin_templates() -> Vec<ScheduleTemplate> {
             prompt: "Check the current price of {{item}} at {{url_or_source}}. Use web search/fetch \
                 tools; if the page needs JS rendering, say so and stop rather than guessing. Keep a \
                 state file at $PANTHEON_DATA_DIR/price-watch.json mapping item names to last-seen \
-                prices (create it if absent). Alert — with old price, new price, and % change — when \
+                prices (create it if absent). Alert - with old price, new price, and % change - when \
                 the price moved ≥ {{threshold_pct}}% since the last check, or when it crosses \
                 {{target_price}} in either direction (ignore the target condition when blank). If \
-                neither fired, reply in one line with the current price and stop — no noise.".into(),
+                neither fired, reply in one line with the current price and stop - no noise.".into(),
             vars: vec![
                 var("item", "What item should I watch the price of?", None),
                 var(
@@ -296,15 +296,15 @@ pub fn apply_defaults(template: &ScheduleTemplate, vars: &mut HashMap<String, St
 /// `POST /api/schedule/jobs`.
 ///
 /// Reserved vars (`model`, `provider`) become the model pin, not prompt
-/// text — an explicit pin wins, a blank var is dropped. Defaults fill the
+/// text - an explicit pin wins, a blank var is dropped. Defaults fill the
 /// remaining gaps; every var left without a value or a default is resolved
-/// through `missing_var(name, question)` — the CLI prompts interactively,
+/// through `missing_var(name, question)` - the CLI prompts interactively,
 /// the dashboard fails loudly.
 ///
 /// A `missing_var` error does not abort the scan: the remaining vars are
 /// still offered to the callback (so a caller can collect *every* missing
 /// name for a single loud error), and the first error is returned
-/// afterwards — without rendering, since a render with unresolved vars
+/// afterwards - without rendering, since a render with unresolved vars
 /// cannot succeed. [`render_prompt`] failures propagate unchanged.
 ///
 /// On success `vars` holds the final var map (reserved vars removed),

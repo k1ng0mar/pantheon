@@ -1,11 +1,11 @@
 //! The single LLM-gating contract for the nightly pass.
 //!
-//! Three LLM touchpoints — proposal refinement, memory distillation, and
-//! fix-loop draft revision — go through this one trait, and every call is
+//! Three LLM touchpoints - proposal refinement, memory distillation, and
+//! fix-loop draft revision - go through this one trait, and every call is
 //! routed through an explicitly resolved [`AuxiliaryModel`]: the proposal
 //! refiner uses the `Reflection` slot, the memory distiller uses the
 //! `Consolidation` slot, and ALL fix-loop draft revision (eval-reject and
-//! replay-reject paths) uses the `Repair` slot — never Reflection. None
+//! replay-reject paths) uses the `Repair` slot - never Reflection. None
 //! ever touches the chat/default model. All LLM steps are OFF unless the
 //! pass config has `enabled = true` AND a model policy resolves the slot;
 //! anything else is a deterministic-only pass with zero model calls.
@@ -44,7 +44,7 @@ impl DistillBackend for ResolvedDistill<'_> {
     }
 }
 
-/// No-model distiller: identity. Used whenever LLM steps are disabled —
+/// No-model distiller: identity. Used whenever LLM steps are disabled
 /// zero model calls.
 pub struct DeterministicDistill;
 

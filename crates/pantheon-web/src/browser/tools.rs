@@ -2,7 +2,7 @@
 //!
 //! Every tool gates on [`Capability::Browser`]; `browser_act` additionally
 //! picks up [`Capability::BrowserAct`] (approval-gated in the default
-//! presets) when [`BrowserOptions::act_require_approval`] is true — the
+//! presets) when [`BrowserOptions::act_require_approval`] is true - the
 //! same `extra_capabilities` pattern the `shell` tool uses for `git push`.
 //!
 //! The tool surface adapts to the active backend ([`BackendKind`]):
@@ -10,10 +10,10 @@
 //! * GSD (default): the full 16-tool interactive surface, including
 //!   `browser_act` (`act --intent`, verified against gsd-browser 0.1.24),
 //!   plus `browser_fill_login` when a login vault is wired
-//!   ([`BrowserOptions::login_store`]) — approval-gated credential
+//!   ([`BrowserOptions::login_store`]) - approval-gated credential
 //!   autofill on any interactive backend.
 //! * Other interactive backends (chromiumoxide, Steel, Browserbase,
-//!   Playwright): the interactive surface without `browser_act` — none of
+//!   Playwright): the interactive surface without `browser_act` - none of
 //!   them has gsd's semantic-intent engine, so the tool is not offered.
 //! * Lightpanda (extraction-only): `browser_navigate`, `browser_extract`,
 //!   `browser_page_source`, `browser_screenshot` only. Interactive
@@ -23,7 +23,7 @@
 //!
 //! Search-vs-browse is taught in the tool descriptions: `web_search` is
 //! for *looking something up* (facts, docs, prices, error messages);
-//! `browser_*` is for *doing things on a live site* — navigate, click,
+//! `browser_*` is for *doing things on a live site* - navigate, click,
 //! type, extract from JS-heavy pages that snippets cannot cover.
 
 use super::backend::BrowserBackend;
@@ -47,7 +47,7 @@ pub struct BrowserOptions {
     /// Which backend drives the tools. Default [`BackendKind::Gsd`].
     pub backend: BackendKind,
     /// Per-backend settings (binaries, base URLs, resolved secrets).
-    /// Secrets arrive as resolved values — never logged.
+    /// Secrets arrive as resolved values - never logged.
     pub backend_config: BackendConfig,
     /// Gate `browser_act` behind `Capability::BrowserAct` (approval in
     /// the default presets). Default true; when false the tool carries
@@ -61,14 +61,14 @@ pub struct BrowserOptions {
     pub run_id: Arc<dyn Fn() -> String + Send + Sync>,
     /// Optional narration sink: invoked with `(session, action, detail)`
     /// before every backend call so the app can subtitle what the agent
-    /// is doing ("Tapping…", "Opening example.com…"). The runtime wires
+    /// is doing ("Tapping...", "Opening example.com..."). The runtime wires
     /// this to the event ledger; `detail` is display-safe by construction
-    /// (see [`activity_of`]) — hosts only, never full URLs or typed text.
+    /// (see [`activity_of`]) - hosts only, never full URLs or typed text.
     pub on_activity: Option<Arc<dyn Fn(&str, &str, &str) + Send + Sync>>,
     /// Website-login vault for [`register_fill_login`]. When `None` the
     /// tool is not registered. The runtime opens it from the data dir
     /// (`logins.json` + `logins.env`); passwords only ever leave through
-    /// the fill path — never into model context or error text.
+    /// the fill path - never into model context or error text.
     pub login_store: Option<Arc<LoginStore>>,
 }
 
@@ -111,7 +111,7 @@ fn arg_opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
 
 /// Normalize a `browser_extract` schema argument for `gsd-browser
 /// extract --schema`: the CLI requires a top-level `properties` object
-/// (verified live against 0.1.24 — a bare property map is rejected with
+/// (verified live against 0.1.24 - a bare property map is rejected with
 /// "schema must have a 'properties' object"), so a bare map is wrapped
 /// automatically. Non-JSON input passes through untouched and fails at
 /// the backend with its own error.
@@ -152,7 +152,7 @@ impl Ctx {
 
     fn call(&self, argv: Vec<String>) -> Result<serde_json::Value, PantheonError> {
         let session = self.session();
-        // Narrate before invoking: the subtitle ("Tapping…") should be
+        // Narrate before invoking: the subtitle ("Tapping...") should be
         // live while the action runs, not after it lands.
         if let Some(sink) = &self.on_activity {
             let (action, detail) = activity_of(&argv);
@@ -212,7 +212,7 @@ impl Ctx {
 
     /// Fill a field with a secret value through the canonical `fill-ref`
     /// command. [`BrowserError`] echoes the full argv on failure (Failed,
-    /// Timeout, BadOutput) and its `Display` prints it — so the secret
+    /// Timeout, BadOutput) and its `Display` prints it - so the secret
     /// payload is redacted before the error reaches the model. Success
     /// and narration carry no secret either (see [`activity_of`]).
     fn fill_secret(&self, r: &str, secret: &str) -> Result<(), PantheonError> {
@@ -274,10 +274,10 @@ fn redact_secret_error(e: BrowserError) -> BrowserError {
 }
 
 /// Map a canonical backend argv to narration `(action, detail)`.
-/// Pure function — unit-tested. `detail` is display-safe by construction:
+/// Pure function - unit-tested. `detail` is display-safe by construction:
 /// hosts only for `navigate` (never full URLs with query strings), refs /
 /// selectors / key names otherwise, and never typed text (it may contain
-/// secrets — `fill-ref`/`type` report a placeholder instead).
+/// secrets - `fill-ref`/`type` report a placeholder instead).
 pub fn activity_of(argv: &[String]) -> (String, String) {
     let arg = |i: usize| argv.get(i).map(String::as_str).unwrap_or("");
     let action = arg(0);
@@ -387,7 +387,7 @@ fn register_tool(
 ///
 /// Approval-gated: the tool carries `Capability::BrowserFillLogin` on
 /// top of `Capability::Browser`, and the default policies mark it
-/// Approval — the run loop parks for a human before the closure runs,
+/// Approval - the run loop parks for a human before the closure runs,
 /// so a denied approval aborts without touching the page or the vault.
 /// Secrets never reach the model: the result names only the login id
 /// and the filled field labels, and backend errors have their argv
@@ -405,7 +405,7 @@ fn register_fill_login(reg: &mut ToolRegistry, ctx: &Ctx) {
     reg.register_with(
         schema(
             "browser_fill_login",
-            "Fill a saved website-login credential into the page's login form. Finds the username/email and password fields from a fresh snapshot and fills them with the vault credential — works on any configured browser backend. APPROVAL-GATED: the run parks for a human before anything is filled; a denial aborts cleanly. Never returns secret values: the result names only the login id and which field labels were filled. Does NOT submit the form — click the submit button yourself afterwards with browser_click_ref.",
+            "Fill a saved website-login credential into the page's login form. Finds the username/email and password fields from a fresh snapshot and fills them with the vault credential - works on any configured browser backend. APPROVAL-GATED: the run parks for a human before anything is filled; a denial aborts cleanly. Never returns secret values: the result names only the login id and which field labels were filled. Does NOT submit the form - click the submit button yourself afterwards with browser_click_ref.",
             serde_json::json!({
                 "login": str_prop("Vault login id (see the app's More → Logins list). If omitted, the login is matched against the site."),
                 "site": str_prop("URL or host to match a saved login against. Defaults to the current page's host (tracked from the last browser_navigate)."),
@@ -491,7 +491,7 @@ fn resolve_credential(
             Err(login_err(
                 "LOGIN_AMBIGUOUS",
                 format!(
-                    "multiple saved logins match '{host}': {} — pass the login id explicitly",
+                    "multiple saved logins match '{host}': {} - pass the login id explicitly",
                     ids.join(", ")
                 ),
             ))
@@ -506,7 +506,7 @@ fn fill_login(ctx: &Ctx, store: &LoginStore, args: &str) -> Result<String, Panth
 
     // 1. Resolve the credential. Only metadata (id/site/username) is
     //    read here; the password leaves the vault straight into the
-    //    backend argv in step 3 — never into model-visible text.
+    //    backend argv in step 3 - never into model-visible text.
     let cred = resolve_credential(store, login.as_deref(), site.as_deref(), ctx)?;
     let password = store
         .password_for(&cred.id)
@@ -529,7 +529,7 @@ fn fill_login(ctx: &Ctx, store: &LoginStore, args: &str) -> Result<String, Panth
         FillError::AmbiguousPasswordFields(n) => login_err(
             "LOGIN_AMBIGUOUS_FIELDS",
             format!(
-                "found {n} password fields — ambiguous which form to fill: snapshot the page and fill the exact refs with browser_fill_ref instead"
+                "found {n} password fields - ambiguous which form to fill: snapshot the page and fill the exact refs with browser_fill_ref instead"
             ),
         ),
     })?;
@@ -570,8 +570,8 @@ pub fn register_browser_tools(
         return Ok(());
     }
     // Fail fast on misconfiguration (missing API key, no Lightpanda
-    // transport, …) instead of registering dead tools. Construction is
-    // lazy: no network, no subprocess, no browser launch happens here —
+    // transport, ...) instead of registering dead tools. Construction is
+    // lazy: no network, no subprocess, no browser launch happens here
     // backends connect on first `invoke`.
     let backend = build_backend(opts.backend, &opts.backend_config)?;
     let kind = opts.backend;
@@ -584,7 +584,7 @@ pub fn register_browser_tools(
         last_url: Arc::new(Mutex::new(HashMap::new())),
     };
     // Lightpanda never gets the interactive tools (its backend refuses
-    // them too — this just keeps the tool list honest).
+    // them too - this just keeps the tool list honest).
     let interactive = !kind.is_extraction_only();
 
     register_tool(
@@ -628,7 +628,7 @@ pub fn register_browser_tools(
         reg,
         &ctx,
         "browser_reload",
-        "Reload the current page. Refs from the previous snapshot are invalidated — snapshot again before interacting.",
+        "Reload the current page. Refs from the previous snapshot are invalidated - snapshot again before interacting.",
         serde_json::json!({}),
         &[],
         false,
@@ -642,7 +642,7 @@ pub fn register_browser_tools(
         &format!(
             "Capture the page's interactive elements as a list of refs like @v1:e1. \
              Always snapshot before clicking/typing: refs are INVALIDATED on any page change \
-             (stale refs error — take a fresh snapshot, never retry the old ref). {SEARCH_VS_BROWSE}"
+             (stale refs error - take a fresh snapshot, never retry the old ref). {SEARCH_VS_BROWSE}"
         ),
         serde_json::json!({}),
         &[],
@@ -696,7 +696,7 @@ pub fn register_browser_tools(
         reg,
         &ctx,
         "browser_click",
-        "Click an element by CSS selector. Prefer browser_snapshot + browser_click_ref when you can see the element — selectors are brittle.",
+        "Click an element by CSS selector. Prefer browser_snapshot + browser_click_ref when you can see the element - selectors are brittle.",
         serde_json::json!({ "selector": str_prop("CSS selector of the element to click") }),
         &["selector"],
         false,
@@ -767,7 +767,7 @@ pub fn register_browser_tools(
 
         // Credential autofill: snapshot → locate fields → fill from the
         // vault. Inside the interactive surface (Lightpanda has no
-        // snapshot/fill), and only when a login store is wired — otherwise
+        // snapshot/fill), and only when a login store is wired - otherwise
         // the tool is not registered at all.
         register_fill_login(reg, &ctx);
     } // end of the interactive surface
@@ -806,7 +806,7 @@ pub fn register_browser_tools(
         },
     );
 
-    // browser_act: GSD only — it is the one backend with a semantic-intent
+    // browser_act: GSD only - it is the one backend with a semantic-intent
     // engine (`act --intent`, verified against gsd-browser 0.1.24).
     // `act` clicks the top intent candidate with NO minimum score
     // threshold upstream. Mirrors the git-push pattern: when
@@ -823,7 +823,7 @@ pub fn register_browser_tools(
         reg,
         &ctx,
         "browser_act",
-        "AUTONOMOUS ACTION — use only as a last resort. Performs a low-confidence semantic action, clicking the top intent candidate with NO minimum score threshold. SAFER PATTERN FIRST: browser_snapshot, verify the target yourself, then browser_click_ref / browser_fill_ref on the exact ref. Approval-gated by policy.",
+        "AUTONOMOUS ACTION - use only as a last resort. Performs a low-confidence semantic action, clicking the top intent candidate with NO minimum score threshold. SAFER PATTERN FIRST: browser_snapshot, verify the target yourself, then browser_click_ref / browser_fill_ref on the exact ref. Approval-gated by policy.",
         serde_json::json!({
             "intent": str_prop("Semantic intent: submit_form | close_dialog | primary_cta | search_field | next_step | dismiss | auth_action | back_navigation"),
             "scope": str_prop("Optional CSS selector to narrow the search area"),

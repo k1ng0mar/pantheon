@@ -23,7 +23,7 @@ pub(crate) fn store_dir(data_dir: &Path, kind: &str) -> PathBuf {
     data_dir.join(kind)
 }
 
-/// Path of one template file. `None` when the id is not a slug — the
+/// Path of one template file. `None` when the id is not a slug - the
 /// caller turns that into a 400 before touching the filesystem. The
 /// `starts_with` guard is defense in depth: a valid slug cannot contain
 /// `/`, `\`, or `..`, so the join cannot escape `store_dir` anyway.
@@ -61,7 +61,7 @@ pub(crate) fn read_item<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
 }
 
 /// All templates in a gallery, sorted by id. A single corrupt file does
-/// not fail the whole listing — it is skipped, and the gallery stays
+/// not fail the whole listing - it is skipped, and the gallery stays
 /// usable (the file can be fixed or deleted through the API).
 pub(crate) fn list_items<T: DeserializeOwned>(dir: &Path) -> Result<Vec<(String, T)>, String> {
     let mut out = Vec::new();

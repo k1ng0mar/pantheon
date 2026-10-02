@@ -3,7 +3,7 @@
 //! vector recall layer works without any configured provider.
 //!
 //! The auxiliary is resolved from `ModelPolicy.auxiliaries` under
-//! `AuxiliaryKind::Embeddings` — same scoping rule as title-gen and
+//! `AuxiliaryKind::Embeddings` - same scoping rule as title-gen and
 //! compression. Absent entry = local embedder, never chat.
 
 use crate::catalog::{self, ApiMode};
@@ -33,7 +33,7 @@ fn eerr(code: &str, cause: String) -> PantheonError {
 pub enum Embedder {
     /// Remote provider resolved through the auxiliary chain.
     Provider(DefaultModel),
-    /// Local deterministic hashing embedder — no network, no key, works
+    /// Local deterministic hashing embedder - no network, no key, works
     /// everywhere. Weaker semantics than a real embedding model, but it
     /// turns the vector layer on for every install by default.
     Local,
@@ -172,7 +172,7 @@ impl EmbedClient {
             eerr(
                 "PROVIDER_CONFIG",
                 format!(
-                    "{} — run `pantheon model` to fill the provider's required values",
+                    "{} - run `pantheon model` to fill the provider's required values",
                     e.cause
                 ),
             )
@@ -218,7 +218,7 @@ impl EmbedderClient for EmbedClient {
 
 /// Deterministic local embedding: hashed character n-grams into a
 /// fixed-dimension L2-normalised vector. Zero network, zero key,
-/// stable across runs. Semantics are bag-of-features, not deep — good
+/// stable across runs. Semantics are bag-of-features, not deep - good
 /// enough to make the vector layer real for recall, and it is replaced
 /// wholesale the moment an embeddings auxiliary is configured.
 fn local_embed(text: &str) -> Embedding {

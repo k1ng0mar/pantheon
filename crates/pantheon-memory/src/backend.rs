@@ -35,7 +35,7 @@ fn merr(code: &str, cause: String) -> PantheonError {
 /// wizard consumes `BackendRegistry::catalog()`; `auth` names the
 /// credential the entry needs (env var or keyless), `deployment` says
 /// where it runs, and `recommended` is reserved for a future named
-/// default (false everywhere — native is the implicit default).
+/// default (false everywhere - native is the implicit default).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackendInfo {
     pub name: String,
@@ -125,7 +125,7 @@ pub fn save_selection(data_dir: &Path, sel: &BackendSelection) -> Result<(), Pan
 /// Instantiate the selected backend for a data dir.
 ///
 /// - `native` (default): the persistent SQLite store at
-///   `<data_dir>/memory.db` — same file sessions have always used.
+///   `<data_dir>/memory.db` - same file sessions have always used.
 /// - anything else: resolved through `BackendRegistry::with_defaults()`.
 ///   If instantiation fails (missing url, unreachable config), the error
 ///   is returned so callers can decide; `Session::new` logs and degrades
@@ -208,7 +208,7 @@ struct PluginSpec {
 ///   `/v1/memory` protocol. Old defaults removed for the same reason.
 /// - Supermemory Cloud is real (api.supermemory.ai, Bearer, `sm_` keys)
 ///   and `npx supermemory local` is real (:6767, prints an `sm_...` API
-///   key on first boot — local access is NOT keyless). Neither speaks
+///   key on first boot - local access is NOT keyless). Neither speaks
 ///   Pantheon's `/v1/memory` protocol. Old defaults removed.
 /// - Mem0 Cloud is real (api.mem0.ai, `m0-` keys; Mem0's own API uses
 ///   `Authorization: Token <key>`, not Bearer). Old default removed.
@@ -217,7 +217,7 @@ struct PluginSpec {
 ///   not speak Pantheon's `/v1/memory` protocol. Old default removed.
 /// - GalaxyMem (k1ng0mar/galaxymem) is a local-first SQLite memory
 ///   engine (Hermes plugin or standalone library); it has no plain REST
-///   surface at all — a thin bridge is the only path.
+///   surface at all - a thin bridge is the only path.
 /// - ByteRover is `brv` CLI/MCP-shaped (no plain REST); Mnemosyne is
 ///   MCP-shaped (stdio/SSE/streamable HTTP, no REST); mnemopi is omp's
 ///   local SQLite engine (stdio MCP); sharpshooter is omp's
@@ -225,7 +225,7 @@ struct PluginSpec {
 const PLUGIN_SPECS: &[PluginSpec] = &[
     PluginSpec {
         name: "byterover",
-        label: "ByteRover via local thin bridge (brv is CLI/MCP-shaped: no plain REST API — point `url` at a bridge that fronts `brv query`/`brv curate`)",
+        label: "ByteRover via local thin bridge (brv is CLI/MCP-shaped: no plain REST API - point `url` at a bridge that fronts `brv query`/`brv curate`)",
         default_url: None,
         auth: "via the bridge; local brv is keyless (`brv login` is only for cloud sync)",
         deployment: DeploymentKind::Local,
@@ -239,35 +239,35 @@ const PLUGIN_SPECS: &[PluginSpec] = &[
     },
     PluginSpec {
         name: "hindsight-cloud",
-        label: "Hindsight Cloud via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; Hindsight's own REST (api.hindsight.vectorize.io) does not speak it",
+        label: "Hindsight Cloud via a thin bridge - point `url` at a bridge exposing Pantheon's /v1/memory protocol; Hindsight's own REST (api.hindsight.vectorize.io) does not speak it",
         default_url: None,
         auth: "hsk_ API token via PANTHEON_MEMORY_HINDSIGHT_CLOUD_KEY",
         deployment: DeploymentKind::Cloud,
     },
     PluginSpec {
         name: "hindsight-local",
-        label: "Hindsight (local) via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; the `hindsight-api` server's own REST (:8888) does not speak it",
+        label: "Hindsight (local) via a thin bridge - point `url` at a bridge exposing Pantheon's /v1/memory protocol; the `hindsight-api` server's own REST (:8888) does not speak it",
         default_url: None,
         auth: "none on loopback; an LLM provider key or local model is needed for extraction",
         deployment: DeploymentKind::Local,
     },
     PluginSpec {
         name: "honcho-cloud",
-        label: "Honcho Cloud via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; Honcho's own API (api.honcho.dev) does not speak it",
+        label: "Honcho Cloud via a thin bridge - point `url` at a bridge exposing Pantheon's /v1/memory protocol; Honcho's own API (api.honcho.dev) does not speak it",
         default_url: None,
         auth: "HONCHO_API_KEY via PANTHEON_MEMORY_HONCHO_CLOUD_KEY (Bearer)",
         deployment: DeploymentKind::Cloud,
     },
     PluginSpec {
         name: "honcho-local",
-        label: "Honcho (self-host) via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; the Docker Compose stack's own API (:8000) does not speak it",
+        label: "Honcho (self-host) via a thin bridge - point `url` at a bridge exposing Pantheon's /v1/memory protocol; the Docker Compose stack's own API (:8000) does not speak it",
         default_url: None,
         auth: "optional: self-set config key via PANTHEON_MEMORY_HONCHO_LOCAL_KEY (self-hosted Honcho is often keyless)",
         deployment: DeploymentKind::SelfHosted,
     },
     PluginSpec {
         name: "mem0",
-        label: "Mem0 via HTTP bridge — cloud memory API (needs a thin bridge to Pantheon's /v1/memory protocol; api.mem0.ai does not speak it)",
+        label: "Mem0 via HTTP bridge - cloud memory API (needs a thin bridge to Pantheon's /v1/memory protocol; api.mem0.ai does not speak it)",
         default_url: None,
         auth: "m0- API key via PANTHEON_MEMORY_MEM0_KEY (Mem0's own API uses `Authorization: Token <key>`)",
         deployment: DeploymentKind::Cloud,
@@ -281,14 +281,14 @@ const PLUGIN_SPECS: &[PluginSpec] = &[
     },
     PluginSpec {
         name: "mnemosyne",
-        label: "Mnemosyne (local-only) via HTTP bridge — target its MCP streamable-HTTP endpoint or a thin bridge; no plain REST API",
+        label: "Mnemosyne (local-only) via HTTP bridge - target its MCP streamable-HTTP endpoint or a thin bridge; no plain REST API",
         default_url: None,
         auth: "none (local loopback; embeddings may need OPENAI_API_KEY or a local profile)",
         deployment: DeploymentKind::Local,
     },
     PluginSpec {
         name: "openviking",
-        label: "OpenViking (self-host only) via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; OpenViking's own REST (:1933) does not speak it",
+        label: "OpenViking (self-host only) via a thin bridge - point `url` at a bridge exposing Pantheon's /v1/memory protocol; OpenViking's own REST (:1933) does not speak it",
         default_url: None,
         auth: "root_api_key from ov.conf via PANTHEON_MEMORY_OPENVKING_KEY (sent to the bridge as Bearer; OpenViking itself uses X-API-Key)",
         deployment: DeploymentKind::SelfHosted,
@@ -302,14 +302,14 @@ const PLUGIN_SPECS: &[PluginSpec] = &[
     },
     PluginSpec {
         name: "supermemory-cloud",
-        label: "Supermemory Cloud via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; Supermemory's own API (api.supermemory.ai) does not speak it",
+        label: "Supermemory Cloud via a thin bridge - point `url` at a bridge exposing Pantheon's /v1/memory protocol; Supermemory's own API (api.supermemory.ai) does not speak it",
         default_url: None,
         auth: "API key (sm_...) via PANTHEON_MEMORY_SUPERMEMORY_CLOUD_KEY (Bearer)",
         deployment: DeploymentKind::Cloud,
     },
     PluginSpec {
         name: "supermemory-local",
-        label: "Supermemory (local binary) via a thin bridge — point `url` at a bridge exposing Pantheon's /v1/memory protocol; the local server's own API (:6767) does not speak it",
+        label: "Supermemory (local binary) via a thin bridge - point `url` at a bridge exposing Pantheon's /v1/memory protocol; the local server's own API (:6767) does not speak it",
         default_url: None,
         auth: "API key printed on first boot (sm_...) via PANTHEON_MEMORY_SUPERMEMORY_LOCAL_KEY",
         deployment: DeploymentKind::Local,
@@ -340,7 +340,7 @@ fn bridge_factory(
                 return Err(merr(
                     "MEM_BACKEND_CONFIG",
                     format!(
-                        "{}: no url configured — point it at a thin bridge exposing Pantheon's /v1/memory protocol (or a future native adapter); set options.url in memory-backend.toml or ${env_url}",
+                        "{}: no url configured - point it at a thin bridge exposing Pantheon's /v1/memory protocol (or a future native adapter); set options.url in memory-backend.toml or ${env_url}",
                         spec.name,
                     ),
                 ))
@@ -466,7 +466,7 @@ impl BackendRegistry {
     }
 
     /// The setup-wizard catalog: every registered backend, native first,
-    /// then alphabetical by name. Native stays the implicit default —
+    /// then alphabetical by name. Native stays the implicit default
     /// no entry is marked `recommended`.
     pub fn catalog(&self) -> Vec<BackendInfo> {
         let mut v = self.list();

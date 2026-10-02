@@ -3,13 +3,13 @@
 //! Every model-supplied filesystem path goes through [`confine`] before any
 //! read or write. Two layers, in this order:
 //!
-//! 1. **Deny globs** — secret-bearing locations (`~/.ssh/**`, `/etc/**`,
-//!    …) are rejected outright, evaluated *before* any capability allow: a
+//! 1. **Deny globs** - secret-bearing locations (`~/.ssh/**`, `/etc/**`,
+//!    ...) are rejected outright, evaluated *before* any capability allow: a
 //!    granted `FilesystemRead` never implies the right to read
 //!    `~/.ssh/id_rsa`. The globs are matched against the raw input, the
 //!    `~`-expanded input, the absolutized path, and the canonicalized path,
 //!    so `../.ssh/id_rsa` and symlinks into denied dirs are caught too.
-//! 2. **Workspace containment** — the path is canonicalized (resolving `..`
+//! 2. **Workspace containment** - the path is canonicalized (resolving `..`
 //!    and symlinks via the longest existing prefix) and must stay under the
 //!    canonical workspace root.
 //!
@@ -135,7 +135,7 @@ fn expand_home_str(s: &str) -> Option<String> {
 /// collapses to `<root>/x`, the kernel would land in `/`). That is safe
 /// here because of the check/use invariant: [`confine`] returns the
 /// canonicalized path and callers must use the *returned* path for IO, never
-/// the original — so the containment verdict and the actual IO always agree,
+/// the original - so the containment verdict and the actual IO always agree,
 /// and a `..`-after-symlink can only remap to another path *inside* the
 /// verdict. What lexical collapsing buys us: paths with trailing `..`
 /// resolve instead of erroring, and `..` can never smuggle a symlink past
@@ -172,7 +172,7 @@ fn normalize_lexical(p: &Path) -> PathBuf {
 }
 
 /// Canonicalize, resolving symlinks. For paths that do not (fully) exist,
-/// canonicalize the longest existing prefix and re-append the remainder —
+/// canonicalize the longest existing prefix and re-append the remainder
 /// intermediate popped components provably do not exist, so no symlink in
 /// the remainder can hide an escape; the final result is re-checked against
 /// the deny list and the workspace root.
@@ -220,12 +220,12 @@ fn canonicalize_best_effort(abs: &Path) -> Result<PathBuf, PantheonError> {
 
 /// Confine `path` to `workspace_root`.
 ///
-/// Returns the canonicalized absolute path on success — callers should use
+/// Returns the canonicalized absolute path on success - callers should use
 /// the returned path for IO, not the original, so the check and the use
 /// agree. Errors:
-/// - `CONFINE_DENIED` — matched a deny glob (checked before containment);
-/// - `CONFINE_ESCAPE` — canonical path leaves the workspace root;
-/// - `CONFINE_BAD_PATH` / `CONFINE_IO` — unresolvable input or root.
+/// - `CONFINE_DENIED` - matched a deny glob (checked before containment);
+/// - `CONFINE_ESCAPE` - canonical path leaves the workspace root;
+/// - `CONFINE_BAD_PATH` / `CONFINE_IO` - unresolvable input or root.
 pub fn confine(path: &Path, workspace_root: &Path) -> Result<PathBuf, PantheonError> {
     let raw = path.to_string_lossy();
     if raw.trim().is_empty() {
@@ -257,7 +257,7 @@ pub fn confine(path: &Path, workspace_root: &Path) -> Result<PathBuf, PantheonEr
         return Err(denied(&abs_s, pat));
     }
 
-    // Stage 3: canonicalized — resolves `..` and symlinks, catching
+    // Stage 3: canonicalized - resolves `..` and symlinks, catching
     // `work/../.ssh/x` and `work/link -> ~/.ssh` style evasions.
     let canon = canonicalize_best_effort(&abs)?;
     let canon_s = canon.to_string_lossy().into_owned();

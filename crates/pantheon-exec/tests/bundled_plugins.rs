@@ -4,7 +4,7 @@
 //! These cover the plugin contract, not the runtime wiring (the bundle
 //! mechanism is built by a separate workstream):
 //! - every manifest parses against the real schema; all are opt-in
-//!   (`enabled: false`) except `noisegate`, which ships enabled — it is
+//!   (`enabled: false`) except `noisegate`, which ships enabled - it is
 //!   the one bundled plugin on by default, per Umar's direct directive
 //! - doc-pack: real document round-trips through the Python libraries
 //!   when installed, and the missing-dependency error path otherwise
@@ -878,7 +878,7 @@ fn noisegate_hook_manifest_is_enabled_by_default() {
     assert_eq!(m.name, "noisegate");
     assert!(
         m.enabled,
-        "noisegate must ship with enabled: true — it is the one bundled plugin on by default"
+        "noisegate must ship with enabled: true - it is the one bundled plugin on by default"
     );
     let hooks = hook_names(&m);
     assert!(hooks.contains(&"transform_tool_result"), "hooks: {hooks:?}");

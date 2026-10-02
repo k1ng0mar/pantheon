@@ -1,7 +1,7 @@
 //! Compat adapter: OpenClaw / OMP extensions -> Pantheon extensions.
 //!
-//! Both foreign ecosystems ship the same *idea* — a `register(api)` entry
-//! point that attaches handlers to named lifecycle events — under different
+//! Both foreign ecosystems ship the same *idea* - a `register(api)` entry
+//! point that attaches handlers to named lifecycle events - under different
 //! manifests, different spellings, and a much larger event vocabulary. This
 //! module is the seam named in `docs/developer/architecture.md` section 8.
 //!
@@ -106,7 +106,7 @@ pub enum HookMap {
 ///
 /// The mapping is intentionally conservative. A hook is only reported as
 /// [`HookMap::Mapped`] when it is both semantically equivalent **and**
-/// actually wired (see [`Hook::is_wired`]) — `Mapped` promises the operator
+/// actually wired (see [`Hook::is_wired`]) - `Mapped` promises the operator
 /// that the handler will run, so it must never be handed out for a hook with
 /// no fire site. `before_tool_call` now maps for real (to the
 /// `pre_tool_call` gate); `pre_gateway_dispatch` is still refused because
@@ -164,7 +164,7 @@ pub fn map_hook(event: &str) -> HookMap {
         // `retry_fallback_applied/succeeded`, `ttsr_triggered`). Pantheon's
         // fallback walk lives in the provider plane (`chain.rs`:
         // `ModelEvent::Fallback`), which never reaches the core event fan-out
-        // the bridge fires from — so there is no fire site, and per this
+        // the bridge fires from - so there is no fire site, and per this
         // file's rule these stay Unsupported rather than mapping onto an
         // observer that would fire at the wrong time. Explicit arms (not the
         // catch-all) so they count as reasoned-about in KNOWN_FOREIGN_EVENTS.
@@ -463,7 +463,7 @@ pub fn render_plugin_yaml(name: &str, version: &str, description: &str, mapped: 
          provides_hooks:\n{}\n",
         hooks
             .iter()
-            .map(|h| format!("  - {h}"))
+            .map(|h| format!(" - {h}"))
             .collect::<Vec<_>>()
             .join("\n")
     )

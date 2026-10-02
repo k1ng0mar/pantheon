@@ -9,8 +9,8 @@
 //! the next fallback. Adapters are single-attempt; the agent loop only
 //! sees `ModelTurn`. The chain also owns the policy-plane `ModelEvent`s
 //! (Attempt / AttemptFailed / RetryAttempt / Fallback / Exhausted /
-//! Usage / Completed), resolving provider metadata — base URL, API key,
-//! wire mode, capability/cost facts — from the core catalog.
+//! Usage / Completed), resolving provider metadata - base URL, API key,
+//! wire mode, capability/cost facts - from the core catalog.
 
 use crate::catalog::{self, ApiMode};
 use crate::error_kind::short_snippet;
@@ -110,7 +110,7 @@ impl Sleeper for ThreadSleeper {
 
 /// Wait before retry number `retry` (1-based): exponential
 /// `base * 2^(retry-1)` capped at `max_delay`, full jitter (uniform in
-/// [0, exp]), then `max` with the provider's asked-for Retry-After —
+/// [0, exp]), then `max` with the provider's asked-for Retry-After
 /// the provider's wait is a floor, not a suggestion. Pure, so the
 /// backoff math is unit-testable without sleeping.
 pub(crate) fn backoff_delay(
@@ -268,7 +268,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                         usage.cost_usd =
                             meta.cost.estimate(usage.input_tokens, usage.output_tokens);
                         // The adapter baked `cost_cents` at parse time from
-                        // `cost_usd: None` (always 0) — it never sees catalog
+                        // `cost_usd: None` (always 0) - it never sees catalog
                         // prices, so the chain owns the fix-up. Cost feeds
                         // stats only (there is no cost cap); without this
                         // every tracked turn would report $0.
@@ -317,7 +317,7 @@ impl<T: ChatTransport> ProviderChain<T> {
     }
 
     /// Next chain entry after `failed` (its chain index). `None` exhausts.
-    /// (Name is historical: the walk now continues on any failure —
+    /// (Name is historical: the walk now continues on any failure
     /// retryable ones burn their retries first, non-retryable ones move
     /// straight on.)
     fn next_in_chain(&self, failed: usize) -> Option<(usize, &DefaultModel)> {
@@ -330,7 +330,7 @@ impl<T: ChatTransport> ProviderChain<T> {
     /// exponential backoff + jitter (Retry-After honored as a floor).
     /// Emits `RetryAttempt` before each wait so the UI shows
     /// "retrying n/3" instead of a frozen screen. Non-retryable failures
-    /// skip retries entirely — the caller walks straight to the next
+    /// skip retries entirely - the caller walks straight to the next
     /// fallback.
     fn attempt_with_retries(
         &self,
@@ -406,10 +406,10 @@ impl<T: ChatTransport> ProviderChain<T> {
         opts: &TurnOptions,
         sink: &dyn ModelEventSink,
     ) -> Result<TurnOutcome, PantheonError> {
-        // Vision gate (provider/chain layer, resolved from the catalog —
+        // Vision gate (provider/chain layer, resolved from the catalog
         // never the UI): image parts need a vision-capable model. A
         // non-vision model would 400 mid-turn or silently ignore the
-        // pictures, so this fails LOUDLY before the first attempt — no
+        // pictures, so this fails LOUDLY before the first attempt - no
         // fallback either, since silently switching models on a capability
         // mismatch is exactly the drop this gate exists to prevent.
         let image_count: usize = messages.iter().map(|m| m.images.len()).sum();
@@ -530,8 +530,8 @@ impl<T: ChatTransport> ProviderChain<T> {
                     // 3 retries inside attempt_with_retries (each wait
                     // honored Retry-After, so no extra pacing is needed
                     // before the fallback); non-retryable failures skip
-                    // retries entirely. The loop top emits Fallback — or
-                    // Exhausted when nothing is left — so the verdict
+                    // retries entirely. The loop top emits Fallback - or
+                    // Exhausted when nothing is left - so the verdict
                     // always renders.
                     failed = Some((
                         idx,
@@ -649,7 +649,7 @@ fn failure_snippet(e: &PantheonError) -> String {
 /// A stacked key is worth rotating past only for credential/quota
 /// failures: 401/403 (dead key) and 429 (this key is over quota).
 /// Anything else (bad request, server error, network) fails the turn
-/// as before — rotating keys cannot fix it.
+/// as before - rotating keys cannot fix it.
 fn is_key_failure(e: &PantheonError) -> bool {
     e.code == "PROVIDER_HTTP"
         && (e.cause.contains("HTTP 401")

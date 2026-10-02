@@ -2,7 +2,7 @@
 //! speech-to-text and outbound text-to-speech.
 //!
 //! Umar's directive: voice is a Gateway-channel capability (and the mobile
-//! app), never an agent tool — so no voice tool is registered anywhere;
+//! app), never an agent tool - so no voice tool is registered anywhere;
 //! the backends are consumed here, at the channel seam. (The mobile app's
 //! `/agui/voice` edge lives in [`crate::voice`]; this module is the
 //! Discord/Telegram counterpart.)
@@ -10,12 +10,12 @@
 //! Backends come from `[stt]` / `[tts]` (built by
 //! [`stt_from_config`](pantheon_providers::voice::stt_from_config) /
 //! [`tts_from_config`](pantheon_providers::voice::tts_from_config)).
-//! Both additionally require the `[tools] voice` group toggle — the same
+//! Both additionally require the `[tools] voice` group toggle - the same
 //! double gate the browser uses (`[browser]` enabled + `[tools] browser`):
 //! toggle off or section absent = the backend is never constructed.
 //!
 //! Hygiene: secrets never reach logs or the ledger. Every error surfaced
-//! from this module carries a code or a static message — never a URL
+//! from this module carries a code or a static message - never a URL
 //! (Telegram file URLs embed the bot token; ureq errors echo URLs) and
 //! never key material. Downloaded audio is staged to the temp dir and
 //! deleted on every path via [`TempAudio`]'s `Drop`.
@@ -34,18 +34,18 @@ use std::path::PathBuf;
 /// speech rather than typed text.
 pub const VOICE_TRANSCRIPT_PREFIX: &str = "[voice message] ";
 /// Polite decline: a voice message arrived but no `[stt]` backend is
-/// configured. Sent as a reply — never silently dropped.
+/// configured. Sent as a reply - never silently dropped.
 pub const STT_NOT_CONFIGURED: &str =
-    "I can't listen to voice messages yet — no speech-to-text backend configured.";
+    "I can't listen to voice messages yet - no speech-to-text backend configured.";
 /// The `[stt]` section exists but the backend failed to construct.
 pub const STT_UNAVAILABLE: &str =
-    "I can't listen to voice messages right now — speech-to-text is unavailable.";
+    "I can't listen to voice messages right now - speech-to-text is unavailable.";
 /// Download or transcription failed mid-flight.
 pub const STT_FAILED: &str =
-    "I couldn't make out that voice message — please try again or type it instead.";
+    "I couldn't make out that voice message - please try again or type it instead.";
 /// The backend returned an empty transcript.
 pub const STT_EMPTY: &str =
-    "I couldn't hear anything in that voice message — please try again or type it instead.";
+    "I couldn't hear anything in that voice message - please try again or type it instead.";
 
 /// Download cap for inbound voice files. Telegram voice notes run ~1 MB
 /// per minute; 25 MB is far beyond any legitimate voice message and
@@ -63,7 +63,7 @@ pub enum VoiceSlot<T> {
     /// Backend constructed and ready.
     Ready(T),
     /// Section present but construction failed. Carries the backend's
-    /// error *code* only — never a message that could hold a secret.
+    /// error *code* only - never a message that could hold a secret.
     Unavailable(String),
 }
 
@@ -97,7 +97,7 @@ impl VoicePipes {
     /// per [`ToolsSection::is_enabled`]) AND the `[stt]`/`[tts]` section
     /// must both be present; either missing disables that side without
     /// constructing a backend. A section that fails to construct becomes
-    /// `Unavailable` — surfaced as "STT/TTS unavailable", never a model
+    /// `Unavailable` - surfaced as "STT/TTS unavailable", never a model
     /// error.
     pub fn from_config(
         tools: Option<&ToolsSection>,
@@ -136,7 +136,7 @@ impl VoicePipes {
 
     /// True when agent text replies on this channel should go out as
     /// voice. Requires the operator's `voice_replies` opt-in AND a
-    /// working `[tts]` backend — text stays the default otherwise.
+    /// working `[tts]` backend - text stays the default otherwise.
     pub fn speak_replies(&self) -> bool {
         self.voice_replies && matches!(self.tts, VoiceSlot::Ready(_))
     }
@@ -222,7 +222,7 @@ impl VoicePipes {
 
 /// What inbound voice processing produced for one message/update: either
 /// a normal channel event for the sink, or a plain-text reply the surface
-/// must send back (declines — never silently dropped).
+/// must send back (declines - never silently dropped).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoiceOutcome {
     Event(ChannelEvent),
@@ -230,7 +230,7 @@ pub enum VoiceOutcome {
 }
 
 /// Downloaded audio staged to the temp dir. The backends take a file
-/// path, so the bytes must touch disk — briefly: `Drop` removes the
+/// path, so the bytes must touch disk - briefly: `Drop` removes the
 /// file on every path, including transcription errors and panics. (The
 /// mobile edge in [`crate::voice`] has its own guard without an
 /// extension; this one keeps the suffix so backends that sniff by

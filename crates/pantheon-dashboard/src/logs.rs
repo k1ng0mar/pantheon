@@ -2,7 +2,7 @@
 //!
 //! The files are the closed set from `pantheon_api::logging`
 //! (`KNOWN_LOGS`), and the line format is its `"TIMESTAMP LEVEL
-//! [component] message"` contract — parsed the same way the `pantheon
+//! [component] message"` contract - parsed the same way the `pantheon
 //! logs` reader parses it. `GET /api/logs` tails; `GET /api/logs/stream`
 //! is Server-Sent Events over chunked encoding for live follow.
 
@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// CLI reader: splitting on whitespace looks equivalent and is not.
 const TS_WIDTH: usize = 23;
 /// How far back the SSE stream starts: the last 64 KiB of the log, like
-/// `tail` — enough context without dumping a huge file to the client.
+/// `tail` - enough context without dumping a huge file to the client.
 const STREAM_TAIL_BYTES: u64 = 64 * 1024;
 /// Poll interval for new log lines on the SSE stream.
 const STREAM_POLL: Duration = Duration::from_millis(500);

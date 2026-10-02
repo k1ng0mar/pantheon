@@ -26,10 +26,10 @@
 //!
 //! | field | rule | rationale |
 //! |---|---|---|
-//! | `display_name`, `soul_file`, `user_file`, `policy`, `model`, `soul`, `swarm_max_subagents` | **override** — child wins if set, else inherit | a persona is an identity, not a stack of layers |
+//! | `display_name`, `soul_file`, `user_file`, `policy`, `model`, `soul`, `swarm_max_subagents` | **override** - child wins if set, else inherit | a persona is an identity, not a stack of layers |
 //! | `agents_file` (AGENTS.md) | **concatenate**, parent first, child last | instructions genuinely layer; a child adds rules, never silently erases the parent's |
-//! | `memory_namespace` | **NEVER inherited** — always `agent:<name>` unless set explicitly | inheritance must not merge memory. Two profiles sharing a namespace is a data leak, not a convenience |
-//! | sessions, ledger rows, artifacts | **isolated by construction** — keyed by the profile's own id | resuming one agent's run must never replay another's transcript |
+//! | `memory_namespace` | **NEVER inherited** - always `agent:<name>` unless set explicitly | inheritance must not merge memory. Two profiles sharing a namespace is a data leak, not a convenience |
+//! | sessions, ledger rows, artifacts | **isolated by construction** - keyed by the profile's own id | resuming one agent's run must never replay another's transcript |
 //!
 //! Because the rules are field-specific rather than uniform, resolution
 //! returns provenance: [`Resolved<T>`] records which profile in the chain
@@ -107,7 +107,7 @@ impl<T> Resolved<T> {
     /// The profile that actually *supplied* this value.
     ///
     /// For `Own` that is the profile itself. For `Inherited` it is the
-    /// `ancestor` that declared the value — not the `profile` field, which
+    /// `ancestor` that declared the value - not the `profile` field, which
     /// names who asked. Returning the requester would make every inherited
     /// setting look self-authored, which is precisely the question this
     /// provenance exists to answer.
@@ -147,7 +147,7 @@ pub struct AgentProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents_file: Option<String>,
     /// User-context file (USER.md equivalent), by path. Optional: like
-    /// `soul_file` this one *overrides* across an inheritance chain — the
+    /// `soul_file` this one *overrides* across an inheritance chain - the
     /// child's file wins if set, else the parent's is inherited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_file: Option<String>,
@@ -558,7 +558,7 @@ impl ProfileRegistry {
             };
             // OVERRIDE fields: the chain is walked root-first, so the LAST
             // profile that declares a value wins. That is what makes a
-            // child override its parent — the child is the last writer. A
+            // child override its parent - the child is the last writer. A
             // "first writer wins" scan here would hand precedence to the
             // ancestor, which is the opposite of what `inherits` means.
             if let Some(d) = &decl.display_name {

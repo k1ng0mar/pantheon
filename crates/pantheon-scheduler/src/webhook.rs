@@ -1,6 +1,6 @@
 //! Inbound webhook triggers (§21).
 //!
-//! A webhook job does not fire on a clock — a surface calls in. So these jobs
+//! A webhook job does not fire on a clock - a surface calls in. So these jobs
 //! are deliberately never "due": the trigger path identifies the job, and the
 //! caller's request id is the occurrence. A caller that retries a delivery
 //! (which webhook senders do on any non-2xx) collapses onto the run already
@@ -18,7 +18,7 @@
 //!
 //! - The secret comes from the `PANTHEON_WEBHOOK_SECRET` environment variable
 //!   (see [`WebhookAuth::from_env`]). It must be non-empty; an unset or empty
-//!   secret means the webhook surface must not be served at all —
+//!   secret means the webhook surface must not be served at all
 //!   [`accept`] takes `&WebhookAuth`, so there is no unsigned code path.
 //! - The scheme prefix is the literal `sha256=`; anything else is malformed.
 //! - The hex digest is compared in constant time
@@ -56,7 +56,7 @@ pub struct WebhookAuth {
 }
 
 impl WebhookAuth {
-    /// Build from raw secret bytes. Returns `None` when the secret is empty —
+    /// Build from raw secret bytes. Returns `None` when the secret is empty
     /// an empty secret authenticates nothing.
     pub fn new(secret: impl AsRef<[u8]>) -> Option<Self> {
         let secret = secret.as_ref().to_vec();

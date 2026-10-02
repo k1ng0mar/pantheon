@@ -33,13 +33,13 @@ periodic digests of what actually changed.
    get flagged as undated, not silently trusted.
 5. Anything unclear (rumor, single anonymous source) is labeled as such.
 
-## Output Contract
+## Output contract
 
 - Digest header: period covered, watchlist entries checked.
 - Per item: headline, source + date, URL, one-line significance.
 - "Nothing new" is a valid digest. Do not pad it.
 
-## Operating Rules
+## Operating rules
 
 1. One digest per scheduled run. Do not accumulate and dump monthly.
 2. Never report an item twice. The seen-file is the memory; check it.

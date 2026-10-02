@@ -2,7 +2,7 @@
 //! for the whole provider plane, plus SSE streaming so adapters can emit
 //! normalized `ModelEvent`s as chunks arrive. Sync, rustls, no tokio.
 //!
-//! Fallback policy does NOT live here — see `chain.rs`. Adapters are
+//! Fallback policy does NOT live here - see `chain.rs`. Adapters are
 //! single-attempt; the chain decides what happens on failure.
 
 use crate::catalog::{self, ApiMode};
@@ -42,7 +42,7 @@ pub struct AdapterTurn {
 }
 
 /// One outbound HTTP call, fully described. Adapters build these; the
-/// transport executes them — wire format never leaks into the chain.
+/// transport executes them - wire format never leaks into the chain.
 #[derive(Debug, Clone)]
 pub struct WireRequest {
     pub url: String,
@@ -163,7 +163,7 @@ pub const MAX_RETRY_AFTER_SECS: u64 = 60;
 
 /// Parse a `Retry-After` header value into a capped wait in seconds.
 /// Accepts delta-seconds (`120`) and an HTTP-date
-/// (`Sun, 06 Nov 1994 08:49:37 GMT`); anything else is `None` — no wait
+/// (`Sun, 06 Nov 1994 08:49:37 GMT`); anything else is `None` - no wait
 /// rather than a wrong wait. Pure, so the backoff math is unit-testable
 /// without touching the network.
 pub fn parse_retry_after(value: &str) -> Option<u64> {
@@ -259,7 +259,7 @@ fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, Panthe
             let snippet: String = body.chars().take(300).collect();
             // 5xx / 408-class server trouble and transport errors are
             // retryable (fallback-eligible); 4xx is a client/config problem
-            // — except 429, which is transient: another key or provider may
+            // - except 429, which is transient: another key or provider may
             // still have quota, and the stamped Retry-After paces the retry.
             let retryable = !(400..500).contains(&code) || code == 429;
             let mut cause = format!("{}: HTTP {code} {snippet}", req.url);
@@ -276,7 +276,7 @@ fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, Panthe
 /// endpoint templates (azure resource, bedrock region, vertex
 /// project/location, cloudflare account). Missing values are a
 /// *config* error (`PROVIDER_CONFIG`, fail-fast with remediation),
-/// never a network error — a raw `{placeholder}` must not reach the wire.
+/// never a network error - a raw `{placeholder}` must not reach the wire.
 pub fn resolve_base(provider_id: &str) -> Result<String, PantheonError> {
     catalog::resolve_base_url(provider_id).map_err(|cause| {
         PantheonError::new(
@@ -328,7 +328,7 @@ pub fn aux_request(wire: &AuxWire, model: &str, prompt: String) -> WireRequest {
 }
 
 /// Build the wire request for one prompt plus image parts: no tools, no
-/// streaming. Empty `images` degrades exactly to [`aux_request`] — the
+/// streaming. Empty `images` degrades exactly to [`aux_request`] - the
 /// adapters keep text-only rows byte-identical.
 pub fn aux_vision_request(
     wire: &AuxWire,

@@ -5,8 +5,8 @@
 //! database, or a scheduler running. Times are UTC; a job that cares about
 //! local wall-clock belongs to a context policy, not to the expression.
 //!
-//! Supports the standard five fields — minute, hour, day-of-month, month,
-//! day-of-week — with `*`, `a`, `a-b`, `*/n`, `a-b/n`, and comma lists.
+//! Supports the standard five fields - minute, hour, day-of-month, month,
+//! day-of-week - with `*`, `a`, `a-b`, `*/n`, `a-b/n`, and comma lists.
 //! Day-of-week accepts 0 or 7 for Sunday, and follows Vixie cron's rule:
 //! when both day fields are restricted, either one matching is enough.
 

@@ -38,14 +38,14 @@ runs.
 5. Fix the root cause (see `systematic-debugging`), add a regression
    test.
 
-## Output Contract
+## Output contract
 
 - Repro command and traceback.
 - The scripted debugger session: commands run and the state they
   revealed.
 - Root cause and fix, with regression test result.
 
-## Operating Rules
+## Operating rules
 
 1. Never assume an interactive prompt. If a session would need you to
    read output and then decide the next command, restructure it: run one

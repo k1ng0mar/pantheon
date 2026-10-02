@@ -1,6 +1,6 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
-//! Tests for `pantheon_extensions::manager::tests` — sibling file so sources stay test-free.
+//! Tests for `pantheon_extensions::manager::tests` - sibling file so sources stay test-free.
 use pantheon_extensions::hooks::Hook;
 use pantheon_extensions::manager::{ExtensionManager, GateDecision};
 use pantheon_extensions::python_runner::RunnerConfig;
@@ -135,7 +135,7 @@ fn unapproved_plugin_stays_pending_and_never_fires() {
         "pre_llm_call",
         "{'context': 'X'}",
     );
-    // NOTE: deliberately not mgr_with — this test needs the plugin UNAPPROVED.
+    // NOTE: deliberately not mgr_with - this test needs the plugin UNAPPROVED.
     let mut m = ExtensionManager::new(RunnerConfig::default());
     m.load_dir(&base).unwrap();
     assert!(m.names().is_empty(), "unapproved plugin must not load");

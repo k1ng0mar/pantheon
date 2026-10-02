@@ -153,11 +153,11 @@ impl Default for CamofoxToolConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebsearchToolConfig {
     /// Master switch. The tool is only registered when a key also
-    /// resolves — a keyless `web_search` would be a tool that can never
+    /// resolves - a keyless `web_search` would be a tool that can never
     /// work, so it stays out of the model's tool list.
     pub enabled: bool,
     /// Provider name: a `pantheon-web` registry id (`tavily`, `exa`,
-    /// `marginalia`, …). An unknown id leaves `web_search` unregistered
+    /// `marginalia`, ...). An unknown id leaves `web_search` unregistered
     /// with a warning.
     pub provider: String,
     /// Secret name holding the provider API key, resolved via the
@@ -220,7 +220,7 @@ pub struct McpToolConfig {
 
 /// Tool-group enablement resolved from `[tools]` in config.toml: which
 /// tool groups the runtime registers. A disabled group never appears in
-/// the model's tool list — the registration call sites consult this,
+/// the model's tool list - the registration call sites consult this,
 /// never the config section directly.
 ///
 /// Session search is deliberately absent: it is default-on and always
@@ -345,8 +345,8 @@ fn on(value: Option<bool>, default: bool) -> bool {
 /// `PANTHEON_BROWSER_BACKEND`) win over the file, matching the runtime
 /// defaults.
 ///
-/// Lives here (not in the TUI) so every client of the runtime — the TUI
-/// agent loop and the dashboard's browser stream endpoints — resolves the
+/// Lives here (not in the TUI) so every client of the runtime - the TUI
+/// agent loop and the dashboard's browser stream endpoints - resolves the
 /// section identically.
 pub fn resolve_browser_section(s: &pantheon_api::config::BrowserSection) -> BrowserToolConfig {
     let mut cfg = BrowserToolConfig::default();
@@ -539,7 +539,7 @@ pub fn browser_backend_config(
         },
         // `[browser.camofox]` arrives resolved (defaults applied). The
         // proxy password resolves here, at build time, like the other
-        // secret values — never stored, never logged.
+        // secret values - never stored, never logged.
         camofox: b::CamofoxConfig {
             python: cfg.camofox.python.clone(),
             headless: cfg.camofox.headless,
@@ -566,9 +566,9 @@ pub fn browser_backend_config(
 /// Build the configured browser backend from a resolved
 /// [`BrowserToolConfig`], resolving secret names through `secrets`.
 ///
-/// Returns `None` when the browser tool is disabled — callers treat that
+/// Returns `None` when the browser tool is disabled - callers treat that
 /// as "browser not available", not an error. Secrets resolve here (build
-/// time), like at tool registration — they are never stored, never
+/// time), like at tool registration - they are never stored, never
 /// logged.
 pub fn build_browser_backend(
     cfg: &BrowserToolConfig,

@@ -1,6 +1,6 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
-//! Tests for `pantheon_tools::skill_tools` — the registration half that
+//! Tests for `pantheon_tools::skill_tools` - the registration half that
 //! split out of `pantheon-exec::skills_tests` (capability ≠ tool).
 use pantheon_exec::skills::load_skill;
 use pantheon_tools::skill_tools::register_skill_tools;

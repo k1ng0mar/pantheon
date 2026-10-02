@@ -6,7 +6,7 @@
 //! use per Pantheon session, `client.sessions().release(..)` on
 //! `stop_daemon`. The returned `websocketUrl` is driven through the shared
 //! raw-CDP [`CdpDriver`](super::cdp::CdpDriver) (chromiumoxide 0.9.1),
-//! exactly as Steel's own Rust cookbook does — the SDK hands off the CDP
+//! exactly as Steel's own Rust cookbook does - the SDK hands off the CDP
 //! URL and the driver takes it from there.
 //!
 //! The API key is only ever sent as the `steel-api-key` header (REST) and
@@ -97,7 +97,7 @@ impl SteelConfig {
 
     /// Build the official SDK client. An unset key is passed as `""`:
     /// `with_base_url` sends it as an empty `steel-api-key` header,
-    /// which self-hosted Steel ignores — and unlike `Steel::new` it
+    /// which self-hosted Steel ignores - and unlike `Steel::new` it
     /// does not consult the process environment, keeping the secrets
     /// broker the single source of keys.
     fn client(&self) -> Result<steel::Steel, BrowserError> {
@@ -109,7 +109,7 @@ impl SteelConfig {
 fn sdk_err(e: steel::Error) -> BrowserError {
     let stderr = match &e {
         steel::Error::Authentication(_) => {
-            "steel: API key rejected (401) — check the configured key".to_string()
+            "steel: API key rejected (401) - check the configured key".to_string()
         }
         _ => format!("steel session API error: {e}"),
     };
@@ -121,7 +121,7 @@ fn sdk_err(e: steel::Error) -> BrowserError {
 }
 
 /// Append the `apiKey` query parameter Steel's cloud requires on the
-/// CDP URL — only when the key is non-empty. Self-hosted sessions
+/// CDP URL - only when the key is non-empty. Self-hosted sessions
 /// carry no key and must not get a dangling `?apiKey=`.
 fn authed_cdp_url(websocket_url: &str, api_key: &str) -> String {
     if api_key.is_empty() {

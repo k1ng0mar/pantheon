@@ -5,14 +5,14 @@
 //! extracts Open Graph metadata so the client never has to.
 //!
 //! Security model: the dashboard fetches an arbitrary URL the client
-//! names, so every hop is SSRF-guarded — only `http`/`https`, the host
+//! names, so every hop is SSRF-guarded - only `http`/`https`, the host
 //! must resolve to public IPs (no loopback, private, link-local,
 //! carrier-grade NAT, or unique-local ranges), and redirects are
 //! followed manually (max 3) with the guard re-applied per hop.
 //! Fetch is bounded: 5 s total timeout, ~1 MiB body cap.
 //!
 //! v1 notes: no caching (every card view re-fetches), and the DNS
-//! check is a pre-flight — a resolver that answers differently on the
+//! check is a pre-flight - a resolver that answers differently on the
 //! real connection (TOCTOU) is not defended against. Good enough for a
 //! localhost dashboard; revisit before exposing this remotely.
 
@@ -48,7 +48,7 @@ fn fail(status: u16, code: &'static str, msg: impl Into<String>) -> PreviewError
 
 /// True when the IP is publicly routable. Rejects loopback, private,
 /// link-local, unspecified, multicast, CGNAT (100.64.0.0/10), and IPv6
-/// unique-local (fc00::/7) — the ranges std's helpers don't cover are
+/// unique-local (fc00::/7) - the ranges std's helpers don't cover are
 /// checked by hand.
 fn is_public_ip(ip: &IpAddr) -> bool {
     if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
@@ -235,7 +235,7 @@ fn clean(s: &str) -> Option<String> {
 }
 
 /// Parse card fields out of an HTML document. `base` resolves relative
-/// image URLs. Pure function — unit-tested with fixture HTML.
+/// image URLs. Pure function - unit-tested with fixture HTML.
 pub fn parse_preview_html(html: &str, base: &Url) -> Card {
     let title = meta_content(html, "og:title").or_else(|| {
         find_insensitive(html, "<title>").and_then(|s| {

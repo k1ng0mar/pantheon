@@ -20,7 +20,7 @@ fn plugin_factory_reads_url_from_selection_options() {
     // Construction performs no I/O; only the URL check runs here.
     let backend = r.instantiate_selected(&sel).unwrap();
     // list_agent would need the service; expect a structured conn error,
-    // not a panic — proves the adapter is wired. The cause carries the
+    // not a panic - proves the adapter is wired. The cause carries the
     // resolved URL, so this also proves options.url won.
     let err = backend.list_agent("nyx").unwrap_err();
     assert_eq!(err.code, "MEM_HTTP_CONN");

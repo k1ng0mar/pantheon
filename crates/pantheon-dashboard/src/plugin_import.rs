@@ -4,7 +4,7 @@
 //! Sources: `https://github.com/<owner>/<repo>` (optional `#<branch|tag>`
 //! fragment or `ref` field) and `clawhub:<slug>`.
 //!
-//! Honest design notes — read before extending:
+//! Honest design notes - read before extending:
 //!
 //! - The static scanner below is **heuristic pattern matching**, not a
 //!   sandbox and not a guarantee. It catches low-effort malicious
@@ -40,8 +40,8 @@
 //! - Tar entries are parsed by hand (no `tar` crate) with flate2 for
 //!   gzip; entries with `..`, absolute paths, or symlinks/hardlinks are
 //!   skipped and counted, never materialized. Zip entries (ClawHub
-//!   packages) are parsed by hand the same way — central directory,
-//!   stored/deflated via flate2 — with the same safety rules.
+//!   packages) are parsed by hand the same way - central directory,
+//!   stored/deflated via flate2 - with the same safety rules.
 //! - Imported plugins land UNAPPROVED in
 //!   `<data_dir>/plugins/.quarantine/<name>/` with `.scan-report.json`
 //!   and `.import-meta.json` beside them. Approval (via the existing
@@ -203,8 +203,8 @@ fn parse_clawhub_slug(slug: &str) -> Result<String, ImportError> {
 }
 
 /// URL whitelist: exactly `https://github.com/<owner>/<repo>`. Everything
-/// else — private IPs, loopback, other hosts, credentials, ports, deep
-/// paths — is rejected with 400.
+/// else - private IPs, loopback, other hosts, credentials, ports, deep
+/// paths - is rejected with 400.
 fn parse_github_url(raw: &str, ref_field: Option<&str>) -> Result<SourceSpec, ImportError> {
     let bad = |m: &str| ImportError::BadRequest(m.to_string());
     let u = url::Url::parse(raw).map_err(|_| bad("url is not a valid URL"))?;
@@ -296,7 +296,7 @@ fn validate_gitref(r: &str) -> Result<(), ImportError> {
 /// Proxy env is honored for *transport*, the same posture as curl and
 /// git. That does not weaken the source whitelist: the URL is validated
 /// against the whitelist before any fetch happens, and TLS still
-/// verifies the origin server's certificate through the proxy tunnel —
+/// verifies the origin server's certificate through the proxy tunnel
 /// a proxy cannot make a non-whitelisted host present a valid cert for
 /// a whitelisted name.
 ///
@@ -476,7 +476,7 @@ fn extract_tar(tar: &[u8], dest: &Path) -> Result<ExtractStats, ImportError> {
                 None => stats.skipped_unsafe += 1,
             },
             // Symlinks (b'2'), hardlinks (b'1'), and anything exotic are
-            // never materialized — a symlink pointing at /etc/passwd must
+            // never materialized - a symlink pointing at /etc/passwd must
             // not survive extraction. Counted, not an error.
             _ => stats.skipped_unsafe += 1,
         }
@@ -898,7 +898,7 @@ const CLAUDE_EVENT_MAP: &[(&str, &str)] = &[
 /// - `hooks` (map of Claude event → `[{matcher, hooks: [{type, command}]}]`)
 ///   → Pantheon `provides_hooks` for mapped events; unmapped event names
 ///   are kept verbatim in the non-validated `hooks` list. Hook *bodies*
-///   (shell commands) are preserved verbatim in `claude-hooks.json` —
+///   (shell commands) are preserved verbatim in `claude-hooks.json`
 ///   Pantheon's runner executes `__init__.py`, not shell, so they need
 ///   manual porting before the plugin can do anything.
 /// - `commands` / `agents` / `skills` (dirs) and `mcpServers` are NOT
@@ -1180,7 +1180,7 @@ fn sanitize_plugin_name(raw: &str) -> Result<String, ImportError> {
 // Static security scanner
 // ---------------------------------------------------------------------------
 //
-// Heuristic static analysis over the staged files — NOT a sandbox, NOT a
+// Heuristic static analysis over the staged files - NOT a sandbox, NOT a
 // guarantee. It catches low-effort malicious patterns and flags
 // suspicious ones for human review. A clean verdict means "nothing
 // obviously bad found", not "safe". Clever attackers evade static
@@ -1628,7 +1628,7 @@ fn is_network_use(l: &str) -> bool {
         .any(|w| l.contains(w))
 }
 
-/// A run of ≥200 base64-alphabet characters — rare in honest code,
+/// A run of ≥200 base64-alphabet characters - rare in honest code,
 ///
 /// common in packed payloads.
 fn has_long_base64_token(line: &str) -> bool {
@@ -1696,7 +1696,7 @@ fn extract_env_reads(line: &str) -> Vec<String> {
 // Quarantine
 // ---------------------------------------------------------------------------
 
-/// Staging/quarantine live here — never on any plugin load path.
+/// Staging/quarantine live here - never on any plugin load path.
 /// (The tool loader scans `<data_dir>/plugins` immediate subdirs for
 /// `manifest.yaml`; `.quarantine` contains none directly, and the
 /// loader additionally skips dot-directories. The hook loader only
@@ -2020,7 +2020,7 @@ fn fetch_clawhub_package(fetch: &FetchFn, slug: &str) -> Result<ClawHubPackage, 
     Ok(ClawHubPackage { bytes, version })
 }
 
-/// A slug that 404s on the packages endpoint might be a ClawHub skill —
+/// A slug that 404s on the packages endpoint might be a ClawHub skill
 /// check the skills endpoint so the operator still gets the helpful
 /// NOT_A_PLUGIN hint instead of a bare 404.
 fn clawhub_skill_hint(fetch: &FetchFn, slug: &str) -> ImportError {
@@ -2042,7 +2042,7 @@ fn clawhub_skill_hint(fetch: &FetchFn, slug: &str) -> ImportError {
 
 fn not_a_plugin_error(entry_json: &serde_json::Value, slug: &str) -> ImportError {
     let mut entry = registry_entry_from(entry_json);
-    // The packages-metadata shape has no `slug` field — the slug the
+    // The packages-metadata shape has no `slug` field - the slug the
     // operator typed is authoritative.
     if entry.slug.is_empty() {
         entry.slug = slug.to_string();
@@ -2056,7 +2056,7 @@ fn not_a_plugin_error(entry_json: &serde_json::Value, slug: &str) -> ImportError
     }
     ImportError::NotAPlugin {
         message: format!(
-            "clawhub:{slug} is a ClawHub skill (SKILL.md bundle), not a Pantheon plugin — refusing to install it as a plugin"
+            "clawhub:{slug} is a ClawHub skill (SKILL.md bundle), not a Pantheon plugin - refusing to install it as a plugin"
         ),
         skill: entry.to_json(),
         hint: "POST /api/skills/import".into(),
@@ -2330,7 +2330,7 @@ mod tests {
     }
 
     /// P1 #3 (server side of the contract): the value the TUI now sends as
-    /// `{url}` — `clawhub:<slug>` — must resolve through the ClawHub
+    /// `{url}` - `clawhub:<slug>` - must resolve through the ClawHub
     /// packages API instead of 400ing with "url is required". Fetch is
     /// stubbed; no network.
     #[test]

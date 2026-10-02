@@ -45,7 +45,7 @@ pub use pantheon_api::nightly::TurnRef;
 /// Behavior signals mined from the ledger.
 #[derive(Debug, Clone)]
 pub enum Signal {
-    /// A tool sequence succeeded in N turns — skill material.
+    /// A tool sequence succeeded in N turns - skill material.
     RepeatedSequence {
         tools: Vec<String>,
         hits: Vec<TurnRef>,
@@ -54,13 +54,13 @@ pub enum Signal {
     UserCorrection { text: String, at: TurnRef },
     /// An approval was denied.
     ApprovalDenied { scope: String, at: TurnRef },
-    /// A tool failed repeatedly — precondition-lesson material.
+    /// A tool failed repeatedly - precondition-lesson material.
     RepeatedFailure {
         tool: String,
         count: usize,
         at: Vec<TurnRef>,
     },
-    /// A preference keyword recurred across turns — persona material.
+    /// A preference keyword recurred across turns - persona material.
     RepeatedPreference {
         topic: &'static str,
         keyword: &'static str,
@@ -78,7 +78,7 @@ pub struct Source {
 /// What kind of memory a candidate wants to become.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandidateKind {
-    /// A steering correction from a user — standing guidance.
+    /// A steering correction from a user - standing guidance.
     Steering,
     /// Something the agent wrote at session scope worth keeping.
     SessionMemory,
@@ -119,7 +119,7 @@ pub struct ScanResult {
 /// Events before `since_ms` are skipped; at most `max_runs` runs are
 /// scanned (most recent first). Memory candidates also need the memory
 /// backend: the ledger only carries memory-write keys, so the value is
-/// read back by exact (layer, namespace, key) — never a fuzzy neighbor.
+/// read back by exact (layer, namespace, key) - never a fuzzy neighbor.
 pub fn collect(
     ledger: &Ledger,
     backend: &dyn MemoryBackend,
@@ -218,7 +218,7 @@ pub fn collect(
                         // Read the value back from the store: the ledger
                         // only carries the key. Recall with the key's
                         // tokens as the query, then take the exact
-                        // (layer, namespace, key) hit — never a fuzzy
+                        // (layer, namespace, key) hit - never a fuzzy
                         // neighbor. A missing record (expired,
                         // forgotten) is not a candidate: we never invent
                         // text.

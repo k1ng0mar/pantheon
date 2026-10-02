@@ -3,7 +3,7 @@
 //!
 //! The tool owns the shared in-memory list (the session, `/todos`, and
 //! the TUI card read the same state). Durability crosses into the run's
-//! ledger through [`TodoToolSink`], which the runtime implements — the
+//! ledger through [`TodoToolSink`], which the runtime implements - the
 //! tool crate never touches storage directly, mirroring `memory_tools`.
 
 use crate::tools::{parse_args, ToolRegistry};

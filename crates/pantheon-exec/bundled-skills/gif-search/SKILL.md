@@ -24,7 +24,7 @@ preview and media URLs, optionally download the file.
 
 ## Tooling
 
-`scripts/gif-search.sh "<query>"` — prints the top result as JSON
+`scripts/gif-search.sh "<query>"` - prints the top result as JSON
 (`title`, `preview_url`, `media_url`). With `--download <dir>`, also saves
 the GIF and prints the file path.
 

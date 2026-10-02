@@ -8,15 +8,15 @@
 //!
 //! The patterns are deliberately narrow so prose *about* secrets does not
 //! trip the scan:
-//! - labeled assignments: `password`, `api_key`, … followed by `=`/`:` and
+//! - labeled assignments: `password`, `api_key`, ... followed by `=`/`:` and
 //!   a non-empty value (`"the password policy requires rotation"` has no
 //!   assignment and passes; `"password = hunter2"` fails);
-//! - known token prefixes (`sk-`, `ghp_`, `AKIA`, …) followed by at least
+//! - known token prefixes (`sk-`, `ghp_`, `AKIA`, ...) followed by at least
 //!   8 opaque characters (`"task-list"` does not count as `sk-`);
 //! - PEM private-key blocks.
 //!
 //! This is a tripwire, not a vault: it catches the common accident (a
-//! pasted key, "remember this password: …"), not a determined exfil.
+//! pasted key, "remember this password: ..."), not a determined exfil.
 
 /// (lowercase label, pattern class)
 const LABELED: &[(&str, &str)] = &[

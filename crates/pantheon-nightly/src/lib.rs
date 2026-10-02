@@ -6,7 +6,7 @@
 //! 1. **Scan** the structured ledger once ([`signals::collect`]).
 //! 2. **Propose** deterministic proposals with run/turn provenance
 //!    ([`propose::from_signals`]).
-//! 3. Optionally **refine** drafts with an LLM — off by default, always
+//! 3. Optionally **refine** drafts with an LLM - off by default, always
 //!    through the `Reflection` auxiliary slot, never the chat model.
 //! 4. **Eval-gate** skill/persona proposals: relevant `pantheon-eval`
 //!    targets must pass ([`gate`]). Memory lessons skip this.
@@ -18,9 +18,9 @@
 //!    `max_fix_attempts` diagnose → revise → re-check iterations
 //!    (deterministic repairs; LLM sharpening only when LLM steps are
 //!    enabled), then escalates to the human as `NeedsAttention`
-//!    ([`fixloop`]) — never an infinite loop, never silent.
+//!    ([`fixloop`]) - never an infinite loop, never silent.
 //! 7. **Apply**: memory lessons auto-apply at trust tier `Memory`
-//!    (after passing the frequency + recency promotion rule — no decay
+//!    (after passing the frequency + recency promotion rule - no decay
 //!    curves). Skills/personas wait in the pending queue for explicit
 //!    human approval.
 //! 7. **Repair** broken operational targets: MCP servers, scheduled
@@ -37,7 +37,7 @@
 //!
 //! Memory promotion rule: a candidate promotes when seen in at least
 //! `min_sessions` distinct runs with the newest observation inside
-//! `max_age_days`. Plain frequency + recency — the old exponential
+//! `max_age_days`. Plain frequency + recency - the old exponential
 //! half-life formula is gone.
 
 mod apply;
@@ -221,7 +221,7 @@ fn now_ms() -> i64 {
 ///
 /// The repair phase runs only as part of an enabled pass: `[nightly]
 /// enabled` gating (workstream 1) decides whether `run_pass` is invoked
-/// at all — this phase invents no second flag.
+/// at all - this phase invents no second flag.
 pub fn run_pass(
     config: &NightlyConfig,
     deps: &mut NightlyDeps<'_>,
@@ -313,7 +313,7 @@ pub fn run_pass(
     } else {
         None
     };
-    // Fix-loop draft revision goes through the Repair slot — never
+    // Fix-loop draft revision goes through the Repair slot - never
     // Reflection. `None` means revision is unavailable: the loop falls
     // back to plain retries, then escalation. A pass never fails for
     // lack of a repair model.
@@ -334,7 +334,7 @@ pub fn run_pass(
                 if config.dry_run {
                     // Dry run: the proposal stands as proposed, nothing
                     // is written. Audit/state/report still record the
-                    // pass — that is the point of a dry run.
+                    // pass - that is the point of a dry run.
                     p.status = ProposalStatus::Proposed;
                 } else {
                     match apply_memory_lesson(&config.data_dir, &p) {
@@ -415,7 +415,7 @@ pub fn run_pass(
     // jobs, tools). Skipped when no repair targets are attached; in
     // dry-run mode the phase detects and audits but mutates nothing.
     // Diagnosis goes through the `Repair` slot (mirroring the fix
-    // loop's slot resolution) — never Reflection, never chat. `None`
+    // loop's slot resolution) - never Reflection, never chat. `None`
     // means deterministic-only repair; the pass never fails for a
     // missing repair model.
     let repair_model = if config.llm_enabled {
@@ -438,9 +438,9 @@ pub fn run_pass(
     }
 
     // 7b. Ideas: proactive suggestions minted from this pass's signals
-    // and repair outcomes. This runs only inside an enabled pass —
+    // and repair outcomes. This runs only inside an enabled pass
     // `run_pass` is never invoked when the nightly master switch is off
-    // (the single entry `run_one_pass` gates first) — so no second flag
+    // (the single entry `run_one_pass` gates first) - so no second flag
     // is invented here. Dry runs mint nothing. Ideas are advisory: a
     // broken ideas store skips the phase instead of failing the pass.
     let mut ideas_minted = 0usize;

@@ -8,7 +8,7 @@ origin: bundled
 
 Contracts, briefs, and long email threads bury the same three things:
 what must be done, by when, and by whom. This skill reads the document with
-the filesystem/read tools and pulls those out. It is a workflow skill —
+the filesystem/read tools and pulls those out. It is a workflow skill:
 the reading is real, the judgment is the agent's.
 
 ## Workflow
@@ -17,11 +17,11 @@ the reading is real, the judgment is the agent's.
    for Word use `docx-extract`. Do not work from a summary someone else
    wrote.
 2. Extract, in order of how binding they are:
-   - **Obligations**: things the document says must happen ("shall",
+  - **Obligations**: things the document says must happen ("shall",
      "must", "agrees to"). Quote the clause.
-   - **Deadlines**: every date mentioned, what it attaches to, and
+  - **Deadlines**: every date mentioned, what it attaches to, and
      whether it is a hard date or a target.
-   - **Tasks for the user**: obligations where the user (or their side)
+  - **Tasks for the user**: obligations where the user (or their side)
      is the actor.
 3. For each item: cite the section or page it came from. An action item
    without a source line is a guess.
@@ -32,7 +32,7 @@ the reading is real, the judgment is the agent's.
    language quoted.
 2. Deadlines in chronological order: date | what | hard or target.
 3. The user's tasks: what, by when, and what blocks it.
-4. Explicitly list what the document does NOT say — the gaps the user
+4. Explicitly list what the document does NOT say - the gaps the user
    should confirm (missing dates, unnamed owners, undefined terms).
 
 ## Operating rules

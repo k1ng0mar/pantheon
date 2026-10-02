@@ -3,7 +3,7 @@
 //! A team is genuinely composed of experts: every member carries an
 //! `expert_id` referencing the Experts gallery, and the member's display
 //! identity (name, avatar color, icon) is derived from the linked expert
-//! at read time — the expert is the single source of truth. Members keep
+//! at read time - the expert is the single source of truth. Members keep
 //! a team-specific `role` line (their job within that team) and the agent
 //! profile they run as. Storage is one JSON file per team under
 //! `<data_dir>/teams/<id>.json` (see [`crate::templates`]).
@@ -19,14 +19,14 @@
 //!   a swarm through the existing orchestrator exactly like
 //!   `swarm::create` profiles mode, and answers like it:
 //!   `{ok, swarm_id, id, run_id, agents, status_view}`. `run_id` is the
-//!   first agent's run id — a swarm is a fan-out, not a single session,
+//!   first agent's run id - a swarm is a fan-out, not a single session,
 //!   so session-style screens load that run. `task` overrides the team's
 //!   `brief_template` when non-empty; `judge` defaults to true.
 //!   A member whose `expert_id` no longer resolves (expert deleted after
 //!   the team was written) fails closed: 400, nothing spawns.
 //!
 //! Seeding: the five bundled teams below are written on first access,
-//! only when the gallery holds no team files — re-seeding never
+//! only when the gallery holds no team files - re-seeding never
 //! overwrites user edits or user-added teams. The experts gallery is
 //! seeded first, and every bundled member is verified against the bundled
 //! expert list; a broken reference is a code bug, so seeding fails loudly
@@ -42,7 +42,7 @@ const KIND: &str = "teams";
 
 /// A team member: a reference to an expert in the Experts gallery plus
 /// the member's job within this team. Display identity (name, color,
-/// icon) is never stored here — it is derived from the linked expert at
+/// icon) is never stored here - it is derived from the linked expert at
 /// read time (see [`Team::to_client_json`]), so a team is genuinely
 /// composed of experts rather than carrying a stale copy of them.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -80,13 +80,13 @@ pub struct Stage {
     /// members. Several ids here means parallel work within the stage.
     pub members: Vec<String>,
     /// What this stage consumes, as a structured contract (e.g.
-    /// `"claims[] as {statement, source_url}"`) — data, not prose dumps.
+    /// `"claims[] as {statement, source_url}"`) - data, not prose dumps.
     pub input_contract: String,
     /// What this stage produces, as a structured contract (e.g.
     /// `"verdict {pass: bool, failed_claims[]}"`).
     pub output_contract: String,
     /// Optional review edge: on verification failure, redo this earlier
-    /// stage. Must name an *earlier* stage — forward references are
+    /// stage. Must name an *earlier* stage - forward references are
     /// unexecutable, so they fail validation (the stage graph stays a
     /// DAG plus bounded backward review edges).
     pub loop_back_to: Option<String>,
@@ -130,7 +130,7 @@ impl Team {
     /// every member enriched by its expert's display identity:
     /// `{expert_id, role, profile, expert: {id, name, color, icon}}`.
     /// `expert` is `null` when the linked expert no longer exists (e.g.
-    /// deleted after the team was written) — clients render those members
+    /// deleted after the team was written) - clients render those members
     /// as unresolved, and `use` refuses to launch them (fail closed).
     /// `lead` carries the lead expert's display identity (null when the
     /// lead's expert is gone); stages keep expert ids, which clients join
@@ -171,7 +171,7 @@ impl Team {
 /// at `use` time on a hand-edited team file. Covers the topology model:
 /// the lead must be a member, stage members must be a subset of the
 /// team, and review edges must point at earlier stages (the stage graph
-/// stays a DAG plus bounded backward review edges — forward references
+/// stays a DAG plus bounded backward review edges - forward references
 /// would be unexecutable).
 fn validate_structure(t: &Team) -> Result<(), String> {
     if !templates::valid_slug(&t.id) {
@@ -297,10 +297,10 @@ fn validate_team(data_dir: &std::path::Path, t: &Team) -> Result<(), String> {
 ///
 /// The experts gallery seeds first: teams reference experts, so every
 /// bundled member is verified against the bundled expert list before
-/// anything is written. A dangling bundled reference is a code bug —
+/// anything is written. A dangling bundled reference is a code bug
 /// fail loudly (500) rather than seeding a team that can never launch.
 /// (An expert a user deletes later is a runtime condition, handled
-/// per-team at `use` time — it must not break the gallery.)
+/// per-team at `use` time - it must not break the gallery.)
 fn ensure_seeded(data_dir: &std::path::Path) -> Result<(), Response> {
     crate::experts::ensure_seeded(data_dir)?;
     templates::seed_if_empty(data_dir, KIND, &bundled_teams(), |t| &t.id)
@@ -388,7 +388,7 @@ pub fn get(app: &App, id: &str) -> Response {
     }
 }
 
-/// `PUT /api/teams/:id`: replace the team. The URL id is authoritative —
+/// `PUT /api/teams/:id`: replace the team. The URL id is authoritative
 /// a body id that disagrees is overwritten. 404 when missing.
 pub fn update(app: &App, id: &str, req: &Request) -> Response {
     if let Err(r) = ensure_seeded(&app.data_dir) {
@@ -432,26 +432,26 @@ pub fn delete(app: &App, id: &str) -> Response {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/teams/:id/use — profile resolution and swarm launch
+// POST /api/teams/:id/use - profile resolution and swarm launch
 // ---------------------------------------------------------------------------
 
 /// Resolve a member's profile ref to the concrete profile the swarm
 /// agent should run as.
 ///
 /// `"default"` is the conventional default profile name
-/// (`pantheon_api::agent_profile::DEFAULT_PROFILE` — "the identity used
+/// (`pantheon_api::agent_profile::DEFAULT_PROFILE` - "the identity used
 /// when no profile is selected"). It resolves exactly like
 /// `Config::resolve_profile` does: the config's active `agent` (the same
 /// field `profiles.rs` reads as the default profile) wins, else the
 /// literal `"default"`. The resolved name must be declared in `[agents]`
-/// — except the fully-anonymous case (no active agent and an
+/// - except the fully-anonymous case (no active agent and an
 /// empty/missing `[agents]` table), where `"default"` passes through
 /// untouched: swarm count mode already runs such turns without `--agent`
 /// (see `swarm::agent_flag_for`), so the bundled teams stay usable on
 /// installs that predate profiles.
 ///
 /// Any other name must be declared in `[agents]`, exactly like
-/// `swarm::create` profiles mode — unknown → Err naming the bad profile,
+/// `swarm::create` profiles mode - unknown → Err naming the bad profile,
 /// and nothing spawns (fail closed; a typo must never silently run the
 /// wrong identity).
 fn resolve_member_profile(
@@ -477,7 +477,7 @@ fn resolve_member_profile(
         };
     }
     // "default": the active `agent` wins (profiles.rs's default-profile
-    // field); it must be declared — an active name pointing nowhere is a
+    // field); it must be declared - an active name pointing nowhere is a
     // broken config, fail closed on it.
     let active = cfg
         .as_ref()
@@ -524,7 +524,7 @@ fn swarm_err(e: SwarmError) -> Response {
 /// through the swarm orchestrator's staged path (`create_staged`), which
 /// mechanically runs the topology: stages in order, handoff inputs
 /// between them, bounded review loops, member runs never user-facing.
-/// The response mirrors `swarm::create`'s shape, plus `run_id` — the
+/// The response mirrors `swarm::create`'s shape, plus `run_id` - the
 /// lead's coordination run, the only user-facing run.
 pub fn use_team(app: &App, id: &str, req: &Request) -> Response {
     if let Err(r) = ensure_seeded(&app.data_dir) {
@@ -686,7 +686,7 @@ fn member(expert_id: &str, role: &str) -> TeamMember {
         role: role.to_string(),
         // Bundled members run as the conventional default profile; the
         // concrete identity resolves at `use` time (see
-        // `resolve_member_profile`). Never validated at seed time — the
+        // `resolve_member_profile`). Never validated at seed time - the
         // user's config is unknown until then.
         profile: pantheon_api::agent_profile::DEFAULT_PROFILE.to_string(),
     }
@@ -711,7 +711,7 @@ fn stage(
 }
 
 /// The five bundled teams. Every member references a real expert id;
-/// rosters are Umar's spec — teams are genuinely composed of experts.
+/// rosters are Umar's spec - teams are genuinely composed of experts.
 fn bundled_teams() -> Vec<Team> {
     vec![
         Team {
@@ -910,7 +910,7 @@ fn bundled_teams() -> Vec<Team> {
                     "opportunities",
                     &["research-analyst"],
                     "candidate profile",
-                    "shortlist[] as {role, company, url, posted_date, why_fits} — only posted within the last two weeks, verifiable companies",
+                    "shortlist[] as {role, company, url, posted_date, why_fits} - only posted within the last two weeks, verifiable companies",
                     None,
                 ),
                 stage(
@@ -924,7 +924,7 @@ fn bundled_teams() -> Vec<Team> {
                     "verify",
                     &["evidence-reviewer"],
                     "drafts[] + CV",
-                    "verdict {pass: bool, failed_claims[]} — every claim must trace to the CV, no invented facts",
+                    "verdict {pass: bool, failed_claims[]} - every claim must trace to the CV, no invented facts",
                     Some("applications"),
                 ),
             ],

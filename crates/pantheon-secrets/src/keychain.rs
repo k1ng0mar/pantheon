@@ -1,6 +1,6 @@
 //! OS keychain vault (spec §13): the preferred durable backend.
 //!
-//! macOS Keychain Services, Windows Credential Manager, and — on Linux —
+//! macOS Keychain Services, Windows Credential Manager, and - on Linux
 //! the freedesktop Secret Service (gnome-keyring, KWallet) all sit behind
 //! the `keyring` crate's platform-default store. This is the "OS
 //! keychain" the spec ranks above the encrypted local file; insert it
@@ -10,7 +10,7 @@
 //! Contract notes:
 //! - `get`/`set` are one local round-trip to the store (a D-Bus call on
 //!   Linux, ~ms). A *locked* keyring surfaces as [`SecretsError::Backend`],
-//!   bounded by the platform's own method timeout — never a modal prompt
+//!   bounded by the platform's own method timeout - never a modal prompt
 //!   the runtime would block on forever (the `SecretVault::get` contract
 //!   forbids that).
 //! - `names` is unsupported: the platform APIs store and look up
@@ -23,9 +23,9 @@
 //! Availability contract (the broker relies on it):
 //! - Host with **no store at all**: `get` reads as absence (`Ok(None)`),
 //!   `delete` as the no-op it would be, so a broker chain falls through
-//!   to the next vault; `set` errors — there is nowhere to write.
+//!   to the next vault; `set` errors - there is nowhere to write.
 //! - Host **with a store that cannot answer** (locked, D-Bus broken):
-//!   every op surfaces [`SecretsError::Backend`] — the secret may exist,
+//!   every op surfaces [`SecretsError::Backend`] - the secret may exist,
 //!   the store just couldn't reply. Callers such as
 //!   [`crate::SecretsBroker`] decide whether to fall through or fail.
 //!
@@ -79,7 +79,7 @@ impl KeychainVault {
 /// The first use in a process asks the `keyring` crate to build the
 /// platform-default store (a Secret Service connection on Linux, the
 /// Keychain on macOS, CredMan on Windows) and installs it. Once a store
-/// is already installed — including a test-injected one — this is a
+/// is already installed - including a test-injected one - this is a
 /// no-op, which is what makes the sample-store lib tests deterministic
 /// in the same process.
 fn ensure_store() -> Result<(), SecretsError> {
@@ -106,7 +106,7 @@ impl SecretVault for KeychainVault {
     fn get(&self, name: &str) -> Result<Option<SecretValue>, SecretsError> {
         validate_name(name)?;
         // No store on this host: this backend holds nothing under any
-        // name — absence, so the broker chain falls through.
+        // name - absence, so the broker chain falls through.
         // (A store that exists but cannot answer stays a loud Backend
         // error below: the secret may well be in there.)
         if ensure_store().is_err() {
@@ -131,7 +131,7 @@ impl SecretVault for KeychainVault {
         // Validate before touching the platform, exactly like get/set. A
         // store-less host returned Ok(()) for every name, empty ones
         // included, so `delete("")` only failed where a keyring happened to
-        // exist — the test passed locally and failed on a CI runner with
+        // exist - the test passed locally and failed on a CI runner with
         // one. A rejected name is rejected everywhere.
         validate_name(name)?;
         // Nothing can be stored where there is no store: deleting every

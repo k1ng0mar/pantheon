@@ -136,7 +136,7 @@ fn summary_is_truncated_to_about_2000_chars() {
     let long = "x".repeat(5000);
     let summary = build_summary(&long);
     assert!(summary.chars().count() <= 2000, "len={}", summary.len());
-    assert!(summary.ends_with('…'));
+    assert!(summary.ends_with("..."));
     let short = "fine";
     assert_eq!(build_summary(short), "fine");
 }
@@ -144,7 +144,7 @@ fn summary_is_truncated_to_about_2000_chars() {
 #[test]
 fn rest_sender_reports_missing_config_as_error() {
     // Without tokens/chat targets configured, delivery fails with a
-    // message naming the missing variable — never a panic, never a hang.
+    // message naming the missing variable - never a panic, never a hang.
     // (Cleared explicitly: no other test reads these.)
     std::env::remove_var("PANTHEON_TELEGRAM_BOT_TOKEN");
     std::env::remove_var("PANTHEON_DELIVER_TELEGRAM_TO");

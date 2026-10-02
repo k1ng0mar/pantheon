@@ -4,7 +4,7 @@
 //!
 //! - **Memory lessons** (trust tier `Memory`) auto-apply. They are
 //!   informative, never authoritative, and can never clobber a
-//!   user-confirmed record — idempotent keys keep them stable across
+//!   user-confirmed record - idempotent keys keep them stable across
 //!   passes.
 //! - **Skill and Persona proposals** never apply themselves. They pass
 //!   eval-gating and replay-gating, then sit in
@@ -55,7 +55,7 @@ fn save_pending(data_dir: &Path, pending: &[Proposal]) -> Result<(), String> {
 }
 
 /// Queue a skill/persona proposal for human approval. No-op (returns
-/// false) when a proposal with the same id is already queued — the
+/// false) when a proposal with the same id is already queued - the
 /// operator sees one decision per proposal.
 pub fn queue_for_approval(data_dir: &Path, proposal: &Proposal) -> Result<bool, String> {
     let mut pending = load_pending(data_dir)?;
@@ -71,7 +71,7 @@ pub fn queue_for_approval(data_dir: &Path, proposal: &Proposal) -> Result<bool, 
 
 /// Resolve a human decision. Approving applies the skill/persona;
 /// denying ends the proposal. Either way the proposal leaves the
-/// pending queue — the queue holds only undecided proposals. Every
+/// pending queue - the queue holds only undecided proposals. Every
 /// decision is audited (`ApprovalDecided`, plus `Applied` on approval).
 /// Returns whether the id was found.
 pub fn decide(
@@ -156,7 +156,7 @@ fn memory_store(data_dir: &Path) -> Result<MemoryStore, String> {
 }
 
 /// Apply a validated, human-approved skill/persona proposal.
-/// Memory lessons are NOT applied here — they go through
+/// Memory lessons are NOT applied here - they go through
 /// [`apply_memory_lesson`].
 pub fn apply_skill_or_persona(data_dir: &Path, proposal: &Proposal) -> Result<(), String> {
     match &proposal.kind {

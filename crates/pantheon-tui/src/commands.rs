@@ -6,7 +6,7 @@
 //! jobs: `is_builtin` (the dynamic `/<skill>` dispatch consults it so
 //! built-in names always win over skill names) and `complete` (the
 //! "did you mean" suggestion source). It must list exactly the commands
-//! the session dispatches — a built-in missing here is invisible to
+//! the session dispatches - a built-in missing here is invisible to
 //! completion and to the built-in-vs-skill check.
 
 use crate::widget::Key;
@@ -35,7 +35,7 @@ pub fn is_builtin(name: &str) -> bool {
 }
 
 /// Every command the dispatch chain in `handle_slash_inner` serves,
-/// grouped — except the one it serves but keeps off the advertised
+/// grouped - except the one it serves but keeps off the advertised
 /// surface: /name (silent alias of /title).
 ///
 /// Also absent on purpose: /cost (the header carries tokens and
@@ -173,7 +173,7 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
         },
         CommandMeta {
             name: "collab",
-            desc: "deprecated — multi-profile tasks moved to /swarm",
+            desc: "deprecated - multi-profile tasks moved to /swarm",
             category: "agent",
         },
         CommandMeta {

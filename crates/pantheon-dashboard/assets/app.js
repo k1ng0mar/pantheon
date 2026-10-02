@@ -59,7 +59,7 @@ async function api(method, path, body) {
   });
   if (res.status === 401) {
     showReauthGate();
-    throw { status: 401, reauth: true, message: "unauthorized: bad or missing token — reconnect with the current token" };
+    throw { status: 401, reauth: true, message: "unauthorized: bad or missing token - reconnect with the current token" };
   }
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
@@ -85,7 +85,7 @@ function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 /* Minimal safe markdown subset for inspector message bodies (D-11):
-   escape first, then restore a small set of constructs — no raw HTML
+   escape first, then restore a small set of constructs - no raw HTML
    ever passes through. Covers fenced/inline code, headings, bold,
    italic, markdown links, bare-URL autolinks, lists, and blockquotes. */
 function renderMd(text) {
@@ -136,20 +136,20 @@ function linkCardHtml(p) {
     '<span class="link-card-domain mono">' + esc(p.domain || p.site_name || "") + "</span></span></a>";
 }
 function fmtNum(n) {
-  if (n == null) return "—";
+  if (n == null) return " - ";
   return Number(n).toLocaleString("en-US");
 }
 function fmtCost(n) {
-  if (n == null) return "—";
+  if (n == null) return " - ";
   return "$" + Number(n).toFixed(2);
 }
 function fmtTime(ms) {
-  if (!ms) return "—";
+  if (!ms) return " - ";
   const d = new Date(ms);
   return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 function relTime(ms) {
-  if (!ms) return "—";
+  if (!ms) return " - ";
   const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if (s < 60) return s + "s ago";
   if (s < 3600) return Math.floor(s / 60) + "m ago";
@@ -164,7 +164,7 @@ function statusPill(s) {
 /* VibePrompt sparkline: tiny SVG polyline, no library. */
 function spark(values, w, h) {
   w = w || 96; h = h || 24;
-  if (!values || values.length < 2) return '<span class="text-faint mono" style="font-size:11px">—</span>';
+  if (!values || values.length < 2) return '<span class="text-faint mono" style="font-size:11px"> - </span>';
   const max = Math.max.apply(null, values.concat([1]));
   const min = Math.min.apply(null, values.concat([0]));
   const span = max - min || 1;
@@ -430,7 +430,7 @@ renderers.overview = async function () {
       "<span><span class='agent-name'>" + esc(r.title || ("Run " + r.id.slice(0, 8))) + "</span><br>" +
       "<span class='agent-sub'>" + esc(r.id.slice(0, 12)) + "</span></span></span></td>" +
       "<td>" + statusPill(r.status) + "</td>" +
-      "<td class='mono'>" + esc(r.model || "—") + "</td>" +
+      "<td class='mono'>" + esc(r.model || " - ") + "</td>" +
       "<td class='mono' style='text-align:right'>" + fmtNum(r.input_tokens + r.output_tokens) + "</td>" +
       "<td class='mono' style='text-align:right'>" + fmtCost(r.cost_usd) + "</td>" +
       "<td class='mono'>" + relTime(r.created_ms) + "</td></tr>"
@@ -491,7 +491,7 @@ renderers.overview = async function () {
         (gw ? (gw.running
           ? '<span class="pill" data-s="ok">running</span>'
           : '<span class="pill" data-s="warn">stopped</span>')
-          : '<span class="metric-value dim">—</span>') + "</div></div>"
+          : '<span class="metric-value dim"> - </span>') + "</div></div>"
       );
       // ---- activity tabs ----
       const items = [];
@@ -526,7 +526,7 @@ renderers.overview = async function () {
       activityData.upcoming = upcoming.length
         ? '<ul class="activity">' + upcoming.map((j) =>
           '<li><span class="act-icon">' + icon("schedule", 14) + '</span>' +
-          '<span class="act-body"><span class="act-title">' + esc(j.task.slice(0, 80)) + (j.task.length > 80 ? "…" : "") + "</span><br>" +
+          '<span class="act-body"><span class="act-title">' + esc(j.task.slice(0, 80)) + (j.task.length > 80 ? "..." : "") + "</span><br>" +
           '<span class="act-sub">' + esc(kindLabel(j.kind)) + "</span></span>" +
           '<span class="act-time">' + esc(fmtNextFire(j.next_fire_ms)) + "</span></li>"
         ).join("") + "</ul>"
@@ -570,8 +570,8 @@ renderers.runs = async function () {
         '<th style="text-align:right">Tokens</th><th style="text-align:right">Cost</th><th>Created</th></tr></thead><tbody>' +
         data.runs.map((r) =>
           "<tr class='rowlink' data-run='" + esc(r.id) + "' tabindex='0'>" +
-          "<td class='mono'>" + esc(r.id.slice(0, 12)) + "</td><td>" + esc(r.title || "—") + "</td>" +
-          "<td>" + statusPill(r.status) + "</td><td class='mono'>" + esc(r.model || "—") + "</td>" +
+          "<td class='mono'>" + esc(r.id.slice(0, 12)) + "</td><td>" + esc(r.title || " - ") + "</td>" +
+          "<td>" + statusPill(r.status) + "</td><td class='mono'>" + esc(r.model || " - ") + "</td>" +
           "<td class='mono'>" + fmtNum(r.turns) + "</td><td class='mono'>" + fmtNum(r.tool_calls) + "</td>" +
           "<td class='mono' style='text-align:right'>" + fmtNum(r.input_tokens + r.output_tokens) + "</td>" +
           "<td class='mono' style='text-align:right'>" + fmtCost(r.cost_usd) + "</td>" +
@@ -655,7 +655,7 @@ function inspDetailHtml(t) {
     "<dt>Event</dt><dd>" + esc(k.label) + "</dd>" +
     "<dt>Time</dt><dd class='mono'>" + fmtTime(t.ts_ms) + "</dd>" +
     "<dt>Sequence</dt><dd class='mono'>#" + t.seq + "</dd>" +
-    "<dt>Detail</dt><dd>" + (t.detail ? esc(String(t.detail)) : '<span class="text-faint">—</span>') + "</dd>" +
+    "<dt>Detail</dt><dd>" + (t.detail ? esc(String(t.detail)) : '<span class="text-faint"> - </span>') + "</dd>" +
     (isApproval ? "<dt></dt><dd><a href='#/approvals'>Open approvals</a></dd>" : "") +
     "</dl>";
 }
@@ -689,7 +689,7 @@ renderers.inspector = async function () {
       '<button class="btn small danger" id="rd-prune">Prune</button></span></div>' +
       '<div class="panel insp-queue"><div class="panel-body">' +
       '<div class="field" style="margin:0"><label for="rd-qmsg">Queue / steer a follow-up</label>' +
-      '<div style="display:flex;gap:8px"><input class="input" id="rd-qmsg" placeholder="Message the agent…" style="flex:1" aria-label="queue message">' +
+      '<div style="display:flex;gap:8px"><input class="input" id="rd-qmsg" placeholder="Message the agent..." style="flex:1" aria-label="queue message">' +
       '<button class="btn primary small" id="rd-qsend">Send</button></div>' +
       '<div class="hint">Busy run: the message is queued and runs when the current turn settles. Idle run: it starts a new turn.</div></div>' +
       "</div></div>" +
@@ -707,7 +707,7 @@ renderers.inspector = async function () {
       '<div class="panel"><div class="panel-head"><span class="panel-title">Run summary</span></div>' +
       '<div class="panel-body"><dl class="kv">' +
       "<dt>Status</dt><dd>" + statusPill(r.status) + "</dd>" +
-      "<dt>Model</dt><dd class='mono'>" + esc(r.model || "—") + (r.provider ? " <span class='view-sub'>" + esc(r.provider) + "</span>" : "") + "</dd>" +
+      "<dt>Model</dt><dd class='mono'>" + esc(r.model || " - ") + (r.provider ? " <span class='view-sub'>" + esc(r.provider) + "</span>" : "") + "</dd>" +
       "<dt>Tokens</dt><dd class='mono'>" + fmtNum(r.input_tokens + r.output_tokens) + " (" + fmtNum(r.input_tokens) + " in / " + fmtNum(r.output_tokens) + " out)</dd>" +
       "<dt>Cost</dt><dd class='mono'>" + fmtCost(r.cost_usd) + "</dd>" +
       "<dt>Turns / tools</dt><dd class='mono'>" + fmtNum(r.turns) + " / " + fmtNum(r.tool_calls) + "</dd>" +
@@ -784,7 +784,7 @@ renderers.inspector = async function () {
     if (cxlBtn) cxlBtn.onclick = async () => {
       const ok = await confirmDialog({
         title: "Cancel this run?",
-        body: '<p class="m-sub">Asks the in-flight turn to wind down cooperatively — it stops at its next checkpoint.</p>',
+        body: '<p class="m-sub">Asks the in-flight turn to wind down cooperatively - it stops at its next checkpoint.</p>',
         confirmLabel: "Cancel run", danger: true,
       });
       if (!ok) return;
@@ -812,7 +812,7 @@ renderers.inspector = async function () {
         const res = await api("POST", "/api/runs/" + encodeURIComponent(id) + "/message", body);
         qInput.value = "";
         inspQDraft = "";
-        toast(res.steered ? "Steered — queued for the next turn" : res.queued ? "Message queued" : "Sent", "ok");
+        toast(res.steered ? "Steered - queued for the next turn" : res.queued ? "Message queued" : "Sent", "ok");
         renderers.inspector();
       } catch (e) { toast(e.message, "err"); }
     };
@@ -910,7 +910,7 @@ renderers.approvals = async function () {
 
 /* ---------------- schedule ---------------- */
 function kindLabel(k) {
-  if (!k) return "—";
+  if (!k) return " - ";
   switch (k.type) {
     case "cron": return '<code class="inline">' + esc(k.expr) + "</code>";
     case "every": return "every " + esc(fmtDur(k.every_ms));
@@ -921,7 +921,7 @@ function kindLabel(k) {
   }
 }
 function fmtDur(ms) {
-  if (ms == null) return "—";
+  if (ms == null) return " - ";
   const s = Math.round(ms / 1000);
   if (s < 60) return s + "s";
   if (s < 3600) return Math.round(s / 60) + "m";
@@ -931,7 +931,7 @@ function fmtDur(ms) {
 /* Next-fire countdown, future-aware (D-10): fires in the future render
    "in Xm", overdue jobs read "due now" instead of a negative duration. */
 function fmtNextFire(ms) {
-  if (ms == null) return "—";
+  if (ms == null) return " - ";
   if (ms - Date.now() <= 0) return "due now";
   return "in " + fmtDur(ms - Date.now());
 }
@@ -952,12 +952,12 @@ renderers.schedule = async function () {
       $("#sjobs").innerHTML = '<div class="panel"><div class="panel-body flush"><table class="grid"><thead><tr>' +
         "<th>Task</th><th>Schedule</th><th>Next fire</th><th>State</th><th>Model</th><th>Deliver</th><th></th></tr></thead><tbody>" +
         data.jobs.map((j) =>
-          "<tr><td style='max-width:340px'>" + esc(j.task.slice(0, 120)) + (j.task.length > 120 ? "…" : "") +
+          "<tr><td style='max-width:340px'>" + esc(j.task.slice(0, 120)) + (j.task.length > 120 ? "..." : "") +
           "<div class='mono view-sub'>" + esc(j.id) + "</div></td>" +
           "<td>" + kindLabel(j.kind) + "</td>" +
-          "<td class='mono'>" + (j.paused ? "—" : fmtNextFire(j.next_fire_ms)) + "</td>" +
+          "<td class='mono'>" + (j.paused ? " - " : fmtNextFire(j.next_fire_ms)) + "</td>" +
           "<td>" + (j.paused ? '<span class="pill" data-s="paused">paused</span>' : '<span class="pill" data-s="ok">active</span>') + "</td>" +
-          "<td class='mono'>" + esc(j.model || "—") + "</td><td class='mono'>" + esc(j.deliver || "—") + "</td>" +
+          "<td class='mono'>" + esc(j.model || " - ") + "</td><td class='mono'>" + esc(j.deliver || " - ") + "</td>" +
           "<td><span class='btn-row'>" +
           '<button class="btn small" data-jpause="' + esc(j.id) + '">' + (j.paused ? "Resume" : "Pause") + "</button>" +
           '<button class="btn small" data-jtrigger="' + esc(j.id) + '">Run now</button>' +
@@ -1000,7 +1000,7 @@ async function showJobForm(editId) {
   root.innerHTML = '<div class="modal-veil"><div class="modal" role="dialog" aria-modal="true" aria-label="' + (job ? "Edit job" : "New job") + '">' +
     "<h3>" + (job ? "Edit job" : "New job") + "</h3>" +
     (job ? "" :
-      '<div class="field"><label>Template</label><select id="jf-tpl" class="select"><option value="">— none (raw task) —</option>' +
+      '<div class="field"><label>Template</label><select id="jf-tpl" class="select"><option value=""> - none (raw task) - </option>' +
       templates.map((t) => '<option value="' + esc(t.name) + '">' + esc(t.name) + ": " + esc(t.description || "") + "</option>").join("") +
       "</select></div><div id='jf-vars'></div>") +
     '<div class="field"><label>Task / prompt</label><textarea id="jf-task" class="input" rows="4">' + esc(job ? job.task : "") + "</textarea></div>" +
@@ -1086,7 +1086,7 @@ renderers.stats = async function () {
         (s.by_run.length ? '<table class="grid"><thead><tr><th>Run</th><th>Title</th><th style="text-align:right">Calls</th><th style="text-align:right">In</th><th style="text-align:right">Out</th><th style="text-align:right">Total</th><th style="text-align:right">Cost</th></tr></thead><tbody>' +
           s.by_run.slice(0, 25).map((r) =>
             "<tr><td class='mono'><a href='#/runs/" + encodeURIComponent(r.run_id) + "'>" + esc(r.run_id.slice(0, 12)) + "</a></td>" +
-            "<td>" + esc(r.title || "—") + "</td>" +
+            "<td>" + esc(r.title || " - ") + "</td>" +
             "<td class='mono' style='text-align:right'>" + fmtNum(r.totals.calls) + "</td>" +
             "<td class='mono' style='text-align:right'>" + fmtNum(r.totals.input_tokens) + "</td>" +
             "<td class='mono' style='text-align:right'>" + fmtNum(r.totals.output_tokens) + "</td>" +
@@ -1126,9 +1126,9 @@ renderers.memory = async function () {
         '<div class="panel-body flush"><table class="grid"><thead><tr><th>Key</th><th>Value</th><th>Trust</th><th>Origin</th><th>Recorded</th></tr></thead><tbody>' +
         data.records.map((r) =>
           "<tr><td class='mono'>" + esc(r.key) + "</td>" +
-          "<td style='max-width:420px;word-break:break-word'>" + esc(r.value.length > 280 ? r.value.slice(0, 280) + "…" : r.value) + "</td>" +
-          "<td>" + (r.provenance && r.provenance.trust ? '<span class="pill">' + esc(r.provenance.trust) + "</span>" : "—") + "</td>" +
-          "<td class='mono view-sub'>" + esc(r.provenance && r.provenance.origin ? r.provenance.origin : "—") + "</td>" +
+          "<td style='max-width:420px;word-break:break-word'>" + esc(r.value.length > 280 ? r.value.slice(0, 280) + "..." : r.value) + "</td>" +
+          "<td>" + (r.provenance && r.provenance.trust ? '<span class="pill">' + esc(r.provenance.trust) + "</span>" : " - ") + "</td>" +
+          "<td class='mono view-sub'>" + esc(r.provenance && r.provenance.origin ? r.provenance.origin : " - ") + "</td>" +
           "<td class='mono'>" + relTime(r.recorded_at_ms) + "</td></tr>"
         ).join("") + "</tbody></table></div></div>";
     } catch (e) { $("#mbody").innerHTML = errorState(e.message, true); $("[data-retry]").onclick = load; }
@@ -1173,7 +1173,7 @@ function configInput(f) {
 renderers.config = async function () {
   const rrBanner = (state.pendingRestart && state.pendingRestart.length)
     ? '<div class="notice warn" role="status">Restart required for <strong>' + esc(state.pendingRestart.join(", ")) +
-      "</strong> to take effect — these sections are read once at startup." +
+      "</strong> to take effect - these sections are read once at startup." +
       '<span class="spacer"></span><button class="btn small" id="cf-rr-x">Dismiss</button></div>'
     : "";
   setView(viewHead("Config", "config.toml: validated, atomic writes") + rrBanner +
@@ -1262,7 +1262,7 @@ renderers.config = async function () {
             if (rr.length) state.pendingRestart = rr;
             toast(
               "Applied " + res.changed.length + " change(s)" +
-              (rr.length ? " — restart required for " + rr.join(", ") + " to take effect" : ""),
+              (rr.length ? " - restart required for " + rr.join(", ") + " to take effect" : ""),
               rr.length ? "warn" : "ok"
             );
             renderers.config();
@@ -1295,7 +1295,7 @@ renderers.config = async function () {
               if (rr.length) state.pendingRestart = rr;
               toast(
                 "Applied " + res.changed.length + " change(s)" +
-                (rr.length ? " — restart required for " + rr.join(", ") + " to take effect" : ""),
+                (rr.length ? " - restart required for " + rr.join(", ") + " to take effect" : ""),
                 rr.length ? "warn" : "ok"
               );
               renderers.config();
@@ -1330,8 +1330,8 @@ renderers.keys = async function () {
         data.keys.map((k) =>
           "<tr><td class='mono'>" + esc(k.key) + "</td>" +
           "<td class='mono'>" + esc(k.redacted) + "</td>" +
-          "<td class='mono view-sub'>" + (k.used_by.length ? esc(k.used_by.join(", ")) : "—") + "</td>" +
-          "<td>" + (k.shadowed_by_process_env ? '<span class="pill" data-s="warn">shadows file</span>' : '<span class="view-sub">—</span>') + "</td>" +
+          "<td class='mono view-sub'>" + (k.used_by.length ? esc(k.used_by.join(", ")) : " - ") + "</td>" +
+          "<td>" + (k.shadowed_by_process_env ? '<span class="pill" data-s="warn">shadows file</span>' : '<span class="view-sub"> - </span>') + "</td>" +
           "<td><span class='btn-row'><button class='btn small' data-kedit='" + esc(k.key) + "'>Rotate</button>" +
           "<button class='btn small danger' data-kdel='" + esc(k.key) + "'>Delete</button></span></td></tr>"
         ).join("") + "</tbody></table></div></div>";
@@ -1487,7 +1487,7 @@ renderers.skills = async function () {
         "<th>Skill</th><th>Description</th><th>Scope</th><th>State</th><th></th></tr></thead><tbody>" +
         data.skills.map((s) =>
           "<tr><td class='mono'>" + esc(s.name) + "<div class='view-sub'>" + esc(s.origin || "") + "</div></td>" +
-          "<td>" + esc(s.description || "—") + "</td>" +
+          "<td>" + esc(s.description || " - ") + "</td>" +
           "<td><span class='pill'>" + esc(s.scope) + "</span></td>" +
           "<td>" + (s.enabled ? '<span class="pill" data-s="enabled">enabled</span>' : '<span class="pill" data-s="disabled">disabled</span>') + "</td>" +
           "<td><span class='btn-row'><button class='btn small' data-sktoggle='" + esc(s.name) + "'>" + (s.enabled ? "Disable" : "Enable") + "</button>" +
@@ -1522,8 +1522,8 @@ function skillImportForm() {
   const root = $("#modal-root");
   root.innerHTML = '<div class="modal-veil"><div class="modal" role="dialog" aria-modal="true" aria-label="Import skill">' +
     "<h3>Import skill</h3><p class='m-sub'>From a SKILL.md URL or a git repo. Files land under &lt;data_dir&gt;/skills.</p>" +
-    '<div class="field"><label>SKILL.md URL</label><input id="si-url" class="input mono" placeholder="https://…" spellcheck="false"></div>' +
-    '<div class="field"><label>or git repo</label><input id="si-repo" class="input mono" placeholder="https://github.com/…" spellcheck="false"></div>' +
+    '<div class="field"><label>SKILL.md URL</label><input id="si-url" class="input mono" placeholder="https://..." spellcheck="false"></div>' +
+    '<div class="field"><label>or git repo</label><input id="si-repo" class="input mono" placeholder="https://github.com/..." spellcheck="false"></div>' +
     '<div class="field"><label>subpath (optional)</label><input id="si-sub" class="input mono" spellcheck="false"></div>' +
     '<div class="m-actions"><button class="btn" data-x>Cancel</button><button class="btn primary" data-ok>Import</button></div></div></div>';
   const close = () => { root.innerHTML = ""; };
@@ -1573,7 +1573,7 @@ renderers.mcp = async function () {
           (s.needs_credentials ? "<div class='view-sub'>needs credentials</div>" : "") +
           (s.requires_env && s.requires_env.length ? "<div class='view-sub'>" + esc(s.requires_env.join(", ")) + "</div>" : "") + "</td>" +
           "<td class='mono'>" + esc(s.transport) + "</td>" +
-          "<td class='mono view-sub' style='max-width:280px;overflow:hidden;text-overflow:ellipsis'>" + esc(s.command || s.url || "—") + "</td>" +
+          "<td class='mono view-sub' style='max-width:280px;overflow:hidden;text-overflow:ellipsis'>" + esc(s.command || s.url || " - ") + "</td>" +
           "<td>" + (s.readiness ? '<span class="pill" data-s="warn">' + esc(s.readiness) + "</span>" : '<span class="pill" data-s="ok">ready</span>') + "</td>" +
           "<td>" + (s.enabled ? '<span class="pill" data-s="enabled">enabled</span>' : '<span class="pill" data-s="disabled">disabled</span>') + "</td>" +
           "<td><span class='btn-row'>" +
@@ -1659,7 +1659,7 @@ function pluginErrMsg(e) {
   return (e && e.message) || "request failed";
 }
 function pluginScanPill(p) {
-  if (!p.quarantined) return '<span class="pill">—</span>';
+  if (!p.quarantined) return '<span class="pill"> - </span>';
   const v = p.scan_verdict || "unknown";
   const s = v === "clean" ? "ok" : v === "suspicious" ? "warn" : "err";
   const n = p.scan_report && p.scan_report.findings ? p.scan_report.findings.length : 0;
@@ -1693,7 +1693,7 @@ function pluginActions(p) {
 renderers.plugins = async function () {
   setView(viewHead("Plugins", "tool and hook plugins. Imports are quarantined and scanned until approved") +
     '<div class="toolbar"><button class="btn primary" id="pl-import">Import</button>' +
-    '<input id="pl-cq" class="input mono" placeholder="search ClawHub…" spellcheck="false" style="max-width:220px">' +
+    '<input id="pl-cq" class="input mono" placeholder="search ClawHub..." spellcheck="false" style="max-width:220px">' +
     '<button class="btn small" id="pl-csearch">Search</button>' +
     '<button class="btn small" id="pl-refresh">Refresh</button></div>' +
     '<div id="pl-reg"></div><div id="pl-body">' + loading("plugins") + "</div>");
@@ -1712,7 +1712,7 @@ renderers.plugins = async function () {
       const rows = plugins.map((p) =>
         "<tr><td class='mono'>" + esc(p.name) +
         "<div class='view-sub'>" + esc(p.kind) + " · v" + esc(p.version || "?") + "</div></td>" +
-        "<td>" + esc(p.description || "—") +
+        "<td>" + esc(p.description || " - ") +
         (p.privilege_notes ? "<div class='view-sub'>" + esc(p.privilege_notes) + "</div>" : "") + "</td>" +
         "<td>" + (p.bundled ? '<span class="pill">bundled</span>' : '<span class="pill">third-party</span>') +
         "<div class='view-sub mono'>" + esc(p.location || "") + "</div></td>" +
@@ -1742,12 +1742,12 @@ function wirePluginButtons(reload, plugins) {
       const findings = (p.scan_report && p.scan_report.findings) || [];
       const list = findings.slice(0, 8).map((f) =>
         "<div class='mono' style='margin:4px 0'>[" + esc(f.severity) + "] " + esc(f.file) +
-        (f.line ? ":" + f.line : "") + " — " + esc(f.rule) + "</div>"
+        (f.line ? ":" + f.line : "") + " - " + esc(f.rule) + "</div>"
       ).join("") || "<p class='m-sub'>No findings recorded.</p>";
       const ok = await confirmDialog({
         title: "Approve " + p.name + " despite the scan?",
         body: "<p class='m-sub'>The static scan flagged this plugin as suspicious:</p>" + list +
-          (findings.length > 8 ? "<p class='m-sub'>…and " + (findings.length - 8) + " more. This is heuristic static analysis, not a sandbox.</p>" : "") +
+          (findings.length > 8 ? "<p class='m-sub'>...and " + (findings.length - 8) + " more. This is heuristic static analysis, not a sandbox.</p>" : "") +
           "<p class='m-sub'>Approving promotes it out of quarantine and lets it load.</p>",
         confirmLabel: "Approve anyway",
         danger: true,
@@ -1810,7 +1810,7 @@ function pluginScanModal(p) {
   ).join("") : "<tr><td colspan='4'>No findings.</td></tr>";
   root.innerHTML = '<div class="modal-veil"><div class="modal" role="dialog" aria-modal="true" aria-label="Scan report" style="max-width:720px">' +
     "<h3>Scan report: " + esc(p.name) + "</h3>" +
-    "<p class='m-sub'>Verdict: <b>" + esc(p.scan_verdict || "unknown") + "</b>. Heuristic static analysis — not a sandbox, not a guarantee.</p>" +
+    "<p class='m-sub'>Verdict: <b>" + esc(p.scan_verdict || "unknown") + "</b>. Heuristic static analysis - not a sandbox, not a guarantee.</p>" +
     '<div class="panel"><div class="panel-body flush"><table class="grid"><thead><tr><th>Severity</th><th>File</th><th>Rule</th><th>Description</th></tr></thead><tbody>' +
     rows + "</tbody></table></div></div>" +
     '<div class="m-actions"><button class="btn primary" data-x>Close</button></div></div></div>';
@@ -1820,7 +1820,7 @@ function pluginScanModal(p) {
 function pluginImportForm() {
   const root = $("#modal-root");
   root.innerHTML = '<div class="modal-veil"><div class="modal" role="dialog" aria-modal="true" aria-label="Import plugin">' +
-    "<h3>Import plugin</h3><p class='m-sub'>From a GitHub repo URL or a <span class='mono'>clawhub:&lt;slug&gt;</span> reference. The bundle is downloaded, scanned, and quarantined — nothing loads until you approve it.</p>" +
+    "<h3>Import plugin</h3><p class='m-sub'>From a GitHub repo URL or a <span class='mono'>clawhub:&lt;slug&gt;</span> reference. The bundle is downloaded, scanned, and quarantined - nothing loads until you approve it.</p>" +
     '<div class="field"><label>GitHub repo URL or clawhub:slug</label><input id="pi-url" class="input mono" placeholder="https://github.com/owner/repo or clawhub:slug" spellcheck="false"></div>' +
     '<div class="field"><label>ref (optional: branch, tag, commit)</label><input id="pi-ref" class="input mono" placeholder="main" spellcheck="false"></div>' +
     '<div id="pi-err" class="view-sub" style="color:var(--danger)"></div>' +
@@ -1836,7 +1836,7 @@ function pluginImportForm() {
       const body = { url };
       if (ref) body.ref = ref;
       const res = await api("POST", "/api/plugins/import", body);
-      toast("Imported " + res.name + " — quarantined, scan: " + (res.scan_report && res.scan_report.verdict), "ok");
+      toast("Imported " + res.name + " - quarantined, scan: " + (res.scan_report && res.scan_report.verdict), "ok");
       close();
       renderers.plugins();
     } catch (e) {
@@ -1857,7 +1857,7 @@ function pluginImportForm() {
 async function pluginRegistrySearch() {
   const q = $("#pl-cq").value.trim();
   if (!q) return;
-  $("#pl-reg").innerHTML = '<p class="view-sub">Searching ClawHub…</p>';
+  $("#pl-reg").innerHTML = '<p class="view-sub">Searching ClawHub...</p>';
   try {
     const data = await api("GET", "/api/plugins/registry/search?q=" + encodeURIComponent(q) + "&source=clawhub");
     const results = data.results || [];
@@ -1869,9 +1869,9 @@ async function pluginRegistrySearch() {
       '<div class="panel"><div class="panel-body flush"><table class="grid"><thead><tr><th>Entry</th><th>Description</th><th>Version</th><th></th></tr></thead><tbody>' +
       results.map((r) =>
         "<tr><td class='mono'>" + esc(r.name || r.slug) + "<div class='view-sub'>" + esc(r.slug) + " · " + esc(r.kind) + "</div></td>" +
-        "<td>" + esc(r.description || "—") + "</td>" +
-        "<td class='mono'>" + esc(r.version || "—") + "</td>" +
-        "<td><span class='view-sub'>ClawHub lists skills — import from the " +
+        "<td>" + esc(r.description || " - ") + "</td>" +
+        "<td class='mono'>" + esc(r.version || " - ") + "</td>" +
+        "<td><span class='view-sub'>ClawHub lists skills - import from the " +
         "<a href='#/skills'>Skills</a> page, not here.</span></td></tr>"
       ).join("") + "</tbody></table></div></div>";
   } catch (e) { $("#pl-reg").innerHTML = '<p class="view-sub">Search failed: ' + esc(pluginErrMsg(e)) + "</p>"; }
@@ -1899,7 +1899,7 @@ renderers.system = async function () {
       '<button class="btn small' + (night.enabled ? " danger" : " primary") + '" id="sy-night-toggle">' + (night.enabled ? "Disable" : "Enable") + '</button></div>' +
       '<div class="panel-body"><dl class="kv">' +
       "<dt>Loop</dt><dd>" + (night.enabled ? '<span class="pill" data-s="ok">enabled</span>' : '<span class="pill" data-s="warn">off</span>') + "</dd>" +
-      "<dt>Why</dt><dd class='mono'>" + esc(night.reason || "—") + "</dd>" +
+      "<dt>Why</dt><dd class='mono'>" + esc(night.reason || " - ") + "</dd>" +
       "<dt>Next run</dt><dd class='mono'>" + (night.next_run_ms ? fmtTime(night.next_run_ms) + " (" + relTime(night.next_run_ms) + ")" : "not scheduled") + "</dd>" +
       "<dt>Last pass</dt><dd class='mono' style='white-space:pre-wrap'>" + esc(night.last_summary || "no nightly passes yet") + "</dd>" +
       "</dl></div></div>" +
@@ -1914,7 +1914,7 @@ renderers.system = async function () {
       '<div class="panel-body"><dl class="kv">' +
       "<dt>Enabled</dt><dd>" + (cons.enabled ? '<span class="pill" data-s="ok">enabled</span>' : '<span class="pill" data-s="warn">disabled</span>') + "</dd>" +
       "<dt>Last run</dt><dd class='mono'>" + (cons.last_run_ms ? fmtTime(cons.last_run_ms) + " (" + relTime(cons.last_run_ms) + ")" : "never") + "</dd>" +
-      "<dt>Last summary</dt><dd class='mono'>" + esc(cons.last_summary || "—") + "</dd>" +
+      "<dt>Last summary</dt><dd class='mono'>" + esc(cons.last_summary || " - ") + "</dd>" +
       "<dt>Promoted keys</dt><dd class='mono'>" + fmtNum(cons.promoted_keys) + "</dd>" +
       "</dl></div></div>"
     );
@@ -1923,7 +1923,7 @@ renderers.system = async function () {
       const ok = await confirmDialog({
         title: (enable ? "Enable" : "Disable") + " nightly pass?",
         body: '<p class="m-sub">' + (enable
-          ? "Writes <code class=\"inline\">enabled = true</code> to <code class=\"inline\">[nightly]</code> — the same flag <code class=\"inline\">/nightly on</code> writes."
+          ? "Writes <code class=\"inline\">enabled = true</code> to <code class=\"inline\">[nightly]</code> - the same flag <code class=\"inline\">/nightly on</code> writes."
           : "Writes <code class=\"inline\">enabled = false</code> to <code class=\"inline\">[nightly]</code>; it wins even with a model pin.") + "</p>",
         confirmLabel: enable ? "Enable" : "Disable",
         danger: !enable,
@@ -1933,9 +1933,9 @@ renderers.system = async function () {
       catch (e) { toast(e.message, "err"); }
     };
     $("#sy-gw-restart").onclick = async () => {
-      const ok = await confirmDialog({ title: "Restart gateway?", body: '<p class="m-sub">Runs <code class="inline">pantheon gateway restart</code> in the background. <strong>This page will disconnect</strong> when the gateway restarts — reload the dashboard URL afterwards. Chat surfaces may drop briefly.</p>', confirmLabel: "Restart", danger: true });
+      const ok = await confirmDialog({ title: "Restart gateway?", body: '<p class="m-sub">Runs <code class="inline">pantheon gateway restart</code> in the background. <strong>This page will disconnect</strong> when the gateway restarts - reload the dashboard URL afterwards. Chat surfaces may drop briefly.</p>', confirmLabel: "Restart", danger: true });
       if (!ok) return;
-      try { await api("POST", "/api/gateway/restart", { confirm: true }); toast("Restart requested — this page will disconnect", "ok"); }
+      try { await api("POST", "/api/gateway/restart", { confirm: true }); toast("Restart requested - this page will disconnect", "ok"); }
       catch (e) { toast(e.message, "err"); }
     };
     const runPass = (kind, dry) => async () => {
@@ -1975,7 +1975,7 @@ renderers.system = async function () {
 /* ------------------------------------------------------------------ */
 
 const SWARM_MISSING =
-  "Swarm not found — it may have been pruned, or the id is wrong. " +
+  "Swarm not found - it may have been pruned, or the id is wrong. " +
   "Recently launched swarms are remembered in this tab's sessionStorage.";
 
 function swarmIsMissing(e) {
@@ -2033,7 +2033,7 @@ function swarmTranscriptHtml(t) {
    Every message is labeled with the speaking expert (avatar + name, like the
    HERMES / MEDUSA labels); handoffs between experts render as @-mention
    chips; the header shows the participant stack. The lead's messages are the
-   primary thread — member runs are team activity, never user-facing. */
+   primary thread - member runs are team activity, never user-facing. */
 
 /* Avatar in the expert's own color when we have it, else the hash avatar. */
 function expertAvatarHtml(x, cls) {
@@ -2269,7 +2269,7 @@ renderers.swarm = async function () {
         esc((r.task || "").slice(0, 80) || r.id) + '</div>' +
         '<div class="agent-sub">' + esc(r.id) + (r.created ? " \u00b7 " + esc(r.created) : "") + "</div></div></a>"
       ).join("") + "</div>"
-      : emptyState("No swarms launched yet", "Launch one above — it will be remembered here for this tab.")) +
+      : emptyState("No swarms launched yet", "Launch one above - it will be remembered here for this tab.")) +
     "</div></div>";
   $("#sw-view").innerHTML = form + list;
 
@@ -2418,9 +2418,9 @@ renderers.swarmDetail = async function (id) {
 /* ---------------- boot ---------------- */
 /* ---------------- profiles: persona files ---------------- */
 const PROFILE_FILES = [
-  ["soul", "SOUL", "Persona — who this agent is"],
-  ["user", "USER", "User context — who it serves"],
-  ["agents", "AGENTS", "Instructions — how it works"],
+  ["soul", "SOUL", "Persona - who this agent is"],
+  ["user", "USER", "User context - who it serves"],
+  ["agents", "AGENTS", "Instructions - how it works"],
 ];
 
 renderers.profiles = async function () {
@@ -2457,10 +2457,10 @@ renderers.profiles = async function () {
 
 function profileFileCard(name, kind, label, sub, file) {
   const content = file.content || "";
-  const preview = content.split("\n").slice(0, 3).join("\n") || "— empty —";
+  const preview = content.split("\n").slice(0, 3).join("\n") || " - empty - ";
   const pathLine = file.path
     ? '<div class="mono text-faint" style="font-size:11px;margin-top:8px;word-break:break-all">' + esc(file.path) + "</div>"
-    : '<div class="text-faint" style="font-size:11px;margin-top:8px">Not set — saving creates it under the profile.</div>';
+    : '<div class="text-faint" style="font-size:11px;margin-top:8px">Not set - saving creates it under the profile.</div>';
   return '<div class="panel" id="pf-' + kind + '"><div class="panel-head">' +
     '<span class="panel-title">' + esc(label) + '</span><span class="spacer"></span>' +
     '<button class="btn small" data-edit="' + kind + '">Edit</button></div>' +
@@ -2553,7 +2553,7 @@ async function profileEditFile(name, kind, file) {
   $("#pf-save").onclick = async () => {
     const btn = $("#pf-save");
     btn.disabled = true;
-    btn.textContent = "Saving…";
+    btn.textContent = "Saving...";
     try {
       await api("PUT", "/api/profiles/" + encodeURIComponent(name) + "/files", { file: kind, content: ta.value });
       toast(label + " saved", "ok");
@@ -2654,7 +2654,7 @@ function topoLabel(topo) {
 }
 
 /* Topology badge, lead row, and the ordered stages with their handoff
-   contracts — how the team actually executes. */
+   contracts - how the team actually executes. */
 function teamPlanHtml(t) {
   const stages = t.stages || [];
   const byId = {};

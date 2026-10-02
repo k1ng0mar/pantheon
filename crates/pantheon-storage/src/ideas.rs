@@ -1,6 +1,6 @@
 //! Nightly-gated proactive ideas (the Ideas page backend).
 //!
-//! An idea is a suggestion the nightly pass mints — a repair opportunity,
+//! An idea is a suggestion the nightly pass mints - a repair opportunity,
 //! an observation from the audit, or a proposed scheduled task mined from
 //! repeating session patterns. Ideas wait in `pending` for the user's
 //! explicit accept/dismiss; accept/dismiss/feedback signals are recorded

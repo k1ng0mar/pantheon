@@ -45,7 +45,7 @@ fn send_err(e: ureq::Error) -> ChannelError {
 pub trait TelegramTransport: Send + Sync {
     fn send_message(&self, chat_id: &str, payload: &Value) -> Result<(), ChannelError>;
     /// Download a file by its `file_id` (`getFile` + the file download
-    /// URL). Default: unsupported — test recorders only implement
+    /// URL). Default: unsupported - test recorders only implement
     /// `send_message`.
     fn download_file(&self, file_id: &str) -> Result<Vec<u8>, ChannelError> {
         let _ = file_id;
@@ -55,7 +55,7 @@ pub trait TelegramTransport: Send + Sync {
         ))
     }
     /// Send synthesized audio back (`sendVoice` for ogg, `sendAudio`
-    /// otherwise). Default: unsupported — the channel falls back to text.
+    /// otherwise). Default: unsupported - the channel falls back to text.
     fn send_voice(
         &self,
         chat_id: &str,
@@ -235,7 +235,7 @@ pub fn voice_ref(message: &Value) -> Option<TelegramVoiceRef> {
 }
 
 /// Thread id + sender for a Telegram `message` object. `None` when the
-/// chat id is missing — the same condition `parse_event` rejects with.
+/// chat id is missing - the same condition `parse_event` rejects with.
 fn message_thread_sender(message: &Value) -> Option<(String, Option<String>)> {
     let chat_id = message
         .get("chat")
@@ -417,7 +417,7 @@ impl TelegramChannel {
         // Token-safe: the getUpdates URL embeds the bot token and the
         // transport's error message may echo it (ureq's Display prints
         // the URL), so only the error code and (for HTTP failures) the
-        // numeric status are surfaced — the daemon's health tracker needs
+        // numeric status are surfaced - the daemon's health tracker needs
         // the 401 to spot a revoked token.
         let updates =
             transport
@@ -470,7 +470,7 @@ impl Channel for TelegramChannel {
     }
     fn send(&self, envelope: ChannelEnvelope) -> Result<(), ChannelError> {
         // Voice replies: agent text goes through the [tts] backend and out
-        // as sendVoice/sendAudio — but only for plain Text frames.
+        // as sendVoice/sendAudio - but only for plain Text frames.
         // Approval requests keep their inline keyboard: buttons cannot be
         // spoken.
         if self.voice.speak_replies() && envelope.frame.kind == UiFrameKind::Text {

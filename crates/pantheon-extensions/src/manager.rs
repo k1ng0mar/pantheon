@@ -5,7 +5,7 @@
 //! plugin.yaml (or Hermes `__init__.py` plugins that keep in-process
 //! `_seen_sessions`, which our subprocess runner can't preserve) fire at
 //! most once per (plugin, hook, session). The manager owns this, not the
-//! plugin process — required because each fire spawns fresh.
+//! plugin process - required because each fire spawns fresh.
 use crate::hooks::{Hook, HookClass};
 use crate::python_runner::{
     fire_hook, fire_hook_full, HookDirective, HookInput, PythonPlugin, RunnerConfig,
@@ -58,7 +58,7 @@ pub enum GateDecision {
 const SKIP_AFTER_FAILURES: u32 = 3;
 
 /// Immediate subdirs of `dir` containing a plugin.yaml, sorted. A
-/// missing or unreadable dir yields nothing — used for the optional
+/// missing or unreadable dir yields nothing - used for the optional
 /// `<ext>/bundled/` layer, where absence is the normal first-run state.
 fn plugin_dirs(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -109,7 +109,7 @@ impl ExtensionManager {
     /// without approval.
     pub fn load_dir(&mut self, dir: &Path) -> Result<Vec<String>, PantheonError> {
         // The top-level dir keeps its old contract: unreadable means an
-        // error the caller can report. The bundled subdir is optional —
+        // error the caller can report. The bundled subdir is optional
         // missing just means no bundled plugins on disk yet.
         let rd = std::fs::read_dir(dir).map_err(|e| merr("EXT_DIR", e.to_string()))?;
         let mut tops = Vec::new();
@@ -179,7 +179,7 @@ impl ExtensionManager {
         let pl = PythonPlugin::load(dir)?;
         let name = pl.manifest.name.clone();
         // `load_one` targets a specific plugin dir; the extensions root is
-        // its parent. Approval still applies — an explicit load is not
+        // its parent. Approval still applies - an explicit load is not
         // consent.
         let ext_dir = dir.parent().unwrap_or(dir);
         if !self.approved_here(
@@ -241,7 +241,7 @@ impl ExtensionManager {
             // Bundled (first-party) plugins skip the third-party approval
             // store. Enablement: the config file (`[plugins.<name>]`) is
             // the single enablement state, shared with the dashboard, the
-            // mobile app, and the agent — and it wins when present. When
+            // mobile app, and the agent - and it wins when present. When
             // absent, the bundled manifest's own `enabled` flag is the
             // default (true only for plugins that ship on, like
             // noisegate). A missing or unparsable config fails closed
@@ -387,7 +387,7 @@ impl ExtensionManager {
                     // The shim CATCHES plugin exceptions and reports them as a
                     // clean envelope with `error` set, so a raising plugin
                     // arrives here as Ok, not Err. A gate must read both as
-                    // "no answer" — otherwise the most likely real-world
+                    // "no answer" - otherwise the most likely real-world
                     // failure (a plugin with a bug) fails OPEN.
                     if let Some(msg) = out.error {
                         self.bump_streak(&pl.manifest.name);

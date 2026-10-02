@@ -2,7 +2,7 @@
 //!
 //! The TUI snapshots files named by `apply_files` at `ToolStarted` and
 //! diffs them at `ToolCompleted`, so the transcript shows what actually
-//! changed — red `-` lines, green `+` lines, `@@` hunk headers — instead
+//! changed - red `-` lines, green `+` lines, `@@` hunk headers - instead
 //! of just the tool's argument summary. New files render all-`+`,
 //! deletions all-`-`, binaries are skipped, and large diffs truncate with
 //! an honest "N more lines" marker.
@@ -51,7 +51,7 @@ pub fn snapshot_file(path: &Path) -> Option<FileSnapshot> {
 
 /// Parse the `edits` array out of `apply_files` args JSON. Returns the
 /// target paths; anything unparseable yields an empty vec (no diff, no
-/// error — diffing is best-effort display).
+/// error - diffing is best-effort display).
 ///
 /// Only `apply_files` is hooked: `stage_files` stages without touching
 /// targets (nothing to diff), and `apply_staged` applies by opaque stage
@@ -251,7 +251,7 @@ pub fn render_diff_lines(
                 Style::default().fg(th.failure),
             )),
             DiffLine::Truncated(n) => Line::from(Span::styled(
-                format!("│  … {n} more lines"),
+                format!("│  ... {n} more lines"),
                 Style::default().fg(th.dim).add_modifier(Modifier::ITALIC),
             )),
         })

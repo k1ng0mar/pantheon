@@ -3,18 +3,18 @@
 //!
 //! ## The lineup
 //!
-//! * GSD Browser (`gsd-browser` CLI subprocess) — default interactive
+//! * GSD Browser (`gsd-browser` CLI subprocess) - default interactive
 //!   backend: versioned refs, `act --intent`, vault, stealth.
-//! * Raw CDP via exactly-pinned `chromiumoxide` 0.9.1 — local fallback,
+//! * Raw CDP via exactly-pinned `chromiumoxide` 0.9.1 - local fallback,
 //!   no CLI, no daemon.
-//! * Steel — REST + CDP websocket through the official `steel-rs` SDK;
+//! * Steel - REST + CDP websocket through the official `steel-rs` SDK;
 //!   cloud and self-host share one implementation (configurable base URL).
-//! * Browserbase — cloud fallback: session REST API, raw CDP websocket
+//! * Browserbase - cloud fallback: session REST API, raw CDP websocket
 //!   per session.
-//! * Lightpanda — extraction/fetch only, never interactive (allowlisted
+//! * Lightpanda - extraction/fetch only, never interactive (allowlisted
 //!   command surface enforced before any connection).
-//! * Playwright — official stateful `@playwright/cli` subprocess fallback.
-//! * Camoufox — anti-detect fallback: patched Firefox through the
+//! * Playwright - official stateful `@playwright/cli` subprocess fallback.
+//! * Camoufox - anti-detect fallback: patched Firefox through the
 //!   official Python launcher (Juggler protocol, no CDP), driven by a
 //!   long-lived JSON-over-stdio shim; fingerprint config under
 //!   `[browser.camofox]`.
@@ -31,7 +31,7 @@
 //! sandboxing would give the illusion of containment while a daemon or
 //! cloud session still dials out. The authorization boundary here is the
 //! capability gate (`Capability::Browser`, default-deny; `BrowserAct`
-//! approval-gated), not the sandbox — and the binaries are user-installed
+//! approval-gated), not the sandbox - and the binaries are user-installed
 //! trusted software, not arbitrary model-supplied commands. Gating the
 //! *decision to browse* is the honest control.
 //!
@@ -40,20 +40,20 @@
 //! Verified against the real binary (`--help` plus a live daemon attached
 //! to Chrome via `--cdp-url`):
 //!
-//! * Invocation: `gsd-browser --session <name> --json <command>...` —
+//! * Invocation: `gsd-browser --session <name> --json <command>...`
 //!   global flags precede the subcommand. `--browser-path` points at a
 //!   Chrome binary; `--cdp-url` attaches to an already-running Chrome
 //!   (useful where the daemon cannot launch Chrome itself).
 //! * `daemon stop` exists (`daemon {start,stop,health}`); GC uses it
 //!   best-effort (see [`crate::lifecycle`]). A stale session in
-//!   `starting`/`healthy` state refuses replacement — `daemon stop`
+//!   `starting`/`healthy` state refuses replacement - `daemon stop`
 //!   first, then retry.
 //! * `snapshot` returns `{"version": N, "refs": {"e1": {...}, ...},
-//!   "metadata": {...}, "count": N}` — ref *keys* are `e1`-style; the
+//!   "metadata": {...}, "count": N}` - ref *keys* are `e1`-style; the
 //!   `@vN:eM` form is the *input* spelling (`click-ref @v2:e2` echoes
 //!   back `"ref": "@v2:e2"`).
 //! * `extract` **requires** `--schema <json>` where the schema is
-//!   `{"properties": {"title": {"_selector": "h1", ...}, ...}}` — a bare
+//!   `{"properties": {"title": {"_selector": "h1", ...}, ...}}` - a bare
 //!   property map without `properties` is rejected. `--selector` scopes,
 //!   `--multiple` enables container mode. Output: `{"data": {...},
 //!   "fieldCount": N, "multiple": false, "scope": null}`.
@@ -63,7 +63,7 @@
 //!   `text_hidden`, `request_completed`, `console_message`,
 //!   `element_count`, `region_stable`. Success output:
 //!   `{"condition": ..., "elapsed_ms": N, "met": true, ...}`.
-//! * `act` takes `--intent <enum>` — one of `submit_form`,
+//! * `act` takes `--intent <enum>` - one of `submit_form`,
 //!   `close_dialog`, `primary_cta`, `search_field`, `next_step`,
 //!   `dismiss`, `auth_action`, `back_navigation` (optional `--scope`).
 //!   There is **no** natural-language `act-instruction` command in
@@ -72,7 +72,7 @@
 //!   (default jpeg), plus `--selector` / `--full-page` / `--quality`.
 //! * Failures come back as `{"error": {"code": -32603, "message": ...,
 //!   "data": {"retryHint": ...}}}` on stdout with exit 0 in some paths
-//!   (e.g. navigation errors) — and as non-zero exits with JSON errors
+//!   (e.g. navigation errors) - and as non-zero exits with JSON errors
 //!   in others; both are surfaced as [`error::BrowserError::Failed`],
 //!   never a panic.
 //! * `@playwright/cli` (verified live via `npx -y @playwright/cli

@@ -306,7 +306,7 @@ fn disabled_and_unapproved_servers_are_never_targets() {
     let mut events = Vec::new();
     let reports = run_repair_phase(&config, dir.path(), &mut targets, &[], None, &mut events, 1);
     // Only the ready server yields a report (Healthy); the other two are
-    // skipped silently — operator intent / pending human decision.
+    // skipped silently - operator intent / pending human decision.
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].outcome, RepairOutcome::Healthy);
     assert!(mcp.retried.is_empty());
@@ -565,7 +565,7 @@ fn missing_repair_model_degrades_to_deterministic_only() {
 
 #[test]
 fn resolve_repair_uses_the_repair_slot() {
-    // The repair diagnosis resolves through AuxiliaryKind::Repair —
+    // The repair diagnosis resolves through AuxiliaryKind::Repair
     // mirroring resolve_refiner, never the Reflection slot.
     let llm = DiagLlm::new("x");
     let policy = ModelPolicy {

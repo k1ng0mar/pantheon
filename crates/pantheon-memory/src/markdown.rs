@@ -307,7 +307,7 @@ pub fn parse_md(content: &str) -> Vec<(String, String)> {
 /// Trust handling: a v2 file carries each record's tier and a hand-edited
 /// or legacy file is human-authored, so both import at the file's tier
 /// (`memory.md` is a human-authored origin in the write gate). The tier is
-/// capped at the tier the store already has for the row — an import can
+/// capped at the tier the store already has for the row - an import can
 /// keep or lower the file's claimed tier, never upgrade it. The store's
 /// own anti-clobber rule still applies on top: when the capped tier is
 /// below the stored tier the row is held entirely.

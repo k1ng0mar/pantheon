@@ -76,7 +76,7 @@ fn unescape_dotenv_value(inner: &str) -> String {
 }
 
 /// Render a value for the file: always double-quoted, with `\` and `"`
-/// escaped. Quoting makes the round-trip lossless — `parse_dotenv`
+/// escaped. Quoting makes the round-trip lossless - `parse_dotenv`
 /// strips ` #` comments and edge whitespace only on *unquoted* values,
 /// so a raw `abc # def` used to read back as `abc`. Values must still
 /// be single-line; `\n`/`\r` are rejected by the callers.
@@ -125,7 +125,7 @@ fn dotenv_line_key(raw_line: &str) -> Option<&str> {
 /// write exclusion. Every read-modify-write below runs inside
 /// [`with_dotenv_write_lock`], which holds this mutex for the whole
 /// read → transform → write sequence (so concurrent `set` calls in this
-/// process cannot interleave and lose updates — fresh-broker-per-request
+/// process cannot interleave and lose updates - fresh-broker-per-request
 /// means the lock cannot live on the broker) AND an exclusive flock on a
 /// sidecar `<target>.lock` file (so writers in *other* processes cannot
 /// interleave either). Reads stay unlocked: every write below is an atomic
@@ -135,7 +135,7 @@ static DOTENV_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Sidecar lock file for a dotenv target: `<target>.lock`
 /// (`<data_dir>/.env` → `<data_dir>/.env.lock`). It is never renamed, so
 /// the inode the flock pins stays stable across the atomic renames of the
-/// target itself — locking the target directly would be racy, because the
+/// target itself - locking the target directly would be racy, because the
 /// rename swaps the locked inode out from under the locker.
 fn dotenv_lock_path(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
@@ -184,7 +184,7 @@ fn pid_is_alive(_pid: u32) -> bool {
 /// Remove `<target>.tmp.<pid>` temp files leaked by writers that died
 /// mid-write (kill -9 between temp creation and rename leaves them; dozens
 /// were observed across repeated kill rounds). Only temps whose pid is dead
-/// are removed — a live writer's temp is never touched — so this is safe to
+/// are removed - a live writer's temp is never touched - so this is safe to
 /// call at startup ([`load_dotenv`]) and on every write.
 ///
 /// Matches the [`atomic_write_dotenv_file`] naming (`<target>.tmp.<pid>`,
@@ -216,8 +216,8 @@ pub fn sweep_stale_dotenv_temps(data_dir: &Path) {
 
 /// Run `f` with the full dotenv write exclusion held, in a fixed order:
 /// the process-wide mutex first, then an exclusive flock on the sidecar
-/// `<target>.lock` file. The flock is blocking — a writer waits its turn
-/// rather than failing — and the OS releases it if the holder dies, so a
+/// `<target>.lock` file. The flock is blocking - a writer waits its turn
+/// rather than failing - and the OS releases it if the holder dies, so a
 /// kill -9'd writer can never wedge later writers; it can only leak its
 /// temp file, which is reaped here by [`sweep_stale_dotenv_temps`]
 /// (we hold the exclusive flock, so no live flock-aware writer can own a
@@ -256,7 +256,7 @@ fn with_dotenv_write_lock<T>(
 }
 
 /// Write `text` to `path` atomically: bytes go to a temp file created
-/// with owner-only permissions *at creation* (no umask window — the
+/// with owner-only permissions *at creation* (no umask window - the
 /// file is never world-readable, not even briefly), fsynced, then
 /// renamed over the target. A crash at any point leaves the old file
 /// or the complete new file, never a torn one. The temp name carries
@@ -443,14 +443,14 @@ pub fn valid_key(key: &str) -> bool {
 /// Line-preserving like [`upsert_dotenv`]: comments, order, and unrelated
 /// keys survive; hand-edited duplicates collapse (last-wins). Values are
 /// quoted on write so they round-trip losslessly through [`parse_dotenv`];
-/// they must be single-line — a value containing `\n` or `\r` is rejected
+/// they must be single-line - a value containing `\n` or `\r` is rejected
 /// rather than written in a form the parser would read back differently.
 ///
 /// Holds the full cross-process write exclusion (process-wide dotenv
 /// mutex + exclusive flock on the sidecar lock file) for the whole
 /// read-modify-write, so concurrent batches (or single upserts) in this
 /// process or any other serialize instead of losing updates. This is the
-/// write path behind multi-key `PUT /api/env` — one batch, one atomic commit.
+/// write path behind multi-key `PUT /api/env` - one batch, one atomic commit.
 pub fn apply_dotenv_batch(
     data_dir: &Path,
     upserts: &[(String, String)],
@@ -543,7 +543,7 @@ mod dotenv_durability_tests {
     /// Item 2c: values with comment markers, quotes, and edge whitespace
     /// must round-trip EXACTLY. Before the quoting fix, `parse_dotenv`
     /// stripped ` #` and quotes on read, so `"abc # def"` came back as
-    /// `"abc"` — silent round-trip corruption.
+    /// `"abc"` - silent round-trip corruption.
     #[test]
     fn quoted_values_round_trip_losslessly() {
         let dir = scratch_dir("roundtrip");
@@ -577,7 +577,7 @@ mod dotenv_durability_tests {
     }
 
     /// Item 2a: a crash mid-write must leave the old file or the new
-    /// file — never a torn one. Readers racing a writer must only ever
+    /// file - never a torn one. Readers racing a writer must only ever
     /// observe complete, well-formed snapshots. (With the old direct
     /// `fs::write` path this test observes torn lines.)
     #[test]
@@ -623,7 +623,7 @@ mod dotenv_durability_tests {
                             continue;
                         }
                         // Every non-blank line must be a complete KEY= line
-                        // from one generation — a torn write shows up as a
+                        // from one generation - a torn write shows up as a
                         // truncated line or mixed generations.
                         let Some(eq) = t.find('=') else {
                             torn.store(true, Ordering::Relaxed);
@@ -666,7 +666,7 @@ mod dotenv_durability_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Item 2a: a multi-key batch applies atomically — after the call
+    /// Item 2a: a multi-key batch applies atomically - after the call
     /// every key is present with its exact value.
     #[test]
     fn batch_upserts_apply_atomically() {

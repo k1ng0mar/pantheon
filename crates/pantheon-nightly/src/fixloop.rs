@@ -1,25 +1,25 @@
 //! Bounded fix loop: diagnose → revise → re-check, then escalate.
 //!
 //! When a skill/persona proposal fails eval-gating or replay-gating,
-//! the pass doesn't just reject it — it tries to repair the DRAFT
+//! the pass doesn't just reject it - it tries to repair the DRAFT
 //! first:
 //!
 //! - **Eval reject**: the eval failure detail goes to the repair aux
 //!   model (Repair slot), which revises the draft body; the FULL eval
 //!   tag set re-runs against the revised draft. Eval tags are immutable
-//!   once the proposal enters the loop — the loop may not narrow the
+//!   once the proposal enters the loop - the loop may not narrow the
 //!   claim to dodge failing evals (that let broken drafts validate
 //!   green).
 //! - **Skipped evals** (no tags): escalates unless the proposal kind is
 //!   explicitly allowlisted to skip eval-gating. Currently no kind is
-//!   allowlisted — memory lessons never reach the gate at all (lib.rs
+//!   allowlisted - memory lessons never reach the gate at all (lib.rs
 //!   handles them on a separate path: the promotion rule IS the gate).
 //! - **Replay reject, fair measurement** ("no strict improvement"): one
 //!   flakiness re-run of the A/B pair per attempt. With LLM steps
 //!   enabled, the repair aux model (Repair slot) may instead sharpen
 //!   the draft once, then both gates re-run on the revised draft.
 //! - **Replay reject, infrastructure** (no tasks, spawn/timeout/scoring
-//!   errors): not repairable by revision — escalate immediately.
+//!   errors): not repairable by revision - escalate immediately.
 //!
 //! After `max_fix_attempts` the proposal is marked `NeedsAttention` and
 //! recorded in `nightly-escalated.json`; it never loops forever and it
@@ -101,9 +101,9 @@ fn now_ms() -> i64 {
 
 /// Proposal kinds explicitly allowed to reach `Validated` with zero
 /// evals run. Currently none: every kind that reaches `gate()` must
-/// run its tagged evals. Memory lessons never reach the gate at all —
+/// run its tagged evals. Memory lessons never reach the gate at all
 /// lib.rs handles them on a separate path ("the promotion rule IS the
-/// gate") — so the empty allowlist is deliberate, not an oversight.
+/// gate") - so the empty allowlist is deliberate, not an oversight.
 /// The match is exhaustive so adding a kind forces a conscious choice.
 fn eval_skip_allowed(kind: &ProposalKind) -> bool {
     match kind {
@@ -121,7 +121,7 @@ fn eval_skip_allowed(kind: &ProposalKind) -> bool {
 /// audits them with the rest of the pass.
 ///
 /// `judge` scores replay transcripts (`ReplayCheck::Judge`); `repair`
-/// revises drafts on eval/replay reject — all draft revision goes
+/// revises drafts on eval/replay reject - all draft revision goes
 /// through the Repair slot, never Reflection. `repair = None` means
 /// revision is unavailable: the loop falls back to plain retries,
 /// then escalation.
@@ -256,7 +256,7 @@ fn fair_measurement(reason: &str) -> bool {
 
 /// Ask the repair aux model to revise `proposal` per `prompt`; the
 /// returned full draft becomes the new body. `None` when no repair
-/// model is configured or the call fails — the caller falls back to a
+/// model is configured or the call fails - the caller falls back to a
 /// plain retry.
 fn sharpen_draft(
     judge: Option<(&dyn NightlyLlm, &AuxiliaryModel)>,
@@ -276,7 +276,7 @@ fn sharpen_draft(
 
 /// With LLM steps enabled, ask the repair aux model to revise a draft
 /// that failed eval-gating, feeding it the eval failure detail. `None`
-/// when no repair model is configured or the call fails — the caller
+/// when no repair model is configured or the call fails - the caller
 /// falls back to a plain gate re-run (flakiness retry).
 fn try_eval_sharpen(
     repair: Option<(&dyn NightlyLlm, &AuxiliaryModel)>,
@@ -295,7 +295,7 @@ fn try_eval_sharpen(
 
 /// With LLM steps enabled, ask the repair aux model to sharpen a draft
 /// that failed to improve replay. `None` when no repair model is
-/// configured or the call fails — the caller falls back to a plain
+/// configured or the call fails - the caller falls back to a plain
 /// retry.
 fn try_llm_sharpen(
     repair: Option<(&dyn NightlyLlm, &AuxiliaryModel)>,

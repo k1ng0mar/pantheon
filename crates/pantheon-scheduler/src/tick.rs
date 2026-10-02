@@ -5,12 +5,12 @@
 //! 1. applies the job's [`OverlapPolicy`](crate::OverlapPolicy) against the
 //!    in-flight set (same-process concurrency);
 //! 2. wins a durable claim for the occurrence from the
-//!    [`DurableClaimLedger`] — an atomic first-wins INSERT, so two ticks
+//!    [`DurableClaimLedger`] - an atomic first-wins INSERT, so two ticks
 //!    racing the same due job (two threads, two processes, or a restart
 //!    replaying a minute) agree on exactly one winner;
 //! 3. runs the job with its timeout: a run that outlives
 //!    [`Job::effective_timeout_secs`](crate::Job::effective_timeout_secs)
-//!    is abandoned — the tick stops waiting. Rust cannot kill a thread,
+//!    is abandoned - the tick stops waiting. Rust cannot kill a thread,
 //!    so the abandoned run keeps going detached until it finishes on its
 //!    own.
 //!
@@ -99,7 +99,7 @@ pub enum RunOutcome {
     Panicked,
     /// The executor returned normally but the task itself failed
     /// (app-level failure, e.g. the agent run errored). Never produced
-    /// by the tick driver — the app records it when its executor
+    /// by the tick driver - the app records it when its executor
     /// reports a task error. Counts as a failure for run history.
     Failed,
     /// The run was superseded by an [`OverlapPolicy::Replace`] fire while
@@ -134,7 +134,7 @@ pub enum TickDecision {
 }
 
 /// Fresh paused-state predicate for queue drains: `Fn(job_id) -> bool`.
-/// Installed by the app crate, which owns the job store — the driver
+/// Installed by the app crate, which owns the job store - the driver
 /// itself never touches the store, it just asks before draining.
 pub type PausedCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
@@ -149,7 +149,7 @@ pub struct TickDriver {
     /// supersedes without racing its cleanup.
     in_flight: Mutex<HashMap<String, u64>>,
     /// Job ids that became due while running and asked to queue. Durable
-    /// twin: the [`DurableClaimLedger`] drain queue — the in-memory set is
+    /// twin: the [`DurableClaimLedger`] drain queue - the in-memory set is
     /// the fast path, the store is what survives a crash.
     queued: Mutex<HashSet<String>>,
     paused_check: std::sync::RwLock<Option<PausedCheck>>,
@@ -201,7 +201,7 @@ impl TickDriver {
     /// `last_fire_ms` is the job's persisted last fire (drives
     /// [`Job::due`](crate::Job::due) and the occurrence stamp).
     /// `execute` runs the job; it is called at most once per won claim,
-    /// on a worker thread — this method never blocks on the run itself.
+    /// on a worker thread - this method never blocks on the run itself.
     pub fn tick_job(
         self: &Arc<Self>,
         job: &Job,
@@ -210,7 +210,7 @@ impl TickDriver {
         execute: Arc<dyn Fn() + Send + Sync + 'static>,
     ) -> TickDecision {
         // Crash recovery for the durable drain queue: a previous process
-        // may have died owing this job a queued fire. Atomic take — this
+        // may have died owing this job a queued fire. Atomic take - this
         // process now owns the owed fire.
         let recovered = match self.ledger.take_pending_drain(&job.id) {
             Ok(taken) => taken,
@@ -249,13 +249,13 @@ impl TickDriver {
         //
         // Replace deliberately bumps the generation only AFTER winning the
         // claim below: the claim serializes racing replacers (same
-        // occurrence, same key — exactly one wins), and a replacer that
+        // occurrence, same key - exactly one wins), and a replacer that
         // loses the claim leaves the in-flight run untouched.
         let (generation, replacing) = {
             let mut in_flight = match self.lock_in_flight() {
                 Some(g) => g,
                 // Poisoned: the in-flight set is untrustworthy, so the
-                // overlap decision can't be made — fail closed, don't fire.
+                // overlap decision can't be made - fail closed, don't fire.
                 None => return TickDecision::ClaimFailed("tick state lock poisoned".to_string()),
             };
             match in_flight.get(&job.id).copied() {
@@ -278,7 +278,7 @@ impl TickDriver {
                             }
                         }
                         // Durable twin of the in-memory insert: a crash
-                        // must not lose the owed fire. Best-effort — if
+                        // must not lose the owed fire. Best-effort - if
                         // the write fails the entry still queues for this
                         // process's lifetime; the failure is loud.
                         if let Err(e) = self.ledger.enqueue_drain(&job.id) {
@@ -303,7 +303,7 @@ impl TickDriver {
                             in_flight.insert(job.id.clone(), next);
                         }
                         // Won the claim but can't record the generation:
-                        // fail closed — don't start a run we can't track.
+                        // fail closed - don't start a run we can't track.
                         None => {
                             self.release_if_current(&job.id, generation);
                             return TickDecision::ClaimFailed(
@@ -347,7 +347,7 @@ impl TickDriver {
     /// Fire a drain-claimed run immediately: the crash-recovery path for
     /// a durable drain-queue leftover when the job is not otherwise due.
     /// Claims a unique drain occurrence (idempotent across restarts),
-    /// installs the in-flight slot, and spawns the worker — the same
+    /// installs the in-flight slot, and spawns the worker - the same
     /// shape as a natural fire, minus the occurrence claim.
     fn fire_drain(
         self: &Arc<Self>,
@@ -369,7 +369,7 @@ impl TickDriver {
             let mut in_flight = match self.lock_in_flight() {
                 Some(g) => g,
                 // Won the claim but can't record the generation:
-                // fail closed — don't start a run we can't track. (The
+                // fail closed - don't start a run we can't track. (The
                 // claim stays won; like the natural path, claims are
                 // never released.)
                 None => {
@@ -408,7 +408,7 @@ impl TickDriver {
         let timeout = Duration::from_secs(job.effective_timeout_secs());
         // The suffix keeps each drain's claim key unique; the owed fire
         // itself is durable (the ledger's drain queue) and only deleted
-        // once taken — a crash before the take is recovered at the next
+        // once taken - a crash before the take is recovered at the next
         // `tick_job` entry.
         let mut drain_seq: u64 = 0;
         loop {
@@ -429,7 +429,7 @@ impl TickDriver {
             if self.generation_of(&job.id) != Some(generation) {
                 // A Replace fire disowned us while we ran: report the
                 // supersession instead of the run's own outcome, and touch
-                // nothing — the new generation owns the in-flight slot and
+                // nothing - the new generation owns the in-flight slot and
                 // the queue now. Exactly one outcome per run.
                 let _ = tx.send(RunOutcome::Replaced);
                 return;
@@ -503,7 +503,7 @@ impl TickDriver {
         }
     }
 
-    /// Timeout abandon: give up the slot, and drop any queued duplicate —
+    /// Timeout abandon: give up the slot, and drop any queued duplicate
     /// the run it would have followed never finished, so the next natural
     /// due fire is the honest retry. Only when we still own the slot; a
     /// Replace fire that disowned us owns the queue now.
@@ -516,7 +516,7 @@ impl TickDriver {
     }
 
     fn take_queued(&self, id: &str) -> bool {
-        // Poisoned: don't drain — fail closed.
+        // Poisoned: don't drain - fail closed.
         self.lock_queued().is_some_and(|mut q| q.remove(id))
     }
 
@@ -586,7 +586,7 @@ mod tick_drain_queue_tests {
     }
 
     /// When the job is also due, the recovered fire seeds the in-memory
-    /// queue and drains after the natural fire — no duplicate, no loss.
+    /// queue and drains after the natural fire - no duplicate, no loss.
     #[test]
     fn recovery_seeds_queue_when_also_due() {
         let dir = tempfile::tempdir().unwrap();

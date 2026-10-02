@@ -10,7 +10,7 @@
 //! Layout: `crates/pantheon-exec/bundled-skills/<name>/SKILL.md`, plus
 //! optional `scripts/` and `references/` trees. The registry is GENERATED
 //! by `build.rs` from those directories (`BundledSkill`, `BundledSkillFile`,
-//! `bundled_skills()` below come from OUT_DIR) — adding a skill is adding
+//! `bundled_skills()` below come from OUT_DIR) - adding a skill is adding
 //! a directory, no code changes. Seeding materializes the full tree:
 //! write-if-missing, with the content-stamp behavior for SKILL.md and a
 //! hash manifest for the bundled files, so a user editing the materialized
@@ -210,7 +210,7 @@ fn seed_bundled_files(dir: &Path, bundled: &BundledSkill) -> Result<SeedOutcome,
                 outcome = SeedOutcome::Refreshed;
             }
         }
-        // Else: user-edited (or seeded before the manifest existed) —
+        // Else: user-edited (or seeded before the manifest existed)
         // never overwrite.
     }
     if changed {

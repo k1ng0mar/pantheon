@@ -196,7 +196,7 @@ fn computer_use_without_driver_binary_registers_nothing() {
     let s = gating_session("computer-no-driver");
     s.set_tool_enablement(ToolEnablement::default());
     // A configured binary that does not exist fails closed: no spec, no
-    // tools, no panic — the toggle promises nothing it cannot honor.
+    // tools, no panic - the toggle promises nothing it cannot honor.
     s.set_computer_config(pantheon_runtime::tool_config::ComputerToolConfig {
         enabled: true,
         driver: "cua-driver".into(),

@@ -61,7 +61,7 @@ target_percent = 50   # summary size as % of the absorbed transcript chars (1-10
 
 Higher keeps more detail (less aggressive), lower compresses harder. `0` and values over `100` are config errors. The default `12` preserves the historic summary budget.
 
-Note: `[extraction]`, `[rerank]`, `[planner]`, `[vision]`, `[search_synthesis]`, `[mcp_synthesis]`, and `[judge]` have no features using them yet. They exist so you can pin models ahead of time. (`[judge]` is validated by `doctor` but the production agent loop is built with `judge: None`, so it currently changes nothing — the engine supports it, installation into the runtime loop is still open.) Everything else is wired: `[compression]`/`[title_gen]` run in the session, `[embeddings]` powers semantic recall, `[scheduled]` sets the model for background runs, `[verify]` checks delegated results, and `[reflect]`/`[consolidation]`/`[repair]` serve the nightly pass (`[repair]` is the only slot the fix loop uses to revise drafts; `[reflect]` still handles pre-pass proposal refinement and replay transcript scoring).
+Note: `[extraction]`, `[rerank]`, `[planner]`, `[vision]`, `[search_synthesis]`, `[mcp_synthesis]`, and `[judge]` have no features using them yet. They exist so you can pin models ahead of time. (`[judge]` is validated by `doctor` but the production agent loop is built with `judge: None`, so it currently changes nothing - the engine supports it, installation into the runtime loop is still open.) Everything else is wired: `[compression]`/`[title_gen]` run in the session, `[embeddings]` powers semantic recall, `[scheduled]` sets the model for background runs, `[verify]` checks delegated results, and `[reflect]`/`[consolidation]`/`[repair]` serve the nightly pass (`[repair]` is the only slot the fix loop uses to revise drafts; `[reflect]` still handles pre-pass proposal refinement and replay transcript scoring).
 
 `[verify]` is the exception to the "leave a section out and it uses your main model" rule: **absent `[verify]` means no verification happens at all** (off by default, no `auto` entry). Pin a section and every delegated subagent's claimed result is adversarially checked by that model before the parent accepts it:
 
@@ -72,7 +72,7 @@ model = "claude-3-5-haiku-latest"
 timeout = 30
 ```
 
-The verifier starts from the assumption the child did *not* achieve its goal and answers `HOLDS`, `FALSIFIED`, or `INCONCLUSIVE` with a confidence. A `FALSIFIED` verdict fails the delegation outright (`SWARM_CHILD_FALSIFIED`); `INCONCLUSIVE` or a verifier transport failure marks the result unverified — never treated as done. Keep this on a cheap, fast model: it runs once per delegation, read-only, with no tools.
+The verifier starts from the assumption the child did *not* achieve its goal and answers `HOLDS`, `FALSIFIED`, or `INCONCLUSIVE` with a confidence. A `FALSIFIED` verdict fails the delegation outright (`SWARM_CHILD_FALSIFIED`); `INCONCLUSIVE` or a verifier transport failure marks the result unverified - never treated as done. Keep this on a cheap, fast model: it runs once per delegation, read-only, with no tools.
 
 ## Self-improvement
 
@@ -92,9 +92,9 @@ model = "gpt-4o-mini"
 # timeout = 60        # per-request timeout in seconds
 ```
 
-The nightly pass is **off by default** and does nothing unless enabled — one rule, four paths:
+The nightly pass is **off by default** and does nothing unless enabled - one rule, four paths:
 
-1. a `[nightly.model]` pin (absent `enabled` flag) — presence of the pin = enabled;
+1. a `[nightly.model]` pin (absent `enabled` flag) - presence of the pin = enabled;
 2. `/nightly on` in the TUI (writes `enabled = true`);
 3. a config edit (`enabled = true` under `[nightly]`);
 4. the dashboard / mobile-app toggle.
@@ -103,18 +103,18 @@ The nightly pass is **off by default** and does nothing unless enabled — one r
 
 The dashboard / mobile-app toggle is two HTTP endpoints on the dashboard control plane (the mobile app uses the same API):
 
-- `GET /api/nightly/status` — the resolved state: `enabled` (the single enable rule), `reason` (explicit flag on|off, on via `[nightly.model]` pin, on via `PANTHEON_NIGHTLY_*` env, off), the raw `explicit` flag, `model_pin`, `next_run_ms` (next `pantheon schedule nightly` fire, if any), and the last pass summary.
-- `POST /api/nightly/enabled` — `{enabled: bool, confirm: true}`. Writes the explicit `[nightly] enabled` flag through the shared config document (load → mutate → save) — the same flag `/nightly on|off` and a manual config edit write; there is no parallel store. Without `confirm: true` the request is rejected. The response is the fresh status document, so the client renders the toggle without a second read.
+- `GET /api/nightly/status` - the resolved state: `enabled` (the single enable rule), `reason` (explicit flag on|off, on via `[nightly.model]` pin, on via `PANTHEON_NIGHTLY_*` env, off), the raw `explicit` flag, `model_pin`, `next_run_ms` (next `pantheon schedule nightly` fire, if any), and the last pass summary.
+- `POST /api/nightly/enabled` - `{enabled: bool, confirm: true}`. Writes the explicit `[nightly] enabled` flag through the shared config document (load → mutate → save) - the same flag `/nightly on|off` and a manual config edit write; there is no parallel store. Without `confirm: true` the request is rejected. The response is the fresh status document, so the client renders the toggle without a second read.
 
-When enabled, Pantheon reviews its history in a single pass, proposes improvements (memory lessons, skills, persona notes) with ledger provenance, and gates them: memory lessons recur across N sessions before auto-applying; skills/personas must pass no-regression evals and strictly improve held-out replay before asking for your approval. Memory lessons apply automatically once confirmed; everything else waits for your yes or no (`/nightly`, or `pantheon nightly --approve <id>`). The pass's own LLM steps resolve through the `[nightly.model]` pin when one is configured, else through the Reflection/Consolidation aux slots — never the chat model directly.
+When enabled, Pantheon reviews its history in a single pass, proposes improvements (memory lessons, skills, persona notes) with ledger provenance, and gates them: memory lessons recur across N sessions before auto-applying; skills/personas must pass no-regression evals and strictly improve held-out replay before asking for your approval. Memory lessons apply automatically once confirmed; everything else waits for your yes or no (`/nightly`, or `pantheon nightly --approve <id>`). The pass's own LLM steps resolve through the `[nightly.model]` pin when one is configured, else through the Reflection/Consolidation aux slots - never the chat model directly.
 
-The old `[reflect]` / `[consolidation]` sections are **deprecated** but still parse (old configs keep loading). `[nightly]` is the authoritative section: when it is present the legacy sections are ignored entirely for the nightly pass; when it is absent they are honored field-by-field as a migration fallback. `pantheon doctor` nudges you to move the behavior knobs across — `enabled` and `auto_turns` from `[reflect]`, `enabled`, `min_sessions`, and `cron` from `[consolidation]` — into `[nightly]`. The legacy aux-model pins (`provider`/`model`/`api_key_env`/`timeout`) stay where they are; the pass's own pin lives in `[nightly.model]`. `half_life_days` and `min_score` are ignored: the decay curve was replaced by recurrence across sessions.
+The old `[reflect]` / `[consolidation]` sections are **deprecated** but still parse (old configs keep loading). `[nightly]` is the authoritative section: when it is present the legacy sections are ignored entirely for the nightly pass; when it is absent they are honored field-by-field as a migration fallback. `pantheon doctor` nudges you to move the behavior knobs across - `enabled` and `auto_turns` from `[reflect]`, `enabled`, `min_sessions`, and `cron` from `[consolidation]` - into `[nightly]`. The legacy aux-model pins (`provider`/`model`/`api_key_env`/`timeout`) stay where they are; the pass's own pin lives in `[nightly.model]`. `half_life_days` and `min_score` are ignored: the decay curve was replaced by recurrence across sessions.
 
 Replay tasks are headless and built in: define a task with
 `pantheon nightly replay-tasks add --exec-cmd ./scripts/run-task.sh --exec-arg foo --exec-env KEY=VALUE`.
-Pantheon runs `<command> <args...> <prompt>` in a fresh temporary working directory, captures stdout as the transcript, and enforces a timeout; the candidate skill/persona is visible to the task through `PANTHEON_REPLAY_SKILL_DIR`. The temporary directory only controls where the task starts — it is **not** a security sandbox, so treat task specs as trusted process execution: only attach exec specs to commands you would run yourself. Tasks without an exec spec fall back to `[nightly] replay_command`; with neither configured, replays fail loudly and the replay gate rejects every proposal — strict improvement cannot be measured without a runner.
+Pantheon runs `<command> <args...> <prompt>` in a fresh temporary working directory, captures stdout as the transcript, and enforces a timeout; the candidate skill/persona is visible to the task through `PANTHEON_REPLAY_SKILL_DIR`. The temporary directory only controls where the task starts - it is **not** a security sandbox, so treat task specs as trusted process execution: only attach exec specs to commands you would run yourself. Tasks without an exec spec fall back to `[nightly] replay_command`; with neither configured, replays fail loudly and the replay gate rejects every proposal - strict improvement cannot be measured without a runner.
 
-A failing proposal goes through a bounded fix loop (default 3 attempts, `max_fix_attempts`): eval failures revise the draft via the Reflection auxiliary slot (LLM steps enabled) and re-run the full eval tag set — eval tags are immutable in the loop, and zero-tagged eval gating is reported as skipped, never as a vacuous pass; fair replay failures retry the A/B and, with LLM steps enabled, sharpen the draft via the Reflection auxiliary slot; infrastructure failures (runner errors, non-finite scores, missing tasks) escalate immediately. After the bound, the proposal is marked `NeedsAttention` and recorded in `<data_dir>/nightly/nightly-escalated.json` — never queued, never applied.
+A failing proposal goes through a bounded fix loop (default 3 attempts, `max_fix_attempts`): eval failures revise the draft via the Reflection auxiliary slot (LLM steps enabled) and re-run the full eval tag set - eval tags are immutable in the loop, and zero-tagged eval gating is reported as skipped, never as a vacuous pass; fair replay failures retry the A/B and, with LLM steps enabled, sharpen the draft via the Reflection auxiliary slot; infrastructure failures (runner errors, non-finite scores, missing tasks) escalate immediately. After the bound, the proposal is marked `NeedsAttention` and recorded in `<data_dir>/nightly/nightly-escalated.json` - never queued, never applied.
 
 Approved persona notes are written to the `persona` memory namespace and injected into every session's system prompt as a `<nightly_persona>` block. Unapproved persona notes live only in the approval queue and are never injected.
 
@@ -200,7 +200,7 @@ soul_file    = "agents/zeus/SOUL.md"
 `agent = "zeus"` picks which agent this install runs as (it must name a table above). No `[agents]` table means anonymous runs. See [Agents](../user-guide/agents.md).
 
 > **Removed keys.** Older configs may carry a top-level `profile = "..."` label or a
-> `[tools]` table. Both were inert — `profile` never selected an agent (that is
+> `[tools]` table. Both were inert - `profile` never selected an agent (that is
 > what `agent` does), and `[tools]` never gated tool registration (registration
 > is unconditional). They were removed; old files still load, the keys are
 > simply ignored. There is no replacement to configure.
@@ -256,7 +256,7 @@ timeout_secs = "120"
   No key anywhere is fine for keyless local endpoints.
 
 Check status with `/voice` in the TUI. There is no microphone capture or
-speaker playback in the TUI — these backends move bytes for callers that
+speaker playback in the TUI - these backends move bytes for callers that
 already have audio (files, other surfaces), they don't record or play it.
 
 ## Gateway
@@ -276,7 +276,7 @@ provider = "tinyfish"        # one of: tinyfish (recommended), tavily, ollama, e
 max_results = 8
 ```
 
-The `web_search` tool only registers when the provider's auth requirement is met — keyed providers need their key resolvable (default secret names: `TINYFISH_API_KEY`, `TAVILY_API_KEY`, `OLLAMA_API_KEY`, `EXA_API_KEY`, `BRAVE_API_KEY`, `FIRECRAWL_API_KEY`, `PERPLEXITY_API_KEY`); Marginalia is keyless and SearXNG needs a self-hosted instance URL. Without that, the tool stays out of the model's tool list. Store keys with `pantheon secrets set <NAME>` (or in `<data_dir>/.env`).
+The `web_search` tool only registers when the provider's auth requirement is met - keyed providers need their key resolvable (default secret names: `TINYFISH_API_KEY`, `TAVILY_API_KEY`, `OLLAMA_API_KEY`, `EXA_API_KEY`, `BRAVE_API_KEY`, `FIRECRAWL_API_KEY`, `PERPLEXITY_API_KEY`); Marginalia is keyless and SearXNG needs a self-hosted instance URL. Without that, the tool stays out of the model's tool list. Store keys with `pantheon secrets set <NAME>` (or in `<data_dir>/.env`).
 
 ```toml
 [browser]
@@ -287,7 +287,7 @@ idle_timeout_secs = 900      # stop the run's browser daemon when idle
 vault_key_secret = "GSD_BROWSER_VAULT_KEY"  # auth-vault key via secrets
 ```
 
-Browser automation shells out to the [gsd-browser](https://github.com/gsd-build/gsd-browser) binary (install: `curl -fsSL https://install.gsd.build/browser | bash`). One browser daemon session maps to one Pantheon run; it starts lazily on the first `browser_*` call and stops when the run ends or after `idle_timeout_secs` of disuse. `browser_act` clicks the top semantic-intent candidate with no upstream confidence threshold, so it carries the `browser.act` capability and the run parks for your approval before it runs — leave `act_require_approval = true` unless you trust autonomous clicks.
+Browser automation shells out to the [gsd-browser](https://github.com/gsd-build/gsd-browser) binary (install: `curl -fsSL https://install.gsd.build/browser | bash`). One browser daemon session maps to one Pantheon run; it starts lazily on the first `browser_*` call and stops when the run ends or after `idle_timeout_secs` of disuse. `browser_act` clicks the top semantic-intent candidate with no upstream confidence threshold, so it carries the `browser.act` capability and the run parks for your approval before it runs - leave `act_require_approval = true` unless you trust autonomous clicks.
 
 ## MCP servers
 
@@ -318,7 +318,7 @@ INDEX_DIR = "/home/umar/.cache/codebase-index"
 
 Transports: `stdio` spawns `command` with `args` (the child inherits only `PATH` plus the declared env); `sse` opens a Server-Sent Events stream and posts messages to the discovered endpoint; `http` speaks streamable HTTP (POST, with SSE fallback). Remote transports reconnect with backoff; a server that keeps failing is left alone until its backoff expires.
 
-**Approvals.** A server never runs without your explicit approval: `pantheon mcp approve <name>` prints exactly what would launch (or where it would connect), shows the warning, and asks you to confirm by typing the server name. The approval binds the server's name, its reported version, and a content hash of the binary/script (or the endpoint URL) — any upgrade or change invalidates it and you are asked again. `pantheon mcp list` shows what's declared and whether it's approved; `pantheon mcp status` and `pantheon mcp health <name>` report live state from the launcher's `<data_dir>/mcp/live.json` snapshot; the dashboard's MCP page shows the same merged view. `PANTHEON_MCP_ENABLED=0` forces the launcher off.
+**Approvals.** A server never runs without your explicit approval: `pantheon mcp approve <name>` prints exactly what would launch (or where it would connect), shows the warning, and asks you to confirm by typing the server name. The approval binds the server's name, its reported version, and a content hash of the binary/script (or the endpoint URL) - any upgrade or change invalidates it and you are asked again. `pantheon mcp list` shows what's declared and whether it's approved; `pantheon mcp status` and `pantheon mcp health <name>` report live state from the launcher's `<data_dir>/mcp/live.json` snapshot; the dashboard's MCP page shows the same merged view. `PANTHEON_MCP_ENABLED=0` forces the launcher off.
 
 ## Bundled plugins
 
@@ -329,7 +329,7 @@ Pantheon's first-party plugins (today: `time-gap`, a hook plugin) share one enab
 enabled = true   # kind and version are stamped automatically when enabled
 ```
 
-For a bundled plugin this entry wins over the plugin manifest's own `enabled` flag. Third-party plugins are unaffected: their gate is the approval store (`pantheon extensions approve`), not this table, and entries for names outside the bundled catalog are inert. The agent can propose enabling a bundled plugin through its `enable_plugin` tool, which parks for your approval like any other privileged action — never silent, and only catalog plugins are eligible.
+For a bundled plugin this entry wins over the plugin manifest's own `enabled` flag. Third-party plugins are unaffected: their gate is the approval store (`pantheon extensions approve`), not this table, and entries for names outside the bundled catalog are inert. The agent can propose enabling a bundled plugin through its `enable_plugin` tool, which parks for your approval like any other privileged action - never silent, and only catalog plugins are eligible.
 
 ## Data directory
 

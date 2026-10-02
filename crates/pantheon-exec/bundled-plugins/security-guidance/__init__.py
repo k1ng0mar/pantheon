@@ -38,7 +38,7 @@ Behavior:
   Always returns {} (allow).
 - ``transform_tool_result``: pops stashed input findings for the tool
   and scans the RESULT for leaked credentials (API keys, private
-  keys, tokens — a Pantheon addition). Matched spans are REDACTED
+  keys, tokens - a Pantheon addition). Matched spans are REDACTED
   (replaced with ``[redacted:<rule>]``) so secrets never reach the
   model, and a compact banner is prepended; otherwise {} (no change).
 
@@ -62,7 +62,7 @@ _MAX_FINDINGS = 4
 _MAX_BANNER = 6000
 
 _BANNER_HEAD = (
-    "[security-guidance] Advisory findings (NOT a block — review and continue):\n"
+    "[security-guidance] Advisory findings (NOT a block - review and continue):\n"
 )
 
 

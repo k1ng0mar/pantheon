@@ -25,7 +25,7 @@ pub const DISCORD_CONTENT_LIMIT: usize = 2_000;
 pub trait DiscordTransport: Send + Sync {
     fn send_message(&self, channel_id: &str, payload: &Value) -> Result<(), ChannelError>;
     /// Download an attachment URL (Discord CDN links are pre-signed).
-    /// Default: unsupported — test recorders only implement
+    /// Default: unsupported - test recorders only implement
     /// `send_message`.
     fn download(&self, url: &str) -> Result<Vec<u8>, ChannelError> {
         let _ = url;
@@ -35,7 +35,7 @@ pub trait DiscordTransport: Send + Sync {
         ))
     }
     /// Send synthesized audio as a message attachment. Default:
-    /// unsupported — the channel falls back to text.
+    /// unsupported - the channel falls back to text.
     fn send_audio(
         &self,
         channel_id: &str,
@@ -98,7 +98,7 @@ impl DiscordTransport for DiscordRestTransport {
     }
     fn download(&self, url: &str) -> Result<Vec<u8>, ChannelError> {
         // Attachment URLs are pre-signed CDN links: no Authorization
-        // header — the bot token must not travel to the CDN, and the
+        // header - the bot token must not travel to the CDN, and the
         // failure messages stay static so no URL reaches a log line.
         download_capped(&self.agent, url, MAX_VOICE_BYTES, "DISCORD_HTTP")
     }
@@ -419,7 +419,7 @@ impl Channel for DiscordChannel {
     }
     fn send(&self, envelope: ChannelEnvelope) -> Result<(), ChannelError> {
         // Voice replies: agent text goes through the [tts] backend and out
-        // as an audio attachment — but only for plain Text frames.
+        // as an audio attachment - but only for plain Text frames.
         // Approval requests keep their buttons: they cannot be spoken.
         if self.voice.speak_replies() && envelope.frame.kind == UiFrameKind::Text {
             let text = format_text(&envelope.frame);

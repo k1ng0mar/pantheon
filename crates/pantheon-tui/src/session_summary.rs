@@ -17,7 +17,7 @@
 //!
 //! Counts come from the transcript blocks: user messages, assistant
 //! texts, and tool calls. The `Messages:` total folds all three in, with
-//! the breakdown naming user messages and tool calls — the Hermes shape.
+//! the breakdown naming user messages and tool calls - the Hermes shape.
 
 use std::time::Duration;
 
@@ -85,7 +85,7 @@ impl SessionSummary {
         self.user_messages + self.assistant_messages + self.tool_calls
     }
 
-    /// `Messages:  163 (3 user, 158 tool calls)` — labels padded to the
+    /// `Messages:  163 (3 user, 158 tool calls)` - labels padded to the
     /// same column as the reference.
     fn messages_value(&self) -> String {
         format!(
@@ -127,7 +127,7 @@ impl SessionSummary {
     }
 
     /// Plain text for stdout after the TUI shuts down. Same layout, no
-    /// ANSI — the terminal is already restored at that point.
+    /// ANSI - the terminal is already restored at that point.
     pub fn to_plain_text(&self) -> String {
         let title = self.title.as_deref().unwrap_or("untitled");
         format!(

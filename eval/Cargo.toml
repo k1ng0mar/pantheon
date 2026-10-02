@@ -6,7 +6,7 @@ publish = false
 
 # Behavioral / integration / eval test suite for Pantheon.
 #
-# Policy: no tests live beside the code — `cargo test -p <crate>` runs
+# Policy: no tests live beside the code - `cargo test -p <crate>` runs
 # zero tests. Everything (unit, behavioral, integration) lives here and
 # runs via `cargo test -p pantheon-eval`. Tautological, decorative,
 # host-dependent-skip, live-network, and dead-behavior tests are deleted,

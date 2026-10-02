@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# arxiv.sh — query the public arXiv API (https://export.arxiv.org/api/query).
+# arxiv.sh - query the public arXiv API (https://export.arxiv.org/api/query).
 # No API key required. Requires: curl, python3.
 # Be polite: arXiv asks for ~3s between requests; this script sleeps 3s
 # before each call.

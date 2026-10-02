@@ -250,7 +250,7 @@ fn an_exact_match_wins_over_a_stem_match() {
         ("one".to_string(), "SHARED_API_KEY".to_string()),
         ("two".to_string(), "SHARED_KEY".to_string()),
     ];
-    // Both are exact `key_env` entries, so both are catalogued — the stem path
+    // Both are exact `key_env` entries, so both are catalogued - the stem path
     // must not be reached for either, and must not pick the other provider.
     assert_eq!(
         reconcile_key("SHARED_KEY", &cat),

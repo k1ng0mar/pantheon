@@ -1,7 +1,7 @@
 //! Built-in tools: shell, read_file, write_file, list_dir.
 //! Each maps to its capability and compacts output before it hits context.
 //!
-//! `write_file` is NOT a plain atomic write — it routes through the
+//! `write_file` is NOT a plain atomic write - it routes through the
 //! safe-writer so every write is checkpointed, journaled, and recoverable.
 //! That makes the safe path the default, not an opt-in side door.
 
@@ -20,8 +20,8 @@ use std::sync::Arc;
 /// thread running the tool call: `Spawned` comes from the runner's
 /// spawn hook (synchronously, right after spawn); `Exited` is fired by
 /// `run_shell` after the wait loop ends (exit, timeout kill, or wait
-/// error). The pid is also the child's process-group id — the runner
-/// does `setsid()` in pre-exec — so a cancel path can register the
+/// error). The pid is also the child's process-group id - the runner
+/// does `setsid()` in pre-exec - so a cancel path can register the
 /// group for `killpg` on `Spawned` and unregister it on `Exited`, when
 /// the pid is stale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,7 +46,7 @@ pub struct BuiltinOptions {
     /// process working directory is captured here, at registration time.
     /// Every `read_file`/`write_file`/`list_dir` path is confined with
     /// `pantheon_exec::confine` (deny globs, then containment) before any
-    /// read or write — a granted `FilesystemRead`/`FilesystemWrite`
+    /// read or write - a granted `FilesystemRead`/`FilesystemWrite`
     /// capability never widens it.
     pub workspace_root: Option<std::path::PathBuf>,
     /// Tool-group toggles from `[tools]` in config.toml: a disabled group
@@ -145,7 +145,7 @@ pub fn register_builtins(reg: &mut ToolRegistry) {
 /// Register with options. When `safewrite_state_dir` is set, `write_file`
 /// routes through the SafeWriter (checkpoint + journal + atomic publish +
 /// stale-hash rejection). Without it, `write_file` falls back to a plain
-/// atomic write — kept for callers that explicitly want the unsafe path.
+/// atomic write - kept for callers that explicitly want the unsafe path.
 pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
     let sd = opts.safewrite_state_dir.clone();
     // Workspace root for confinement, captured once at registration: no
@@ -342,15 +342,15 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
     }
     // `ask_user` never executes: the agent loop intercepts the call
     // before gating and parks the turn for operator input (the clarify
-    // card) — production `Session::drive` pre-gates it, so it can never
+    // card) - production `Session::drive` pre-gates it, so it can never
     // require approval, consume budget, or execute. It is registered so the model sees it
-    // in the tool list and so direct `execute("ask_user", …)` callers get
+    // in the tool list and so direct `execute("ask_user", ...)` callers get
     // a structured refusal instead of TOOL_UNKNOWN.
     if opts.enable_ask_user {
         reg.register(
         ToolSchema {
             name: "ask_user".into(),
-            description: "Ask the operator a question and wait for their answer. Use when you genuinely cannot proceed without input — a genuine fork in the road, not a guess you could make. `question` is required; `options` (max 9) offers quick-pick choices but the operator can always type free text."
+            description: "Ask the operator a question and wait for their answer. Use when you genuinely cannot proceed without input - a genuine fork in the road, not a guess you could make. `question` is required; `options` (max 9) offers quick-pick choices but the operator can always type free text."
                 .into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -372,7 +372,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
     // `plugin.enable` Approval, so the run parks, an `ApprovalRequested`
     // event is audit-logged, and the write below happens only after the
     // operator grants. Never silent. Only bundled-catalog names are
-    // accepted — there is no agent path to install or enable arbitrary
+    // accepted - there is no agent path to install or enable arbitrary
     // plugins. The config file is the single enablement state, so the
     // toggle lands in `[plugins.<name>]` where the dashboard, the mobile
     // app, and the TUI all read it. Without a data dir the tool cannot
@@ -383,7 +383,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
         reg.register(
         ToolSchema {
             name: "enable_plugin".into(),
-            description: "Propose enabling one of Pantheon's bundled plugins (first-party code shipped with Pantheon, all disabled by default). `name` must be a bundled-catalog name — anything else is refused. Calling this parks the run for operator approval: the proposal is audit-logged and the plugin switches on only if the operator grants. Use when a bundled plugin would genuinely help the task; say why in your message first."
+            description: "Propose enabling one of Pantheon's bundled plugins (first-party code shipped with Pantheon, all disabled by default). `name` must be a bundled-catalog name - anything else is refused. Calling this parks the run for operator approval: the proposal is audit-logged and the plugin switches on only if the operator grants. Use when a bundled plugin would genuinely help the task; say why in your message first."
                 .into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -418,7 +418,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
     // `mcp.enable` Approval, so the run parks, an `ApprovalRequested`
     // event is audit-logged, and the write below happens only after the
     // operator grants. Never silent. Only bundled-catalog names are
-    // accepted — there is no agent path to put an arbitrary command on
+    // accepted - there is no agent path to put an arbitrary command on
     // the spawn line (the supply-chain boundary). The config file is the
     // single enablement state, so the toggle lands in
     // `[mcp.servers.<name>]` where the dashboard, the mobile app, and the
@@ -429,7 +429,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
         reg.register(
         ToolSchema {
             name: "enable_mcp".into(),
-            description: "Propose enabling one of Pantheon's bundled MCP servers (first-party catalog entries, all disabled by default). `name` must be a bundled-catalog name — anything else is refused, so this can never install an arbitrary server command. Calling this parks the run for operator approval: the proposal is audit-logged and the server switches on only if the operator grants. Use when a bundled server would genuinely help the task; say why in your message first."
+            description: "Propose enabling one of Pantheon's bundled MCP servers (first-party catalog entries, all disabled by default). `name` must be a bundled-catalog name - anything else is refused, so this can never install an arbitrary server command. Calling this parks the run for operator approval: the proposal is audit-logged and the server switches on only if the operator grants. Use when a bundled server would genuinely help the task; say why in your message first."
                 .into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -454,7 +454,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             // existing keys, so a name-colliding table carrying an
             // arbitrary command would otherwise survive a legitimate
             // enable click and run under the bundled name. Flag it
-            // loudly and refuse — never silently keep the poison.
+            // loudly and refuse - never silently keep the poison.
             if let Some(entry) = pantheon_api::mcp_catalog::load_config(&data_dir)
                 .as_ref()
                 .and_then(|cfg| cfg.mcp.as_ref())
@@ -520,7 +520,7 @@ fn run_shell(args: &str, child_hook: Option<&ShellChildHook>) -> Result<String, 
     );
     if let (Some(hook), Some(pid)) = (child_hook, spawned.get()) {
         // Fires on every terminal path (exit, timeout kill, wait error):
-        // the pid is stale now — unregister it.
+        // the pid is stale now - unregister it.
         hook(ShellChildEvent::Exited, pid);
     }
     let result = result?;
@@ -533,7 +533,7 @@ fn run_shell(args: &str, child_hook: Option<&ShellChildHook>) -> Result<String, 
     };
     // The runner reports whether isolation actually happened. By default
     // it fails closed: on a host without a working wrapper (a common
-    // case — most EC2/container instances block `bwrap`'s uid map) the
+    // case - most EC2/container instances block `bwrap`'s uid map) the
     // call above already returned a SANDBOX_UNAVAILABLE error. A
     // `sandboxed == false` result is only possible with the direct
     // fallback explicitly opted in (PANTHEON_SANDBOX_FALLBACK=allow or

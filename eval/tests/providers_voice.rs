@@ -19,7 +19,7 @@ fn opts(pairs: &[(&str, &str)]) -> HashMap<String, String> {
 
 #[test]
 fn command_stt_reads_stdout_of_the_template_command() {
-    // `cat {file}` echoes the audio file's bytes — a stand-in for any
+    // `cat {file}` echoes the audio file's bytes - a stand-in for any
     // whisper-style binary that prints the transcript to stdout.
     let dir = std::env::temp_dir().join(format!("pantheon-stt-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

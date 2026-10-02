@@ -20,7 +20,7 @@
 //!
 //! The token + mutation guards are enforced by the gateway's `check_auth`
 //! before dispatch, from the [`AuthCtx`] the mount builds; this crate no
-//! longer runs its own server — [`DashboardMount`] plugs the routing table
+//! longer runs its own server - [`DashboardMount`] plugs the routing table
 //! into the gateway listener.
 //!
 //! Design references (named, per brief):
@@ -138,7 +138,7 @@ impl App {
 /// Spawn the pantheon binary itself as a subprocess: the dashboard calls
 /// back into the real CLI code paths (`schedule run`, `gateway restart`,
 /// `reflect`, `consolidate`) instead of reimplementing them. Fire and
-/// forget — the caller already responded; the child must not inherit the
+/// forget - the caller already responded; the child must not inherit the
 /// socket.
 ///
 /// Returns the spawn result so turn-starting callers can keep the queued
@@ -163,7 +163,7 @@ pub fn spawn_pantheon(args: &[&str]) -> std::io::Result<()> {
 
 /// Spawn the pantheon binary as a turn child with the turn text piped on
 /// stdin while argv carries `--say -`. Keeps user message text out of
-/// argv (and out of process listings) — the child resolves the `-`
+/// argv (and out of process listings) - the child resolves the `-`
 /// through the same `resolve_say_stdin` path the CLI documents. The
 /// payload is written before returning; the child is already running so
 /// a large message cannot deadlock the pipe.
@@ -341,7 +341,7 @@ const ICON_512: &[u8] = include_bytes!("../assets/icon-512.png");
 /// THE single path-normalization point for the dashboard mount.
 ///
 /// Splits on '/', drops empty segments, then percent-decodes each segment
-/// — in exactly this order, so an encoded '/' (`%2F`) never creates a new
+/// - in exactly this order, so an encoded '/' (`%2F`) never creates a new
 /// segment. `auth_group` and `dispatch` MUST both go through this function:
 /// the auth decision and the route decision have to see the same path, or
 /// encoded/empty-segment variants (`/%61pi/runs`, `//api/runs`) slip past
@@ -553,7 +553,7 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
     }
 }
 
-/// `GET /api/health/channels` — per-channel state from the gateway
+/// `GET /api/health/channels` - per-channel state from the gateway
 /// daemon's health snapshots (F-7): connected/degraded/dead, last error,
 /// last successful poll. The gateway and the HTTP listener are different
 /// processes, so the daemon writes JSON files and this route merges them.
@@ -662,7 +662,7 @@ pub struct DashboardConfig {
 /// `App` the gateway's unified listener uses (production swarm
 /// orchestrator) and serves it on `bind:port` via
 /// [`pantheon_gateway::http::serve`], preserving the old standalone
-/// behavior — per-instance token printed at startup, bind-all warning,
+/// behavior - per-instance token printed at startup, bind-all warning,
 /// `--open` handling.
 pub fn run(cfg: DashboardConfig) -> ! {
     let token = pantheon_gateway::http::generate_token();
@@ -809,7 +809,7 @@ mod route_tests {
         !ledger.replay(run_id).expect("replay").is_empty()
     }
 
-    /// P0 #2: a DELETE to a nonexistent sub-resource must 404 — and must
+    /// P0 #2: a DELETE to a nonexistent sub-resource must 404 - and must
     /// NOT prune the run. (Before the fix the `("DELETE", "runs", id, _, _)`
     /// catch-all routed it to `runs::prune`, so `?confirm=true` silently
     /// deleted the whole run.)
@@ -920,7 +920,7 @@ mod route_tests {
 
     /// Same class, mutating POST: `POST /api/runs/:id/cancel/extra` must
     /// 404. Before the fix the trailing `_` arm swallowed the 4th segment
-    /// and routed it to `cancel_run` — the run was actually canceled (200).
+    /// and routed it to `cancel_run` - the run was actually canceled (200).
     #[test]
     fn post_cancel_with_extra_segment_404s_and_preserves_run() {
         let (app, dir) = test_app();
@@ -1062,7 +1062,7 @@ mod route_tests {
     // Host/Origin check. ---
 
     /// Every raw path that normalizes to `["api", ...]` must be
-    /// `DashboardApi` — exactly the set `dispatch` routes as API.
+    /// `DashboardApi` - exactly the set `dispatch` routes as API.
     #[test]
     fn auth_group_normalizes_api_prefix_before_classifying() {
         let (app, dir) = test_app();

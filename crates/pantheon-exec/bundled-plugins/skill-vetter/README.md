@@ -1,6 +1,6 @@
 # skill-vetter
 
-Static security vetting for community plugin/skill installs — the companion
+Static security vetting for community plugin/skill installs - the companion
 to `/plugins` import-by-URL. Point it at a local directory (or an `http(s)`
 URL to a file/archive) and get a risk report with a `pass` / `review` /
 `block` verdict.
@@ -14,10 +14,10 @@ All detection logic is static pattern analysis over file contents
 
 | Check id | Severity | What it flags |
 |---|---|---|
-| `webhook-exfil` | high | Traffic to relay/exfiltration hosts (Discord/Slack webhooks, webhook.site, ngrok, oastify, …) |
+| `webhook-exfil` | high | Traffic to relay/exfiltration hosts (Discord/Slack webhooks, webhook.site, ngrok, oastify, ...) |
 | `cred-file` | high | Reads of `~/.ssh`, `~/.aws`, `~/.gnupg`, private keys, `.netrc` |
-| `cred-env` | high | Environment reads of secret-named vars (`*_KEY`, `*_TOKEN`, `*_SECRET`, …) |
-| `remote-code-exec` | high | `exec`/`eval` of fetched code, `curl … \| sh`, PowerShell `IEX` on URLs |
+| `cred-env` | high | Environment reads of secret-named vars (`*_KEY`, `*_TOKEN`, `*_SECRET`, ...) |
+| `remote-code-exec` | high | `exec`/`eval` of fetched code, `curl ... \| sh`, PowerShell `IEX` on URLs |
 | `priv-escalation` | high | `sudo`, `pkexec`, `setuid`/`setgid`, setuid bits |
 | `net-listener` | high | `socket.listen`/`bind`, `http.server`, `app.run()`, `0.0.0.0` binds |
 | `unknown-host` | medium | HTTP(S) contact with hosts outside a well-known allowlist |
@@ -30,13 +30,13 @@ otherwise → `pass`.
 
 ## Usage
 
-`vet_target(path_or_url)` — one argument:
+`vet_target(path_or_url)` - one argument:
 
 - Absolute local path to a plugin/skill directory, single file, or
   `.zip` / `.tar.gz` archive.
 - `http(s)` URL to a file or archive. Redirects are re-validated to stay
   on `http(s)`; downloads are capped at 10 MB; archives are extracted
-  with path-traversal sanitization. Git (`.git`) URLs are refused —
+  with path-traversal sanitization. Git (`.git`) URLs are refused
   clone locally first, then vet the directory.
 
 Only `http`/`https` URLs are accepted; anything else (including

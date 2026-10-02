@@ -1,6 +1,6 @@
 //! Hook points.
 //!
-//! SCOPE (this comment is load-bearing — keep it true).
+//! SCOPE (this comment is load-bearing - keep it true).
 //!
 //! Pantheon implements a *subset* of the Hermes hook surface, not a superset.
 //! Hermes' `VALID_HOOKS` (`hermes_cli/plugins.py`) names 41 events; of those,
@@ -68,7 +68,7 @@ pub enum Hook {
     /// May REPLACE a tool's output before the model sees it. Redaction and
     /// secret-scrubbing live here.
     TransformToolResult,
-    /// A sub-agent was spawned. Observer — this is what makes §3 swarm
+    /// A sub-agent was spawned. Observer - this is what makes §3 swarm
     /// spawns visible to plugins.
     SubagentStart,
     /// A sub-agent finished. Observer.
@@ -89,7 +89,7 @@ pub enum Hook {
     /// `auto_compaction_end`); Pantheon fires once, after the fact, off the
     /// durable `ContextTrimmed` / `ContextCompressed` events. A plugin that
     /// needs "compaction is about to happen" gets "compaction happened"
-    /// instead — the collapse is documented here and in `compat::map_hook`
+    /// instead - the collapse is documented here and in `compat::map_hook`
     /// so nobody mistakes it for a pre-compaction gate.
     OnCompaction,
 }

@@ -1,6 +1,6 @@
 //! Behavioral tests for the provider chain retry policy: 3 retries
 //! before fallback, each fallback gets its own 3, non-retryable skips
-//! retries, exhaustion fails loudly. Fake clock everywhere — no real
+//! retries, exhaustion fails loudly. Fake clock everywhere - no real
 //! sleeping. Runs under `cargo test -p pantheon-eval`.
 use pantheon_api::error::PantheonError;
 use pantheon_api::message::Message;
@@ -206,7 +206,7 @@ fn three_retries_then_fallback() {
 
 #[test]
 fn each_fallback_gets_its_own_retries() {
-    // Every chain entry — default AND each fallback — gets its own 3
+    // Every chain entry - default AND each fallback - gets its own 3
     // retries: 4 calls per entry, 12 total across the three models.
     rate_provider("retry1");
     rate_provider("retry2");
@@ -255,7 +255,7 @@ fn each_fallback_gets_its_own_retries() {
 
 #[test]
 fn non_retryable_failure_skips_retries() {
-    // A 401 is not retryable: no RetryAttempt, no waits — straight to
+    // A 401 is not retryable: no RetryAttempt, no waits - straight to
     // the fallback. The fallback succeeds.
     rate_provider("retry401a");
     rate_provider("retry401b");

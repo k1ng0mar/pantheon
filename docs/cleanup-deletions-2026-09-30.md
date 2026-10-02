@@ -1,4 +1,4 @@
-# Cleanup-pass deletions — 2026-09-30
+# Cleanup-pass deletions - 2026-09-30
 
 The concurrent "Rust cleanup pass" deleted 62 files. Most were legitimate
 (dead code, authorized consolidations). The items below were **not** dead
@@ -12,8 +12,8 @@ security-critical ones; the rest need your call.
 | `pantheon-scheduler/src/webhook.rs` | Inbound webhook triggers (§21): HMAC-SHA256 signature verification | Security boundary. Without it, anyone reaching the endpoint can inject job triggers. Eval test `scheduler_webhook` (8 tests) covers the contract. |
 | `pantheon-scheduler/src/idempotency.rs` | `ClaimLedger`, `occurrence_key`, `runs_for_missed` | Durability correctness: replayed occurrences must not double-fire. |
 | `pantheon-scheduler/src/durable.rs` methods | `DurableClaimLedger::is_claimed/release/len/is_empty/names` | Used by eval tests `scheduler_durable` (6) and `storage_claims` (5). |
-| `pantheon-gateway/src/allowlist.rs` | `Allowlist`, `Admission`, `Pairing` — gateway admission control | Public API re-exported at crate root. |
-| `pantheon-gateway/src/canonical.rs` | `Canonical`, `Command`, `Conversation`, `Reaction` — normalized message types | Public API; the §16 "agent never knows which surface sent it" seam. |
+| `pantheon-gateway/src/allowlist.rs` | `Allowlist`, `Admission`, `Pairing` - gateway admission control | Public API re-exported at crate root. |
+| `pantheon-gateway/src/canonical.rs` | `Canonical`, `Command`, `Conversation`, `Reaction` - normalized message types | Public API; the §16 "agent never knows which surface sent it" seam. |
 | `pantheon-exec/src/acp.rs` | Agent Client Protocol handshake client (§6 interop seam) | 291 lines, deliberate: "no adapter code per harness, just one client speaking the protocol." Eval test `exec_acp` (2 tests). |
 | `AgentRuntime::run_agent` / `send` | Run-ownership lookup + agent messaging | Eval test `runtime_agent_runtime` (22 tests): run-binding guarantee, message-is-data-not-instruction. |
 
@@ -24,7 +24,7 @@ Notes on the restoration:
 - `hmac`/`sha2` re-added to `pantheon-scheduler/Cargo.toml`.
 - Mermaid parser bug fixed along the way: `render_mermaid` returned `None` on edge labels (`A-->|yes|B`).
 
-## Deleted and NOT restored — your call
+## Deleted and NOT restored - your call
 
 | Deleted | What it is | Tests deleted with it |
 |---|---|---|
@@ -33,12 +33,12 @@ Notes on the restoration:
 | `pantheon-tui/src/session/overview.rs` | Session overview UI | (unit tests in-file) |
 
 Deliberately left deleted (your earlier decision):
-- `pantheon-tui/src/approval_notify.rs` — phone approval notifications, which you had removed 2026-09-29.
+- `pantheon-tui/src/approval_notify.rs` - phone approval notifications, which you had removed 2026-09-29.
 
 ## Legitimate deletions (no action)
 
 - Crate consolidation: `pantheon-capability/`, `pantheon-consolidate/`, `pantheon-swarm/`, `pantheon-sandbox/`, `pantheon-browser/`, `pantheon-websearch/`, `pantheon-reflect/` (authorized merges).
-- `pantheon-dashboard/src/server.rs`, `pantheon-runtime/src/serve.rs`, `pantheon-runtime/src/transport.rs` — the authorized gateway serve-surface refactor (runtime stays client-agnostic; gateway owns sockets). The `runtime_transport` eval test was rewritten to exercise the dispatcher in-process.
+- `pantheon-dashboard/src/server.rs`, `pantheon-runtime/src/serve.rs`, `pantheon-runtime/src/transport.rs` - the authorized gateway serve-surface refactor (runtime stays client-agnostic; gateway owns sockets). The `runtime_transport` eval test was rewritten to exercise the dispatcher in-process.
 - `pantheon-agent/src/agent_profile.rs` → moved to `pantheon-api/src/agent_profile.rs` (authorized config-doc consolidation).
 
 ## Verification

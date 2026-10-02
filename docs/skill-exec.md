@@ -12,7 +12,7 @@ attributed on the timeline.
 
 ```yaml
 exec:
-  - name: fetch-transcript # slug: [a-z0-9-], 1..=64
+- name: fetch-transcript # slug: [a-z0-9-], 1..=64
     description: "Fetch a YouTube video transcript as plain text"
     command: scripts/fetch-transcript.sh # relative path (shell/python3/node) OR npx spec when runtime: npx
     args: "<youtube-url>" # usage hint
@@ -33,7 +33,7 @@ Rules, enforced fail-closed:
   lowercase ASCII only. It is **never** resolved to a local file.
 - `timeout_secs` must be 1..=600. The sandbox wall clock is set from it.
 - `side_effects` defaults to `write`. `npx` is always `write`, even when
-  declared `read` — fetching and running remote code is a side effect.
+  declared `read` - fetching and running remote code is a side effect.
 - One bad entry fails the **whole skill** at discovery (`SKILL_BAD_EXEC`,
   naming the skill and the entry index). A half-declared executable is
   worse than none.
@@ -46,7 +46,7 @@ Registered whenever at least one skill is installed. Arguments:
 { "skill": "design-references", "name": "fetch-transcript", "args": ["<url>"] }
 ```
 
-- Each entry of `args` becomes a separate **argv element** — never
+- Each entry of `args` becomes a separate **argv element** - never
   shell-interpolated. `["a;b"]` is data, not a command separator.
 - Working directory is the skill dir, so scripts resolve bundled
   `scripts/` and `references/` relatively.
@@ -59,7 +59,7 @@ Registered whenever at least one skill is installed. Arguments:
   (`SANDBOX_TIMEOUT`).
 - If the sandbox binary is unavailable the call fails closed
   (`SANDBOX_UNAVAILABLE`), unless the operator explicitly opted into the
-  direct-spawn fallback — which is then labeled honestly in the output.
+  direct-spawn fallback - which is then labeled honestly in the output.
 
 ### Capability gating
 
@@ -67,7 +67,7 @@ Registered whenever at least one skill is installed. Arguments:
 requires `ShellExecute` when the named executable declares
 `side_effects: write`, so write executables flow through the normal
 approval path and `read` executables behave like read-only tools. An
-unresolvable skill/executable adds no capabilities — the executor
+unresolvable skill/executable adds no capabilities - the executor
 rejects the call itself.
 
 ### Plan mode
@@ -82,7 +82,7 @@ always agrees with the registered tool.
 > **Deviation, stated loudly:** `pantheon-api` is out of scope for this
 > workstream, so there is no structured event field for skill attribution.
 > Instead, `ToolStarted` events for `skill_exec` carry
-> `Provenance::system("skill:<name>")` — same trust tier as any system
+> `Provenance::system("skill:<name>")` - same trust tier as any system
 > tool call, only the source string names the skill. The args JSON also
 > carries the skill name natively. A future structured field can replace
 > this without changing the tool.
@@ -119,7 +119,7 @@ agent (and the audit trail) relies on.
   scripts for anything the skill runs routinely.
 - **First-run download**: some third-party skills ship a launcher that
   downloads its real payload on first run (observed: `impeccable`). Treat
-  this as the npx caveat wearing a different hat — a network fetch at
+  this as the npx caveat wearing a different hat - a network fetch at
   runtime, outside anything discovery validated. It runs through the
   `shell` tool (World 2), not `skill_exec`, and deserves the same
   suspicion: know what it downloads before approving.
@@ -127,7 +127,7 @@ agent (and the audit trail) relies on.
   `<data_dir>/skills/` on first use. SKILL.md seeding is write-if-missing
   with a content stamp (a binary update refreshes only skills the user
   never edited); `scripts/` and `references/` use a `.pantheon-bundled.json`
-  hash manifest with the same rule — user edits are never overwritten.
+  hash manifest with the same rule - user edits are never overwritten.
   Every non-npx `exec:` command must point at a bundled file, checked at
   seed time.
 
@@ -138,4 +138,4 @@ optional `scripts/` and `references/` trees. `build.rs` generates the
 registry from those directories (shared logic in
 `build-support/gen.rs`, unit-tested against fixture trees); only UTF-8
 text files are embedded, anything else is skipped with a build warning.
-**Content workers add skills by adding directories — no code changes.**
+**Content workers add skills by adding directories - no code changes.**

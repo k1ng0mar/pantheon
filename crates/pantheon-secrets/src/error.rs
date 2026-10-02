@@ -14,7 +14,7 @@ pub enum SecretsError {
     /// The request itself was invalid (empty name, bad reference).
     Invalid(String),
     /// The platform backend failed (OS keychain locked, D-Bus error,
-    /// credential store missing). The secret itself may well exist —
+    /// credential store missing). The secret itself may well exist
     /// the store just could not answer.
     Backend(String),
 }

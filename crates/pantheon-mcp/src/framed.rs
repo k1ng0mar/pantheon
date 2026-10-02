@@ -69,7 +69,7 @@ pub fn read_message<R: BufRead>(
 }
 
 /// Read one `\n`-terminated line, consuming exactly up to and including the
-/// newline — never over-reading into the next frame. Rejects anything over
+/// newline - never over-reading into the next frame. Rejects anything over
 /// `cap` bytes. Returns `Ok(None)` only on EOF with no bytes read.
 fn read_line_capped<R: BufRead>(reader: &mut R, cap: usize) -> Result<Option<String>, FrameError> {
     let mut buf = Vec::new();

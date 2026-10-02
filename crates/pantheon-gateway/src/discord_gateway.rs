@@ -21,7 +21,7 @@ use tungstenite::Message;
 
 use crate::discord::DiscordChannel;
 
-/// Discord gateway URL (v10, JSON encoding — no compression, keeps the
+/// Discord gateway URL (v10, JSON encoding - no compression, keeps the
 /// client dependency-free beyond the websocket itself).
 pub const GATEWAY_URL: &str = "wss://gateway.discord.gg/?v=10&encoding=json";
 

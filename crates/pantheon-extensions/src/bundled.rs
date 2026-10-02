@@ -13,7 +13,7 @@
 //!   capability gate, hook plugins as per-fire child processes with a
 //!   scrubbed environment (PATH only). Either way the code lives on the
 //!   operator's side of the trust boundary, running with the operator's
-//!   user privileges — Pantheon does **not** sandbox plugins. Enabling a
+//!   user privileges - Pantheon does **not** sandbox plugins. Enabling a
 //!   plugin is consent to run its code.
 //!
 //! - An **MCP server** is an out-of-process **integration**. Pantheon
@@ -22,8 +22,8 @@
 //!   machine entirely. Trust there is in the endpoint and its
 //!   configuration (command, URL, env), not in shipped code.
 //!
-//! Bundled plugins are first-party — shipped in this repo, reviewed
-//! in-tree — so they skip the third-party approval store
+//! Bundled plugins are first-party - shipped in this repo, reviewed
+//! in-tree - so they skip the third-party approval store
 //! ([`pantheon_api::approval`], which exists to gate code from sources
 //! the operator has not vetted). They do **not** skip enablement: every
 //! catalog entry is disabled unless `[plugins.<name>]` says otherwise.
@@ -32,7 +32,7 @@
 //!
 //! The catalog ships as source in `vendor/` and is compiled into the
 //! binary. [`seed`] materializes each entry into
-//! `<ext_dir>/bundled/<name>/` on load — inert files, never enabled.
+//! `<ext_dir>/bundled/<name>/` on load - inert files, never enabled.
 //! The `<dir>/bundled/` layout is what
 //! [`pantheon_api::approval::is_bundled`] recognizes, and
 //! [`crate::manager::ExtensionManager::load_dir`] scans it. An existing
@@ -65,7 +65,7 @@
 //! policies mark Approval). The run parks, an `ApprovalRequested` event
 //! is appended to the ledger (audit-logged like every approval), and the
 //! plugin is switched on only if the operator grants. It is never silent,
-//! and only catalog names are accepted — there is no agent path to
+//! and only catalog names are accepted - there is no agent path to
 //! install or enable arbitrary plugins.
 //!
 //! ## Stable interface
@@ -130,7 +130,7 @@ impl std::fmt::Display for PluginKind {
     }
 }
 
-/// One plugin Pantheon ships. Most entries are disabled by default —
+/// One plugin Pantheon ships. Most entries are disabled by default
 /// [`is_enabled_with_default`] falls back to the catalog entry's own
 /// manifest `enabled` flag when there is no `[plugins.<name>]` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,7 +180,7 @@ fn catalog_rows() -> Vec<CatalogRow> {
         )],
         privilege_notes: "Hook plugin (Python): injects an implicit time-gap \
             sense into the prompt on `pre_llm_call`, only when a gap or date \
-            rollover crosses. Context-class hook — it may add text, never deny \
+            rollover crosses. Context-class hook - it may add text, never deny \
             an action, and a crash or timeout is fail-open (the injection is \
             skipped, the turn continues). Runs as a child process Pantheon \
             spawns with a scrubbed environment (PATH only), under your user \
@@ -211,7 +211,7 @@ pub fn bundled_plugins() -> Vec<BundledPlugin> {
 }
 
 /// The catalog entry for `name`, or `None` when it is not bundled.
-/// Only catalog names are toggleable — this is what keeps the agent
+/// Only catalog names are toggleable - this is what keeps the agent
 /// from proposing (or any surface from flipping) an arbitrary plugin.
 pub fn find(name: &str) -> Option<BundledPlugin> {
     bundled_plugins().into_iter().find(|p| p.name == name)
@@ -219,7 +219,7 @@ pub fn find(name: &str) -> Option<BundledPlugin> {
 
 /// Is the bundled plugin `name` enabled? Pure read over the config:
 /// absent `[plugins.<name>]` (or an entry without `enabled`) = false.
-/// Unknown names are false too — inert entries never enable anything.
+/// Unknown names are false too - inert entries never enable anything.
 ///
 /// Prefer [`is_enabled_with_default`] when the bundled manifest is at
 /// hand: it honors the manifest's default-enabled flag.
@@ -229,11 +229,11 @@ pub fn is_enabled(config: &Config, name: &str) -> bool {
 
 /// Is the bundled plugin `name` enabled, with a manifest default?
 ///
-/// The `[plugins.<name>]` config entry wins when present — an explicit
+/// The `[plugins.<name>]` config entry wins when present - an explicit
 /// operator choice always overrides the shipped default. When the entry
 /// is absent, the bundled manifest's own `enabled` flag is the default
 /// (true only for plugins that ship on, like noisegate; false for the
-/// rest). Unknown names are false too — inert entries never enable
+/// rest). Unknown names are false too - inert entries never enable
 /// anything.
 pub fn is_enabled_with_default(config: &Config, name: &str, manifest_default: bool) -> bool {
     if config.plugins.contains_key(name) {
@@ -248,7 +248,7 @@ pub fn is_enabled_with_default(config: &Config, name: &str, manifest_default: bo
 /// never `exit(2)` the host because the config has a typo. A missing
 /// config means every bundled plugin is disabled (fail closed); a config
 /// that exists but does not parse is reported on stderr and also fails
-/// closed — a typo must never silently flip a plugin on.
+/// closed - a typo must never silently flip a plugin on.
 pub fn load_config(data_dir: &Path) -> Option<Config> {
     match Config::load(data_dir) {
         Ok(c) => Some(c),
@@ -264,13 +264,13 @@ pub fn load_config(data_dir: &Path) -> Option<Config> {
 /// Write the single enablement state: set `[plugins.<name>].enabled` in
 /// `<data_dir>/config.toml`, creating the file and tables as needed.
 /// Only bundled-catalog names are accepted (`PLUGIN_UNKNOWN_PLUGIN`
-/// otherwise) — this is the no-arbitrary-plugin-install boundary.
+/// otherwise) - this is the no-arbitrary-plugin-install boundary.
 /// Enabling stamps the catalog `kind` and `version` so the entry is
 /// self-describing; disabling keeps them and flips the flag.
 ///
 /// The rest of the file is preserved: the document is edited as TOML,
 /// not re-serialized from the [`Config`] struct, so unknown keys and
-/// values survive the write. (Comments are not preserved — TOML
+/// values survive the write. (Comments are not preserved - TOML
 /// re-serialization drops them, the same tradeoff the dashboard's config
 /// editor makes.)
 /// Enable a catalog plugin, persisting to the config file. Rejects
@@ -450,7 +450,7 @@ mod tests {
         // No config entry: the manifest default decides.
         assert!(is_enabled_with_default(&empty, "noisegate", true));
         assert!(!is_enabled_with_default(&empty, "security-guidance", false));
-        // Explicit config entry always wins over the manifest default —
+        // Explicit config entry always wins over the manifest default
         // including an explicit `false`, which is how an operator turns
         // a default-on plugin back off.
         assert!(!is_enabled_with_default(

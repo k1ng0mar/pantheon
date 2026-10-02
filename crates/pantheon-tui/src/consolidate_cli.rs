@@ -1,4 +1,4 @@
-//! `pantheon consolidate` — compatibility shim over the unified nightly pass.
+//! `pantheon consolidate` - compatibility shim over the unified nightly pass.
 //!
 //! The old standalone consolidation pipeline is merged into
 //! [`crate::nightly_cli`]: `pantheon consolidate` now runs the full

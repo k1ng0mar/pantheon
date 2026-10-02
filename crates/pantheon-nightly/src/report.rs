@@ -35,7 +35,7 @@ pub fn render(
     }
     for p in proposals {
         md.push_str(&format!(
-            "### {} — {}\n- Kind: {}\n- Status: {:?}\n- Provenance: {}\n\n{}\n\n",
+            "### {} - {}\n- Kind: {}\n- Status: {:?}\n- Provenance: {}\n\n{}\n\n",
             p.id,
             p.title,
             p.kind_name(),
@@ -55,7 +55,7 @@ pub fn render(
     }
     for r in acted {
         md.push_str(&format!(
-            "- `{}` — {:?}: {}\n",
+            "- `{}` - {:?}: {}\n",
             r.target, r.outcome, r.detail
         ));
     }

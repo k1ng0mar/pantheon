@@ -3,7 +3,7 @@
 //!
 //! These live at the API (protocol) layer, not in `pantheon-nightly`:
 //! `pantheon-providers` implements [`NightlyLlm`] but must not depend on
-//! the nightly pipeline crate (that would invert the layering — a provider
+//! the nightly pipeline crate (that would invert the layering - a provider
 //! leaf depending on a pipeline crate). The nightly crate re-exports these
 //! types, and owns the pipeline that produces and consumes them.
 use crate::model::{AuxiliaryKind, AuxiliaryModel, ModelPolicy};
@@ -81,19 +81,19 @@ impl Proposal {
 }
 
 /// The one LLM seam for the nightly pass. Implementations must place
-/// calls on the provided [`AuxiliaryModel`] — never on the chat model
+/// calls on the provided [`AuxiliaryModel`] - never on the chat model
 /// directly. Every call is routed through an explicitly resolved
 /// [`AuxiliaryModel`]: the proposal refiner uses the `Reflection` slot,
 /// the memory distiller uses the `Consolidation` slot, and repair
 /// diagnosis uses the `Repair` slot. Neither ever touches the chat model.
 pub trait NightlyLlm: Send + Sync {
     /// Polish or extend a draft proposal body. Must not change the
-    /// proposal's meaning, kind, or provenance — enrichment only.
+    /// proposal's meaning, kind, or provenance - enrichment only.
     /// Routed through the `Reflection` auxiliary slot.
     fn refine_proposal(&self, model: &AuxiliaryModel, draft: &Proposal) -> Result<String, String>;
 
     /// Merge staged memory texts into durable facts. Must not invent new
-    /// claims — merge and phrase only. Routed through the `Consolidation`
+    /// claims - merge and phrase only. Routed through the `Consolidation`
     /// slot.
     fn distill_memories(
         &self,
@@ -105,13 +105,13 @@ pub trait NightlyLlm: Send + Sync {
     /// tool) for the nightly repair loop. Advisory only: the caller
     /// records the returned text in the audit log and any escalation;
     /// repair *actions* stay deterministic and bounded. Must not suggest
-    /// anything destructive. Routed through the `Repair` auxiliary slot —
+    /// anything destructive. Routed through the `Repair` auxiliary slot
     /// never the `Reflection` slot (repair diagnosis is a distinct
     /// workload from proposal refinement) and never the chat model.
     ///
     /// Default: unimplemented. Callers degrade gracefully to
     /// deterministic-only repair when the backend does not implement it
-    /// or the `Repair` slot is unconfigured — the nightly pass never
+    /// or the `Repair` slot is unconfigured - the nightly pass never
     /// fails for a missing repair model.
     fn diagnose_repair(&self, model: &AuxiliaryModel, prompt: &str) -> Result<String, String> {
         let _ = (model, prompt);
@@ -132,7 +132,7 @@ pub fn resolve_refiner<'a>(
 
 /// Resolve the fix-loop repair model: `Some` only when the policy
 /// carries a `Repair` entry. All fix-loop draft revision (eval-reject
-/// and replay-reject paths) resolves through this slot — never the
+/// and replay-reject paths) resolves through this slot - never the
 /// Reflection slot. The caller additionally gates on `config.enabled`.
 /// `None` means revision is unavailable: the loop falls back to plain
 /// retries, then escalation. A pass never fails for lack of a repair

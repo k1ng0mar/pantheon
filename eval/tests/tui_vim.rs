@@ -1,7 +1,7 @@
 //! Modal vim editing for the TUI composer (`/vim`, `[tui] vim`).
 //! Run with `cargo test -p pantheon-eval`.
 //!
-//! v1 scope: Normal + Insert modes only — no Visual, no macros, no
+//! v1 scope: Normal + Insert modes only - no Visual, no macros, no
 //! `.vimrc`. These tests drive the pure buffer model in
 //! `pantheon_tui::session::vim` (the same functions the event loop calls)
 //! plus the config persistence behind `/vim`.

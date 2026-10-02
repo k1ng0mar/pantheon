@@ -1,8 +1,8 @@
 //! Behavioral / integration tests moved out of the crate's unit suite.
 //!
 //! Policy: only small deterministic unit tests live beside the code
-//! (`cargo test -p <crate>`). Everything behavioral — SQLite stores,
-//! threads, sockets, subprocesses, timing, filesystem — lives here and
+//! (`cargo test -p <crate>`). Everything behavioral - SQLite stores,
+//! threads, sockets, subprocesses, timing, filesystem - lives here and
 //! runs via `cargo test -p pantheon-eval`.
 
 //! Tests for `AgentRuntime`: identity, delegation, and the boundaries
@@ -242,8 +242,8 @@ fn the_binding_survives_a_restart() {
 //
 // NOTE: the old `AgentRuntime::delegate()` / `task_status()` record-and-poll
 // API was removed (2026-10-01 delegation build). Delegation is now a
-// blocking tool call on the session — `delegate(agent, task, budget?,
-// context?)` in `crates/pantheon-runtime/src/session.rs` — which drives a
+// blocking tool call on the session - `delegate(agent, task, budget?,
+// context?)` in `crates/pantheon-runtime/src/session.rs` - which drives a
 // real child session to a terminal state instead of writing a task row that
 // nothing executed. The behavioral tests for the new primitive live beside
 // the code (`delegate_tool_tests` in pantheon-runtime): blocking-until-finish,

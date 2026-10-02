@@ -71,7 +71,7 @@ fn legacy_nightly_checks(c: &Config) -> Vec<Check> {
 }
 
 /// Nightly state check: report whether the pass is enabled and why, and
-/// — when it is disabled with no model pin — hint how to enable it: a
+/// - when it is disabled with no model pin - hint how to enable it: a
 /// `[nightly.model]` pin, `/nightly on`, a config edit, or the dashboard
 /// toggle. Pure over the config so the rule is unit-testable.
 fn nightly_state_check(c: &Config) -> Check {
@@ -105,7 +105,7 @@ fn nightly_state_check(c: &Config) -> Check {
                 check(
                     "nightly",
                     "ok",
-                    "pass enabled via legacy [reflect]/[consolidation] (deprecated — move the knobs into [nightly])",
+                    "pass enabled via legacy [reflect]/[consolidation] (deprecated - move the knobs into [nightly])",
                     "move `enabled`, `auto_turns` / `enabled`, `min_sessions`, `cron` into [nightly]",
                 )
             } else {
@@ -126,7 +126,7 @@ fn nightly_state_check(c: &Config) -> Check {
 fn skill_dep_fix(dep: &crate::skill_deps::SkillDep, pip_ok: bool) -> String {
     if dep.needs_pip && !pip_ok {
         return format!(
-            "python3 with pip is missing — install it first, then run: {} (or rerun `pantheon setup`)",
+            "python3 with pip is missing - install it first, then run: {} (or rerun `pantheon setup`)",
             dep.install_cmd.unwrap_or("see the Skill dependencies step")
         );
     }
@@ -343,7 +343,7 @@ pub fn run_system_doctor_opts(data_dir: &Path, ping: bool) -> SystemReport {
 
     // 5b. Skill dependencies: third-party packages the skill library
     eprintln!("doctor: skill-deps");
-    // needs. A missing dep is a warn, never a fail — a skill without
+    // needs. A missing dep is a warn, never a fail - a skill without
     // its package degrades or falls back, but preflight must not stop
     // the run. A `[skill_deps].skipped` entry that is present now is
     // reported as healed, so the record visibly converges.
@@ -370,7 +370,7 @@ pub fn run_system_doctor_opts(data_dir: &Path, ping: bool) -> SystemReport {
             checks.push(check(
                 "skill-deps",
                 "warn",
-                format!("{} not found — needed by {}", dep.name, dep.needed_by),
+                format!("{} not found - needed by {}", dep.name, dep.needed_by),
                 skill_dep_fix(&dep, pip_ok),
             ));
         }
@@ -508,7 +508,7 @@ pub fn run_system_doctor_opts(data_dir: &Path, ping: bool) -> SystemReport {
         checks.push(check(
             "sandbox",
             "warn",
-            "bwrap not found on PATH — the shell tool's High sandbox fails closed without it",
+            "bwrap not found on PATH - the shell tool's High sandbox fails closed without it",
             "install bubblewrap (e.g. `apt install bubblewrap`), or set PANTHEON_SANDBOX_FALLBACK=allow to opt into the direct-spawn fallback",
         ));
     }
@@ -570,7 +570,7 @@ fn finish(checks: Vec<Check>) -> SystemReport {
 
 /// Split an `http(s)://host[:port][/...]` URL into `(host, port)`.
 /// Default ports follow the scheme. Returns `None` for anything that
-/// does not look like an HTTP URL — the probe treats that as
+/// does not look like an HTTP URL - the probe treats that as
 /// unreachable rather than guessing.
 fn host_port(url: &str) -> Option<(String, u16)> {
     let after = url.split("://").nth(1)?;
@@ -619,7 +619,7 @@ pub fn render_human(report: &SystemReport) -> String {
     }
     let verdict = if report.ok { "pass" } else { "FAIL" };
     out.push_str(&format!(
-        "pantheon doctor: {verdict} — {oks} ok, {warns} warn, {fails} fail\n\n"
+        "pantheon doctor: {verdict} - {oks} ok, {warns} warn, {fails} fail\n\n"
     ));
     for c in &report.checks {
         let glyph = match c.status.as_str() {

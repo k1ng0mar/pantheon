@@ -1,7 +1,7 @@
 //! Making the session quarantine live.
 //!
 //! `migrate apply` copies a source's transcripts into
-//! `<data_dir>/imported-sessions/<source>/` and stops there — a file nobody
+//! `<data_dir>/imported-sessions/<source>/` and stops there - a file nobody
 //! reads. This module closes that: it turns those quarantined transcripts into
 //! [`SessionChunk`]s and indexes them into the same `session_search` store the
 //! live runtime writes, so a migrated history is actually searchable.
@@ -30,7 +30,7 @@ pub struct ImportedChunk {
     pub chunk_id: String,
     pub run_id: String,
     pub seq: i64,
-    /// `message`, `title`, or `tool` — the same vocabulary the live path uses.
+    /// `message`, `title`, or `tool` - the same vocabulary the live path uses.
     pub kind: String,
     pub text: String,
     pub ts_ms: i64,
@@ -150,7 +150,7 @@ pub fn parse_transcript(path: &Path, source: &str, session: &str) -> Vec<Importe
         }
         let text = if text.chars().count() > MAX_CHUNK_CHARS {
             let cut: String = text.chars().take(MAX_CHUNK_CHARS).collect();
-            format!("{cut}…")
+            format!("{cut}...")
         } else {
             text
         };
@@ -262,7 +262,7 @@ pub fn quarantine_dir(data_dir: &Path, source: &str) -> PathBuf {
 /// search store, treating index failure as import failure.
 ///
 /// A bare [`index_quarantine`] returns `Err` on an index write failure, but
-/// nothing stops a caller from logging it and reporting success anyway —
+/// nothing stops a caller from logging it and reporting success anyway
 /// which is what `migrate apply` used to do (stderr line, exit 0). This
 /// function's contract is explicit: an `Err` here means the session import
 /// did not complete and must be reported as failed, never as success.

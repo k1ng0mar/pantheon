@@ -1,9 +1,9 @@
 //! SearXNG-backed [`SearchProvider`]:
-//! `GET {instance}/search?q=…&format=json`.
+//! `GET {instance}/search?q=...&format=json`.
 //!
 //! Self-hosted only: the instance base URL is user-configured (config
 //! file `[websearch] searxng_url`, or the `SEARXNG_URL` env override).
-//! **Do not point this at a public instance** — public instances bot-gate
+//! **Do not point this at a public instance** - public instances bot-gate
 //! the JSON API (403/429) and silently break. No auth is sent.
 //!
 //! Responses carry no date fields: `published` is always `None` rather
@@ -21,7 +21,7 @@ pub const SEARXNG_URL: &str = "SEARXNG_URL";
 /// stock SearXNG docker-compose port on localhost.
 pub const DEFAULT_INSTANCE_URL: &str = "http://localhost:8080";
 
-/// SearXNG search provider. Self-hosted — takes an instance URL, no key.
+/// SearXNG search provider. Self-hosted - takes an instance URL, no key.
 pub struct SearxngProvider {
     base_url: String,
 }
