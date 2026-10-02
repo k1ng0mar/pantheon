@@ -361,11 +361,22 @@ fn doc_pack_pptx_round_trip_when_lib_present() {
         slides[0].get("title").and_then(|v| v.as_str()),
         Some("Welcome")
     );
-    assert!(slides[1]
+    // `texts` is one entry per text shape (the manifest's contract);
+    // a bulleted shape reads back as its paragraphs joined.
+    let texts = slides[1]
         .get("texts")
         .and_then(|v| v.as_array())
-        .map(|t| t.iter().any(|x| x.as_str() == Some("one")))
-        .unwrap_or(false));
+        .expect("slide 2 must carry text shapes");
+    let joined = texts
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(joined.contains("one"), "first bullet round-trips: {joined}");
+    assert!(
+        joined.contains("two"),
+        "second bullet round-trips: {joined}"
+    );
     assert_eq!(
         slides[1].get("notes").and_then(|v| v.as_str()),
         Some("say hi")
