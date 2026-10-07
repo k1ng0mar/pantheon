@@ -123,6 +123,40 @@ fn fork_without_turn_forks_the_latest() {
 }
 
 #[test]
+fn fork_records_lineage_in_ledger() {
+    let dir = tempdir().unwrap();
+    let sup = Supervisor::open(dir.path().to_path_buf()).unwrap();
+    seed_three_turns(&sup, "root");
+
+    // First fork: parent is the root run.
+    let (mid, _) = sup.fork_run("root", None).unwrap();
+    assert_eq!(
+        sup.ledger_forked_from(&mid).unwrap(),
+        Some("root".to_string())
+    );
+    // The source run is not a fork itself.
+    assert_eq!(sup.ledger_forked_from("root").unwrap(), None);
+
+    // Fork of a fork: the pointer is the direct parent only (a chain, not a tree).
+    let (leaf, _) = sup.fork_run(&mid, None).unwrap();
+    assert_eq!(sup.ledger_forked_from(&leaf).unwrap(), Some(mid.clone()));
+
+    // Walking the chain reaches the root in exactly two hops.
+    let mut cursor = Some(leaf);
+    let mut hops = 0;
+    while let Some(run) = cursor {
+        cursor = sup.ledger_forked_from(&run).unwrap();
+        hops += 1;
+        assert!(hops <= 4, "lineage chain should be short");
+    }
+    assert_eq!(hops, 3, "leaf -> mid -> root -> None");
+
+    // Rebinding a run that already has a parent is a hard error.
+    let err = sup.ledger_forked_from(&mid).unwrap(); // sanity: still the original parent
+    assert_eq!(err, Some("root".to_string()));
+}
+
+#[test]
 fn fork_rejects_bad_turns_and_empty_runs() {
     let dir = tempdir().unwrap();
     let sup = Supervisor::open(dir.path().to_path_buf()).unwrap();

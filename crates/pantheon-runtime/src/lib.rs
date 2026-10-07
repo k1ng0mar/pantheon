@@ -767,7 +767,7 @@ impl Supervisor {
         self.require_parked(run_id)?;
         let entries = self.ledger().replay(run_id)?;
         let (requested, resolved) = Self::approval_scan(&entries);
-        if !requested.iter().any(|s| *s == scope) {
+        if !requested.contains(&scope) {
             return Err(rerr(
                 "RT_APPROVAL_UNKNOWN",
                 format!("run {run_id} has no pending approval for scope {scope}"),
@@ -824,7 +824,7 @@ impl Supervisor {
         self.require_parked(run_id)?;
         let entries = self.ledger().replay(run_id)?;
         let (requested, resolved) = Self::approval_scan(&entries);
-        if !requested.iter().any(|s| *s == scope) {
+        if !requested.contains(&scope) {
             return Err(rerr(
                 "RT_APPROVAL_UNKNOWN",
                 format!("run {run_id} has no pending approval for scope {scope}"),
@@ -1264,6 +1264,12 @@ impl Supervisor {
     ) -> Result<Vec<pantheon_api::todo::TodoItem>, PantheonError> {
         self.ledger().todos(run_id)
     }
+    /// The direct parent run this run was forked from, or `None` when the
+    /// run was not created by a fork. Repeatedly following the chain yields
+    /// the full lineage to the root run.
+    pub fn ledger_forked_from(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
+        self.ledger().forked_from(run_id)
+    }
     pub fn replay(
         &self,
         run_id: &str,
@@ -1323,6 +1329,10 @@ impl Supervisor {
         let cut = user_at.get(n).copied().unwrap_or(entries.len());
         let new_id = new_run_id();
         self.start_run(&new_id)?;
+        // Record lineage: this run was forked from `src`. Written once,
+        // before any events are replayed into it, so the parent pointer
+        // exists even if the fork dies mid-replay.
+        self.ledger().set_run_forked_from(&new_id, src)?;
         for e in &entries[..cut] {
             // Skip the source's run boundary: start_run already emitted
             // the fork's own RunStarted, and a boundary is per-run.

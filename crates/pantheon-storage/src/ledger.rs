@@ -324,6 +324,11 @@ fn migrate(conn: &Connection) -> Result<(), PantheonError> {
     // metadata, not agent events.
     add("ALTER TABLE runs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")?;
     add("ALTER TABLE runs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")?;
+    // Fork lineage: when a run was created by forking another run, the
+    // source run id is recorded here. NULL for runs that were not forked.
+    // Written once at fork creation; never updated (a fork-of-a-fork
+    // points at its direct parent only, giving a clean chain, not a tree).
+    add("ALTER TABLE runs ADD COLUMN forked_from TEXT")?;
     Ok(())
 }
 
@@ -1352,6 +1357,61 @@ impl Ledger {
         Ok(())
     }
 
+    /// Record fork lineage on a freshly-created run row. The forked-from
+    /// pointer is written exactly once, when the fork is created, and
+    /// never afterward: it is immutable provenance, not mutable metadata.
+    /// A run that already has a parent is a hard error (a fork-of-a-fork
+    /// should point at its direct parent, set at its own creation).
+    pub fn set_run_forked_from(&self, run_id: &str, parent_run: &str) -> Result<(), PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT forked_from FROM runs WHERE run_id=?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| err("LEDGER_FORK_READ", e.to_string()))?
+            .flatten();
+        if existing.is_some() {
+            return Err(err(
+                "LEDGER_FORK_REBIND",
+                format!(
+                    "run {run_id} already has a fork parent ({existing:?}); refusing to rebind"
+                ),
+            ));
+        }
+        conn.execute(
+            "UPDATE runs SET forked_from=?2 WHERE run_id=?1",
+            params![run_id, parent_run],
+        )
+        .map_err(|e| err("LEDGER_FORK_WRITE", e.to_string()))?;
+        Ok(())
+    }
+
+    /// The direct parent run this run was forked from, or `None` when the
+    /// run was not created by a fork. Following the chain repeatedly yields
+    /// the full lineage to the root. A NULL column and a missing row both
+    /// resolve to `None`; the fetcher is typed `Option<String>` so NULL
+    /// never surfaces as an error.
+    pub fn forked_from(&self, run_id: &str) -> Result<Option<String>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        conn.query_row(
+            "SELECT forked_from FROM runs WHERE run_id=?1",
+            params![run_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|inner| inner.flatten())
+        .map_err(|e| err("LEDGER_FORK_READ", e.to_string()))
+    }
+
     /// Reopen a terminal run for continued conversation. Only terminal
     /// statuses flip back to running; a running/awaiting run is untouched
     /// (the caller then follows the normal path). Returns whether a
@@ -1932,13 +1992,15 @@ fn lease_is_live(conn: &rusqlite::Connection, run_id: &str) -> Result<bool, Pant
     Ok(now - beat <= window)
 }
 
+/// A fresh in-memory ledger for the test modules below.
+#[cfg(test)]
+fn mem() -> Ledger {
+    Ledger::open_in_memory().expect("in-memory ledger")
+}
+
 #[cfg(test)]
 mod project_tests {
     use super::*;
-
-    fn mem() -> Ledger {
-        Ledger::open_in_memory().expect("in-memory ledger")
-    }
 
     fn start(ledger: &Ledger, run_id: &str) {
         ledger
@@ -2146,10 +2208,6 @@ mod queue_atomicity_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    fn mem() -> Ledger {
-        Ledger::open_in_memory().expect("in-memory ledger")
-    }
-
     /// Item 5: a migration that reports `Ok` really migrated. Against a
     /// connection with no `runs` table the ALTER fails with "no such
     /// table" - that must propagate as LEDGER_MIGRATE, not be swallowed
@@ -2249,10 +2307,9 @@ mod queue_atomicity_tests {
             } else {
                 (Arc::clone(&b), Arc::clone(&taken))
             };
-            threads.push(std::thread::spawn(move || loop {
-                match ledger.take_queued_message("rq").expect("take works") {
-                    Some(msg) => taken.lock().unwrap().push(msg),
-                    None => break,
+            threads.push(std::thread::spawn(move || {
+                while let Some(msg) = ledger.take_queued_message("rq").expect("take works") {
+                    taken.lock().unwrap().push(msg);
                 }
             }));
         }
