@@ -189,7 +189,7 @@ fn parse_status(hdr: &[u8]) -> Option<u16> {
                 _ => None,
             }
         })
-        .last()
+        .next_back()
 }
 
 /// True when `msg` is rustls's "peer closed connection without sending

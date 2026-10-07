@@ -201,9 +201,10 @@ fn repair_aux() -> AuxiliaryModel {
 }
 
 fn phase_config(dir: &std::path::Path) -> NightlyConfig {
-    let mut c = NightlyConfig::default();
-    c.data_dir = dir.to_path_buf();
-    c
+    NightlyConfig {
+        data_dir: dir.to_path_buf(),
+        ..Default::default()
+    }
 }
 
 fn fix_attempts(events: &[NightlyEvent], id: &str) -> Vec<(usize, String, String)> {
@@ -713,8 +714,10 @@ fn run_pass_contains_always_erroring_tool() {
         tools: Some(&mut tools),
         ..RepairTargets::default()
     };
-    let mut config = NightlyConfig::default();
-    config.data_dir = dir.path().to_path_buf();
+    let config = NightlyConfig {
+        data_dir: dir.path().to_path_buf(),
+        ..Default::default()
+    };
     let mut deps = NightlyDeps {
         ledger: &ledger,
         backend: backend.as_ref(),

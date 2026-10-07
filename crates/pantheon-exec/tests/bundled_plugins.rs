@@ -421,6 +421,14 @@ print("OK")
 
 #[test]
 fn doc_pack_rejects_relative_paths_and_unknown_tools() {
+    // Path validation runs behind the per-tool library import, so without
+    // python-docx the call fails closed on the dependency instead and the
+    // error under test never happens. Gate the same way the round-trip
+    // tests do.
+    if !python_has("docx") {
+        eprintln!("SKIP: python-docx not installed");
+        return;
+    }
     let runner = plugin_dir("doc-pack").join("runner.py");
     let resp = call_tool(
         "python3",

@@ -73,7 +73,7 @@ pub fn now_ms() -> u64 {
 pub fn task_label(prompt: &str) -> String {
     let first = prompt.lines().next().unwrap_or("").trim();
     let redacted = pantheon_api::logging::redact(first);
-    let mut label: String = redacted.chars().take(LABEL_CHARS).collect();
+    let mut label: String = redacted.chars().take(LABEL_CHARS - 3).collect();
     if redacted.chars().count() > LABEL_CHARS {
         label.push_str("...");
     }

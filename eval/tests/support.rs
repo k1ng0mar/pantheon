@@ -11,6 +11,8 @@
 //! Note: this file is also compiled as its own (empty) test target by
 //! cargo's auto-discovery; that is harmless.
 
+#![allow(dead_code)]
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;

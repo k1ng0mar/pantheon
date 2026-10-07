@@ -39,22 +39,10 @@ pub enum ConfigState {
 impl Entry {
     /// The resolution itself, separated from the terminal so it is testable.
     ///
-    /// `configured` is the signal from the config, and it is deliberately
-    /// narrow: a config with no model cannot produce an answer, so it is not
-    /// a usable agent no matter what else it declares. Anything less than a
-    /// model and a provider means setup.
-    pub fn resolve(configured: bool, resume: Option<String>) -> Entry {
-        Self::resolve_state(
-            if configured {
-                ConfigState::Ready
-            } else {
-                ConfigState::Missing
-            },
-            resume,
-        )
-    }
-
-    /// Tri-state resolution: a broken config is repair, not setup.
+    /// Tri-state on purpose: a config with no model cannot produce an
+    /// answer, so it is not a usable agent no matter what else it declares,
+    /// and a config that does not parse is a repair job rather than a
+    /// first run. Anything less than a model and a provider means setup.
     pub fn resolve_state(state: ConfigState, resume: Option<String>) -> Entry {
         match state {
             ConfigState::Ready => Entry::Session { resume },

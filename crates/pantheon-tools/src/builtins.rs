@@ -35,6 +35,11 @@ pub enum ShellChildEvent {
 /// Must be cheap and non-blocking: it runs on the tool-call thread.
 pub type ShellChildHook = Arc<dyn Fn(ShellChildEvent, u32) + Send + Sync>;
 
+/// Per-call extra env for the shell child: command text -> named
+/// variables the child may receive. The single sanctioned gate for
+/// secrets into a sandboxed shell child (the Cloudflare token path).
+pub type ShellEnvHook = Arc<dyn Fn(&str) -> Vec<(String, String)> + Send + Sync>;
+
 /// Options for `register_builtins`. Empty defaults keep the old call site
 /// working; supplying `safewrite_state_dir` routes `write_file` through the
 /// SafeWriter instead of leaving the safe path as an opt-in side door.
@@ -69,6 +74,14 @@ pub struct BuiltinOptions {
     /// on cancel: the runtime registers the child's pgid on `Spawned`
     /// and unregisters it on `Exited`.
     pub shell_child_hook: Option<ShellChildHook>,
+    /// Per-call extra env for the shell child, resolved by the host at
+    /// call time. Called with the command text; returns the named
+    /// variables the child may receive (empty = none). This is the
+    /// single sanctioned gate for secrets into a sandboxed shell child:
+    /// the host resolves through the secrets broker, the hook decides,
+    /// the runner injects past the scrub. `None` (default) = no extras
+    /// ever.
+    pub shell_env_hook: Option<ShellEnvHook>,
 }
 
 impl std::fmt::Debug for BuiltinOptions {
@@ -82,6 +95,7 @@ impl std::fmt::Debug for BuiltinOptions {
             .field("enable_plugins", &self.enable_plugins)
             .field("data_dir", &self.data_dir)
             .field("shell_child_hook", &self.shell_child_hook.is_some())
+            .field("shell_env_hook", &self.shell_env_hook.is_some())
             .finish()
     }
 }
@@ -99,6 +113,7 @@ impl Default for BuiltinOptions {
             enable_plugins: true,
             data_dir: None,
             shell_child_hook: None,
+            shell_env_hook: None,
         }
     }
 }
@@ -162,6 +177,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
         // 'static closure: the child hook is an Arc, so the clone here
         // is cheap and the registry owns its copy.
         let shell_child_hook = opts.shell_child_hook.clone();
+        let shell_env_hook = opts.shell_env_hook.clone();
         reg.register_with(
         ToolSchema {
             name: "shell".into(),
@@ -182,13 +198,22 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             let v = parse_args(args)?;
             let command = arg_str(&v, "command")?;
             pantheon_exec::danger::gate(&command)?;
-            run_shell(args, shell_child_hook.as_ref())
+            run_shell_with_env(
+                args,
+                shell_child_hook.as_ref(),
+                shell_env_hook.as_ref().map(|h| h(command.as_str())).unwrap_or_default().as_slice(),
+            )
         },
         Some(Box::new(|args: &str| {
             // `git push` is the one shell operation the policies single
             // out (coder marks git.push Approval). The static ShellExecute
             // capability alone let every push through unapproved, so the
             // command is inspected and the call picks up GitPush.
+            // `cf ...` is the second: Cloudflare CLI calls classify into
+            // read/write/destroy (pantheon-exec::cloudflare), and the
+            // destroy/write classes carry their own tokens so the default
+            // policies park on them. Unknown cf shapes fail closed to
+            // Destroy, the strictest class.
             let Ok(v) = parse_args(args) else {
                 return Vec::new();
             };
@@ -196,10 +221,15 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
                 return Vec::new();
             };
             if pantheon_exec::danger::is_git_push(cmd) {
-                vec![Capability::GitPush]
-            } else {
-                Vec::new()
+                return vec![Capability::GitPush];
             }
+            if pantheon_exec::cloudflare::is_cf_command(cmd) {
+                match pantheon_exec::cloudflare::classify(cmd).capability_token() {
+                    Some(token) => return vec![Capability::Other(token.to_string())],
+                    None => return Vec::new(),
+                }
+            }
+            Vec::new()
         })),
     );
     }
@@ -488,7 +518,16 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
     }
 }
 
-fn run_shell(args: &str, child_hook: Option<&ShellChildHook>) -> Result<String, PantheonError> {
+/// Run a shell command, with an optional caller-supplied extra-env list
+/// (see `run_sandboxed_with_env`). The Cloudflare integration uses the
+/// env list to hand the broker-resolved API token to `cf` children;
+/// the default path passes an empty list and children get nothing
+/// beyond the scrub allowlist.
+fn run_shell_with_env(
+    args: &str,
+    child_hook: Option<&ShellChildHook>,
+    extra_env: &[(String, String)],
+) -> Result<String, PantheonError> {
     let v = parse_args(args)?;
     let command = arg_str(&v, "command")?;
     // Shell runs at HIGH isolation: bwrap with dropped caps + no-new-privs
@@ -511,12 +550,13 @@ fn run_shell(args: &str, child_hook: Option<&ShellChildHook>) -> Result<String, 
             hook(ShellChildEvent::Spawned, pid);
         }
     });
-    let result = pantheon_exec::sandbox::runner::run_sandboxed_with_spawn_hook(
+    let result = pantheon_exec::sandbox::runner::run_sandboxed_with_spawn_hook_and_env(
         &profile,
         "sh",
         &["-c", &command],
         &cwd,
         spawn_hook.as_ref().map(|f| f as &dyn Fn(u32)),
+        extra_env,
     );
     if let (Some(hook), Some(pid)) = (child_hook, spawned.get()) {
         // Fires on every terminal path (exit, timeout kill, wait error):

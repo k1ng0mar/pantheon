@@ -3199,7 +3199,7 @@ impl Session {
         }
         let counts = ToolCounts {
             builtin: n_builtin,
-            skills: n_skills - n_builtin,
+            skills: n_skills - n_builtin - n_codeintel,
             vault: n_vault - n_skills,
             session_search: n_search - n_vault,
             vision: n_vision,

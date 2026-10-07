@@ -265,29 +265,6 @@ fn compose_turn_text(drained: Option<&str>, message: &str) -> String {
     }
 }
 
-#[cfg(test)]
-mod agui_queue_tests {
-    use super::compose_turn_text;
-
-    #[test]
-    fn queue_head_rides_first() {
-        assert_eq!(
-            compose_turn_text(Some("first"), "second"),
-            "first\n\nsecond"
-        );
-    }
-
-    #[test]
-    fn echoed_head_is_not_duplicated() {
-        assert_eq!(compose_turn_text(Some("same"), "same"), "same");
-    }
-
-    #[test]
-    fn empty_queue_leaves_message_alone() {
-        assert_eq!(compose_turn_text(None, "hello"), "hello");
-    }
-}
-
 struct Grant {
     data_dir: PathBuf,
 }
@@ -501,5 +478,28 @@ impl MethodHandler for ServeHint {
             "sse": format!("http://{host}:{port}/agui/stream"),
             "rpc": format!("http://{host}:{port}/agui/rpc"),
         }))
+    }
+}
+
+#[cfg(test)]
+mod agui_queue_tests {
+    use super::compose_turn_text;
+
+    #[test]
+    fn queue_head_rides_first() {
+        assert_eq!(
+            compose_turn_text(Some("first"), "second"),
+            "first\n\nsecond"
+        );
+    }
+
+    #[test]
+    fn echoed_head_is_not_duplicated() {
+        assert_eq!(compose_turn_text(Some("same"), "same"), "same");
+    }
+
+    #[test]
+    fn empty_queue_leaves_message_alone() {
+        assert_eq!(compose_turn_text(None, "hello"), "hello");
     }
 }

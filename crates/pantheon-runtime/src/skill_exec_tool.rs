@@ -74,16 +74,27 @@ pub fn register_skill_exec_tool(reg: &mut ToolRegistry, skills: Vec<Skill>) {
 /// read-side-effect executables need nothing more (they run like
 /// read-only tools); write-side-effect ones additionally need
 /// ShellExecute, so they flow through the normal approval path.
-/// Unresolvable calls add nothing - the executor fails them closed.
+///
+/// A call that cannot be resolved is treated as an execution attempt,
+/// not as a read. The executor fails it closed, so nothing runs, but the
+/// gate should not be the thing that decided it was harmless: reporting
+/// `FilesystemRead` for a `skill_exec` invocation means a caller that
+/// somehow got a resolvable exec past this check would only need the
+/// read tier. Fail toward the capability that matches the tool's nature.
 fn extra_capabilities(skills: &[Skill], args: &str) -> Vec<Capability> {
     let Ok((skill, name, _)) = parse_skill_exec_args(args) else {
-        return Vec::new();
+        // Not even parseable: still a `skill_exec` call.
+        return vec![Capability::ShellExecute];
     };
     match find_skill_exec(skills, &skill, &name) {
         Ok((_, exec)) if exec.side_effects == SkillExecSideEffects::Write => {
             vec![Capability::ShellExecute]
         }
-        _ => Vec::new(),
+        Ok(_) => Vec::new(),
+        // The model named a skill or an executable that does not exist.
+        // Could be a stale prompt, could be probing for a gate that says
+        // no. Either way this is an execution request.
+        Err(_) => vec![Capability::ShellExecute],
     }
 }
 

@@ -296,9 +296,21 @@ fn skill_exec_extra_capabilities_follow_side_effects() {
         write_caps.contains(&Capability::FilesystemRead),
         "{write_caps:?}"
     );
-    // Unresolvable call: extras fail closed to nothing; the executor
-    // rejects the call itself.
-    assert_eq!(caps("with-exec", "nope"), vec![Capability::FilesystemRead]);
+    // Unresolvable call: the gate treats it as an execution attempt and
+    // requires ShellExecute. It previously fell back to the static
+    // FilesystemRead alone, which meant the gate reported a read for a
+    // call whose nature is an execution; the executor rejecting the call
+    // was the only thing keeping it from running. The capability that
+    // matches the tool's nature is the one the gate should ask for.
+    let unknown_caps = caps("with-exec", "nope");
+    assert!(
+        unknown_caps.contains(&Capability::ShellExecute),
+        "an unresolvable skill_exec must still require ShellExecute: {unknown_caps:?}"
+    );
+    assert!(
+        unknown_caps.contains(&Capability::FilesystemRead),
+        "{unknown_caps:?}"
+    );
 }
 
 /// Unknown skill/exec names and malformed args fail with distinct,
@@ -330,4 +342,156 @@ fn skill_exec_execute_rejects_unknown_skill_and_exec() {
     assert_eq!(err.code, "SKILL_UNKNOWN_EXEC");
     let err = reg.execute(SKILL_EXEC_TOOL_NAME, "not json").unwrap_err();
     assert_eq!(err.code, "TOOL_BAD_ARGS");
+}
+
+// ---------------------------------------------------------------------------
+// permission_mode.rs: the three-mode gate
+// ---------------------------------------------------------------------------
+
+/// End-to-end through a real `Session`: a config file naming a permission
+/// mode must actually change what the session reports, and an unparseable
+/// value must fall back to `Ask` rather than widening anything.
+///
+/// This is the wiring proof. The unit tests in `permission_mode` cover the
+/// ladder; this covers "the config is read and reaches the session".
+#[test]
+fn configured_permission_mode_reaches_the_session() {
+    use pantheon_api::capability::Policy;
+    use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy};
+    use pantheon_api::permission_mode::PermissionMode;
+    use pantheon_runtime::session::Session;
+
+    // A minimal, deterministic model policy: this test is about the
+    // permission-mode plumbing, not model resolution.
+    fn model_policy() -> ModelPolicy {
+        ModelPolicy {
+            reasoning_budget: Default::default(),
+            reasoning: Default::default(),
+            default: DefaultModel {
+                provider: "test".into(),
+                model: "test".into(),
+            },
+            fallbacks: FallbackChain {
+                fallbacks: Vec::new(),
+            },
+            auxiliaries: Vec::new(),
+        }
+    }
+
+    fn session_with(permission_mode: Option<&str>) -> Session {
+        let dir = tempfile::tempdir().unwrap();
+        // Keep the tempdir alive for the session's lifetime by leaking it;
+        // the test process exits shortly after.
+        let path = dir.keep();
+        if let Some(mode) = permission_mode {
+            std::fs::write(
+                path.join("config.toml"),
+                format!("permission_mode = \"{mode}\"\n"),
+            )
+            .unwrap();
+        }
+        Session::new(
+            path,
+            Policy::coder(),
+            model_policy(),
+            pantheon_secrets::SecretsBroker::new(),
+        )
+        .unwrap()
+    }
+
+    assert_eq!(
+        session_with(None).permission_mode(),
+        PermissionMode::Ask,
+        "an absent setting must default to the conservative mode"
+    );
+    assert_eq!(
+        session_with(Some("smart")).permission_mode(),
+        PermissionMode::Smart
+    );
+    assert_eq!(
+        session_with(Some("allow_all")).permission_mode(),
+        PermissionMode::AllowAll
+    );
+    assert_eq!(
+        session_with(Some("nonsense")).permission_mode(),
+        PermissionMode::Ask,
+        "a typo must never silently widen what runs unattended"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Budget: the consecutive-failure cap
+// ---------------------------------------------------------------------------
+
+/// The cap bounds *fruitless* work, which `max_tool_calls` does not: a
+/// model retrying one broken command can otherwise spend the whole tool
+/// budget on it, paying a provider round trip per retry. A success must
+/// reset the streak so a long run that is making progress is never cut.
+#[test]
+fn consecutive_failure_cap_bounds_fruitless_retries() {
+    use pantheon_agent::Budget;
+
+    let b = Budget::default();
+    assert_eq!(
+        b.max_consecutive_tool_failures, 5,
+        "the cap must be on by default: an unbounded retry loop is the bug"
+    );
+
+    // The semantics the drive loop implements: a success resets to zero,
+    // a failure extends. Simulate the counter directly so the contract is
+    // pinned here even if the loop is refactored.
+    let mut streak = 0u32;
+    let mut tripped_at = None;
+    for (n, failed) in [true, true, false, true, true, true, true, true]
+        .into_iter()
+        .enumerate()
+    {
+        if failed {
+            streak += 1;
+        } else {
+            streak = 0;
+        }
+        if streak >= b.max_consecutive_tool_failures {
+            tripped_at = Some(n);
+            break;
+        }
+    }
+    assert_eq!(
+        tripped_at,
+        Some(7),
+        "the streak must reset on the success at index 2, so it trips on \
+         the fifth consecutive failure after it, not earlier"
+    );
+}
+
+/// `0` disables the cap, and the config resolver must preserve that
+/// rather than treating it as unset (which is how every other budget key
+/// behaves).
+#[test]
+fn zero_disables_the_failure_cap() {
+    use pantheon_api::config::BudgetSection;
+
+    let disabled = BudgetSection {
+        max_consecutive_tool_failures: Some(0),
+        ..Default::default()
+    };
+    let b = pantheon_tui::config::resolve_budget_section(&disabled);
+    assert_eq!(
+        b.max_consecutive_tool_failures, 0,
+        "an explicit 0 must mean 'no cap', not 'fall back to the default'"
+    );
+
+    let absent = BudgetSection::default();
+    let b = pantheon_tui::config::resolve_budget_section(&absent);
+    assert_eq!(
+        b.max_consecutive_tool_failures, 5,
+        "an absent key takes the default"
+    );
+
+    let tuned = BudgetSection {
+        max_consecutive_tool_failures: Some(12),
+        ..Default::default()
+    };
+    let b = pantheon_tui::config::resolve_budget_section(&tuned);
+    assert_eq!(b.max_consecutive_tool_failures, 12);
 }

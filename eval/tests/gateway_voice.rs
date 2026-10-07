@@ -242,8 +242,10 @@ fn command_stt_section() -> VoiceSection {
 fn voice_double_gate_requires_toggle_and_section() {
     let secrets = SecretsBroker::new();
     // Toggle off + section present: disabled, backend never constructed.
-    let mut tools_off = ToolsSection::default();
-    tools_off.voice = Some(false);
+    let tools_off = ToolsSection {
+        voice: Some(false),
+        ..Default::default()
+    };
     let pipes = VoicePipes::from_config(
         Some(&tools_off),
         Some(&command_stt_section()),
@@ -290,8 +292,10 @@ fn slot_name<T>(slot: &VoiceSlot<T>) -> &'static str {
 #[test]
 fn voice_tool_group_toggle_checked_by_name() {
     // Sanity: the gate really keys on the voice group, not another group.
-    let mut tools = ToolsSection::default();
-    tools.voice = Some(false);
+    let tools = ToolsSection {
+        voice: Some(false),
+        ..Default::default()
+    };
     assert!(!tools.is_enabled(ToolGroup::Voice));
     assert!(ToolsSection::default().is_enabled(ToolGroup::Voice));
 }
@@ -812,11 +816,13 @@ fn mobile_stt_edge(transcript: &str) -> (VoiceEdge, Arc<Mutex<MobileSeenStt>>) {
     (VoiceEdge::with_backends(Some(Arc::new(fake)), None), seen)
 }
 
-fn mobile_tts_edge() -> (
+type TtsEdge = (
     VoiceEdge,
     Arc<Mutex<Option<String>>>,
     Arc<Mutex<AudioFormat>>,
-) {
+);
+
+fn mobile_tts_edge() -> TtsEdge {
     let seen_voice = Arc::new(Mutex::new(None));
     let seen_format = Arc::new(Mutex::new(AudioFormat::Wav));
     let fake = MobileFakeTts {

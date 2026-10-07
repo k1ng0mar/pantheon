@@ -121,6 +121,7 @@ fn decl_spec(s: &McpServer) -> McpServerSpec {
         url: s.url.clone(),
         enabled: s.enabled,
         timeout: std::time::Duration::from_secs(30),
+        headers: Default::default(),
     }
 }
 

@@ -27,6 +27,9 @@ fn timeout_kills_long_running_command() {
         max_pids: None,
         wall_clock_ms: 100, // 100ms timeout
         allow_direct_fallback: false,
+        seccomp: false,
+        landlock: false,
+        writable_paths: Vec::new(),
     };
     let result = run_sandboxed(&profile, "sleep", &["5"], "/tmp");
     assert!(result.is_err(), "should have timed out");
@@ -130,6 +133,9 @@ fn in_process_boundary_also_gets_the_limits() {
         max_pids: Some(8),
         wall_clock_ms: 30_000,
         allow_direct_fallback: false,
+        seccomp: false,
+        landlock: false,
+        writable_paths: Vec::new(),
     };
     assert_eq!(
         proc_limit(&profile, "Max address space"),
@@ -315,6 +321,9 @@ fn timeout_error_redacts_secret_bearing_args() {
         max_pids: None,
         wall_clock_ms: 100, // 100ms timeout
         allow_direct_fallback: false,
+        seccomp: false,
+        landlock: false,
+        writable_paths: Vec::new(),
     };
     // The canary rides in the args: a timeout error that echoes them
     // verbatim leaks secrets into the ledger and the model transcript.

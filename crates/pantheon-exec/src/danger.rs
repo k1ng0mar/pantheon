@@ -114,28 +114,50 @@ fn normalize(cmd: &str) -> String {
 ///
 /// Strip privilege/escalation and launcher prefixes so `sudo bash -c`,
 /// `env FOO=1 find ...` etc. are judged by the real command word.
+///
+/// Two bugs lived here and both were load-bearing:
+///
+/// - `setsid` was missing from the list, so `setsid rm -rf /` kept
+///   `setsid` as its command word and every pattern keyed on `rm`
+///   silently stopped matching. The list has to agree with the
+///   peel table in `analyze_simple`, or the two halves of the
+///   classifier disagree about what a wrapper is.
+/// - `timeout` was stripped as a bare word, which left its duration
+///   argument behind: `timeout 5 rm -rf /` became `5 rm -rf /` and the
+///   command word was `5`. Wrappers that take a mandatory argument have
+///   to consume it.
 fn strip_wrappers(seg: &str) -> &str {
     let mut seg = seg.trim();
     // Iterate: sudo env FOO=1 nice -n 5 rm ... etc.
     loop {
-        let strip = seg
-            .split_whitespace()
-            .next()
-            .map(|first| {
-                matches!(
-                    first,
-                    "sudo" | "env" | "nice" | "nohup" | "command" | "timeout"
-                ) || first.contains('=')
-            })
-            .unwrap_or(false);
+        let mut parts = seg.split_whitespace();
+        let first = parts.next().unwrap_or("");
+        // Flag-only wrappers: the next word is the command.
+        let flag_only = matches!(
+            first,
+            "sudo" | "env" | "nice" | "nohup" | "command" | "setsid" | "time" | "builtin"
+        );
+        // Wrappers whose first non-flag argument is consumed with the
+        // wrapper (`timeout 5 rm`, `nice -n 5 rm`, `stdbuf -o0 rm`).
+        let takes_arg = matches!(first, "timeout");
+        let strip = flag_only || takes_arg || first.contains('=');
         if !strip {
             break;
         }
-        seg = seg
-            .split_once(char::is_whitespace)
-            .map(|x| x.1)
-            .unwrap_or("")
-            .trim();
+        seg = match seg.split_once(char::is_whitespace) {
+            Some((_, rest)) => rest.trim(),
+            None => "",
+        };
+        if takes_arg {
+            // Drop the duration, so the command word is what follows it.
+            seg = match seg.split_once(char::is_whitespace) {
+                Some((_, rest)) => rest.trim(),
+                None => "",
+            };
+        }
+        if seg.is_empty() {
+            break;
+        }
     }
     seg
 }
@@ -298,10 +320,10 @@ const PATTERNS: &[Pattern] = &[
 ///
 /// INTENDED FUTURE ARCHITECTURE: authoritative enforcement belongs at the
 /// exec/policy boundary, not in this parser. The plan is a final-argv check
-/// - a `git` argv whose subcommand is `push` requires approval - with
-/// every opaque shell construction (interpreters, `eval`, `sh -c`-style
-/// re-parse, unreadable argv) classified as opaque execution under the
-/// policy, so hiding a push behind opacity is itself the gated event.
+/// (a `git` argv whose subcommand is `push` requires approval) with every
+/// opaque shell construction (interpreters, `eval`, `sh -c`-style re-parse,
+/// unreadable argv) classified as opaque execution under the policy, so
+/// hiding a push behind opacity is itself the gated event.
 /// Until that lands, this heuristic is the best the capability gate has:
 /// useful, advisory, and fallible by design.
 ///
@@ -1056,17 +1078,11 @@ fn expand_brace_param(inner: &str, ctx: &PushCtx) -> Option<String> {
             _ => None,
         };
     }
-    let def = if let Some(d) = rest.strip_prefix(":-") {
-        d
-    } else if let Some(d) = rest.strip_prefix(":=") {
-        d
-    } else if let Some(d) = rest.strip_prefix('-') {
-        d
-    } else if let Some(d) = rest.strip_prefix('=') {
-        d
-    } else {
-        return None;
-    };
+    let def = rest
+        .strip_prefix(":-")
+        .or_else(|| rest.strip_prefix(":="))
+        .or_else(|| rest.strip_prefix('-'))
+        .or_else(|| rest.strip_prefix('='))?;
     // The default is itself shell text: expand recursively.
     match expand_seq(&def.chars().collect::<Vec<char>>(), ctx)? {
         alts if alts.len() == 1 => alts.into_iter().next(),
@@ -1896,9 +1912,10 @@ fn peel_env(words: &[String], pos: usize, ctx: &PushCtx) -> Peel {
         }
         if v.len() > 1 && v.starts_with('-') {
             let f = v.trim_start_matches('-');
-            if f.len() == 1 && matches!(f.chars().next(), Some('u' | 'C' | 'S' | 'f')) {
-                p = (p + 2).min(words.len());
-            } else if matches!(f, "unset" | "chdir" | "split-string" | "file") {
+            let takes_value = (f.len() == 1
+                && matches!(f.chars().next(), Some('u' | 'C' | 'S' | 'f')))
+                || matches!(f, "unset" | "chdir" | "split-string" | "file");
+            if takes_value {
                 p = (p + 2).min(words.len());
             } else {
                 p += 1;
@@ -1931,9 +1948,9 @@ fn peel_timeout(words: &[String], pos: usize, ctx: &PushCtx) -> Peel {
         }
         if v.len() > 1 && v.starts_with('-') {
             let f = v.trim_start_matches('-');
-            if f.len() == 1 && matches!(f.chars().next(), Some('s' | 'k')) {
-                p = (p + 2).min(words.len());
-            } else if matches!(f, "signal" | "kill-after") {
+            let takes_value = (f.len() == 1 && matches!(f.chars().next(), Some('s' | 'k')))
+                || matches!(f, "signal" | "kill-after");
+            if takes_value {
                 p = (p + 2).min(words.len());
             } else {
                 p += 1;
@@ -2150,7 +2167,7 @@ fn analyze_xargs(words: &[String], pos: usize, ctx: &mut PushCtx, depth: usize) 
     match expand_word(&words[p], ctx) {
         WordVal::Opaque => true,
         WordVal::Known(a) => {
-            if a.len() == 1 && cmd_name(&a[0]).to_ascii_lowercase() == "git" {
+            if a.len() == 1 && cmd_name(&a[0]).eq_ignore_ascii_case("git") {
                 return subcommand_is_push_xargs(&words[p + 1..], ctx, replace.as_deref());
             }
             // Any other command: analyze it with its static args. Stdin
@@ -2530,6 +2547,64 @@ pub fn gate(command: &str) -> Result<(), PantheonError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every wrapper in the strip list must be stripped, or a pattern
+    /// keyed on the real command word stops matching. `setsid` was
+    /// missing from that list, so `setsid rm -rf /` classified as Low.
+    ///
+    /// This walks the list rather than spot-checking one wrapper: the
+    /// failure mode is a wrapper quietly dropping out of the list, and a
+    /// test that only names `setsid` will not notice the next one going.
+    #[test]
+    fn every_strip_wrapper_is_actually_stripped() {
+        const WRAPPERS: &[&str] = &[
+            "sudo", "env", "nice", "nohup", "command", "setsid", "time", "builtin",
+        ];
+        for w in WRAPPERS {
+            assert_eq!(
+                strip_wrappers(&format!("{w} rm -rf /")),
+                "rm -rf /",
+                "wrapper `{w}` was not stripped"
+            );
+        }
+    }
+
+    /// Wrappers with a mandatory argument must consume it, or the
+    /// argument becomes the command word: `timeout 5 rm -rf /` used to
+    /// reduce to `5 rm -rf /`.
+    #[test]
+    fn argument_taking_wrappers_consume_their_argument() {
+        assert_eq!(strip_wrappers("timeout 5 rm -rf /"), "rm -rf /");
+        assert_eq!(strip_wrappers("timeout 30 rm -rf /"), "rm -rf /");
+        // Nested: the argument-consuming wrapper is itself wrapped.
+        assert_eq!(strip_wrappers("sudo timeout 5 rm -rf /"), "rm -rf /");
+    }
+
+    /// The end-to-end property the two tests above exist to protect: a
+    /// destructive command stays Critical through any wrapper.
+    #[test]
+    fn destructive_commands_stay_critical_through_wrappers() {
+        for w in [
+            "setsid rm -rf /",
+            "timeout 5 rm -rf /",
+            "setsid dd if=/dev/zero of=/dev/sda",
+            "nice -n 5 mkfs.ext4 /dev/sda",
+            "builtin rm -rf ~/",
+        ] {
+            assert_eq!(
+                assess(w).level,
+                RiskLevel::Critical,
+                "wrapper let a destructive command through as Low: {w}"
+            );
+        }
+    }
+
+    /// `strip_wrappers` must not loop forever on a bare wrapper.
+    #[test]
+    fn bare_wrapper_terminates() {
+        assert_eq!(strip_wrappers("sudo"), "");
+        assert_eq!(strip_wrappers("timeout"), "");
+    }
 
     #[test]
     fn git_push_plain_command_detected() {

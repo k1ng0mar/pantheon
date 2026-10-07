@@ -4,10 +4,10 @@
 //!
 //! Covers the full outward path: stdio handshake, tools/list,
 //! namespaced [`ToolRegistry`](pantheon_tools::tools::ToolRegistry)
-//! registration, invocation of a registered tool, and the approval gate
-//! - including that a version or content change invalidates an
-//! approval. Each test gets a fresh temp dir as the manager scope, so
-//! approvals never touch the real data dir.
+//! registration, invocation of a registered tool, and the approval gate,
+//! including that a version or content change invalidates an approval.
+//! Each test gets a fresh temp dir as the manager scope, so approvals
+//! never touch the real data dir.
 
 use pantheon_api::approval::{ApprovalRecord, ApprovalStore};
 use pantheon_mcp::manager::{McpManager, McpServerSpec, McpTransport, ServerStatus};
@@ -37,6 +37,7 @@ fn spec(name: &str, log: Option<&Path>) -> McpServerSpec {
         url: None,
         enabled: true,
         timeout: Duration::from_secs(10),
+        headers: Default::default(),
     }
 }
 
@@ -277,6 +278,7 @@ fn launcher_pin_bump_lapses_approval() {
             url: None,
             enabled: true,
             timeout: Duration::from_secs(10),
+            headers: Default::default(),
         }
     }
     let tmp = scope();

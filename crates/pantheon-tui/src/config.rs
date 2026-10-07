@@ -28,6 +28,27 @@ fn nz(value: Option<u32>, default: u32) -> u32 {
     value.filter(|&v| v > 0).unwrap_or(default)
 }
 
+/// Resolve `[mcp.servers.<name>] headers` values. A value starting with
+/// `env:` reads the variable from the operator's environment at load
+/// time (missing variable = the header is dropped: the server's own
+/// 401 names the problem, not a Pantheon panic). Literal values pass
+/// through. Header NAMES may appear in logs; values never do.
+fn resolve_headers(
+    headers: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for (k, v) in headers {
+        let resolved = match v.strip_prefix("env:") {
+            Some(name) => std::env::var(name).unwrap_or_default(),
+            None => v.clone(),
+        };
+        if !resolved.is_empty() {
+            out.insert(k.clone(), resolved);
+        }
+    }
+    out
+}
+
 /// The `[tools]` enablement for a loaded config: absent section = every
 /// group enabled, the pre-Tools-screen default.
 pub fn tool_enablement(cfg: Option<&Config>) -> pantheon_runtime::tool_config::ToolEnablement {
@@ -77,6 +98,9 @@ pub fn resolve_budget_section(s: &BudgetSection) -> pantheon_agent::Budget {
         max_tokens: s.max_tokens.filter(|&v| v > 0),
         max_delegate_depth: nz(s.max_delegate_depth, 2),
         allow_child_spawn: true,
+        // Not `nz`: `0` is a meaningful value here (explicitly disable the
+        // cap), so only an absent key falls back to the default.
+        max_consecutive_tool_failures: s.max_consecutive_tool_failures.unwrap_or(5),
     }
 }
 
@@ -981,6 +1005,7 @@ pub fn resolve_mcp_section(
                 url,
                 enabled: e.enabled,
                 timeout: Duration::from_secs(e.timeout_secs.filter(|&s| s > 0).unwrap_or(30)),
+                headers: resolve_headers(&e.headers),
             });
         }
     } else if !declarations.is_empty() {
@@ -1032,6 +1057,7 @@ pub fn resolve_mcp_section(
                 url,
                 enabled: d.enabled,
                 timeout: Duration::from_secs(30),
+                headers: Default::default(),
             });
         }
     }

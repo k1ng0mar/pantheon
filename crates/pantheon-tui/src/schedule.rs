@@ -455,12 +455,14 @@ fn build_create_job(args: &[String], data_dir: &Path) -> Result<ScheduledJob, St
         };
         expand_template(
             t,
-            &mut vars,
-            &mut parsed.model,
-            &mut parsed.provider,
-            &mut parsed.task,
-            &mut parsed.every,
-            &mut parsed.cron,
+            pantheon_scheduler::templates::TemplateParams {
+                vars: &mut vars,
+                model: &mut parsed.model,
+                provider: &mut parsed.provider,
+                task: &mut parsed.task,
+                every: &mut parsed.every,
+                cron: &mut parsed.cron,
+            },
             has_schedule,
             &mut prompt,
         )?;

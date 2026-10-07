@@ -308,7 +308,10 @@ fn emit_from(path: &Path, opts: &Options, offset: &mut i64) -> Result<(), String
     let mut w = out.lock();
     if opts.follow {
         for l in &kept {
-            let _ = writeln!(w, "{l}");
+            // Log lines carry model and provider text. Strip terminal
+            // control bytes so `pantheon logs` cannot repaint the
+            // operator's terminal from log content.
+            let _ = writeln!(w, "{}", crate::sanitize::strip_control(l));
         }
         let _ = w.flush();
     } else {

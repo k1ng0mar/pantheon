@@ -16,6 +16,12 @@ toml = "0.8"
 sha2 = "0.11"
 ureq = { version = "2", features = ["json", "proxy-from-env", "native-certs"] }
 libc = "0.2"
+# Kernel-level confinement layers, applied in the child between fork and
+# exec. Linux-only: both are Linux kernel features.
+[target.'cfg(target_os = "linux")'.dependencies]
+seccompiler = "0.5"
+landlock = "0.4"
+
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Context tests exercise provider-backed compression; the tool layer that
 # used providers (session_search) and the memory-backed tools moved to

@@ -365,7 +365,7 @@ fn pick_run_id(original: &str, investigator_run: &str) -> String {
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
-    let mut out: String = s.chars().take(max_chars).collect();
+    let mut out: String = s.chars().take(max_chars.saturating_sub(3)).collect();
     if s.chars().count() > max_chars {
         out.push_str("...");
     }
@@ -429,6 +429,7 @@ fn investigate_real(input: &InvestigateInput) -> HealVerdict {
         max_tokens: Some(32_000),
         max_delegate_depth: 0,
         allow_child_spawn: false,
+        max_consecutive_tool_failures: 5,
     });
 
     let history_line = match input.stats {

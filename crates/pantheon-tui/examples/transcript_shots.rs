@@ -254,10 +254,8 @@ fn main() {
     let (pw, ph) = (100 * cw, 52 * ch);
     let mut px = vec![0u8; pw * ph * 3];
     // Base fill.
-    for p in px.chunks_exact_mut(3) {
-        p[0] = bg_r;
-        p[1] = bg_g;
-        p[2] = bg_b;
+    for p in px.as_chunks_mut::<3>().0 {
+        p.copy_from_slice(&[bg_r, bg_g, bg_b]);
     }
     for y in 0..52 {
         for x in 0..100 {

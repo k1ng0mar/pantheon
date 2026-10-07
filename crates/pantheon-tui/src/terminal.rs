@@ -275,7 +275,10 @@ fn run_delivered_task(
         Ok(outcome) => {
             let answer = outcome_text(&outcome);
             if target == "session" {
-                println!("{answer}");
+                // Model output goes to the terminal verbatim here, and
+                // this path is not ratatui-rendered, so escape sequences
+                // would reach the tty as-is.
+                println!("{}", crate::sanitize::strip_control(&answer));
             } else if let Err(e) =
                 crate::gateway::enqueue_outbound(&data_dir(), target, &answer, target)
             {
@@ -291,7 +294,9 @@ fn run_delivered_task(
             // the exact grant/deny command with the scope inlined, so it is
             // printed verbatim instead of being restated with a placeholder.
             println!("parked - run {run_id}");
-            println!("{e}");
+            // The error embeds the approval scope, which contains raw
+            // tool arguments. Strip before printing.
+            println!("{}", crate::sanitize::strip_control(&e.to_string()));
         }
         Err(e) => {
             eprintln!("run {run_id}: {e}");
@@ -1118,6 +1123,10 @@ url = "http://127.0.0.1:9000"
 name = "{name}"
 label = "{name} bridge"
 kind = "stdio"
+# kind=stdio makes pantheon spawn this command with your user privileges.
+# allow_exec is the consent gate: without it the manifest is rejected and
+# the backend never runs. Read the command below before you set it true.
+allow_exec = false
 command = "python3"
 args = ["/absolute/path/to/{name}_bridge.py"]
 timeout_ms = 5000
@@ -1405,7 +1414,11 @@ timeout_ms = 5000
                         for (run_id, status, _ts, title, ..) in rows {
                             // Same status vocabulary as the TUI `/runs` view,
                             // so the two never disagree about a run.
-                            println!("{run_id:<34} {status:<18} {}", title.unwrap_or_default());
+                            // Run titles are model-generated.
+                            println!(
+                                "{run_id:<34} {status:<18} {}",
+                                crate::sanitize::strip_control(&title.unwrap_or_default())
+                            );
                         }
                     }
                     Err(e) => {
@@ -1434,7 +1447,8 @@ timeout_ms = 5000
                 return;
             }
             match sup.render_run_log(&args[2]) {
-                Ok(t) => println!("{t}"),
+                // The run log interleaves model and tool text.
+                Ok(t) => println!("{}", crate::sanitize::strip_control(&t)),
                 Err(e) => {
                     eprintln!("logs: {e}");
                     std::process::exit(1);
@@ -1596,6 +1610,9 @@ timeout_ms = 5000
         }
         "setup" => {
             crate::setup::cmd_setup(&args);
+        }
+        "cloudflare" => {
+            crate::cloudflare_verb::cmd_cloudflare(&args);
         }
         "update" => {
             crate::update::cmd_update(&args);
