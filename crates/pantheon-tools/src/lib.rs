@@ -14,6 +14,8 @@
 //! registry - that is what keeps `capability → tools → exec` acyclic.
 
 pub mod builtins;
+pub mod gitundo_tools;
+pub mod lsp_tools;
 pub mod memory_tools;
 pub mod plugin_tools;
 pub mod safewrite_tools;
