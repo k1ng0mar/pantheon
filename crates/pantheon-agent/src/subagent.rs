@@ -112,14 +112,17 @@ pub trait SubagentSpawner {
     fn subagent_list(&self) -> Vec<(SubagentHandle, SubagentStatus)>;
 }
 
+/// Shared settle state: (status, result) under a mutex, woken by the
+/// condvar. Result is Some once the child settled.
+type SubagentState = Arc<(
+    Mutex<(SubagentStatus, Option<Result<String, String>>)>,
+    Condvar,
+)>;
+
 struct ChildEntry {
     handle: SubagentHandle,
     transcript: Arc<Mutex<Vec<String>>>,
-    /// (status, result): result is Some once the child settled.
-    state: Arc<(
-        Mutex<(SubagentStatus, Option<Result<String, String>>)>,
-        Condvar,
-    )>,
+    state: SubagentState,
 }
 
 struct RegistryState {
@@ -261,16 +264,7 @@ impl SubagentRegistry {
         Ok(handle)
     }
 
-    fn entry_state(
-        &self,
-        handle: &str,
-    ) -> Result<
-        Arc<(
-            Mutex<(SubagentStatus, Option<Result<String, String>>)>,
-            Condvar,
-        )>,
-        PantheonError,
-    > {
+    fn entry_state(&self, handle: &str) -> Result<SubagentState, PantheonError> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state
             .children

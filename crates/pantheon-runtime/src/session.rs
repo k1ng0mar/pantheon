@@ -7,7 +7,8 @@
 use crate::agent_runtime::AgentRuntime;
 use crate::operation::{run_tool_operation, ToolOperationAdapter};
 use crate::tool_config::{
-    BrowserToolConfig, ComputerToolConfig, McpToolConfig, ToolEnablement, WebsearchToolConfig,
+    BrowserToolConfig, CloudflareToolConfig, ComputerToolConfig, McpToolConfig, ToolEnablement,
+    WebsearchToolConfig,
 };
 use crate::watchdog::TurnWatchdog;
 use crate::{ObserverGuard, RunLeaseGuard, Supervisor};
@@ -18,6 +19,7 @@ use pantheon_api::events::Event;
 use pantheon_api::message::{ImagePart, Message, ToolCallRef, ToolSchema};
 use pantheon_api::mode::{is_mutating_tool, AgentMode, PLAN_MODE_REFUSAL};
 use pantheon_api::model::{ModelPolicy, TitleGenerator};
+use pantheon_api::permission_mode::PermissionMode;
 use pantheon_api::provenance::Provenance;
 use pantheon_api::todo::{TodoItem, TodoList};
 use pantheon_exec::supervisor::PluginSupervisor;
@@ -707,18 +709,26 @@ struct DelegatePolicy {
     budget_section: Option<pantheon_api::config::BudgetSection>,
 }
 
+/// Everything a spawned child inherits from its parent. Bundled so
+/// `build_delegate_session` keeps a readable signature as delegation
+/// grows.
+struct DelegateContext<'a> {
+    parent_depth: u32,
+    profile: &'a str,
+    parent_goal: Option<String>,
+    parent_tools: &'a ToolEnablement,
+    parent_mode: AgentMode,
+    parent_permission_mode: PermissionMode,
+}
+
 fn build_delegate_session(
     agent: &AgentRuntime,
     model_policy: &ModelPolicy,
     data_dir: &Path,
-    parent_depth: u32,
-    profile: &str,
-    parent_goal: Option<String>,
-    parent_tools: &ToolEnablement,
-    parent_mode: AgentMode,
+    ctx: DelegateContext<'_>,
     policy: DelegatePolicy,
 ) -> Result<Session, PantheonError> {
-    let child = agent.for_profile(profile)?;
+    let child = agent.for_profile(ctx.profile)?;
     // The child runs under its OWN profile's policy preset,
     // never the parent's: a reader child of a coder parent
     // must not inherit coder privileges. `for_profile`
@@ -747,11 +757,17 @@ fn build_delegate_session(
     // toggle a lie. (The child's *policy preset* stays its own - a
     // reader child of a coder parent must not inherit coder privileges;
     // enablement is which tools exist, policy is what they may do.)
-    child_session.set_tool_enablement(parent_tools.clone());
+    child_session.set_tool_enablement(ctx.parent_tools.clone());
     // The agent mode travels with the delegation: a child spawned while
     // the parent is in Plan mode plans too - otherwise the Tab toggle
     // would be trivially bypassable by delegating the writes away.
-    child_session.set_mode(parent_mode);
+    child_session.set_mode(ctx.parent_mode);
+    // The permission mode travels with the delegation for the same
+    // reason the agent mode does: a child spawned under `Ask` must not
+    // silently run under `AllowAll` because the parent session happened
+    // to hold that setting. The child's own policy preset still governs
+    // what is permitted at all.
+    child_session.set_permission_mode(ctx.parent_permission_mode);
     // Self-contained spawn prompt: the child gets its persona, its
     // instruction files, and the result-envelope contract verbatim,
     // because none of the parent's context survives the spawn.
@@ -759,14 +775,14 @@ fn build_delegate_session(
     child_session.system_prompt = assemble_child_system_prompt(&child_agent);
     // The parent's active goal travels with the delegation so the child
     // can pursue it through the normal goal-append path.
-    if let Some(goal) = parent_goal.filter(|g| !g.trim().is_empty()) {
+    if let Some(goal) = ctx.parent_goal.filter(|g| !g.trim().is_empty()) {
         if let Ok(mut slot) = child_session.goal.lock() {
             *slot = Some(goal);
         }
     }
     // Depth threading: the engine's depth cap sees the child's loop
     // depth, so the child must run at parent_depth + 1, not 0.
-    child_session.depth = parent_depth + 1;
+    child_session.depth = ctx.parent_depth + 1;
     // Delegation knobs travel with the session. The child's own
     // `delegate` tool and its threaded spawner snapshot the child
     // budget at turn start (`DelegateDriver::for_turn`); leaving the
@@ -809,6 +825,10 @@ struct DelegateDriver {
     /// delegate call still reaches the child (the same sharing the
     /// threaded spawner uses).
     mode: Arc<Mutex<AgentMode>>,
+    /// Live permission-mode handle, shared with the parent session for the
+    /// same reason as `mode`: the blocking `delegate` tool reads it at
+    /// spawn so an Ask flip reaches the child.
+    permission_mode: Arc<Mutex<PermissionMode>>,
     /// Delegation depth of the parent loop (0 = primary session).
     depth: u32,
     /// Depth and child-spawn caps, snapshotted from the parent budget at
@@ -867,6 +887,7 @@ impl DelegateDriver {
                 .map(|t| t.clone())
                 .unwrap_or_default(),
             mode: Arc::clone(&session.mode),
+            permission_mode: Arc::clone(&session.permission_mode),
             depth: session.depth,
             max_delegate_depth: budget.max_delegate_depth,
             allow_child_spawn: budget.allow_child_spawn,
@@ -1019,15 +1040,25 @@ fn run_delegate_child(
     // The parent's mode is read live: a Tab flip between turn start and
     // this call still reaches the child.
     let parent_mode = driver.mode.lock().map(|m| *m).unwrap_or_default();
+    // Read live, like the agent mode: a flip between turn start and this
+    // call still reaches the child.
+    let parent_permission_mode = driver
+        .permission_mode
+        .lock()
+        .map(|m| *m)
+        .unwrap_or_default();
     let child_session = build_delegate_session(
         &driver.agent,
         &driver.model_policy,
         &driver.data_dir,
-        driver.depth,
-        agent,
-        driver.goal.clone(),
-        &driver.tools,
-        parent_mode,
+        DelegateContext {
+            parent_depth: driver.depth,
+            profile: agent,
+            parent_goal: driver.goal.clone(),
+            parent_tools: &driver.tools,
+            parent_mode,
+            parent_permission_mode,
+        },
         DelegatePolicy {
             max_delegate_depth: driver.max_delegate_depth,
             allow_child_spawn: driver.allow_child_spawn,
@@ -1270,6 +1301,13 @@ pub struct Session {
     /// a child is spawned, not a turn-start snapshot: a Tab flip
     /// mid-turn reaches children spawned after it.
     pub mode: Arc<Mutex<AgentMode>>,
+    /// How much scrutiny an approval-gated call gets (Ask / Smart /
+    /// AllowAll). A separate axis from `mode` above: that one refuses
+    /// mutating tools in Plan, this one decides whether an allowed call
+    /// parks for a human. Shared (`Arc`) for the same reason as `mode`:
+    /// a flip mid-turn reaches children spawned after it, and the gate
+    /// reads it live per batch.
+    pub permission_mode: Arc<Mutex<PermissionMode>>,
     /// The session's todo list, shared with the `todo` tool (which
     /// replaces it wholesale) and read by `/todos` and the TUI card.
     /// Reloaded from the run's ledger snapshot on `set_current_run` so
@@ -1353,6 +1391,11 @@ pub struct Session {
     /// registration time; secrets resolve then, so a resolved key never
     /// sits in session state.
     pub browser_config: Mutex<BrowserToolConfig>,
+    /// Cloudflare integration knobs (`[cloudflare]` in config.toml).
+    /// `enabled` gates token injection; the token itself is resolved
+    /// through the secrets broker at call time and never stored here.
+    /// Same resolve-at-registration rule as browser_config.
+    pub cloudflare_config: Mutex<CloudflareToolConfig>,
     /// Web-search knobs (`[websearch]` in config.toml). Same
     /// resolve-at-registration rule as browser_config.
     pub websearch_config: Mutex<WebsearchToolConfig>,
@@ -1484,6 +1527,14 @@ impl Session {
         let memory_selection = pantheon_memory::load_selection(&data_dir);
         let memory = pantheon_memory::open_selected(&data_dir).ok();
         let sup = Supervisor::open(data_dir.clone())?;
+        // The configured permission mode, resolved once at construction.
+        // Absent or unparseable reads as `Ask`, the conservative default:
+        // a typo in config must never silently widen what runs unattended.
+        let configured_permission_mode = pantheon_api::config::Config::load(&data_dir)
+            .ok()
+            .and_then(|c| c.permission_mode)
+            .and_then(|s| PermissionMode::parse(&s))
+            .unwrap_or_default();
         // Vector recall layer: resolve the embeddings auxiliary from the
         // policy. Absent entry -> local hashing embedder (the client
         // itself decides; either way the supervisor indexes with vectors).
@@ -1509,6 +1560,7 @@ impl Session {
             budget_max_tokens: Mutex::new(None),
             goal: Mutex::new(None),
             mode: Arc::new(Mutex::new(AgentMode::default())),
+            permission_mode: Arc::new(Mutex::new(configured_permission_mode)),
             todo_state: Arc::new(Mutex::new(TodoList::default())),
             verdict_tool: Mutex::new(false),
             depth: 0,
@@ -1525,6 +1577,7 @@ impl Session {
             temporal: Mutex::new(pantheon_api::temporal::TemporalConfig::default()),
             current_run: Mutex::new(String::new()),
             browser_config: Mutex::new(BrowserToolConfig::default()),
+            cloudflare_config: Mutex::new(CloudflareToolConfig::default()),
             websearch_config: Mutex::new(WebsearchToolConfig::default()),
             mcp_config: Mutex::new(McpToolConfig::default()),
             computer_config: Mutex::new(ComputerToolConfig::default()),
@@ -2012,6 +2065,37 @@ impl Session {
     pub fn set_browser_config(&self, cfg: BrowserToolConfig) {
         if let Ok(mut b) = self.browser_config.lock() {
             *b = cfg;
+        }
+    }
+
+    /// Cloudflare integration config (`[cloudflare]` in config.toml).
+    /// Same call pattern as [`Session::set_browser_config`].
+    pub fn set_cloudflare_config(&self, cfg: CloudflareToolConfig) {
+        if let Ok(mut c) = self.cloudflare_config.lock() {
+            *c = cfg;
+        }
+    }
+
+    /// Snapshot for the shell tool's env hook. `None` = integration off
+    /// or the token is not resolvable this call: the child runs tokenless
+    /// and cf surfaces its own auth error.
+    pub fn cloudflare_child_env(&self) -> Vec<(String, String)> {
+        let cfg = match self.cloudflare_config.lock() {
+            Ok(c) => c.clone(),
+            Err(_) => return Vec::new(),
+        };
+        if !cfg.enabled {
+            return Vec::new();
+        }
+        let name = cfg
+            .api_token_secret
+            .clone()
+            .unwrap_or_else(|| "CLOUDFLARE_API_TOKEN".to_string());
+        match self.secrets.resolve(&name) {
+            Ok(Some(v)) if !v.expose().is_empty() => {
+                vec![(name, v.expose().to_owned())]
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -2533,6 +2617,122 @@ impl Session {
         self.mode.lock().map(|m| *m).unwrap_or_default()
     }
 
+    /// Set the session's permission mode (Ask / Smart / AllowAll). Drives
+    /// whether an approval-gated capability parks for a human, is judged,
+    /// or runs. Safe to call from the UI thread; the gate reads it fresh
+    /// per batch, so a flip applies from the next tool call and never
+    /// retroactively kills a call already running.
+    pub fn set_permission_mode(&self, mode: PermissionMode) {
+        if let Ok(mut slot) = self.permission_mode.lock() {
+            *slot = mode;
+        }
+    }
+
+    /// The session's current permission mode. Defaults to Ask, so a
+    /// session that never sets it parks exactly where the policy says.
+    pub fn permission_mode(&self) -> PermissionMode {
+        self.permission_mode.lock().map(|m| *m).unwrap_or_default()
+    }
+
+    /// Build the judge for this session from the `[judge]` auxiliary.
+    ///
+    /// Returns `None` when no judge is configured or its key cannot be
+    /// resolved. `None` is safe: `PermissionMode::Smart` treats a missing
+    /// judge as "park", so an unconfigured judge can never silently
+    /// auto-approve anything.
+    ///
+    /// Resolution mirrors the title generator: the `[judge]` section when
+    /// set, otherwise `auto` (the run's default model). The key resolves
+    /// through the broker at this boundary and never enters the transcript.
+    fn build_judge(&self) -> Option<pantheon_providers::JudgeClient> {
+        let policy = self.policy_snapshot();
+        let aux = policy.auxiliary(&pantheon_api::model::AuxiliaryKind::Judge)?;
+        let target = pantheon_api::model::DefaultModel {
+            provider: aux.provider.clone(),
+            model: aux.model.clone(),
+        };
+        let key = self
+            .secrets
+            .inject("PANTHEON_JUDGE_API_KEY")
+            .ok()
+            .flatten()
+            .or_else(|| self.secrets.inject("PANTHEON_API_KEY").ok().flatten());
+        Some(pantheon_providers::JudgeClient::new(target, key).with_timeout_secs(aux.timeout_secs))
+    }
+
+    /// Ask the judge about one approval-gated call, in `Smart` mode only.
+    ///
+    /// Returns `None` for every failure path: wrong mode, no judge
+    /// configured, transport error, or an answer that is not a gate
+    /// verdict. `PermissionMode::resolve` turns `None` into a park, so a
+    /// judge that cannot be reached degrades to asking a human rather than
+    /// to running unattended. The `DecisionRequested` / `DecisionMade`
+    /// audit rows are emitted by `consult_gate_advisory` through the loop's
+    /// own sink.
+    fn judge_verdict_for_call(
+        &self,
+        loop_: &pantheon_agent::AgentLoop<'_>,
+        run_id: &str,
+        call_name: &str,
+        call_args: &str,
+        cap: &pantheon_api::capability::Capability,
+    ) -> Option<pantheon_api::model::GateVerdict> {
+        if self.permission_mode() != PermissionMode::Smart {
+            return None;
+        }
+        let judge = self.build_judge()?;
+        let context = format!(
+            "tool: {call_name}\ncapability: {}\nargs: {call_args}",
+            cap.token()
+        );
+        let choices = vec![
+            "allow".to_string(),
+            "needs_approval".to_string(),
+            "deny".to_string(),
+        ];
+        let _ = run_id;
+        loop_.consult_gate_advisory(&judge, &choices, Some(&context))
+    }
+
+    /// The final gate outcome for one capability, with the session's
+    /// permission mode applied on top of the deterministic policy.
+    ///
+    /// `Ask` reproduces the historical behavior exactly (park on every
+    /// approval-gated capability). `AllowAll` clears those parks.
+    /// `Smart` clears one only when the judge says `Allow`. A `Deny` from
+    /// the policy is absolute in every mode, so a read-only preset stays
+    /// read-only even under `AllowAll`.
+    fn gate_with_mode(
+        &self,
+        loop_: &pantheon_agent::AgentLoop<'_>,
+        run_id: &str,
+        call_name: &str,
+        call_args: &str,
+        cap: &pantheon_api::capability::Capability,
+    ) -> Result<pantheon_agent::GateOutcome, PantheonError> {
+        use pantheon_api::capability::Decision;
+        let decision = loop_.policy.check(cap);
+        let judge_verdict = if matches!(decision, Decision::Approval) {
+            self.judge_verdict_for_call(loop_, run_id, call_name, call_args, cap)
+        } else {
+            None
+        };
+        match self.permission_mode().resolve(decision, judge_verdict) {
+            Decision::Allow => Ok(pantheon_agent::GateOutcome::Allow),
+            Decision::Approval => Ok(pantheon_agent::GateOutcome::NeedsApproval {
+                capability: cap.clone(),
+            }),
+            Decision::Deny => Err(PantheonError::new(
+                "CAP_DENIED",
+                pantheon_api::error::Layer::Capability,
+                false,
+                format!("capability {cap:?} denied by policy"),
+                "request approval or narrow the capability grant",
+                "",
+            )),
+        }
+    }
+
     /// Build the session-scoped tool registry: built-in tools (incl.
     /// safewrite), skill tools, and session search. Skill discovery
     /// re-reads the skill directories on every call, so a skill installed
@@ -2599,13 +2799,45 @@ impl Session {
                 enable_plugins: tools.plugins,
                 data_dir: Some(self.supervisor.data_dir().to_path_buf()),
                 shell_child_hook: Some(shell_child_hook),
+                // Cloudflare token injection: the hook resolves through
+                // the secrets broker per call, only for `cf` commands,
+                // and only when `[cloudflare].enabled`. Empty = no
+                // injection (the integration is off or unresolvable).
+                shell_env_hook: Some(std::sync::Arc::new({
+                    let session_self = self as *const Session as usize;
+                    move |cmd: &str| {
+                        // SAFETY: the hook lives inside the Session that
+                        // created it and the Arc keeps the session alive
+                        // for the registry's lifetime. The runtime never
+                        // moves the Session (it is held in an Arc).
+                        // Dereferencing here re-reads the live config +
+                        // broker state, so a `[cloudflare].enabled`
+                        // flip applies from the next call.
+                        // (See cloudflare_child_env: pure read paths.)
+                        let s = unsafe { &*(session_self as *const Session) };
+                        if !pantheon_exec::cloudflare::is_cf_command(cmd) {
+                            return Vec::new();
+                        }
+                        s.cloudflare_child_env()
+                    }
+                })),
             },
         );
         // SafeWriter is the safe file-writing path: it belongs to Files.
         if tools.files {
             register_safewrite(&mut reg, safewrite_dir);
         }
+        // Code-intel group: LSP diagnostics + repo-level git undo. Both are
+        // read-only by default (open/diagnostics/list), with the mutating
+        // paths (restore/delete) gated on GitWrite. Registered under the
+        // same gate as the group; off = none of the tools appear.
         let n_builtin = reg.names().len();
+        if tools.code_intel {
+            let undo_state = self.supervisor.data_dir().join("git_undo");
+            pantheon_tools::gitundo_tools::register_gitundo(&mut reg, undo_state);
+            pantheon_tools::lsp_tools::register_lsp(&mut reg);
+        }
+        let n_codeintel = reg.names().len() - n_builtin;
         // Skill tools: SKILL.md capabilities from all cross-format scopes
         // (pantheon + project + Hermes/OpenClaw/.agents/.claude +
         // PANTHEON_SKILLS_DIR extra roots), gated on FilesystemRead.
@@ -2953,19 +3185,6 @@ impl Session {
                     }
                 }
             }
-        };
-        // Code-intel group: LSP diagnostics + repo-level git undo. Both are
-        // session-scoped: the LSP client is shared across calls via one
-        // Arc<Mutex<Option<Arc<LspClient>>>>, and git-undo snapshots point
-        // at the session's data dir. Off = none of those tools register.
-        let n_codeintel = if !self.tools_on(pantheon_api::config::ToolGroup::CodeIntel) {
-            0
-        } else {
-            let before = reg.names().len();
-            let undo_state = self.supervisor.data_dir().to_path_buf();
-            pantheon_tools::gitundo_tools::register_gitundo(&mut reg, undo_state);
-            pantheon_tools::lsp_tools::register_lsp(&mut reg);
-            reg.names().len() - before
         };
         // Tools the nightly repair loop disabled stay disabled. The durable
         // list (`<data_dir>/nightly/disabled-tools.json`) is the
@@ -3606,9 +3825,11 @@ impl Session {
                 .lock()
                 .map(|s| s.clone())
                 .unwrap_or_default();
-            let mut caps = pantheon_agent::SubagentCaps::default();
-            caps.max_depth = budget.max_delegate_depth;
-            caps.allow_child_spawn = budget.allow_child_spawn;
+            let caps = pantheon_agent::SubagentCaps {
+                max_depth: budget.max_delegate_depth,
+                allow_child_spawn: budget.allow_child_spawn,
+                ..Default::default()
+            };
             struct SessionSpawner {
                 agent: AgentRuntime,
                 model_policy: ModelPolicy,
@@ -3619,6 +3840,10 @@ impl Session {
                 // time so a Tab flip between turn start and the delegate
                 // call still reaches the child.
                 mode: Arc<Mutex<AgentMode>>,
+                // Same live-handle reasoning as `mode`: the child reads the
+                // parent's permission mode at spawn, so an Ask flip reaches
+                // children spawned after it.
+                permission_mode: Arc<Mutex<PermissionMode>>,
                 // Delegation knobs, snapshotted from the parent budget at
                 // turn start. They travel into every child session via
                 // `DelegatePolicy`: without them the child's own spawner
@@ -3650,15 +3875,25 @@ impl Session {
                     // the turn started but before this delegate call still
                     // reaches the child.
                     let parent_mode = self.mode.lock().map(|m| *m).unwrap_or_default();
+                    // Read live for the same reason: a flip between turn
+                    // start and this delegate call reaches the child.
+                    let parent_permission_mode = self
+                        .permission_mode
+                        .lock()
+                        .map(|m| *m)
+                        .unwrap_or_default();
                     let child_session = build_delegate_session(
                         &self.agent,
                         &self.model_policy,
                         &self.data_dir,
-                        depth,
-                        agent,
-                        self.goal.clone(),
-                        &self.tools,
-                        parent_mode,
+                        DelegateContext {
+                            parent_depth: depth,
+                            profile: agent,
+                            parent_goal: self.goal.clone(),
+                            parent_tools: &self.tools,
+                            parent_mode,
+                            parent_permission_mode,
+                        },
                         DelegatePolicy {
                             max_delegate_depth: self.max_delegate_depth,
                             allow_child_spawn: self.allow_child_spawn,
@@ -3752,6 +3987,7 @@ impl Session {
                 goal: self.goal.lock().ok().and_then(|g| g.clone()),
                 tools: tools_enablement,
                 mode: Arc::clone(&self.mode),
+                permission_mode: Arc::clone(&self.permission_mode),
                 max_delegate_depth: budget.max_delegate_depth,
                 allow_child_spawn: budget.allow_child_spawn,
                 budget_section,
@@ -3815,6 +4051,11 @@ impl Session {
         // from the ledger's completed calls so a resumed or continued run
         // does not get a fresh budget every `chat_turn`.
         let mut tool_calls_used: u32 = completed_tool_calls(&entries);
+        // Consecutive tool failures, NOT reset per turn: a model that
+        // fails the same call, gets the error, and retries it in the next
+        // turn is exactly the pathology this cap exists to stop. A
+        // successful call resets it to zero.
+        let mut tool_failures: u32 = 0;
         let outcome = match self.drive(
             &loop_,
             &chain,
@@ -3829,6 +4070,7 @@ impl Session {
                 denied: denied_scopes.clone(),
             },
             &mut tool_calls_used,
+            &mut tool_failures,
             &watchdog,
             &ledger_poison,
         ) {
@@ -4222,6 +4464,7 @@ impl Session {
         reg: &ToolRegistry,
         approvals: &Approvals,
         tool_calls_used: &mut u32,
+        tool_failures: &mut u32,
         watchdog: &std::sync::Mutex<TurnWatchdog>,
         ledger_poison: &LedgerPoison,
     ) -> Result<LoopOutcome, PantheonError> {
@@ -4373,7 +4616,7 @@ impl Session {
                     .into_iter()
                     .find(|c| {
                         matches!(
-                            pantheon_agent::gate(&loop_.policy, c),
+                            self.gate_with_mode(&loop_, run_id, &first.name, &first.arguments, c),
                             Ok(pantheon_agent::GateOutcome::NeedsApproval { .. })
                         )
                     })
@@ -4396,12 +4639,61 @@ impl Session {
             // fresh batch: gate (already granted), run, emit, append results.
             // Plan mode still applies: a grant from before the Tab flip
             // does not authorize a write the operator has since ruled out.
-            let mut reexecute: Vec<&ToolCallRef> = Vec::with_capacity(granted.len());
+            // A grant settles ONE tool call, not "this kind of call". The scope
+            // string binds the exact call id, tool name, and argument
+            // bytes, so a granted `shell` running `git status` can never
+            // authorize a different `shell` call on the same run. What the
+            // grant does NOT do is re-decide the capability: if the
+            // operator approved under one policy and the run resumes
+            // under a stricter one, the capability check must run again.
+            // The fresh-call path below re-gates every capability; this
+            // path used to skip it, on the belief that "already granted"
+            // settled it.
+            let mut regated: Vec<&ToolCallRef> = Vec::with_capacity(granted.len());
             for tc in &granted {
                 if self.plan_refuse_tool(run_id, &tc.id, &tc.name, &tc.arguments, messages)? {
                     continue;
                 }
-                reexecute.push(tc);
+                let mut needs_approval = false;
+                for cap in reg.required_capabilities(&tc.name, &tc.arguments) {
+                    if let pantheon_agent::GateOutcome::NeedsApproval { .. } =
+                        self.gate_with_mode(&loop_, run_id, &tc.name, &tc.arguments, &cap)?
+                    {
+                        // Same call, same scope, but the policy now wants
+                        // a human. Park again rather than run it: the
+                        // operator gets to answer under the policy that
+                        // is actually in force.
+                        self.supervisor.emit(Event::ApprovalRequested {
+                            run_id: run_id.into(),
+                            scope: approval_scope(&tc.id, &tc.name, &tc.arguments),
+                        })?;
+                        needs_approval = true;
+                        break;
+                    }
+                }
+                if !needs_approval {
+                    regated.push(tc);
+                }
+            }
+            let reexecute = regated;
+            if reexecute.is_empty() && !granted.is_empty() && ungranted.is_empty() {
+                // Every granted call now needs approval under the current
+                // policy. Park with the first one so the run does not spin.
+                let first = &granted[0];
+                let cap = reg
+                    .required_capabilities(&first.name, &first.arguments)
+                    .into_iter()
+                    .find(|c| {
+                        matches!(
+                            pantheon_agent::gate(&loop_.policy, c),
+                            Ok(pantheon_agent::GateOutcome::NeedsApproval { .. })
+                        )
+                    })
+                    .unwrap_or(pantheon_api::capability::Capability::Other("tool".into()));
+                return Ok(LoopOutcome::AwaitingApproval {
+                    capability: cap,
+                    scope: approval_scope(&first.id, &first.name, &first.arguments),
+                });
             }
             if !reexecute.is_empty() {
                 for tc in &reexecute {
@@ -4450,7 +4742,16 @@ impl Session {
                     // response, so the failure is settled as a tool message
                     // and the turn continues: the model can correct the
                     // arguments, choose another tool, or explain.
+                    let failed = out.is_err();
                     let out = tool_result_text(out);
+                    // The resume path gets the same consecutive-failure cap
+                    // as a fresh batch: a granted call that keeps failing
+                    // must not be able to retry forever.
+                    if failed {
+                        *tool_failures += 1;
+                    } else {
+                        *tool_failures = 0;
+                    }
                     // Counted like any executed call: the whole-run budget
                     // seeds from the ledger's ToolCompleted rows, so the
                     // in-turn counter must agree with the durable record.
@@ -4475,6 +4776,12 @@ impl Session {
                         tool: tc.name.clone(),
                         provenance: Provenance::untrusted(&tc.name),
                     })?;
+                    let cap = loop_.budget.max_consecutive_tool_failures;
+                    if cap > 0 && *tool_failures >= cap {
+                        return Ok(LoopOutcome::BudgetExhausted {
+                            cap: "max_consecutive_tool_failures",
+                        });
+                    }
                 }
             }
         }
@@ -4631,7 +4938,7 @@ impl Session {
                     let (call, r) = (&calls[i], &refs[i]);
                     let caps = reg.required_capabilities(&call.name, &call.args);
                     for cap in &caps {
-                        match pantheon_agent::gate(&loop_.policy, cap)? {
+                        match self.gate_with_mode(&loop_, run_id, &call.name, &call.args, cap)? {
                             pantheon_agent::GateOutcome::Allow => {}
                             pantheon_agent::GateOutcome::NeedsApproval { capability } => {
                                 let scope = approval_scope(&r.id, &call.name, &call.args);
@@ -4706,8 +5013,37 @@ impl Session {
                 });
                 for (&i, out) in allowed.iter().zip(results) {
                     let (call, r) = (&calls[i], &refs[i]);
+                    let failed = out.is_err();
                     let out = tool_result_text(out);
                     *tool_calls_used += 1;
+                    // Consecutive-failure cap: a success resets the streak,
+                    // a failure extends it. Checked here, per result, so a
+                    // batch that fails several calls trips it in one turn.
+                    if failed {
+                        *tool_failures += 1;
+                    } else {
+                        *tool_failures = 0;
+                    }
+                    let cap = loop_.budget.max_consecutive_tool_failures;
+                    if cap > 0 && *tool_failures >= cap {
+                        self.supervisor.emit(Event::ToolOutput {
+                            run_id: run_id.into(),
+                            call_id: r.id.clone(),
+                            tool: call.name.clone(),
+                            truncated: false,
+                            provenance: Provenance::untrusted(&call.name),
+                        })?;
+                        let tool_msg = Message::tool(r.id.clone(), out)
+                            .with_provenance(Provenance::untrusted(&call.name));
+                        messages.push(tool_msg.clone());
+                        self.supervisor.emit(Event::ToolMessage {
+                            run_id: run_id.into(),
+                            message: tool_msg,
+                        })?;
+                        return Ok(LoopOutcome::BudgetExhausted {
+                            cap: "max_consecutive_tool_failures",
+                        });
+                    }
                     self.supervisor.emit(Event::ToolOutput {
                         run_id: run_id.into(),
                         call_id: r.id.clone(),
@@ -4743,6 +5079,7 @@ impl Session {
                         denied: denied_scopes.clone(),
                     },
                     tool_calls_used,
+                    tool_failures,
                     watchdog,
                     ledger_poison,
                 )

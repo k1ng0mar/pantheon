@@ -116,8 +116,7 @@ pub fn display_message(cause: &str) -> String {
         msg = &msg[i..];
     } else {
         // Strip leading "scheme://..." prefixes; transport causes repeat it.
-        loop {
-            let Some(colon) = msg.find(": ") else { break };
+        while let Some(colon) = msg.find(": ") {
             let head = &msg[..colon];
             if head.contains("://") && !head.contains(' ') {
                 msg = &msg[colon + 2..];

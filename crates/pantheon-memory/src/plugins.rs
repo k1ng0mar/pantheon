@@ -70,6 +70,20 @@ pub struct MemoryPluginManifest {
     pub args: Vec<String>,
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
+    /// Explicit operator consent to run a `stdio` command.
+    ///
+    /// A `stdio` backend is a child process pantheon spawns with the
+    /// operator's privileges, so it is the same trust class as an
+    /// extension or an exec plugin. Those paths require an approval
+    /// record; without one here, dropping a TOML file into
+    /// `<data_dir>/memory-plugins/` was enough to get arbitrary code
+    /// execution on the next memory call. `http` backends talk to a
+    /// network endpoint and run nothing, so they do not need this.
+    ///
+    /// Defaults to false, so existing `http` manifests keep working and
+    /// every `stdio` manifest must now opt in deliberately.
+    #[serde(default)]
+    pub allow_exec: bool,
 }
 
 fn default_kind() -> String {
@@ -108,6 +122,20 @@ impl MemoryPluginManifest {
                     return Err(perr(
                         "MEM_PLUGIN_MANIFEST",
                         format!("{}: kind=stdio requires `command`", self.name),
+                    ));
+                }
+                // Fail closed on the consent gate, and name the fix in
+                // the error: an operator who wrote this manifest can
+                // answer the question without reading the source.
+                if !self.allow_exec {
+                    return Err(perr(
+                        "MEM_PLUGIN_MANIFEST",
+                        format!(
+                            "{}: kind=stdio runs `{}` as a child process with your user \
+privileges; set `allow_exec = true` in this manifest to consent to that",
+                            self.name,
+                            self.command.as_deref().unwrap_or("")
+                        ),
                     ));
                 }
             }

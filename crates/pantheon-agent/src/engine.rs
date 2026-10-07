@@ -104,6 +104,18 @@ pub struct Budget {
     /// `SWARM_CHILD_SPAWN_DENIED` before any spawner is consulted.
     /// Default true (children may spawn, subject to depth caps).
     pub allow_child_spawn: bool,
+    /// Stop the run after this many consecutive failed tool calls.
+    ///
+    /// `max_turns` and `max_tool_calls` bound total work, but neither
+    /// stops the specific pathology of a model retrying the same broken
+    /// command: a run can burn its whole tool budget on one failing
+    /// invocation, and every retry costs a provider round trip. This is
+    /// the cap that stops that. Any successful tool call resets the
+    /// counter, so a long run that is making progress is never cut off.
+    ///
+    /// Default 5. `0` disables the cap (unbounded retries), which is
+    /// deliberately opt-in.
+    pub max_consecutive_tool_failures: u32,
 }
 
 impl Default for Budget {
@@ -114,6 +126,7 @@ impl Default for Budget {
             max_tokens: None,
             max_delegate_depth: 2,
             allow_child_spawn: true,
+            max_consecutive_tool_failures: 5,
         }
     }
 }

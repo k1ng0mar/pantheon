@@ -107,9 +107,19 @@ impl SecretsBroker {
     /// restart, which is the failure this constructor exists to prevent.
     /// Fails loudly when the file vault cannot be opened (I/O, tampered
     /// envelope) rather than degrading to memory.
+    ///
+    /// "The platform has a usable credential store" is checked with a real
+    /// probe, not just `store_status`. A D-Bus session can exist on a
+    /// headless host while the `login` keyring collection does not, and
+    /// `store_status` reports Ok for that case. Trusting it put a broker in
+    /// front of a keychain that can only ever fail, so every `set` returned
+    /// a backend error and the file vault that would have worked was never
+    /// opened.
     pub fn durable(data_dir: &Path) -> Result<Self, SecretsError> {
         let mut durable: Vec<Arc<dyn SecretVault>> = Vec::new();
-        if crate::keychain::KeychainVault::platform_available().is_ok() {
+        if crate::keychain::KeychainVault::platform_available().is_ok()
+            && crate::keychain::KeychainVault::usable().is_ok()
+        {
             durable.push(Arc::new(crate::keychain::KeychainVault::new()));
         } else {
             durable.push(Arc::new(crate::filevault::EncryptedFileVault::open(

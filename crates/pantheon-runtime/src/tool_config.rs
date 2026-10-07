@@ -149,6 +149,17 @@ impl Default for CamofoxToolConfig {
     }
 }
 
+/// Runtime config for the Cloudflare integration.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CloudflareToolConfig {
+    /// Master switch. `false` = the shell tool never injects a
+    /// Cloudflare token into any child, whatever the broker holds.
+    pub enabled: bool,
+    /// Secret name holding the API token, resolved via the secrets
+    /// broker at call time. `None` = `CLOUDFLARE_API_TOKEN`.
+    pub api_token_secret: Option<String>,
+}
+
 /// Runtime config for the `web_search` tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebsearchToolConfig {

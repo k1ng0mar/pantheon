@@ -118,13 +118,14 @@ mod tests {
     static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn cfg_with_model(provider: &str, model: &str) -> Config {
-        let mut c = Config::default();
-        c.model = Some(crate::config::ModelSection {
-            provider: provider.to_string(),
-            model: model.to_string(),
+        Config {
+            model: Some(crate::config::ModelSection {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
-        c
+        }
     }
 
     fn clear_env() {

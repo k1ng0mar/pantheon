@@ -38,6 +38,7 @@ pub mod message;
 pub mod mode;
 pub mod model;
 pub mod nightly;
+pub mod permission_mode;
 pub mod provenance;
 pub mod temporal;
 pub mod todo;

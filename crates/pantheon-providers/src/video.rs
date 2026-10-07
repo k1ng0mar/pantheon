@@ -497,7 +497,7 @@ pub fn extract_frames(
 
 /// Extract the audio track to a temp WAV file (16kHz mono, the shape STT
 /// backends take). Returns `Ok(None)` when the video has no audio stream
-/// - a normal case, not an error. Fails with `VIDEO_NO_FFMPEG` when
+/// (a normal case, not an error). Fails with `VIDEO_NO_FFMPEG` when
 /// ffmpeg is absent, like the frame leg.
 pub fn extract_audio(video_path: &Path) -> Result<Option<PathBuf>, PantheonError> {
     let bin = ffmpeg_bin();
