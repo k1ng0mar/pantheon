@@ -125,7 +125,7 @@ pub enum AuxiliaryKind {
     /// scheduled tasks, and tools next). Host-orchestrated; never chat.
     /// Absent = OFF: no policy entry, and fix-loop draft revision is
     /// unavailable. Every fix-loop revision resolves through this slot
-    /// - never the Reflection slot - so repair work stays on a model
+    /// (never the Reflection slot), so repair work stays on a model
     /// pinned for the job.
     Repair,
     /// Structured-extraction model (config `[extraction]`): pulls fields

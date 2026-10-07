@@ -311,17 +311,32 @@ pub fn apply_defaults(template: &ScheduleTemplate, vars: &mut HashMap<String, St
 /// `task` holds the rendered snapshot when the caller left it empty, and
 /// the template's own schedule fills `every`/`cron` when the caller
 /// specified none (`has_schedule`).
+/// The mutable render targets `expand_template` fills: the var map plus
+/// the fields a template may set. Bundled so the function signature stays
+/// readable as the template surface grows.
+pub struct TemplateParams<'a> {
+    pub vars: &'a mut HashMap<String, String>,
+    pub model: &'a mut Option<String>,
+    pub provider: &'a mut Option<String>,
+    pub task: &'a mut String,
+    pub every: &'a mut Option<String>,
+    pub cron: &'a mut Option<String>,
+}
+
 pub fn expand_template(
     template: &ScheduleTemplate,
-    vars: &mut HashMap<String, String>,
-    model: &mut Option<String>,
-    provider: &mut Option<String>,
-    task: &mut String,
-    every: &mut Option<String>,
-    cron: &mut Option<String>,
+    params: TemplateParams<'_>,
     has_schedule: bool,
     missing_var: &mut dyn FnMut(&str, &str) -> Result<String, String>,
 ) -> Result<(), String> {
+    let TemplateParams {
+        vars,
+        model,
+        provider,
+        task,
+        every,
+        cron,
+    } = params;
     // Reserved vars become the job's model pin, not prompt text. An
     // explicit pin wins over the var; a blank var is dropped silently.
     for reserved in ["model", "provider"] {

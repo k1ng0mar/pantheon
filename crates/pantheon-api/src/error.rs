@@ -30,10 +30,10 @@ pub struct PantheonError {
     pub evidence: String,
 }
 
-/// Recovery guidance lives in the `retryable` flag plus `remediation`:
-/// retryable errors may be retried, everything else fails. A finer
-/// recovery classification (fallback / degrade / pause / resume) is a
-/// §20 supervisor concern, not per-error data.
+// Recovery guidance lives in the `retryable` flag plus `remediation`:
+// retryable errors may be retried, everything else fails. A finer
+// recovery classification (fallback / degrade / pause / resume) is a
+// §20 supervisor concern, not per-error data.
 
 impl PantheonError {
     pub fn new(

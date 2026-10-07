@@ -38,6 +38,15 @@ use crate::value::SecretValue;
 use crate::vault::SecretVault;
 use keyring_core::{Entry as KrEntry, Error as KrError};
 
+/// Probe names for [`KeychainVault::usable`]. Never hold a real secret:
+/// the probe only builds an entry handle, which is what forces the
+/// platform store to open the collection.
+const PROBE_SERVICE: &str = "pantheon-probe";
+const PROBE_USER: &str = "probe";
+/// Throwaway value written and immediately deleted by the probe. Not a
+/// secret; it exists only to prove the credential store answers.
+const PROBE_VALUE: &str = "pantheon-probe-value";
+
 /// Durable vault backed by the OS credential store.
 #[derive(Debug)]
 pub struct KeychainVault {
@@ -65,6 +74,35 @@ impl KeychainVault {
     /// without a Secret Service, unsupported platform.
     pub fn platform_available() -> Result<(), SecretsError> {
         ensure_store()
+    }
+
+    /// Can the keychain actually store a credential right now?
+    ///
+    /// [`Self::platform_available`] only proves a store object could be
+    /// constructed. On a headless Linux host a D-Bus session is often
+    /// present while the `login` collection is not, so a real entry probe
+    /// fails where `store_status` succeeded. Callers that are about to
+    /// commit to the keychain (rather than merely report availability)
+    /// must use this one.
+    pub fn usable() -> Result<(), SecretsError> {
+        ensure_store()?;
+        // Building an entry is lazy on the Secret Service backend: the
+        // handle is created but no D-Bus call happens until a credential
+        // is read or written. So the probe has to actually round-trip a
+        // value, otherwise it reports a usable keychain on a host whose
+        // `login` collection does not exist.
+        let entry = KrEntry::new(PROBE_SERVICE, PROBE_USER).map_err(|e| backend_err(&e))?;
+        entry
+            .set_password(PROBE_VALUE)
+            .map_err(|e| backend_err(&e))?;
+        let read_back = entry.get_password().map_err(|e| backend_err(&e))?;
+        let _ = entry.delete_credential();
+        if read_back != PROBE_VALUE {
+            return Err(SecretsError::Backend(
+                "os keychain: probe value did not round-trip".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn entry(&self, name: &str) -> Result<KrEntry, SecretsError> {

@@ -115,6 +115,9 @@ pub struct McpServerSpec {
     pub url: Option<String>,
     pub enabled: bool,
     pub timeout: Duration,
+    /// Extra HTTP headers for sse/http transports. Values were already
+    /// resolved (`env:` names looked up) by the config loader.
+    pub headers: HashMap<String, String>,
 }
 
 impl std::fmt::Debug for McpServerSpec {
@@ -147,6 +150,7 @@ impl McpServerSpec {
             url: e.url.clone(),
             enabled: e.enabled,
             timeout: Duration::from_secs(e.timeout_secs.unwrap_or(30).max(1)),
+            headers: HashMap::new(),
         })
     }
 
@@ -253,6 +257,17 @@ pub struct McpReport {
 /// Sanitize one name segment for the `mcp_<server>_<tool>` namespace:
 /// lowercase alphanumeric runs joined by single underscores; anything
 /// else collapses. Never empty.
+/// Header map -> ordered header list for the HTTP transport. Sorted by
+/// name so the wire shape is deterministic for tests.
+pub fn resolved_headers(headers: &HashMap<String, String>) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = headers
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    out.sort();
+    out
+}
+
 pub fn sanitize_segment(s: &str) -> String {
     let mut out = String::new();
     let mut prev_us = true; // trim leading separators
@@ -1352,6 +1367,7 @@ impl McpManager {
                     t,
                     &url,
                     spec.timeout,
+                    &resolved_headers(&spec.headers),
                 )?))
             }
         }

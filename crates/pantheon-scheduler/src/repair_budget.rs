@@ -167,9 +167,25 @@ impl RepairBudget {
 mod repair_budget_tests {
     use super::*;
 
-    // Fixed instants: 2026-10-01 and 2026-10-02 00:00:00 UTC.
-    const DAY1: i64 = 1_790_812_800_000;
-    const DAY2: i64 = DAY1 + 86_400_000;
+    // Instants inside the prune window relative to *today*, not fixed
+    // constants. `open` prunes days older than `now - KEEP_DAYS`, so a
+    // hardcoded date silently rots: these assertions passed when written
+    // and started failing days later, with nothing in the diff to explain
+    // it. Anchoring to the real clock keeps the window permanent.
+    fn day_ms(days_from_today: i64) -> i64 {
+        let today = now_ms().div_euclid(86_400_000) * 86_400_000;
+        today + days_from_today * 86_400_000
+    }
+
+    /// Today, in UTC ms: the newest day the pruner always keeps.
+    fn today_ms() -> i64 {
+        day_ms(0)
+    }
+
+    /// Two days back: still inside `KEEP_DAYS`.
+    fn two_days_ago_ms() -> i64 {
+        day_ms(-2)
+    }
 
     fn open_temp() -> (RepairBudget, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -180,36 +196,36 @@ mod repair_budget_tests {
     #[test]
     fn consumes_up_to_cap_then_denies() {
         let (mut b, _dir) = open_temp();
-        assert!(b.try_consume("task-a", 3, DAY1));
-        assert!(b.try_consume("task-a", 3, DAY1));
-        assert!(b.try_consume("task-a", 3, DAY1));
-        assert!(!b.try_consume("task-a", 3, DAY1));
-        assert_eq!(b.used_today("task-a", DAY1), 3);
+        assert!(b.try_consume("task-a", 3, today_ms()));
+        assert!(b.try_consume("task-a", 3, today_ms()));
+        assert!(b.try_consume("task-a", 3, today_ms()));
+        assert!(!b.try_consume("task-a", 3, today_ms()));
+        assert_eq!(b.used_today("task-a", today_ms()), 3);
     }
 
     #[test]
     fn budget_is_per_task() {
         let (mut b, _dir) = open_temp();
-        assert!(b.try_consume("task-a", 1, DAY1));
-        assert!(!b.try_consume("task-a", 1, DAY1));
-        assert!(b.try_consume("task-b", 1, DAY1));
+        assert!(b.try_consume("task-a", 1, today_ms()));
+        assert!(!b.try_consume("task-a", 1, today_ms()));
+        assert!(b.try_consume("task-b", 1, today_ms()));
     }
 
     #[test]
     fn budget_resets_next_utc_day() {
         let (mut b, _dir) = open_temp();
-        assert!(b.try_consume("task-a", 1, DAY1));
-        assert!(!b.try_consume("task-a", 1, DAY1));
-        assert!(b.try_consume("task-a", 1, DAY2));
-        assert_eq!(b.used_today("task-a", DAY1), 1);
-        assert_eq!(b.used_today("task-a", DAY2), 1);
+        assert!(b.try_consume("task-a", 1, today_ms()));
+        assert!(!b.try_consume("task-a", 1, today_ms()));
+        assert!(b.try_consume("task-a", 1, two_days_ago_ms()));
+        assert_eq!(b.used_today("task-a", today_ms()), 1);
+        assert_eq!(b.used_today("task-a", two_days_ago_ms()), 1);
     }
 
     #[test]
     fn zero_cap_disables() {
         let (mut b, _dir) = open_temp();
-        assert!(!b.try_consume("task-a", 0, DAY1));
-        assert_eq!(b.used_today("task-a", DAY1), 0);
+        assert!(!b.try_consume("task-a", 0, today_ms()));
+        assert_eq!(b.used_today("task-a", today_ms()), 0);
     }
 
     #[test]
@@ -217,14 +233,14 @@ mod repair_budget_tests {
         let dir = tempfile::tempdir().unwrap();
         {
             let mut b = RepairBudget::open(dir.path()).unwrap();
-            assert!(b.try_consume("task-a", 3, DAY1));
-            assert!(b.try_consume("task-a", 3, DAY1));
+            assert!(b.try_consume("task-a", 3, today_ms()));
+            assert!(b.try_consume("task-a", 3, today_ms()));
         }
         // A restart must not reset the budget.
         let mut b2 = RepairBudget::open(dir.path()).unwrap();
-        assert_eq!(b2.used_today("task-a", DAY1), 2);
-        assert!(b2.try_consume("task-a", 3, DAY1));
-        assert!(!b2.try_consume("task-a", 3, DAY1));
+        assert_eq!(b2.used_today("task-a", today_ms()), 2);
+        assert!(b2.try_consume("task-a", 3, today_ms()));
+        assert!(!b2.try_consume("task-a", 3, today_ms()));
     }
 
     #[test]
@@ -232,13 +248,18 @@ mod repair_budget_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE_NAME), b"not json{{{").unwrap();
         let mut b = RepairBudget::open(dir.path()).unwrap();
-        assert!(b.try_consume("task-a", 3, DAY1));
+        assert!(b.try_consume("task-a", 3, today_ms()));
     }
 
     #[test]
     fn day_string_matches_known_dates() {
-        assert_eq!(day_string(DAY1), "2026-10-01");
-        assert_eq!(day_string(DAY2), "2026-10-02");
+        // Fixed instants here on purpose: this test pins the civil-date
+        // algorithm against known calendar days, so the expectations must
+        // not move with the wall clock.
         assert_eq!(day_string(0), "1970-01-01");
+        assert_eq!(day_string(1_790_812_800_000), "2026-10-01");
+        assert_eq!(day_string(1_790_899_200_000), "2026-10-02");
+        // A leap day, to catch a wrong days-in-month handling.
+        assert_eq!(day_string(1_709_164_800_000), "2024-02-29");
     }
 }

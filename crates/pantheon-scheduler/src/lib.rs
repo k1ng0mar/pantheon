@@ -429,6 +429,7 @@ fn lock_store(data_dir: &Path, exclusive: bool) -> Result<std::fs::File, String>
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&path)
         .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     use fs2::FileExt as _;

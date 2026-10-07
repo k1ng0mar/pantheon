@@ -169,6 +169,8 @@ pub struct HttpMcpClient {
     sse_rx: Option<mpsc::Receiver<StreamMsg>>,
     next_id: u64,
     timeout: Duration,
+    /// Extra headers sent with every POST (auth for remote endpoints).
+    headers: Vec<(String, String)>,
     /// Protocol version the server answered in `initialize`.
     pub negotiated_version: String,
     /// The server's self-reported version, when it sends one.
@@ -186,6 +188,7 @@ impl HttpMcpClient {
         transport: HttpTransport,
         url: &str,
         timeout: Duration,
+        headers: &[(String, String)],
     ) -> Result<Self, McpError> {
         let agent = ureq::AgentBuilder::new().timeout(timeout).build();
         let (post_url, sse_rx) = match transport {
@@ -266,6 +269,7 @@ impl HttpMcpClient {
             sse_rx,
             next_id: 1,
             timeout,
+            headers: headers.to_vec(),
             negotiated_version: String::new(),
             server_version: None,
             dead: false,
@@ -284,6 +288,9 @@ impl HttpMcpClient {
             .post(&self.post_url)
             .set("Content-Type", "application/json")
             .set("Accept", "application/json, text/event-stream");
+        for (k, v) in &self.headers {
+            req = req.set(k, v);
+        }
         if let Some(sid) = &self.session_id {
             req = req.set("Mcp-Session-Id", sid);
         }

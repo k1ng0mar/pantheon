@@ -149,6 +149,7 @@ impl BundledMcpServer {
             url: self.url.clone(),
             enabled: false,
             timeout_secs: None,
+            headers: Default::default(),
         }
     }
 }
@@ -324,6 +325,32 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 (streamable HTTP). Browser OAuth on first connect; its tools \
                 act on your Cloudflare account (Workers, DNS, zones). No \
                 local code runs - trust is in the endpoint and your account."
+                .to_string(),
+        },
+        BundledMcpServer {
+            name: "cloudflare-docs".to_string(),
+            version: "remote https://docs.mcp.cloudflare.com/mcp".to_string(),
+            package: None,
+            description: "Cloudflare's official documentation MCP server: up-to-date \\\
+                docs and reference lookups across every Cloudflare product."
+                .to_string(),
+            transport: "http".to_string(),
+            command: None,
+            args: vec![],
+            url: Some("https://docs.mcp.cloudflare.com/mcp".to_string()),
+            requires_env: vec![],
+            default_env: vec![],
+            setup_notes: "Fully remote and public: no authentication, no token, \\\
+                nothing runs on this machine. Safe to leave enabled everywhere. \\\
+                Pair with the cloudflare server (OAuth) for account operations, \\\
+                or with the cf CLI + CLOUDFLARE_API_TOKEN for the same surface \\\
+                through the shell."
+                .to_string(),
+            local_only: false,
+            deprecated_warning: None,
+            privilege_notes: "Read-only documentation lookups against Cloudflare's \\\
+                hosted endpoint. No account access: the server is public and \\\
+                unauthenticated."
                 .to_string(),
         },
         BundledMcpServer {

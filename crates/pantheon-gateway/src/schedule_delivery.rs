@@ -84,7 +84,7 @@ pub fn build_summary(raw: &str) -> String {
     if redacted.chars().count() <= MAX_CHARS {
         redacted
     } else {
-        let mut s: String = redacted.chars().take(MAX_CHARS - 1).collect();
+        let mut s: String = redacted.chars().take(MAX_CHARS - 3).collect();
         s.push_str("...");
         s
     }

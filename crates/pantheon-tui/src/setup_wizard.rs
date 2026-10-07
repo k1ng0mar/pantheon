@@ -1161,6 +1161,7 @@ fn add_mcp_server(existing: &[(String, McpServerEntry)]) -> Option<(String, McpS
         url: None,
         enabled: true,
         timeout_secs: None,
+        headers: HashMap::new(),
     };
     match transport.as_str() {
         "stdio" => {
@@ -1345,6 +1346,7 @@ mod tests {
             url: None,
             enabled: false,
             timeout_secs: None,
+            headers: HashMap::new(),
         }
     }
 

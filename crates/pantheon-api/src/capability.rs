@@ -184,6 +184,13 @@ impl Policy {
             .approval(Capability::ComputerUse)
             .approval(Capability::PluginEnable)
             .approval(Capability::McpEnable)
+            // Cloudflare CLI: reads ride ShellExecute; anything that
+            // creates/modifies infra or can destroy it (DNS, WAF, access
+            // policy, tokens) parks for a human. Classification lives in
+            // pantheon-exec::cloudflare; the tokens are strings so the
+            // classifier can evolve without a Capability variant per verb.
+            .approval(Capability::Other("cloudflare.write".into()))
+            .approval(Capability::Other("cloudflare.destroy".into()))
             .allow(Capability::MemoryRead)
             .allow(Capability::AgentSpawn)
             .allow(Capability::Other(crate::todo::TODO_TOOL_NAME.into()))

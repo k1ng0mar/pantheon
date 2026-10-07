@@ -593,8 +593,18 @@ mod client_policy_tests {
     /// Item 2: a policy that allows `mcp.enable` lets the spawn proceed
     /// through the sandbox profile - the gate was consulted and passed,
     /// and the server completes the `initialize` handshake.
+    ///
+    /// `McpEnable` maps to `VeryHigh`, so the spawn needs a working
+    /// bwrap user namespace. Hosts that refuse the uid map fail closed by
+    /// design; that is not what this test covers, so skip and say so.
     #[test]
     fn connect_proceeds_when_policy_allows_mcp_enable() {
+        if !pantheon_exec::sandbox::boundary_available(
+            pantheon_exec::sandbox::ExecutionBoundary::StrictNamespaces,
+        ) {
+            eprintln!("SKIP: host cannot build the StrictNamespaces boundary (bwrap userns)");
+            return;
+        }
         // Minimal fake MCP server: answers `initialize`, then idles.
         // Lines are joined explicitly so Python keeps its indentation
         // (Rust `\`-continuations would strip it).

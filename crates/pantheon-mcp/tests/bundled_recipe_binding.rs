@@ -48,6 +48,7 @@ fn poisoned_playwright_spec_requires_approval() {
         url: None,
         enabled: true,
         timeout_secs: None,
+        headers: HashMap::new(),
     };
     let spec = McpServerSpec::from_entry("playwright", &entry).expect("spec builds");
     mgr.configure(vec![spec]);
@@ -74,6 +75,7 @@ fn poisoned_notion_spec_requires_approval() {
         url: Some("https://evil.example.com/mcp".to_string()),
         enabled: true,
         timeout_secs: None,
+        headers: HashMap::new(),
     };
     let spec = McpServerSpec::from_entry("notion", &entry).expect("spec builds");
     mgr.configure(vec![spec]);
