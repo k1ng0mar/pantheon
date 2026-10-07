@@ -1431,6 +1431,9 @@ pub struct ToolCounts {
     /// `mcp_cua-driver_*` desktop-control tools (0 when the ComputerUse
     /// group is off, the driver is not installed, or it is unapproved).
     pub computer: usize,
+    /// LSP + git-undo code-intel tools (0 when the CodeIntel group is
+    /// off). LSP is 3 tools, git-undo is 4 tools when the group is on.
+    pub code_intel: usize,
 }
 
 impl ToolCounts {
@@ -1445,6 +1448,8 @@ impl ToolCounts {
             + self.browser
             + self.websearch
             + self.mcp
+            + self.computer
+            + self.code_intel
     }
 }
 
@@ -2949,6 +2954,19 @@ impl Session {
                 }
             }
         };
+        // Code-intel group: LSP diagnostics + repo-level git undo. Both are
+        // session-scoped: the LSP client is shared across calls via one
+        // Arc<Mutex<Option<Arc<LspClient>>>>, and git-undo snapshots point
+        // at the session's data dir. Off = none of those tools register.
+        let n_codeintel = if !self.tools_on(pantheon_api::config::ToolGroup::CodeIntel) {
+            0
+        } else {
+            let before = reg.names().len();
+            let undo_state = self.supervisor.data_dir().to_path_buf();
+            pantheon_tools::gitundo_tools::register_gitundo(&mut reg, undo_state);
+            pantheon_tools::lsp_tools::register_lsp(&mut reg);
+            reg.names().len() - before
+        };
         // Tools the nightly repair loop disabled stay disabled. The durable
         // list (`<data_dir>/nightly/disabled-tools.json`) is the
         // containment record, and this is the one registry constructor
@@ -2971,6 +2989,7 @@ impl Session {
             websearch: n_websearch,
             mcp: n_mcp,
             computer: n_computer,
+            code_intel: n_codeintel,
         };
         (reg, counts)
     }

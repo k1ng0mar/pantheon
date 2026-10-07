@@ -1182,11 +1182,12 @@ pub enum ToolGroup {
     VideoAnalysis,
     ComputerUse,
     Plugins,
+    CodeIntel,
 }
 
 impl ToolGroup {
     /// All groups, in Tools-screen order.
-    pub fn all() -> [ToolGroup; 15] {
+    pub fn all() -> [ToolGroup; 16] {
         [
             ToolGroup::WebSearch,
             ToolGroup::Browser,
@@ -1203,6 +1204,7 @@ impl ToolGroup {
             ToolGroup::VideoAnalysis,
             ToolGroup::ComputerUse,
             ToolGroup::Plugins,
+            ToolGroup::CodeIntel,
         ]
     }
 
@@ -1224,6 +1226,7 @@ impl ToolGroup {
             ToolGroup::VideoAnalysis => "video_analysis",
             ToolGroup::ComputerUse => "computer_use",
             ToolGroup::Plugins => "plugins",
+            ToolGroup::CodeIntel => "code_intel",
         }
     }
 
@@ -1251,6 +1254,7 @@ impl ToolGroup {
             ToolGroup::VideoAnalysis => "Video Analysis",
             ToolGroup::ComputerUse => "Computer Use",
             ToolGroup::Plugins => "Plugins & MCP",
+            ToolGroup::CodeIntel => "Code Intel (LSP + git-undo)",
         }
     }
 }
@@ -1304,6 +1308,12 @@ pub struct ToolsSection {
     /// Plugin tools and MCP server projections.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugins: Option<bool>,
+    /// Code-intel tool group: LSP diagnostics (`lsp.open` /
+    /// `lsp.diagnostics` / `lsp.shutdown`) and repo-level git undo
+    /// (`gitundo.snapshot` / `gitundo.list` / `gitundo.restore` /
+    /// `gitundo.delete`). Off = none of those tools are registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_intel: Option<bool>,
 }
 
 impl ToolsSection {
@@ -1325,6 +1335,7 @@ impl ToolsSection {
             ToolGroup::VideoAnalysis => self.video_analysis,
             ToolGroup::ComputerUse => self.computer_use,
             ToolGroup::Plugins => self.plugins,
+            ToolGroup::CodeIntel => self.code_intel,
         };
         flag.unwrap_or(true)
     }
@@ -1355,6 +1366,7 @@ impl ToolsSection {
                     ToolGroup::VideoAnalysis => &mut s.video_analysis,
                     ToolGroup::ComputerUse => &mut s.computer_use,
                     ToolGroup::Plugins => &mut s.plugins,
+                    ToolGroup::CodeIntel => &mut s.code_intel,
                 };
                 *flag = Some(false);
             }

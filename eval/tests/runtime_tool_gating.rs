@@ -116,7 +116,7 @@ fn session_search_has_no_tool_group() {
     // The Tools screen cannot list what the group enum does not know:
     // session search stays hidden by construction.
     assert!(ToolGroup::parse("session_search").is_none());
-    assert_eq!(ToolGroup::all().len(), 15);
+    assert_eq!(ToolGroup::all().len(), 16);
 }
 
 #[test]
@@ -152,11 +152,13 @@ fn vision_and_video_aux_entries_gate_on_their_groups() {
         model: "test".into(),
     };
     // Vision off: no vision aux entry, video untouched.
-    let mut cfg = pantheon_api::config::Config::default();
-    cfg.tools = Some(ToolsSection {
-        vision: Some(false),
+    let mut cfg = pantheon_api::config::Config {
+        tools: Some(ToolsSection {
+            vision: Some(false),
+            ..Default::default()
+        }),
         ..Default::default()
-    });
+    };
     let auxes = auxiliaries(Some(&cfg), &default);
     assert!(!auxes.iter().any(|a| a.kind == AuxiliaryKind::Vision));
     assert!(auxes.iter().any(|a| a.kind == AuxiliaryKind::Video));
@@ -180,8 +182,10 @@ fn vision_and_video_aux_entries_gate_on_their_groups() {
 #[test]
 fn computer_use_toggle_off_registers_no_driver_tools() {
     let s = gating_session("computer-off");
-    let mut e = ToolEnablement::default();
-    e.computer_use = false;
+    let e = ToolEnablement {
+        computer_use: false,
+        ..Default::default()
+    };
     s.set_tool_enablement(e);
     let (reg, counts) = s.build_tool_registry();
     assert_eq!(counts.computer, 0);
@@ -189,6 +193,64 @@ fn computer_use_toggle_off_registers_no_driver_tools() {
         !names(&reg).iter().any(|t| t.starts_with("mcp_cua_driver_")),
         "driver tools registered while the ComputerUse group is off"
     );
+}
+
+#[test]
+fn code_intel_toggle_on_registers_lsp_and_gitundo_tools() {
+    let s = gating_session("codeintel-on");
+    s.set_tool_enablement(ToolEnablement::default());
+    let (reg, counts) = s.build_tool_registry();
+    let n = names(&reg);
+    for tool in [
+        "lsp.open",
+        "lsp.diagnostics",
+        "lsp.shutdown",
+        "gitundo.snapshot",
+        "gitundo.list",
+        "gitundo.restore",
+        "gitundo.delete",
+    ] {
+        assert!(
+            n.iter().any(|t| t == tool),
+            "'{tool}' not registered with the CodeIntel group on"
+        );
+    }
+    assert_eq!(counts.code_intel, 7, "expected 7 code-intel tools");
+    assert!(
+        counts.code_intel <= counts.total(),
+        "code_intel must feed total()"
+    );
+}
+
+#[test]
+fn code_intel_toggle_off_registers_no_codeintel_tools() {
+    let s = gating_session("codeintel-off");
+    let e = ToolEnablement {
+        code_intel: false,
+        ..Default::default()
+    };
+    s.set_tool_enablement(e);
+    let (reg, counts) = s.build_tool_registry();
+    assert_eq!(counts.code_intel, 0);
+    let n = names(&reg);
+    assert!(
+        !n.iter()
+            .any(|t| t.starts_with("lsp.") || t.starts_with("gitundo.")),
+        "code-intel tools registered while the CodeIntel group is off"
+    );
+}
+
+#[test]
+fn code_intel_group_parses_and_resolves_in_tools_section() {
+    // The new group must round-trip through the config layer: a disabled
+    // group writes `code_intel = false` and resolves back to off; an
+    // absent flag stays on.
+    let mut on = ToolsSection::default();
+    assert!(on.is_enabled(ToolGroup::CodeIntel), "absent = on");
+    on.code_intel = Some(false);
+    assert!(!on.is_enabled(ToolGroup::CodeIntel), "explicit false");
+    // Parse back from the key.
+    assert_eq!(ToolGroup::parse("code_intel"), Some(ToolGroup::CodeIntel));
 }
 
 #[test]
