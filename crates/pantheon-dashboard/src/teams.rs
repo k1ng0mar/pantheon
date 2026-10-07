@@ -443,9 +443,9 @@ pub fn delete(app: &App, id: &str) -> Response {
 /// when no profile is selected"). It resolves exactly like
 /// `Config::resolve_profile` does: the config's active `agent` (the same
 /// field `profiles.rs` reads as the default profile) wins, else the
-/// literal `"default"`. The resolved name must be declared in `[agents]`
-/// - except the fully-anonymous case (no active agent and an
-/// empty/missing `[agents]` table), where `"default"` passes through
+/// literal `"default"`. The resolved name must be declared in `[agents]`,
+/// except in the fully-anonymous case (no active agent and an empty or
+/// missing `[agents]` table), where `"default"` passes through
 /// untouched: swarm count mode already runs such turns without `--agent`
 /// (see `swarm::agent_flag_for`), so the bundled teams stay usable on
 /// installs that predate profiles.

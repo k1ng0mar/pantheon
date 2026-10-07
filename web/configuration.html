@@ -107,21 +107,79 @@ model    = &quot;claude-sonnet-4-5&quot;
 </code></pre>
 <p class="my-3 leading-relaxed">The <code>reasoning</code> setting is translated per provider (thinking budget on Anthropic, reasoning effort on OpenAI). An exact <code>reasoning_budget</code> number overrides the translation; <code>0</code> turns it off. Unknown spellings are treated as off, and <code>doctor</code> flags them.</p>
 <h2 id="helper-models" class="text-xl font-bold tracking-tight mt-10 mb-3">Helper models</h2>
-<p class="my-3 leading-relaxed">Small models for specific background jobs. Each section has the same shape: <code>provider</code>, <code>model</code>, optional <code>api_key_env</code>. Available sections: <code>[judge]</code>, <code>[compression]</code>, <code>[title_gen]</code>, <code>[embeddings]</code>, <code>[search_synthesis]</code>, <code>[vision]</code>, <code>[scheduled]</code>, <code>[mcp_synthesis]</code>, <code>[extraction]</code>, <code>[rerank]</code>, <code>[planner]</code>.</p>
-<p class="my-3 leading-relaxed">Leave one out and it uses your main model. <code>[embeddings]</code> defaults to a local embedder instead. Environment overrides look like <code>PANTHEON_RERANK_MODEL</code>.</p>
-<p class="my-3 leading-relaxed">Note: <code>[extraction]</code>, <code>[rerank]</code>, and <code>[planner]</code> have no features using them yet. They exist so you can pin cheap models ahead of time.</p>
+<p class="my-3 leading-relaxed">Small models for specific background jobs. Each section has the same shape (<code>[compression]</code> additionally takes <code>target_percent</code>, documented below). Available sections: <code>[judge]</code>, <code>[compression]</code>, <code>[title_gen]</code>, <code>[embeddings]</code>, <code>[search_synthesis]</code>, <code>[vision]</code>, <code>[scheduled]</code>, <code>[mcp_synthesis]</code>, <code>[extraction]</code>, <code>[rerank]</code>, <code>[planner]</code>, <code>[repair]</code>, <code>[verify]</code>, <code>[reflect]</code>, <code>[consolidation]</code>.</p>
+<p class="my-3 leading-relaxed">Each section inherits from your main <code>[model]</code> unless you say otherwise:</p>
+<pre><code>
+[vision]
+provider = &quot;default&quot;   # use the main model&#x27;s provider (or just leave provider out)
+model = &quot;&quot;             # empty = use the main model&#x27;s model
+timeout = 120          # optional: per-job timeout in seconds
+
+[extraction]
+provider = &quot;nous&quot;
+model = &quot;openai/gpt-6-astra&quot;
+timeout = 360
+api_key_env = &quot;NOUS_API_KEY&quot;   # only needed when the provider isn&#x27;t &quot;default&quot;
+</code></pre>
+<p class="my-3 leading-relaxed">Rules:</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><code>provider = &quot;default&quot;</code> (or omitted) inherits the <code>[model]</code> provider.</li>
+<li>An empty or omitted <code>model</code> inherits the <code>[model]</code> model.</li>
+<li><code>api_key_env</code> is only needed for a non-default provider. A default-inheriting provider inherits <code>[model].api_key_env</code>.</li>
+<li><code>timeout</code> is optional per section. When omitted, each job keeps its built-in default (10s for title/judge, 15s embeddings, 30s compression and verify, 60s reflection/consolidation/repair, 120s everything else).</li>
+</ul>
+<p class="my-3 leading-relaxed">Leave a section out entirely and it uses your main model. <code>[embeddings]</code> defaults to a local embedder instead. Environment overrides look like <code>PANTHEON_RERANK_MODEL</code> and beat the config file.</p>
+<p class="my-3 leading-relaxed"><code>[compression]</code> takes one extra knob the other sections don&#x27;t have:</p>
+<pre><code>
+[compression]
+model = &quot;gpt-4o-mini&quot;
+target_percent = 50   # summary size as % of the absorbed transcript chars (1-100, default 12)
+</code></pre>
+<p class="my-3 leading-relaxed">Higher keeps more detail (less aggressive), lower compresses harder. <code>0</code> and values over <code>100</code> are config errors. The default <code>12</code> preserves the historic summary budget.</p>
+<p class="my-3 leading-relaxed">Note: <code>[extraction]</code>, <code>[rerank]</code>, <code>[planner]</code>, <code>[vision]</code>, <code>[search_synthesis]</code>, <code>[mcp_synthesis]</code>, and <code>[judge]</code> have no features using them yet. They exist so you can pin models ahead of time. (<code>[judge]</code> is validated by <code>doctor</code> but the production agent loop is built with <code>judge: None</code>, so it currently changes nothing - the engine supports it, installation into the runtime loop is still open.) Everything else is wired: <code>[compression]</code>/<code>[title_gen]</code> run in the session, <code>[embeddings]</code> powers semantic recall, <code>[scheduled]</code> sets the model for background runs, <code>[verify]</code> checks delegated results, and <code>[reflect]</code>/<code>[consolidation]</code>/<code>[repair]</code> serve the nightly pass (<code>[repair]</code> is the only slot the fix loop uses to revise drafts; <code>[reflect]</code> still handles pre-pass proposal refinement and replay transcript scoring).</p>
+<p class="my-3 leading-relaxed"><code>[verify]</code> is the exception to the &quot;leave a section out and it uses your main model&quot; rule: <strong>absent <code>[verify]</code> means no verification happens at all</strong> (off by default, no <code>auto</code> entry). Pin a section and every delegated subagent&#x27;s claimed result is adversarially checked by that model before the parent accepts it:</p>
+<pre><code>
+[verify]
+provider = &quot;anthropic&quot;
+model = &quot;claude-3-5-haiku-latest&quot;
+timeout = 30
+</code></pre>
+<p class="my-3 leading-relaxed">The verifier starts from the assumption the child did *not* achieve its goal and answers <code>HOLDS</code>, <code>FALSIFIED</code>, or <code>INCONCLUSIVE</code> with a confidence. A <code>FALSIFIED</code> verdict fails the delegation outright (<code>SWARM_CHILD_FALSIFIED</code>); <code>INCONCLUSIVE</code> or a verifier transport failure marks the result unverified - never treated as done. Keep this on a cheap, fast model: it runs once per delegation, read-only, with no tools.</p>
 <h2 id="self-improvement" class="text-xl font-bold tracking-tight mt-10 mb-3">Self-improvement</h2>
 <pre><code>
-[reflect]
-enabled       = false   # opt in explicitly; off by default
-auto_turns    = 20      # automatic review every N finished conversations (0 = off)
-max_proposals = 5       # how many suggestions per review
-# provider    = &quot;openai&quot;   # optional: pin a cheap model for reviews
-# model       = &quot;gpt-4o-mini&quot;
-# api_key_env = &quot;OPENAI_API_KEY&quot;
+[nightly]
+# enabled = true     # master switch; absent = on iff a [nightly.model] pin exists, else off (default: off)
+# auto_turns = 20    # automatic pass every N completed turns; 0 disables the trigger
+# min_sessions = 3   # sessions in the window needed to promote a memory
+# max_age_days = 30  # only look back this far
+# cron = &quot;0 3 * * *&quot; # default when scheduled via `pantheon schedule nightly`
+# replay_command = &quot;&quot; # external replay driver for tasks without their own exec spec
+
+[nightly.model]       # the pass&#x27;s own model pin; presence = enabled (unless enabled = false)
+provider = &quot;openai&quot;
+model = &quot;gpt-4o-mini&quot;
+# api_key_env = &quot;OPENAI_API_KEY&quot;  # only needed for a non-default provider; seeds PANTHEON_NIGHTLY_API_KEY
+# timeout = 60        # per-request timeout in seconds
 </code></pre>
-<p class="my-3 leading-relaxed">When enabled, Pantheon periodically reviews its own history, spots patterns (repeated mistakes, your corrections, denied permissions), and suggests improvements: lessons for memory, new skills, notes about its personality. Memory lessons apply automatically once confirmed; everything else waits for your yes or no (<code>/reflect</code>, or <code>pantheon reflect --approve &lt;id&gt;</code>). Reviews always use the pinned model, never your main chat model, so keep it cheap.</p>
-<p class="my-3 leading-relaxed">Commands: <code>/reflect</code> (run one review now), <code>/reflect on|off</code> (toggle), <code>/reflect status</code>. From the shell: <code>pantheon reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]</code>. To run it nightly: <code>pantheon schedule reflect --cron &#x27;0 2 * * *&#x27;</code>.</p>
+<p class="my-3 leading-relaxed">The nightly pass is <strong>off by default</strong> and does nothing unless enabled - one rule, four paths:</p>
+<p>1. a <code>[nightly.model]</code> pin (absent <code>enabled</code> flag) - presence of the pin = enabled;</p>
+<p>2. <code>/nightly on</code> in the TUI (writes <code>enabled = true</code>);</p>
+<p>3. a config edit (<code>enabled = true</code> under <code>[nightly]</code>);</p>
+<p>4. the dashboard / mobile-app toggle.</p>
+<p class="my-3 leading-relaxed"><code>enabled = false</code> always wins, even with a model pin. <code>PANTHEON_NIGHTLY_PROVIDER</code> / <code>PANTHEON_NIGHTLY_MODEL</code> env overrides count as a pin, like every other aux slot. <code>pantheon doctor</code> reports the on/off state and why; <code>/nightly status</code> shows it too.</p>
+<p class="my-3 leading-relaxed">The dashboard / mobile-app toggle is two HTTP endpoints on the dashboard control plane (the mobile app uses the same API):</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><code>GET /api/nightly/status</code> - the resolved state: <code>enabled</code> (the single enable rule), <code>reason</code> (explicit flag on|off, on via <code>[nightly.model]</code> pin, on via <code>PANTHEON_NIGHTLY_*</code> env, off), the raw <code>explicit</code> flag, <code>model_pin</code>, <code>next_run_ms</code> (next <code>pantheon schedule nightly</code> fire, if any), and the last pass summary.</li>
+<li><code>POST /api/nightly/enabled</code> - <code>{enabled: bool, confirm: true}</code>. Writes the explicit <code>[nightly] enabled</code> flag through the shared config document (load → mutate → save) - the same flag <code>/nightly on|off</code> and a manual config edit write; there is no parallel store. Without <code>confirm: true</code> the request is rejected. The response is the fresh status document, so the client renders the toggle without a second read.</li>
+</ul>
+<p class="my-3 leading-relaxed">When enabled, Pantheon reviews its history in a single pass, proposes improvements (memory lessons, skills, persona notes) with ledger provenance, and gates them: memory lessons recur across N sessions before auto-applying; skills/personas must pass no-regression evals and strictly improve held-out replay before asking for your approval. Memory lessons apply automatically once confirmed; everything else waits for your yes or no (<code>/nightly</code>, or <code>pantheon nightly --approve &lt;id&gt;</code>). The pass&#x27;s own LLM steps resolve through the <code>[nightly.model]</code> pin when one is configured, else through the Reflection/Consolidation aux slots - never the chat model directly.</p>
+<p class="my-3 leading-relaxed">The old <code>[reflect]</code> / <code>[consolidation]</code> sections are <strong>deprecated</strong> but still parse (old configs keep loading). <code>[nightly]</code> is the authoritative section: when it is present the legacy sections are ignored entirely for the nightly pass; when it is absent they are honored field-by-field as a migration fallback. <code>pantheon doctor</code> nudges you to move the behavior knobs across - <code>enabled</code> and <code>auto_turns</code> from <code>[reflect]</code>, <code>enabled</code>, <code>min_sessions</code>, and <code>cron</code> from <code>[consolidation]</code> - into <code>[nightly]</code>. The legacy aux-model pins (<code>provider</code>/<code>model</code>/<code>api_key_env</code>/<code>timeout</code>) stay where they are; the pass&#x27;s own pin lives in <code>[nightly.model]</code>. <code>half_life_days</code> and <code>min_score</code> are ignored: the decay curve was replaced by recurrence across sessions.</p>
+<p class="my-3 leading-relaxed">Replay tasks are headless and built in: define a task with</p>
+<p class="my-3 leading-relaxed"><code>pantheon nightly replay-tasks add --exec-cmd ./scripts/run-task.sh --exec-arg foo --exec-env KEY=VALUE</code>.</p>
+<p class="my-3 leading-relaxed">Pantheon runs <code>&lt;command&gt; &lt;args...&gt; &lt;prompt&gt;</code> in a fresh temporary working directory, captures stdout as the transcript, and enforces a timeout; the candidate skill/persona is visible to the task through <code>PANTHEON_REPLAY_SKILL_DIR</code>. The temporary directory only controls where the task starts - it is <strong>not</strong> a security sandbox, so treat task specs as trusted process execution: only attach exec specs to commands you would run yourself. Tasks without an exec spec fall back to <code>[nightly] replay_command</code>; with neither configured, replays fail loudly and the replay gate rejects every proposal - strict improvement cannot be measured without a runner.</p>
+<p class="my-3 leading-relaxed">A failing proposal goes through a bounded fix loop (default 3 attempts, <code>max_fix_attempts</code>): eval failures revise the draft via the Reflection auxiliary slot (LLM steps enabled) and re-run the full eval tag set - eval tags are immutable in the loop, and zero-tagged eval gating is reported as skipped, never as a vacuous pass; fair replay failures retry the A/B and, with LLM steps enabled, sharpen the draft via the Reflection auxiliary slot; infrastructure failures (runner errors, non-finite scores, missing tasks) escalate immediately. After the bound, the proposal is marked <code>NeedsAttention</code> and recorded in <code>&lt;data_dir&gt;/nightly/nightly-escalated.json</code> - never queued, never applied.</p>
+<p class="my-3 leading-relaxed">Approved persona notes are written to the <code>persona</code> memory namespace and injected into every session&#x27;s system prompt as a <code>&lt;nightly_persona&gt;</code> block. Unapproved persona notes live only in the approval queue and are never injected.</p>
+<p class="my-3 leading-relaxed">Commands: <code>/nightly</code> (run one pass now), <code>/nightly on|off</code> (toggle), <code>/nightly status</code>. From the shell: <code>pantheon nightly [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]</code>. To run it on a schedule: <code>pantheon schedule nightly --cron &#x27;0 3 * * *&#x27;</code>.</p>
 <h2 id="permissions" class="text-xl font-bold tracking-tight mt-10 mb-3">Permissions</h2>
 <p class="my-3 leading-relaxed"><code>policy = &quot;reader&quot; | &quot;coder&quot; | &quot;coder_memory&quot;</code>.</p>
 <ul class="list-disc pl-6 my-3 space-y-1">
@@ -137,13 +195,12 @@ max_turns          = 16      # back-and-forth exchanges per run
 max_tool_calls     = 32      # tool uses per run
 max_delegate_depth = 2       # how deep agents can delegate to other agents
 max_iterations     = 3       # pipeline iterations
-# max_tokens       = 50000   # optional cap on tokens per run; unset = no cap
-# delegate_child_max_tokens = 8000  # optional default max tokens for a delegated child's generation; unset = no cap
+# max_tokens       = 50000   # optional per-response OUTPUT cap; unset = no config cap
 
 [goal]
 max_iterations     = 10      # exchanges allowed per /goal before it stops and asks
 </code></pre>
-<p class="my-3 leading-relaxed">Every key is optional; <code>0</code> counts as unset. These are the defaults for a session. <code>/set &lt;key&gt; &lt;value&gt;</code> changes them live for the current session, and <code>/tokens [n|off]</code> manages the token cap on its own. There is no spending cap: cost is tracked for statistics only.</p>
+<p class="my-3 leading-relaxed">Every key is optional; <code>0</code> counts as unset. These are the defaults for a session. <code>/set &lt;key&gt; &lt;value&gt;</code> changes them live for the current session, and <code>/tokens [n|off]</code> manages the per-response output cap on its own. There is no spending cap: cost is tracked for statistics only.</p>
 <h2 id="time-awareness" class="text-xl font-bold tracking-tight mt-10 mb-3">Time awareness</h2>
 <pre><code>
 [temporal]
@@ -172,7 +229,7 @@ plugin_env_allowlist = [&quot;MY_PLUGIN_TOKEN&quot;]
 </ul>
 <h2 id="agents" class="text-xl font-bold tracking-tight mt-10 mb-3">Agents</h2>
 <pre><code>
-profile = &quot;default&quot;   # just a label; does NOT pick the agent
+agent = &quot;zeus&quot;   # which agent this install runs as; must name a table below
 
 [agents.default]
 display_name = &quot;Default&quot;
@@ -186,6 +243,11 @@ display_name = &quot;Zeus&quot;
 soul_file    = &quot;agents/zeus/SOUL.md&quot;
 </code></pre>
 <p class="my-3 leading-relaxed"><code>agent = &quot;zeus&quot;</code> picks which agent this install runs as (it must name a table above). No <code>[agents]</code> table means anonymous runs. See <a href="agents.html">Agents</a>.</p>
+<blockquote><strong>Removed keys.</strong> Older configs may carry a top-level <code>profile = &quot;...&quot;</code> label or a</blockquote>
+<blockquote><code>[tools]</code> table. Both were inert - <code>profile</code> never selected an agent (that is</blockquote>
+<blockquote>what <code>agent</code> does), and <code>[tools]</code> never gated tool registration (registration</blockquote>
+<blockquote>is unconditional). They were removed; old files still load, the keys are</blockquote>
+<blockquote>simply ignored. There is no replacement to configure.</blockquote>
 <h2 id="custom-providers" class="text-xl font-bold tracking-tight mt-10 mb-3">Custom providers</h2>
 <pre><code>
 [custom_providers.my-llm]
@@ -200,9 +262,96 @@ key_env  = &quot;PANTHEON_KEY_MY_LLM&quot;
 port = 18789
 host = &quot;127.0.0.1&quot;
 </code></pre>
-<p class="my-3 leading-relaxed"><code>[stt]</code> / <code>[tts]</code> pick speech-to-text and text-to-speech backends (<code>command</code> with a <code>cmd</code>, or <code>openai</code> with a <code>provider</code>).</p>
+<p class="my-3 leading-relaxed"><code>[stt]</code> / <code>[tts]</code> pick speech-to-text and text-to-speech backends. These are</p>
+<p class="my-3 leading-relaxed">provider-plane services, never model-policy entries: absent = the surface</p>
+<p class="my-3 leading-relaxed">simply has no speech capability.</p>
+<pre><code>
+[stt]
+backend = &quot;openai&quot;          # or &quot;command&quot;
+
+[stt.options]
+provider    = &quot;openai&quot;      # catalog id or base URL
+model       = &quot;whisper-1&quot;
+api_key_env = &quot;OPENAI_API_KEY&quot;  # optional: env var holding the key
+
+[tts]
+backend = &quot;command&quot;
+
+[tts.options]
+cmd          = &quot;espeak-ng&quot;
+args         = &quot;--stdout -v {voice}&quot;  # {voice}, {format} placeholders
+timeout_secs = &quot;120&quot;
+</code></pre>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><code>command</code>: a local binary. STT reads the transcript from stdout</li>
+</ul>
+<p class="my-3 leading-relaxed">  (<code>{file}</code>, <code>{language}</code> placeholders); TTS takes text on stdin and audio</p>
+<p class="my-3 leading-relaxed">  on stdout (<code>{voice}</code>, <code>{format}</code>). Every run is wall-clock bounded.</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><code>openai</code>: OpenAI-compatible HTTP (<code>/audio/transcriptions</code>,</li>
+</ul>
+<p class="my-3 leading-relaxed">  <code>/audio/speech</code>). The key resolves through the secrets broker:</p>
+<p class="my-3 leading-relaxed">  <code>api_key_env</code> names the env var explicitly, otherwise the catalog row&#x27;s</p>
+<p class="my-3 leading-relaxed">  key env (e.g. <code>OPENAI_API_KEY</code>), otherwise <code>PANTHEON_KEY_&lt;PROVIDER&gt;</code>.</p>
+<p class="my-3 leading-relaxed">  No key anywhere is fine for keyless local endpoints.</p>
+<p class="my-3 leading-relaxed">Check status with <code>/voice</code> in the TUI. There is no microphone capture or</p>
+<p class="my-3 leading-relaxed">speaker playback in the TUI - these backends move bytes for callers that</p>
+<p class="my-3 leading-relaxed">already have audio (files, other surfaces), they don&#x27;t record or play it.</p>
 <h2 id="gateway" class="text-xl font-bold tracking-tight mt-10 mb-3">Gateway</h2>
 <p class="my-3 leading-relaxed">Chat app tokens live in <code>&lt;data_dir&gt;/.env</code>, never in this file: <code>PANTHEON_DISCORD_TOKEN</code>, <code>PANTHEON_TELEGRAM_BOT_TOKEN</code>, plus the required <code>PANTHEON_GATEWAY_ALLOW</code> (who may talk to it). See <a href="channels.html">Channels</a>.</p>
+<h2 id="web-access" class="text-xl font-bold tracking-tight mt-10 mb-3">Web access</h2>
+<p class="my-3 leading-relaxed">Two separate systems, on purpose. <code>web_search</code> *looks things up* (facts, news, docs, prices); the <code>browser_*</code> tools *do things on a live site* (navigate, click, fill forms, extract from JS-heavy pages). The model picks by intent: &quot;what is X&quot; → search, &quot;do Y on site Z&quot; → browser.</p>
+<pre><code>
+[websearch]
+enabled = true
+provider = &quot;tinyfish&quot;        # one of: tinyfish (recommended), tavily, ollama, exa, marginalia, brave, firecrawl, searxng, perplexity
+# api_key_secret = &quot;TINYFISH_API_KEY&quot;  # optional override; absent = the provider&#x27;s default secret name
+# base_url = &quot;http://localhost:8080&quot;  # endpoint override for self-hosted providers (SearXNG)
+max_results = 8
+</code></pre>
+<p class="my-3 leading-relaxed">The <code>web_search</code> tool only registers when the provider&#x27;s auth requirement is met - keyed providers need their key resolvable (default secret names: <code>TINYFISH_API_KEY</code>, <code>TAVILY_API_KEY</code>, <code>OLLAMA_API_KEY</code>, <code>EXA_API_KEY</code>, <code>BRAVE_API_KEY</code>, <code>FIRECRAWL_API_KEY</code>, <code>PERPLEXITY_API_KEY</code>); Marginalia is keyless and SearXNG needs a self-hosted instance URL. Without that, the tool stays out of the model&#x27;s tool list. Store keys with <code>pantheon secrets set &lt;NAME&gt;</code> (or in <code>&lt;data_dir&gt;/.env</code>).</p>
+<pre><code>
+[browser]
+enabled = true
+# binary = &quot;/usr/local/bin/gsd-browser&quot;  # absent = resolved from PATH
+act_require_approval = true  # browser_act parks for human approval
+idle_timeout_secs = 900      # stop the run&#x27;s browser daemon when idle
+vault_key_secret = &quot;GSD_BROWSER_VAULT_KEY&quot;  # auth-vault key via secrets
+</code></pre>
+<p class="my-3 leading-relaxed">Browser automation shells out to the <a href="https://github.com/gsd-build/gsd-browser">gsd-browser</a> binary (install: <code>curl -fsSL https://install.gsd.build/browser | bash</code>). One browser daemon session maps to one Pantheon run; it starts lazily on the first <code>browser_*</code> call and stops when the run ends or after <code>idle_timeout_secs</code> of disuse. <code>browser_act</code> clicks the top semantic-intent candidate with no upstream confidence threshold, so it carries the <code>browser.act</code> capability and the run parks for your approval before it runs - leave <code>act_require_approval = true</code> unless you trust autonomous clicks.</p>
+<h2 id="mcp-servers" class="text-xl font-bold tracking-tight mt-10 mb-3">MCP servers</h2>
+<p class="my-3 leading-relaxed">MCP servers are third-party tools Pantheon launches (or connects to) and projects into the agent&#x27;s tool registry as <code>mcp_&lt;server&gt;_&lt;tool&gt;</code>. Declare them in config.toml; servers imported by <code>pantheon migrate apply</code> also appear as declarations under <code>&lt;data_dir&gt;/mcp/*.json</code>, which fill in names the config section does not define.</p>
+<pre><code>
+[mcp]
+enabled = true   # master switch; absent section = off
+
+[mcp.servers.github]
+transport = &quot;http&quot;                       # stdio | sse | http (streamable HTTP); default stdio
+url = &quot;http://localhost:8080/mcp&quot;
+# env refs below resolve at launch time: &quot;env:NAME&quot; reads the secret/vault
+# first, then the process environment. Values are never logged.
+
+[mcp.servers.github.env]
+GITHUB_TOKEN = &quot;env:GITHUB_TOKEN&quot;
+
+[mcp.servers.codebase-memory]            # a codebase index is just a server, not special-cased
+transport = &quot;stdio&quot;
+command = &quot;codebase-mcp&quot;
+args = [&quot;--repo&quot;, &quot;/home/umar/src/pantheon&quot;]
+timeout_secs = 30                        # per-request timeout; default 30
+
+[mcp.servers.codebase-memory.env]
+INDEX_DIR = &quot;/home/umar/.cache/codebase-index&quot;
+</code></pre>
+<p class="my-3 leading-relaxed">Transports: <code>stdio</code> spawns <code>command</code> with <code>args</code> (the child inherits only <code>PATH</code> plus the declared env); <code>sse</code> opens a Server-Sent Events stream and posts messages to the discovered endpoint; <code>http</code> speaks streamable HTTP (POST, with SSE fallback). Remote transports reconnect with backoff; a server that keeps failing is left alone until its backoff expires.</p>
+<p class="my-3 leading-relaxed"><strong>Approvals.</strong> A server never runs without your explicit approval: <code>pantheon mcp approve &lt;name&gt;</code> prints exactly what would launch (or where it would connect), shows the warning, and asks you to confirm by typing the server name. The approval binds the server&#x27;s name, its reported version, and a content hash of the binary/script (or the endpoint URL) - any upgrade or change invalidates it and you are asked again. <code>pantheon mcp list</code> shows what&#x27;s declared and whether it&#x27;s approved; <code>pantheon mcp status</code> and <code>pantheon mcp health &lt;name&gt;</code> report live state from the launcher&#x27;s <code>&lt;data_dir&gt;/mcp/live.json</code> snapshot; the dashboard&#x27;s MCP page shows the same merged view. <code>PANTHEON_MCP_ENABLED=0</code> forces the launcher off.</p>
+<h2 id="bundled-plugins" class="text-xl font-bold tracking-tight mt-10 mb-3">Bundled plugins</h2>
+<p class="my-3 leading-relaxed">Pantheon&#x27;s first-party plugins (today: <code>time-gap</code>, a hook plugin) share one enablement state with the dashboard and the mobile app: the config file. All bundled plugins are disabled by default.</p>
+<pre><code>
+[plugins.time-gap]
+enabled = true   # kind and version are stamped automatically when enabled
+</code></pre>
+<p class="my-3 leading-relaxed">For a bundled plugin this entry wins over the plugin manifest&#x27;s own <code>enabled</code> flag. Third-party plugins are unaffected: their gate is the approval store (<code>pantheon extensions approve</code>), not this table, and entries for names outside the bundled catalog are inert. The agent can propose enabling a bundled plugin through its <code>enable_plugin</code> tool, which parks for your approval like any other privileged action - never silent, and only catalog plugins are eligible.</p>
 <h2 id="data-directory" class="text-xl font-bold tracking-tight mt-10 mb-3">Data directory</h2>
 <p class="my-3 leading-relaxed"><code>$PANTHEON_DATA_DIR</code> or <code>~/.pantheon/</code>. Everything lives here, so backing up this folder backs up everything:</p>
 <table class="my-6"><thead><tr><th>Path</th><th>What it is</th></tr></thead><tbody>

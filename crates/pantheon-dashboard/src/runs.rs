@@ -141,6 +141,14 @@ fn rollup(entries: &[pantheon_storage::LedgerEntry]) -> Rollup {
     r
 }
 
+/// The two pin/archive list flags rendered into run JSON. Bundled so
+/// `run_json` stays under the arg-count lint as the shape grows.
+#[derive(Clone, Copy, Default)]
+struct RunFlags {
+    pinned: bool,
+    archived: bool,
+}
+
 fn run_json(
     run_id: &str,
     status: &str,
@@ -148,8 +156,7 @@ fn run_json(
     title: Option<&str>,
     r: &Rollup,
     project: Option<&str>,
-    pinned: bool,
-    archived: bool,
+    flags: RunFlags,
 ) -> serde_json::Value {
     serde_json::json!({
         "id": run_id,
@@ -169,8 +176,8 @@ fn run_json(
         "updated_ms": r.updated_ms,
         "last_activity": r.last_activity,
         "project": project,
-        "pinned": pinned,
-        "archived": archived,
+        "pinned": flags.pinned,
+        "archived": flags.archived,
     })
 }
 
@@ -262,8 +269,7 @@ pub fn list(app: &App, req: &Request) -> Response {
             title.as_deref(),
             &r,
             project.as_deref(),
-            pinned,
-            archived,
+            RunFlags { pinned, archived },
         ));
         if out.len() >= limit {
             break;
@@ -455,7 +461,7 @@ fn fmt_tool_ms(ms: i64) -> String {
 /// Cap a timeline detail at `max_chars` characters (timeline rows must
 /// stay glanceable; the full text lives in the ledger).
 fn cap(s: &str, max_chars: usize) -> String {
-    let mut out: String = s.chars().take(max_chars).collect();
+    let mut out: String = s.chars().take(max_chars.saturating_sub(3)).collect();
     if s.chars().count() > max_chars {
         out.push_str("...");
     }
@@ -542,8 +548,7 @@ fn detail_value(app: &App, run_id: &str) -> Result<serde_json::Value, Response> 
         Some(&title),
         &r,
         project.as_deref(),
-        pinned,
-        archived,
+        RunFlags { pinned, archived },
     );
     v["transcript"] = serde_json::Value::Array(transcript);
     v["timeline"] = serde_json::Value::Array(timeline);
@@ -829,14 +834,11 @@ pub fn send_message(app: &App, run_id: &str, req: &Request) -> Response {
     // transcript from the ledger, so a settled session keeps talking.
     // Only a parked run (awaiting approval) refuses a new turn until it
     // is granted or denied.
-    match ledger.status(run_id).unwrap_or(None).as_deref() {
-        Some("awaiting_approval") => {
-            return conflict(
-                "RUN_PARKED",
-                &format!("run {run_id} is parked on approval; grant or deny it first"),
-            )
-        }
-        _ => {}
+    if ledger.status(run_id).unwrap_or(None).as_deref() == Some("awaiting_approval") {
+        return conflict(
+            "RUN_PARKED",
+            &format!("run {run_id} is parked on approval; grant or deny it first"),
+        );
     }
     // Serialize turn-starting requests per run: the busy-check → drain →
     // spawn sequence below must be atomic, or two concurrent POSTs both
@@ -992,14 +994,11 @@ pub fn retry_turn(app: &App, run_id: &str) -> Response {
         Ok(_) => return err_json(404, "NOT_FOUND", "unknown run"),
         Err(e) => return err_json(500, "LEDGER", &format!("replay: {e}")),
     };
-    match ledger.status(run_id).unwrap_or(None).as_deref() {
-        Some("awaiting_approval") => {
-            return conflict(
-                "RUN_PARKED",
-                &format!("run {run_id} is parked on approval; grant or deny it first"),
-            )
-        }
-        _ => {}
+    if ledger.status(run_id).unwrap_or(None).as_deref() == Some("awaiting_approval") {
+        return conflict(
+            "RUN_PARKED",
+            &format!("run {run_id} is parked on approval; grant or deny it first"),
+        );
     }
     let send_lock = app.send_guard(run_id);
     let _send_guard = send_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -1605,7 +1604,7 @@ pub fn set_project(app: &App, run_id: &str, req: &Request) -> Response {
         None | Some(serde_json::Value::Null) => None,
         Some(v) => match v.as_str().map(str::trim) {
             // Documented contract: an empty name unassigns, like null.
-            Some(s) if s.is_empty() => None,
+            Some("") => None,
             Some(s) if s.chars().count() > PROJECT_MAX_CHARS => {
                 return bad_json("field \"project\" exceeds 128 characters")
             }

@@ -253,7 +253,8 @@ fn enable_bundled(app: &App, kind: &str, name: &str, enabled: bool) -> Option<Re
 /// - `malicious` → 409 SCAN_BLOCKED, always;
 /// - `suspicious` → 409 RISK_ACK_REQUIRED unless the body carries
 ///   `{"acknowledge_risk": true}`;
-/// - `clean` (or no report) → the normal flow.
+/// - `clean` (or no report) leads to the normal flow.
+///
 /// Approving a quarantined import promotes its tree into the live dir
 /// first; the scan report and import metadata travel with it as an audit
 /// trail. Non-quarantined plugins keep the existing behavior exactly.

@@ -105,6 +105,31 @@ pantheon gateway restart|stop|status|run
 </code></pre>
 <p class="my-3 leading-relaxed">Two things are required, no exceptions: your chat app tokens (put them in <code>&lt;data_dir&gt;/.env</code>, never in the config file) and a list of who is allowed to talk to it (<code>PANTHEON_GATEWAY_ALLOW</code>). Strangers are turned away before anything reaches the assistant.</p>
 <p class="my-3 leading-relaxed">Replies go out with <code>pantheon run --say ... --deliver telegram|discord</code>. Outgoing messages are saved first, so they get delivered even if the gateway was down when they were queued.</p>
+<h3 id="multiple-bots-multiple-agents" class="font-bold mt-6 mb-2">Multiple bots, multiple agents</h3>
+<p class="my-3 leading-relaxed">One gateway can run several bots on the same platform, each served by a different agent. Declare a <code>[gateway.channels.&lt;name&gt;]</code> entry per bot with its <code>platform</code>, its token, and its <code>profile</code>:</p>
+<pre><code>
+[agents.support]
+display_name = &quot;Support&quot;
+policy = &quot;reader&quot;
+soul_file = &quot;agents/support/SOUL.md&quot;
+
+[agents.coder]
+display_name = &quot;Coder&quot;
+policy = &quot;coder&quot;
+soul_file = &quot;agents/coder/SOUL.md&quot;
+
+[gateway.channels.support-bot]
+platform = &quot;telegram&quot;
+token_secret = &quot;SUPPORT_BOT_TOKEN&quot;   # read from &lt;data_dir&gt;/gateway.env (or the process env)
+profile = &quot;support&quot;
+
+[gateway.channels.coder-bot]
+platform = &quot;telegram&quot;
+token_secret = &quot;CODER_BOT_TOKEN&quot;
+profile = &quot;coder&quot;
+</code></pre>
+<p class="my-3 leading-relaxed">Each channel gets its own poller, its own outbound queue, and its own agent runtime: a message on the support bot is answered by the support agent with the support memory namespace, and the coder bot never sees it. Thread ids are namespaced per channel, so two bots&#x27; conversations can&#x27;t collide. Leave <code>token_secret</code> out and the channel falls back to the platform&#x27;s standard token (<code>PANTHEON_TELEGRAM_BOT_TOKEN</code>); leave <code>profile</code> out and it uses the default profile. Channels that don&#x27;t declare a <code>platform</code> keep the old single-bot behavior exactly. An unknown <code>profile</code> stops the gateway at startup with a clear error instead of serving the wrong agent.</p>
+<p class="my-3 leading-relaxed">Deliver to a specific bot with <code>pantheon run --say ... --deliver support-bot</code>.</p>
 <h2 id="voice-api-mobile" class="text-xl font-bold tracking-tight mt-10 mb-3">Voice API (mobile)</h2>
 <p class="my-3 leading-relaxed">The serve API exposes the voice edge so the mobile app can talk to</p>
 <p class="my-3 leading-relaxed">the assistant hands-free. Both routes inherit the serve token and</p>

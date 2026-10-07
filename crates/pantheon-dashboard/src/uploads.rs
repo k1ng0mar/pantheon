@@ -57,7 +57,7 @@ fn new_upload_id() -> String {
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let sequence = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let n = (sequence as u32).wrapping_add(std::process::id()) % 10_000;
+    let n = sequence.wrapping_add(std::process::id()) % 10_000;
     format!("upl_{ms}_{n:04}")
 }
 
@@ -147,13 +147,11 @@ fn valid_id_shape(id: &str) -> bool {
     };
     let mut parts = rest.split('_');
     match (parts.next(), parts.next(), parts.next()) {
-        (Some(a), Some(b), None)
-            if !a.is_empty()
+        (Some(a), Some(b), None) => {
+            !a.is_empty()
                 && !b.is_empty()
                 && a.bytes().all(|c| c.is_ascii_digit())
-                && b.bytes().all(|c| c.is_ascii_digit()) =>
-        {
-            true
+                && b.bytes().all(|c| c.is_ascii_digit())
         }
         _ => false,
     }

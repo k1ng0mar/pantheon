@@ -307,12 +307,14 @@ pub fn create_job(app: &App, req: &Request) -> Response {
         };
         if let Err(e) = expand_template(
             t,
-            &mut input.vars,
-            &mut input.model,
-            &mut input.provider,
-            &mut input.task,
-            &mut input.every,
-            &mut input.cron,
+            pantheon_scheduler::templates::TemplateParams {
+                vars: &mut input.vars,
+                model: &mut input.model,
+                provider: &mut input.provider,
+                task: &mut input.task,
+                every: &mut input.every,
+                cron: &mut input.cron,
+            },
             has_schedule,
             &mut collect,
         ) {
@@ -407,7 +409,7 @@ pub fn update_job(app: &App, req: &Request, id: &str) -> Response {
     // load and save. Validation failures are data, not store errors:
     // the lock is released and the file rewrite is a harmless no-op.
     enum Edit {
-        Done(ScheduledJob),
+        Done(Box<ScheduledJob>),
         Bad(String),
         Missing,
     }
@@ -642,7 +644,7 @@ pub fn update_job(app: &App, req: &Request, id: &str) -> Response {
                 Err(e) => return Ok(Edit::Bad(format!("bad overlap: {e}"))),
             }
         }
-        Ok(Edit::Done(jobs[pos].clone()))
+        Ok(Edit::Done(Box::new(jobs[pos].clone())))
     }) {
         Ok(o) => o,
         Err(e) => return err_json(500, "SCHEDULE", &e),

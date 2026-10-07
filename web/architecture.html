@@ -121,7 +121,7 @@
 <h2 id="permissions" class="text-xl font-bold tracking-tight mt-10 mb-3">Permissions</h2>
 <p class="my-3 leading-relaxed">The security backbone: fine-grained capabilities (<code>filesystem.read</code>, <code>shell.execute</code>, <code>git.push</code>, <code>memory.write</code>, <code>agent.spawn</code>, ...) mapped through per-agent policies. Knowing something never means being allowed to do something: skills, memories, and tool descriptions inform; only the policy permits.</p>
 <h2 id="execution" class="text-xl font-bold tracking-tight mt-10 mb-3">Execution</h2>
-<p class="my-3 leading-relaxed">Tools run inside sandbox boundaries chosen by the policy (process isolation up to containers/VMs). A boundary that cannot start fails closed: the tool reports <code>SANDBOX_UNAVAILABLE</code> instead of running unconfined. File writes go through atomic apply with checkpoints and rollback.</p>
+<p class="my-3 leading-relaxed">Tools run inside sandbox boundaries chosen by the policy (process isolation up to containers and strict namespace jails - there is no VM backend). A boundary that cannot start fails closed: the tool reports <code>SANDBOX_UNAVAILABLE</code> instead of running unconfined. File writes go through atomic apply with checkpoints and rollback.</p>
 <h2 id="memory-and-storage" class="text-xl font-bold tracking-tight mt-10 mb-3">Memory and storage</h2>
 <p class="my-3 leading-relaxed">Five memory layers (global → agent → project → task → ephemeral) behind one write path: suggest → permission → label the source → validate → store. Storage is SQLite by default: the event record, durable operation state, and a search index for sessions, all in one file.</p>
 <h2 id="secrets" class="text-xl font-bold tracking-tight mt-10 mb-3">Secrets</h2>
@@ -129,7 +129,7 @@
 <h2 id="providers" class="text-xl font-bold tracking-tight mt-10 mb-3">Providers</h2>
 <p class="my-3 leading-relaxed">Transport adapters only: OpenAI-compatible and Anthropic behind one <code>ModelTurn</code> interface, no SDKs above the provider crate. Default model, failure-only backup chain, per-job helper models. No routing; agents never pick models.</p>
 <h2 id="surfaces" class="text-xl font-bold tracking-tight mt-10 mb-3">Surfaces</h2>
-<p class="my-3 leading-relaxed">Terminal app, terminal commands, web (<code>serve</code>), and chat gateways (Discord, Telegram) all drive the same assistant off the same record. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default; foreign plugin formats load through a compat adapter that only maps real matches.</p>
+<p class="my-3 leading-relaxed">Terminal app, terminal commands, web (<code>serve</code>), and chat gateways (Discord, Telegram) all drive the same assistant off the same record. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default (gates fail closed); foreign plugin formats load through a compat adapter in <code>pantheon-migration</code> that only maps real matches. Plugins are not sandboxed: secrets are scrubbed from their environment, but they run with the operator&#x27;s full user privileges, so enabling a third-party plugin requires explicit recorded approval.</p>
 <h2 id="migration" class="text-xl font-bold tracking-tight mt-10 mb-3">Migration</h2>
 <p class="my-3 leading-relaxed"><code>pantheon migrate hermes|openclaw|omp|claude</code>: detect → plan → approve → backup → apply → validate. The apply is transactional (stage → validate → commit): everything found is imported or archived with a reason, nothing silently dropped, credentials never written outside <code>&lt;data_dir&gt;/.env</code>.</p>
 <h2 id="locked-decisions" class="text-xl font-bold tracking-tight mt-10 mb-3">Locked decisions</h2>
@@ -143,23 +143,22 @@
 <p>8. Migration keeps provenance; anything unmappable is archived, not dropped.</p>
 <h2 id="crate-map" class="text-xl font-bold tracking-tight mt-10 mb-3">Crate map</h2>
 <table class="my-6"><thead><tr><th>Crate</th><th>Role</th></tr></thead><tbody>
-<tr><td><code>pantheon-api</code></td><td>Events, errors, capabilities, model policy, identifiers (bottom leaf)</td></tr>
+<tr><td><code>pantheon-api</code></td><td>Events, errors, capabilities, model policy, identifiers, config document, plugin approval, agent profiles, nightly protocol (bottom leaf)</td></tr>
 <tr><td><code>pantheon-storage</code></td><td>The record, claims, leases, session search</td></tr>
-<tr><td><code>pantheon-runtime</code></td><td>Supervisor, recovery, sessions, Runtime API (<code>serve</code>/<code>rpc</code>)</td></tr>
-<tr><td><code>pantheon-agent</code></td><td>Agent loop, permission gate, budgets</td></tr>
-<tr><td><code>pantheon-exec</code></td><td>Process/file execution engine, skills, plugins, supervision</td></tr>
+<tr><td><code>pantheon-runtime</code></td><td>Supervisor, recovery, sessions, Runtime API (<code>serve</code>/<code>rpc</code>), swarm coordination</td></tr>
+<tr><td><code>pantheon-agent</code></td><td>Agent loop, permission gate, budgets, capability policy/role maps</td></tr>
+<tr><td><code>pantheon-exec</code></td><td>Process/file execution engine, skills, plugins, supervision, sandbox levels + enforcement</td></tr>
 <tr><td><code>pantheon-tools</code></td><td>Callable tools + registry (builtins, memory/vault/session-search/skill tools)</td></tr>
-<tr><td><code>pantheon-capability</code></td><td>Policy/role maps</td></tr>
-<tr><td><code>pantheon-sandbox</code></td><td>Levels, profiles, enforcement</td></tr>
+<tr><td><code>pantheon-web</code></td><td>Browser automation + web search</td></tr>
 <tr><td><code>pantheon-memory</code></td><td>Layers, write path, backends</td></tr>
 <tr><td><code>pantheon-secrets</code></td><td>Vaults, broker</td></tr>
 <tr><td><code>pantheon-providers</code></td><td>Adapters, catalog, backup chain</td></tr>
-<tr><td><code>pantheon-extensions</code></td><td>Hooks, manifests, runners, compat</td></tr>
+<tr><td><code>pantheon-extensions</code></td><td>Hooks, manifests, runners</td></tr>
 <tr><td><code>pantheon-scheduler</code></td><td>Triggers, durable claims</td></tr>
 <tr><td><code>pantheon-gateway</code></td><td>Channels, allowlist, delivery</td></tr>
-<tr><td><code>pantheon-swarm</code></td><td>Spawn caps</td></tr>
 <tr><td><code>pantheon-mcp</code></td><td>Token → capability projection</td></tr>
-<tr><td><code>pantheon-migration</code></td><td>Source importers</td></tr>
+<tr><td><code>pantheon-migration</code></td><td>Source importers, foreign-plugin compat adapter</td></tr>
+<tr><td><code>pantheon-dashboard</code></td><td>Web control plane (config editor, schedules, logs)</td></tr>
 <tr><td><code>pantheon-tui</code></td><td>Terminal application: interactive session + non-interactive commands</td></tr>
 </tbody></table>
 <h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
