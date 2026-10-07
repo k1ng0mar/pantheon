@@ -328,6 +328,7 @@ fn query_usize(q: &HashMap<String, String>, key: &str, default: usize) -> usize 
 
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 const STYLE_CSS: &str = include_str!("../assets/style.css");
+const TOKENS_CSS: &str = include_str!("../assets/tokens.css");
 const APP_JS: &str = include_str!("../assets/app.js");
 const MANIFEST_JSON: &str = include_str!("../assets/manifest.json");
 const SW_JS: &str = include_str!("../assets/sw.js");
@@ -340,8 +341,8 @@ const ICON_512: &[u8] = include_bytes!("../assets/icon-512.png");
 
 /// THE single path-normalization point for the dashboard mount.
 ///
-/// Splits on '/', drops empty segments, then percent-decodes each segment
-/// - in exactly this order, so an encoded '/' (`%2F`) never creates a new
+/// Splits on '/', drops empty segments, then percent-decodes each segment,
+/// in exactly this order, so an encoded '/' (`%2F`) never creates a new
 /// segment. `auth_group` and `dispatch` MUST both go through this function:
 /// the auth decision and the route decision have to see the same path, or
 /// encoded/empty-segment variants (`/%61pi/runs`, `//api/runs`) slip past
@@ -359,6 +360,9 @@ fn dispatch(app: &App, req: &Request) -> Response {
     // Static shell: no token needed (it cannot do anything without one).
     if req.method == "GET" && segs.is_empty() {
         return Response::ok_html(INDEX_HTML);
+    }
+    if req.method == "GET" && segs == ["tokens.css"] {
+        return Response::ok_css(TOKENS_CSS);
     }
     if req.method == "GET" && segs == ["style.css"] {
         return Response::ok_css(STYLE_CSS);
@@ -748,6 +752,7 @@ mod route_tests {
     use pantheon_api::message::{Message, ToolCallRef};
     use pantheon_api::provenance::Provenance;
     use pantheon_storage::Ledger;
+    use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -804,7 +809,7 @@ mod route_tests {
         }
     }
 
-    fn run_exists(data_dir: &PathBuf, run_id: &str) -> bool {
+    fn run_exists(data_dir: &Path, run_id: &str) -> bool {
         let ledger = Ledger::open(&data_dir.join("ledger.db")).expect("open ledger");
         !ledger.replay(run_id).expect("replay").is_empty()
     }
@@ -877,7 +882,7 @@ mod route_tests {
     }
 
     /// Seed `n` queued messages on `run-1` ("msg-0" .. "msg-{n-1}").
-    fn seed_queue(data_dir: &PathBuf, n: usize) {
+    fn seed_queue(data_dir: &Path, n: usize) {
         let ledger = Ledger::open(&data_dir.join("ledger.db")).expect("open ledger");
         for i in 0..n {
             ledger
@@ -886,7 +891,7 @@ mod route_tests {
         }
     }
 
-    fn queue_of(data_dir: &PathBuf) -> Vec<String> {
+    fn queue_of(data_dir: &Path) -> Vec<String> {
         let ledger = Ledger::open(&data_dir.join("ledger.db")).expect("open ledger");
         ledger.queued_messages("run-1").expect("read queue")
     }

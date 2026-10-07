@@ -27,6 +27,10 @@
 //! type, extract from JS-heavy pages that snippets cannot cover.
 
 use super::backend::BrowserBackend;
+
+/// Narration sink: invoked with `(session, action, detail)` before every
+/// backend call so the app can subtitle what the agent is doing.
+pub type ActivitySink = Arc<dyn Fn(&str, &str, &str) + Send + Sync>;
 use super::error::BrowserError;
 use super::fill::{find_login_fields, host_matches_site, FillError};
 use super::lifecycle::{sanitize_session_name, SessionManager, DEFAULT_IDLE_TIMEOUT_SECS};
@@ -64,7 +68,7 @@ pub struct BrowserOptions {
     /// is doing ("Tapping...", "Opening example.com..."). The runtime wires
     /// this to the event ledger; `detail` is display-safe by construction
     /// (see [`activity_of`]) - hosts only, never full URLs or typed text.
-    pub on_activity: Option<Arc<dyn Fn(&str, &str, &str) + Send + Sync>>,
+    pub on_activity: Option<ActivitySink>,
     /// Website-login vault for [`register_fill_login`]. When `None` the
     /// tool is not registered. The runtime opens it from the data dir
     /// (`logins.json` + `logins.env`); passwords only ever leave through
@@ -132,7 +136,7 @@ struct Ctx {
     backend: Arc<dyn BrowserBackend>,
     sessions: Arc<SessionManager>,
     run_id: Arc<dyn Fn() -> String + Send + Sync>,
-    on_activity: Option<Arc<dyn Fn(&str, &str, &str) + Send + Sync>>,
+    on_activity: Option<ActivitySink>,
     login_store: Option<Arc<LoginStore>>,
     /// Last navigated URL per session name. The canonical command
     /// vocabulary has no "current URL" query, so `browser_fill_login`

@@ -1,71 +1,8 @@
-/* Pantheon dashboard  -  clean product UI.
-   Light and dark themes via [data-theme] on <html> (dark default).
-   Accent: brand purple #7223FF. Status colors only green/amber/red.
-   No gradients, no fake data. */
+@import url("tokens.css");
 
-:root, [data-theme="dark"] {
-  --bg: #0b0d12;
-  --bg-soft: #0e1118;
-  --panel: #12151d;
-  --panel-2: #161a24;
-  --inset-bg: #0a0c10;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-soft: rgba(255, 255, 255, 0.05);
-  --text: #e8eaf0;
-  --text-dim: #a0a8b8;
-  --text-faint: #828da3;
-  --accent: #7223ff;
-  --accent-strong: #a58bff;
-  --accent-hover: #5e1fe8;
-  --accent-soft: rgba(114, 35, 255, 0.14);
-  --accent-border: rgba(114, 35, 255, 0.38);
-  --green: #3ecf8e;
-  --green-soft: rgba(62, 207, 142, 0.12);
-  --green-border: rgba(62, 207, 142, 0.3);
-  --amber: #f5b942;
-  --amber-soft: rgba(245, 185, 66, 0.12);
-  --amber-border: rgba(245, 185, 66, 0.3);
-  --red: #f26d6d;
-  --red-soft: rgba(242, 109, 109, 0.12);
-  --red-border: rgba(242, 109, 109, 0.3);
-  --hover: rgba(255, 255, 255, 0.04);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.45);
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
-  --radius: 10px;
-  --radius-sm: 7px;
-}
-
-[data-theme="light"] {
-  --bg: #f6f7f9;
-  --bg-soft: #eef0f3;
-  --panel: #ffffff;
-  --panel-2: #f8f9fb;
-  --inset-bg: #f1f3f6;
-  --border: #e4e7ec;
-  --border-soft: #edf0f4;
-  --text: #16191f;
-  --text-dim: #5b6472;
-  --text-faint: #6b7484;
-  --accent: #7223ff;
-  --accent-strong: #5f1fd6;
-  --accent-hover: #5e1fe8;
-  --accent-soft: rgba(114, 35, 255, 0.1);
-  --accent-border: rgba(114, 35, 255, 0.32);
-  --green: #1f9d63;
-  --green-soft: rgba(31, 157, 99, 0.1);
-  --green-border: rgba(31, 157, 99, 0.28);
-  --amber: #b97e12;
-  --amber-soft: rgba(185, 126, 18, 0.1);
-  --amber-border: rgba(185, 126, 18, 0.28);
-  --red: #d64545;
-  --red-soft: rgba(214, 69, 69, 0.09);
-  --red-border: rgba(214, 69, 69, 0.28);
-  --hover: rgba(22, 25, 31, 0.04);
-  --shadow: 0 1px 2px rgba(22, 25, 31, 0.06);
-  --shadow-lg: 0 16px 48px rgba(22, 25, 31, 0.14);
-}
+/* Pantheon dashboard - clean product UI.
+   Design tokens from tokens.css (Pantheon design system).
+   Light and dark themes via [data-theme] on <html> (dark default). */
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }

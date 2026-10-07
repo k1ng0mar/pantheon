@@ -104,12 +104,19 @@ display_name = &quot;Zeus&quot;
 soul_file    = &quot;agents/zeus/SOUL.md&quot;
 </code></pre>
 <p class="my-3 leading-relaxed"><code>pantheon setup</code> creates the <code>default</code> agent for you. Add more for specialists: a researcher, a coder, a planner. Each one inherits the shared defaults but keeps its own name, memory, and permission level. Pick the active one with <code>agent = &quot;zeus&quot;</code>. If you define no agents at all, Pantheon just runs anonymously, like before.</p>
+<p class="my-3 leading-relaxed">To open the terminal as a different agent for one session without changing the config:</p>
+<pre><code>
+pantheon --profile zeus   # -p zeus and --agent zeus work too
+</code></pre>
+<p class="my-3 leading-relaxed">An unknown name fails before the terminal opens, with the fix spelled out - it never silently falls back to another agent.</p>
 <p class="my-3 leading-relaxed">All the fields are explained in <a href="configuration.html#agents">Configuration</a>.</p>
 <h2 id="working-together" class="text-xl font-bold tracking-tight mt-10 mb-3">Working together</h2>
 <p class="my-3 leading-relaxed">One agent can hand a subtask to another in the middle of a conversation, just by naming it in plain language:</p>
 <blockquote>&quot;Ask Zeus to research the error handling, then combine it with what you found.&quot;</blockquote>
 <p class="my-3 leading-relaxed">The child runs as that agent, with its own personality and memory, and hands back what it found. It never makes up a result: if it gets stuck waiting for permission or runs out of budget, it reports a clear error instead of going quiet.</p>
 <p class="my-3 leading-relaxed">There are safety rails: delegation can only nest so deep (configurable, default 2), and too much at once is refused rather than allowed to spiral.</p>
+<p class="my-3 leading-relaxed">Every spawned child gets a self-contained briefing: its own identity, its persona and instruction files inlined verbatim (nothing arrives as a bare path it may or may not read), your active <code>/goal</code>, and a fixed result contract. The child reports back in a machine-parseable envelope - <code>status</code> (<code>completed</code>, <code>partial</code>, <code>failed</code>, or <code>unknown</code>), files changed, a summary of what it actually did, its decisions, open questions, and follow-ups. Free-text replies that skip the envelope degrade to <code>unknown</code> and are never treated as done.</p>
+<p class="my-3 leading-relaxed">Optionally, add a <code>[verify]</code> section to your config and each child&#x27;s claimed result is checked by a separate adversarial model before you see it: the verifier assumes the goal was *not* achieved and must be convinced otherwise. A falsified claim fails the delegation outright; an inconclusive one is marked unverified, never accepted as complete. Verification is opt-in - without <code>[verify]</code> there is no verifier and results arrive with no verification mark. See <a href="configuration.html">Configuration</a> for the section shape.</p>
 <pre><code>
 pantheon swarm status [&lt;id&gt;] | list   # see past collaborations; this command never starts new work
 </code></pre>

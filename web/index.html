@@ -32,33 +32,34 @@
       }
     }
   </script>
+  <link rel="stylesheet" href="tokens.css">
   <style>
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
-    body { background: #fafaf9; color: #141417; font-family: 'Alpino', sans-serif; font-size: 1.0625rem; line-height: 1.7; }
+    body { background: var(--ground); color: var(--ink); font-family: 'Alpino', sans-serif; font-size: 1.0625rem; line-height: 1.7; }
     .t-display { font-family: 'Array', sans-serif; font-weight: 600; font-size: clamp(2.75rem, 3rem + 4vw, 4.75rem); line-height: 1.03; letter-spacing: -0.025em; }
     .t-statement { font-family: 'Array', sans-serif; font-weight: 500; font-size: clamp(1.6rem, 1.4rem + 1.5vw, 2.25rem); line-height: 1.25; letter-spacing: -0.015em; }
-    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
     .logo-mark { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; flex: none;
       filter: drop-shadow(0 2px 8px rgba(114,35,255,.25)); transition: transform .2s; }
     .logo-mark:hover { transform: scale(1.08); }
     .logo-mark img { height: 38px; width: auto; }
-    .cmdbox { background: #f1efeb; border: 1px solid #e9e6e1; border-radius: 20px; padding: 1.25rem 1.4rem; }
-    .cmdbox code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #141417; }
-    code:not(.cmdbox code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
-    .copy-btn { border: 1px solid #e9e6e1; background: #fafaf9; color: #6f6f76; border-radius: 999px; padding: .45rem 1rem; font-family: 'JetBrains Mono', monospace; font-size: .75rem; flex: none; min-height: 44px; }
-    .copy-btn:hover { color: #141417; border-color: #6f6f76; }
-    .copy-btn[data-state="done"] { color: #2e7d46; border-color: #2e7d46; }
-    .btn-primary { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: .85rem 2rem; background: #7223FF; color: #fff; font-weight: 600; font-size: 1rem; border-radius: 999px; }
-    .btn-primary:hover { background: #5c1de0; }
-    .btn-ghost { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: .85rem 2rem; border: 1px solid #e9e6e1; color: #141417; font-weight: 500; font-size: 1rem; border-radius: 999px; }
-    .btn-ghost:hover { border-color: #141417; }
-    .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: #7223FF; }
+    .cmdbox { background: var(--inset); border: 1px solid var(--rule); border-radius: 20px; padding: 1.25rem 1.4rem; }
+    .cmdbox code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: var(--ink); }
+    code:not(.cmdbox code) { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: var(--accent-strong); }
+    .copy-btn { border: 1px solid var(--rule); background: #fafaf9; color: var(--ink-2); border-radius: 999px; padding: .45rem 1rem; font-family: 'JetBrains Mono', monospace; font-size: .75rem; flex: none; min-height: 44px; }
+    .copy-btn:hover { color: var(--ink); border-color: var(--ink-2); }
+    .copy-btn[data-state="done"] { color: var(--green); border-color: var(--green); }
+    .btn-primary { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: .85rem 2rem; background: var(--accent); color: #fff; font-weight: 600; font-size: 1rem; border-radius: 999px; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-ghost { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: .85rem 2rem; border: 1px solid var(--rule); color: var(--ink); font-weight: 500; font-size: 1rem; border-radius: 999px; }
+    .btn-ghost:hover { border-color: var(--ink); }
+    .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
     summary { list-style: none; cursor: pointer; }
     summary::-webkit-details-marker { display: none; }
-    .plus { display: inline-block; transition: transform .15s; color: #6f6f76; font-weight: 400; }
+    .plus { display: inline-block; transition: transform .15s; color: var(--ink-2); font-weight: 400; }
     details[open] summary .plus { transform: rotate(45deg); }
-    a.link { color: #7223FF; }
+    a.link { color: var(--accent); }
     a.link:hover { text-decoration: underline; text-underline-offset: 3px; }
     #touch-glow { position: fixed; width: 400px; height: 400px; border-radius: 50%; pointer-events: none; z-index: 1;
       background: radial-gradient(circle, rgba(114,35,255,0.08) 0%, rgba(114,35,255,0) 70%);

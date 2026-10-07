@@ -166,7 +166,7 @@ fn entry_count_cap_is_enforced() {
 /// Real-world zips made with `zip --symlinks` carry such entries;
 /// `SimpleFileOptions` cannot produce them because `unix_permissions`
 /// masks off the file-type bits.
-fn mark_first_entry_symlink(zip_bytes: &mut Vec<u8>) {
+fn mark_first_entry_symlink(zip_bytes: &mut [u8]) {
     let sig = [0x50u8, 0x4b, 0x01, 0x02]; // central directory file header
     let start = zip_bytes
         .windows(4)

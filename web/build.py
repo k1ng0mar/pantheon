@@ -26,6 +26,7 @@ PAGES = {
     "user-guide/memory.md": "memory.html",
     "user-guide/runs.md": "runs.html",
     "user-guide/channels.md": "channels.html",
+    "user-guide/cloudflare.md": "cloudflare.html",
     "user-guide/providers.md": "providers.html",
     "user-guide/extensions.md": "extensions.html",
     "user-guide/mcp.md": "mcp.html",

@@ -265,6 +265,7 @@ fn budget_for(cfg: Option<&Config>) -> pantheon_agent::Budget {
             max_tokens: b.max_tokens.filter(|&v| v > 0),
             max_delegate_depth: nz(b.max_delegate_depth, 2),
             allow_child_spawn: true,
+            max_consecutive_tool_failures: 5,
         },
     }
 }
@@ -365,11 +366,7 @@ mod budget_tiering_tests {
         // ... and the kept-apart configured-cap slot must hold it too, so
         // `/tokens off` semantics (fall back to the config tier) match
         // the TUI.
-        let configured = session
-            .budget_max_tokens
-            .lock()
-            .expect("budget lock")
-            .clone();
+        let configured = *session.budget_max_tokens.lock().expect("budget lock");
         assert_eq!(configured, Some(5000));
         // End to end through the real precedence function: config tier
         // wins over the model max / 16k fallback when the session has no

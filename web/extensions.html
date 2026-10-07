@@ -110,10 +110,38 @@ provides_hooks:
 <li>Three crashes in a row disables the plugin for the session, loudly. A new session gives it another chance.</li>
 <li>Nothing bypasses your permissions. A plugin&#x27;s tools need capabilities like any built-in tool.</li>
 </ul>
+<h2 id="security-approval-and-privileges" class="text-xl font-bold tracking-tight mt-10 mb-3">Security: approval and privileges</h2>
+<p class="my-3 leading-relaxed">Pantheon does <strong>not</strong> sandbox plugins. Secrets (API keys, tokens) are scrubbed from a plugin&#x27;s environment, but a plugin otherwise runs with <strong>your full user privileges</strong>: it can read and write your files, access the network, and execute commands as you. Gate hooks fail closed (a crash denies the action), but that is a fail-safe, not isolation.</p>
+<p class="my-3 leading-relaxed">Because of that, a third-party plugin never runs until you explicitly approve it:</p>
+<pre><code>
+pantheon extensions approve my-plugin
+pantheon plugins approve my-plugin
+</code></pre>
+<p class="my-3 leading-relaxed">You will see a warning describing exactly what approval means. <strong>Approving is informed consent to the plugin running with your full privileges</strong> - only approve plugins from sources you trust. The approval is recorded (name, version, content hash, timestamp); if the plugin&#x27;s code changes afterwards, the approval lapses and you are asked again.</p>
+<p class="my-3 leading-relaxed">Plugins shipped with Pantheon (under <code>bundled/</code>) are first-party and don&#x27;t need approval. Everything else is third-party.</p>
+<h2 id="bundled-plugins-one-enablement-state" class="text-xl font-bold tracking-tight mt-10 mb-3">Bundled plugins: one enablement state</h2>
+<p class="my-3 leading-relaxed">Pantheon ships a small catalog of first-party plugins (today: <code>time-gap</code>, a hook plugin that injects an implicit time-gap sense into the prompt). Like bundled MCP servers, they follow one lifecycle: <strong>all disabled by default</strong>, toggleable in the config file, the dashboard, and the mobile app, which all share a single enablement state.</p>
+<pre><code>
+[plugins.time-gap]
+enabled = true
+</code></pre>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li>The config file is the source of truth. The dashboard&#x27;s plugin list and the mobile app read and write the same <code>[plugins.&lt;name&gt;]</code> entries, so the three surfaces can never disagree.</li>
+<li>The plugin&#x27;s files are materialized automatically: on startup the runtime copies the shipped source into <code>&lt;data_dir&gt;/extensions/bundled/&lt;name&gt;/</code> (without touching anything already there). Seeding never enables - files sit inert until you flip the flag.</li>
+<li>For a bundled plugin, the config entry wins over the plugin manifest&#x27;s own <code>enabled</code> flag. For a third-party plugin, the approval store (above) remains the gate - unapproved third-party code never loads no matter what any flag says.</li>
+<li>The agent can propose enabling a bundled plugin, but never silently: the proposal goes through the normal approval flow (the run parks, the request is audit-logged, and the plugin switches on only if you grant). Only catalog plugins can be proposed - there is no agent path to install arbitrary plugins.</li>
+</ul>
+<h2 id="plugins-vs-mcps-the-trust-distinction" class="text-xl font-bold tracking-tight mt-10 mb-3">Plugins vs MCPs: the trust distinction</h2>
+<p class="my-3 leading-relaxed">Both extend what the agent can do, and they are trusted completely differently - the approval UI surfaces this on purpose:</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li>A <strong>plugin</strong> is code Pantheon itself runs on your machine: the runtime loads its manifest and executes it (tool plugins as spawned runner processes behind the capability gate, hook plugins as per-fire child processes with a scrubbed environment). Either way it runs with your user privileges, unsandboxed. Enabling a plugin is consent to run its code.</li>
+<li>An <strong>MCP server</strong> is an out-of-process integration: Pantheon speaks the MCP protocol to it but never executes its code - the server may run on another machine entirely. Trust there is in the endpoint and its configuration, not in shipped code.</li>
+</ul>
 <h2 id="manage-and-debug" class="text-xl font-bold tracking-tight mt-10 mb-3">Manage and debug</h2>
 <pre><code>
-pantheon plugins list|install &lt;name&gt;|enable|disable &lt;name&gt;
-pantheon extensions                 # what actually loaded
+pantheon plugins list|install &lt;name&gt;|enable|disable|approve &lt;name&gt;
+pantheon extensions                 # what actually loaded (+ pending approvals)
+pantheon extensions approve &lt;name&gt;  # approve a hook extension
 pantheon hook &lt;name&gt; [--session S]  # run a hook once and see what it adds
 pantheon doctor &lt;plugin_dir&gt;        # preflight check: manifest, hooks, files
 </code></pre>

@@ -157,7 +157,7 @@ fn find_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     h.windows(n.len()).position(|w| {
         w.iter()
             .zip(n.iter())
-            .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
     })
 }
 

@@ -953,13 +953,15 @@ fn convert_claude_plugin(root: &Path) -> Result<DetectedPlugin, ImportError> {
 
     write_converted_manifest(
         root,
-        &name,
-        &version,
-        &description,
-        &author,
-        &license,
-        &provides_hooks,
-        &raw_hooks,
+        ConvertedMeta {
+            name: &name,
+            version: &version,
+            description: &description,
+            author: &author,
+            license: &license,
+            provides_hooks: &provides_hooks,
+            raw_hooks: &raw_hooks,
+        },
         &raw,
     )?;
     if let Some(hooks) = v.get("hooks") {
@@ -1022,25 +1024,30 @@ fn manifest_author(v: &serde_json::Value) -> String {
 
 /// Write the Pantheon `plugin.yaml` for a converted foreign manifest and
 /// preserve the original as `imported-plugin.json` for manual porting.
+/// The manifest header fields carried from a converted foreign plugin.
+struct ConvertedMeta<'a> {
+    name: &'a str,
+    version: &'a str,
+    description: &'a str,
+    author: &'a str,
+    license: &'a str,
+    provides_hooks: &'a [String],
+    raw_hooks: &'a [String],
+}
+
 fn write_converted_manifest(
     root: &Path,
-    name: &str,
-    version: &str,
-    description: &str,
-    author: &str,
-    license: &str,
-    provides_hooks: &[String],
-    raw_hooks: &[String],
+    meta: ConvertedMeta<'_>,
     original_raw: &[u8],
 ) -> Result<(), ImportError> {
     let yaml = serde_yaml::to_string(&serde_json::json!({
-        "name": name,
-        "version": version,
-        "description": description,
-        "author": author,
-        "license": license,
-        "provides_hooks": provides_hooks,
-        "hooks": raw_hooks,
+        "meta.name": meta.name,
+        "meta.version": meta.version,
+        "meta.description": meta.description,
+        "meta.author": meta.author,
+        "meta.license": meta.license,
+        "meta.provides_hooks": meta.provides_hooks,
+        "hooks": meta.raw_hooks,
     }))
     .map_err(|e| ImportError::Io(e.to_string()))?;
     std::fs::write(root.join("plugin.yaml"), yaml).map_err(|e| ImportError::Io(e.to_string()))?;
@@ -1048,16 +1055,16 @@ fn write_converted_manifest(
     Ok(())
 }
 
-/// Convert an OpenClaw plugin (`openclaw.plugin.json`, `{id, name,
-/// description, version, ...}`) into a Pantheon hook plugin.
+/// Convert an OpenClaw plugin (`openclaw.plugin.json`, `{id, meta.name,
+/// meta.description, meta.version, ...}`) into a Pantheon hook plugin.
 ///
 /// Field mapping mirrors the Claude Code converter:
-/// - `name` (fallback: `id`) → plugin.yaml `name` (sanitized to
+/// - `meta.name` (fallback: `id`) → plugin.yaml `meta.name` (sanitized to
 ///   lowercase `[a-z0-9-_]`, ≤64 chars; required)
-/// - `description` → `description`
-/// - `version` → `version` (default `"0.0.0"`)
-/// - `author` (string or `{name}`) → `author`
-/// - `license` → `license`
+/// - `meta.description` → `meta.description`
+/// - `meta.version` → `meta.version` (default `"0.0.0"`)
+/// - `meta.author` (string or `{meta.name}`) → `meta.author`
+/// - `meta.license` → `meta.license`
 /// - `commands` / `agents` / `skills` (arrays) → `openclaw-*`
 ///   capability counters
 /// - `hooks` (object of event → handler, or array) → event names kept
@@ -1119,13 +1126,15 @@ fn convert_openclaw_plugin(root: &Path) -> Result<DetectedPlugin, ImportError> {
 
     write_converted_manifest(
         root,
-        &name,
-        &version,
-        &description,
-        &author,
-        &license,
-        &[],
-        &raw_hooks,
+        ConvertedMeta {
+            name: &name,
+            version: &version,
+            description: &description,
+            author: &author,
+            license: &license,
+            provides_hooks: &[],
+            raw_hooks: &raw_hooks,
+        },
         &raw,
     )?;
 

@@ -372,10 +372,7 @@ pub(crate) fn apply_changes(
 /// A path that does not exist is a 404; nothing is written unless every
 /// path was removed.
 pub(crate) fn remove_paths(app: &App, paths: &[&str]) -> Result<Vec<String>, Response> {
-    let (mut doc, _) = match read_doc(&app.data_dir) {
-        Ok(d) => d,
-        Err(r) => return Err(r),
-    };
+    let (mut doc, _) = read_doc(&app.data_dir)?;
     let mut removed = Vec::with_capacity(paths.len());
     for path in paths {
         let (table, leaf) = match parent_of(&mut doc, path) {
