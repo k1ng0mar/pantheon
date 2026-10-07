@@ -242,6 +242,7 @@ pub struct ToolEnablement {
     pub video_analysis: bool,
     pub computer_use: bool,
     pub plugins: bool,
+    pub code_intel: bool,
 }
 
 impl Default for ToolEnablement {
@@ -264,6 +265,7 @@ impl Default for ToolEnablement {
             video_analysis: true,
             computer_use: true,
             plugins: true,
+            code_intel: true,
         }
     }
 }
@@ -288,6 +290,7 @@ impl ToolEnablement {
             video_analysis: false,
             computer_use: false,
             plugins: false,
+            code_intel: false,
         }
     }
 
@@ -310,6 +313,7 @@ impl ToolEnablement {
         e.video_analysis = get(s.video_analysis);
         e.computer_use = get(s.computer_use);
         e.plugins = get(s.plugins);
+        e.code_intel = get(s.code_intel);
         e
     }
 
@@ -332,6 +336,7 @@ impl ToolEnablement {
             G::VideoAnalysis => self.video_analysis,
             G::ComputerUse => self.computer_use,
             G::Plugins => self.plugins,
+            G::CodeIntel => self.code_intel,
         }
     }
 }

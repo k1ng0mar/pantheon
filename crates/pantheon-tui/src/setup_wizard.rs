@@ -799,6 +799,7 @@ fn tool_group_desc(g: ToolGroup) -> &'static str {
             "desktop control via the CUA driver \u{2014} provider screen follows"
         }
         ToolGroup::Plugins => "plugin tools and MCP server integrations",
+        ToolGroup::CodeIntel => "LSP diagnostics + repo-level git undo (code-intel tool group)",
     }
 }
 
