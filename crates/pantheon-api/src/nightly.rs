@@ -65,7 +65,8 @@ pub struct Proposal {
     /// (run, turn) pairs this was learned from.
     pub provenance_turns: Vec<TurnRef>,
     /// pantheon-eval test targets that must pass before this proposal can
-    /// be approved. Empty for memory lessons (no evals; auto-applied).
+    /// be approved. Empty for memory lessons (no evals; they queue for
+    /// approval like skill/persona, and a grant writes the record).
     pub eval_tags: Vec<String>,
     pub status: ProposalStatus,
 }

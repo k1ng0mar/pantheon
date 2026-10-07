@@ -385,9 +385,12 @@ pub fn weigh_candidates(
     weighed
 }
 
-/// Turn promoted memory candidates into auto-applying MemoryLesson
-/// proposals, so memory promotion flows through the same
-/// propose → audit → apply pipeline as everything else.
+/// Turn promoted memory candidates into MemoryLesson proposals. The
+/// promotion rule (frequency + recency) marks which candidates are
+/// strong enough to *surface*; each becomes a proposal parked in the
+/// approval queue with its evidence (provenance runs + observed-count).
+/// An operator grant is what dures the record - the unattended pass
+/// never writes it itself.
 pub fn memory_proposals(weighed: &[WeighedCandidate]) -> Vec<Proposal> {
     weighed
         .iter()
