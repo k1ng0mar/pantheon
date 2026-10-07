@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pantheon: Cloudflare</title>
+  <meta name="description" content="Pantheon documentation.">
+  <meta property="og:title" content="Pantheon docs">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="logo.png">
+  <link rel="icon" href="logo.png">
+  <link rel="preconnect" href="https://api.fontshare.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://api.fontshare.com/v2/css?f[]=array@400,500,600,700&f[]=alpino@400,500,600,700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            paper: '#fafaf9', ink: '#141417', grey: '#6f6f76', line: '#e9e6e1',
+            codebg: '#f1efeb', brand: '#7223FF', branddark: '#5c1de0'
+          },
+          fontFamily: {
+            mono: ['JetBrains Mono', 'monospace'],
+            sans: ['Alpino', 'sans-serif']
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { background: #fafaf9; color: #141417; font-family: 'Alpino', sans-serif; font-size: 1.0625rem; line-height: 1.7; }
+    :focus-visible { outline: 2px solid #7223FF; outline-offset: 3px; }
+    .hairline { height: 1px; background: #e9e6e1; }
+    .logo-mark { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; flex: none;
+      filter: drop-shadow(0 2px 8px rgba(114,35,255,.25)); transition: transform .2s; }
+    .logo-mark:hover { transform: scale(1.08); }
+    .logo-mark img { height: 38px; width: auto; }
+    /* Doc content type scale: h1 30 / h2 22 / h3 20 / body 16 (each step >= 1.25x) */
+    .doc h1 { font-family: 'Array', sans-serif; font-size: 1.875rem; font-weight: 600; line-height: 1.2; letter-spacing: -0.02em; }
+    .doc h2 { font-size: 1.375rem; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
+    .doc h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.3; }
+    .doc p, .doc li { color: #3f3f46; }
+    .doc h1, .doc h2, .doc h3 { color: #141417; }
+    .doc strong { color: #141417; }
+    .doc pre { background: #f1efeb; border: 1px solid #e9e6e1; border-radius: 10px; padding: 1.25rem; overflow-x: auto; margin: 1.5rem 0; }
+    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #141417; background: none; padding: 0; }
+    .doc code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
+    .doc table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }
+    .doc th, .doc td { border-bottom: 1px solid #e9e6e1; padding: .65rem .8rem; text-align: left; font-size: .9rem; vertical-align: top; }
+    .doc th { font-size: .75rem; font-weight: 600; color: #6f6f76; text-transform: uppercase; letter-spacing: .04em; }
+    .doc tr:hover td { background: rgba(114,35,255,.04); }
+    .doc blockquote { border-left: 2px solid #7223FF; padding-left: 1.25rem; margin: 1.5rem 0; color: #3f3f46; }
+    .doc p a, .doc li a, .doc td a { color: #7223FF; text-decoration: underline; text-underline-offset: 3px; }
+    .doc ul { list-style: disc; padding-left: 1.5rem; }
+    .doc ol { list-style: decimal; padding-left: 1.5rem; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    @media (max-width: 640px) {
+      .doc table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    }
+  </style>
+</head>
+<body class="antialiased">
+
+  <header class="max-w-6xl mx-auto px-6 md:px-10 pt-8 flex items-center justify-between">
+    <a href="index.html" class="flex items-center gap-2.5" aria-label="Pantheon home">
+      <span class="logo-mark"><img src="logo.svg" alt="" width="38" height="38"></span>
+      <span class="font-semibold text-ink text-lg tracking-tight">pantheon</span>
+    </a>
+    <nav class="flex items-center gap-6 md:gap-8 text-[15px]" aria-label="Main">
+      <a href="product.html" class="hidden sm:inline text-grey hover:text-ink">Product</a>
+      <a href="install.html" class="hidden sm:inline text-grey hover:text-ink">Install</a>
+      <a href="docs.html" class="hidden sm:inline text-ink">Docs</a>
+      <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="hidden sm:inline text-grey hover:text-ink">GitHub</a>
+      <button type="button" id="menu-btn" class="sm:hidden text-grey hover:text-ink text-sm px-3 py-2 min-h-[44px]" aria-expanded="false" aria-controls="menu">menu</button>
+    </nav>
+  </header>
+  <div id="menu" class="hidden sm:hidden max-w-6xl mx-auto px-6 py-4 flex-col gap-1 text-[15px] border-b border-line">
+    <a href="product.html" class="text-grey hover:text-ink py-2.5 block">Product</a>
+    <a href="install.html" class="text-grey hover:text-ink py-2.5 block">Install</a>
+    <a href="docs.html" class="text-ink py-2.5 block">Docs</a>
+    <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink py-2.5 block">GitHub</a>
+  </div>
+
+  <main class="doc max-w-3xl mx-auto px-6 pt-24 pb-16">
+<h1 id="cloudflare" class="text-3xl font-bold tracking-tight mb-2">Cloudflare</h1><div class="hairline my-6"></div>
+<p class="my-3 leading-relaxed">Pantheon integrates Cloudflare through three official channels, no</p>
+<p class="my-3 leading-relaxed">Pantheon-specific CLI surface:</p>
+<table class="my-6"><thead><tr><th>Channel</th><th>What it provides</th><th>Where it lives</th></tr></thead><tbody>
+<tr><td>cf CLI</td><td>The whole Cloudflare API (3,000+ operations), JSON by default, <code>cf cli search</code> for command discovery</td><td>The <code>shell</code> tool, classified by Pantheon&#x27;s capability hook</td></tr>
+<tr><td>cf-ops plugin</td><td>A bundled tool plugin exposing <code>cf_read</code> / <code>cf_write</code> / <code>cf_destroy</code> through the plugin protocol</td><td><code>[plugins]</code> section, bundled catalog</td></tr>
+<tr><td>Remote MCP</td><td><code>cloudflare-docs</code> (public, no auth) bundled; the account servers (OAuth) documented but not bundled</td><td><code>[mcp.servers]</code>, the <code>enable_mcp</code> tool</td></tr>
+<tr><td>Official skills</td><td>Cloudflare&#x27;s own skill library (workers, wrangler, durable-objects, agents-sdk, ...)</td><td>Imported on request from github.com/cloudflare/skills</td></tr>
+</tbody></table>
+<h2 id="setup" class="text-xl font-bold tracking-tight mt-10 mb-3">Setup</h2>
+<pre><code>
+pantheon cloudflare setup
+</code></pre>
+<p class="my-3 leading-relaxed">The setup walks the chain and does what it is allowed to:</p>
+<p>1. Detects node, npm, and the cf CLI. Offers <code>npm install -g cf</code> after a</p>
+<p class="my-3 leading-relaxed">   confirm. Node 22+ required.</p>
+<p>2. Checks <code>CLOUDFLARE_API_TOKEN</code> in the environment. Never reads or</p>
+<p class="my-3 leading-relaxed">   prints the value.</p>
+<p>3. Offers to import Cloudflare&#x27;s official skills from</p>
+<p class="my-3 leading-relaxed">   github.com/cloudflare/skills into the data dir (shallow clone through</p>
+<p class="my-3 leading-relaxed">   the existing skills-import path).</p>
+<p>4. Writes the <code>[cloudflare]</code> config section.</p>
+<p class="my-3 leading-relaxed"><code>pantheon cloudflare status</code> reports what is present, authenticated, and</p>
+<p class="my-3 leading-relaxed">enabled without changing anything. <code>pantheon doctor</code> carries a</p>
+<p class="my-3 leading-relaxed">cloudflare section with a fix hint per gap.</p>
+<h2 id="authentication-and-the-token-path" class="text-xl font-bold tracking-tight mt-10 mb-3">Authentication and the token path</h2>
+<p class="my-3 leading-relaxed">cf resolves credentials in this order: the <code>CLOUDFLARE_API_TOKEN</code></p>
+<p class="my-3 leading-relaxed">environment variable, then named OAuth profiles (<code>cf auth login</code>). The</p>
+<p class="my-3 leading-relaxed">API token is the automation path and the one Pantheon wires.</p>
+<p class="my-3 leading-relaxed">The token reaches a <code>cf</code> child process through one sanctioned path:</p>
+<p>1. <code>[cloudflare].enabled = true</code> in config.toml (the operator&#x27;s</p>
+<p class="my-3 leading-relaxed">   declaration; the default section is disabled and injects nothing).</p>
+<p>2. The runtime resolves <code>api_token_secret</code> (default</p>
+<p class="my-3 leading-relaxed">   <code>CLOUDFLARE_API_TOKEN</code>) through the secrets broker at call time.</p>
+<p>3. The shell tool&#x27;s env hook injects it only for <code>cf</code> commands, past the</p>
+<p class="my-3 leading-relaxed">   sandbox&#x27;s env scrub, into the child&#x27;s environment.</p>
+<p class="my-3 leading-relaxed">The token never appears in the ledger, logs, or tool output. Putting it</p>
+<p class="my-3 leading-relaxed">in the command text (<code>env CLOUDFLARE_API_TOKEN=x cf ...</code>) defeats the</p>
+<p class="my-3 leading-relaxed">redaction layer and lands it in the transcript; the plugin runner</p>
+<p class="my-3 leading-relaxed">rejects that shape.</p>
+<h2 id="capability-classification" class="text-xl font-bold tracking-tight mt-10 mb-3">Capability classification</h2>
+<p class="my-3 leading-relaxed">Every <code>cf ...</code> invocation through the shell tool is classified by</p>
+<p class="my-3 leading-relaxed"><code>pantheon-exec::cloudflare</code>:</p>
+<table class="my-6"><thead><tr><th>Class</th><th>Verbs</th><th>Capability</th><th>Default policy</th></tr></thead><tbody>
+<tr><td>Read</td><td>list, get, describe, search, whoami, status</td><td>shell.execute (already granted)</td><td>Allow</td></tr>
+<tr><td>Write</td><td>create, update, put, patch, import, deploy, upload, rotate, ...</td><td><code>cloudflare.write</code></td><td>Approval</td></tr>
+<tr><td>Destroy</td><td>delete, purge-all, revoke, logout + anything under dns, zones, firewall, waf, access, zero-trust, tokens, ssl, registrar, billing</td><td><code>cloudflare.destroy</code></td><td>Approval</td></tr>
+</tbody></table>
+<p class="my-3 leading-relaxed">Unknown operations classify as Destroy: fail closed. The classification</p>
+<p class="my-3 leading-relaxed">table is pinned in tests to commands verified against the real cf</p>
+<p class="my-3 leading-relaxed">surface, so a verb rename in cf fails the test instead of silently</p>
+<p class="my-3 leading-relaxed">changing what needs approval.</p>
+<p class="my-3 leading-relaxed">The workflow the bundled cloudflare skill teaches: observe the current</p>
+<p class="my-3 leading-relaxed">state, plan the exact change, apply after approval, verify by re-reading,</p>
+<p class="my-3 leading-relaxed">report the observed result.</p>
+<h2 id="the-cf-ops-plugin" class="text-xl font-bold tracking-tight mt-10 mb-3">The cf-ops plugin</h2>
+<p class="my-3 leading-relaxed">Ships in the bundled catalog, off by default like every bundled plugin.</p>
+<p class="my-3 leading-relaxed">Enable in <code>[plugins]</code> or through the agent&#x27;s <code>enable_plugin</code> tool (which</p>
+<p class="my-3 leading-relaxed">needs approval). It runs <code>cf</code> as exec argv, never a shell string, caps</p>
+<p class="my-3 leading-relaxed">output at 512 KiB, times out at 120 s, and passes cf&#x27;s own error text</p>
+<p class="my-3 leading-relaxed">through on failure. No secrets live in the plugin: it inherits the same</p>
+<p class="my-3 leading-relaxed">env injection the shell tool gets.</p>
+<h2 id="mcp-servers" class="text-xl font-bold tracking-tight mt-10 mb-3">MCP servers</h2>
+<p class="my-3 leading-relaxed"><code>cloudflare-docs</code> is bundled and public: documentation lookups with no</p>
+<p class="my-3 leading-relaxed">authentication. Enable it like any bundled server.</p>
+<p class="my-3 leading-relaxed">The account servers (<code>cloudflare</code> at mcp.cloudflare.com, plus bindings,</p>
+<p class="my-3 leading-relaxed">builds, observability) use per-user browser OAuth. Pantheon&#x27;s HTTP MCP</p>
+<p class="my-3 leading-relaxed">transport supports header authentication (<code>headers</code> in</p>
+<p class="my-3 leading-relaxed"><code>[mcp.servers.&lt;name&gt;]</code>, values <code>env:NAME</code> resolve at load) but does not</p>
+<p class="my-3 leading-relaxed">implement the OAuth authorization-code flow. Until it does, those</p>
+<p class="my-3 leading-relaxed">servers are reachable through the cf CLI with an API token, which covers</p>
+<p class="my-3 leading-relaxed">the same API surface.</p>
+<h2 id="official-skills" class="text-xl font-bold tracking-tight mt-10 mb-3">Official skills</h2>
+<p class="my-3 leading-relaxed">Imported by reference, not vendored:</p>
+<pre><code>
+pantheon skills import --repo https://github.com/cloudflare/skills --sub skills
+</code></pre>
+<p class="my-3 leading-relaxed">Rerunning updates them. Skills are data gated on FilesystemRead and</p>
+<p class="my-3 leading-relaxed">declare no capabilities, so an import adds knowledge, not permissions.</p>
+<h2 id="current-status" class="text-xl font-bold tracking-tight mt-10 mb-3">Current status</h2>
+<p class="my-3 leading-relaxed">Implemented and tested: classification (12 tests incl. a live-verified</p>
+<p class="my-3 leading-relaxed">surface table), capability gating, token injection through the sandbox,</p>
+<p class="my-3 leading-relaxed">the cf-ops plugin (live-smoked against a real account), the</p>
+<p class="my-3 leading-relaxed">cloudflare-docs bundled MCP row, header auth on remote MCP entries,</p>
+<p class="my-3 leading-relaxed">config section with round-trip test, doctor section, skills import.</p>
+<p class="my-3 leading-relaxed">Not implemented: OAuth inside the MCP transport, a native Rust REST</p>
+<p class="my-3 leading-relaxed">client, wrangler-specific tooling beyond what cf delegates internally,</p>
+<p class="my-3 leading-relaxed">and a generic multi-provider framework.</p>
+<h2 id="troubleshooting" class="text-xl font-bold tracking-tight mt-10 mb-3">Troubleshooting</h2>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><code>cf auth whoami</code> says the token is invalid: create a new scoped API</li>
+</ul>
+<p class="my-3 leading-relaxed">  token in the dashboard. Avoid the Global API Key; it is legacy.</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li>Every cf call fails with &quot;No zone specified&quot;: pass <code>--zone</code> or set</li>
+</ul>
+<p class="my-3 leading-relaxed">  <code>CLOUDFLARE_ZONE_ID</code>.</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li>Token injection appears dead: check <code>[cloudflare].enabled</code>, then</li>
+</ul>
+<p class="my-3 leading-relaxed">  <code>pantheon cloudflare status</code>.</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li>A cf call parked for approval: the approval prompt shows the exact</li>
+</ul>
+<p class="my-3 leading-relaxed">  argv. Grant the specific call or deny it; a grant is one-shot.</p>
+</main>
+
+  <footer class="border-t border-line mt-8">
+    <div class="max-w-6xl mx-auto px-6 md:px-10 py-14">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-8">
+        <div class="flex items-center gap-2.5">
+          <span class="logo-mark"><img src="logo.svg" alt="" width="38" height="38"></span>
+          <span class="font-semibold text-ink">pantheon</span>
+        </div>
+        <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
+          <a href="product.html" class="text-grey hover:text-ink">Product</a>
+          <a href="install.html" class="text-grey hover:text-ink">Install</a>
+          <a href="docs.html" class="text-grey hover:text-ink">Docs</a>
+          <a href="https://github.com/k1ng0mar/pantheon" target="_blank" rel="noopener" class="text-grey hover:text-ink">GitHub</a>
+        </div>
+      </div>
+      <p class="text-grey text-sm mt-10">An assistant that does everything. MIT licensed.</p>
+    </div>
+  </footer>
+
+  <script>
+    var menuBtn = document.getElementById('menu-btn');
+    var menu = document.getElementById('menu');
+    if (menuBtn && menu) {
+      menuBtn.addEventListener('click', function () {
+        var isHidden = menu.classList.toggle('hidden');
+        menu.classList.toggle('flex', !isHidden);
+        menuBtn.setAttribute('aria-expanded', String(!isHidden));
+      });
+    }
+  </script>
+
+</body>
+</html>
