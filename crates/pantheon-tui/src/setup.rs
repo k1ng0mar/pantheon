@@ -364,6 +364,10 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         stt: stt.as_ref().map(voice_section),
         tts: tts.as_ref().map(voice_section),
         policy: Some(policy),
+        // Setup never picks a permission mode: a fresh install starts on
+        // the conservative `Ask` default, and the operator opts into
+        // `smart` or `allow_all` deliberately afterwards.
+        permission_mode: None,
         memory: memory_section(&memory),
         server: Some(super::config::ServerSection {
             port: 18789,
@@ -411,6 +415,9 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
                 skipped: skill_deps_skipped,
             })
         },
+        // The wizard does not configure the Cloudflare integration; absent
+        // section keeps the integration off (no token injection).
+        cloudflare: None,
         // The wizard does not configure gateway channels; absent section
         // keeps the previous default.
         gateway: None,

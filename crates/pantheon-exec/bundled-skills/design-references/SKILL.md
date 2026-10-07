@@ -1,6 +1,6 @@
 ---
 name: design-references
-description: "Use when building or reviewing UI, and the work risks looking generic. Points at 77 named design references and says how to pick."
+description: "Use when building or reviewing UI, and the work risks looking generic: read the brief, then point at 77 named design references and say how to pick."
 origin: bundled
 ---
 
@@ -35,6 +35,26 @@ aesthetics is worse than a page that commits to one.
    copy brand color, a logo, or a name.
 5. Write down which references you used before writing the component.
 
+## Read the room before drawing
+
+The default failure is not bad taste, it is never reading the brief. Before
+writing any component, state the read in one line: what kind of surface this
+is, who it is for, and the language it should speak. "Terminal chat surface
+for a developer reading logs at 2am, plain and dense, no decoration" is a
+design decision. "Make it look nice" is not.
+
+Three signals pick the reference more reliably than taste does:
+
+- **Surface kind**: landing, portfolio, dashboard, table, docs, 404.
+- **Audience**: an end user, a developer, or a procurement panel. Density
+  and motion tolerance follow from this, not from preference.
+- **Quiet constraints**: accessibility-first, regulated, public-sector,
+  trust-first commerce. These override the aesthetic. A dense cockpit
+  layout for a public service is wrong however good it looks.
+
+When the brief genuinely diverges, ask one question, not a list. When it
+can be inferred, do not ask at all.
+
 ## What to steal and what not to
 
 Steal: the grid, the type scale and its ratios, the spacing scale, the hover
@@ -64,6 +84,14 @@ output:
 - Empty state, loading state, and error state exist and were looked at.
 - Focus rings are visible. Keyboard tab order follows visual order.
 - Contrast is checked, not assumed.
+- No "AI-purple" gradient, dark mesh hero, or glassmorphism on surfaces
+  that did not ask for one. These are model defaults, not choices.
+- No Inter on slate-900 unless the brief named it. The default pairing is
+  invisible, which means it was not made.
+- Motion is on interaction, not looping forever on load.
+- Nothing is centered because centering is the safe default, when the
+  surface has a natural reading direction (left for text, right for data
+  tables, top for dashboards).
 
 ## The registry
 

@@ -277,7 +277,7 @@ fn upload_attach_serialize_end_to_end() {
 
     // 3. Serialize onto the outgoing provider request (both wire modes).
     let msg = Message::user("what color is this?").with_images(vec![part]);
-    let oai = openai::body_value("gpt-4o-mini", &[msg.clone()], &[]);
+    let oai = openai::body_value("gpt-4o-mini", std::slice::from_ref(&msg), &[]);
     let oai_parts = oai["messages"][0]["content"].as_array().unwrap();
     assert_eq!(oai_parts[1]["type"], "image_url");
     assert!(oai_parts[1]["image_url"]["url"]

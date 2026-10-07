@@ -343,6 +343,9 @@ impl ToolRepairAdapter {
                     // Drive-by compile fix (another leaf added this field to
                     // BuiltinOptions): None matches the struct's Default.
                     shell_child_hook: None,
+                    // The nightly repair host never runs `cf` commands
+                    // and never injects child env: None matches Default.
+                    shell_env_hook: None,
                 },
             );
             if let Some(mcp) = &self.mcp {

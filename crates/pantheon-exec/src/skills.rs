@@ -1686,7 +1686,7 @@ pub fn import_skill_dirs(
 /// plugin layout (`plugin/skills/<name>`) wins; ties break by shortest
 /// path, then lexicographic. Deterministic across re-imports.
 fn pick_canonical<'a>(group: &'a [&'a PathBuf]) -> &'a PathBuf {
-    fn score(rel: &PathBuf) -> (bool, usize, String) {
+    fn score(rel: &Path) -> (bool, usize, String) {
         let comps: Vec<String> = rel
             .components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())

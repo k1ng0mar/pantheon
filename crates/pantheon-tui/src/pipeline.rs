@@ -244,7 +244,10 @@ fn drive(sup: &Supervisor, data_dir: &std::path::Path, run_id: &str, spec: &str)
         Ok(outcome) => {
             for (stage, text) in &outcome.outputs {
                 println!("== {stage} ==");
-                println!("{text}");
+                // Stage output is model text: untrusted, and printed
+                // outside any ratatui buffer, so escape sequences would
+                // reach the terminal verbatim.
+                println!("{}", crate::sanitize::strip_control(text));
                 println!();
             }
             sup.complete(run_id).unwrap_or_else(|e| {

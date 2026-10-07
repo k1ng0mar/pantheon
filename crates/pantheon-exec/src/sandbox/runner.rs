@@ -54,7 +54,7 @@ pub struct SandboxResult {
 /// It is a test hook: tests simulate a missing wrapper (e.g. "bwrap
 /// absent") by pointing it at a directory without that binary, without
 /// touching the host.
-fn find_binary(bin: &str) -> Option<PathBuf> {
+pub(crate) fn find_binary(bin: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PANTHEON_SANDBOX_PATH").or_else(|| std::env::var_os("PATH"))?;
     for dir in std::env::split_paths(&path) {
         let cand = dir.join(bin);
@@ -372,6 +372,34 @@ pub fn build_sandboxed(
 fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
     use std::os::unix::process::CommandExt;
 
+    // Compile the kernel-layer programs in the PARENT. `pre_exec` runs
+    // after fork, where only async-signal-safe calls are permitted: no
+    // allocation, no locks. Compiling here means the child's closure only
+    // makes the two syscalls.
+    #[cfg(target_os = "linux")]
+    let seccomp_program = if profile.seccomp {
+        // A profile that asks for seccomp and cannot get it must not run
+        // unfiltered: `None` here is enforced inside the closure, which is
+        // the only place that can abort the spawn.
+        super::kernel::compile_seccomp().ok()
+    } else {
+        None
+    };
+    #[cfg(target_os = "linux")]
+    let seccomp_wanted = profile.seccomp;
+    #[cfg(target_os = "linux")]
+    let mut landlock_ruleset = if profile.landlock {
+        let cwd = cmd
+            .get_current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".to_string());
+        super::kernel::compile_landlock(&cwd, &profile.writable_paths).ok()
+    } else {
+        None
+    };
+    #[cfg(target_os = "linux")]
+    let landlock_wanted = profile.landlock;
+
     let as_bytes = profile
         .max_memory_mb
         .map(|mb| mb.saturating_mul(1024 * 1024));
@@ -406,6 +434,33 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
             #[cfg(target_os = "linux")]
             if no_new_privs && libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                 return Err(std::io::Error::last_os_error());
+            }
+            // Kernel confinement layers, after no_new_privs (seccomp
+            // requires that bit before an unprivileged filter can be
+            // installed). Both are fail-closed: a profile that asked for a
+            // layer and did not get it aborts the spawn here rather than
+            // exec'ing unfiltered. Only syscalls in this zone.
+            #[cfg(target_os = "linux")]
+            {
+                if landlock_wanted {
+                    // `restrict_self` consumes the ruleset, so take it out
+                    // of the captured Option. The closure is `FnMut` and
+                    // runs at most once (one fork, one exec).
+                    let Some(ruleset) = landlock_ruleset.take() else {
+                        return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+                    };
+                    if ruleset.restrict_self().is_err() {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                if seccomp_wanted {
+                    let Some(program) = seccomp_program.as_ref() else {
+                        return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+                    };
+                    if seccompiler::apply_filter(program).is_err() {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
             }
             if let Some(bytes) = as_bytes {
                 let lim = libc::rlimit {
@@ -647,6 +702,17 @@ pub fn run_sandboxed_with_spawn_hook(
     cwd: &str,
     on_spawn: Option<&dyn Fn(u32)>,
 ) -> Result<SandboxResult, PantheonError> {
+    run_sandboxed_with_spawn_hook_and_env(profile, program, args, cwd, on_spawn, &[])
+}
+
+pub fn run_sandboxed_with_spawn_hook_and_env(
+    profile: &SandboxProfile,
+    program: &str,
+    args: &[&str],
+    cwd: &str,
+    on_spawn: Option<&dyn Fn(u32)>,
+    extra_env: &[(String, String)],
+) -> Result<SandboxResult, PantheonError> {
     let timeout_ms = profile.wall_clock_ms;
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -677,6 +743,11 @@ pub fn run_sandboxed_with_spawn_hook(
         #[cfg(unix)]
         confine_child(&mut builder, profile);
         sandboxed = false;
+    }
+    // Named extras go in after every scrub path, so both the wrapped and
+    // the direct-fallback command get exactly the same variables.
+    for (k, v) in extra_env {
+        builder.env(k, v);
     }
 
     let mut child = builder
@@ -787,6 +858,25 @@ pub fn run_sandboxed(
     run_sandboxed_with_spawn_hook(profile, program, args, cwd, None)
 }
 
+/// [`run_sandboxed`] plus explicitly named extra env vars for the child.
+///
+/// The env scrub (see `scrub_child_env`) wipes inheritance so host secrets
+/// never cross implicitly. Some tools need exactly one secret the operator
+/// resolved ahead of time (the Cloudflare CLI needs `CLOUDFLARE_API_TOKEN`);
+/// this is the sanctioned way to hand that in. The caller resolves values
+/// through the secrets broker; the map here is the single gate between the
+/// broker and the child, and every entry must trace to a config decision,
+/// not ambient inheritance.
+pub fn run_sandboxed_with_env(
+    profile: &SandboxProfile,
+    program: &str,
+    args: &[&str],
+    cwd: &str,
+    extra_env: &[(String, String)],
+) -> Result<SandboxResult, PantheonError> {
+    run_sandboxed_with_spawn_hook_and_env(profile, program, args, cwd, None, extra_env)
+}
+
 fn berr(code: &str, cause: String, recoverable: bool) -> PantheonError {
     PantheonError::new(
         code,
@@ -831,6 +921,23 @@ mod sandbox_escape_tests {
     /// `PANTHEON_SANDBOX_PATH` lookup hook, sentinel env vars).
     static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Skip guard for the tests that need a real `IsolatedProcess` run.
+    /// Delegates to the shared probe so this crate and its callers agree
+    /// on what "the host can do this" means.
+    macro_rules! require_isolated_process {
+        () => {
+            if !crate::sandbox::boundary_available(
+                crate::sandbox::ExecutionBoundary::IsolatedProcess,
+            ) {
+                eprintln!(
+                    "skipping: this host refuses unshare --map-root-user \
+                     (SANDBOX_UNAVAILABLE is the intended fail-closed result)"
+                );
+                return;
+            }
+        };
+    }
+
     fn medium_profile() -> SandboxProfile {
         SandboxProfile::from(SandboxLevel::Medium)
     }
@@ -861,6 +968,7 @@ mod sandbox_escape_tests {
     fn unshare_honors_network_false_with_own_netns() {
         // Serialized with the PANTHEON_SANDBOX_PATH mutator below: the
         // wrapper lookup must see the real PATH here.
+        require_isolated_process!();
         let _g = ENV_GUARD.lock().unwrap();
         let cwd = scratch_cwd("netns");
         let r = run_sandboxed(&medium_profile(), "readlink", &["/proc/self/ns/net"], &cwd)
@@ -884,6 +992,7 @@ mod sandbox_escape_tests {
     /// and the host `/tmp` freely.
     #[test]
     fn unshare_confines_writes_to_sandbox_root() {
+        require_isolated_process!();
         let _g = ENV_GUARD.lock().unwrap();
         let cwd = scratch_cwd("fswrite");
         let probe = format!(
@@ -968,6 +1077,7 @@ mod sandbox_escape_tests {
     /// Before the fix the child inherited everything, sentinel included.
     #[test]
     fn sandboxed_child_env_is_scrubbed() {
+        require_isolated_process!();
         let _g = ENV_GUARD.lock().unwrap();
         let sentinel = format!(
             "PANTHEON_SANDBOX_TEST_SENTINEL_{}",

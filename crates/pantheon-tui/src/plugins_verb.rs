@@ -226,8 +226,8 @@ fn print_list(rows: &[PluginRow]) {
         return;
     }
     println!(
-        "  {:<26} {:<4} {:<10} {:<8}  {}",
-        "NAME", "KIND", "VERSION", "STATUS", "DESCRIPTION"
+        "  {:<26} {:<4} {:<10} {:<8}  DESCRIPTION",
+        "NAME", "KIND", "VERSION", "STATUS"
     );
     for r in rows {
         let status = if r.enabled { "enabled" } else { "disabled" };

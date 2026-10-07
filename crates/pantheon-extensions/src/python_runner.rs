@@ -688,8 +688,20 @@ mod tests {
     /// Item 2: a policy that allows `plugin.enable` lets the spawn
     /// proceed through the sandbox profile - the gate was consulted and
     /// passed.
+    ///
+    /// `PluginEnable` maps to `VeryHigh`, so this needs a working bwrap
+    /// user namespace. Hosts that refuse the uid map fail closed by
+    /// design, which is not what this test is about: it is about the
+    /// policy gate letting the spawn through. Skip when the host cannot
+    /// provide the boundary, and say so.
     #[test]
     fn hook_full_proceeds_when_policy_allows_plugin_enable() {
+        if !pantheon_exec::sandbox::boundary_available(
+            pantheon_exec::sandbox::ExecutionBoundary::StrictNamespaces,
+        ) {
+            eprintln!("SKIP: host cannot build the StrictNamespaces boundary (bwrap userns)");
+            return;
+        }
         let dir = chatty_plugin_dir();
         let plugin = PythonPlugin::load(&dir).expect("fixture plugin loads");
         let policy = Policy::default().allow(Capability::PluginEnable);

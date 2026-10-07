@@ -334,7 +334,7 @@ fn handler_full_turn_round_trip() {
     assert!(binaries.iter().all(|b| b.len() == 3200));
     let mut samples = vec![];
     for b in &binaries {
-        for pair in b.chunks_exact(2) {
+        for pair in b.as_chunks::<2>().0 {
             samples.push(i16::from_le_bytes([pair[0], pair[1]]));
         }
     }

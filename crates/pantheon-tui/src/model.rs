@@ -158,9 +158,21 @@ pub fn pick(title: &str, items: &[PickItem]) -> Option<usize> {
             let marker = if start + row == selected { ">" } else { " " };
             let it = &items[idx];
             if start + row == selected {
-                println!("  {marker} \x1b[1m{}\x1b[0m  {}\r", it.label, it.desc);
+                // label/desc can come from plugin manifests: strip
+                // control bytes so the SGR highlight below is the only
+                // escape in this line and a stray CSI cannot cancel it
+                // or move the cursor.
+                println!(
+                    "  {marker} \x1b[1m{}\x1b[0m  {}\r",
+                    crate::sanitize::strip_control(&it.label),
+                    crate::sanitize::strip_control(&it.desc)
+                );
             } else {
-                println!("  {marker} {}  {}\r", it.label, it.desc);
+                println!(
+                    "  {marker} {}  {}\r",
+                    crate::sanitize::strip_control(&it.label),
+                    crate::sanitize::strip_control(&it.desc)
+                );
             }
         }
         println!(

@@ -76,5 +76,6 @@ pub fn cua_driver_spec(driver: Option<&str>, binary: Option<&str>) -> Option<Mcp
         url: None,
         enabled: true,
         timeout: Duration::from_secs(60),
+        headers: HashMap::new(),
     })
 }

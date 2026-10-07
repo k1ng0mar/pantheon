@@ -14,6 +14,7 @@
 //! screen and the verbs can never disagree.
 
 use crate::plugins_verb::{apply_toggle, collect_rows, PluginRow};
+use crate::sanitize::strip_control;
 use std::path::Path;
 
 /// The trust distinction, shown on every render. Condensed from the
@@ -35,6 +36,12 @@ impl Drop for TermGuard {
 
 /// One rendered row: `[*] name  kind  version  status  description`.
 /// Pure so it is unit-testable without a TTY.
+///
+/// Every manifest-derived field is control-stripped before it is placed
+/// in the row. This screen runs in raw mode with no alternate screen, so
+/// an unescaped CSI or OSC in a third-party `description` could clear the
+/// screen, move the cursor, or retitle the terminal while the operator
+/// believes they are looking at a list.
 pub(crate) fn format_row(row: &PluginRow, selected: bool) -> String {
     let marker = if selected { ">" } else { " " };
     let check = if row.enabled { "[*]" } else { "[ ]" };
@@ -42,7 +49,12 @@ pub(crate) fn format_row(row: &PluginRow, selected: bool) -> String {
     let bundled = if row.bundled { " bundled" } else { "" };
     let line = format!(
         "{marker} {check} {:<24} {:<4} {:<10} {:<8} {}{}",
-        row.name, row.kind, row.version, status, row.description, bundled
+        strip_control(&row.name),
+        strip_control(row.kind),
+        strip_control(&row.version),
+        status,
+        strip_control(&row.description),
+        bundled
     );
     if selected {
         format!("\x1b[1m{line}\x1b[0m")

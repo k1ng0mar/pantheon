@@ -70,8 +70,8 @@ fn legacy_nightly_checks(c: &Config) -> Vec<Check> {
     out
 }
 
-/// Nightly state check: report whether the pass is enabled and why, and
-/// - when it is disabled with no model pin - hint how to enable it: a
+/// Nightly state check: report whether the pass is enabled and why. When
+/// it is disabled with no model pin, hint how to enable it: a
 /// `[nightly.model]` pin, `/nightly on`, a config edit, or the dashboard
 /// toggle. Pure over the config so the rule is unit-testable.
 fn nightly_state_check(c: &Config) -> Check {
@@ -356,7 +356,7 @@ pub fn run_system_doctor_opts(data_dir: &Path, ping: bool) -> SystemReport {
             .map(|s| s.skipped.as_slice())
             .unwrap_or(&[]);
         for dep in crate::skill_deps::skill_deps() {
-            if detect(&dep.detect_cmd) {
+            if detect(dep.detect_cmd) {
                 if skipped.iter().any(|s| s == dep.id) {
                     checks.push(check(
                         "skill-deps",
@@ -371,7 +371,7 @@ pub fn run_system_doctor_opts(data_dir: &Path, ping: bool) -> SystemReport {
                 "skill-deps",
                 "warn",
                 format!("{} not found - needed by {}", dep.name, dep.needed_by),
-                skill_dep_fix(&dep, pip_ok),
+                skill_dep_fix(dep, pip_ok),
             ));
         }
         // Stale record hygiene: a skipped id the registry no longer
@@ -436,6 +436,62 @@ pub fn run_system_doctor_opts(data_dir: &Path, ping: bool) -> SystemReport {
             ""
         },
     ));
+
+    // 6c. Cloudflare integration: the chain (cf CLI, token, section).
+    // Every gap is a warn, never a fail: the integration is optional and
+    // a missing token just means `cf` calls fail with cf's own auth
+    // error, which the agent reports instead of acting on.
+    eprintln!("doctor: cloudflare");
+    {
+        let detect = crate::setup_providers::detect_binary;
+        let section = cfg.as_ref().and_then(|c| c.cloudflare.as_ref());
+        if section.is_none() {
+            checks.push(check(
+                "cloudflare",
+                "ok",
+                "integration off ([cloudflare] absent)",
+                "run `pantheon cloudflare setup` to enable",
+            ));
+        } else {
+            let secret_name = section
+                .and_then(|s| s.api_token_secret.clone())
+                .unwrap_or_else(|| "CLOUDFLARE_API_TOKEN".to_string());
+            let token_ok = std::env::var(&secret_name)
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false);
+            let cf_ok = detect("command -v cf");
+            let enabled = section.map(|s| s.enabled).unwrap_or(false);
+            if !enabled {
+                checks.push(check(
+                    "cloudflare",
+                    "warn",
+                    "[cloudflare] present but disabled: no token injection",
+                    "set enabled = true in [cloudflare] when the token is ready",
+                ));
+            } else if !cf_ok {
+                checks.push(check(
+                    "cloudflare",
+                    "warn",
+                    "integration enabled but the cf CLI is missing",
+                    "run `pantheon cloudflare setup` (installs `npm install -g cf`)",
+                ));
+            } else if !token_ok {
+                checks.push(check(
+                    "cloudflare",
+                    "warn",
+                    format!("cf present but {secret_name} is not set in the environment"),
+                    "create a scoped API token (dashboard > My Profile > API Tokens) and export it",
+                ));
+            } else {
+                checks.push(check(
+                    "cloudflare",
+                    "ok",
+                    format!("cf CLI present, {secret_name} resolves, token injection enabled"),
+                    "",
+                ));
+            }
+        }
+    }
 
     // 7. Plugins: run the extension doctor over the extension dir.
     eprintln!("doctor: plugins");

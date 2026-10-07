@@ -20,3 +20,5 @@ ENGINE.md
 SOUL.md
 vendor/**/debug.log
 *.tmp
+__pycache__/
+*.pyc

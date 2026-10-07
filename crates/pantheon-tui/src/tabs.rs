@@ -233,23 +233,23 @@ pub enum TabAction {
     CloseTab,
 }
 
-/// Map a crossterm key event to a tab action. Pure - no terminal needed.
+/// Map a crossterm key event to a tab action. Pure, no terminal needed.
 ///
-/// Notes on real terminals:
-/// * Ctrl+Tab arrives as `Tab` + CONTROL on most terminals; some send it as
-///   plain Tab or swallow it - those users still have `[`/`]` and Alt+1..9.
-/// * Ctrl+Shift+Tab usually arrives as `BackTab` + CONTROL; plain Shift+Tab
+/// Ctrl+Tab/BackTab cycle, Ctrl+T/W open/close, Alt+1..9 jump. Plain
+/// `[`/`]` step prev/next, but the caller gates those to
+/// overview-with-empty-composer so a typed bracket in chat input never
+/// switches tabs (see the tab-key site in session.rs).
+///
+/// What terminals actually send:
+/// - Ctrl+Tab usually arrives as `Tab` + CONTROL; some send plain Tab or
+///   swallow it, and those users still have `[`/`]` and Alt+1..9.
+/// - Ctrl+Shift+Tab usually arrives as `BackTab` + CONTROL; plain Shift+Tab
 ///   arrives as `BackTab` + SHIFT and is mapped to Prev as a fallback.
-/// * Alt+digit arrives as `Char` + ALT on most setups. A few terminals send
-///   ESC followed by the digit instead; the driver can add an ESC-prefix
-///   peek if it wants that path - this mapper only handles the ALT form.
-/// * `[`/`]` are also the image-preview cyclers, but the preview overlay
+/// - Alt+digit arrives as `Char` + ALT on most setups. A few send ESC
+///   followed by the digit instead; the driver can add an ESC-prefix peek
+///   if it wants that path, and this mapper only handles the ALT form.
+/// - `[`/`]` are also the image-preview cyclers, but the preview overlay
 ///   owns the keyboard while open, so there is no conflict.
-/// Map a key event to a tab action. Ctrl+Tab/BackTab cycle, Ctrl+T/W
-/// open/close, Alt+1..9 jump. Plain `[`/`]` step prev/next - but the
-/// caller gates those to overview-with-empty-composer so a typed bracket
-/// in chat input never switches tabs (see the tab-key site in
-/// session.rs).
 pub fn tab_key_action(code: KeyCode, mods: KeyModifiers) -> Option<TabAction> {
     if mods.contains(KeyModifiers::CONTROL) {
         return match code {

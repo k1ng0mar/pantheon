@@ -71,6 +71,36 @@ pub struct SandboxProfile {
     /// enables the same fallback at run time without touching profiles.
     #[serde(default)]
     pub allow_direct_fallback: bool,
+    /// Apply a seccomp syscall filter in the child before exec.
+    ///
+    /// Namespaces (bwrap) decide what the child can *see*; seccomp decides
+    /// what it can *ask the kernel to do*. The two are complementary: a
+    /// namespace-confined process can still call `ptrace`, `bpf`,
+    /// `userfaultfd`, or `keyctl`, and those are how a confined process
+    /// escapes. Deny-by-default with a curated allowlist, applied after
+    /// `no_new_privs` (seccomp requires that bit for unprivileged filters).
+    ///
+    /// Linux-only. On a kernel or build without seccomp support the runner
+    /// refuses rather than running unfiltered when this is set, because a
+    /// silent downgrade is exactly the wrong-strength bug the namespace
+    /// path already fixed.
+    #[serde(default)]
+    pub seccomp: bool,
+    /// Apply a Landlock filesystem ruleset in the child before exec.
+    ///
+    /// The third layer: namespaces hide, seccomp restricts syscalls,
+    /// Landlock restricts *file paths* the process may touch even as the
+    /// owning user. Where the profile's `cwd` is the only writable root,
+    /// a confined process cannot write to `$HOME` or `/tmp` even though
+    /// its uid allows it. Requires kernel Landlock support (ABI >= 1).
+    #[serde(default)]
+    pub landlock: bool,
+    /// Paths the Landlock ruleset grants read+write. Empty = the `cwd`
+    /// alone. Read access is granted to the whole filesystem so the
+    /// program can load its libraries; only write is restricted, which is
+    /// the boundary that matters for an agent running untrusted commands.
+    #[serde(default)]
+    pub writable_paths: Vec<String>,
 }
 
 /// Execution limits for a level.
@@ -85,6 +115,9 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             max_memory_mb: None,
             max_pids: None,
             wall_clock_ms: 30_000,
+            seccomp: false,
+            landlock: false,
+            writable_paths: Vec::new(),
             allow_direct_fallback: false,
         },
         SandboxLevel::Medium => SandboxProfile {
@@ -96,6 +129,9 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             max_memory_mb: Some(2048),
             max_pids: Some(64),
             wall_clock_ms: 120_000,
+            seccomp: false,
+            landlock: false,
+            writable_paths: Vec::new(),
             allow_direct_fallback: false,
         },
         SandboxLevel::High => SandboxProfile {
@@ -107,6 +143,9 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             max_memory_mb: Some(4096),
             max_pids: Some(256),
             wall_clock_ms: 600_000,
+            seccomp: false,
+            landlock: false,
+            writable_paths: Vec::new(),
             allow_direct_fallback: false,
         },
         SandboxLevel::VeryHigh => SandboxProfile {
@@ -118,6 +157,14 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             max_memory_mb: Some(2048),
             max_pids: Some(64),
             wall_clock_ms: 300_000,
+            // The strongest boundary gets all three layers. Namespaces
+            // decide what the child sees, seccomp what it may ask the
+            // kernel to do, Landlock which paths it may write. This is the
+            // level only reached after interactive approval, so the extra
+            // layers cost nothing in the common path.
+            seccomp: true,
+            landlock: true,
+            writable_paths: Vec::new(),
             allow_direct_fallback: false,
         },
     }

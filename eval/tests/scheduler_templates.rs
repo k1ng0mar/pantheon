@@ -210,12 +210,14 @@ fn scheduled_model_policy_prefers_pin_then_scheduled_aux() {
     // the `[scheduled]` auxiliary, never the interactive default.
     use pantheon_api::config::{AuxSection, Config};
 
-    let mut cfg = Config::default();
-    cfg.scheduled = Some(AuxSection {
-        provider: "openai".to_string(),
-        model: "cheap".to_string(),
+    let cfg = Config {
+        scheduled: Some(AuxSection {
+            provider: "openai".to_string(),
+            model: "cheap".to_string(),
+            ..Default::default()
+        }),
         ..Default::default()
-    });
+    };
 
     // Explicit pin beats the aux.
     let p = pantheon_tui::config::build_scheduled_model_policy(

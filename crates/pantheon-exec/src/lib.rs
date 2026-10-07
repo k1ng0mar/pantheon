@@ -10,6 +10,7 @@
 //! tool, and `pantheon-tools` depends *on* this crate (Tools → Exec).
 
 pub mod bundled_skills;
+pub mod cloudflare;
 pub mod confine;
 pub mod context;
 pub mod danger;

@@ -30,6 +30,7 @@ use ratatui::{
 
 use pantheon_api::events::Event as RuntimeErrorEvent;
 use pantheon_api::mode::AgentMode;
+use pantheon_api::permission_mode::PermissionMode;
 use pantheon_providers::error_kind::{
     classify_provider_error, display_message, retry_after_secs_from_cause, ProviderErrorKind,
 };
@@ -134,6 +135,7 @@ const KEY_HINTS: &[(&str, &str)] = &[
     ("Ctrl+B", "toggle sidebar"),
     ("Ctrl+G", "sidebar: activity / todo view"),
     ("Tab", "toggle Build / Plan mode"),
+    ("Shift+Tab", "cycle permissions: ask / smart / allow_all"),
     ("/", "command palette (type to filter, Enter runs)"),
     ("Esc Esc (idle)", "offer to rewind the last turn"),
     ("/exit, /quit", "leave pantheon"),
@@ -604,6 +606,12 @@ pub struct TuiState {
     /// [`apply_plan_mode_to_session`], which is what actually gates
     /// write tools in the agent loop.
     pub plan_mode: bool,
+    /// Permission mode (Ask / Smart / AllowAll). A separate axis from
+    /// `plan_mode`: that one refuses mutating tools in Plan, this one
+    /// decides whether an allowed call parks for a human, is judged, or
+    /// runs. Mirrored into the runtime session alongside the plan toggle
+    /// so the two can never drift; cycled with the permission-mode key.
+    pub permission_mode: PermissionMode,
     /// Every run currently parked on an approval, keyed by run id.
     /// The decision card renders for the active session; other runs get
     /// the amber tab dot.
@@ -757,6 +765,7 @@ impl Default for TuiState {
             activity_status: String::new(),
             sweep: activity::TravelHighlight::new("Thinking..."),
             plan_mode: false,
+            permission_mode: PermissionMode::default(),
             approvals: std::collections::HashMap::new(),
             clarifies: std::collections::HashMap::new(),
             pending_clarify: None,
@@ -919,6 +928,7 @@ impl TuiState {
             activity_status: String::new(),
             sweep: activity::TravelHighlight::new("Thinking..."),
             plan_mode: false,
+            permission_mode: PermissionMode::default(),
             approvals: std::collections::HashMap::new(),
             clarifies: std::collections::HashMap::new(),
             pending_clarify: None,
@@ -1593,6 +1603,24 @@ impl TuiState {
         } else {
             AgentMode::Build
         });
+        // The permission mode rides the same push as the plan toggle, so
+        // every path that syncs one syncs both and they can never drift
+        // apart in the runtime.
+        session.set_permission_mode(self.permission_mode);
+    }
+
+    /// Cycle the permission mode (Ask -> Smart -> AllowAll -> Ask) and
+    /// mirror it into the runtime session. Drives whether an
+    /// approval-gated call parks, is judged, or runs; the gate reads it
+    /// fresh per batch, so a flip applies from the next tool call and
+    /// never retroactively kills a running one.
+    pub fn cycle_permission_mode(&mut self) {
+        self.permission_mode = match self.permission_mode {
+            PermissionMode::Ask => PermissionMode::Smart,
+            PermissionMode::Smart => PermissionMode::AllowAll,
+            PermissionMode::AllowAll => PermissionMode::Ask,
+        };
+        self.status_line = format!("permissions: {}", self.permission_mode.as_str());
     }
 
     /// Set the dynamic footer status string and keep the sweep on the
@@ -3056,10 +3084,7 @@ fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
     let scope = if state.history_all_projects {
         "all projects"
     } else {
-        match state.history_own_project.as_deref() {
-            Some(p) => p,
-            None => "sessions",
-        }
+        state.history_own_project.as_deref().unwrap_or("sessions")
     };
     let card = Paragraph::new(lines).block(
         Block::bordered()
@@ -3643,11 +3668,11 @@ fn render_composer_box(f: &mut Frame, area: Rect, state: &TuiState) {
     }
     let inner = w - 2; // columns between the border glyphs
     let mut rows: Vec<Line> = Vec::with_capacity(4);
-    rows.push(Line::from(vec![
+    rows.extend([Line::from(vec![
         Span::styled("╭", dim),
         Span::styled("─".repeat(inner), dim),
         Span::styled("╮", dim),
-    ]));
+    ])]);
     rows.push(bordered_row(
         Span::styled("│", accent),
         composer_prompt_spans(state, th, inner - 1),
@@ -4413,10 +4438,12 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
                 block,
                 is_last,
                 interrupted,
-                th,
-                img,
-                area.width,
-                live_tokens,
+                &mut BlockRenderCtx {
+                    th,
+                    img,
+                    term_width: area.width,
+                    live_tokens,
+                },
             );
             // Airy, opencode-style: messages breathe with two blank
             // lines after them; compact cards keep one.
@@ -4617,6 +4644,17 @@ fn zoom_preview(state: &mut TuiState, factor: f32) {
     }
 }
 
+/// The ambient render context a transcript block draws into: the theme,
+/// the shared image paint state, the terminal width, and the live token
+/// count for tool-card tickers. Bundled so `render_block` keeps a
+/// readable signature.
+struct BlockRenderCtx<'a> {
+    th: &'a theme::Theme,
+    img: &'a mut crate::richtext::ImagePaintState,
+    term_width: u16,
+    live_tokens: u32,
+}
+
 /// Render a single transcript block as Lines. `is_last` marks the streaming
 /// head: thinking blocks stay expanded while they are the live block and
 /// collapse to a summary line once anything else lands after them.
@@ -4625,11 +4663,16 @@ fn render_block(
     block: &TranscriptBlock,
     is_last: bool,
     interrupted: bool,
-    th: &theme::Theme,
-    img: &mut crate::richtext::ImagePaintState,
-    term_width: u16,
-    live_tokens: u32,
+    ctx: &mut BlockRenderCtx<'_>,
 ) {
+    let BlockRenderCtx {
+        th,
+        img,
+        term_width,
+        live_tokens,
+    } = ctx;
+    let (th, term_width, live_tokens) = (*th, *term_width, *live_tokens);
+    let img = &mut **img;
     match &block.kind {
         BlockKind::UserMessage(text) => {
             // Colored sender label, no chrome: whitespace + color are
@@ -5248,6 +5291,20 @@ pub fn run_tui_session_with(
             .unwrap_or_default(),
     );
 
+    // Cloudflare integration (`[cloudflare]` in config.toml). Absent
+    // section = off: the shell tool injects no token, whatever the
+    // broker resolves.
+    session.set_cloudflare_config(
+        file_cfg
+            .as_ref()
+            .and_then(|c| c.cloudflare.clone())
+            .map(|s| pantheon_runtime::tool_config::CloudflareToolConfig {
+                enabled: s.enabled,
+                api_token_secret: s.api_token_secret,
+            })
+            .unwrap_or_default(),
+    );
+
     // Speech-to-text (`[stt]` in config.toml) for the video fallback's
     // audio leg. Absent = frames only, noted honestly in the summary.
     session.set_stt_section(file_cfg.as_ref().and_then(|c| c.stt.clone()));
@@ -5378,9 +5435,9 @@ pub fn run_tui_session_with(
             })
             .unwrap_or_default();
         let project_root =
-            std::env::current_dir().unwrap_or_else(|_| session.supervisor.data_dir().clone());
+            std::env::current_dir().unwrap_or_else(|_| session.supervisor.data_dir().to_path_buf());
         state.plugin_count = pantheon_exec::skills::discover_skills_enabled(
-            &session.supervisor.data_dir(),
+            session.supervisor.data_dir(),
             &project_root,
             &extra_roots,
         )
@@ -7114,6 +7171,18 @@ fn tui_loop(
                 // means Tab never lands in the composer as whitespace.
                 if key.code == KeyCode::Tab && key.modifiers.is_empty() {
                     state.toggle_plan_mode();
+                    state.apply_plan_mode_to_session(&session);
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
+                // Shift+Tab cycles the permission mode (Ask -> Smart ->
+                // AllowAll). Kept off plain Tab so the existing plan
+                // toggle is untouched.
+                if key.code == KeyCode::BackTab
+                    || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+                {
+                    state.cycle_permission_mode();
                     state.apply_plan_mode_to_session(&session);
                     state.tick();
                     terminal.draw(|f| render(state, f))?;

@@ -63,12 +63,9 @@ pub fn tool_display_name(name: &str) -> String {
                     out.push(' ');
                 }
                 let mut chars = part.chars();
-                match chars.next() {
-                    Some(c) => {
-                        out.extend(c.to_uppercase());
-                        out.extend(chars);
-                    }
-                    None => {}
+                if let Some(c) = chars.next() {
+                    out.extend(c.to_uppercase());
+                    out.extend(chars);
                 }
             }
             if out.is_empty() {
@@ -385,7 +382,7 @@ pub fn record_spawned(records: &mut Vec<SubAgentRecord>, parent_run_id: &str, ag
 
 /// Feed an `AgentCompleted` event: the newest live record for this
 /// agent under this parent flips to done.
-pub fn record_completed(records: &mut Vec<SubAgentRecord>, parent_run_id: &str, agent: &str) {
+pub fn record_completed(records: &mut [SubAgentRecord], parent_run_id: &str, agent: &str) {
     if let Some(r) = records.iter_mut().rev().find(|r| {
         r.parent_run_id == parent_run_id
             && r.name == agent.trim()

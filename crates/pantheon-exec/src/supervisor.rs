@@ -940,11 +940,18 @@ mod tests {
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let stop_w = std::sync::Arc::clone(&stop);
         let churn_path = runner_path.clone();
+        // Hold each state briefly. Without the pause the churner can keep
+        // the runner permanently in one state for the whole run, which
+        // starves the loop below of a GOOD window and makes this test
+        // report a scheduling artifact as a failure. The security claim
+        // (never exec unapproved bytes) holds either way; what needs a
+        // guaranteed window is the both-outcomes sanity assertion.
         let churner = std::thread::spawn(move || {
             let mut flip = false;
             while !stop_w.load(Ordering::Relaxed) {
                 flip = !flip;
                 inplace_write(&churn_path, if flip { EVIL_SCRIPT } else { GOOD_SCRIPT });
+                std::thread::sleep(Duration::from_micros(200));
             }
         });
 

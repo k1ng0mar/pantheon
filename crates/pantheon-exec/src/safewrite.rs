@@ -35,7 +35,7 @@ fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
-fn fnv1a_hex(data: &[u8]) -> String {
+pub fn fnv1a_hex(data: &[u8]) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in data {
         h ^= *b as u64;

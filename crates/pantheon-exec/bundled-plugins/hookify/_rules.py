@@ -88,8 +88,12 @@ def _parse_frontmatter(text):
     for ln in fm_lines:
         if not ln.strip() or ln.lstrip().startswith("#"):
             continue
-        # "- key: value" or "- value" list items.
-        m = re.match(r"^\s+-\s+(.*)$", ln)
+        # "- key: value" or "- value" list items. The indent is optional:
+        # a YAML sequence may sit at the same column as its parent key
+        # (`conditions:` followed by `- field: ...` at column 0), which
+        # is the only form the shipped rules use. Requiring `\s+` here
+        # silently dropped every such condition.
+        m = re.match(r"^\s*-\s+(.*)$", ln)
         if m:
             rest = m.group(1).strip()
             if cur_key == "conditions":

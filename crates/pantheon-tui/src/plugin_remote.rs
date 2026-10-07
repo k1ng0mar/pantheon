@@ -473,7 +473,7 @@ mod tests {
 
     /// P1 #3: `POST /api/plugins/import` reads only `{url}` - the server
     /// resolves `clawhub:<slug>` itself (`plugin_import::parse_source_spec`)
-    /// - so the TUI must send the slug as `url`. Sending `{spec}` made the
+    ///   so the TUI must send the slug as `url`. Sending `{spec}` made the
     /// server 400 with "url is required".
     #[test]
     fn clawhub_import_body_uses_url_key() {

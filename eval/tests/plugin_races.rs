@@ -368,6 +368,31 @@ fn hook_fire_uses_canonical_plugin_dir() {
 // Race harness: swapper thread rename-swapping A <-> B under a fixed path
 // ---------------------------------------------------------------------------
 
+/// Load a plugin, tolerating the window where the dir swapper has the
+/// path renamed aside. `PythonPlugin::load` fails closed with
+/// EXT_MANIFEST_READ when `plugin.yaml` is not there, and under the
+/// swapper that is an expected transient state rather than a real error.
+/// Returns the first load that gets a manifest; panics if the swapper
+/// never leaves the path readable, which means the fixture is broken
+/// rather than merely racing.
+fn load_while_swapping(dir: &Path) -> PythonPlugin {
+    let mut last: Option<pantheon_api::error::PantheonError> = None;
+    for _ in 0..200 {
+        match PythonPlugin::load(dir) {
+            Ok(p) => return p,
+            Err(e) if e.code == "EXT_MANIFEST_READ" => {
+                last = Some(e);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => panic!("unexpected load failure: {} ({})", e.code, e.cause),
+        }
+    }
+    panic!(
+        "victim never became readable under the swapper: {}",
+        last.map(|e| e.cause).unwrap_or_default()
+    )
+}
+
 /// Swap `victim` between `store_a` and `store_b` contents by rename until
 /// `stop` is set. `victim_is_a` tracks which variant is live.
 fn spawn_dir_swapper(
@@ -556,22 +581,25 @@ fn race_hook_plugin_swap_old_vs_new() {
     // ---- AFTER: scope bound -> re-hash before every fire ---------------
     // NOTE: do NOT re-record approval here: the store must stay bound to
     // variant A (recorded at setup), or the re-check would bless B.
-    let mut new_plugin = PythonPlugin::load(&victim).expect("loads");
+    // The swapper moves `victim` aside with a rename, so there is a real
+    // window where the path does not exist at all. Retry the load across
+    // that window instead of expecting the directory to be continuously
+    // present: the transient ENOENT is the swapper working as designed,
+    // not a broken fixture.
+    let mut new_plugin = load_while_swapping(&victim);
     new_plugin.scope_dir = Some(ext_dir.to_path_buf());
     let mut after_wins = 0usize;
     let mut after_ok_a = 0usize;
     for _ in 0..RACE_ITERS / 4 {
         std::thread::sleep(Duration::from_micros(jitter_us(&mut js, 8000)));
-        match fire_hook_full(&new_plugin, Hook::PreLlmCall, &hook_input(), &cfg) {
-            Ok(out) => {
-                let ctx = out.context.unwrap_or_default();
-                if ctx.starts_with("CTX_B:") {
-                    after_wins += 1;
-                } else if ctx.starts_with("CTX_A:") {
-                    after_ok_a += 1;
-                }
+        // Err is the expected fail-closed result while the swap lands.
+        if let Ok(out) = fire_hook_full(&new_plugin, Hook::PreLlmCall, &hook_input(), &cfg) {
+            let ctx = out.context.unwrap_or_default();
+            if ctx.starts_with("CTX_B:") {
+                after_wins += 1;
+            } else if ctx.starts_with("CTX_A:") {
+                after_ok_a += 1;
             }
-            Err(_) => {} // fail-closed on swap: expected
         }
     }
 

@@ -7,16 +7,14 @@
 //!
 //! 1. pick a provider: recommended first, preselected on the
 //!    recommended row, provider notes in the descriptions;
-//! 2. follow-up by kind:
-//!   - [`ProviderKind::Keyless`] → nothing to ask;
-//!   - [`ProviderKind::Cloud`] → the ENV VAR NAME holding the key
-//!      (never the value - the wizard never handles secrets);
-//!   - [`ProviderKind::SelfHosted`] → the instance URL;
-//!   - [`ProviderKind::Local`] → detect the binary; when it is missing
-//!      the metadata's dependency notes are shown and the user gets
-//!      install-or-skip (a known `install_cmd` runs on confirmation,
-//!      then detection re-runs);
-//! 3. extra fields (voice model, project id, command, ...) as declared.
+//! 2. follow-up by kind: [`ProviderKind::Keyless`] asks nothing;
+//!    [`ProviderKind::Cloud`] asks for the ENV VAR NAME holding the key
+//!    (never the value; the wizard never handles secrets);
+//!    [`ProviderKind::SelfHosted`] asks for the instance URL;
+//!    [`ProviderKind::Local`] detects the binary, and when it is missing
+//!    shows the metadata's dependency notes then offers install-or-skip
+//!    (a known `install_cmd` runs on confirmation, then detection re-runs);
+//! 3. extra fields (voice model, project id, command, and so on) as declared.
 //!
 //! A provider whose wire is not live-verified never reaches the picker:
 //! the row builders filter to what the runtime can actually construct,

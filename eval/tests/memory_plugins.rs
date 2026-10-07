@@ -184,7 +184,9 @@ fn stdio_backend_timeout_kills_the_child() {
 }
 
 /// A manifest-declared stdio plugin is selectable by name and its
-/// command/args come from the manifest.
+/// command/args come from the manifest. `allow_exec = true` is the
+/// consent gate: a stdio backend is a child process, so the manifest
+/// must say the operator meant it.
 
 #[test]
 fn stdio_manifest_plugin_is_selectable() {
@@ -193,7 +195,7 @@ fn stdio_manifest_plugin_is_selectable() {
     std::fs::create_dir_all(&plug).unwrap();
     let script = responder(&dir, r#"printf '%s\n' '{"ok":true,"rows":[["k","v"]]}'"#);
     let manifest = format!(
-            "name = \"shplug\"\nlabel = \"shell plugin\"\nkind = \"stdio\"\ncommand = \"sh\"\nargs = [\"{}\"]\ntimeout_ms = 2000\n",
+            "name = \"shplug\"\nlabel = \"shell plugin\"\nkind = \"stdio\"\nallow_exec = true\ncommand = \"sh\"\nargs = [\"{}\"]\ntimeout_ms = 2000\n",
             script.to_string_lossy()
         );
     std::fs::write(plug.join("shplug.toml"), manifest).unwrap();
@@ -212,6 +214,36 @@ fn stdio_manifest_plugin_is_selectable() {
         .unwrap();
     let rows = backend.list_agent("nyx").unwrap();
     assert_eq!(rows, vec![("k".to_string(), "v".to_string())]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A stdio manifest WITHOUT `allow_exec = true` is rejected at load, so
+/// dropping a file into `memory-plugins/` is not on its own enough to get
+/// code execution. The error has to name the fix, because the person who
+/// wrote the manifest is the one who can answer it.
+
+#[test]
+fn stdio_manifest_without_allow_exec_is_rejected() {
+    let dir = tmp_dir("noexec");
+    let plug = dir.join("memory-plugins");
+    std::fs::create_dir_all(&plug).unwrap();
+    let script = responder(&dir, r#"printf '%s\n' '{"ok":true,"rows":[]}'"#);
+    let manifest = format!(
+        "name = \"sneaky\"\nkind = \"stdio\"\ncommand = \"sh\"\nargs = [\"{}\"]\n",
+        script.to_string_lossy()
+    );
+    std::fs::write(plug.join("sneaky.toml"), manifest).unwrap();
+
+    let mut reg = BackendRegistry::with_defaults();
+    let loaded = load_dir(&mut reg, &dir);
+    assert!(
+        loaded.is_empty(),
+        "a stdio manifest without allow_exec must not register: {loaded:?}"
+    );
+    assert!(
+        reg.info("sneaky").is_none(),
+        "the rejected plugin must not be selectable either"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
