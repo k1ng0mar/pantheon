@@ -19,10 +19,13 @@
 //!    (deterministic repairs; LLM sharpening only when LLM steps are
 //!    enabled), then escalates to the human as `NeedsAttention`
 //!    ([`fixloop`]) - never an infinite loop, never silent.
-//! 7. **Apply**: memory lessons auto-apply at trust tier `Memory`
-//!    (after passing the frequency + recency promotion rule - no decay
-//!    curves). Skills/personas wait in the pending queue for explicit
-//!    human approval.
+//! 7. **Apply**: everything queues for human approval. Memory lessons
+//!    propose-only - an unattended pass never writes a durable record;
+//!    it surfaces the candidate with its evidence (provenance runs +
+//!    observed-count) and parks it in the approval queue, exactly like
+//!    skills and personas. Only an operator grant applies it. This is
+//!    the trust/permission model: frequency + recency can *propose* a
+//!    lesson, they cannot *durable* one.
 //! 7. **Repair** broken operational targets: MCP servers, scheduled
 //!    jobs, and tools walk a bounded repair ladder (retry → `Repair`-slot
 //!    diagnosis → config repair → disable/pause + escalate), audited with
@@ -106,8 +109,9 @@ use std::time::Duration;
 pub struct NightlyConfig {
     /// Pantheon data dir (`<data_dir>/nightly/*` is the pass workspace).
     pub data_dir: PathBuf,
-    /// Memory lessons auto-apply at this tier. Defaults to `Memory`.
-    /// Anything higher needs a human.
+    /// When an operator approves a memory lesson, it is written at this
+    /// tier. Defaults to `Memory`. Propose-only: the unattended pass
+    /// queues the candidate; only a grant reaches this tier.
     pub memory_trust: TrustTier,
     /// `collect` knobs.
     pub since_ms: i64,
@@ -323,36 +327,45 @@ pub fn run_pass(
     } else {
         None
     };
-    let mut applied = 0usize;
+    // No unattended pass writes a durable record anymore: memory lessons
+    // queue for approval, and skill/persona queue behind their eval +
+    // replay gates. `applied` is the auto-apply count for the pass, which
+    // is now structurally 0 - the report keeps the field so the shape is
+    // stable, and its zero is the signal that nothing bypassed approval.
+    let applied = 0usize;
     let mut pending = 0usize;
     let mut finished: Vec<Proposal> = Vec::new();
 
     for mut p in proposals {
         match &p.kind {
             ProposalKind::MemoryLesson { .. } => {
-                // No evals, no replay: the promotion rule IS the gate.
+                // Propose only: an unattended pass never dures a memory
+                // lesson itself. The promotion rule (frequency + recency)
+                // surfaced this candidate with its evidence; the
+                // operator decides. Queue it exactly like skill/persona
+                // so the approval surface is one queue, and only a grant
+                // writes the durable record.
                 if config.dry_run {
                     // Dry run: the proposal stands as proposed, nothing
-                    // is written. Audit/state/report still record the
-                    // pass - that is the point of a dry run.
+                    // is written or queued.
                     p.status = ProposalStatus::Proposed;
                 } else {
-                    match apply_memory_lesson(&config.data_dir, &p) {
-                        Ok(()) => {
-                            p.status = ProposalStatus::Applied;
-                            applied += 1;
-                            events.push(NightlyEvent::LessonApplied {
+                    match queue_for_approval(&config.data_dir, &p) {
+                        Ok(_) => {
+                            pending += 1;
+                            // The queued copy is stored as ReplayPassed;
+                            // the pass result must report the same
+                            // status, not the pre-queue `Proposed`.
+                            p.status = ProposalStatus::ReplayPassed;
+                            events.push(NightlyEvent::QueuedForApproval {
                                 id: p.id.clone(),
-                                key: match &p.kind {
-                                    ProposalKind::MemoryLesson { key } => key.clone(),
-                                    _ => unreachable!(),
-                                },
+                                kind: p.kind_name().into(),
                                 at_ms: at,
                             });
                         }
                         Err(e) => events.push(NightlyEvent::EvalRejected {
                             id: p.id.clone(),
-                            reason: format!("apply failed: {e}"),
+                            reason: format!("queue failed: {e}"),
                             at_ms: at,
                         }),
                     }
@@ -446,9 +459,10 @@ pub fn run_pass(
     let mut ideas_minted = 0usize;
     if let Ok(store) = pantheon_storage::IdeaStore::open(&config.data_dir) {
         let today = ideas::today_utc(at);
-        match ideas::run_ideas_phase(&store, &signals, &repairs, config.dry_run, &today, at) {
-            Ok(n) => ideas_minted = n,
-            Err(_) => {}
+        if let Ok(n) =
+            ideas::run_ideas_phase(&store, &signals, &repairs, config.dry_run, &today, at)
+        {
+            ideas_minted = n;
         }
     }
 

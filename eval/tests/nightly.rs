@@ -243,7 +243,7 @@ fn seed_skill_signal(h: &Harness) {
 fn skill_proposals(out: &pantheon_nightly::PassResult) -> Vec<&Proposal> {
     out.proposals
         .iter()
-        .filter(|p| matches!(p.status, ProposalStatus::ReplayPassed))
+        .filter(|p| p.kind_name() == "skill" && matches!(p.status, ProposalStatus::ReplayPassed))
         .collect()
 }
 
@@ -452,7 +452,24 @@ fn recurring_memory_across_sessions_promotes() {
     )
     .unwrap();
 
-    assert!(out.applied > 0);
+    // Propose-only: the unattended pass queues the lesson, it does not
+    // write it. `applied` (auto-applies during the pass) is structurally
+    // 0; the candidate sits in the pending queue with its evidence.
+    assert_eq!(out.applied, 0);
+    assert!(out.pending > 0, "lesson must be queued, got pending={}", out.pending);
+    let pending = load_pending(h.dir.path()).unwrap();
+    assert!(pending.iter().any(|p| p.kind_name() == "lesson"));
+    // Nothing durable yet - the record lands only after an operator grant.
+    assert!(nightly_lessons(&h, "tabs").is_empty());
+
+    // Approving the queued lesson writes the durable record.
+    let id = pending
+        .iter()
+        .find(|p| p.kind_name() == "lesson")
+        .unwrap()
+        .id
+        .clone();
+    decide(h.dir.path(), &config(h.dir.path()), &id, true).unwrap();
     assert_eq!(nightly_lessons(&h, "tabs").len(), 1);
 }
 
@@ -470,7 +487,10 @@ fn one_off_memory_does_not_promote() {
     )
     .unwrap();
 
+    // Below the promotion threshold: not even surfaced, so nothing
+    // queues and nothing applies.
     assert_eq!(out.applied, 0);
+    assert!(load_pending(h.dir.path()).unwrap().is_empty());
     assert!(nightly_lessons(&h, "tabs").is_empty());
 }
 
@@ -561,10 +581,15 @@ fn one_pass_feeds_proposals_and_memory_from_single_scan() {
     )
     .unwrap();
 
-    // Skill reached approval AND the lesson auto-applied - one scan.
+    // One scan feeds both pipelines. Propose-only: the skill queues for
+    // approval and the lesson now queues too (it no longer auto-applies),
+    // so both sit in the pending queue; nothing durable until a grant.
     assert_eq!(skill_proposals(&out).len(), 1);
-    assert_eq!(load_pending(h.dir.path()).unwrap().len(), 1);
-    assert_eq!(nightly_lessons(&h, "imports").len(), 1);
+    let pending = load_pending(h.dir.path()).unwrap();
+    assert_eq!(pending.len(), 2, "skill + lesson both queue");
+    assert!(pending.iter().any(|p| p.kind_name() == "skill"));
+    assert!(pending.iter().any(|p| p.kind_name() == "lesson"));
+    assert!(nightly_lessons(&h, "imports").is_empty());
     // Exactly one pass ran.
     let passes = pantheon_nightly::read_events(h.dir.path())
         .into_iter()

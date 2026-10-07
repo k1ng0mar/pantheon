@@ -1,16 +1,19 @@
 //! Apply + pending approval.
 //!
-//! The approval rule is the trust-tier split:
+//! Propose-only: no unattended path writes a durable record.
 //!
-//! - **Memory lessons** (trust tier `Memory`) auto-apply. They are
-//!   informative, never authoritative, and can never clobber a
-//!   user-confirmed record - idempotent keys keep them stable across
-//!   passes.
-//! - **Skill and Persona proposals** never apply themselves. They pass
-//!   eval-gating and replay-gating, then sit in
-//!   `<data_dir>/nightly/nightly-pending.json` until a human approves or
-//!   denies them. A denial ends the proposal's life; an approval moves it
-//!   to applied.
+//! - **Memory lessons** are surfaced with their evidence (provenance
+//!   runs + observed-count), then parked in
+//!   `<data_dir>/nightly/nightly-pending.json` for a human to approve or
+//!   deny. A grant writes the record at trust tier `Memory`; a denial
+//!   ends the proposal. Idempotent keys keep re-approval stable.
+//! - **Skill and Persona proposals** pass eval-gating and replay-gating,
+//!   then sit in the same pending queue until a human approves or denies
+//!   them.
+//!
+//! `route` always queues. `apply_memory_lesson` / `apply_approved` are
+//! only reachable through an explicit operator grant (`decide`), never
+//! through the unattended nightly pass.
 
 use crate::propose::{Proposal, ProposalKind, ProposalStatus};
 use crate::NightlyConfig;
@@ -28,9 +31,12 @@ pub fn pending_path(data_dir: &Path) -> PathBuf {
 
 #[derive(Debug, Clone)]
 pub enum ApplyOutcome {
-    /// Memory lesson written at trust tier Memory.
+    /// A durable record was written by the explicit operator path
+    /// (`nightly approve <id>`). Emitted only by
+    /// [`apply_memory_lesson`]; the unattended [`route`] never does this.
     AutoApplied,
-    /// Skill/persona proposal queued for human approval.
+    /// Proposal queued for human approval. This is the only outcome the
+    /// unattended nightly pass produces - propose-only, no auto-during.
     AwaitingApproval,
 }
 
@@ -88,7 +94,7 @@ pub fn decide(
         // Apply BEFORE dequeuing: if application fails the proposal stays
         // in the queue for retry and the failure is audited.
         let proposal = pending[pos].clone();
-        if let Err(e) = apply_skill_or_persona(data_dir, &proposal) {
+        if let Err(e) = apply_approved(data_dir, &proposal) {
             crate::audit::audit(
                 data_dir,
                 &crate::audit::NightlyEvent::ApplyFailed {
@@ -210,7 +216,24 @@ pub fn apply_skill_or_persona(data_dir: &Path, proposal: &Proposal) -> Result<()
             Ok(())
         }
         ProposalKind::MemoryLesson { .. } => {
-            Err("memory lessons apply via apply_memory_lesson, not the approval queue".into())
+            // Operator-approved a memory lesson: write it at trust tier
+            // Memory now. This is the explicit user-vouch path - the
+            // unattended `route` never reaches here.
+            apply_memory_lesson(data_dir, proposal)
+        }
+    }
+}
+
+/// Apply a human-approved proposal by kind. The dispatcher [`decide`]
+/// calls this after a grant: skill/persona proposals apply their payload,
+/// memory lessons write the durable record at trust tier Memory. This is
+/// the only path that turns a queued proposal into a durable effect -
+/// `route` always queues, never applies.
+pub fn apply_approved(data_dir: &Path, proposal: &Proposal) -> Result<(), String> {
+    match &proposal.kind {
+        ProposalKind::MemoryLesson { .. } => apply_memory_lesson(data_dir, proposal),
+        ProposalKind::Skill { .. } | ProposalKind::Persona { .. } => {
+            apply_skill_or_persona(data_dir, proposal)
         }
     }
 }
@@ -235,17 +258,20 @@ pub fn apply_memory_lesson(data_dir: &Path, proposal: &Proposal) -> Result<(), S
 }
 
 /// Route a validated proposal to its destination.
+///
+/// Memory lessons no longer auto-apply: an unattended nightly pass
+/// surfaces a proposed lesson with its evidence (provenance runs +
+/// observed-count) and parks it in the approval queue, exactly like
+/// skill/persona proposals. The operator grants or denies; only a grant
+/// writes the durable record. This is the trust/permission model -
+/// frequency + recency can *propose* a lesson, they cannot *durable* one.
 pub fn route(data_dir: &Path, proposal: &Proposal) -> Result<ApplyOutcome, String> {
-    match &proposal.kind {
-        ProposalKind::MemoryLesson { .. } => {
-            apply_memory_lesson(data_dir, proposal)?;
-            Ok(ApplyOutcome::AutoApplied)
-        }
-        ProposalKind::Skill { .. } | ProposalKind::Persona { .. } => {
-            queue_for_approval(data_dir, proposal)?;
-            Ok(ApplyOutcome::AwaitingApproval)
-        }
-    }
+    // All proposal kinds (memory lesson, skill, persona) queue for human
+    // approval. `apply_memory_lesson` is still exposed for the explicit
+    // operator path (`nightly approve <id>`), but the unattended route
+    // never calls it directly.
+    queue_for_approval(data_dir, proposal)?;
+    Ok(ApplyOutcome::AwaitingApproval)
 }
 
 /// Skill names are slug-shaped (`[a-z0-9-]`, non-empty, bounded): the
