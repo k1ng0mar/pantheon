@@ -1,0 +1,41 @@
+name: cf-ops
+description: Cloudflare operations through the cf CLI. Runs read/write/destroy-classified `cf` commands and returns their JSON output. Every mutating call carries the approval capability the host policy parks on.
+version: "1.0.0"
+maintainer: Pantheon
+capabilities:
+  - name: cf_read
+    capability: ShellExecute
+    description: Run a read-only `cf` CLI command (list/get/describe/search/whoami) and return its JSON output. Pass the full argument list after `cf`; the leading `cf` is supplied by the runner.
+    parameters:
+      type: object
+      required: [args]
+      properties:
+        args:
+          type: array
+          description: Arguments after `cf`, e.g. ["dns", "records", "list", "--zone", "example.com"].
+          items:
+            type: string
+  - name: cf_write
+    capability: ShellExecute
+    description: Run a create-or-modify `cf` CLI command. Requires operator approval through the host policy before execution.
+    parameters:
+      type: object
+      required: [args]
+      properties:
+        args:
+          type: array
+          description: Arguments after `cf`. Classify the operation before calling; the host re-classifies and parks on the write token.
+          items:
+            type: string
+  - name: cf_destroy
+    capability: ShellExecute
+    description: Run a destructive or production-sensitive `cf` CLI command (delete, DNS mutation on a proxied zone, nameservers, WAF, Access policy, tokens). Requires operator approval.
+    parameters:
+      type: object
+      required: [args]
+      properties:
+        args:
+          type: array
+          description: Arguments after `cf`. The host parks the run for explicit approval of the exact argv.
+          items:
+            type: string
