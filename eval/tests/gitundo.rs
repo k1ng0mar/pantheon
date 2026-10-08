@@ -58,8 +58,8 @@ fn repo_root_finds_git_repo() {
 #[test]
 fn snapshot_then_restore_roundtrip() {
     let d = tempdir();
-    let _ = std::fs::write(d.join("base.txt"), "original\n").unwrap();
-    let _ = std::fs::write(d.join("old.txt"), "stay\n").unwrap();
+    std::fs::write(d.join("base.txt"), "original\n").unwrap();
+    std::fs::write(d.join("old.txt"), "stay\n").unwrap();
     init_repo(&d);
 
     let state = d.join("state");
@@ -103,7 +103,7 @@ fn snapshot_then_restore_roundtrip() {
 #[test]
 fn list_and_delete_undo_points() {
     let d = tempdir();
-    let _ = std::fs::write(d.join("a"), "1\n").unwrap();
+    std::fs::write(d.join("a"), "1\n").unwrap();
     init_repo(&d);
 
     let state = d.join("state");
@@ -131,7 +131,7 @@ fn list_and_delete_undo_points() {
 #[test]
 fn corrupt_patch_is_rejected() {
     let d = tempdir();
-    let _ = std::fs::write(d.join("a"), "1\n").unwrap();
+    std::fs::write(d.join("a"), "1\n").unwrap();
     init_repo(&d);
 
     let state = d.join("state");
