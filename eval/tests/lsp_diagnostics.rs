@@ -19,7 +19,7 @@ fn tempdir() -> PathBuf {
 /// answers `initialize`, and emits a `publishDiagnostics` when it sees
 /// `textDocument/didOpen`. Python handles the byte framing correctly
 /// where a bash `read` loop does not.
-fn write_mock_server(dir: &PathBuf) -> PathBuf {
+fn write_mock_server(dir: &std::path::Path) -> PathBuf {
     let script = dir.join("mock_lsp.py");
     let body = r#"#!/usr/bin/env python3
 import sys, json
