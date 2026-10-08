@@ -1,0 +1,12 @@
+name: planning-with-files
+version: "1.0.0"
+description: Persistent file-based planning for multi-step agent work. Keeps task_plan.md, findings.md, and progress.md on disk; lifecycle hooks inject selected project planning context. Automatic recovery reads project planning files only.
+author: "Pantheon"
+license: "MIT"
+enabled: true
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - on_session_start
+  - on_session_end
