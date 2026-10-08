@@ -6143,6 +6143,29 @@ fn do_design(state: &mut TuiState, cmd: &str) {
                         run_design_verify(state, file);
                     }
                 }
+                "shoot" => {
+                    let file = arg.strip_prefix("shoot").map(str::trim).unwrap_or("");
+                    if file.is_empty() {
+                        state.add_status(
+                            "usage: /design shoot <file> (render + slop scan)".into(),
+                        );
+                    } else {
+                        run_web_designer_script(state, "shoot", file);
+                    }
+                }
+                "matrix" => {
+                    let file = arg.strip_prefix("matrix").map(str::trim).unwrap_or("");
+                    if file.is_empty() {
+                        state.add_status(
+                            "usage: /design matrix <file> (cross-platform check)".into(),
+                        );
+                    } else {
+                        run_web_designer_script(state, "matrix", file);
+                    }
+                }
+                "doctor" => {
+                    run_web_designer_doctor(state);
+                }
                 _ => {
                     state.add_status(format!(
                         "unknown /design action '{action}'; try: /design, /design list, /design bind <name>, /design verify <file>"
@@ -6241,6 +6264,122 @@ fn run_design_verify(state: &mut TuiState, file: &str) {
         }
         Err(e) => {
             state.add_status(format!("drafthouse lint failed to run: {e}"));
+        }
+    }
+}
+
+/// Find the seeded web-designer scripts directory. Bundled skills are
+/// materialized into `<data_dir>/skills/<name>/` on first use, so the
+/// scripts live under `skills/web-designer/scripts/`. Returns None when
+/// the skill has not been seeded yet (the caller reports that).
+fn web_designer_scripts_dir() -> Option<std::path::PathBuf> {
+    let data_dir = crate::terminal::data_dir();
+    let candidate = data_dir.join("skills/web-designer/scripts");
+    if candidate.is_dir() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// Run a web-designer script (shoot, matrix, filmstrip, record, fallback,
+/// history) against a target file. The scripts are Node ESM modules that
+/// use playwright-core; they are invoked with `node <script>.mjs <target>`.
+fn run_web_designer_script(state: &mut TuiState, script: &str, target: &str) {
+    use std::process::Command;
+    let scripts_dir = match web_designer_scripts_dir() {
+        Some(d) => d,
+        None => {
+            state.add_status(
+                "web-designer skill not seeded yet; run /design doctor first".into(),
+            );
+            return;
+        }
+    };
+    let script_path = scripts_dir.join(format!("{script}.mjs"));
+    if !script_path.is_file() {
+        state.add_status(format!(
+            "script {script}.mjs not found in {scripts_dir:?}"
+        ));
+        return;
+    }
+    let out = Command::new("node")
+        .arg(&script_path)
+        .arg(target)
+        .output();
+    match out {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if o.status.success() {
+                state.add_status(format!("{script} completed for {target}"));
+                if !stdout.trim().is_empty() {
+                    state.add_status(stdout.trim().to_string());
+                }
+            } else {
+                state.add_status(format!(
+                    "{script} failed for {target} (exit {})",
+                    o.status.code().unwrap_or(-1)
+                ));
+                if !stdout.trim().is_empty() {
+                    state.add_status(stdout.trim().to_string());
+                }
+                if !stderr.trim().is_empty() {
+                    state.add_status(stderr.trim().to_string());
+                }
+            }
+        }
+        Err(e) => {
+            state.add_status(format!("node failed to run {script}: {e}"));
+        }
+    }
+}
+
+/// Run the web-designer doctor: checks that the skill can render on this
+/// machine (Node version, playwright-core, Chromium) and fixes what it can.
+fn run_web_designer_doctor(state: &mut TuiState) {
+    use std::process::Command;
+    let scripts_dir = match web_designer_scripts_dir() {
+        Some(d) => d,
+        None => {
+            state.add_status(
+                "web-designer skill not seeded yet; restart Pantheon to seed it".into(),
+            );
+            return;
+        }
+    };
+    let doctor_path = scripts_dir.join("doctor.mjs");
+    if !doctor_path.is_file() {
+        state.add_status(format!(
+            "doctor.mjs not found in {scripts_dir:?}"
+        ));
+        return;
+    }
+    let out = Command::new("node")
+        .arg(&doctor_path)
+        .arg("--fix")
+        .output();
+    match out {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if o.status.success() {
+                state.add_status("web-designer doctor: all checks passed".into());
+            } else {
+                state.add_status(format!(
+                    "web-designer doctor: issues found (exit {})",
+                    o.status.code().unwrap_or(-1)
+                ));
+            }
+            if !stdout.trim().is_empty() {
+                state.add_status(stdout.trim().to_string());
+            }
+            if !stderr.trim().is_empty() {
+                state.add_status(stderr.trim().to_string());
+            }
+        }
+        Err(e) => {
+            state.add_status(format!("node failed to run doctor: {e}"));
         }
     }
 }
