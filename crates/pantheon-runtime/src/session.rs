@@ -4616,7 +4616,7 @@ impl Session {
                     .into_iter()
                     .find(|c| {
                         matches!(
-                            self.gate_with_mode(&loop_, run_id, &first.name, &first.arguments, c),
+                            self.gate_with_mode(loop_, run_id, &first.name, &first.arguments, c),
                             Ok(pantheon_agent::GateOutcome::NeedsApproval { .. })
                         )
                     })
@@ -4657,7 +4657,7 @@ impl Session {
                 let mut needs_approval = false;
                 for cap in reg.required_capabilities(&tc.name, &tc.arguments) {
                     if let pantheon_agent::GateOutcome::NeedsApproval { .. } =
-                        self.gate_with_mode(&loop_, run_id, &tc.name, &tc.arguments, &cap)?
+                        self.gate_with_mode(loop_, run_id, &tc.name, &tc.arguments, &cap)?
                     {
                         // Same call, same scope, but the policy now wants
                         // a human. Park again rather than run it: the
@@ -4938,7 +4938,7 @@ impl Session {
                     let (call, r) = (&calls[i], &refs[i]);
                     let caps = reg.required_capabilities(&call.name, &call.args);
                     for cap in &caps {
-                        match self.gate_with_mode(&loop_, run_id, &call.name, &call.args, cap)? {
+                        match self.gate_with_mode(loop_, run_id, &call.name, &call.args, cap)? {
                             pantheon_agent::GateOutcome::Allow => {}
                             pantheon_agent::GateOutcome::NeedsApproval { capability } => {
                                 let scope = approval_scope(&r.id, &call.name, &call.args);

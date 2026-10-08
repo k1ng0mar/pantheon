@@ -333,7 +333,7 @@ impl LspClient {
     pub fn all_diagnostics(&self) -> Vec<Diagnostics> {
         let g = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let mut v: Vec<_> = g.diagnostics.values().cloned().collect();
-        v.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+        v.sort_by_key(|d| std::cmp::Reverse(d.updated_ms));
         v
     }
 
@@ -344,7 +344,7 @@ impl LspClient {
             "jsonrpc": "2.0",
             "method": "exit"
         }));
-        if let Some(mut guard) = self.child.try_lock().ok() {
+        if let Ok(mut guard) = self.child.try_lock() {
             let _ = guard.kill();
         }
         self.server_alive
