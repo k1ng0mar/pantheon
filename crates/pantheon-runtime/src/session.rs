@@ -2364,6 +2364,42 @@ impl Session {
         Provenance::system("tool call")
     }
 
+    /// Record a pre-state hash for a file-writing tool call that is about
+    /// to park for approval. No-op for tools that don't write files.
+    fn record_prestate(
+        &self,
+        run_id: &str,
+        scope: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Result<(), PantheonError> {
+        let Some(path) = pantheon_exec::prestate::file_write_target(tool_name, args) else {
+            return Ok(());
+        };
+        let hash =
+            pantheon_exec::prestate::hash_file(std::path::Path::new(&path)).unwrap_or_default();
+        self.supervisor.emit(Event::PreStateRecorded {
+            run_id: run_id.to_string(),
+            scope: scope.to_string(),
+            path,
+            sha256: hash,
+        })?;
+        Ok(())
+    }
+
+    /// Check a granted call's pre-state hash against the file's current
+    /// contents. Returns Err (with a human-readable reason) if the file
+    /// changed between park and resume. Ok when no pre-state was recorded.
+    fn verify_prestate(&self, run_id: &str, scope: &str) -> Result<(), String> {
+        let recorded = self
+            .supervisor
+            .prestate_for_scope(run_id, scope)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no pre-state recorded".to_string())?;
+        let path = std::path::Path::new(&recorded.path);
+        pantheon_exec::prestate::verify_pre_state(path, &recorded.sha256)
+    }
+
     fn plan_refuse_tool(
         &self,
         run_id: &str,
@@ -4622,10 +4658,14 @@ impl Session {
                     })
                     .unwrap_or(pantheon_api::capability::Capability::Other("tool".into()));
                 for tc in &ungranted {
+                    let scope = approval_scope(&tc.id, &tc.name, &tc.arguments);
                     self.supervisor.emit(Event::ApprovalRequested {
                         run_id: run_id.into(),
-                        scope: approval_scope(&tc.id, &tc.name, &tc.arguments),
+                        scope: scope.clone(),
                     })?;
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&tc.arguments) {
+                        let _ = self.record_prestate(run_id, &scope, &tc.name, &v);
+                    }
                 }
                 return Ok(LoopOutcome::AwaitingApproval {
                     capability: cap,
@@ -4652,6 +4692,34 @@ impl Session {
             let mut regated: Vec<&ToolCallRef> = Vec::with_capacity(granted.len());
             for tc in &granted {
                 if self.plan_refuse_tool(run_id, &tc.id, &tc.name, &tc.arguments, messages)? {
+                    continue;
+                }
+                // Stale-grant check: the target file may have changed
+                // between park and resume. If so, refuse the call and
+                // tell the agent to re-plan rather than clobbering
+                // whatever the user did while the run was parked.
+                let tc_scope = approval_scope(&tc.id, &tc.name, &tc.arguments);
+                if let Err(reason) = self.verify_prestate(run_id, &tc_scope) {
+                    let refusal = Message::tool(
+                        tc.id.clone(),
+                        format!(
+                            "grant refused: {reason}. The file changed after you \
+                             proposed this edit. Re-read it and re-plan."
+                        ),
+                    )
+                    .with_provenance(Provenance::system("pantheon"));
+                    messages.push(refusal.clone());
+                    self.supervisor.emit(Event::ToolMessage {
+                        run_id: run_id.into(),
+                        message: refusal,
+                    })?;
+                    self.supervisor.emit(Event::ToolCompleted {
+                        run_id: run_id.into(),
+                        call_id: tc.id.clone(),
+                        tool: tc.name.clone(),
+                        provenance: Provenance::system("pantheon"),
+                    })?;
+                    *tool_calls_used += 1;
                     continue;
                 }
                 let mut needs_approval = false;
@@ -4946,6 +5014,13 @@ impl Session {
                                     run_id: run_id.into(),
                                     scope: scope.clone(),
                                 })?;
+                                // Snapshot the target file's hash so a
+                                // stale grant can be detected on resume.
+                                if let Ok(v) =
+                                    serde_json::from_str::<serde_json::Value>(&call.args)
+                                {
+                                    let _ = self.record_prestate(run_id, &scope, &call.name, &v);
+                                }
                                 // One request per call: further gated
                                 // capabilities on the same call add no new
                                 // information for the operator.
