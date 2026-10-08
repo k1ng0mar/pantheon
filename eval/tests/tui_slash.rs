@@ -339,3 +339,18 @@ fn learn_persists_and_is_recallable() {
         "the lesson must come back on recall"
     );
 }
+
+// ------------------------------------------------------------- /design ---
+
+#[test]
+fn design_is_registered_in_the_command_catalog() {
+    let reg = commands::registry();
+    assert!(reg.contains_key("design"), "/design must be a registered command");
+    assert!(commands::is_builtin("design"), "design is a built-in");
+    let completions = commands::complete("/des");
+    assert!(
+        completions.contains(&"/design".to_string()),
+        "palette suggests /design: {completions:?}"
+    );
+}
+
