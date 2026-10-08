@@ -1090,7 +1090,6 @@ fn format_kind(kind: &ScheduleKind) -> String {
             Some(t) => format!("at {}", t.to_rfc3339()),
             None => format!("at {at_ms}ms"),
         },
-        ScheduleKind::Webhook { path } => format!("webhook {path}"),
     }
 }
 

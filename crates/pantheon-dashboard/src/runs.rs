@@ -351,7 +351,7 @@ fn timeline_item(
         Event::ApprovalRequested { scope, .. } => Some(redact(scope)),
         Event::ApprovalGranted { scope, .. } => Some(redact(scope)),
         Event::ApprovalDenied { scope, .. } => Some(redact(scope)),
-        Event::PreStateRecorded { path, .. } => Some(path.clone()),
+        Event::PreStateRecorded { path, .. } => Some(redact(path)),
         Event::AgentSpawned { agent, .. } => Some(agent.clone()),
         Event::AgentMessage { agent, .. } => Some(agent.clone()),
         Event::AgentCompleted { agent, .. } => Some(agent.clone()),

@@ -94,7 +94,9 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
                     "",
                 )
             })?;
-            *g = Some(LspClient::start(&program, &args, lang, &want_root, timeout)?);
+            *g = Some(LspClient::start(
+                &program, &args, lang, &want_root, timeout,
+            )?);
             *rg = Some(want_root);
         }
         g.clone().ok_or_else(|| {

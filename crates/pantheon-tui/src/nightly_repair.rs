@@ -228,7 +228,6 @@ impl ScheduleRepairTarget for ScheduleRepairAdapter {
                     ScheduleKind::Cron { expr } => ("cron", Some(expr.clone())),
                     ScheduleKind::Interval { .. } => ("interval", None),
                     ScheduleKind::OneShot { .. } => ("one-shot", None),
-                    ScheduleKind::Webhook { path } => ("webhook", Some(path.clone())),
                 };
                 ScheduledJobSnapshot {
                     id: s.job.id.clone(),

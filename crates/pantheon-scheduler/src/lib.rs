@@ -18,7 +18,6 @@ pub mod retention;
 pub mod run_history;
 pub mod templates;
 pub mod tick;
-pub mod webhook;
 
 pub use cron::{normalize_cron_expr, CronError, CronSchedule};
 pub use durable::DurableClaimLedger;
@@ -28,10 +27,6 @@ pub use templates::{
     ScheduleTemplate, TemplateSchedule, TemplateStore, TemplateVar,
 };
 pub use tick::{occurrence_key, ClaimLedger, PausedCheck, RunOutcome, TickDecision, TickDriver};
-pub use webhook::{
-    accept as accept_webhook, route as route_webhook, sign as sign_webhook, verify_signature, Fire,
-    SignatureError, WebhookAuth, WebhookReject, SECRET_ENV_VAR, SIGNATURE_HEADER,
-};
 
 /// Default ceiling for one job run: 10 minutes. A run that outlives it is
 /// abandoned (the tick stops waiting; Rust cannot kill the thread, so the
@@ -117,7 +112,6 @@ pub enum ScheduleKind {
     Cron { expr: String },
     Interval { every_ms: u64 },
     OneShot { at_ms: i64 },
-    Webhook { path: String },
 }
 
 fn default_agent() -> String {
@@ -245,8 +239,6 @@ impl Job {
         }
         match &self.kind {
             ScheduleKind::OneShot { at_ms } => now_ms >= *at_ms && last_fire_ms.is_none(),
-            // Webhook jobs fire on inbound calls, never on the tick.
-            ScheduleKind::Webhook { .. } => false,
             ScheduleKind::Interval { every_ms } => match last_fire_ms {
                 // every_ms == 0 is rejected at parse time, but rows can
                 // arrive via the dashboard API or templates: a zero
@@ -324,8 +316,6 @@ impl Job {
             ScheduleKind::OneShot { at_ms } => {
                 (last_fire_ms.is_none() && *at_ms > now_ms).then_some(*at_ms)
             }
-            // No clock fire time: webhooks arrive from outside.
-            ScheduleKind::Webhook { .. } => None,
             ScheduleKind::Interval { every_ms } => {
                 // A zero interval is invalid (rejected at parse time, but
                 // reachable via the API): report no future fire rather
@@ -392,9 +382,6 @@ impl Job {
                     Some(last) => last.saturating_add(every),
                 })
             }
-            // Webhook occurrences are keyed by the caller's request id, not
-            // by a clock stamp.
-            ScheduleKind::Webhook { .. } => None,
         }
     }
 }
@@ -630,7 +617,13 @@ impl LegacyStoredJob {
             LegacyKind::Cron { expr } => ScheduleKind::Cron { expr },
             LegacyKind::Interval { every_ms } => ScheduleKind::Interval { every_ms },
             LegacyKind::OneShot { at_ms } => ScheduleKind::OneShot { at_ms },
-            LegacyKind::Webhook { path } => ScheduleKind::Webhook { path },
+            LegacyKind::Webhook { path } => {
+                warnings.push(format!(
+                    "ignoring legacy job '{}': webhook triggers were removed (path {path:?})",
+                    self.id
+                ));
+                return None;
+            }
             LegacyKind::Conditional { expr } => {
                 warnings.push(format!(
                     "ignoring legacy job '{}': conditional triggers were removed (expr {expr:?})",

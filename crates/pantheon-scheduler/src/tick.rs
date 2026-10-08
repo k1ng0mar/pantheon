@@ -442,8 +442,12 @@ impl TickDriver {
                     job.id,
                     job.effective_timeout_secs()
                 );
-                let _ = tx.send(RunOutcome::TimedOut);
+                // Release the slot BEFORE reporting: an observer that
+                // sees TimedOut must already be able to fire again.
+                // (Reporting first let a fast re-tick observe the stale
+                // slot and skip a fire that should have run.)
                 self.abandon(&job.id, generation);
+                let _ = tx.send(RunOutcome::TimedOut);
                 return;
             }
             let _ = tx.send(outcome);

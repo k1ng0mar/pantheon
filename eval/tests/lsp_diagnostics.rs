@@ -110,7 +110,13 @@ fn resolve_workspace_root_finds_nearest_manifest() {
     let root = resolve_workspace_root(&nested);
     // Walk up from proj/src/main.rs: proj/src has no manifest, proj has
     // Cargo.toml, so the root is proj/.
-    assert_eq!(root, d.join("proj"), "expected root {:?}, got {:?}", d.join("proj"), root);
+    assert_eq!(
+        root,
+        d.join("proj"),
+        "expected root {:?}, got {:?}",
+        d.join("proj"),
+        root
+    );
 
     // A file with no manifest anywhere up the tree falls back to an
     // ancestor directory (the walk bottoms out at /). We only assert the
@@ -202,13 +208,29 @@ fn lsp_tool_reroots_across_projects() {
     let _ = std::fs::remove_dir_all(&b);
     std::fs::create_dir_all(a.join("src")).unwrap();
     std::fs::create_dir_all(b.join("src")).unwrap();
-    std::fs::write(a.join("Cargo.toml"), "[package]\nname = \"a\"\nedition = \"2021\"\n").unwrap();
-    std::fs::write(b.join("Cargo.toml"), "[package]\nname = \"b\"\nedition = \"2021\"\n").unwrap();
+    std::fs::write(
+        a.join("Cargo.toml"),
+        "[package]\nname = \"a\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        b.join("Cargo.toml"),
+        "[package]\nname = \"b\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
     // Project A error: u32 -> i64 mismatch.
-    std::fs::write(a.join("src/main.rs"), "fn f() -> i64 { let x: u32 = 1; x }\nfn main() {}\n").unwrap();
+    std::fs::write(
+        a.join("src/main.rs"),
+        "fn f() -> i64 { let x: u32 = 1; x }\nfn main() {}\n",
+    )
+    .unwrap();
     // Project B error: &str -> u32 mismatch (a *different* error message,
     // so we can tell which server produced the diagnostics).
-    std::fs::write(b.join("src/main.rs"), "fn g() -> u32 { \"s\" }\nfn main() {}\n").unwrap();
+    std::fs::write(
+        b.join("src/main.rs"),
+        "fn g() -> u32 { \"s\" }\nfn main() {}\n",
+    )
+    .unwrap();
 
     // Warm each project's cargo check cache so rust-analyzer's first
     // analysis is fast (avoids the cold-check timeout flake).
@@ -228,14 +250,24 @@ fn lsp_tool_reroots_across_projects() {
     // a/ (nearest Cargo.toml), roots the server there, and gets A's error.
     // RA cold-checks the first crate, so retry: we want the positive result
     // (A's type error) but tolerate a "still analyzing" empty batch.
+    //
+    // A's error text varies by rust-analyzer version and analysis timing:
+    // usually "mismatched types", sometimes just the E0308 label
+    // ("expected i64, found u32"). Either proves A's diagnostics surfaced;
+    // the hard guarantee is the no-contamination check below.
+    let a_ok =
+        |out: &str| out.contains("mismatched types") || out.contains("expected i64, found u32");
     let a_path = a.join("src/main.rs").display().to_string();
     let mut out_a = String::new();
     for _ in 0..4 {
         out_a = reg
-            .execute("lsp.open", &format!(r#"{{"path":"{a_path}","wait_secs":40}}"#))
+            .execute(
+                "lsp.open",
+                &format!(r#"{{"path":"{a_path}","wait_secs":40}}"#),
+            )
             .unwrap();
         // The positive proof: A's own type error, not a cross-project leak.
-        if out_a.contains("mismatched types") && !out_a.contains("crate `b`") {
+        if a_ok(&out_a) && !out_a.contains("crate `b`") {
             break;
         }
         // A's diagnostics must never reference B's crate.
@@ -245,7 +277,7 @@ fn lsp_tool_reroots_across_projects() {
         );
     }
     assert!(
-        out_a.contains("mismatched types"),
+        a_ok(&out_a),
         "project A open should surface A's type error, got: {out_a}"
     );
 
@@ -259,10 +291,18 @@ fn lsp_tool_reroots_across_projects() {
     let mut out_b = String::new();
     for _ in 0..6 {
         out_b = reg
-            .execute("lsp.open", &format!(r#"{{"path":"{b_path}","wait_secs":40}}"#))
+            .execute(
+                "lsp.open",
+                &format!(r#"{{"path":"{b_path}","wait_secs":40}}"#),
+            )
             .unwrap();
         // The re-root proof: B's own diagnostics, never A's crate name.
-        if out_b.contains("mismatched types") && !out_b.contains("crate `a`") {
+        // Same rendering tolerance as the A side: the E0308 label
+        // ("expected u32 ...") counts, not just the "mismatched types"
+        // message.
+        if (out_b.contains("mismatched types") || out_b.contains("expected u32"))
+            && !out_b.contains("crate `a`")
+        {
             break;
         }
         assert!(
