@@ -94,6 +94,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/nightly [on|off|status]", "run the nightly maintenance pass now; on/off/status manage the loop"),
     ("/reflect [on|off|status]", "run a reflection pass now, or toggle the self-improvement loop"),
     ("/consolidate [status|--dry-run]", "run a memory consolidation pass (dry run changes nothing)"),
+    ("/design [bind NAME|verify|list]", "design systems: show the bound system, bind one, or verify artifacts"),
     ("/todos", "inspect this session's todo list"),
     ("/compress", "compress this conversation to the window now"),
     ("/export [md|json]", "save this conversation to exports/"),
@@ -6040,6 +6041,226 @@ fn maybe_auto_reflect(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEven
 
 /// `/bg` lists background tasks with their states; `/bg <id>` shows one
 /// task's full output.
+/// `/design` — Pantheon's design-system command: show the bound system,
+/// list available Drafthouse packages, bind one, or run the verify pass.
+///
+/// This is the TUI entry point for the Drafthouse integration: the design
+/// systems live under `~/.hermes/design-systems/` (the `pantheon` package
+/// is Pantheon's own), and the verify step shells to the Drafthouse
+/// lint/verify tools when they are on PATH. Bare `/design` shows the
+/// current binding plus the available packages; the subcommands drive the
+/// workflow.
+fn do_design(state: &mut TuiState, cmd: &str) {
+    let arg = cmd.strip_prefix("/design").map(str::trim).unwrap_or("");
+    // Discover the design-systems root: project-local first, then the
+    // Hermes home install. Neither is required to list what is available.
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let roots: Vec<std::path::PathBuf> = std::iter::once(
+        home.as_ref().map(|h| h.join(".hermes/design-systems")).unwrap_or_default(),
+    )
+    .filter(|p| p.is_dir())
+    .collect();
+
+    let list_packages = |roots: &[std::path::PathBuf]| -> Vec<String> {
+        let mut names = Vec::new();
+        for r in roots {
+            if let Ok(entries) = std::fs::read_dir(r) {
+                for e in entries.flatten() {
+                    if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        if e.path().join("DESIGN.md").exists()
+                            || e.path().join("tokens.css").exists()
+                        {
+                            names.push(e.file_name().to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+        names.sort();
+        names.dedup();
+        names
+    };
+
+    match arg {
+        "" => {
+            // Show the active binding and what is available.
+            let pkgs = list_packages(&roots);
+            let active = resolve_active_design(&roots, &pkgs);
+            if let Some(a) = &active {
+                state.add_status(format!(
+                    "design system bound: {a} ({})",
+                    roots.iter()
+                        .find(|r| r.join(a).exists())
+                        .map(|r| r.join(a).display().to_string())
+                        .unwrap_or_default()
+                ));
+            } else {
+                state.add_status("no design system bound yet".into());
+            }
+            if pkgs.is_empty() {
+                state.add_status("no design-system packages found".into());
+            } else {
+                state.add_status(format!("available: {}", pkgs.join(", ")));
+            }
+            state.add_status("usage: /design bind <name> | /design verify <file> | /design list".into());
+        }
+        "list" => {
+            let pkgs = list_packages(&roots);
+            if pkgs.is_empty() {
+                state.add_status("no design-system packages found".into());
+            } else {
+                for p in &pkgs {
+                    state.add_status(format!("  {p}"));
+                }
+                state.add_status(format!("{} packages", pkgs.len()));
+            }
+        }
+        _ => {
+            let action = arg.split_whitespace().next().unwrap_or("");
+            match action {
+                "bind" => {
+                    let name = arg.strip_prefix("bind").map(str::trim).unwrap_or("");
+                    if name.is_empty() {
+                        state.add_status("usage: /design bind <name>".into());
+                    } else if let Some(pkg) = roots.iter().find(|r| {
+                        r.join(name).join("DESIGN.md").exists()
+                            || r.join(name).join("tokens.css").exists()
+                    }) {
+                        bind_design_system(state, pkg.join(name).as_path(), name);
+                    } else {
+                        state.add_status(format!(
+                            "no design system named '{name}' found; try /design list"
+                        ));
+                    }
+                }
+                "verify" => {
+                    let file = arg.strip_prefix("verify").map(str::trim).unwrap_or("");
+                    if file.is_empty() {
+                        state.add_status(
+                            "usage: /design verify <file> (run the Drafthouse lint/verify pass)".into(),
+                        );
+                    } else {
+                        run_design_verify(state, file);
+                    }
+                }
+                _ => {
+                    state.add_status(format!(
+                        "unknown /design action '{action}'; try: /design, /design list, /design bind <name>, /design verify <file>"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Bind a design system into the active project: copy its `tokens.css` and
+/// `DESIGN.md` into `.pantheon/` so the build (and the Drafthouse verify
+/// step) can find them. Reports the outcome, never claims success it did
+/// not perform.
+fn bind_design_system(state: &mut TuiState, pkg: &std::path::Path, name: &str) {
+    let project = crate::skills::project_root();
+    let dest = project.join(".pantheon");
+    if let Err(e) = std::fs::create_dir_all(&dest) {
+        state.add_status(format!("could not create {dest:?}: {e}"));
+        return;
+    }
+    let mut copied = Vec::new();
+    for fname in ["tokens.css", "DESIGN.md", "manifest.json"] {
+        let src = pkg.join(fname);
+        if src.exists() {
+            match std::fs::copy(&src, dest.join(fname)) {
+                Ok(_) => copied.push(fname.to_string()),
+                Err(e) => state
+                    .add_status(format!("copy {fname} failed: {e}")),
+            }
+        }
+    }
+    if copied.is_empty() {
+        state.add_status(format!(
+            "design system '{name}' has no tokens.css or DESIGN.md; nothing bound"
+        ));
+    } else {
+        state.add_status(format!(
+            "bound design system '{name}' into {dest:?} ({})",
+            copied.join(", ")
+        ));
+    }
+}
+
+/// Run the Drafthouse lint/verify pass on a file. Shells to the
+/// `drafthouse` CLI when it is on PATH; otherwise reports that it is not
+/// installed, which is the honest state on most boxes.
+fn run_design_verify(state: &mut TuiState, file: &str) {
+    use std::process::Command;
+    // Find the drafthouse CLI: PATH first, then the Hermes home bin.
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let candidates: Vec<std::path::PathBuf> = vec![
+        std::path::PathBuf::from("drafthouse"),
+        home.as_ref().map(|h| h.join(".hermes/bin/drafthouse")).unwrap_or_default(),
+    ];
+    let bin = candidates.iter().find(|p| {
+        if p.as_os_str() == "drafthouse" {
+            true // resolved via PATH
+        } else {
+            p.is_file()
+        }
+    });
+    let bin = match bin {
+        Some(b) => b.clone(),
+        None => {
+            state.add_status(
+                "drafthouse CLI not found on PATH; install it to run /design verify".into(),
+            );
+            return;
+        }
+    };
+    let out = Command::new(&bin)
+        .args(["lint", file])
+        .output();
+    match out {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if o.status.success() {
+                state.add_status(format!("design lint clean for {file}"));
+                if !stdout.trim().is_empty() {
+                    state.add_status(stdout.trim().to_string());
+                }
+            } else {
+                state.add_status(format!(
+                    "design lint found issues in {file} (exit {})",
+                    o.status.code().unwrap_or(-1)
+                ));
+                if !stdout.trim().is_empty() {
+                    state.add_status(stdout.trim().to_string());
+                }
+                if !stderr.trim().is_empty() {
+                    state.add_status(stderr.trim().to_string());
+                }
+            }
+        }
+        Err(e) => {
+            state.add_status(format!("drafthouse lint failed to run: {e}"));
+        }
+    }
+}
+
+/// The design system currently bound to this install: the first package
+/// that carries both a DESIGN.md and a tokens.css, if any. None when the
+/// install has no design-system packages at all.
+fn resolve_active_design(
+    roots: &[std::path::PathBuf],
+    pkgs: &[String],
+) -> Option<String> {
+    pkgs.iter().find(|name| {
+        roots.iter().any(|r| {
+            r.join(name.as_str()).join("DESIGN.md").exists()
+                && r.join(name.as_str()).join("tokens.css").exists()
+        })
+    })
+    .cloned()
+}
+
 fn do_bg(state: &mut TuiState, cmd: &str) {
     let arg = cmd.strip_prefix("/bg").map(str::trim).unwrap_or("");
     if arg.is_empty() {
@@ -8944,6 +9165,10 @@ fn handle_slash_inner(
             format!("/plugins {}", cmd["/plugin ".len()..].trim_start())
         };
         crate::plugin_remote::do_plugins(state, &normalized);
+        return;
+    }
+    if cmd == "/design" || cmd.starts_with("/design ") {
+        do_design(state, cmd);
         return;
     }
     if cmd == "/theme" || cmd.starts_with("/theme ") {

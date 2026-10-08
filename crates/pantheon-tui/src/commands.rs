@@ -358,6 +358,11 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "system",
         },
         CommandMeta {
+            name: "design",
+            desc: "design systems: show the bound system, bind one, or verify artifacts",
+            category: "system",
+        },
+        CommandMeta {
             name: "vim",
             desc: "modal vim editing for the composer (v1: Normal/Insert only)",
             category: "system",
