@@ -2145,9 +2145,8 @@ impl Session {
     /// the `TurnOutcome::Delegate` arm resolve their defaults from it
     /// per turn.
     ///
-    /// TODO(TUI): wire this from the TUI startup path like the other
-    /// `set_*_section` calls, so `[budget]` edits actually reach the
-    /// running session. Until then the compiled defaults apply.
+    /// Wired from the TUI startup path alongside the other `set_*`
+    /// calls; `[budget]` edits reach the running session through it.
     pub fn set_budget_section(&self, section: pantheon_api::config::BudgetSection) {
         if let Ok(mut s) = self.budget_section.lock() {
             *s = Some(section);
@@ -2394,8 +2393,12 @@ impl Session {
         let recorded = self
             .supervisor
             .prestate_for_scope(run_id, scope)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "no pre-state recorded".to_string())?;
+            .map_err(|e| e.to_string())?;
+        // No pre-state was recorded for this scope (read-only tool, or a
+        // run from before this feature): nothing to verify, so allow.
+        let Some(recorded) = recorded else {
+            return Ok(());
+        };
         let path = std::path::Path::new(&recorded.path);
         pantheon_exec::prestate::verify_pre_state(path, &recorded.sha256)
     }
@@ -5016,8 +5019,7 @@ impl Session {
                                 })?;
                                 // Snapshot the target file's hash so a
                                 // stale grant can be detected on resume.
-                                if let Ok(v) =
-                                    serde_json::from_str::<serde_json::Value>(&call.args)
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&call.args)
                                 {
                                     let _ = self.record_prestate(run_id, &scope, &call.name, &v);
                                 }

@@ -345,7 +345,10 @@ fn learn_persists_and_is_recallable() {
 #[test]
 fn design_is_registered_in_the_command_catalog() {
     let reg = commands::registry();
-    assert!(reg.contains_key("design"), "/design must be a registered command");
+    assert!(
+        reg.contains_key("design"),
+        "/design must be a registered command"
+    );
     assert!(commands::is_builtin("design"), "design is a built-in");
     let completions = commands::complete("/des");
     assert!(
@@ -353,4 +356,3 @@ fn design_is_registered_in_the_command_catalog() {
         "palette suggests /design: {completions:?}"
     );
 }
-

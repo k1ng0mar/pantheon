@@ -315,6 +315,11 @@ pub fn open_maintenance_session(data_dir: &Path) -> Result<Session, String> {
     // without this the `[budget].max_tokens` tier silently fell through
     // to the model max / 16k fallback.
     session.set_budget(budget_for(cfg_ref));
+    // The live `[budget]` section itself, so `delegate` turns spawned
+    // from maintenance sessions resolve delegation knobs
+    // (delegate_child_max_tokens, max_delegations) exactly as
+    // configured — same wiring as the TUI startup path.
+    session.set_budget_section(cfg_ref.and_then(|c| c.budget.clone()).unwrap_or_default());
     // The configured token cap, kept apart from the live budget exactly
     // like the TUI's `set_budget_max_tokens` block, so `/tokens off`
     // falls back to the configured value instead of forgetting it.

@@ -22,8 +22,6 @@ use pantheon_scheduler::{
 use std::collections::HashMap;
 
 /// Only the three live kinds can be created. Rows in the old file format
-/// Render a [`ScheduleKind`] for the dashboard. Webhook jobs show their
-/// path; they fire on inbound calls, never on the tick.
 fn kind_json(kind: &ScheduleKind) -> serde_json::Value {
     match kind {
         ScheduleKind::Cron { expr } => serde_json::json!({"type": "cron", "expr": expr}),
@@ -31,7 +29,6 @@ fn kind_json(kind: &ScheduleKind) -> serde_json::Value {
             serde_json::json!({"type": "every", "every_ms": every_ms})
         }
         ScheduleKind::OneShot { at_ms } => serde_json::json!({"type": "oneshot", "at_ms": at_ms}),
-        ScheduleKind::Webhook { path } => serde_json::json!({"type": "webhook", "path": path}),
     }
 }
 

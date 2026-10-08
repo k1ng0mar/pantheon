@@ -28,30 +28,19 @@ pub fn hash_file(path: &Path) -> Option<String> {
 /// Extract the target file path from a tool call's arguments, if the tool
 /// writes to a file. Returns None for read-only tools.
 ///
-/// Covers: write, edit, patch, and any tool whose args carry a `path`
-/// field that maps to a write operation.
+/// Only `write_file` is tracked: it is the sole built-in file-writing
+/// tool (its `path` arg names the target). `shell` can write files too,
+/// but a shell command's write targets are not reliably enumerable from
+/// its args, so shell calls are out of scope here. At execution time
+/// `write_file` additionally enforces its own `expected_hash` stale-edit
+/// guard through the safe-writer; the pre-state hash covers the
+/// park-to-resume gap that guard cannot see.
 pub fn file_write_target(tool_name: &str, args: &serde_json::Value) -> Option<String> {
-    let path = args.get("path").or_else(|| args.get("file_path"))?;
-    let path_str = path.as_str()?;
-
-    match tool_name {
-        "write" | "write_file" | "edit" | "patch" | "create_file" | "notebook_edit" => {
-            Some(path_str.to_string())
-        }
-        _ => {
-            // For tools we don't know, only treat it as a write target if
-            // the args explicitly say so.
-            let writes = args
-                .get("_write")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if writes {
-                Some(path_str.to_string())
-            } else {
-                None
-            }
-        }
+    if tool_name != "write_file" {
+        return None;
     }
+    let path = args.get("path")?;
+    path.as_str().map(|s| s.to_string())
 }
 
 /// Check whether a file's current hash matches the recorded pre-state hash.

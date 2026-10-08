@@ -104,8 +104,12 @@ pub fn scan_skill_dir(dir: &Path) -> Result<ScanVerdict, PantheonError> {
 /// Parse the JSON output from SkillSpector.
 fn parse_verdict(stdout: &[u8], _dir: &Path) -> Result<ScanVerdict, PantheonError> {
     let text = String::from_utf8_lossy(stdout);
-    let json: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| serr("SKILL_SCAN_PARSE", format!("invalid JSON from skillspector: {e}")))?;
+    let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        serr(
+            "SKILL_SCAN_PARSE",
+            format!("invalid JSON from skillspector: {e}"),
+        )
+    })?;
 
     let risk_score = json
         .get("risk_score")
@@ -193,7 +197,8 @@ pub fn record_verdict(
 
     let json = serde_json::to_string_pretty(&record)
         .map_err(|e| serr("SKILL_SCAN_PARSE", format!("serialize verdict: {e}")))?;
-    std::fs::write(&target, json).map_err(|e| serr("SKILL_SCAN_DIR", format!("write verdict: {e}")))?;
+    std::fs::write(&target, json)
+        .map_err(|e| serr("SKILL_SCAN_DIR", format!("write verdict: {e}")))?;
     Ok(())
 }
 
@@ -278,8 +283,12 @@ fn set_skill_quarantined(
         names.retain(|n| n != name);
     }
 
-    let json = serde_json::to_string_pretty(&names)
-        .map_err(|e| serr("SKILL_SCAN_PARSE", format!("serialize quarantined.json: {e}")))?;
+    let json = serde_json::to_string_pretty(&names).map_err(|e| {
+        serr(
+            "SKILL_SCAN_PARSE",
+            format!("serialize quarantined.json: {e}"),
+        )
+    })?;
     std::fs::write(&path, json)
         .map_err(|e| serr("SKILL_SCAN_DIR", format!("write quarantined.json: {e}")))?;
     Ok(())
@@ -300,7 +309,9 @@ fn data_dir() -> PathBuf {
     std::env::var_os("PANTHEON_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default();
             home.join(".pantheon")
         })
 }

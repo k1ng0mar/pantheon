@@ -738,7 +738,10 @@ impl Supervisor {
             .iter()
             .filter_map(|e| match &e.event {
                 Event::PreStateRecorded {
-                    scope, path, sha256, ..
+                    scope,
+                    path,
+                    sha256,
+                    ..
                 } => Some(PreStateRecord {
                     scope: scope.clone(),
                     path: path.clone(),

@@ -4226,8 +4226,6 @@ fn health_alerts(
                 }
             }
             pantheon_scheduler::ScheduleKind::Cron { .. } => {}
-            // Webhook jobs fire on inbound calls; no clock-based overdue.
-            pantheon_scheduler::ScheduleKind::Webhook { .. } => {}
         }
     }
     alerts
@@ -5257,6 +5255,16 @@ pub fn run_tui_session_with(
             .map(config::config_budget)
             .unwrap_or_default(),
     );
+    // The live `[budget]` section itself, so the `delegate` tool and
+    // turn outcomes resolve delegation knobs (delegate_child_max_tokens,
+    // max_delegations) exactly as configured rather than falling back
+    // to compiled defaults. Absent section = defaults.
+    session.set_budget_section(
+        file_cfg
+            .as_ref()
+            .and_then(|c| c.budget.clone())
+            .unwrap_or_default(),
+    );
     // The configured token cap, kept apart from the live budget: `/tokens`
     // overwrites `budget.max_tokens` for the session, and `/tokens off`
     // must fall back to this configured value rather than forget it.
@@ -6057,7 +6065,9 @@ fn do_design(state: &mut TuiState, cmd: &str) {
     // Hermes home install. Neither is required to list what is available.
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let roots: Vec<std::path::PathBuf> = std::iter::once(
-        home.as_ref().map(|h| h.join(".hermes/design-systems")).unwrap_or_default(),
+        home.as_ref()
+            .map(|h| h.join(".hermes/design-systems"))
+            .unwrap_or_default(),
     )
     .filter(|p| p.is_dir())
     .collect();
@@ -6067,12 +6077,11 @@ fn do_design(state: &mut TuiState, cmd: &str) {
         for r in roots {
             if let Ok(entries) = std::fs::read_dir(r) {
                 for e in entries.flatten() {
-                    if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                        if e.path().join("DESIGN.md").exists()
-                            || e.path().join("tokens.css").exists()
-                        {
-                            names.push(e.file_name().to_string_lossy().to_string());
-                        }
+                    if e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                        && (e.path().join("DESIGN.md").exists()
+                            || e.path().join("tokens.css").exists())
+                    {
+                        names.push(e.file_name().to_string_lossy().to_string());
                     }
                 }
             }
@@ -6090,7 +6099,8 @@ fn do_design(state: &mut TuiState, cmd: &str) {
             if let Some(a) = &active {
                 state.add_status(format!(
                     "design system bound: {a} ({})",
-                    roots.iter()
+                    roots
+                        .iter()
                         .find(|r| r.join(a).exists())
                         .map(|r| r.join(a).display().to_string())
                         .unwrap_or_default()
@@ -6103,7 +6113,9 @@ fn do_design(state: &mut TuiState, cmd: &str) {
             } else {
                 state.add_status(format!("available: {}", pkgs.join(", ")));
             }
-            state.add_status("usage: /design bind <name> | /design verify <file> | /design list".into());
+            state.add_status(
+                "usage: /design bind <name> | /design verify <file> | /design list".into(),
+            );
         }
         "list" => {
             let pkgs = list_packages(&roots);
@@ -6138,7 +6150,8 @@ fn do_design(state: &mut TuiState, cmd: &str) {
                     let file = arg.strip_prefix("verify").map(str::trim).unwrap_or("");
                     if file.is_empty() {
                         state.add_status(
-                            "usage: /design verify <file> (run the Drafthouse lint/verify pass)".into(),
+                            "usage: /design verify <file> (run the Drafthouse lint/verify pass)"
+                                .into(),
                         );
                     } else {
                         run_design_verify(state, file);
@@ -6147,9 +6160,7 @@ fn do_design(state: &mut TuiState, cmd: &str) {
                 "shoot" => {
                     let file = arg.strip_prefix("shoot").map(str::trim).unwrap_or("");
                     if file.is_empty() {
-                        state.add_status(
-                            "usage: /design shoot <file> (render + slop scan)".into(),
-                        );
+                        state.add_status("usage: /design shoot <file> (render + slop scan)".into());
                     } else {
                         run_web_designer_script(state, "shoot", file);
                     }
@@ -6194,8 +6205,7 @@ fn bind_design_system(state: &mut TuiState, pkg: &std::path::Path, name: &str) {
         if src.exists() {
             match std::fs::copy(&src, dest.join(fname)) {
                 Ok(_) => copied.push(fname.to_string()),
-                Err(e) => state
-                    .add_status(format!("copy {fname} failed: {e}")),
+                Err(e) => state.add_status(format!("copy {fname} failed: {e}")),
             }
         }
     }
@@ -6220,7 +6230,9 @@ fn run_design_verify(state: &mut TuiState, file: &str) {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let candidates: Vec<std::path::PathBuf> = vec![
         std::path::PathBuf::from("drafthouse"),
-        home.as_ref().map(|h| h.join(".hermes/bin/drafthouse")).unwrap_or_default(),
+        home.as_ref()
+            .map(|h| h.join(".hermes/bin/drafthouse"))
+            .unwrap_or_default(),
     ];
     let bin = candidates.iter().find(|p| {
         if p.as_os_str() == "drafthouse" {
@@ -6238,9 +6250,7 @@ fn run_design_verify(state: &mut TuiState, file: &str) {
             return;
         }
     };
-    let out = Command::new(&bin)
-        .args(["lint", file])
-        .output();
+    let out = Command::new(&bin).args(["lint", file]).output();
     match out {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
@@ -6291,23 +6301,16 @@ fn run_web_designer_script(state: &mut TuiState, script: &str, target: &str) {
     let scripts_dir = match web_designer_scripts_dir() {
         Some(d) => d,
         None => {
-            state.add_status(
-                "web-designer skill not seeded yet; run /design doctor first".into(),
-            );
+            state.add_status("web-designer skill not seeded yet; run /design doctor first".into());
             return;
         }
     };
     let script_path = scripts_dir.join(format!("{script}.mjs"));
     if !script_path.is_file() {
-        state.add_status(format!(
-            "script {script}.mjs not found in {scripts_dir:?}"
-        ));
+        state.add_status(format!("script {script}.mjs not found in {scripts_dir:?}"));
         return;
     }
-    let out = Command::new("node")
-        .arg(&script_path)
-        .arg(target)
-        .output();
+    let out = Command::new("node").arg(&script_path).arg(target).output();
     match out {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
@@ -6351,15 +6354,10 @@ fn run_web_designer_doctor(state: &mut TuiState) {
     };
     let doctor_path = scripts_dir.join("doctor.mjs");
     if !doctor_path.is_file() {
-        state.add_status(format!(
-            "doctor.mjs not found in {scripts_dir:?}"
-        ));
+        state.add_status(format!("doctor.mjs not found in {scripts_dir:?}"));
         return;
     }
-    let out = Command::new("node")
-        .arg(&doctor_path)
-        .arg("--fix")
-        .output();
+    let out = Command::new("node").arg(&doctor_path).arg("--fix").output();
     match out {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
@@ -6388,17 +6386,15 @@ fn run_web_designer_doctor(state: &mut TuiState) {
 /// The design system currently bound to this install: the first package
 /// that carries both a DESIGN.md and a tokens.css, if any. None when the
 /// install has no design-system packages at all.
-fn resolve_active_design(
-    roots: &[std::path::PathBuf],
-    pkgs: &[String],
-) -> Option<String> {
-    pkgs.iter().find(|name| {
-        roots.iter().any(|r| {
-            r.join(name.as_str()).join("DESIGN.md").exists()
-                && r.join(name.as_str()).join("tokens.css").exists()
+fn resolve_active_design(roots: &[std::path::PathBuf], pkgs: &[String]) -> Option<String> {
+    pkgs.iter()
+        .find(|name| {
+            roots.iter().any(|r| {
+                r.join(name.as_str()).join("DESIGN.md").exists()
+                    && r.join(name.as_str()).join("tokens.css").exists()
+            })
         })
-    })
-    .cloned()
+        .cloned()
 }
 
 fn do_bg(state: &mut TuiState, cmd: &str) {
