@@ -456,7 +456,11 @@ fn recurring_memory_across_sessions_promotes() {
     // write it. `applied` (auto-applies during the pass) is structurally
     // 0; the candidate sits in the pending queue with its evidence.
     assert_eq!(out.applied, 0);
-    assert!(out.pending > 0, "lesson must be queued, got pending={}", out.pending);
+    assert!(
+        out.pending > 0,
+        "lesson must be queued, got pending={}",
+        out.pending
+    );
     let pending = load_pending(h.dir.path()).unwrap();
     assert!(pending.iter().any(|p| p.kind_name() == "lesson"));
     // Nothing durable yet - the record lands only after an operator grant.
