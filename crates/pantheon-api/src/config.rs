@@ -2885,8 +2885,7 @@ mod gateway_multi_agent_tests {
     /// other's override (`cli_override_beats_the_agent_setting` failed on
     /// CI with `UnknownProfile { zeus }` because a concurrent guard had
     /// set zeus between the set and the read).
-    static OVERRIDES_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
-        std::sync::OnceLock::new();
+    static OVERRIDES_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
     /// Holds the OVERRIDES_LOCK guard for the whole test body (not just the
     /// `set_profile_override` call): a guard dropped at the end of the
