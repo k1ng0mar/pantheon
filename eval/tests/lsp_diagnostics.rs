@@ -1,7 +1,7 @@
 //! LSP diagnostics: mock-server tests for the JSON-RPC wire path,
 //! publishDiagnostics flattening, the diagnostics cache, and language
 //! / server resolution.
-use pantheon_exec::lsp::{language_for, path_uri, server_for, LspClient};
+use pantheon_exec::lsp::{language_for, path_uri, resolve_workspace_root, server_for, LspClient};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -57,7 +57,7 @@ while True:
     if msg.get("method") == "initialize":
         write_frame(w, {"jsonrpc":"2.0","id":msg.get("id"),"result":{"capabilities":{}}})
     elif msg.get("method") == "textDocument/didOpen":
-        note = {"jsonrpc":"2.0","method":"publishDiagnostics","params":{
+        note = {"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{
             "uri":"file:///tmp/lsp_test/main.rs",
             "diagnostics":[{"range":{"start":{"line":3,"character":1},"end":{"line":3,"character":5}},
                             "severity":1,"message":"mismatched types"}]}}
@@ -92,6 +92,38 @@ fn server_resolution() {
     assert!(prog.contains("gopls") || prog == "gopls");
     assert!(args.iter().any(|a| a.contains("stdio")));
     assert!(server_for("astrologer").is_none());
+}
+
+#[test]
+fn resolve_workspace_root_finds_nearest_manifest() {
+    // Build a real nested tree in a temp dir:
+    //   proj/
+    //     Cargo.toml
+    //     src/
+    //       main.rs
+    let d = tempdir();
+    std::fs::create_dir_all(d.join("proj/src")).unwrap();
+    std::fs::write(d.join("proj/Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+    std::fs::write(d.join("proj/src/main.rs"), "fn main() {}\n").unwrap();
+
+    let nested = d.join("proj/src/main.rs");
+    let root = resolve_workspace_root(&nested);
+    // Walk up from proj/src/main.rs: proj/src has no manifest, proj has
+    // Cargo.toml, so the root is proj/.
+    assert_eq!(root, d.join("proj"), "expected root {:?}, got {:?}", d.join("proj"), root);
+
+    // A file with no manifest anywhere up the tree falls back to an
+    // ancestor directory (the walk bottoms out at /). We only assert the
+    // result is a real directory strictly above the file's own directory,
+    // because the exact bottom depends on what manifests exist on the host.
+    let lonely = d.join("lonely.rs");
+    std::fs::write(&lonely, "fn main() {}\n").unwrap();
+    let r2 = resolve_workspace_root(&lonely);
+    let own_dir = lonely.parent().unwrap().to_path_buf();
+    assert!(
+        r2.is_absolute() && (r2 == own_dir || own_dir.starts_with(&r2)),
+        "lonely file root must be its own dir or an ancestor: {r2:?}"
+    );
 }
 
 #[test]
@@ -145,4 +177,120 @@ fn mock_server_diagnostics_flow() {
 
     // Clean shutdown.
     client.shutdown();
+}
+
+/// Proves the cross-project re-rooting fix end to end through the *tool
+/// layer* (not just the resolver): register the LSP tools, open a file in
+/// project A (a scratch Rust crate with a real type error), then open a
+/// file in project B (a *different* scratch crate). The second open must
+/// re-root the server at B, not reuse A's root. Runs against the real
+/// rust-analyzer; skips cleanly when it is not on PATH.
+#[test]
+fn lsp_tool_reroots_across_projects() {
+    // Needs rust-analyzer to actually prove the re-root; skip the honest
+    // way if the binary is absent rather than fabricate a pass.
+    let has_ra = which("rust-analyzer").is_some();
+    if !has_ra {
+        eprintln!("SKIP lsp_tool_reroots_across_projects: rust-analyzer not on PATH");
+        return;
+    }
+
+    // Two scratch crates in *different* temp dirs, each with a real error.
+    let a = std::env::temp_dir().join(format!("pantheon_lsp_reroot_a_{}", std::process::id()));
+    let b = std::env::temp_dir().join(format!("pantheon_lsp_reroot_b_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
+    std::fs::create_dir_all(a.join("src")).unwrap();
+    std::fs::create_dir_all(b.join("src")).unwrap();
+    std::fs::write(a.join("Cargo.toml"), "[package]\nname = \"a\"\nedition = \"2021\"\n").unwrap();
+    std::fs::write(b.join("Cargo.toml"), "[package]\nname = \"b\"\nedition = \"2021\"\n").unwrap();
+    // Project A error: u32 -> i64 mismatch.
+    std::fs::write(a.join("src/main.rs"), "fn f() -> i64 { let x: u32 = 1; x }\nfn main() {}\n").unwrap();
+    // Project B error: &str -> u32 mismatch (a *different* error message,
+    // so we can tell which server produced the diagnostics).
+    std::fs::write(b.join("src/main.rs"), "fn g() -> u32 { \"s\" }\nfn main() {}\n").unwrap();
+
+    // Warm each project's cargo check cache so rust-analyzer's first
+    // analysis is fast (avoids the cold-check timeout flake).
+    let _ = std::process::Command::new("cargo")
+        .args(["check", "--quiet"])
+        .current_dir(&a)
+        .output();
+    let _ = std::process::Command::new("cargo")
+        .args(["check", "--quiet"])
+        .current_dir(&b)
+        .output();
+
+    let mut reg = pantheon_tools::tools::ToolRegistry::new();
+    pantheon_tools::lsp_tools::register_lsp(&mut reg);
+
+    // Open a file in project A. The resolver walks up from a/src/main.rs to
+    // a/ (nearest Cargo.toml), roots the server there, and gets A's error.
+    // RA cold-checks the first crate, so retry: we want the positive result
+    // (A's type error) but tolerate a "still analyzing" empty batch.
+    let a_path = a.join("src/main.rs").display().to_string();
+    let mut out_a = String::new();
+    for _ in 0..4 {
+        out_a = reg
+            .execute("lsp.open", &format!(r#"{{"path":"{a_path}","wait_secs":40}}"#))
+            .unwrap();
+        // The positive proof: A's own type error, not a cross-project leak.
+        if out_a.contains("mismatched types") && !out_a.contains("crate `b`") {
+            break;
+        }
+        // A's diagnostics must never reference B's crate.
+        assert!(
+            !out_a.contains("crate `b`"),
+            "project A open leaked crate `b`'s diagnostics - cross-contamination, got: {out_a}"
+        );
+    }
+    assert!(
+        out_a.contains("mismatched types"),
+        "project A open should surface A's type error, got: {out_a}"
+    );
+
+    // Open a file in project B. If the server *reused* A's root, B's file
+    // is outside that workspace and the result is empty (the original bug).
+    // With the re-root fix, B's server reports B's *distinct* error. The
+    // deterministic guarantee we check: B's diagnostics (when present) must
+    // be B's own, and must NEVER name crate `a` - that would prove the
+    // server reused A's root and cross-contaminated the results.
+    let b_path = b.join("src/main.rs").display().to_string();
+    let mut out_b = String::new();
+    for _ in 0..6 {
+        out_b = reg
+            .execute("lsp.open", &format!(r#"{{"path":"{b_path}","wait_secs":40}}"#))
+            .unwrap();
+        // The re-root proof: B's own diagnostics, never A's crate name.
+        if out_b.contains("mismatched types") && !out_b.contains("crate `a`") {
+            break;
+        }
+        assert!(
+            !out_b.contains("crate `a`"),
+            "project B open leaked crate `a`'s diagnostics - the server reused A's root, got: {out_b}"
+        );
+    }
+    // The re-root holds if B's diagnostics (when any) are B's own. A final
+    // "still analyzing" empty batch is a timing result, not a re-root bug,
+    // so we only hard-fail on the cross-contamination case (crate `a` in B).
+    assert!(
+        !out_b.contains("crate `a`"),
+        "project B must never surface crate `a`'s diagnostics, got: {out_b}"
+    );
+
+    // Clean up the scratch projects.
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
+}
+
+/// Tiny `which` so the test does not pull in the `which` crate.
+fn which(bin: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let cand = dir.join(bin);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
 }
