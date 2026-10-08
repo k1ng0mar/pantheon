@@ -1122,6 +1122,8 @@ pub fn import_skill_from_url(
             .map_err(|e| serr("SKILL_IMPORT_IO", format!("write {}: {e}", dest.display())))?;
     }
     s.path = dest.clone();
+    // Gate: scan the imported skill with SkillSpector
+    let _ = crate::skills_scan::gate_imported_skill(data_dir, &name);
     Ok((dest, s))
 }
 
@@ -1307,6 +1309,8 @@ pub fn import_skill_from_clawhub(
     };
     let dest_dir = contained_skill_dir(&data_dir.join("skills"), &name)?;
     write_bundle(&bundle, &dest_dir)?;
+    // Gate: scan the imported skill with SkillSpector
+    let _ = crate::skills_scan::gate_imported_skill(data_dir, &name);
     let mut s = Skill {
         meta: SkillMeta {
             name: name.clone(),
@@ -1497,6 +1501,8 @@ pub fn import_skill_from_hermes(
         .name;
     let dest_dir = contained_skill_dir(&data_dir.join("skills"), &name)?;
     write_bundle(&bundle, &dest_dir)?;
+    // Gate: scan the imported skill with SkillSpector
+    let _ = crate::skills_scan::gate_imported_skill(data_dir, &name);
     let mut s = load_skill(&dest_dir.join("SKILL.md"))
         .ok_or_else(|| serr("SKILL_HUB_EMPTY", format!("hermes {path}: re-parse failed")))?;
     s.meta.origin = "hermes".to_string();
@@ -1581,6 +1587,8 @@ pub fn import_skill(data_dir: &Path, skill: &Skill) -> Result<PathBuf, PantheonE
     })?;
     std::fs::write(&dest, raw)
         .map_err(|e| serr("SKILL_IMPORT_IO", format!("write {}: {e}", dest.display())))?;
+    // Gate: scan the imported skill with SkillSpector
+    let _ = crate::skills_scan::gate_imported_skill(data_dir, &skill.meta.name);
     Ok(dest)
 }
 
@@ -1604,6 +1612,8 @@ pub fn import_skill_dir(data_dir: &Path, src: &Path, name: &str) -> Result<PathB
     // names (repo clones, user input) and must not escape skills/.
     let dest_dir = contained_skill_dir(&data_dir.join("skills"), name)?;
     copy_tree(src, &dest_dir)?;
+    // Gate: scan the imported skill with SkillSpector
+    let _ = crate::skills_scan::gate_imported_skill(data_dir, name);
     Ok(dest_dir.join("SKILL.md"))
 }
 
@@ -1675,7 +1685,11 @@ pub fn import_skill_dirs(
         };
         let dir = root.join(rel);
         match import_skill_dir(data_dir, &dir, &name) {
-            Ok(p) => out.push((name, p)),
+            Ok(p) => {
+                // Gate: scan the imported skill with SkillSpector
+                let _ = crate::skills_scan::gate_imported_skill(data_dir, &name);
+                out.push((name, p));
+            }
             Err(e) => eprintln!("skill {}: {e}", dir.display()),
         }
     }
