@@ -2879,16 +2879,33 @@ mod gateway_multi_agent_tests {
     /// Panic-safe guard: the profile override is process-global, so every
     /// test that sets it must clear it even on failure - a leaked override
     /// would silently change what other tests resolve.
-    struct OverrideGuard;
+    /// The profile override is a process-global static, so any test that
+    /// touches it must hold this lock for the whole body: without it, two
+    /// parallel tests interleave on the shared value and one reads the
+    /// other's override (`cli_override_beats_the_agent_setting` failed on
+    /// CI with `UnknownProfile { zeus }` because a concurrent guard had
+    /// set zeus between the set and the read).
+    static OVERRIDES_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+
+    /// Holds the OVERRIDES_LOCK guard for the whole test body (not just the
+    /// `set_profile_override` call): a guard dropped at the end of the
+    /// `.lock()` expression would let a parallel test interleave between
+    /// the set and the read. Named, so it lives as long as `OverrideGuard`.
+    struct OverrideGuard(std::sync::MutexGuard<'static, ()>);
     impl OverrideGuard {
         fn set(name: &str) -> Self {
+            let lock = OVERRIDES_LOCK.get_or_init(|| std::sync::Mutex::new(()));
+            let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             set_profile_override(Some(name.to_string()));
-            OverrideGuard
+            OverrideGuard(guard)
         }
     }
     impl Drop for OverrideGuard {
         fn drop(&mut self) {
             set_profile_override(None);
+            // the MutexGuard (self.0) is dropped by the compiler after this,
+            // releasing OVERRIDES_LOCK for the next override test.
         }
     }
 
