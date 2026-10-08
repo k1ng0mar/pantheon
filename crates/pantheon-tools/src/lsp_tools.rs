@@ -132,7 +132,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
                 .ok_or_else(|| err("LSP_NO_LANG", format!("cannot infer language for '{path}'"), "pass 'language' explicitly"))?;
             *l1.lock().unwrap_or_else(|p| p.into_inner()) = Some(lang.clone());
             let wait_secs = v.get("wait_secs").and_then(|x| x.as_u64()).unwrap_or(15);
-            let client = ensure(&s1, &lang, &*r1, timeout)?;
+            let client = ensure(&s1, &lang, &r1, timeout)?;
             let cpath = PathBuf::from(path);
             let text = std::fs::read_to_string(&cpath).map_err(|e| {
                 err(
@@ -145,7 +145,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
             let uri = path_uri(&cpath);
             let diags = client.wait_diagnostics(&uri, Duration::from_secs(wait_secs))?;
             match diags {
-                Some(d) => Ok(serde_json::to_string_pretty(&d).unwrap_or_else(|_| d.uri)),
+                Some(d) => Ok(serde_json::to_string_pretty(&d).unwrap_or(d.uri)),
                 None => Ok(format!(
                     "no diagnostics for {uri} within {wait_secs}s (server may not be ready or file is clean)"
                 )),
@@ -175,7 +175,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
                 .map(|s| s.to_string())
                 .or_else(|| l2.lock().unwrap_or_else(|p| p.into_inner()).clone())
                 .ok_or_else(|| err("LSP_NO_LANG", "no language in scope; pass 'language'".to_string(), "pass 'language' explicitly"))?;
-            let client = ensure(&s2, &lang, &*r2, timeout)?;
+            let client = ensure(&s2, &lang, &r2, timeout)?;
             let maybe_uri = v.get("path").and_then(|x| x.as_str()).map(|p| path_uri(Path::new(p)));
             let out: Vec<_> = match maybe_uri {
                 Some(uri) => client.diagnostics(&uri).into_iter().collect(),
