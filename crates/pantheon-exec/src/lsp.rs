@@ -443,7 +443,16 @@ pub fn path_uri(path: &Path) -> String {
 /// language".
 pub fn server_for(language: &str) -> Option<(String, Vec<String>)> {
     match language.to_lowercase().as_str() {
-        "rust" => Some(("rust-analyzer".into(), vec!["--path".into(), ".".into()])),
+        "rust" => Some((
+            "rust-analyzer".into(),
+            // rust-analyzer gets its project root from the LSP initialize
+            // handshake's rootUri, not from a CLI flag. Newer releases
+            // (1.80+) reject an unknown --path and exit immediately, which
+            // surfaces as LSP_DEAD at handshake. No args: the server speaks
+            // plain LSP on stdin/stdout and discovers the workspace from
+            // the didOpen/initialize payload.
+            Vec::new(),
+        )),
         "python" => Some((
             "python3".into(),
             vec!["-m".into(), "python-lsp-server".into()],
