@@ -300,8 +300,20 @@ impl LspClient {
     }
 
     /// Wait up to `timeout` for the reader thread to have populated
-    /// diagnostics for the given file. Returns the latest batch or
-    /// None if the server emitted none in time.
+    /// *meaningful* diagnostics for the given file.
+    ///
+    /// A real LSP server (e.g. rust-analyzer) emits an empty
+    /// `publishDiagnostics` (count 0) the instant `textDocument/didOpen`
+    /// is processed, *before* the project model and type-check finish; the
+    /// actual errors arrive in a later batch. Returning on the first batch
+    /// would therefore hand the caller the premature empty one. So this
+    /// keeps polling until a batch with `count > 0` appears, or the
+    /// deadline passes.
+    ///
+    /// Returns `Some` of the latest batch when one (empty or not) was seen
+    /// by the deadline, and `None` when the server emitted nothing for this
+    /// file at all. The caller is responsible for interpreting an empty
+    /// `Some` as "no diagnostics yet - the server may still be analyzing".
     pub fn wait_diagnostics(
         &self,
         uri: &str,
@@ -313,11 +325,16 @@ impl LspClient {
                 let g = self.state.lock().unwrap_or_else(|p| p.into_inner());
                 g.diagnostics.get(uri).cloned()
             };
-            if got.is_some() {
+            // A non-empty batch is the definitive "analysis produced results"
+            // signal - stop here.
+            if got.as_ref().is_some_and(|d| d.count > 0) {
                 return Ok(got);
             }
             if std::time::Instant::now() >= deadline {
-                return Ok(None);
+                // Deadline passed. Hand back whatever (possibly empty)
+                // batch was last seen, or None if the server never spoke
+                // for this file at all.
+                return Ok(got);
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -393,8 +410,16 @@ fn read_frame(r: &mut ChildStdout, buf: &mut Vec<u8>) -> Result<Option<Value>, s
 
 /// Pull `publishDiagnostics` out of a raw JSON-RPC message and flatten it
 /// into cache form. Returns None for any other message type.
+///
+/// The real LSP notification is `textDocument/publishDiagnostics` (with the
+/// `textDocument/` namespace prefix); some server implementations and our
+/// own mock historically emitted the short `publishDiagnostics` form.
+/// Accept both so a client change never silently breaks against a real
+/// server again - this exact mismatch is why the tool returned empty
+/// diagnostics for real rust-analyzer while the mock test stayed green.
 fn flatten_publish_diagnostics(msg: &Value, server: &str) -> Option<Diagnostics> {
-    if msg.get("method")? != "publishDiagnostics" {
+    let method = msg.get("method")?.as_str()?;
+    if method != "textDocument/publishDiagnostics" && method != "publishDiagnostics" {
         return None;
     }
     let params = msg.get("params")?;
@@ -430,6 +455,47 @@ fn flatten_publish_diagnostics(msg: &Value, server: &str) -> Option<Diagnostics>
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0),
     })
+}
+
+/// Walk up from a file to find its project root, i.e. the nearest
+/// directory containing a recognised project manifest. This is what a
+/// language server needs as its `rootUri`: rust-analyzer only fully
+/// analyzes a file when the file belongs to the workspace it was
+/// initialized for. Without it, `lsp.open` on a file in a *different*
+/// project silently returns empty diagnostics because the server is
+/// rooted at the wrong place.
+///
+/// The probe set is broad enough to cover the languages this harness
+/// targets. The walk stops at the filesystem root and returns the starting
+/// directory itself when no manifest is found (a file with no project is
+/// still a valid single-file analysis target).
+pub fn resolve_workspace_root(path: &Path) -> PathBuf {
+    const MARKERS: &[&str] = &[
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "go.mod",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "CMakeLists.txt",
+        ".git",
+    ];
+    let mut dir = match path.parent() {
+        Some(d) => d.to_path_buf(),
+        None => PathBuf::from(path),
+    };
+    loop {
+        for m in MARKERS {
+            if dir.join(m).exists() {
+                return dir;
+            }
+        }
+        match dir.parent() {
+            Some(p) => dir = p.to_path_buf(),
+            None => return dir,
+        }
+    }
 }
 
 /// Convert a filesystem path to a `file://` URI.

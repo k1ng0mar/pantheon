@@ -13,7 +13,7 @@ use crate::tools::{parse_args, ToolRegistry};
 use pantheon_api::capability::Capability;
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::message::ToolSchema;
-use pantheon_exec::lsp::{language_for, path_uri, server_for, LspClient};
+use pantheon_exec::lsp::{language_for, path_uri, resolve_workspace_root, server_for, LspClient};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -47,22 +47,43 @@ impl Default for LspOptions {
 }
 
 pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
-    let root_uri: Arc<String> = Arc::new(opts.root_uri.unwrap_or_else(|| {
+    let default_root_uri: Arc<String> = Arc::new(opts.root_uri.unwrap_or_else(|| {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         path_uri(&cwd)
     }));
     let timeout = opts.timeout;
     let server: Arc<Mutex<Option<Arc<LspClient>>>> = Arc::new(Mutex::new(None));
+    // Tracks the root the live server was initialized against. A language
+    // server only fully analyzes files that belong to its own workspace,
+    // so when `lsp.open` targets a file in a *different* project we must
+    // restart the server re-rooted at that project, not reuse the old one.
+    let active_root: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let last_lang: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
+    /// Get a live client rooted at `target_root`, restarting the server
+    /// when `target_root` differs from the one the current client is
+    /// rooted at. `default_root_uri` is the fallback when no explicit root
+    /// is supplied.
     fn ensure(
         server: &Arc<Mutex<Option<Arc<LspClient>>>>,
+        active_root: &Arc<Mutex<Option<String>>>,
         lang: &str,
-        root_uri: &str,
+        target_root: Option<&str>,
+        default_root_uri: &str,
         timeout: Duration,
     ) -> Result<Arc<LspClient>, PantheonError> {
+        let want_root = target_root.unwrap_or(default_root_uri).to_string();
         let mut g = server.lock().unwrap_or_else(|p| p.into_inner());
-        if g.is_none() {
+        let mut rg = active_root.lock().unwrap_or_else(|p| p.into_inner());
+        // Restart if there is no client yet, or the client was rooted at a
+        // different workspace than the one this call targets.
+        if g.is_none() || Some(want_root.as_str()) != rg.as_ref().map(|s| s.as_str()) {
+            if g.is_some() {
+                if let Some(old) = g.take() {
+                    old.shutdown();
+                }
+                *rg = None;
+            }
             let (program, args) = server_for(lang).ok_or_else(|| {
                 PantheonError::new(
                     "LSP_NO_SERVER",
@@ -73,7 +94,8 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
                     "",
                 )
             })?;
-            *g = Some(LspClient::start(&program, &args, lang, root_uri, timeout)?);
+            *g = Some(LspClient::start(&program, &args, lang, &want_root, timeout)?);
+            *rg = Some(want_root);
         }
         g.clone().ok_or_else(|| {
             PantheonError::new(
@@ -101,15 +123,17 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
 
     let s1 = server.clone();
     let l1 = last_lang.clone();
-    let r1 = root_uri.clone();
+    let a1 = active_root.clone();
+    let d1 = default_root_uri.clone();
     reg.register(
         mk(
             "lsp.open",
-            "Open a source file in the language server and wait for its first diagnostics batch. Starts the server on demand. Returns the diagnostics (may be empty if clean).",
+            "Open a source file in the language server and wait for its first diagnostics batch. Starts the server on demand and roots it at the file's project. Returns the diagnostics (may be empty if clean).",
             serde_json::json!({
                 "path": {"type":"string","description":"Absolute or workspace-relative file path"},
                 "language": {"type":"string","description":"Optional language override (default: inferred from extension)"},
                 "wait_secs": {"type":"integer","description":"Diagnostics wait budget (default 15)"},
+                "root": {"type":"string","description":"Optional explicit project root directory (default: auto-detected by walking up from the file)"},
             }),
             vec!["path"],
         ),
@@ -132,8 +156,16 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
                 .ok_or_else(|| err("LSP_NO_LANG", format!("cannot infer language for '{path}'"), "pass 'language' explicitly"))?;
             *l1.lock().unwrap_or_else(|p| p.into_inner()) = Some(lang.clone());
             let wait_secs = v.get("wait_secs").and_then(|x| x.as_u64()).unwrap_or(15);
-            let client = ensure(&s1, &lang, &r1, timeout)?;
             let cpath = PathBuf::from(path);
+            // Resolve the project root: an explicit `root` wins, otherwise
+            // walk up from the file to its nearest manifest. This is what
+            // lets the tool analyze files in projects other than the one
+            // pantheon was launched from.
+            let target_root = match v.get("root").and_then(|x| x.as_str()) {
+                Some(explicit) => Some(path_uri(Path::new(explicit))),
+                None => Some(path_uri(&resolve_workspace_root(&cpath))),
+            };
+            let client = ensure(&s1, &a1, &lang, target_root.as_deref(), &d1, timeout)?;
             let text = std::fs::read_to_string(&cpath).map_err(|e| {
                 err(
                     "LSP_READ",
@@ -145,7 +177,18 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
             let uri = path_uri(&cpath);
             let diags = client.wait_diagnostics(&uri, Duration::from_secs(wait_secs))?;
             match diags {
-                Some(d) => Ok(serde_json::to_string_pretty(&d).unwrap_or(d.uri)),
+                Some(d) if d.count > 0 => Ok(serde_json::to_string_pretty(&d).unwrap_or(d.uri)),
+                Some(d) => {
+                    // An empty batch by the deadline means the server
+                    // emitted "no diagnostics yet" - it may still be
+                    // analyzing (rust-analyzer's first batch is empty).
+                    // Report that honestly instead of claiming the file is
+                    // clean.
+                    Ok(format!(
+                        "no diagnostics for {uri} within {wait_secs}s; the server may still be analyzing (retry, or increase wait_secs). last batch: {} error(s)",
+                        d.count
+                    ))
+                }
                 None => Ok(format!(
                     "no diagnostics for {uri} within {wait_secs}s (server may not be ready or file is clean)"
                 )),
@@ -155,7 +198,8 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
 
     let s2 = server.clone();
     let l2 = last_lang.clone();
-    let r2 = root_uri.clone();
+    let a2 = active_root.clone();
+    let d2 = default_root_uri.clone();
     reg.register(
         mk(
             "lsp.diagnostics",
@@ -175,7 +219,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
                 .map(|s| s.to_string())
                 .or_else(|| l2.lock().unwrap_or_else(|p| p.into_inner()).clone())
                 .ok_or_else(|| err("LSP_NO_LANG", "no language in scope; pass 'language'".to_string(), "pass 'language' explicitly"))?;
-            let client = ensure(&s2, &lang, &r2, timeout)?;
+            let client = ensure(&s2, &a2, &lang, None, &d2, timeout)?;
             let maybe_uri = v.get("path").and_then(|x| x.as_str()).map(|p| path_uri(Path::new(p)));
             let out: Vec<_> = match maybe_uri {
                 Some(uri) => client.diagnostics(&uri).into_iter().collect(),
@@ -187,6 +231,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
     );
 
     let s3 = server.clone();
+    let a3 = active_root.clone();
     reg.register(
         mk(
             "lsp.shutdown",
@@ -199,6 +244,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
             let mut g = s3.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(client) = g.take() {
                 client.shutdown();
+                *a3.lock().unwrap_or_else(|p| p.into_inner()) = None;
                 Ok("LSP server shut down; diagnostics cache cleared".to_string())
             } else {
                 Ok("no live LSP server; nothing to shut down".to_string())
