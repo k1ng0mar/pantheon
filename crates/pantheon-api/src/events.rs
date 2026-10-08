@@ -263,6 +263,20 @@ pub enum Event {
         run_id: String,
         scope: String,
     },
+    /// Pre-state snapshot recorded when a file-writing tool call parks for
+    /// approval. The scope matches the ApprovalRequested scope. On resume,
+    /// the runtime re-reads the file and compares hashes; a mismatch means
+    /// the file changed between plan and apply, so the grant is stale and
+    /// the call is rejected rather than blindly applied.
+    PreStateRecorded {
+        run_id: String,
+        scope: String,
+        /// Absolute or relative path of the target file.
+        path: String,
+        /// SHA-256 hex of the file's contents at park time. Empty string
+        /// means the file did not exist yet.
+        sha256: String,
+    },
     /// The agent asked the operator a question via the `ask_user` tool.
     /// Parks the turn exactly like an approval: the run waits for
     /// [`Event::UserInputProvided`] and resumes with the answer available
@@ -606,8 +620,19 @@ impl Event {
                 scope,
             },
             Event::ApprovalDenied { run_id: _, scope } => Event::ApprovalDenied {
-                run_id: run_id.to_string(),
+                run_id: "<redacted>".to_string(),
                 scope,
+            },
+            Event::PreStateRecorded {
+                run_id: _,
+                scope,
+                path,
+                sha256,
+            } => Event::PreStateRecorded {
+                run_id: "<redacted>".to_string(),
+                scope,
+                path,
+                sha256,
             },
             Event::UserInputRequested {
                 run_id: _,

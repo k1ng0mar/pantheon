@@ -19,6 +19,7 @@ pub mod http;
 pub mod lsp;
 pub mod plugin_approval;
 pub mod plugins;
+pub mod prestate;
 pub mod process;
 pub mod safewrite;
 pub mod sandbox;

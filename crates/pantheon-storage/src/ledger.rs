@@ -174,6 +174,7 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::ApprovalRequested { run_id, .. }
         | Event::ApprovalGranted { run_id, .. }
         | Event::ApprovalDenied { run_id, .. }
+        | Event::PreStateRecorded { run_id, .. }
         | Event::DecisionRequested { run_id, .. }
         | Event::DecisionMade { run_id, .. }
         | Event::DecisionRecorded { run_id, .. }
@@ -1874,6 +1875,9 @@ fn describe(ev: &Event) -> String {
         }
         Event::ApprovalGranted { scope, .. } => format!("approval granted: {scope}"),
         Event::ApprovalDenied { scope, .. } => format!("approval denied: {scope}"),
+        Event::PreStateRecorded { path, sha256, .. } => {
+            format!("pre-state recorded: {path} ({sha256})")
+        }
         Event::DecisionRequested { point, .. } => {
             format!("decision requested: {:?}", point)
         }

@@ -1522,6 +1522,7 @@ fn event_run_id(ev: &RuntimeErrorEvent) -> Option<&str> {
         | E::ApprovalRequested { run_id, .. }
         | E::ApprovalGranted { run_id, .. }
         | E::ApprovalDenied { run_id, .. }
+        | E::PreStateRecorded { run_id, .. }
         | E::UserInputRequested { run_id, .. }
         | E::UserInputProvided { run_id, .. }
         | E::DecisionRequested { run_id, .. }

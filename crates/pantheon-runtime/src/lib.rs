@@ -197,6 +197,16 @@ pub struct RunLeaseGuard {
     heartbeat: Option<std::thread::JoinHandle<()>>,
 }
 
+/// A pre-state hash recorded when a file-writing tool call parked for
+/// approval. Used to detect stale grants: if the file's contents changed
+/// between park and resume, the grant is refused.
+#[derive(Debug, Clone)]
+pub struct PreStateRecord {
+    pub scope: String,
+    pub path: String,
+    pub sha256: String,
+}
+
 impl RunLeaseGuard {
     /// Acquire a run lease or fail. There is deliberately no panicking
     /// constructor: a busy lease is a normal operational condition, not a
@@ -722,6 +732,23 @@ impl Supervisor {
         (requested, resolved)
     }
 
+    /// Every pre-state hash recorded for this run, in emission order.
+    fn prestate_scan(entries: &[pantheon_storage::LedgerEntry]) -> Vec<PreStateRecord> {
+        entries
+            .iter()
+            .filter_map(|e| match &e.event {
+                Event::PreStateRecorded {
+                    scope, path, sha256, ..
+                } => Some(PreStateRecord {
+                    scope: scope.clone(),
+                    path: path.clone(),
+                    sha256: sha256.clone(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The run must currently be parked on approval. Shared by `grant` and
     /// `deny`; `pending_approvals` is read-only and intentionally skips it.
     fn require_parked(&self, run_id: &str) -> Result<(), PantheonError> {
@@ -801,6 +828,21 @@ impl Supervisor {
     ///
     /// Scopes already granted or denied are filtered out, so the result is
     /// exactly what still needs a human.
+    /// Look up the pre-state hash recorded for an approval scope. Returns
+    /// None when no PreStateRecorded event exists for that scope (e.g. a
+    /// read-only tool, or a run from before this feature).
+    pub fn prestate_for_scope(
+        &self,
+        run_id: &str,
+        scope: &str,
+    ) -> Result<Option<PreStateRecord>, PantheonError> {
+        let entries = self.ledger().replay(run_id)?;
+        Ok(Self::prestate_scan(&entries)
+            .into_iter()
+            .rev()
+            .find(|p| p.scope == scope))
+    }
+
     pub fn pending_approvals(&self, run_id: &str) -> Result<Vec<String>, PantheonError> {
         let entries = self.ledger().replay(run_id)?;
         let (requested, resolved) = Self::approval_scan(&entries);

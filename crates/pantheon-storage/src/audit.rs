@@ -93,6 +93,7 @@ fn event_name(e: &pantheon_api::events::Event) -> &'static str {
         ApprovalRequested { .. } => "ApprovalRequested",
         ApprovalGranted { .. } => "ApprovalGranted",
         ApprovalDenied { .. } => "ApprovalDenied",
+        PreStateRecorded { .. } => "PreStateRecorded",
         AgentMessage { .. } => "AgentMessage",
         AgentSpawned { .. } => "AgentSpawned",
         AgentCompleted { .. } => "AgentCompleted",
