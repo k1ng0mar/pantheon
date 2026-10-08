@@ -8,6 +8,7 @@ data/
 .pantheon/
 .pantheon-data/
 web/node_modules/
+bundled-skills/*/node_modules/
 web/docs/
 .vscode/
 .idea/
