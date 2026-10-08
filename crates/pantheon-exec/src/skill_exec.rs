@@ -108,6 +108,17 @@ fn run_skill_exec_with(
     exec: &SkillExec,
     args: &[String],
 ) -> Result<String, PantheonError> {
+    // Quarantine check: a CAUTION verdict blocks executables until cleared
+    if crate::skills_scan::is_skill_quarantined_default(&skill.meta.name) {
+        return Err(serr(
+            "SKILL_QUARANTINED",
+            format!(
+                "skill '{}' is quarantined by a SkillSpector CAUTION verdict; \
+                 clear it with `pantheon skills clear-quarantine {}`",
+                skill.meta.name, skill.meta.name
+            ),
+        ));
+    }
     let who = format!("skill '{}', executable '{}'", skill.meta.name, exec.name);
     let target = resolve_skill_exec_target(skill, exec)?;
     let dir = skill_dir(skill);

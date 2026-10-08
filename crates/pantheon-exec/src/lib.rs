@@ -24,6 +24,7 @@ pub mod safewrite;
 pub mod sandbox;
 pub mod skill_exec;
 pub mod skills;
+pub mod skills_scan;
 pub mod supervisor;
 
 // Re-exported at the crate root: these were `pantheon_sandbox::...` paths
