@@ -5247,35 +5247,11 @@ pub fn run_tui_session_with(
     crate::config::apply_tool_enablement(&session, file_cfg.as_ref());
 
     // Run budgets from `[budget]` in config.toml (max turns, tool calls,
-    // delegate depth, token cap). Absent = the runtime defaults; `/set`
-    // and `/tokens` retune them live for this session.
-    session.set_budget(
-        file_cfg
-            .as_ref()
-            .map(config::config_budget)
-            .unwrap_or_default(),
-    );
-    // The live `[budget]` section itself, so the `delegate` tool and
-    // turn outcomes resolve delegation knobs (delegate_child_max_tokens,
-    // max_delegations) exactly as configured rather than falling back
-    // to compiled defaults. Absent section = defaults.
-    session.set_budget_section(
-        file_cfg
-            .as_ref()
-            .and_then(|c| c.budget.clone())
-            .unwrap_or_default(),
-    );
-    // The configured token cap, kept apart from the live budget: `/tokens`
-    // overwrites `budget.max_tokens` for the session, and `/tokens off`
-    // must fall back to this configured value rather than forget it.
-    // (0 = unset, same as `resolve_budget_section`.)
-    session.set_budget_max_tokens(
-        file_cfg
-            .as_ref()
-            .and_then(|c| c.budget.as_ref())
-            .and_then(|b| b.max_tokens)
-            .filter(|&v| v > 0),
-    );
+    // delegate depth, token cap, delegation knobs). Absent = the runtime
+    // defaults; `/set` and `/tokens` retune them live for this session.
+    // Shared helper with the /agui, gateway, and scheduled-run paths so
+    // the tiers cannot drift apart.
+    config::apply_budget_tiers(&session, file_cfg.as_ref());
 
     // Tacit temporal awareness (`[temporal]` in config.toml). Absent
     // section = the runtime defaults (enabled, 2h gap, system timezone).

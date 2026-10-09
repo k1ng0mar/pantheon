@@ -1205,6 +1205,9 @@ pub(crate) fn run_job_now(task: &str, sched: &Job, data_dir: &Path) -> JobRunRep
         }
     };
     config::apply_tool_enablement(&session, file_cfg.as_ref());
+    // Scheduled runs are sessions too: honor `[budget]` exactly like the
+    // interactive, /agui, and gateway paths (see `apply_budget_tiers`).
+    config::apply_budget_tiers(&session, file_cfg.as_ref());
 
     let run_id = pantheon_runtime::new_run_id();
     match session.chat(&run_id, task) {
