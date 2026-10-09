@@ -293,8 +293,9 @@ fn pid_alive(pid: u32) -> bool {
             let ok = GetExitCodeProcess(handle, &mut code);
             CloseHandle(handle);
             // Opened but the exit status is unreadable: treat as alive
-            // rather than reporting a live child dead.
-            return ok == 0 || code == STILL_ACTIVE;
+            // rather than reporting a live child dead. STILL_ACTIVE is an
+            // NTSTATUS (i32); the exit code out-param is u32.
+            return ok == 0 || code == STILL_ACTIVE as u32;
         }
         GetLastError() == ERROR_ACCESS_DENIED
     }
