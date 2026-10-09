@@ -17,6 +17,10 @@ pantheon run --taskID <id> --deny  <scope> [--no-resume]
 
 Each permission is decided exactly once. Allowing continues the work with the real result; denying writes "denied by operator" into the conversation and the model adapts.
 
+A grant covers one exact call, not a kind of call: the scope binds the call id, tool name, and argument bytes, so an approved `shell` running `git status` can never authorize a different command. On resume every granted call is gated against the policy again, so a stricter policy since the approval still applies.
+
+File writes get one extra guard. When a `write_file` call parks for approval, Pantheon records a hash of the target file; on resume it re-reads and compares. If the file changed while the run was parked, the grant is refused and the agent must re-read and re-plan instead of clobbering your edits. This stale-write check covers `write_file` only: `shell` commands and MCP tools execute exactly the bytes you approved, but their effects on the world are not re-validated — a shell command's write targets cannot be enumerated from its arguments. Shell filesystem access is still confined to the workspace, and MCP servers only run after you approve the server itself (`pantheon mcp approve`).
+
 ## Surviving crashes
 
 Kill the process mid-run and everything up to the last recorded event is safe. Start it again with the same run id: finished steps are skipped using their recorded results, interrupted ones run again or get a recorded error, so the conversation stays coherent. Only one supervisor can drive a run at a time, so a second one cannot accidentally do the same work twice.

@@ -74,12 +74,14 @@ pub fn tool_group_enabled(cfg: Option<&Config>, group: pantheon_api::config::Too
 }
 
 /// Thread the `[budget]` tiers into a freshly built session: the live
-/// run budget (`set_budget`, from [`config_budget`]) plus the
-/// kept-apart configured token cap (`set_budget_max_tokens`), so
-/// `/tokens off` falls back to the config value instead of forgetting
-/// it. Call on every `Session::new` that serves turns - the interactive
-/// TUI startup does this inline in session.rs; the /agui, gateway, and
-/// dashboard paths use this helper so they cannot drift apart.
+/// run budget (`set_budget`, from [`config_budget`]), the kept-apart
+/// configured token cap (`set_budget_max_tokens`), so `/tokens off`
+/// falls back to the config value instead of forgetting it, and the
+/// live `[budget]` section itself (`set_budget_section`), so `delegate`
+/// turns resolve delegation knobs exactly as configured. Call on every
+/// `Session::new` that serves turns - the interactive TUI startup, the
+/// /agui, gateway, and scheduled-run paths use this helper so they
+/// cannot drift apart.
 pub fn apply_budget_tiers(session: &pantheon_runtime::session::Session, cfg: Option<&Config>) {
     session.set_budget(cfg.map(config_budget).unwrap_or_default());
     session.set_budget_max_tokens(
@@ -87,6 +89,7 @@ pub fn apply_budget_tiers(session: &pantheon_runtime::session::Session, cfg: Opt
             .and_then(|b| b.max_tokens)
             .filter(|&v| v > 0),
     );
+    session.set_budget_section(cfg.and_then(|c| c.budget.clone()).unwrap_or_default());
 }
 
 /// Resolve `[budget]` to the runtime [`pantheon_agent::Budget`].

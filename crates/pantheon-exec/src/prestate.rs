@@ -1,9 +1,15 @@
-//! Pre-state hashing for file-writing tool calls.
+//! Pre-state hashing for `write_file` calls that park for approval.
 //!
-//! When a tool call that writes a file parks for approval, we record the
-//! SHA-256 of the target file's current contents. On resume, we re-read
-//! and compare. A mismatch means the file changed between plan and apply:
-//! the grant is stale, the call is rejected, and the agent must re-plan.
+//! When such a call parks, we record the SHA-256 of the target file's
+//! current contents. On resume, we re-read and compare. A mismatch means
+//! the file changed between plan and apply: the grant is stale, the call
+//! is rejected, and the agent must re-plan.
+//!
+//! Scope is deliberately narrow: `write_file` is the only built-in tool
+//! whose write target is enumerable from its arguments. `shell` and MCP
+//! tools execute exactly the approved bytes (the approval scope binds
+//! them), but their effects are not re-validated — see the Permissions
+//! section of the Runs user guide for the stated boundary.
 //!
 //! This is optimistic concurrency control. It closes the gap where a user
 //! approves a diff, edits the file manually while the run is parked, and
