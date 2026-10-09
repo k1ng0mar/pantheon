@@ -2393,6 +2393,7 @@ dependencies = [
  "tungstenite 0.30.0",
  "ureq",
  "url",
+ "windows-sys 0.52.0",
  "zip",
 ]
 
