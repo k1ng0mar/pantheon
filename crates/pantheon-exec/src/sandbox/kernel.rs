@@ -38,7 +38,13 @@
 ///
 /// Grouped by what they are for, because the list is the security policy and
 /// a reviewer has to be able to audit it.
-#[cfg(target_os = "linux")]
+///
+/// x86_64-only, like the filter it feeds: the BPF program is compiled
+/// against x86_64 syscall numbers, so on another arch these names would
+/// resolve to numbers the kernel never sees. Non-x86_64 Linux keeps
+/// Landlock, which is an LSM and arch-independent, and refuses a seccomp
+/// profile fail-closed.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub const ALLOWED_SYSCALLS: &[&str] = &[
     // --- process lifecycle ---
     "read",
@@ -204,7 +210,7 @@ pub const ALLOWED_SYSCALLS: &[&str] = &[
 ///
 /// These are the escape primitives. `seccompiler` applies deny rules
 /// after the allowlist, so listing one here is a hard deny.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub const DENIED_SYSCALLS: &[&str] = &[
     // Debugging another process - the classic container escape primitive.
     "ptrace",
@@ -256,7 +262,13 @@ pub const DENIED_SYSCALLS: &[&str] = &[
 ///
 /// Returns the compiled BPF program. The caller applies it inside
 /// `pre_exec` via [`seccompiler::apply_filter`], which is async-signal-safe.
-#[cfg(target_os = "linux")]
+///
+/// x86_64-only: `SeccompFilter::new` is built with `TargetArch::x86_64`,
+/// and a filter compiled with another arch's numbers denies the wrong
+/// syscalls. On non-x86_64 Linux this function does not exist, so
+/// `kernel_layer_available` reports seccomp unavailable and the runner
+/// refuses a profile that asks for it.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn compile_seccomp() -> Result<seccompiler::BpfProgram, String> {
     use seccompiler::{SeccompAction, SeccompFilter, SeccompRule, TargetArch};
     use std::collections::BTreeMap;
@@ -302,7 +314,11 @@ pub fn compile_seccomp() -> Result<seccompiler::BpfProgram, String> {
 /// `libc::SYS_*` constants are the source of truth; matching on the name
 /// keeps the policy list readable. Unknown names return `None` so the
 /// caller fails the build rather than skipping.
-#[cfg(target_os = "linux")]
+///
+/// x86_64-only, for the same reason as the lists above: the table holds
+/// x86_64 syscall numbers, and names like `arch_prctl` or the non-`at`
+/// file syscalls do not exist on other arches.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn syscall_number(name: &str) -> Option<i64> {
     let n = match name {
         "read" => libc::SYS_read,
@@ -565,9 +581,38 @@ pub fn compile_landlock(
 /// the same as the mechanism working. Called in the PARENT before a spawn so
 /// the failure is a clean `SANDBOX_UNAVAILABLE` rather than a mysterious
 /// child exit.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn kernel_layer_available(seccomp: bool, landlock: bool) -> bool {
     if seccomp && compile_seccomp().is_err() {
+        return false;
+    }
+    if landlock {
+        // Landlock needs the syscall to exist. ABI 0 means the kernel has
+        // no Landlock at all.
+        let abi = unsafe {
+            libc::syscall(
+                libc::SYS_landlock_create_ruleset,
+                std::ptr::null::<libc::c_void>(),
+                0usize,
+                1u32, // LANDLOCK_CREATE_RULESET_VERSION
+            )
+        };
+        #[allow(clippy::manual_range_contains)]
+        let supported = abi >= 1;
+        if !supported {
+            return false;
+        }
+    }
+    true
+}
+
+/// Non-x86_64 Linux: Landlock is an LSM and works on any arch, but the
+/// seccomp filter is x86_64-only, so a profile asking for seccomp is
+/// reported unavailable (the runner then refuses it fail-closed) rather
+/// than silently run unfiltered.
+#[cfg(all(target_os = "linux", not(target_arch = "x86_64")))]
+pub fn kernel_layer_available(seccomp: bool, landlock: bool) -> bool {
+    if seccomp {
         return false;
     }
     if landlock {
@@ -604,6 +649,8 @@ mod tests {
     /// The policy lists must be disjoint and every name must resolve. A
     /// typo in either list is a build error here rather than a silently
     /// dropped permission at run time.
+    // x86_64-only: the lists and the resolver exist only there.
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn every_named_syscall_resolves() {
         for name in ALLOWED_SYSCALLS {
@@ -623,6 +670,8 @@ mod tests {
     /// The escape primitives must not be reachable through the allowlist.
     /// This is the property the whole filter exists for, so it is asserted
     /// rather than trusted to review.
+    // x86_64-only: resolves through the x86_64 syscall table.
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn escape_primitives_are_never_allowed() {
         let allowed: Vec<i64> = ALLOWED_SYSCALLS
@@ -640,6 +689,8 @@ mod tests {
 
     /// The filter must compile on this host, or the profile that asks for it
     /// would fail every spawn.
+    // x86_64-only: `compile_seccomp` exists only there.
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn seccomp_compiles() {
         if !kernel_layer_available(true, false) {
@@ -660,7 +711,9 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+// The live proofs drive the real filter, so they exist only where the
+// filter does: x86_64 Linux.
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
 mod live_tests {
     use super::*;
 

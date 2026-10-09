@@ -195,9 +195,22 @@ fn mock_server_diagnostics_flow() {
 fn lsp_tool_reroots_across_projects() {
     // Needs rust-analyzer to actually prove the re-root; skip the honest
     // way if the binary is absent rather than fabricate a pass.
-    let has_ra = which("rust-analyzer").is_some();
+    // The binary existing is not the same as it running: a rustup shim
+    // with no installed component is on PATH and exits immediately, which
+    // surfaces as LSP_DEAD rather than a clean skip. Probe by running it.
+    let has_ra = which("rust-analyzer")
+        .map(|p| {
+            std::process::Command::new(p)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
     if !has_ra {
-        eprintln!("SKIP lsp_tool_reroots_across_projects: rust-analyzer not on PATH");
+        eprintln!("SKIP lsp_tool_reroots_across_projects: rust-analyzer not runnable");
         return;
     }
 

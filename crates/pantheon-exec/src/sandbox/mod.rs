@@ -15,7 +15,10 @@ pub mod level;
 pub mod runner;
 
 pub use enforce::{capability_label, enforce, Enforcement};
-pub use kernel::{kernel_layer_available, ALLOWED_SYSCALLS, DENIED_SYSCALLS};
+pub use kernel::kernel_layer_available;
+// The seccomp policy lists are x86_64-only, like the filter they feed.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub use kernel::{ALLOWED_SYSCALLS, DENIED_SYSCALLS};
 pub use level::{profile_for, ExecutionBoundary, SandboxProfile};
 pub use runner::{
     build_sandboxed, run_sandboxed, run_sandboxed_with_env, run_sandboxed_with_spawn_hook_and_env,
