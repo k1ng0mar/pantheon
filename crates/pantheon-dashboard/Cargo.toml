@@ -57,5 +57,11 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # Plugin import pipeline: parse/emit manifest.yaml and plugin.yaml.
 serde_yaml = "0.9"
 
+# Windows process-liveness probe (pid_alive in swarm.rs): OpenProcess +
+# GetExitCodeProcess. Already in the lock as a transitive dep, so the
+# windows release build pays nothing new.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [lints]
 workspace = true

@@ -49,7 +49,6 @@ pub fn extract_code_blocks(text: &str) -> Vec<CodeBlock> {
 
 /// Backend probing, split from PATH lookup for testability.
 pub fn find_clipboard(search_dirs: &[PathBuf]) -> Option<(&'static str, PathBuf)> {
-    use std::os::unix::fs::PermissionsExt as _;
     // (binary, argv): wl-copy and pbcopy read stdin; xclip/xsel need flags.
     for (bin, _args) in [
         ("wl-copy", &[][..]),
@@ -57,16 +56,33 @@ pub fn find_clipboard(search_dirs: &[PathBuf]) -> Option<(&'static str, PathBuf)
         ("xsel", &["--clipboard", "--input"][..]),
         ("pbcopy", &[][..]),
     ] {
-        let found = search_dirs.iter().map(|d| d.join(bin)).find(|p| {
-            p.metadata()
-                .map(|m| m.permissions().mode() & 0o111 != 0)
-                .unwrap_or(false)
-        });
+        let found = search_dirs
+            .iter()
+            .map(|d| d.join(bin))
+            .find(|p| is_executable(p));
         if let Some(path) = found {
             return Some((bin, path));
         }
     }
     None
+}
+
+/// Executable check: permission bits on unix, mere presence on windows.
+/// Windows has no exec bit, and the candidate names are already the
+/// clipboard backends, so existence is the whole test there.
+fn is_executable(p: &Path) -> bool {
+    let Ok(m) = p.metadata() else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        m.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        m.is_file()
+    }
 }
 
 fn path_dirs() -> Vec<PathBuf> {

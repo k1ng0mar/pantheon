@@ -262,6 +262,7 @@ impl SwarmWorker for SubprocessWorker {
 
 /// `true` when the process still exists. `kill(pid, 0)` fails with EPERM
 /// for processes owned by another user, which still counts as alive.
+#[cfg(unix)]
 fn pid_alive(pid: u32) -> bool {
     // SAFETY: signal 0 performs no action; only error-checking.
     unsafe {
@@ -270,6 +271,33 @@ fn pid_alive(pid: u32) -> bool {
         }
     }
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Windows: `OpenProcess` fails with access-denied for processes this
+/// user cannot query, which still counts as alive, mirroring the unix
+/// EPERM case.
+#[cfg(target_os = "windows")]
+fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: OpenProcess with query rights is a read-only handle;
+    // GetExitCodeProcess only reads it; the handle is always closed.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle != 0 {
+            let mut code = 0u32;
+            let ok = GetExitCodeProcess(handle, &mut code);
+            CloseHandle(handle);
+            // Opened but the exit status is unreadable: treat as alive
+            // rather than reporting a live child dead.
+            return ok == 0 || code == STILL_ACTIVE;
+        }
+        GetLastError() == ERROR_ACCESS_DENIED
+    }
 }
 
 /// Fold one run's ledger events into plain-text transcript lines.
