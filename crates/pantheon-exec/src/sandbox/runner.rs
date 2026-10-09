@@ -376,7 +376,7 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
     // after fork, where only async-signal-safe calls are permitted: no
     // allocation, no locks. Compiling here means the child's closure only
     // makes the two syscalls.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     let seccomp_program = if profile.seccomp {
         // A profile that asks for seccomp and cannot get it must not run
         // unfiltered: `None` here is enforced inside the closure, which is
@@ -453,6 +453,11 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
                         return Err(std::io::Error::last_os_error());
                     }
                 }
+                // The filter is x86_64-only: `SeccompFilter::new` is built
+                // with `TargetArch::x86_64`, so on any other arch it would
+                // deny the wrong syscall numbers. A profile that asks for
+                // seccomp on a non-x86_64 arch must not run unfiltered.
+                #[cfg(target_arch = "x86_64")]
                 if seccomp_wanted {
                     let Some(program) = seccomp_program.as_ref() else {
                         return Err(std::io::Error::from_raw_os_error(libc::EPERM));
@@ -460,6 +465,10 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
                     if seccompiler::apply_filter(program).is_err() {
                         return Err(std::io::Error::last_os_error());
                     }
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                if seccomp_wanted {
+                    return Err(std::io::Error::from_raw_os_error(libc::EPERM));
                 }
             }
             if let Some(bytes) = as_bytes {

@@ -7,7 +7,7 @@
 # Rust, or Cargo required.
 #
 # Env overrides:
-#   PANTHEON_VERSION    version to install (default: latest). e.g. v0.1.0
+#   PANTHEON_VERSION    version to install (default: latest). e.g. v1.0.0
 #   PANTHEON_REPO       owner/repo (default: k1ng0mar/pantheon)
 #   PANTHEON_INSTALL_DIR  binary dir (default: $HOME/.local/bin)
 #   PANTHEON_DATA_DIR     data dir (default: $HOME/.pantheon)
