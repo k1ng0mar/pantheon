@@ -4,7 +4,7 @@
    auth-gated payloads in Cache Storage). */
 "use strict";
 
-const CACHE = "pantheon-v2";
+const CACHE = "pantheon-__PANTHEON_VERSION__";
 const STATIC_ASSETS = [
   "/",
   "/index.html",

@@ -4,6 +4,28 @@
    Design tokens from tokens.css (Pantheon design system).
    Light and dark themes via [data-theme] on <html> (dark default). */
 
+/* Token binding.
+   tokens.css is the Pantheon design system package and the single
+   source of truth. These aliases retire the dashboard's older
+   variable names so every rule below consumes the system without a
+   rename sweep. Both themes resolve automatically: each alias reads
+   the system token, which itself follows [data-theme]. Remove an
+   alias only when its last use is gone. */
+:root, [data-theme="dark"], [data-theme="light"] {
+  --bg: var(--ground);
+  --bg-soft: var(--surface-2);
+  --panel: var(--surface);
+  --panel-2: var(--surface-2);
+  --inset-bg: var(--inset);
+  --border: var(--rule);
+  --border-soft: var(--rule-soft);
+  --text: var(--ink);
+  --text-dim: var(--ink-2);
+  --text-faint: var(--ink-3);
+  --radius: var(--r-md);
+  --radius-sm: var(--r-sm);
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
@@ -22,6 +44,10 @@ a { color: var(--accent-strong); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* ---------- gate ---------- */
+/* The hidden attribute must win over the display:flex below: without
+   this rule the auth overlay stays painted after a token is entered
+   and covers the dashboard permanently. */
+.gate[hidden] { display: none; }
 .gate {
   min-height: 100vh;
   display: flex;
@@ -132,16 +158,16 @@ a:hover { text-decoration: underline; }
 .nav button .count {
   margin-left: auto;
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--t-meta);
   font-weight: 600;
-  color: var(--text-faint);
+  color: var(--text-dim);
   background: var(--hover);
   border-radius: 10px;
   padding: 1px 8px;
 }
 .nav button .count.hot {
-  color: #fff;
-  background: var(--amber);
+  color: var(--amber);
+  background: var(--amber-soft);
 }
 .side-foot {
   padding: 14px 18px;
@@ -174,6 +200,11 @@ a:hover { text-decoration: underline; }
   align-items: center;
   gap: 8px;
   flex: 1;
+  /* A flex item's automatic minimum is its content's min-content
+     width; the input's intrinsic size pins that well above what a
+     phone has room for, pushing the icon cluster off-screen.
+     min-width: 0 lets the row shrink. */
+  min-width: 0;
   max-width: 520px;
   margin: 0 auto;
   background: var(--panel);
@@ -186,6 +217,10 @@ a:hover { text-decoration: underline; }
 .topsearch-icon { flex: none; }
 .topsearch-input {
   flex: 1;
+  /* Inputs carry an intrinsic width (the default size attribute);
+     without min-width:0 the flex chain cannot shrink and the whole
+     topbar overflows on narrow screens. */
+  min-width: 0;
   border: 0;
   background: none;
   color: var(--text);
@@ -197,7 +232,7 @@ a:hover { text-decoration: underline; }
 .topsearch-input::placeholder { color: var(--text-faint); }
 .topsearch-kbd {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--t-meta);
   color: var(--text-faint);
   background: var(--hover);
   border: 1px solid var(--border-soft);
@@ -416,7 +451,7 @@ a:hover { text-decoration: underline; }
 .agent-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .agent-table th {
   text-align: left;
-  font-size: 10.5px;
+  font-size: var(--t-meta);
   text-transform: uppercase;
   letter-spacing: 0.07em;
   color: var(--text-faint);
@@ -494,6 +529,9 @@ table.grid tr.rowlink { cursor: pointer; }
    instead of overflowing the 360px layout. */
 @media (max-width: 640px) {
   table.grid { display: block; overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; }
+  /* The runs table has six columns; on a phone it must scroll inside its
+     card rather than clip the Model column mid-word. */
+  .agent-table { display: block; overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; }
 }
 
 /* ---------- status pills & dots ---------- */
@@ -738,6 +776,10 @@ code.inline {
   .nav button { justify-content: center; padding: 10px; }
   .view { padding: 20px 16px 40px; }
   .topbar { padding: 10px 16px; }
+  /* The desktop centering margin pins the search at its max-content
+     width, which pushes the icon cluster off-screen when space is
+     tight. Plain flex sizing shrinks it to the space that remains. */
+  .topsearch { margin: 0; }
   .topsearch-kbd, .user-name { display: none; }
 }
 @media (max-width: 640px) {
