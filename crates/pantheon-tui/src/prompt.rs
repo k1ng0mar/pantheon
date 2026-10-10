@@ -38,6 +38,22 @@ pub fn pick_text(title: &str, subtitle: &str, placeholder: &str) -> Option<Strin
     app.take_value().and_then(|s| s.text().map(String::from))
 }
 
+/// A masked text input for secrets: the value is real, the display is
+/// dots. Used when the wizard collects an API key value to save to
+/// `.env`, so the key is not echoed across the terminal.
+pub fn pick_secret_text(title: &str, subtitle: &str, placeholder: &str) -> Option<String> {
+    let widget = TextInput::new(title)
+        .hint("enter confirm  esc back".to_string())
+        .placeholder(placeholder.to_string())
+        .secret();
+    let mut app = TuiApp::new();
+    app.push(Screen::text(subtitle, widget));
+    if app.run().is_err() {
+        return None;
+    }
+    app.take_value().and_then(|s| s.text().map(String::from))
+}
+
 /// Draw and run a `MultiSelect`. `None` means cancelled (esc); `Some`
 /// (possibly empty) is the confirmed check set, in list order.
 pub fn pick_many(
