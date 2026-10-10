@@ -22,21 +22,37 @@ fn window(height: u16) -> usize {
     (height as usize).saturating_sub(4).max(1)
 }
 
+/// Rows that fit, accounting for rows that draw a second `meta` line: a
+/// two-line row costs double, so a list full of them shows half as many
+/// before the box overflows. `uses_meta` is read off the list's items
+/// (homogeneous: a list either carries `meta` on every row or none).
+fn visible_rows_for(height: u16, uses_meta: bool) -> usize {
+    let base = window(height);
+    if uses_meta {
+        (base / 2).max(1)
+    } else {
+        base
+    }
+}
+
 fn frame_box(title: &str) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
         .title(format!(" {title} "))
 }
 
-/// Render one row: marker, label, description, right-aligned tag.
-fn row_line(r: &Row) -> Line<'static> {
-    let mut spans = Vec::new();
+/// Render one row to one or two lines: the label line, then a dim
+/// second line when the row carries `meta`. The second line is what
+/// keeps a long context-plus-price string from clipping against the
+/// label on a narrow terminal.
+fn row_lines(r: &Row) -> Vec<Line<'static>> {
+    let mut head = Vec::new();
     if !r.marker.is_empty() {
-        spans.push(Span::raw(format!("{} ", r.marker)));
+        head.push(Span::raw(format!("{} ", r.marker)));
     }
     let bullet = if r.selected { "● " } else { "  " };
-    spans.push(Span::raw(bullet.to_string()));
-    spans.push(Span::styled(
+    head.push(Span::raw(bullet.to_string()));
+    head.push(Span::styled(
         r.label.clone(),
         if r.selected {
             Style::default().add_modifier(Modifier::BOLD)
@@ -45,13 +61,13 @@ fn row_line(r: &Row) -> Line<'static> {
         },
     ));
     if !r.desc.is_empty() {
-        spans.push(Span::styled(
+        head.push(Span::styled(
             format!("  {}", r.desc),
             Style::default().fg(Color::DarkGray),
         ));
     }
     if !r.tag.is_empty() {
-        spans.push(Span::styled(
+        head.push(Span::styled(
             format!("  [{}]", r.tag),
             Style::default().fg(Color::Cyan),
         ));
@@ -59,16 +75,25 @@ fn row_line(r: &Row) -> Line<'static> {
     if !r.enabled {
         // Grey the whole row and say why, rather than letting the user pick
         // it and hit a silent refusal.
-        spans = spans
+        head = head
             .into_iter()
             .map(|s| Span::styled(s.content, Style::default().fg(Color::DarkGray)))
             .collect();
-        spans.push(Span::styled(
+        head.push(Span::styled(
             "  (unavailable)",
             Style::default().fg(Color::DarkGray),
         ));
     }
-    Line::from(spans)
+    let mut lines = vec![Line::from(head)];
+    if !r.meta.is_empty() {
+        // Indented under the bullet so it reads as belonging to the row
+        // above, not a new top-level entry.
+        lines.push(Line::from(Span::styled(
+            format!("    {}", r.meta),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    lines
 }
 
 /// The shared list frame: a bordered box, the rows, and a hint footer.
@@ -100,7 +125,7 @@ fn draw_list(
             inner,
         );
     } else {
-        let lines: Vec<Line> = rows.iter().map(row_line).collect();
+        let lines: Vec<Line> = rows.iter().flat_map(row_lines).collect();
         f.render_widget(Paragraph::new(lines), inner);
     }
 
@@ -119,7 +144,9 @@ fn draw_list(
 }
 
 pub fn draw_select(f: &mut ratatui::Frame, area: Rect, s: &mut Select) {
-    s.list.set_visible_rows(window(area.height));
+    let uses_meta = s.list.items().first().is_some_and(|i| !i.meta.is_empty());
+    s.list
+        .set_visible_rows(visible_rows_for(area.height, uses_meta));
     let rows = crate::widget::select_rows(s);
     draw_list(
         f,
@@ -133,7 +160,9 @@ pub fn draw_select(f: &mut ratatui::Frame, area: Rect, s: &mut Select) {
 }
 
 pub fn draw_multi(f: &mut ratatui::Frame, area: Rect, m: &mut MultiSelect) {
-    m.list.set_visible_rows(window(area.height));
+    let uses_meta = m.list.items().first().is_some_and(|i| !i.meta.is_empty());
+    m.list
+        .set_visible_rows(visible_rows_for(area.height, uses_meta));
     let rows = crate::widget::multi_rows(m);
     draw_list(
         f,
