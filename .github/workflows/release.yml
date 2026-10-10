@@ -34,7 +34,11 @@ jobs:
           - target: x86_64-apple-darwin
             os: darwin
             arch: x86_64
-            runner: macos-13
+            # GitHub retired the x86_64 macOS runner pool; macos-13 jobs
+            # queue forever. The arm runner cross-builds this target with
+            # the std installed, and the asset name is unchanged, so
+            # install.sh on Intel Macs keeps working.
+            runner: macos-latest
           - target: aarch64-apple-darwin
             os: darwin
             arch: aarch64
