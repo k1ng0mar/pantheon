@@ -97,7 +97,7 @@ pub fn run_setup_flow(data_dir: &Path) {
         Some(p) => p,
         None => return,
     };
-    let api_key_env = pick_model_key_env(provider.as_str(), custom.as_ref(), "Step 3/5");
+    let api_key_env = pick_model_key_env(data_dir, provider.as_str(), custom.as_ref(), "Step 3/5");
     let model = pick_model(
         provider.as_str(),
         custom.as_ref(),
@@ -115,10 +115,53 @@ pub fn run_setup_flow(data_dir: &Path) {
     }
 }
 
-/// Where the model provider's API key lives: the env var name the
-/// config stores under `[model].api_key_env`. Esc (or an empty answer)
-/// means none. `None` here is "no key needed", never "ask again later".
+/// Collect a key's value when its env var is not already set, save it
+/// to `<data_dir>/.env` (mode 0600), and export it in-process so the
+/// model fetch right after can use it. A declined or empty paste leaves
+/// the var unset on purpose; the model screen then names the var so the
+/// fix is obvious. Shared by the catalog and custom-endpoint paths.
+fn ensure_key_value(data_dir: &Path, name: &str, label: &str, step: &str) {
+    let already_set = std::env::var(name)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if already_set {
+        return;
+    }
+    let Some(value) = crate::prompt::pick_secret_text(
+        "API key",
+        &format!("{step} · Paste your {label} key (saved to .env, owner-only; empty to skip)"),
+        "paste the key, or leave empty to set it yourself later",
+    ) else {
+        return;
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    match crate::dotenv::upsert_dotenv(data_dir, name, value) {
+        Ok(()) => std::env::set_var(name, value),
+        Err(e) => {
+            eprintln!("setup: could not save the key to .env: {e}");
+            eprintln!("setup: export {name}=... yourself before the fetch can use it");
+        }
+    }
+}
+
+/// Configure the model provider's API key: the env var name the config
+/// stores under `[model].api_key_env`, plus the value when the var is
+/// not already set. Esc (or an empty name) means none. `None` here is
+/// "no key needed", never "ask again later".
+///
+/// Naming a var the user never exported is the trap that made the model
+/// fetch come back empty (groq's `/models` is 401 without a key, so the
+/// list fell back to the single catalog model). So when the named var
+/// is not set in this shell, the wizard offers to take the value now,
+/// writes it to `<data_dir>/.env` (mode 0600, via the same path the
+/// text setup uses), and exports it in-process so the model fetch below
+/// can actually use it. A declined paste still records the name; the
+/// model screen then says plainly that the var is unset.
 fn pick_model_key_env(
+    data_dir: &Path,
     provider: &str,
     custom: Option<&CustomProviderSpec>,
     step: &str,
@@ -126,26 +169,31 @@ fn pick_model_key_env(
     if provider == "local" {
         return None;
     }
-    if let Some(spec) = custom {
-        return spec.key_env.clone();
-    }
-    let meta = pantheon_providers::catalog::provider(provider);
-    let label = meta
-        .as_ref()
-        .map(|m| m.label.clone())
-        .unwrap_or_else(|| provider.to_string());
-    let prefill = meta.map(|m| m.key_env.clone()).unwrap_or_default();
-    let answer = crate::prompt::pick_text(
-        "API key",
-        &format!("{step} · Env var holding the {label} API key (empty = none)"),
-        &prefill,
-    )?;
-    let answer = answer.trim().to_string();
-    if answer.is_empty() {
-        None
-    } else {
-        Some(answer)
-    }
+    // The env var name: a custom endpoint already named its key env on
+    // its own screen; a catalog provider is asked here.
+    let (name, label) = match custom {
+        Some(spec) => (spec.key_env.clone()?, "Custom endpoint".to_string()),
+        None => {
+            let meta = pantheon_providers::catalog::provider(provider);
+            let label = meta
+                .as_ref()
+                .map(|m| m.label.clone())
+                .unwrap_or_else(|| provider.to_string());
+            let prefill = meta.map(|m| m.key_env.clone()).unwrap_or_default();
+            let answer = crate::prompt::pick_text(
+                "API key",
+                &format!("{step} · Env var holding the {label} API key (empty = none)"),
+                &prefill,
+            )?;
+            let name = answer.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            (name, label)
+        }
+    };
+    ensure_key_value(data_dir, &name, &label, step);
+    Some(name)
 }
 
 /// Recommended mode: minimum decisions. The toolset is fixed (every
@@ -419,7 +467,7 @@ fn run_full(
     let (fallback_provider, fallback_model, fallback_custom) = if wants(Section::Fallback) {
         match pick_provider("Fallback provider") {
             Some((fp, fc)) => {
-                let fk = pick_model_key_env(&fp, fc.as_ref(), "Fallback key");
+                let fk = pick_model_key_env(data_dir, &fp, fc.as_ref(), "Fallback key");
                 let model = pick_model(&fp, fc.as_ref(), fk.as_deref(), "Fallback model");
                 (Some(fp), model, fc)
             }
@@ -797,6 +845,7 @@ fn pick_model(
     // var is unset. The key doubles as a validation call: a 401 here
     // means the key is wrong or missing, and the note says so.
     let key = resolve_key(key_env);
+    let key_name = key_env.unwrap_or("the API key");
     let (live, note): (Vec<crate::model_catalog::LiveModel>, Option<String>) = {
         let keyed = if key.is_empty() {
             Err(crate::model_catalog::FetchError::Auth)
@@ -806,15 +855,28 @@ fn pick_model(
         match keyed {
             Ok(l) => (l, None),
             Err(crate::model_catalog::FetchError::Auth) => {
-                match crate::model_catalog::fetch_live_models(&base_url) {
-                    Ok(l) => (l, None),
-                    Err(_) => (
+                if !key.is_empty() {
+                    // A key was sent and the endpoint refused it. Saying
+                    // "rejected" is the honest signal; "not set" would
+                    // send the user to export a key they already have.
+                    (
                         Vec::new(),
-                        Some(
-                            "could not list models; set the key env var and retry, or name a model"
-                                .to_string(),
+                        Some(format!(
+                            "the {label} key was rejected (401); check {key_name} is correct"
+                        )),
+                    )
+                } else {
+                    // No key at all: try keyless, then name the unset var
+                    // so the fix is obvious.
+                    match crate::model_catalog::fetch_live_models(&base_url) {
+                        Ok(l) => (l, None),
+                        Err(_) => (
+                            Vec::new(),
+                            Some(format!(
+                                "{key_name} is not set; export it or paste it during setup to load the full list"
+                            )),
                         ),
-                    ),
+                    }
                 }
             }
             Err(e) => (
