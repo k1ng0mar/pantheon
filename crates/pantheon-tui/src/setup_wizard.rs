@@ -88,23 +88,25 @@ pub fn run_setup_flow(data_dir: &Path) {
         return;
     }
 
-    // --- Provider and model ---------------------------------------------
-    // Both agent modes start here: Recommended fills in everything else,
-    // Full goes on to ask it.
-    let (provider, custom) = match pick_provider() {
+    // --- Provider, key, then model ------------------------------------
+    // Order matters: the model step fetches the live `/models` list
+    // *with* the key, so the key env has to be chosen first. Both agent
+    // modes start here; Recommended fills in everything else, Full goes
+    // on to ask it.
+    let (provider, custom) = match pick_provider("Step 2/5") {
         Some(p) => p,
         None => return,
     };
-    let model = pick_model(provider.as_str());
+    let api_key_env = pick_model_key_env(provider.as_str(), custom.as_ref(), "Step 3/5");
+    let model = pick_model(
+        provider.as_str(),
+        custom.as_ref(),
+        api_key_env.as_deref(),
+        "Step 4/5",
+    );
     if model.is_none() {
         return;
     }
-    // --- API key --------------------------------------------------------
-    // The wizard asks where the provider's API key lives and writes the
-    // env var name (never the key) to `[model].api_key_env`. Local
-    // providers need no key, so the screen is skipped for them; a custom
-    // endpoint already named its key env on its own screen.
-    let api_key_env = pick_model_key_env(provider.as_str(), custom.as_ref());
 
     if mode == Mode::Recommended {
         run_recommended(data_dir, provider, model, custom, api_key_env);
@@ -116,7 +118,11 @@ pub fn run_setup_flow(data_dir: &Path) {
 /// Where the model provider's API key lives: the env var name the
 /// config stores under `[model].api_key_env`. Esc (or an empty answer)
 /// means none. `None` here is "no key needed", never "ask again later".
-fn pick_model_key_env(provider: &str, custom: Option<&CustomProviderSpec>) -> Option<String> {
+fn pick_model_key_env(
+    provider: &str,
+    custom: Option<&CustomProviderSpec>,
+    step: &str,
+) -> Option<String> {
     if provider == "local" {
         return None;
     }
@@ -131,7 +137,7 @@ fn pick_model_key_env(provider: &str, custom: Option<&CustomProviderSpec>) -> Op
     let prefill = meta.map(|m| m.key_env.clone()).unwrap_or_default();
     let answer = crate::prompt::pick_text(
         "API key",
-        &format!("Env var holding the {label} API key (empty = none)"),
+        &format!("{step} · Env var holding the {label} API key (empty = none)"),
         &prefill,
     )?;
     let answer = answer.trim().to_string();
@@ -411,10 +417,10 @@ fn run_full(
     }
 
     let (fallback_provider, fallback_model, fallback_custom) = if wants(Section::Fallback) {
-        let p = pick_provider();
-        match p {
+        match pick_provider("Fallback provider") {
             Some((fp, fc)) => {
-                let model = pick_model(&fp);
+                let fk = pick_model_key_env(&fp, fc.as_ref(), "Fallback key");
+                let model = pick_model(&fp, fc.as_ref(), fk.as_deref(), "Fallback model");
                 (Some(fp), model, fc)
             }
             None => (None, None, None),
@@ -551,111 +557,188 @@ fn provider_note(provider: &str) -> Option<&'static str> {
     }
 }
 
+/// The first-run shortlist: a handful of providers a newcomer can pick
+/// between without knowing the field, then "Show all" for the rest.
+/// Nous leads because it is the recommended default. Ids not in the
+/// catalog are skipped, so the list never shows a dead row.
+fn provider_shortlist() -> Vec<String> {
+    ["nous", "openrouter", "anthropic", "openai", "local"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// What key a provider needs, for the picker's description line. Local
+/// needs none; everyone else names their env var. This plus the cost
+/// tier is the only per-row info that helps at setup time, which is why
+/// the old "[Chinese lab]" / "no curated models" blurbs are gone.
+fn provider_key_hint(m: &pantheon_providers::catalog::ProviderMeta) -> String {
+    if m.id == "local" || m.id == "lmstudio" {
+        "no key needed".to_string()
+    } else if m.key_env.is_empty() {
+        "key required".to_string()
+    } else {
+        format!("needs {}", m.key_env)
+    }
+}
+
+/// A free/cheap/paid tier derived from the provider's curated model
+/// costs, never invented. Local is free; otherwise the cheapest curated
+/// input price decides. No curated cost data means no claim at all.
+fn provider_tier(m: &pantheon_providers::catalog::ProviderMeta) -> Option<String> {
+    if m.id == "local" || m.id == "lmstudio" {
+        return Some("free · local".to_string());
+    }
+    let min_input = m
+        .models
+        .iter()
+        .filter_map(|mm| mm.cost.input_per_mtok_usd)
+        .fold(f64::INFINITY, f64::min);
+    if min_input.is_infinite() {
+        None
+    } else if min_input == 0.0 {
+        Some("free tier".to_string())
+    } else if min_input < 1.0 {
+        Some("cheap".to_string())
+    } else {
+        Some("paid".to_string())
+    }
+}
+
+/// One provider row: label, cost tier as the right tag, and the key
+/// requirement (plus a recommended marker) as the description. No lab
+/// blurb, no curated-model count.
+fn provider_item(m: &pantheon_providers::catalog::ProviderMeta) -> Item {
+    let mut item = Item::new(m.label.clone(), m.id.clone());
+    if let Some(t) = provider_tier(m) {
+        item = item.tag(t);
+    }
+    let mut hint = provider_key_hint(m);
+    if m.recommended {
+        hint = format!("recommended · {hint}");
+    }
+    item.desc(hint)
+}
+
 /// Pick a model provider. Returns the provider id plus, for the Custom
 /// row, the endpoint spec `run_setup` persists to
 /// `[custom_providers.custom]` - the in-memory registration alone does
 /// not survive the process, so the wizard used to write a config
 /// pointing at an endpoint only it remembered.
-fn pick_provider() -> Option<(String, Option<CustomProviderSpec>)> {
-    // The recommended provider (at most one) leads the list, tagged in
-    // the picker; the cursor starts on the first row, making it the
-    // pre-selected choice.
-    let providers = order_model_providers(pantheon_providers::catalog::selectable_providers());
-    let mut items: Vec<Item> = providers
-        .into_iter()
-        .map(|p| {
-            let mut item = Item::new(p.label.clone(), p.id.clone());
-            if p.recommended {
-                let tag = if p.tag.is_empty() {
-                    "recommended".to_string()
-                } else {
-                    format!("{} · recommended", p.tag)
-                };
-                item = item.tag(tag);
-            } else if !p.tag.is_empty() {
-                item = item.tag(p.tag);
-            }
-            if p.models.is_empty() {
-                // No curated models means the generic adapter and whatever
-                // name the user types. Saying so beats an empty list.
-                item = item.desc("no curated models, name one yourself");
-            }
-            item
-        })
+///
+/// The first screen is a shortlist with a "Show all providers..." row;
+/// a first-run user should not face 35 rows. Expanding lists every
+/// selectable provider. `router` is filtered out of the full list (a
+/// dev endpoint), a product decision that belongs here, not in the
+/// widget.
+fn pick_provider(step: &str) -> Option<(String, Option<CustomProviderSpec>)> {
+    let subtitle = format!("{step} · Choose a model provider");
+    let mut items: Vec<Item> = provider_shortlist()
+        .iter()
+        .filter_map(|id| pantheon_providers::catalog::provider(id))
+        .map(|m| provider_item(&m))
         .collect();
-    items.push(Item::new("Custom", "custom").desc("an OpenAI-shaped endpoint you provide"));
-    let chosen = crate::prompt::pick_one("Provider", "Choose a model provider", items)?;
-    if chosen == "custom" {
-        let url =
-            crate::prompt::pick_text("Custom endpoint", "Base URL", "https://api.example.com/v1")?;
-        if url.trim().is_empty() {
-            return None;
-        }
-        // Wire format: the runtime maps anything that is not "anthropic"
-        // to OpenAI, so ask rather than assume.
-        let api_mode = match crate::prompt::pick_one(
-            "Custom endpoint",
-            "Wire format",
-            vec![
-                Item::new("OpenAI-compatible", "openai").desc("OpenAI-style /v1 API"),
-                Item::new("Anthropic", "anthropic").desc("Anthropic Messages API"),
-            ],
-        )?
-        .as_str()
-        {
-            "anthropic" => pantheon_providers::catalog::ApiMode::Anthropic,
-            _ => pantheon_providers::catalog::ApiMode::OpenAi,
-        };
-        let key_env = crate::prompt::pick_text(
-            "Custom endpoint",
-            "Env var holding the API key (empty = none)",
-            "PANTHEON_KEY_CUSTOM",
-        )?;
-        let key_env = {
-            let k = key_env.trim();
-            if k.is_empty() {
-                None
-            } else {
-                Some(k.to_string())
+    items.push(
+        Item::new("Show all providers…", "__show_all__").desc("every provider Pantheon knows"),
+    );
+    items
+        .push(Item::new("Custom endpoint", "custom").desc("an OpenAI-shaped endpoint you provide"));
+    let chosen = crate::prompt::pick_one("Provider", &subtitle, items)?;
+    match chosen.as_str() {
+        "__show_all__" => pick_provider_full(&subtitle),
+        "custom" => pick_custom_provider(),
+        id => {
+            if let Some(note) = provider_note(id) {
+                println!("{note}");
             }
-        };
-        // Registered through the same path `pantheon provider add` uses, so a
-        // custom endpoint set up in the wizard is a real catalog entry and
-        // not a string only this wizard remembers.
-        pantheon_providers::catalog::register_custom_provider(
-            pantheon_providers::catalog::ProviderMeta {
-                id: "custom".into(),
-                label: "Custom endpoint".into(),
-                base_url: url.clone(),
-                api_mode,
-                base_env: String::new(),
-                key_env: key_env.clone().unwrap_or_default(),
-                key_header: String::new(),
-                models: Vec::new(),
-                prominent: true,
-                recommended: false,
-                dev: false,
-                tag: "custom".into(),
-            },
-        );
-        let spec = CustomProviderSpec {
-            name: "custom".to_string(),
-            base_url: url,
-            api_mode: match api_mode {
-                pantheon_providers::catalog::ApiMode::Anthropic => "anthropic".to_string(),
-                _ => "openai".to_string(),
-            },
-            key_env,
-        };
-        return Some(("custom".into(), Some(spec)));
+            Some((id.to_string(), None))
+        }
+    }
+}
+
+/// The expanded provider list: every selectable provider, same row
+/// shape as the shortlist, plus Custom.
+fn pick_provider_full(subtitle: &str) -> Option<(String, Option<CustomProviderSpec>)> {
+    let providers = order_model_providers(pantheon_providers::catalog::selectable_providers());
+    let mut items: Vec<Item> = providers.iter().map(provider_item).collect();
+    items.push(Item::new("Custom", "custom").desc("an OpenAI-shaped endpoint you provide"));
+    let chosen = crate::prompt::pick_one("All providers", subtitle, items)?;
+    if chosen == "custom" {
+        return pick_custom_provider();
     }
     // Nous honesty: the Portal primarily uses OAuth, so a static key may
-    // not be the whole auth story. Printed here, in the shared picker, so
-    // it appears in both agent flows (and the Full flow's fallback pick).
+    // not be the whole auth story. Printed in both pickers so it appears
+    // wherever Nous can be chosen.
     if let Some(note) = provider_note(&chosen) {
         println!("{note}");
     }
     Some((chosen, None))
+}
+
+/// The Custom endpoint flow: base URL, wire format, key env var.
+/// Registered through the same path `pantheon provider add` uses, so a
+/// custom endpoint set up in the wizard is a real catalog entry and not
+/// a string only this wizard remembers.
+fn pick_custom_provider() -> Option<(String, Option<CustomProviderSpec>)> {
+    let url =
+        crate::prompt::pick_text("Custom endpoint", "Base URL", "https://api.example.com/v1")?;
+    if url.trim().is_empty() {
+        return None;
+    }
+    // Wire format: the runtime maps anything that is not "anthropic"
+    // to OpenAI, so ask rather than assume.
+    let api_mode = match crate::prompt::pick_one(
+        "Custom endpoint",
+        "Wire format",
+        vec![
+            Item::new("OpenAI-compatible", "openai").desc("OpenAI-style /v1 API"),
+            Item::new("Anthropic", "anthropic").desc("Anthropic Messages API"),
+        ],
+    )?
+    .as_str()
+    {
+        "anthropic" => pantheon_providers::catalog::ApiMode::Anthropic,
+        _ => pantheon_providers::catalog::ApiMode::OpenAi,
+    };
+    let key_env = crate::prompt::pick_text(
+        "Custom endpoint",
+        "Env var holding the API key (empty = none)",
+        "PANTHEON_KEY_CUSTOM",
+    )?;
+    let key_env = {
+        let k = key_env.trim();
+        if k.is_empty() {
+            None
+        } else {
+            Some(k.to_string())
+        }
+    };
+    pantheon_providers::catalog::register_custom_provider(
+        pantheon_providers::catalog::ProviderMeta {
+            id: "custom".into(),
+            label: "Custom endpoint".into(),
+            base_url: url.clone(),
+            api_mode,
+            base_env: String::new(),
+            key_env: key_env.clone().unwrap_or_default(),
+            key_header: String::new(),
+            models: Vec::new(),
+            prominent: true,
+            recommended: false,
+            dev: false,
+            tag: "custom".into(),
+        },
+    );
+    let spec = CustomProviderSpec {
+        name: "custom".to_string(),
+        base_url: url,
+        api_mode: match api_mode {
+            pantheon_providers::catalog::ApiMode::Anthropic => "anthropic".to_string(),
+            _ => "openai".to_string(),
+        },
+        key_env,
+    };
+    Some(("custom".into(), Some(spec)))
 }
 
 /// Curated catalog entries normalized for the live-list merge.
@@ -673,61 +756,118 @@ fn curated_rows(
         .collect()
 }
 
-fn pick_model(provider: &str) -> Option<String> {
+/// Resolve a key env var's value from the process environment. The
+/// wizard stores the env var *name*, never the key, so the live model
+/// fetch reads the value the user has already exported. An unset or
+/// empty var yields an empty string, which degrades the fetch to
+/// keyless rather than sending a bogus `Bearer`.
+fn resolve_key(key_env: Option<&str>) -> String {
+    key_env
+        .and_then(|n| std::env::var(n).ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn pick_model(
+    provider: &str,
+    _custom: Option<&CustomProviderSpec>,
+    key_env: Option<&str>,
+    step: &str,
+) -> Option<String> {
     let meta = pantheon_providers::catalog::provider(provider);
     let label = meta
         .as_ref()
         .map(|m| m.label.clone())
         .unwrap_or_else(|| provider.to_string());
-    // Live list for OpenAI-compatible providers: the catalog's curated
-    // entries merged with `{base}/models`, fetched keyless-first. A
-    // 401/403 falls back to curated with a "full list after API key"
-    // note; other failures name their kind. Non-OpenAI providers use
-    // the curated list only.
-    let (rows, note): (Vec<crate::model_catalog::ModelRow>, Option<String>) = match &meta {
-        Some(m) if m.api_mode == pantheon_providers::catalog::ApiMode::OpenAi => {
-            let curated = curated_rows(m);
-            match crate::model_catalog::fetch_live_models(&m.base_url) {
-                Ok(live) => (
-                    crate::model_catalog::merge_model_rows(&curated, &live),
-                    None,
-                ),
-                Err(crate::model_catalog::FetchError::Auth) => (
-                    crate::model_catalog::merge_model_rows(&curated, &[]),
-                    Some("full list after API key".to_string()),
-                ),
-                Err(e) => (
-                    crate::model_catalog::merge_model_rows(&curated, &[]),
-                    Some(format!("live list unavailable ({})", e.kind())),
-                ),
+    let base_url = meta
+        .as_ref()
+        .map(|m| m.base_url.clone())
+        .unwrap_or_default();
+    let api_mode = meta
+        .as_ref()
+        .map(|m| m.api_mode)
+        .unwrap_or(pantheon_providers::catalog::ApiMode::OpenAi);
+    let curated = meta.as_ref().map(curated_rows).unwrap_or_default();
+
+    // Live list, fetched *with* the key so a keyed endpoint (the router,
+    // most hosted providers) returns its real models instead of a 401
+    // that would drop the wizard back to curated-only. Keyless is the
+    // fallback for endpoints that serve /models without a key when the
+    // var is unset. The key doubles as a validation call: a 401 here
+    // means the key is wrong or missing, and the note says so.
+    let key = resolve_key(key_env);
+    let (live, note): (Vec<crate::model_catalog::LiveModel>, Option<String>) = {
+        let keyed = if key.is_empty() {
+            Err(crate::model_catalog::FetchError::Auth)
+        } else {
+            crate::model_catalog::fetch_live_models_keyed(&base_url, &key, api_mode)
+        };
+        match keyed {
+            Ok(l) => (l, None),
+            Err(crate::model_catalog::FetchError::Auth) => {
+                match crate::model_catalog::fetch_live_models(&base_url) {
+                    Ok(l) => (l, None),
+                    Err(_) => (
+                        Vec::new(),
+                        Some(
+                            "could not list models; set the key env var and retry, or name a model"
+                                .to_string(),
+                        ),
+                    ),
+                }
             }
+            Err(e) => (
+                Vec::new(),
+                Some(format!("live list unavailable ({})", e.kind())),
+            ),
         }
-        Some(m) => (
-            crate::model_catalog::merge_model_rows(&curated_rows(m), &[]),
-            None,
-        ),
-        None => (Vec::new(), None),
     };
-    let items: Vec<Item> = rows
-        .iter()
-        .map(|row| {
-            let mut item = Item::new(row.id.clone(), format!("{provider}/{}", row.id));
-            if let Some(tag) = crate::model_catalog::row_tag(row) {
-                item = item.tag(tag);
-            }
-            item
-        })
-        .collect();
+
+    let mut rows = crate::model_catalog::merge_model_rows(&curated, &live);
+    // Float a recommendation to the top so a newcomer is not asked to
+    // know what each id is. A curated row wins (catalog order is the
+    // tested order); with only live rows, the first listed leads.
+    let rec_idx =
+        rows.iter()
+            .position(|r| r.curated)
+            .or(if rows.is_empty() { None } else { Some(0) });
+    if let Some(i) = rec_idx {
+        let rec = rows.remove(i);
+        rows.insert(0, rec);
+    }
+
+    let mut items: Vec<Item> = Vec::new();
+    for (idx, row) in rows.iter().enumerate() {
+        let mut item = Item::new(row.id.clone(), format!("{provider}/{}", row.id));
+        if idx == 0 {
+            // The floated recommendation: a right tag plus a one-line
+            // reason, so the choice is explained rather than asserted.
+            let reason = if row.curated {
+                "Pantheon's tested default"
+            } else {
+                "first model the endpoint listed"
+            };
+            item = item.tag("recommended").desc(reason);
+        }
+        // Context and price go on their own dim line, not the right tag,
+        // so a long "131k · $0.15 in / $0.60 out" never clips against
+        // the model id on a narrow terminal.
+        if let Some(m) = crate::model_catalog::row_meta(row) {
+            item = item.meta(m);
+        }
+        items.push(item);
+    }
     if items.is_empty() {
         // No rows at all - neither curated nor fetchable. The generic
         // adapter is the path and the model name is a free-text answer.
         // Inventing a list here would be the fake configuration the spec
         // forbids.
-        let name = crate::prompt::pick_text(
-            "Model",
-            &format!("{label} has no curated models. Name the model to use."),
-            "",
-        )?;
+        let sub = match &note {
+            Some(n) => format!("{step} · {label} · {n}"),
+            None => format!("{step} · {label} has no listed models. Name the model to use."),
+        };
+        let name = crate::prompt::pick_text("Model", &sub, "")?;
         let name = name.trim().to_string();
         if name.is_empty() {
             return None;
@@ -735,9 +875,9 @@ fn pick_model(provider: &str) -> Option<String> {
         // Bare model name: setup pairs it with the provider.
         return Some(name);
     }
-    let subtitle = match note {
-        Some(n) => format!("{label} · {n}"),
-        None => label,
+    let subtitle = match &note {
+        Some(n) => format!("{step} · {label} · {n}"),
+        None => format!("{step} · {label}"),
     };
     let chosen = crate::prompt::pick_one("Model", &subtitle, items)?;
     // The picker's value is "provider/model", which is how the row was built
@@ -1382,5 +1522,86 @@ mod tests {
         assert!(validate_server_name("", &[]).is_some());
         let existing = vec![("my-server".to_string(), dummy_entry())];
         assert!(validate_server_name("my-server", &existing).is_some());
+    }
+
+    // --- first-run provider picker rows ---------------------------------
+
+    use super::{provider_key_hint, provider_tier};
+    use pantheon_providers::catalog::{ApiMode, ModelCost, ModelMeta, ProviderMeta};
+
+    fn provider(id: &str, key_env: &str, recommended: bool) -> ProviderMeta {
+        ProviderMeta {
+            id: id.into(),
+            label: id.into(),
+            base_url: String::new(),
+            api_mode: ApiMode::OpenAi,
+            base_env: String::new(),
+            key_env: key_env.into(),
+            key_header: String::new(),
+            models: Vec::new(),
+            prominent: false,
+            recommended,
+            dev: false,
+            tag: String::new(),
+        }
+    }
+
+    fn model_with_cost(input: Option<f64>) -> ModelMeta {
+        ModelMeta {
+            provider: "p".into(),
+            model: "m".into(),
+            context_limit: None,
+            max_output_tokens: None,
+            tools: true,
+            vision: false,
+            video: false,
+            reasoning: false,
+            streaming: true,
+            cost: ModelCost {
+                input_per_mtok_usd: input,
+                output_per_mtok_usd: None,
+            },
+        }
+    }
+
+    #[test]
+    fn key_hint_names_the_env_var_or_says_none() {
+        assert_eq!(
+            provider_key_hint(&provider("openai", "OPENAI_API_KEY", false)),
+            "needs OPENAI_API_KEY"
+        );
+        assert_eq!(
+            provider_key_hint(&provider("local", "", false)),
+            "no key needed"
+        );
+        assert_eq!(provider_key_hint(&provider("x", "", false)), "key required");
+    }
+
+    #[test]
+    fn tier_is_free_for_local() {
+        assert_eq!(
+            provider_tier(&provider("local", "", false)).as_deref(),
+            Some("free · local")
+        );
+    }
+
+    #[test]
+    fn tier_derives_from_cheapest_curated_input() {
+        let mut cheap = provider("p", "K", false);
+        cheap.models = vec![model_with_cost(Some(0.15)), model_with_cost(Some(10.0))];
+        assert_eq!(provider_tier(&cheap).as_deref(), Some("cheap"));
+
+        let mut pricey = provider("p", "K", false);
+        pricey.models = vec![model_with_cost(Some(3.0))];
+        assert_eq!(provider_tier(&pricey).as_deref(), Some("paid"));
+    }
+
+    #[test]
+    fn tier_is_none_without_cost_data() {
+        // No curated cost means no claim, never an invented "paid".
+        assert_eq!(
+            provider_tier(&provider("openrouter", "OPENROUTER_API_KEY", false)),
+            None
+        );
     }
 }

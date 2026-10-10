@@ -17,6 +17,13 @@
 
 use std::time::Duration;
 
+use pantheon_providers::catalog::ApiMode;
+
+/// Anthropic `anthropic-version` header value. Kept in step with the
+/// transport in `model.rs`; an Anthropic-wire `/models` rejects the
+/// request without it.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+
 /// One live model entry from a `/models` response.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveModel {
@@ -68,6 +75,49 @@ pub fn fetch_live_models(base_url: &str) -> Result<Vec<LiveModel>, FetchError> {
 /// `{base}/models`, tolerant of a trailing slash on the base.
 fn models_url(base_url: &str) -> String {
     format!("{}/models", base_url.trim_end_matches('/'))
+}
+
+/// Fetch the live model list **with** an API key, for the wizard's
+/// post-key model step. Same response shape as [`fetch_live_models`]
+/// but it sends the auth header for the wire mode, so a keyed endpoint
+/// (the local router, most hosted providers) returns its real list
+/// instead of a 401 that would drop the wizard back to curated-only.
+///
+/// An empty key degrades to the keyless call. `mode` picks the header:
+/// OpenAI sends `Authorization: Bearer`, Anthropic sends `x-api-key`
+/// plus `anthropic-version`, because sending the wrong one fails auth
+/// and reads as "this endpoint has no models".
+pub fn fetch_live_models_keyed(
+    base_url: &str,
+    key: &str,
+    mode: ApiMode,
+) -> Result<Vec<LiveModel>, FetchError> {
+    let url = models_url(base_url);
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(15))
+        .build();
+    let mut req = agent.get(&url);
+    let key = key.trim();
+    if !key.is_empty() {
+        match mode {
+            ApiMode::Anthropic => {
+                req = req
+                    .set("x-api-key", key)
+                    .set("anthropic-version", ANTHROPIC_VERSION);
+            }
+            ApiMode::OpenAi => {
+                req = req.set("Authorization", &format!("Bearer {key}"));
+            }
+        }
+    }
+    let resp = req.call().map_err(|e| match e {
+        ureq::Error::Status(code, _) => classify_status(code),
+        _ => FetchError::Unreachable(e.to_string()),
+    })?;
+    let body = resp
+        .into_string()
+        .map_err(|e| FetchError::Unreachable(e.to_string()))?;
+    parse_models_body(&body)
 }
 
 /// Map an HTTP status to the fetch error. Only 401/403 is auth;
@@ -188,33 +238,105 @@ fn fmt_price(v: f64) -> String {
     }
 }
 
-/// Price tag for a row: `in $0.20/M · out $0.60/M`; `free` when both
-/// prices are zero (OpenRouter marks free models with zero pricing);
-/// `None` when there is no pricing at all - never invented.
-pub fn price_tag(input: Option<f64>, output: Option<f64>) -> Option<String> {
+/// Context window as a compact string: `131k`. `None` when unknown.
+pub fn context_str(row: &ModelRow) -> Option<String> {
+    row.context_limit.map(|l| format!("{}k", l / 1000))
+}
+
+/// Compact price for the second metadata line: `$0.15 in / $0.60 out`,
+/// `free`, or a single-sided `$0.15 in`. `None` when no pricing is
+/// known, never invented.
+pub fn price_compact(input: Option<f64>, output: Option<f64>) -> Option<String> {
     match (input, output) {
         (Some(i), Some(o)) if i == 0.0 && o == 0.0 => Some("free".to_string()),
-        (Some(i), Some(o)) => Some(format!("in {}/M · out {}/M", fmt_price(i), fmt_price(o))),
-        (Some(i), None) => Some(format!("in {}/M", fmt_price(i))),
-        (None, Some(o)) => Some(format!("out {}/M", fmt_price(o))),
+        (Some(i), Some(o)) => Some(format!("{} in / {} out", fmt_price(i), fmt_price(o))),
+        (Some(i), None) => Some(format!("{} in", fmt_price(i))),
+        (None, Some(o)) => Some(format!("{} out", fmt_price(o))),
         (None, None) => None,
     }
 }
 
-/// Full picker tag for a row: context first, then price
-/// (`70k · in $0.20/M · out $0.60/M`, or `70k · free`). `None` when
-/// neither is known.
-pub fn row_tag(row: &ModelRow) -> Option<String> {
+/// The second dim line under a model row: context and price joined
+/// (`131k · $0.15 in / $0.60 out`). This lives on its own line, not the
+/// right-aligned tag, because the combined string is long and clips
+/// against the label on a narrow terminal when it shares the row.
+/// `None` when neither context nor price is known.
+pub fn row_meta(row: &ModelRow) -> Option<String> {
     let mut parts = Vec::new();
-    if let Some(limit) = row.context_limit {
-        parts.push(format!("{}k", limit / 1000));
+    if let Some(c) = context_str(row) {
+        parts.push(c);
     }
-    if let Some(p) = price_tag(row.input_per_mtok_usd, row.output_per_mtok_usd) {
+    if let Some(p) = price_compact(row.input_per_mtok_usd, row.output_per_mtok_usd) {
         parts.push(p);
     }
     if parts.is_empty() {
         None
     } else {
         Some(parts.join(" · "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(ctx: Option<u64>, inp: Option<f64>, out: Option<f64>) -> ModelRow {
+        ModelRow {
+            id: "m".into(),
+            context_limit: ctx,
+            input_per_mtok_usd: inp,
+            output_per_mtok_usd: out,
+            curated: true,
+        }
+    }
+
+    #[test]
+    fn price_compact_joins_input_and_output() {
+        assert_eq!(
+            price_compact(Some(0.15), Some(0.60)).as_deref(),
+            Some("$0.15 in / $0.60 out")
+        );
+    }
+
+    #[test]
+    fn price_compact_marks_zero_as_free() {
+        assert_eq!(price_compact(Some(0.0), Some(0.0)).as_deref(), Some("free"));
+    }
+
+    #[test]
+    fn price_compact_single_sided() {
+        assert_eq!(price_compact(Some(2.50), None).as_deref(), Some("$2.50 in"));
+        assert_eq!(
+            price_compact(None, Some(0.30)).as_deref(),
+            Some("$0.30 out")
+        );
+    }
+
+    #[test]
+    fn price_compact_none_when_unknown() {
+        assert_eq!(price_compact(None, None), None);
+    }
+
+    #[test]
+    fn row_meta_puts_context_and_price_on_one_line() {
+        // The whole point of `meta`: context plus price together, ready
+        // for its own dim line so it never clips against the label.
+        assert_eq!(
+            row_meta(&row(Some(131_000), Some(0.15), Some(0.60))).as_deref(),
+            Some("131k · $0.15 in / $0.60 out")
+        );
+    }
+
+    #[test]
+    fn row_meta_context_only() {
+        assert_eq!(
+            row_meta(&row(Some(128_000), None, None)).as_deref(),
+            Some("128k")
+        );
+    }
+
+    #[test]
+    fn row_meta_none_when_nothing_known() {
+        assert_eq!(row_meta(&row(None, None, None)), None);
     }
 }

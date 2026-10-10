@@ -148,6 +148,10 @@ pub struct Item {
     /// The value handed back on submit. Not always the label: a provider row's
     /// value is its catalog id, which the user never sees.
     pub value: String,
+    /// A second metadata line, drawn dim under the label. Used where the
+    /// per-row detail is long enough to clip on a narrow terminal if it
+    /// shared the label line (a model's context window plus price).
+    pub meta: String,
     /// A disabled row is visible and selectable-by-filter but cannot be
     /// submitted. This is how the spec's "provider exists, integration does
     /// not" is rendered without pretending: the row is there, and choosing it
@@ -162,6 +166,7 @@ impl Item {
             value: value.into(),
             desc: String::new(),
             tag: String::new(),
+            meta: String::new(),
             // Opt-in to disabled, never opt-out. A default of `false` here
             // made every row in the product unsubmittable, and the failure was
             // silent: Enter on a provider list did nothing.
@@ -174,6 +179,11 @@ impl Item {
     }
     pub fn tag(mut self, t: impl Into<String>) -> Self {
         self.tag = t.into();
+        self
+    }
+    /// A second dim line under the label. See [`Item::meta`].
+    pub fn meta(mut self, m: impl Into<String>) -> Self {
+        self.meta = m.into();
         self
     }
     pub fn disabled(mut self) -> Self {
@@ -192,6 +202,7 @@ impl Item {
         self.label.to_lowercase().contains(&n)
             || self.desc.to_lowercase().contains(&n)
             || self.tag.to_lowercase().contains(&n)
+            || self.meta.to_lowercase().contains(&n)
             || self.value.to_lowercase().contains(&n)
     }
 }
@@ -784,6 +795,8 @@ pub struct Row {
     pub label: String,
     pub desc: String,
     pub tag: String,
+    /// Second dim line under the label; see [`Item::meta`].
+    pub meta: String,
     pub selected: bool,
     pub enabled: bool,
 }
@@ -813,6 +826,7 @@ pub fn rows_for(state: &ListState, checkbox: Option<&[bool]>) -> Vec<Row> {
                 label: it.label.clone(),
                 desc: it.desc.clone(),
                 tag: it.tag.clone(),
+                meta: it.meta.clone(),
                 // The cursor indexes the filtered list, and the row's offset
                 // in this window is the filtered index minus the scroll
                 // offset. Comparing the two is what marks exactly one row.
