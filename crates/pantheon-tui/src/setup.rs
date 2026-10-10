@@ -24,6 +24,7 @@ use pantheon_api::config::{
 };
 use std::collections::HashMap;
 use std::io::BufRead;
+use std::io::IsTerminal;
 use std::path::Path;
 
 fn prompt(line: &str, default: Option<&str>) -> String {
@@ -859,6 +860,22 @@ pub fn cmd_setup(args: &[String]) {
         std::process::exit(0);
     }
     let parsed = crate::args::Args::parse(raw);
+    // A terminal with no flags is the interactive case, and the TUI
+    // wizard is the experience that was built for it: lists, pickers,
+    // and a visible flow instead of a stdin prompt loop. The text path
+    // stays for scripts (--yes or explicit flags) and for pipes, where
+    // a full-screen wizard cannot render at all. Without this, the
+    // installer's "run `pantheon setup`" advice handed the user the
+    // weaker of the two paths.
+    if std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && !parsed.has("yes")
+        && parsed.flag("provider").is_none()
+        && parsed.flag("model").is_none()
+    {
+        crate::setup_wizard::run_setup_flow(&crate::terminal::data_dir());
+        std::process::exit(0);
+    }
     let flag = |name: &str| parsed.flag(name);
     let policy = flag("policy")
         .and_then(|p| PolicyPreset::parse(&p))

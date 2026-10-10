@@ -204,8 +204,14 @@ pub fn run_with_profile(name: &str) {
 /// that into the fix: start Ollama, pull the model, or pick another
 /// provider.
 ///
-/// Only `local` is probed: a cloud endpoint hiccup at launch time must
-/// not refuse to open the session.
+/// A fresh install lands here: the installer writes the `local`
+/// default non-interactively, and nothing on a clean box runs Ollama.
+/// Exiting with instructions made the first run a wall of text ending
+/// in "run `pantheon setup`" - so when the terminal is interactive the
+/// wizard opens directly instead, and the user is walked through a
+/// provider choice rather than told to go run a command. Only `local`
+/// is probed: a cloud endpoint hiccup at launch time must not refuse
+/// to open the session.
 fn check_local_provider(data_dir: &std::path::Path) {
     let model = match crate::config::Config::load(data_dir) {
         Ok(cfg) => match cfg.model {
@@ -225,6 +231,14 @@ fn check_local_provider(data_dir: &std::path::Path) {
     };
     if crate::doctor::tcp_probe(&url, std::time::Duration::from_secs(3)) {
         return;
+    }
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        eprintln!(
+            "pantheon: the configured provider \"local\" (Ollama) is not reachable at {url}."
+        );
+        eprintln!("pantheon: opening setup so you can choose a provider.");
+        crate::setup_wizard::run_setup_flow(data_dir);
+        std::process::exit(0);
     }
     eprintln!("pantheon: the configured provider \"local\" (Ollama) is not reachable at {url}.");
     eprintln!(
