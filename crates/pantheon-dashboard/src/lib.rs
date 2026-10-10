@@ -359,7 +359,16 @@ fn dispatch(app: &App, req: &Request) -> Response {
     let segs = split_path(&req.path);
     // Static shell: no token needed (it cannot do anything without one).
     if req.method == "GET" && segs.is_empty() {
-        return Response::ok_html(INDEX_HTML);
+        // Inject the build version so the sidebar can never drift from
+        // the binary: the placeholder lives in assets/index.html and is
+        // replaced from CARGO_PKG_VERSION at serve time.
+        let html = INDEX_HTML.replace("__PANTHEON_VERSION__", env!("CARGO_PKG_VERSION"));
+        return Response::Buffered {
+            status: 200,
+            content_type: "text/html; charset=utf-8",
+            body: html.into_bytes(),
+            extra_headers: Vec::new(),
+        };
     }
     if req.method == "GET" && segs == ["tokens.css"] {
         return Response::ok_css(TOKENS_CSS);
@@ -375,7 +384,16 @@ fn dispatch(app: &App, req: &Request) -> Response {
         return Response::ok_bytes("application/manifest+json", MANIFEST_JSON.as_bytes());
     }
     if req.method == "GET" && segs == ["sw.js"] {
-        return Response::ok_js(SW_JS);
+        // Versioned cache name: injecting the build version here retires
+        // the previous version's cached shell on upgrade instead of
+        // serving it forever.
+        let js = SW_JS.replace("__PANTHEON_VERSION__", env!("CARGO_PKG_VERSION"));
+        return Response::Buffered {
+            status: 200,
+            content_type: "application/javascript; charset=utf-8",
+            body: js.into_bytes(),
+            extra_headers: Vec::new(),
+        };
     }
     if req.method == "GET" && segs == ["icon-192.png"] {
         return Response::ok_bytes("image/png", ICON_192);
