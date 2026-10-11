@@ -670,9 +670,151 @@ renderers.inspector = async function () {
     const title = r.title || ("Run " + id.slice(0, 12));
     const TERMINAL = { completed: 1, failed: 1, canceled: 1 };
     const isLive = !TERMINAL[r.status];
+
+/* Structured UI component renderer (UI protocol v1).
+   Renders the typed UiDocument JSON shipped on transcript items with
+   type "ui". Everything is escaped with esc() first - no raw HTML from
+   the document ever reaches the DOM. Interactive actions (form submit,
+   approval decisions) are read-only here: the dashboard has no UI-action
+   endpoint yet, so cards render their labels and a hint. */
+function renderUi(doc) {
+  if (!doc || !doc.root) return '<div class="ui-empty text-faint">Empty UI document.</div>';
+  return '<div class="ui-doc">' + renderUiNode(doc.root) + "</div>";
+}
+function renderUiNode(node) {
+  if (!node || typeof node.type !== "string") return "";
+  var pad = "";
+  switch (node.type) {
+    case "markdown": {
+      var t = "";
+      if (node.title) t += '<div class="ui-title">' + esc(node.title) + "</div>";
+      return '<div class="ui-md">' + t + renderMd(node.text || "") + "</div>";
+    }
+    case "table": {
+      var h = "";
+      if (node.title) h += '<div class="ui-title">' + esc(node.title) + "</div>";
+      var head = "<tr>" + (node.headers || []).map(function (c) { return "<th>" + esc(c) + "</th>"; }).join("") + "</tr>";
+      var rows = (node.rows || []).map(function (r) {
+        return "<tr>" + r.map(function (c) { return "<td>" + esc(c) + "</td>"; }).join("") + "</tr>";
+      }).join("");
+      return '<div class="ui-table-wrap">' + h + '<table class="ui-table"><thead>' + head + "</thead><tbody>" + rows + "</tbody></table></div>";
+    }
+    case "chart": {
+      var title = node.title ? '<div class="ui-title">' + esc(node.title) + "</div>" : "";
+      if (node.chart_type === "bar" && node.series && node.series.length) {
+        var s0 = node.series[0] || { values: [] };
+        var max = Math.max.apply(null, s0.values.concat([1]));
+        var bars = (node.labels || []).map(function (lb, i) {
+          var v = s0.values[i] || 0;
+          var pct = Math.max(2, Math.round((v / max) * 100));
+          return '<div class="ui-bar-row"><span class="ui-bar-label">' + esc(lb) + '</span>' +
+            '<span class="ui-bar-track"><span class="ui-bar-fill" style="width:' + pct + '%"></span></span>' +
+            '<span class="ui-bar-val mono">' + esc(String(v)) + "</span></div>";
+        }).join("");
+        return '<div class="ui-chart">' + title + bars + "</div>";
+      }
+      var vals = ((node.series || [])[0] || {}).values || [];
+      return '<div class="ui-chart">' + title + '<div class="text-faint">chart (' + esc(node.chart_type || "?") +
+        "): " + vals.map(function (v) { return esc(String(v)); }).join(", ") + "</div></div>";
+    }
+    case "metrics": {
+      var cards = (node.items || []).map(function (m) {
+        return '<div class="ui-metric"><div class="ui-metric-val">' + esc(m.value) + "</div>" +
+          '<div class="ui-metric-label">' + esc(m.label) + "</div>" +
+          (m.delta ? '<div class="ui-metric-delta">' + esc(m.delta) + "</div>" : "") + "</div>";
+      }).join("");
+      return '<div class="ui-metrics">' + cards + "</div>";
+    }
+    case "list": {
+      var items = (node.items || []).map(function (it) {
+        var label = typeof it === "string" ? it : it.label || "";
+        var st = typeof it === "string" ? "" : " [" + esc(it.state || "") + "]";
+        return "<li>" + esc(label) + st + "</li>";
+      }).join("");
+      return '<div class="ui-list">' + (node.title ? '<div class="ui-title">' + esc(node.title) + "</div>" : "") +
+        "<ul>" + items + "</ul></div>";
+    }
+    case "code":
+      return '<div class="ui-code"><div class="ui-title mono">' + esc(node.language || "code") + '</div><pre>' + esc(node.code || "") + "</pre></div>";
+    case "refs": {
+      var refs = (node.items || []).map(function (r) {
+        return '<div class="ui-ref"><a href="' + esc(r.url || "#") + '" target="_blank" rel="noopener">' + esc(r.title || r.url || "") + "</a>" +
+          (r.note ? '<div class="text-faint">' + esc(r.note) + "</div>" : "") + "</div>";
+      }).join("");
+      return '<div class="ui-refs">' + refs + "</div>";
+    }
+    case "form": {
+      var fields = (node.fields || []).map(function (f) {
+        var typeHint = f.field_type && f.field_type.type ? " (" + esc(f.field_type.type) + ")" : "";
+        return '<div class="ui-field"><label>' + esc(f.label || f.name) + (f.required ? " *" : "") + typeHint + "</label>" +
+          '<div class="text-faint mono">' + esc(f.name) + "</div></div>";
+      }).join("");
+      var submitLabel = node.submit && node.submit.label ? node.submit.label : "Submit";
+      return '<div class="ui-form">' + (node.title ? '<div class="ui-title">' + esc(node.title) + "</div>" : "") +
+        (node.description ? '<div class="text-faint">' + esc(node.description) + "</div>" : "") +
+        fields + '<div class="ui-actions"><button class="btn small" disabled title="UI actions are not submittable from the dashboard yet">' +
+        esc(submitLabel) + "</button></div></div>";
+    }
+    case "task_list": {
+      var tasks = (node.items || []).map(function (t) {
+        var box = t.state === "done" ? "☑" : t.state === "failed" ? "☒" : "☐";
+        return '<div class="ui-task"><span>' + box + "</span> " + esc(t.label || "") + "</div>";
+      }).join("");
+      return '<div class="ui-tasks">' + (node.title ? '<div class="ui-title">' + esc(node.title) + "</div>" : "") + tasks + "</div>";
+    }
+    case "progress": {
+      var pct = node.total > 0 ? Math.round((node.done / node.total) * 100) : 0;
+      return '<div class="ui-progress"><div class="ui-title">' + esc(node.label || "progress") + " " + pct + '%</div>' +
+        '<div class="ui-bar-track"><div class="ui-bar-fill" style="width:' + pct + '%"></div></div></div>';
+    }
+    case "details":
+      return "<details class='ui-details'><summary>" + esc(node.summary || "details") + "</summary><div>" + renderUiNode(node.body) + "</div></details>";
+    case "diff": {
+      var files = (node.files || []).map(function (f) {
+        var hunks = (f.hunks || []).map(function (h) {
+          var lines = (h.lines || []).map(function (l) {
+            var cls = l.kind === "add" ? "ui-diff-add" : l.kind === "del" ? "ui-diff-del" : "";
+            var sign = l.kind === "add" ? "+" : l.kind === "del" ? "-" : " ";
+            return '<div class="ui-diff-line ' + cls + '">' + esc(sign + (l.text || "")) + "</div>";
+          }).join("");
+          return '<div class="ui-diff-hunk"><div class="text-faint mono">' + esc(h.header || "") + "</div>" + lines + "</div>";
+        }).join("");
+        return '<div class="ui-diff-file"><div class="ui-title mono">' + esc(f.path || "") + "</div>" + hunks + "</div>";
+      }).join("");
+      return '<div class="ui-diff">' + files + "</div>";
+    }
+    case "approval": {
+      var ap = node.approve || {};
+      var dn = node.deny || {};
+      return '<div class="ui-approval"><div class="ui-title">⚠ ' + esc(node.title || "Approval needed") + "</div>" +
+        '<div>' + renderMd(node.detail || "") + "</div>" +
+        (node.scope_hint ? '<div class="text-faint">scope: ' + esc(node.scope_hint) + "</div>" : "") +
+        '<div class="ui-actions"><button class="btn small primary" disabled title="UI approvals are decided in the TUI for now">' + esc(ap.label || "Approve") + "</button> " +
+        '<button class="btn small" disabled title="UI approvals are decided in the TUI for now">' + esc(dn.label || "Deny") + "</button></div></div>";
+    }
+    case "layout": {
+      var kids = "";
+      if (node.kind === "tabs") {
+        kids = (node.children || []).map(function (c, i) {
+          return "<details class='ui-tab'" + (i === 0 ? " open" : "") + "><summary>" + esc(c.title || ("Tab " + (i + 1))) + "</summary>" + renderUiNode(c.node || c) + "</details>";
+        }).join("");
+      } else {
+        kids = (node.children || []).map(function (c) { return '<div class="ui-layout-child">' + renderUiNode(c.node || c) + "</div>"; }).join("");
+      }
+      return '<div class="ui-layout">' + kids + "</div>";
+    }
+    case "custom":
+      return '<div class="ui-custom">' + renderUiNode(node.fallback) + "</div>";
+    default:
+      return '<div class="ui-unknown text-faint">(unsupported component: ' + esc(node.type) + ")</div>";
+  }
+  return pad;
+}
     const transcript = (r.transcript || []).map((m, i) =>
       m.type === "reasoning"
         ? '<div class="msg" data-role="reason"><div class="m-role">reasoning</div><div class="m-body">' + esc(m.content) + "</div></div>"
+        : m.type === "ui"
+        ? '<div class="msg" data-role="ui"><div class="m-role">ui <span class="mono text-faint">' + esc(m.ui_id || "") + " rev " + esc(String(m.revision == null ? 0 : m.revision)) + '</span></div><div class="m-body">' + renderUi(m.document) + "</div></div>"
         : '<div class="msg" data-role="' + esc(m.role) + '"><div class="m-role">' + esc(m.role) + '</div><div class="m-body">' + renderMd(m.content) + '</div><div class="link-cards" id="lp-' + i + '"></div></div>'
     ).join("");
     setView(

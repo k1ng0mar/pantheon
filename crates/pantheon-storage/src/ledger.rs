@@ -191,7 +191,11 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::BrowserActivity { run_id, .. }
         | Event::ScheduledTaskFailed { run_id, .. }
         | Event::ScheduledTaskRecovered { run_id, .. }
-        | Event::TodosUpdated { run_id, .. } => run_id,
+        | Event::TodosUpdated { run_id, .. }
+        | Event::UiContent { run_id, .. }
+        | Event::UiUpdated { run_id, .. }
+        | Event::UiActionRequested { run_id, .. }
+        | Event::UiActionSubmitted { run_id, .. } => run_id,
     }
 }
 
@@ -1872,6 +1876,22 @@ fn describe(ev: &Event) -> String {
                 .filter(|i| i.status == pantheon_api::todo::TodoStatus::Completed)
                 .count();
             format!("todos updated: {done}/{} done", items.len())
+        }
+        Event::UiContent { ui_id, .. } => {
+            format!("UI content published: {ui_id}")
+        }
+        Event::UiUpdated {
+            ui_id, revision, ..
+        } => {
+            format!("UI content revised: {ui_id} (rev {revision})")
+        }
+        Event::UiActionRequested { ui_id, .. } => {
+            format!("UI action requested: {ui_id}")
+        }
+        Event::UiActionSubmitted {
+            ui_id, action_id, ..
+        } => {
+            format!("UI action submitted: {ui_id}#{action_id}")
         }
         Event::ApprovalGranted { scope, .. } => format!("approval granted: {scope}"),
         Event::ApprovalDenied { scope, .. } => format!("approval denied: {scope}"),
