@@ -320,6 +320,7 @@ fn boot() -> (u16, String, tempfile::TempDir) {
         bind_all: false,
         on_approval: None,
         send_locks: Default::default(),
+        ui_action_locks: Default::default(),
         turn_children: Default::default(),
         // Scripted worker + no judge: spawns never leave the process.
         swarm: std::sync::Arc::new(pantheon_runtime::swarm_exec::SwarmOrchestrator::new(

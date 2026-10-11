@@ -73,9 +73,13 @@ session lock so concurrent same-nonce submissions execute at most once.
   width-aware. Forms fill via the composer (`F`), secrets masked.
   Approvals: `a`/`y` approve, `d`/`n` deny.
 - **Dashboard**: `renderUi()` in `assets/app.js` renders the document
-  subset (table, chart, metrics, form read-only, tasks, progress,
-  diff, approval read-only). All strings escaped; no raw HTML.
-  Interactive submission from the dashboard is future work.
+  subset (table, chart, metrics, form, tasks, progress, diff,
+  approval). All strings escaped; no raw HTML. Forms render real
+  inputs (text/number/boolean/select/secret), approval cards render
+  working approve/deny buttons; submissions go to
+  `POST /api/runs/:id/ui-action`, which delegates to
+  `Session::submit_ui_action` — the dashboard performs no action
+  validation of its own.
 - **Gateway**: `UiFrameKind::Component` carries the document JSON;
   text channels get a summary line via `format_text`.
 - **Capability negotiation**: `tui_caps()` declares the TUI's

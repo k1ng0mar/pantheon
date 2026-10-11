@@ -516,6 +516,7 @@ mod tests {
             bind_all: false,
             on_approval: None,
             send_locks: Default::default(),
+            ui_action_locks: Default::default(),
             turn_children: Default::default(),
             swarm: crate::swarm::orchestrator_for(&data_dir),
         }

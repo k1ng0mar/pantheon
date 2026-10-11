@@ -972,8 +972,20 @@ code.inline {
 .ui-code pre { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; font-size: 12px; }
 .ui-ref { margin: 4px 0; }
 .ui-form { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
-.ui-field label { font-weight: 600; font-size: 12px; display: block; }
-.ui-actions { display: flex; gap: 8px; margin-top: 6px; }
+.ui-field label { font-weight: 600; font-size: 12px; display: block; margin-bottom: 2px; }
+.ui-field input[type="text"], .ui-field input[type="number"], .ui-field input[type="password"], .ui-field textarea, .ui-field select {
+  width: 100%; max-width: 420px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--fg); font-size: 13px;
+}
+.ui-field textarea { min-height: 64px; resize: vertical; }
+.ui-field input:focus, .ui-field textarea:focus, .ui-field select:focus {
+  outline: 2px solid var(--accent, #4d7cfe); outline-offset: 1px;
+}
+.ui-actions { display: flex; gap: 8px; margin-top: 6px; align-items: center; flex-wrap: wrap; }
+.ui-status { font-size: 12px; }
+.ui-status[data-s="submitting"] { color: var(--faint); }
+.ui-status[data-s="success"] { color: var(--ok, #2ea043); }
+.ui-status[data-s="error"] { color: var(--err, #f85149); }
 .ui-tasks { display: flex; flex-direction: column; gap: 3px; }
 .ui-task { font-size: 13px; }
 .ui-progress { display: flex; flex-direction: column; gap: 4px; }

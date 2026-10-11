@@ -1202,7 +1202,7 @@ pub fn prune(app: &App, req: &Request, run_id: &str) -> Response {
 }
 
 /// Non-empty replay or a ledger error, mapped to the shared responses.
-fn known_run(app: &App, run_id: &str) -> Result<(), Response> {
+pub(crate) fn known_run(app: &App, run_id: &str) -> Result<(), Response> {
     let ledger = ledger(app)?;
     match ledger.replay(run_id) {
         Ok(e) if !e.is_empty() => Ok(()),
