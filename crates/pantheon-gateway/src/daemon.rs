@@ -601,6 +601,7 @@ impl ChannelDaemon {
                             text: msg.text.clone(),
                             interrupt: false,
                             genui: None,
+                            component: None,
                         },
                     };
                     match channel.send(envelope) {

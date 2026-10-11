@@ -23,5 +23,6 @@ pub mod session_search_tools;
 pub mod skill_tools;
 pub mod todo_tools;
 pub mod tools;
+pub mod ui_tool;
 pub mod vault_tools;
 pub mod verdict_tool;

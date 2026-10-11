@@ -137,6 +137,7 @@ fn text_envelope(thread_id: &str, text: &str) -> ChannelEnvelope {
             text: text.to_string(),
             interrupt: false,
             genui: None,
+            component: None,
         },
     }
 }
@@ -601,6 +602,7 @@ fn telegram_approval_request_keeps_buttons_even_with_voice_on() {
             text: "scope".to_string(),
             interrupt: true,
             genui: None,
+            component: None,
         },
     };
     channel.send(envelope).expect("send");

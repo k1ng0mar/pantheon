@@ -12,6 +12,7 @@ pub fn encode_frame(frame: &UiFrame) -> String {
         crate::stream::UiFrameKind::State => "state",
         crate::stream::UiFrameKind::Approval => "approval",
         crate::stream::UiFrameKind::GenUi => "genui",
+        crate::stream::UiFrameKind::Component => "component",
     };
     let data = serde_json::to_string(frame).unwrap_or_else(|_| "{}".into());
     format!("id: {}\nevent: {kind}\ndata: {data}\n\n", frame.id)

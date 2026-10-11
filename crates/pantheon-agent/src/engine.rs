@@ -161,6 +161,12 @@ pub enum LoopOutcome {
         question: String,
         options: Vec<String>,
     },
+    /// The agent published a UI document containing an approval card
+    /// (see `pantheon_api::ui`). The turn parks; the host resolves it
+    /// through `Session::submit_ui_action` and the resumed turn sees the
+    /// decision as the `render_ui` tool result. `call_id` ties the
+    /// decision back to the exact call.
+    AwaitingUiAction { ui_id: String, call_id: String },
     /// The user interrupted the run. Distinct from Denied and from a
     /// provider error: the work was abandoned on purpose, and the run
     /// stays resumable. `reason` is the short human cause.
