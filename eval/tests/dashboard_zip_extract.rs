@@ -21,6 +21,7 @@ fn test_app(dir: &std::path::Path) -> App {
         bind_all: false,
         on_approval: None,
         send_locks: Default::default(),
+        ui_action_locks: Default::default(),
         turn_children: Default::default(),
         swarm: std::sync::Arc::new(pantheon_runtime::swarm_exec::SwarmOrchestrator::new(
             std::sync::Arc::new(pantheon_runtime::swarm_exec::ScriptedWorker::new()),

@@ -92,6 +92,7 @@ fn cmd_dashboard(args: &[String]) {
             bind_all,
             on_approval: Some(crate::agui::approval_callback()),
             send_locks: Default::default(),
+            ui_action_locks: Default::default(),
             turn_children: Default::default(),
             swarm: pantheon_dashboard::swarm::orchestrator_for(&dir),
         },

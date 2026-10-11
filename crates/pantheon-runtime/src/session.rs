@@ -7655,8 +7655,7 @@ mod delegate_tool_tests {
         let err = session.submit_ui_action(run_id, &sub).expect_err("gated");
         assert_eq!(err.code, "UI_TOOL_DENIED");
         assert!(
-            err.cause.contains("needs operator approval")
-                && err.cause.contains("approval card"),
+            err.cause.contains("needs operator approval") && err.cause.contains("approval card"),
             "actionable denial: {}",
             err.cause
         );
