@@ -116,6 +116,20 @@ pub struct Budget {
     /// Default 5. `0` disables the cap (unbounded retries), which is
     /// deliberately opt-in.
     pub max_consecutive_tool_failures: u32,
+    /// Inject a one-time warning after this many consecutive failed tool
+    /// calls, before `max_consecutive_tool_failures` terminates the run.
+    ///
+    /// The warning is a system message telling the model to diagnose the
+    /// failure, correct invalid arguments, and change approach. It fires
+    /// at most once per failure streak; any successful tool call resets
+    /// both the streak and the warning state. The warning never extends
+    /// the run past the termination cap and does not itself count as a
+    /// tool call.
+    ///
+    /// Must be less than `max_consecutive_tool_failures` to have any
+    /// effect. `0` disables the warning. Default 3 (with the default cap
+    /// of 5, the model gets one warning two failures before termination).
+    pub warn_consecutive_tool_failures: u32,
 }
 
 impl Default for Budget {
@@ -127,6 +141,7 @@ impl Default for Budget {
             max_delegate_depth: 2,
             allow_child_spawn: true,
             max_consecutive_tool_failures: 5,
+            warn_consecutive_tool_failures: 3,
         }
     }
 }

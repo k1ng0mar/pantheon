@@ -430,6 +430,7 @@ fn investigate_real(input: &InvestigateInput) -> HealVerdict {
         max_delegate_depth: 0,
         allow_child_spawn: false,
         max_consecutive_tool_failures: 5,
+        warn_consecutive_tool_failures: 3,
     });
 
     let history_line = match input.stats {

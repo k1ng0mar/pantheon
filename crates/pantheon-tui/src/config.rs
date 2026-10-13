@@ -104,6 +104,10 @@ pub fn resolve_budget_section(s: &BudgetSection) -> pantheon_agent::Budget {
         // Not `nz`: `0` is a meaningful value here (explicitly disable the
         // cap), so only an absent key falls back to the default.
         max_consecutive_tool_failures: s.max_consecutive_tool_failures.unwrap_or(5),
+        // No config key for the warning threshold (out of scope for the
+        // nudge patch); the default pairs with the default cap. The
+        // predicate suppresses the warning when warn_at >= cap.
+        warn_consecutive_tool_failures: 3,
     }
 }
 

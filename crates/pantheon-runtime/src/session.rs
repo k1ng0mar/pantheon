@@ -39,6 +39,30 @@ use pantheon_tools::memory_tools::{
 use pantheon_tools::safewrite_tools::register_safewrite;
 use pantheon_tools::session_search_tools::{register_session_search, SessionSearchOptions};
 
+/// Pure predicate for the consecutive-failure warning.
+///
+/// Returns true when a warning should be injected: the warning threshold is
+/// non-zero and reached, no warning has fired for this streak yet, the
+/// termination cap is active, and the warning threshold is strictly below
+/// the cap (so the warning always precedes termination).
+///
+/// This is a free function (not a method) so the threshold relationship can
+/// be unit-tested without constructing a Session.
+fn should_warn_consecutive_failures(
+    warn_at: u32,
+    cap: u32,
+    tool_failures: u32,
+    already_warned: bool,
+) -> bool {
+    if warn_at == 0 || already_warned || tool_failures < warn_at {
+        return false;
+    }
+    if cap == 0 || warn_at >= cap {
+        return false;
+    }
+    true
+}
+
 /// What `publish_ui_batch` returns: consumed call indices + an optional
 /// park outcome for approval cards.
 type UiBatchOutcome = Option<(Vec<usize>, Option<LoopOutcome>)>;
@@ -3812,8 +3836,14 @@ impl Session {
         let system_prompt = format!("{RUNTIME_IDENTITY}\n\n{system_prompt}");
         // Todo planning: the `todo` tool keeps multi-step work honest.
         // The guidance rides in the system prompt (built, not stored) so
-        // it is always present, whether or not a list exists yet.
-        let system_prompt = format!("{system_prompt}\n\n{TODO_SYSTEM_GUIDANCE}");
+        // it is always present, whether or not a list exists yet. Only
+        // include it when the tool is actually registered (ToolGroup::Tasks
+        // on); otherwise the model is told to use a tool that doesn't exist.
+        let system_prompt = if self.tools_on(pantheon_api::config::ToolGroup::Tasks) {
+            format!("{system_prompt}\n\n{TODO_SYSTEM_GUIDANCE}")
+        } else {
+            system_prompt
+        };
         // Nightly persona overlay: approved persona proposals (evals +
         // replay + explicit human approval - `decide(approve = true)` is
         // the only writer to the persona namespace) shape the preamble
@@ -4228,6 +4258,9 @@ impl Session {
         // turn is exactly the pathology this cap exists to stop. A
         // successful call resets it to zero.
         let mut tool_failures: u32 = 0;
+        // Whether the consecutive-failure warning has been emitted for the
+        // current streak. Reset alongside tool_failures on any success.
+        let mut failure_warned: bool = false;
         let outcome = match self.drive(
             &loop_,
             &chain,
@@ -4243,6 +4276,7 @@ impl Session {
             },
             &mut tool_calls_used,
             &mut tool_failures,
+            &mut failure_warned,
             &watchdog,
             &ledger_poison,
         ) {
@@ -4636,6 +4670,61 @@ impl Session {
     // identity, turn, tools, counters, watchdog, ledger health). A struct
     // here would only move the same fields behind another name at the two
     // call sites.
+    /// Check whether the consecutive-failure warning should fire, and inject
+    /// it if so. Returns true if a warning was injected.
+    ///
+    /// The warning is a system message pushed to `messages`, visible to the
+    /// model on its next turn. It fires at most once per failure streak:
+    /// `failure_warned` tracks whether the current streak has been warned.
+    /// A successful tool call must reset both the counter and this flag
+    /// (done by the caller).
+    ///
+    /// The warning never fires when it would be pointless: if the warning
+    /// threshold is 0 (disabled), if it is >= the termination cap (no room
+    /// for a warning before termination), or if the termination cap itself
+    /// is 0 (unbounded retries — the streak is unbounded by design).
+    ///
+    /// Provider note: `Message::system` is the established harness-
+    /// authoritative voice (see `assemble_transcript`). Anthropic request
+    /// construction hoists all system rows into the top-level `system`
+    /// parameter, so the warning loses its chronological position there
+    /// (it reads as an instruction, not a mid-conversation nudge);
+    /// OpenAI-style providers keep it in order. The warning text is
+    /// self-contained ("your last several tool calls have failed...") and
+    /// the failures remain visible chronologically, so the model can
+    /// correlate them on either provider. A user-role message would
+    /// impersonate the user; an assistant-role message would impersonate
+    /// the model — system is the correct role for harness guidance.
+    fn maybe_warn_consecutive_failures(
+        &self,
+        loop_: &AgentLoop,
+        messages: &mut Vec<Message>,
+        run_id: &str,
+        tool_failures: u32,
+        failure_warned: &mut bool,
+    ) -> Result<bool, PantheonError> {
+        if !should_warn_consecutive_failures(
+            loop_.budget.warn_consecutive_tool_failures,
+            loop_.budget.max_consecutive_tool_failures,
+            tool_failures,
+            *failure_warned,
+        ) {
+            return Ok(false);
+        }
+        let warning = Message::system(
+            "Warning: your last several tool calls have failed consecutively. \
+             Diagnose the failure before retrying: check the error messages, \
+             correct any invalid arguments, and consider a different approach \
+             or tool. The run will terminate if failures continue.",
+        );
+        messages.push(warning.clone());
+        self.supervisor.emit(Event::ToolMessage {
+            run_id: run_id.into(),
+            message: warning,
+        })?;
+        *failure_warned = true;
+        Ok(true)
+    }
     #[allow(clippy::too_many_arguments)]
     fn drive(
         &self,
@@ -4649,6 +4738,7 @@ impl Session {
         approvals: &Approvals,
         tool_calls_used: &mut u32,
         tool_failures: &mut u32,
+        failure_warned: &mut bool,
         watchdog: &std::sync::Mutex<TurnWatchdog>,
         ledger_poison: &LedgerPoison,
     ) -> Result<LoopOutcome, PantheonError> {
@@ -4967,6 +5057,7 @@ impl Session {
                         *tool_failures += 1;
                     } else {
                         *tool_failures = 0;
+                        *failure_warned = false;
                     }
                     // Counted like any executed call: the whole-run budget
                     // seeds from the ledger's ToolCompleted rows, so the
@@ -4998,6 +5089,17 @@ impl Session {
                             cap: "max_consecutive_tool_failures",
                         });
                     }
+                    // Nudge before termination: warn once per streak so the
+                    // model can diagnose and change approach. The warning is
+                    // a system message; it does not count as a tool call and
+                    // does not extend the run past the cap above.
+                    self.maybe_warn_consecutive_failures(
+                        loop_,
+                        messages,
+                        run_id,
+                        *tool_failures,
+                        failure_warned,
+                    )?;
                 }
             }
         }
@@ -5276,6 +5378,7 @@ impl Session {
                         *tool_failures += 1;
                     } else {
                         *tool_failures = 0;
+                        *failure_warned = false;
                     }
                     let cap = loop_.budget.max_consecutive_tool_failures;
                     if cap > 0 && *tool_failures >= cap {
@@ -5317,6 +5420,21 @@ impl Session {
                         tool: call.name.clone(),
                         provenance: Provenance::untrusted(&call.name),
                     })?;
+                    // Nudge before termination: warn once per streak so the
+                    // model can diagnose and change approach. Injected after
+                    // the failed result is recorded, so the transcript order
+                    // is [tool result, warning] and the per-call event
+                    // sequence (ToolOutput -> ToolMessage -> ToolCompleted)
+                    // is preserved. The warning is a system message; it does
+                    // not count as a tool call and does not extend the run
+                    // past the cap above.
+                    self.maybe_warn_consecutive_failures(
+                        loop_,
+                        messages,
+                        run_id,
+                        *tool_failures,
+                        failure_warned,
+                    )?;
                 }
                 self.drive(
                     loop_,
@@ -5333,6 +5451,7 @@ impl Session {
                     },
                     tool_calls_used,
                     tool_failures,
+                    failure_warned,
                     watchdog,
                     ledger_poison,
                 )
@@ -8562,6 +8681,225 @@ mod delegate_tool_tests {
                 }
             }
             other => panic!("expected Ui, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod consecutive_failure_warning_tests {
+    use super::should_warn_consecutive_failures;
+    use pantheon_agent::Budget;
+
+    #[test]
+    fn warns_at_threshold_before_cap() {
+        // Default budget: warn at 3, cap at 5.
+        let b = Budget::default();
+        assert_eq!(b.warn_consecutive_tool_failures, 3);
+        assert_eq!(b.max_consecutive_tool_failures, 5);
+        // Below threshold: no warning.
+        assert!(!should_warn_consecutive_failures(3, 5, 0, false));
+        assert!(!should_warn_consecutive_failures(3, 5, 1, false));
+        assert!(!should_warn_consecutive_failures(3, 5, 2, false));
+        // At threshold: warn.
+        assert!(should_warn_consecutive_failures(3, 5, 3, false));
+        // Above threshold but below cap: still warn (if not already warned).
+        assert!(should_warn_consecutive_failures(3, 5, 4, false));
+    }
+
+    #[test]
+    fn warns_exactly_once_per_streak() {
+        // Already warned: no second warning even as failures accumulate.
+        assert!(!should_warn_consecutive_failures(3, 5, 3, true));
+        assert!(!should_warn_consecutive_failures(3, 5, 4, true));
+    }
+
+    #[test]
+    fn warning_disabled_when_threshold_zero() {
+        assert!(!should_warn_consecutive_failures(0, 5, 3, false));
+        assert!(!should_warn_consecutive_failures(0, 5, 4, false));
+        assert!(!should_warn_consecutive_failures(0, 5, 5, false));
+    }
+
+    #[test]
+    fn warning_disabled_when_cap_zero() {
+        // Unbounded retries: warnings are tied to the cap being active.
+        assert!(!should_warn_consecutive_failures(3, 0, 3, false));
+        assert!(!should_warn_consecutive_failures(3, 0, 10, false));
+    }
+
+    #[test]
+    fn warning_disabled_when_threshold_at_or_above_cap() {
+        // warn_at >= cap: the warning would fire at or after termination.
+        assert!(!should_warn_consecutive_failures(5, 5, 5, false));
+        assert!(!should_warn_consecutive_failures(6, 5, 6, false));
+        assert!(!should_warn_consecutive_failures(10, 5, 10, false));
+    }
+
+    #[test]
+    fn warning_threshold_boundary() {
+        // warn_at = cap - 1: warning fires exactly one failure before cap.
+        assert!(should_warn_consecutive_failures(4, 5, 4, false));
+        assert!(!should_warn_consecutive_failures(4, 5, 3, false));
+    }
+
+    #[test]
+    fn success_resets_streak_allowing_future_warning() {
+        // After a success, the caller resets tool_failures=0 and
+        // failure_warned=false, so a new streak can warn again.
+        // Simulate: first streak warned at 3, then success resets.
+        assert!(should_warn_consecutive_failures(3, 5, 3, false));
+        // After reset (failures=0, warned=false), no warning yet.
+        assert!(!should_warn_consecutive_failures(3, 5, 0, false));
+        // New streak reaches threshold: warns again.
+        assert!(should_warn_consecutive_failures(3, 5, 3, false));
+    }
+
+    // Integration test for the actual injection helper, using the real
+    // Session and small deterministic mocks for the AgentLoop traits.
+    //
+    // Note: `maybe_warn_consecutive_failures` emits via the Session's own
+    // supervisor (created in `Session::new`), not the loop's `sink`, so
+    // these tests assert on the observable `messages` vector and the
+    // `warned` flag. Event emission is covered by the supervisor's own
+    // tests; here we verify no error is returned from the emit path.
+    mod helper_tests {
+        use super::super::*;
+        use pantheon_api::message::Role;
+        use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy, ReasoningLevel};
+
+        struct VecSink;
+        impl pantheon_agent::EventSink for VecSink {
+            fn emit(&self, _event: Event) {}
+        }
+
+        struct NoopRunner;
+        impl pantheon_agent::ToolRunner for NoopRunner {
+            fn run(&self, _name: &str, _args: &str) -> Result<String, PantheonError> {
+                Ok(String::new())
+            }
+        }
+
+        fn test_session() -> (Session, tempfile::TempDir) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let session = Session::new(
+                dir.path().to_path_buf(),
+                Policy::coder(),
+                ModelPolicy {
+                    reasoning_budget: None,
+                    reasoning: ReasoningLevel::default(),
+                    default: DefaultModel {
+                        provider: "local".into(),
+                        model: "default".into(),
+                    },
+                    fallbacks: FallbackChain { fallbacks: vec![] },
+                    auxiliaries: vec![],
+                },
+                SecretsBroker::from_system_env(),
+            )
+            .expect("session");
+            (session, dir)
+        }
+
+        fn test_loop<'a>(
+            sink: &'a VecSink,
+            runner: &'a NoopRunner,
+            warn_at: u32,
+            cap: u32,
+        ) -> AgentLoop<'a> {
+            AgentLoop {
+                run_id: "test-run".into(),
+                policy: Policy::coder(),
+                budget: Budget {
+                    warn_consecutive_tool_failures: warn_at,
+                    max_consecutive_tool_failures: cap,
+                    ..Budget::default()
+                },
+                sink,
+                tools: runner,
+                spawner: None,
+                swarm_ctx: None,
+                judge: None,
+                cancel: None,
+                depth: 0,
+            }
+        }
+
+        #[test]
+        fn helper_injects_system_message() {
+            let (session, _dir) = test_session();
+            let sink = VecSink;
+            let runner = NoopRunner;
+            let loop_ = test_loop(&sink, &runner, 3, 5);
+
+            let mut messages = vec![Message::user("do the thing")];
+            let mut warned = false;
+
+            // Below threshold: no injection.
+            let fired = session
+                .maybe_warn_consecutive_failures(&loop_, &mut messages, "r1", 2, &mut warned)
+                .expect("helper");
+            assert!(!fired);
+            assert!(!warned);
+            assert_eq!(messages.len(), 1);
+
+            // At threshold: injects.
+            let fired = session
+                .maybe_warn_consecutive_failures(&loop_, &mut messages, "r1", 3, &mut warned)
+                .expect("helper");
+            assert!(fired);
+            assert!(warned);
+            assert_eq!(messages.len(), 2);
+            // Warning is appended after existing messages.
+            assert_eq!(messages[0].role, Role::User);
+            assert_eq!(messages[1].role, Role::System);
+            let text = &messages[1].content;
+            assert!(
+                text.contains("failed consecutively"),
+                "warning text: {text}"
+            );
+            assert!(text.contains("invalid arguments"), "warning text: {text}");
+            assert!(text.contains("different approach"), "warning text: {text}");
+        }
+
+        #[test]
+        fn helper_suppresses_second_warning_in_streak() {
+            let (session, _dir) = test_session();
+            let sink = VecSink;
+            let runner = NoopRunner;
+            let loop_ = test_loop(&sink, &runner, 3, 5);
+
+            let mut messages = Vec::new();
+            let mut warned = false;
+
+            // First warning fires.
+            assert!(session
+                .maybe_warn_consecutive_failures(&loop_, &mut messages, "r1", 3, &mut warned)
+                .expect("helper"));
+            assert_eq!(messages.len(), 1);
+
+            // Streak continues (4 < cap 5): no second warning.
+            let fired = session
+                .maybe_warn_consecutive_failures(&loop_, &mut messages, "r1", 4, &mut warned)
+                .expect("helper");
+            assert!(!fired);
+            assert_eq!(messages.len(), 1, "no duplicate warning");
+        }
+
+        #[test]
+        fn helper_respects_disabled_threshold() {
+            let (session, _dir) = test_session();
+            let sink = VecSink;
+            let runner = NoopRunner;
+            // Warning disabled (0), cap active.
+            let loop_ = test_loop(&sink, &runner, 0, 5);
+
+            let mut messages = Vec::new();
+            let mut warned = false;
+            let fired = session
+                .maybe_warn_consecutive_failures(&loop_, &mut messages, "r1", 4, &mut warned)
+                .expect("helper");
+            assert!(!fired);
+            assert!(messages.is_empty());
         }
     }
 }
