@@ -3409,7 +3409,6 @@ impl Session {
             websearch: n_websearch,
             mcp: n_mcp,
             computer: n_computer,
-            code_intel: n_codeintel,
         };
         (reg, counts)
     }
