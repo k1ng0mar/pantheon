@@ -314,6 +314,19 @@ timeout_secs = 30                        # per-request timeout; default 30
 
 [mcp.servers.codebase-memory.env]
 INDEX_DIR = "/home/umar/.cache/codebase-index"
+
+# Reverse-engineer binaries with REA (https://github.com/morluto/rea).
+# Requires Node.js 22+; no Ghidra/Hopper/IDA needed for built-in analysis.
+# Tools project as mcp_rea_<tool>. Read-only static analysis
+# (binary_overview, analyze_function, batch_decompile, ...) runs under
+# the filesystem.read capability; dynamic tracing tools (trace_*,
+# capture_*, observe_*) execute the analyzed binary and park for your
+# approval before each run. MCP server processes are not sandboxed.
+[mcp.servers.rea]
+transport = "stdio"
+command = "npx"
+args = ["rea-agents", "mcp"]
+timeout_secs = 60                        # decompilation can be slow; default 30
 ```
 
 Transports: `stdio` spawns `command` with `args` (the child inherits only `PATH` plus the declared env); `sse` opens a Server-Sent Events stream and posts messages to the discovered endpoint; `http` speaks streamable HTTP (POST, with SSE fallback). Remote transports reconnect with backoff; a server that keeps failing is left alone until its backoff expires.
