@@ -1612,9 +1612,7 @@ timeout_ms = 5000
         "setup" => {
             crate::setup::cmd_setup(&args);
         }
-        "cloudflare" => {
-            crate::cloudflare_verb::cmd_cloudflare(&args);
-        }
+
         "update" => {
             crate::update::cmd_update(&args);
         }

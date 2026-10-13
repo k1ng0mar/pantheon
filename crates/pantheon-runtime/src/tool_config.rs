@@ -149,17 +149,6 @@ impl Default for CamofoxToolConfig {
     }
 }
 
-/// Runtime config for the Cloudflare integration.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CloudflareToolConfig {
-    /// Master switch. `false` = the shell tool never injects a
-    /// Cloudflare token into any child, whatever the broker holds.
-    pub enabled: bool,
-    /// Secret name holding the API token, resolved via the secrets
-    /// broker at call time. `None` = `CLOUDFLARE_API_TOKEN`.
-    pub api_token_secret: Option<String>,
-}
-
 /// Runtime config for the `web_search` tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebsearchToolConfig {
@@ -324,7 +313,6 @@ impl ToolEnablement {
         e.video_analysis = get(s.video_analysis);
         e.computer_use = get(s.computer_use);
         e.plugins = get(s.plugins);
-        e.code_intel = get(s.code_intel);
         e
     }
 
@@ -347,7 +335,7 @@ impl ToolEnablement {
             G::VideoAnalysis => self.video_analysis,
             G::ComputerUse => self.computer_use,
             G::Plugins => self.plugins,
-            G::CodeIntel => self.code_intel,
+            G::CodeIntel => true,
         }
     }
 }

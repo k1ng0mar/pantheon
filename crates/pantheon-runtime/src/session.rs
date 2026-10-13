@@ -7,8 +7,7 @@
 use crate::agent_runtime::AgentRuntime;
 use crate::operation::{run_tool_operation, ToolOperationAdapter};
 use crate::tool_config::{
-    BrowserToolConfig, CloudflareToolConfig, ComputerToolConfig, McpToolConfig, ToolEnablement,
-    WebsearchToolConfig,
+    BrowserToolConfig, ComputerToolConfig, McpToolConfig, ToolEnablement, WebsearchToolConfig,
 };
 use crate::watchdog::TurnWatchdog;
 use crate::{ObserverGuard, RunLeaseGuard, Supervisor};
@@ -50,14 +49,10 @@ use pantheon_tools::session_search_tools::{register_session_search, SessionSearc
 /// be unit-tested without constructing a Session.
 fn should_warn_consecutive_failures(
     warn_at: u32,
-    cap: u32,
     tool_failures: u32,
     already_warned: bool,
 ) -> bool {
     if warn_at == 0 || already_warned || tool_failures < warn_at {
-        return false;
-    }
-    if cap == 0 || warn_at >= cap {
         return false;
     }
     true
@@ -1435,11 +1430,6 @@ pub struct Session {
     /// registration time; secrets resolve then, so a resolved key never
     /// sits in session state.
     pub browser_config: Mutex<BrowserToolConfig>,
-    /// Cloudflare integration knobs (`[cloudflare]` in config.toml).
-    /// `enabled` gates token injection; the token itself is resolved
-    /// through the secrets broker at call time and never stored here.
-    /// Same resolve-at-registration rule as browser_config.
-    pub cloudflare_config: Mutex<CloudflareToolConfig>,
     /// Web-search knobs (`[websearch]` in config.toml). Same
     /// resolve-at-registration rule as browser_config.
     pub websearch_config: Mutex<WebsearchToolConfig>,
@@ -1628,7 +1618,6 @@ impl Session {
             temporal: Mutex::new(pantheon_api::temporal::TemporalConfig::default()),
             current_run: Mutex::new(String::new()),
             browser_config: Mutex::new(BrowserToolConfig::default()),
-            cloudflare_config: Mutex::new(CloudflareToolConfig::default()),
             websearch_config: Mutex::new(WebsearchToolConfig::default()),
             mcp_config: Mutex::new(McpToolConfig::default()),
             computer_config: Mutex::new(ComputerToolConfig::default()),
@@ -2217,37 +2206,6 @@ impl Session {
     pub fn set_browser_config(&self, cfg: BrowserToolConfig) {
         if let Ok(mut b) = self.browser_config.lock() {
             *b = cfg;
-        }
-    }
-
-    /// Cloudflare integration config (`[cloudflare]` in config.toml).
-    /// Same call pattern as [`Session::set_browser_config`].
-    pub fn set_cloudflare_config(&self, cfg: CloudflareToolConfig) {
-        if let Ok(mut c) = self.cloudflare_config.lock() {
-            *c = cfg;
-        }
-    }
-
-    /// Snapshot for the shell tool's env hook. `None` = integration off
-    /// or the token is not resolvable this call: the child runs tokenless
-    /// and cf surfaces its own auth error.
-    pub fn cloudflare_child_env(&self) -> Vec<(String, String)> {
-        let cfg = match self.cloudflare_config.lock() {
-            Ok(c) => c.clone(),
-            Err(_) => return Vec::new(),
-        };
-        if !cfg.enabled {
-            return Vec::new();
-        }
-        let name = cfg
-            .api_token_secret
-            .clone()
-            .unwrap_or_else(|| "CLOUDFLARE_API_TOKEN".to_string());
-        match self.secrets.resolve(&name) {
-            Ok(Some(v)) if !v.expose().is_empty() => {
-                vec![(name, v.expose().to_owned())]
-            }
-            _ => Vec::new(),
         }
     }
 
@@ -2995,21 +2953,10 @@ impl Session {
                 // and only when `[cloudflare].enabled`. Empty = no
                 // injection (the integration is off or unresolvable).
                 shell_env_hook: Some(std::sync::Arc::new({
-                    let session_self = self as *const Session as usize;
+                    let _session_self = self as *const Session as usize;
                     move |cmd: &str| {
-                        // SAFETY: the hook lives inside the Session that
-                        // created it and the Arc keeps the session alive
-                        // for the registry's lifetime. The runtime never
-                        // moves the Session (it is held in an Arc).
-                        // Dereferencing here re-reads the live config +
-                        // broker state, so a `[cloudflare].enabled`
-                        // flip applies from the next call.
-                        // (See cloudflare_child_env: pure read paths.)
-                        let s = unsafe { &*(session_self as *const Session) };
-                        if !pantheon_exec::cloudflare::is_cf_command(cmd) {
-                            return Vec::new();
-                        }
-                        s.cloudflare_child_env()
+                        let _ = cmd;
+                        Vec::new()
                     }
                 })),
             },
@@ -3396,7 +3343,6 @@ impl Session {
         }
         let counts = ToolCounts {
             builtin: n_builtin,
-            code_intel: n_codeintel,
 
             skills: n_skills - n_builtin - n_codeintel,
             vault: n_vault - n_skills,
@@ -3407,6 +3353,7 @@ impl Session {
             websearch: n_websearch,
             mcp: n_mcp,
             computer: n_computer,
+            code_intel: n_codeintel,
         };
         (reg, counts)
     }
@@ -4708,7 +4655,6 @@ impl Session {
     ) -> Result<bool, PantheonError> {
         if !should_warn_consecutive_failures(
             loop_.budget.warn_consecutive_tool_failures,
-            loop_.budget.max_consecutive_tool_failures,
             tool_failures,
             *failure_warned,
         ) {
@@ -5087,16 +5033,6 @@ impl Session {
                         tool: tc.name.clone(),
                         provenance: Provenance::untrusted(&tc.name),
                     })?;
-                    let cap = loop_.budget.max_consecutive_tool_failures;
-                    if cap > 0 && *tool_failures >= cap {
-                        return Ok(LoopOutcome::BudgetExhausted {
-                            cap: "max_consecutive_tool_failures",
-                        });
-                    }
-                    // Nudge before termination: warn once per streak so the
-                    // model can diagnose and change approach. The warning is
-                    // a system message; it does not count as a tool call and
-                    // does not extend the run past the cap above.
                     self.maybe_warn_consecutive_failures(
                         loop_,
                         messages,
@@ -5383,26 +5319,6 @@ impl Session {
                     } else {
                         *tool_failures = 0;
                         *failure_warned = false;
-                    }
-                    let cap = loop_.budget.max_consecutive_tool_failures;
-                    if cap > 0 && *tool_failures >= cap {
-                        self.supervisor.emit(Event::ToolOutput {
-                            run_id: run_id.into(),
-                            call_id: r.id.clone(),
-                            tool: call.name.clone(),
-                            truncated: false,
-                            provenance: Provenance::untrusted(&call.name),
-                        })?;
-                        let tool_msg = Message::tool(r.id.clone(), out)
-                            .with_provenance(Provenance::untrusted(&call.name));
-                        messages.push(tool_msg.clone());
-                        self.supervisor.emit(Event::ToolMessage {
-                            run_id: run_id.into(),
-                            message: tool_msg,
-                        })?;
-                        return Ok(LoopOutcome::BudgetExhausted {
-                            cap: "max_consecutive_tool_failures",
-                        });
                     }
                     self.supervisor.emit(Event::ToolOutput {
                         run_id: run_id.into(),
@@ -8699,51 +8615,36 @@ mod consecutive_failure_warning_tests {
         // Default budget: warn at 3, cap at 5.
         let b = Budget::default();
         assert_eq!(b.warn_consecutive_tool_failures, 3);
-        assert_eq!(b.max_consecutive_tool_failures, 5);
+
         // Below threshold: no warning.
-        assert!(!should_warn_consecutive_failures(3, 5, 0, false));
-        assert!(!should_warn_consecutive_failures(3, 5, 1, false));
-        assert!(!should_warn_consecutive_failures(3, 5, 2, false));
+        assert!(!should_warn_consecutive_failures(3, 0, false));
+        assert!(!should_warn_consecutive_failures(3, 1, false));
+        assert!(!should_warn_consecutive_failures(3, 2, false));
         // At threshold: warn.
-        assert!(should_warn_consecutive_failures(3, 5, 3, false));
+        assert!(should_warn_consecutive_failures(3, 3, false));
         // Above threshold but below cap: still warn (if not already warned).
-        assert!(should_warn_consecutive_failures(3, 5, 4, false));
+        assert!(should_warn_consecutive_failures(3, 4, false));
     }
 
     #[test]
     fn warns_exactly_once_per_streak() {
         // Already warned: no second warning even as failures accumulate.
-        assert!(!should_warn_consecutive_failures(3, 5, 3, true));
-        assert!(!should_warn_consecutive_failures(3, 5, 4, true));
+        assert!(!should_warn_consecutive_failures(3, 3, true));
+        assert!(!should_warn_consecutive_failures(3, 4, true));
     }
 
     #[test]
     fn warning_disabled_when_threshold_zero() {
-        assert!(!should_warn_consecutive_failures(0, 5, 3, false));
-        assert!(!should_warn_consecutive_failures(0, 5, 4, false));
-        assert!(!should_warn_consecutive_failures(0, 5, 5, false));
-    }
-
-    #[test]
-    fn warning_disabled_when_cap_zero() {
-        // Unbounded retries: warnings are tied to the cap being active.
-        assert!(!should_warn_consecutive_failures(3, 0, 3, false));
-        assert!(!should_warn_consecutive_failures(3, 0, 10, false));
-    }
-
-    #[test]
-    fn warning_disabled_when_threshold_at_or_above_cap() {
-        // warn_at >= cap: the warning would fire at or after termination.
-        assert!(!should_warn_consecutive_failures(5, 5, 5, false));
-        assert!(!should_warn_consecutive_failures(6, 5, 6, false));
-        assert!(!should_warn_consecutive_failures(10, 5, 10, false));
+        assert!(!should_warn_consecutive_failures(0, 3, false));
+        assert!(!should_warn_consecutive_failures(0, 4, false));
+        assert!(!should_warn_consecutive_failures(0, 5, false));
     }
 
     #[test]
     fn warning_threshold_boundary() {
         // warn_at = cap - 1: warning fires exactly one failure before cap.
-        assert!(should_warn_consecutive_failures(4, 5, 4, false));
-        assert!(!should_warn_consecutive_failures(4, 5, 3, false));
+        assert!(should_warn_consecutive_failures(4, 4, false));
+        assert!(!should_warn_consecutive_failures(4, 3, false));
     }
 
     #[test]
@@ -8751,11 +8652,11 @@ mod consecutive_failure_warning_tests {
         // After a success, the caller resets tool_failures=0 and
         // failure_warned=false, so a new streak can warn again.
         // Simulate: first streak warned at 3, then success resets.
-        assert!(should_warn_consecutive_failures(3, 5, 3, false));
+        assert!(should_warn_consecutive_failures(3, 3, false));
         // After reset (failures=0, warned=false), no warning yet.
-        assert!(!should_warn_consecutive_failures(3, 5, 0, false));
+        assert!(!should_warn_consecutive_failures(3, 0, false));
         // New streak reaches threshold: warns again.
-        assert!(should_warn_consecutive_failures(3, 5, 3, false));
+        assert!(should_warn_consecutive_failures(3, 3, false));
     }
 
     // Integration test for the actual injection helper, using the real
@@ -8808,14 +8709,13 @@ mod consecutive_failure_warning_tests {
             sink: &'a VecSink,
             runner: &'a NoopRunner,
             warn_at: u32,
-            cap: u32,
+            _cap: u32,
         ) -> AgentLoop<'a> {
             AgentLoop {
                 run_id: "test-run".into(),
                 policy: Policy::coder(),
                 budget: Budget {
                     warn_consecutive_tool_failures: warn_at,
-                    max_consecutive_tool_failures: cap,
                     ..Budget::default()
                 },
                 sink,

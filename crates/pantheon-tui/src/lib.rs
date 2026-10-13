@@ -64,7 +64,7 @@ pub use widget::{Confirm, Item, Key, KeyResult, MultiSelect, Select, Selection, 
 mod agui;
 mod args;
 mod backup;
-pub mod cloudflare_verb;
+
 pub mod config;
 mod config_schema;
 mod config_verb;

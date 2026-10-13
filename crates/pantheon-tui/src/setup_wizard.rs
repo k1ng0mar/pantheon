@@ -1562,7 +1562,6 @@ mod tests {
             "github",
             "google-workspace",
             "chrome-devtools",
-            "cloudflare",
             "playwright",
             "notion",
         ] {
