@@ -57,6 +57,7 @@ pub mod swarm;
 mod system;
 mod teams;
 mod templates;
+mod ui_actions;
 /// Public so the turn child and integration tests can resolve upload ids
 /// to vision image parts without going through HTTP.
 pub mod uploads;
@@ -86,6 +87,14 @@ pub struct App {
     /// with RT_LEASE_BUSY.
     pub send_locks:
         std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
+    /// Per-run mutexes serializing UI-action submissions (`ui-actions`
+    /// route). The dashboard opens a fresh `Session` per request, so the
+    /// runtime's per-`Session` `ui_action_lock` does not span requests:
+    /// without this, two concurrent dashboard POSTs with the same nonce
+    /// could both pass the replay check and both execute. Hold the guard
+    /// across the whole `submit_ui_action` call.
+    pub ui_action_locks:
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
     /// PIDs of turn children spawned by this dashboard process
     /// (`run --taskID <run_id> --say ...`), keyed by run id. Powers
     /// `POST /api/runs/:id/kill`: a PID recorded here is the only
@@ -110,6 +119,20 @@ impl App {
             .clone()
     }
 
+    /// The serialization lock for one run's UI-action submissions.
+    /// Cheap to clone; hold the guard across the whole
+    /// `submit_ui_action` call so concurrent dashboard requests
+    /// serialize through the runtime's check → audit → dispatch
+    /// sequence.
+    pub fn ui_action_guard(&self, run_id: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+        let mut map = self
+            .ui_action_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        map.entry(run_id.to_string())
+            .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
+            .clone()
+    }
     /// Record the turn child just spawned for `run_id`.
     pub fn register_turn_child(&self, run_id: &str, pid: u32) {
         let mut map = self.turn_children.lock().unwrap_or_else(|e| e.into_inner());
@@ -451,6 +474,7 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("POST", "runs", id, "project", "") => runs::set_project(app, id, req),
         ("GET", "projects", "", "", "") => runs::projects(app),
         ("POST", "runs", id, "input", "") => runs::answer_input(app, id, req),
+        ("POST", "runs", id, "ui-action", "") => ui_actions::submit_ui_action(app, id, req),
         // No catch-all here: only the exact run path prunes. Any other
         // DELETE under /api/runs/:id (e.g. a typoed sub-resource) falls
         // through to 404 instead of deleting the whole run.
@@ -709,6 +733,7 @@ pub fn run(cfg: DashboardConfig) -> ! {
         bind_all,
         on_approval: cfg.on_approval,
         send_locks: Default::default(),
+        ui_action_locks: Default::default(),
         turn_children: Default::default(),
         swarm: swarm::orchestrator_for(&cfg.data_dir),
     };
@@ -800,6 +825,7 @@ mod route_tests {
             bind_all: false,
             on_approval: None,
             send_locks: Default::default(),
+            ui_action_locks: Default::default(),
             turn_children: Default::default(),
             swarm: swarm::orchestrator_for(&dir),
         };
@@ -1104,6 +1130,8 @@ mod route_tests {
             ("PATCH", "/api/runs/run-1/%71ueue/0"),
             ("DELETE", "//api/runs/run-1"),
             ("DELETE", "/%61pi/runs/run-1"),
+            ("POST", "/api/runs/run-1/ui-action"),
+            ("POST", "/%61pi/runs/run-1/ui-action"),
         ] {
             assert_eq!(
                 group(method, path),

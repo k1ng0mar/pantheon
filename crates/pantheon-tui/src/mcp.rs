@@ -421,6 +421,21 @@ fn approve(args: &[String]) {
     println!("server sees everything the agent can see. Secrets listed above resolve");
     println!("from your vault at launch time and are never printed.");
     println!();
+    // REA-specific disclosure: its tracing tools execute the analyzed
+    // binary. This is not implied by the general MCP warning above, and
+    // approval must not be mistaken for containment.
+    if name == pantheon_mcp::rea::REA_SERVER_NAME {
+        println!("SECURITY NOTICE — REA reverse-engineering tools:");
+        println!("  - Tracing tools (trace_*, capture_*, observe_*) EXECUTE the");
+        println!("    analyzed binary on this machine to observe its behavior.");
+        println!("  - MCP server processes currently run UNSANDBOXED with your");
+        println!("    user privileges. Approval does NOT provide process");
+        println!("    isolation or containment.");
+        println!("  - Each tracing call parks for your explicit approval before");
+        println!("    it runs, but approval of the call is not a sandbox.");
+        println!("  Only analyze software you trust, from sources you trust.");
+        println!();
+    }
     println!("The approval binds the server's name, its reported version, and a");
     println!("content hash of what would run. Any upgrade or change invalidates it");
     println!("and you will be asked again.");

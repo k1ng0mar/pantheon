@@ -528,6 +528,16 @@ fn detail_value(app: &App, run_id: &str) -> Result<serde_json::Value, Response> 
                 "type": "reasoning",
                 "content": redact(&t),
             }),
+            TranscriptItem::Ui {
+                ui_id,
+                revision,
+                document,
+            } => serde_json::json!({
+                "type": "ui",
+                "ui_id": ui_id,
+                "revision": revision,
+                "document": document,
+            }),
         })
         .collect();
     let timeline: Vec<serde_json::Value> = entries
@@ -1105,6 +1115,15 @@ pub fn export(app: &App, req: &Request, run_id: &str) -> Response {
                     TranscriptItem::Reasoning(t) => {
                         md.push_str(&format!("## Reasoning\n\n{}\n\n", redact(&t)));
                     }
+                    TranscriptItem::Ui {
+                        ui_id, document, ..
+                    } => {
+                        md.push_str(&format!(
+                            "## UI [{ui_id}] ({})\n\n{}\n\n",
+                            document.root.component.tag(),
+                            redact(&pantheon_api::ui::text_summary(&document.root))
+                        ));
+                    }
                 }
             }
             Response::download(
@@ -1127,6 +1146,16 @@ pub fn export(app: &App, req: &Request, run_id: &str) -> Response {
                     TranscriptItem::Reasoning(t) => serde_json::json!({
                         "type": "reasoning",
                         "content": redact(&t),
+                    }),
+                    TranscriptItem::Ui {
+                        ui_id,
+                        revision,
+                        document,
+                    } => serde_json::json!({
+                        "type": "ui",
+                        "ui_id": ui_id,
+                        "revision": revision,
+                        "document": document,
                     }),
                 })
                 .collect();
@@ -1173,7 +1202,7 @@ pub fn prune(app: &App, req: &Request, run_id: &str) -> Response {
 }
 
 /// Non-empty replay or a ledger error, mapped to the shared responses.
-fn known_run(app: &App, run_id: &str) -> Result<(), Response> {
+pub(crate) fn known_run(app: &App, run_id: &str) -> Result<(), Response> {
     let ledger = ledger(app)?;
     match ledger.replay(run_id) {
         Ok(e) if !e.is_empty() => Ok(()),

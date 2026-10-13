@@ -194,6 +194,50 @@ pub enum Event {
         run_id: String,
         items: Vec<TodoItem>,
     },
+    /// The agent published structured UI content (see `crate::ui`). The
+    /// document rides the event so transcript observers (TUI block,
+    /// gateway frames) see it as it happens; the ledger persists it like
+    /// any other event, so resume and replay rebuild it. Clients render
+    /// it through their own native renderers after [`crate::ui::degrade_for`].
+    UiContent {
+        run_id: String,
+        turn_id: String,
+        ui_id: String,
+        document: crate::ui::UiDocument,
+    },
+    /// A revision of a published document (same `ui_id`, bumped
+    /// `revision`). The full replacement document rides the event - no
+    /// JSON-patch dialect to version. Clients apply it only when
+    /// `revision` exceeds the one they hold, so out-of-order replays
+    /// cannot regress a live view.
+    UiUpdated {
+        run_id: String,
+        ui_id: String,
+        revision: u64,
+        document: crate::ui::UiDocument,
+    },
+    /// The runtime parked the turn on a UI approval card (see
+    /// `crate::ui::ApprovalCard`): the operator's approve/deny decision
+    /// is awaited, exactly like `UserInputRequested` parks for `ask_user`.
+    /// Resolved by [`Event::UiActionSubmitted`].
+    UiActionRequested {
+        run_id: String,
+        ui_id: String,
+        call_id: String,
+    },
+    /// The operator submitted a UI action. This is the audit record and
+    /// the idempotency key: `(ui_id, nonce)` replays are rejected.
+    /// Params are deliberately NOT persisted (form `Secret` fields must
+    /// never land in the ledger); the triggered tool call gets its own
+    /// `ToolStarted` event like any other execution.
+    UiActionSubmitted {
+        run_id: String,
+        ui_id: String,
+        revision: u64,
+        node_id: String,
+        action_id: String,
+        nonce: String,
+    },
     /// Assistant turn persisted so resume rebuilds messages without a model call.
     AssistantMessage {
         run_id: String,
@@ -564,6 +608,52 @@ impl Event {
             Event::TodosUpdated { run_id: _, items } => Event::TodosUpdated {
                 run_id: run_id.to_string(),
                 items,
+            },
+            Event::UiContent {
+                run_id: _,
+                turn_id,
+                ui_id,
+                document,
+            } => Event::UiContent {
+                run_id: run_id.to_string(),
+                turn_id,
+                ui_id,
+                document,
+            },
+            Event::UiUpdated {
+                run_id: _,
+                ui_id,
+                revision,
+                document,
+            } => Event::UiUpdated {
+                run_id: run_id.to_string(),
+                ui_id,
+                revision,
+                document,
+            },
+            Event::UiActionRequested {
+                run_id: _,
+                ui_id,
+                call_id,
+            } => Event::UiActionRequested {
+                run_id: run_id.to_string(),
+                ui_id,
+                call_id,
+            },
+            Event::UiActionSubmitted {
+                run_id: _,
+                ui_id,
+                revision,
+                node_id,
+                action_id,
+                nonce,
+            } => Event::UiActionSubmitted {
+                run_id: run_id.to_string(),
+                ui_id,
+                revision,
+                node_id,
+                action_id,
+                nonce,
             },
             Event::AssistantMessage { run_id: _, message } => Event::AssistantMessage {
                 run_id: run_id.to_string(),

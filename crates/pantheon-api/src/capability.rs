@@ -35,6 +35,14 @@ pub enum Capability {
     /// policies mark this Approval so the run loop parks for a human
     /// before it acts.
     ComputerUse,
+    /// Executing or dynamically tracing a binary under analysis (REA's
+    /// `trace_*` / `capture_*` tools). Its own capability because running
+    /// the analyzed program is categorically different from reading it:
+    /// the target may be untrusted or malicious, and MCP server processes
+    /// currently run unsandboxed with the user's privileges. Default
+    /// policies mark this Approval so the run loop parks for a human
+    /// before it acts. Mirrors the ComputerUse split precedent.
+    BinaryTrace,
     MessageSend(String),
     MemoryRead,
     MemoryWrite,
@@ -96,6 +104,7 @@ impl Capability {
             Capability::BrowserAct => "browser.act".to_string(),
             Capability::BrowserFillLogin => "browser.fill_login".to_string(),
             Capability::ComputerUse => "computer.use".to_string(),
+            Capability::BinaryTrace => "binary.trace".to_string(),
             Capability::MessageSend(_) => "message.send".to_string(),
             Capability::MemoryRead => "memory.read".to_string(),
             Capability::MemoryWrite => "memory.write".to_string(),
@@ -124,6 +133,7 @@ impl Capability {
             "browser.act" => Capability::BrowserAct,
             "browser.fill_login" => Capability::BrowserFillLogin,
             "computer.use" => Capability::ComputerUse,
+            "binary.trace" => Capability::BinaryTrace,
             "memory.read" => Capability::MemoryRead,
             "memory.write" => Capability::MemoryWrite,
             "memory.confirm" => Capability::MemoryConfirm,
@@ -165,8 +175,9 @@ impl Policy {
     /// Coder preset: read/write/exec/git, push needs approval. Browser and
     /// outbound network are allowed (web access is a core assistant
     /// capability); autonomous low-confidence browser acts, filling saved
-    /// login credentials, desktop control through the CUA driver, and
-    /// enabling bundled plugins need approval.
+    /// login credentials, desktop control through the CUA driver,
+    /// executing/tracing binaries under analysis, and enabling bundled
+    /// plugins need approval.
     /// The `todo` planning tool is allowed: it only mutates the run's own
     /// in-memory task list, persisted to the ledger as a transcript event.
     pub fn coder() -> Self {
@@ -182,6 +193,7 @@ impl Policy {
             .approval(Capability::BrowserAct)
             .approval(Capability::BrowserFillLogin)
             .approval(Capability::ComputerUse)
+            .approval(Capability::BinaryTrace)
             .approval(Capability::PluginEnable)
             .approval(Capability::McpEnable)
             // Cloudflare CLI: reads ride ShellExecute; anything that
@@ -230,5 +242,59 @@ impl Policy {
             .filter(|(_, d)| **d == Decision::Approval)
             .map(|(c, _)| c.clone())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod binary_trace_tests {
+    use super::*;
+
+    #[test]
+    fn token_round_trip() {
+        assert_eq!(Capability::BinaryTrace.token(), "binary.trace");
+        assert_eq!(
+            Capability::from_token("binary.trace"),
+            Capability::BinaryTrace
+        );
+    }
+
+    #[test]
+    fn coder_policy_parks_binary_trace() {
+        // Tracing tools must park for human approval under the default
+        // coder policy, following the ComputerUse precedent.
+        assert_eq!(
+            Policy::coder().check(&Capability::BinaryTrace),
+            Decision::Approval
+        );
+        assert!(Policy::coder()
+            .approval_caps()
+            .contains(&Capability::BinaryTrace));
+    }
+
+    #[test]
+    fn coder_with_memory_inherits_parking() {
+        assert_eq!(
+            Policy::coder_with_memory().check(&Capability::BinaryTrace),
+            Decision::Approval
+        );
+    }
+
+    #[test]
+    fn default_policy_denies_unlisted() {
+        // Fail-closed: a policy that never mentions BinaryTrace denies it.
+        assert_eq!(
+            Policy::default().check(&Capability::BinaryTrace),
+            Decision::Deny
+        );
+    }
+
+    #[test]
+    fn static_analysis_capability_is_allowed() {
+        // REA static tools project as FilesystemRead: read-only, no new
+        // privilege beyond the agent's own file reads.
+        assert_eq!(
+            Policy::coder().check(&Capability::FilesystemRead),
+            Decision::Allow
+        );
     }
 }

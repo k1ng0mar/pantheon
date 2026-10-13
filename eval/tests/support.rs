@@ -60,6 +60,7 @@ pub fn boot() -> Dash {
         bind_all: false,
         on_approval: None,
         send_locks: Default::default(),
+        ui_action_locks: Default::default(),
         turn_children: Default::default(),
         swarm: swarm.clone(),
     };

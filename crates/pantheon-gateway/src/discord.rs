@@ -374,6 +374,7 @@ impl DiscordChannel {
                 text: text.to_string(),
                 interrupt: false,
                 genui: None,
+                component: None,
             },
         };
         for payload in self.payloads(&envelope) {

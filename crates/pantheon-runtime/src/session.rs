@@ -22,6 +22,7 @@ use pantheon_api::model::{ModelPolicy, TitleGenerator};
 use pantheon_api::permission_mode::PermissionMode;
 use pantheon_api::provenance::Provenance;
 use pantheon_api::todo::{TodoItem, TodoList};
+use pantheon_api::ui::{ActionKind, UiActionSubmission, UiDocument, RENDER_UI_TOOL_NAME};
 use pantheon_exec::supervisor::PluginSupervisor;
 use pantheon_extensions::ExtensionManager;
 use pantheon_memory::{recall_via as mem_recall, LayerKind, MemoryBackend};
@@ -37,10 +38,39 @@ use pantheon_tools::memory_tools::{
 };
 use pantheon_tools::safewrite_tools::register_safewrite;
 use pantheon_tools::session_search_tools::{register_session_search, SessionSearchOptions};
+
+/// Pure predicate for the consecutive-failure warning.
+///
+/// Returns true when a warning should be injected: the warning threshold is
+/// non-zero and reached, no warning has fired for this streak yet, the
+/// termination cap is active, and the warning threshold is strictly below
+/// the cap (so the warning always precedes termination).
+///
+/// This is a free function (not a method) so the threshold relationship can
+/// be unit-tested without constructing a Session.
+fn should_warn_consecutive_failures(
+    warn_at: u32,
+    cap: u32,
+    tool_failures: u32,
+    already_warned: bool,
+) -> bool {
+    if warn_at == 0 || already_warned || tool_failures < warn_at {
+        return false;
+    }
+    if cap == 0 || warn_at >= cap {
+        return false;
+    }
+    true
+}
+
+/// What `publish_ui_batch` returns: consumed call indices + an optional
+/// park outcome for approval cards.
+type UiBatchOutcome = Option<(Vec<usize>, Option<LoopOutcome>)>;
 use pantheon_tools::todo_tools::{
     register_todo_tool, TodoToolEvent, TodoToolOptions, TodoToolSink, TODO_SYSTEM_GUIDANCE,
 };
 use pantheon_tools::tools::ToolRegistry;
+use pantheon_tools::ui_tool::register_ui_tool;
 use pantheon_tools::verdict_tool::register_verdict_tool;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -1246,6 +1276,20 @@ fn map_child_outcome(
                 "",
             ))
         }
+        pantheon_agent::LoopOutcome::AwaitingUiAction { ui_id, .. } => {
+            Err(PantheonError::new(
+                "SWARM_CHILD_UI_ACTION",
+                Layer::Agent,
+                false,
+                format!(
+                    "child agent {agent} parked on a UI decision for {ui_id} \
+                     (child run {child_run}); decide it against the child's run, \
+                     then delegate again"
+                ),
+                "decide the child's UI action against the child's run id",
+                "",
+            ))
+        }
         pantheon_agent::LoopOutcome::Delegated { agent: sub } => Err(PantheonError::new(
             "SWARM_CHILD_DELEGATED",
             Layer::Agent,
@@ -1443,6 +1487,13 @@ pub struct Session {
     /// Absent (never set) = compiled defaults: model-default child
     /// budget, [`pantheon_api::config::DEFAULT_MAX_DELEGATIONS`].
     budget_section: Mutex<Option<pantheon_api::config::BudgetSection>>,
+    /// Serializes UI action submissions. The replay-check -> audit-emit
+    /// -> dispatch sequence in `submit_ui_action` must be atomic:
+    /// without this, two concurrent submissions with the same nonce
+    /// could both pass the replay check and execute the tool twice.
+    /// Held across dispatch (UI actions are human-paced; serialization
+    /// is the correct exactly-once posture here).
+    ui_action_lock: Mutex<()>,
 }
 
 /// How many tools each registration phase of
@@ -1590,6 +1641,7 @@ impl Session {
             skills_cache: Mutex::new(Vec::new()),
             stt_section: Mutex::new(None),
             budget_section: Mutex::new(None),
+            ui_action_lock: Mutex::new(()),
         };
         // Sandbox enforcement for MCP server spawns: the session's
         // capability policy gates every stdio connect through
@@ -2048,6 +2100,106 @@ impl Session {
                 g.items = items;
             }
         }
+        // Crash recovery: an approval decision recorded in the ledger
+        // but never settled (process died between UiActionSubmitted and
+        // the ToolCompleted for the parked render_ui call) would leave
+        // the turn stranded. Completing the deterministic settlement
+        // here makes the ledger consistent on resume. Fail-open.
+        let _ = self.settle_unsettled_ui_approvals(run_id);
+    }
+
+    /// Complete UI approval settlements lost to a crash: for every
+    /// parked `render_ui` call with a recorded approval decision but
+    /// no `ToolCompleted`, emit the decision as the tool result and
+    /// close the call. Deterministic from the ledger; safe to re-run.
+    /// Returns the number of calls settled.
+    pub fn settle_unsettled_ui_approvals(&self, run_id: &str) -> Result<usize, PantheonError> {
+        let _guard = self
+            .ui_action_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let entries = self.supervisor.replay(run_id)?;
+        // (ui_id, call_id) parks, in request order.
+        let mut requested: Vec<(String, String)> = Vec::new();
+        // (ui_id, revision, node_id, action_id) submissions.
+        let mut submissions: Vec<(String, u64, String, String)> = Vec::new();
+        let mut completed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for e in &entries {
+            match &e.event {
+                Event::UiActionRequested { ui_id, call_id, .. } => {
+                    requested.push((ui_id.clone(), call_id.clone()));
+                }
+                Event::UiActionSubmitted {
+                    ui_id,
+                    revision,
+                    node_id,
+                    action_id,
+                    ..
+                } => {
+                    submissions.push((
+                        ui_id.clone(),
+                        *revision,
+                        node_id.clone(),
+                        action_id.clone(),
+                    ));
+                }
+                Event::ToolCompleted { call_id, .. } => {
+                    completed.insert(call_id.clone());
+                }
+                _ => {}
+            }
+        }
+        let mut settled = 0;
+        for (ui_id, call_id) in &requested {
+            if completed.contains(call_id) {
+                continue;
+            }
+            // The decision for this document, if any, classified at its
+            // pinned revision.
+            let mut decision: Option<bool> = None;
+            for (s_ui, s_rev, s_node, s_action) in &submissions {
+                if s_ui != ui_id {
+                    continue;
+                }
+                let approved = match self.ui_document_at_revision(run_id, s_ui, *s_rev)? {
+                    Some(doc) => match doc.find_action(s_node, s_action) {
+                        Some(a) => match &a.kind {
+                            ActionKind::Approval { decision } => Some(matches!(
+                                decision,
+                                pantheon_api::ui::ApprovalDecision::Grant
+                            )),
+                            _ => None,
+                        },
+                        None => None,
+                    },
+                    None => None,
+                };
+                if approved.is_some() {
+                    decision = approved;
+                    break;
+                }
+            }
+            let Some(approved) = decision else { continue };
+            let text = if approved {
+                "operator approved".to_string()
+            } else {
+                "operator denied".to_string()
+            };
+            let msg = Message::tool(call_id, text).with_provenance(Provenance::system("pantheon"));
+            self.supervisor.emit(Event::ToolMessage {
+                run_id: run_id.into(),
+                message: msg,
+            })?;
+            self.supervisor.emit(Event::ToolCompleted {
+                run_id: run_id.into(),
+                call_id: call_id.clone(),
+                tool: RENDER_UI_TOOL_NAME.into(),
+                provenance: Provenance::system("pantheon"),
+            })?;
+            completed.insert(call_id.clone());
+            settled += 1;
+        }
+        Ok(settled)
     }
 
     /// The session's current todo list, shared with the `todo` tool.
@@ -2870,6 +3022,11 @@ impl Session {
         // read-only by default (open/diagnostics/list), with the mutating
         // paths (restore/delete) gated on GitWrite. Registered under the
         // same gate as the group; off = none of the tools appear.
+        // Structured UI: the agent-facing `render_ui` capture tool. Always
+        // registered - rendering is not a privileged operation (morally a
+        // fancier assistant message). The turn loop intercepts calls
+        // before gating; the registry handler only validates.
+        register_ui_tool(&mut reg);
         let n_builtin = reg.names().len();
         if tools.code_intel {
             let undo_state = self.supervisor.data_dir().join("git_undo");
@@ -3679,8 +3836,14 @@ impl Session {
         let system_prompt = format!("{RUNTIME_IDENTITY}\n\n{system_prompt}");
         // Todo planning: the `todo` tool keeps multi-step work honest.
         // The guidance rides in the system prompt (built, not stored) so
-        // it is always present, whether or not a list exists yet.
-        let system_prompt = format!("{system_prompt}\n\n{TODO_SYSTEM_GUIDANCE}");
+        // it is always present, whether or not a list exists yet. Only
+        // include it when the tool is actually registered (ToolGroup::Tasks
+        // on); otherwise the model is told to use a tool that doesn't exist.
+        let system_prompt = if self.tools_on(pantheon_api::config::ToolGroup::Tasks) {
+            format!("{system_prompt}\n\n{TODO_SYSTEM_GUIDANCE}")
+        } else {
+            system_prompt
+        };
         // Nightly persona overlay: approved persona proposals (evals +
         // replay + explicit human approval - `decide(approve = true)` is
         // the only writer to the persona namespace) shape the preamble
@@ -4095,6 +4258,9 @@ impl Session {
         // turn is exactly the pathology this cap exists to stop. A
         // successful call resets it to zero.
         let mut tool_failures: u32 = 0;
+        // Whether the consecutive-failure warning has been emitted for the
+        // current streak. Reset alongside tool_failures on any success.
+        let mut failure_warned: bool = false;
         let outcome = match self.drive(
             &loop_,
             &chain,
@@ -4110,6 +4276,7 @@ impl Session {
             },
             &mut tool_calls_used,
             &mut tool_failures,
+            &mut failure_warned,
             &watchdog,
             &ledger_poison,
         ) {
@@ -4229,6 +4396,18 @@ impl Session {
                 self.supervisor.emit(Event::RunProgress {
                     run_id: run_id.into(),
                     detail: next,
+                })?;
+                // Parked, not failed.
+            }
+            LoopOutcome::AwaitingUiAction { ui_id, .. } => {
+                // Parked on a UI approval card, exactly like an approval
+                // park: the UiActionRequested event carries the ui_id and
+                // call id; this records the human-readable park note. The
+                // run resumes when the host submits the decision through
+                // `Session::submit_ui_action`.
+                self.supervisor.emit(Event::RunProgress {
+                    run_id: run_id.into(),
+                    detail: format!("run {run_id} is awaiting a UI decision on {ui_id}"),
                 })?;
                 // Parked, not failed.
             }
@@ -4491,6 +4670,61 @@ impl Session {
     // identity, turn, tools, counters, watchdog, ledger health). A struct
     // here would only move the same fields behind another name at the two
     // call sites.
+    /// Check whether the consecutive-failure warning should fire, and inject
+    /// it if so. Returns true if a warning was injected.
+    ///
+    /// The warning is a system message pushed to `messages`, visible to the
+    /// model on its next turn. It fires at most once per failure streak:
+    /// `failure_warned` tracks whether the current streak has been warned.
+    /// A successful tool call must reset both the counter and this flag
+    /// (done by the caller).
+    ///
+    /// The warning never fires when it would be pointless: if the warning
+    /// threshold is 0 (disabled), if it is >= the termination cap (no room
+    /// for a warning before termination), or if the termination cap itself
+    /// is 0 (unbounded retries — the streak is unbounded by design).
+    ///
+    /// Provider note: `Message::system` is the established harness-
+    /// authoritative voice (see `assemble_transcript`). Anthropic request
+    /// construction hoists all system rows into the top-level `system`
+    /// parameter, so the warning loses its chronological position there
+    /// (it reads as an instruction, not a mid-conversation nudge);
+    /// OpenAI-style providers keep it in order. The warning text is
+    /// self-contained ("your last several tool calls have failed...") and
+    /// the failures remain visible chronologically, so the model can
+    /// correlate them on either provider. A user-role message would
+    /// impersonate the user; an assistant-role message would impersonate
+    /// the model — system is the correct role for harness guidance.
+    fn maybe_warn_consecutive_failures(
+        &self,
+        loop_: &AgentLoop,
+        messages: &mut Vec<Message>,
+        run_id: &str,
+        tool_failures: u32,
+        failure_warned: &mut bool,
+    ) -> Result<bool, PantheonError> {
+        if !should_warn_consecutive_failures(
+            loop_.budget.warn_consecutive_tool_failures,
+            loop_.budget.max_consecutive_tool_failures,
+            tool_failures,
+            *failure_warned,
+        ) {
+            return Ok(false);
+        }
+        let warning = Message::system(
+            "Warning: your last several tool calls have failed consecutively. \
+             Diagnose the failure before retrying: check the error messages, \
+             correct any invalid arguments, and consider a different approach \
+             or tool. The run will terminate if failures continue.",
+        );
+        messages.push(warning.clone());
+        self.supervisor.emit(Event::ToolMessage {
+            run_id: run_id.into(),
+            message: warning,
+        })?;
+        *failure_warned = true;
+        Ok(true)
+    }
     #[allow(clippy::too_many_arguments)]
     fn drive(
         &self,
@@ -4504,6 +4738,7 @@ impl Session {
         approvals: &Approvals,
         tool_calls_used: &mut u32,
         tool_failures: &mut u32,
+        failure_warned: &mut bool,
         watchdog: &std::sync::Mutex<TurnWatchdog>,
         ledger_poison: &LedgerPoison,
     ) -> Result<LoopOutcome, PantheonError> {
@@ -4822,6 +5057,7 @@ impl Session {
                         *tool_failures += 1;
                     } else {
                         *tool_failures = 0;
+                        *failure_warned = false;
                     }
                     // Counted like any executed call: the whole-run budget
                     // seeds from the ledger's ToolCompleted rows, so the
@@ -4853,6 +5089,17 @@ impl Session {
                             cap: "max_consecutive_tool_failures",
                         });
                     }
+                    // Nudge before termination: warn once per streak so the
+                    // model can diagnose and change approach. The warning is
+                    // a system message; it does not count as a tool call and
+                    // does not extend the run past the cap above.
+                    self.maybe_warn_consecutive_failures(
+                        loop_,
+                        messages,
+                        run_id,
+                        *tool_failures,
+                        failure_warned,
+                    )?;
                 }
             }
         }
@@ -4942,6 +5189,33 @@ impl Session {
                 if let Some(outcome) = self.park_ask_user_batch(run_id, &calls, &refs, messages)? {
                     return Ok(outcome);
                 }
+                // Structured UI: intercept `render_ui` before gating, like
+                // `ask_user`. Publishing is host-mediated: it never needs
+                // approval, never consumes tool budget, never executes.
+                // The publisher persists the assistant tool-call row for
+                // the whole batch (consumed calls included) and settles
+                // each consumed call; the batch below continues with only
+                // the surviving calls and must not push a second row.
+                let mut ui_published = false;
+                let (calls, refs) =
+                    match self.publish_ui_batch(run_id, turn_id, &calls, &refs, messages)? {
+                        None => (calls, refs),
+                        Some((consumed, park)) => {
+                            ui_published = true;
+                            let mut kept_calls = Vec::with_capacity(calls.len());
+                            let mut kept_refs = Vec::with_capacity(refs.len());
+                            for (i, (c, r)) in calls.into_iter().zip(refs).enumerate() {
+                                if !consumed.contains(&i) {
+                                    kept_calls.push(c);
+                                    kept_refs.push(r);
+                                }
+                            }
+                            if let Some(outcome) = park {
+                                return Ok(outcome);
+                            }
+                            (kept_calls, kept_refs)
+                        }
+                    };
                 // Plan mode: partition the batch BEFORE the budget check.
                 // A refused call is never executed and must not consume
                 // budget - otherwise a Plan-mode turn would burn the
@@ -4967,11 +5241,15 @@ impl Session {
                         cap: "max_tool_calls",
                     });
                 }
-                messages.push(Message::assistant_tool_calls(refs.clone()));
-                self.supervisor.emit(Event::AssistantMessage {
-                    run_id: run_id.into(),
-                    message: Message::assistant_tool_calls(refs.clone()),
-                })?;
+                // (When UI was published, the assistant row for the whole
+                // batch is already in `messages` and the ledger.)
+                if !ui_published {
+                    messages.push(Message::assistant_tool_calls(refs.clone()));
+                    self.supervisor.emit(Event::AssistantMessage {
+                        run_id: run_id.into(),
+                        message: Message::assistant_tool_calls(refs.clone()),
+                    })?;
+                }
                 // Refuse the mutating calls as tool results BEFORE the
                 // approval gate. The mode is read fresh per batch, so a
                 // Tab flip mid-turn applies from the next tool call; a
@@ -5100,6 +5378,7 @@ impl Session {
                         *tool_failures += 1;
                     } else {
                         *tool_failures = 0;
+                        *failure_warned = false;
                     }
                     let cap = loop_.budget.max_consecutive_tool_failures;
                     if cap > 0 && *tool_failures >= cap {
@@ -5141,6 +5420,21 @@ impl Session {
                         tool: call.name.clone(),
                         provenance: Provenance::untrusted(&call.name),
                     })?;
+                    // Nudge before termination: warn once per streak so the
+                    // model can diagnose and change approach. Injected after
+                    // the failed result is recorded, so the transcript order
+                    // is [tool result, warning] and the per-call event
+                    // sequence (ToolOutput -> ToolMessage -> ToolCompleted)
+                    // is preserved. The warning is a system message; it does
+                    // not count as a tool call and does not extend the run
+                    // past the cap above.
+                    self.maybe_warn_consecutive_failures(
+                        loop_,
+                        messages,
+                        run_id,
+                        *tool_failures,
+                        failure_warned,
+                    )?;
                 }
                 self.drive(
                     loop_,
@@ -5157,6 +5451,7 @@ impl Session {
                     },
                     tool_calls_used,
                     tool_failures,
+                    failure_warned,
                     watchdog,
                     ledger_poison,
                 )
@@ -5291,6 +5586,616 @@ impl Session {
         }
         Ok(None)
     }
+}
+
+impl Session {
+    /// Intercept `render_ui` calls before gating: publishing UI is
+    /// host-mediated, like `ask_user`. Each call is validated against the
+    /// UI protocol; valid documents become `Event::UiContent` (or
+    /// `Event::UiUpdated` for revisions) and settle with a success tool
+    /// result, invalid ones with a tool error the model can correct.
+    ///
+    /// Returns the indices of the consumed calls plus an optional park
+    /// outcome. Consumed calls must be removed from the batch before the
+    /// plan-mode partition: they never reach the registry, never consume
+    /// tool budget, and never need approval. When a published document
+    /// contains an approval card the turn parks (fail-closed: batched
+    /// siblings settle with refusals, exactly like `ask_user`).
+    fn publish_ui_batch(
+        &self,
+        run_id: &str,
+        turn_id: &str,
+        calls: &[pantheon_agent::ToolCall],
+        refs: &[ToolCallRef],
+        messages: &mut Vec<Message>,
+    ) -> Result<UiBatchOutcome, PantheonError> {
+        let ui_idx: Vec<usize> = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.name == RENDER_UI_TOOL_NAME)
+            .map(|(i, _)| i)
+            .collect();
+        if ui_idx.is_empty() {
+            return Ok(None);
+        }
+        // The assistant tool-call row covers the whole batch, consumed
+        // calls included, so every persisted call id keeps exactly one
+        // matching tool result at every ledger state.
+        messages.push(Message::assistant_tool_calls(refs.to_vec()));
+        self.supervisor.emit(Event::AssistantMessage {
+            run_id: run_id.into(),
+            message: Message::assistant_tool_calls(refs.to_vec()),
+        })?;
+        let mut park: Option<(String, String)> = None;
+        for &i in &ui_idx {
+            let call_id = refs[i].id.clone();
+            match self.publish_one_ui(run_id, turn_id, &calls[i].args) {
+                Ok((ui_id, revision, is_update, unknown)) => {
+                    // Approval cards park the turn: like `ask_user`, the
+                    // parked call is NOT settled here. The operator's
+                    // decision settles it later through `submit_ui_action`,
+                    // so the call keeps exactly one tool result at every
+                    // ledger state.
+                    let parks = if park.is_none() {
+                        self.latest_ui_document(run_id, &ui_id)
+                            .ok()
+                            .flatten()
+                            .map(|(doc, _)| doc.has_approval_card())
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+                    if parks {
+                        park = Some((ui_id, call_id));
+                        continue;
+                    }
+                    let mut text = if is_update {
+                        format!("ui updated: {ui_id} (rev {revision})")
+                    } else {
+                        format!("ui published: {ui_id}")
+                    };
+                    if !unknown.is_empty() {
+                        text.push_str(&format!(
+                            "; unknown components degraded: {}",
+                            unknown.join(", ")
+                        ));
+                    }
+                    self.emit_ui_tool_result(run_id, &call_id, &text, messages)?;
+                }
+                Err(e) => {
+                    self.emit_ui_tool_result(
+                        run_id,
+                        &call_id,
+                        &format!("ui publish failed: {} ({})", e.cause, e.code),
+                        messages,
+                    )?;
+                }
+            }
+        }
+        let park_outcome = if let Some((ui_id, call_id)) = park {
+            // Fail-closed mixed batch: siblings parked with render_ui
+            // would never execute, so settle them now with refusals.
+            for (j, sib) in refs.iter().enumerate() {
+                if ui_idx.contains(&j) {
+                    continue;
+                }
+                let refusal = Message::tool(
+                    sib.id.clone(),
+                    "not executed: render_ui published an approval card and parked the turn; \
+                     re-issue separately after the operator decides",
+                )
+                .with_provenance(Provenance::system("pantheon"));
+                messages.push(refusal.clone());
+                self.supervisor.emit(Event::ToolMessage {
+                    run_id: run_id.into(),
+                    message: refusal,
+                })?;
+            }
+            self.supervisor.emit(Event::UiActionRequested {
+                run_id: run_id.into(),
+                ui_id: ui_id.clone(),
+                call_id: call_id.clone(),
+            })?;
+            Some(LoopOutcome::AwaitingUiAction { ui_id, call_id })
+        } else {
+            None
+        };
+        Ok(Some((ui_idx, park_outcome)))
+    }
+
+    /// Settle one intercepted host-mediated call with a tool result row.
+    fn emit_ui_tool_result(
+        &self,
+        run_id: &str,
+        call_id: &str,
+        text: &str,
+        messages: &mut Vec<Message>,
+    ) -> Result<(), PantheonError> {
+        let msg = Message::tool(call_id, text).with_provenance(Provenance::system("pantheon"));
+        messages.push(msg.clone());
+        self.supervisor.emit(Event::ToolMessage {
+            run_id: run_id.into(),
+            message: msg,
+        })?;
+        self.supervisor.emit(Event::ToolCompleted {
+            run_id: run_id.into(),
+            call_id: call_id.into(),
+            tool: RENDER_UI_TOOL_NAME.into(),
+            provenance: Provenance::system("pantheon"),
+        })?;
+        Ok(())
+    }
+
+    /// Validate and publish one document. Returns
+    /// `(ui_id, revision, is_update, unknown_tags)`.
+    fn publish_one_ui(
+        &self,
+        run_id: &str,
+        turn_id: &str,
+        args: &str,
+    ) -> Result<(String, u64, bool, Vec<String>), PantheonError> {
+        let ui_err = |cause: String| {
+            PantheonError::new(
+                "UI_BAD_DOCUMENT",
+                Layer::Agent,
+                false,
+                cause,
+                "fix the document and call render_ui again",
+                "",
+            )
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| ui_err(format!("args are not JSON: {e}")))?;
+        let doc_value = v
+            .get("document")
+            .ok_or_else(|| ui_err("missing 'document' object".to_string()))?;
+        let (doc, unknown) =
+            UiDocument::from_value_lenient(doc_value).map_err(|e| ui_err(format!("{e}")))?;
+        doc.validate().map_err(|e| ui_err(format!("{e}")))?;
+        if let Some(ui_id) = v.get("ui_id").and_then(|u| u.as_str()) {
+            // Revision: the id must name a live document on this run.
+            match self.latest_ui_document(run_id, ui_id)? {
+                Some(_) => {
+                    let revision = self.ui_revision(run_id, ui_id)? + 1;
+                    self.supervisor.emit(Event::UiUpdated {
+                        run_id: run_id.into(),
+                        ui_id: ui_id.into(),
+                        revision,
+                        document: doc,
+                    })?;
+                    Ok((ui_id.to_string(), revision, true, unknown))
+                }
+                None => Err(ui_err(format!(
+                    "ui_id {ui_id:?} does not name a published document on this run"
+                ))),
+            }
+        } else {
+            let seq = self.ui_seq_for_turn(run_id, turn_id)?;
+            let ui_id = format!("{turn_id}-ui_{seq}");
+            self.supervisor.emit(Event::UiContent {
+                run_id: run_id.into(),
+                turn_id: turn_id.into(),
+                ui_id: ui_id.clone(),
+                document: doc,
+            })?;
+            Ok((ui_id, 0, false, unknown))
+        }
+    }
+
+    /// Latest document + revision for a ui_id, from the ledger. The
+    /// ledger is the registry: no parallel in-memory action table.
+    fn latest_ui_document(
+        &self,
+        run_id: &str,
+        ui_id: &str,
+    ) -> Result<Option<(UiDocument, u64)>, PantheonError> {
+        let entries = self.supervisor.replay(run_id)?;
+        let mut out: Option<(UiDocument, u64)> = None;
+        for e in &entries {
+            match &e.event {
+                Event::UiContent {
+                    ui_id: id,
+                    document,
+                    ..
+                } if id == ui_id => {
+                    out = Some((document.clone(), 0));
+                }
+                Event::UiUpdated {
+                    ui_id: id,
+                    revision,
+                    document,
+                    ..
+                } if id == ui_id => {
+                    out = Some((document.clone(), *revision));
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    /// Highest revision published for a ui_id (0 when only UiContent exists).
+    fn ui_revision(&self, run_id: &str, ui_id: &str) -> Result<u64, PantheonError> {
+        Ok(self
+            .latest_ui_document(run_id, ui_id)?
+            .map(|(_, r)| r)
+            .unwrap_or(0))
+    }
+
+    /// Next per-turn publication sequence: the count of UiContent rows
+    /// already emitted for this turn. Derived from the ledger, so a
+    /// resumed turn cannot collide with pre-restart ids.
+    fn ui_seq_for_turn(&self, run_id: &str, turn_id: &str) -> Result<u64, PantheonError> {
+        let entries = self.supervisor.replay(run_id)?;
+        Ok(entries
+            .iter()
+            .filter(|e| matches!(&e.event, Event::UiContent { turn_id: t, .. } if t == turn_id))
+            .count() as u64)
+    }
+
+    /// A parked UI approval the run is still waiting on, if any:
+    /// `(ui_id, call_id)`. A request is pending until an approval
+    /// DECISION resolves it. Form/tool submissions on the same document
+    /// do not clear the park: resolution is classified by the submitted
+    /// action's kind at its pinned revision, not by ui_id alone.
+    pub fn pending_ui_action(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<(String, String)>, PantheonError> {
+        let entries = self.supervisor.replay(run_id)?;
+        let mut requested: Vec<(String, String)> = Vec::new();
+        let mut submissions: Vec<(String, u64, String, String)> = Vec::new();
+        for e in &entries {
+            match &e.event {
+                Event::UiActionRequested { ui_id, call_id, .. } => {
+                    requested.push((ui_id.clone(), call_id.clone()));
+                }
+                Event::UiActionSubmitted {
+                    ui_id,
+                    revision,
+                    node_id,
+                    action_id,
+                    ..
+                } => {
+                    submissions.push((
+                        ui_id.clone(),
+                        *revision,
+                        node_id.clone(),
+                        action_id.clone(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let mut decided: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (ui_id, revision, node_id, action_id) in &submissions {
+            // Classify against the exact revision the submission
+            // targeted; a later revision may have redefined the action.
+            let is_decision = match self.ui_document_at_revision(run_id, ui_id, *revision)? {
+                Some(doc) => doc
+                    .find_action(node_id, action_id)
+                    .is_some_and(|a| matches!(a.kind, ActionKind::Approval { .. })),
+                None => false,
+            };
+            if is_decision {
+                decided.insert(ui_id.clone());
+            }
+        }
+        Ok(requested
+            .into_iter()
+            .rev()
+            .find(|(ui_id, _)| !decided.contains(ui_id)))
+    }
+
+    /// The document for a ui_id at an exact revision, from the ledger.
+    /// Revision 0 is the `UiContent`; later revisions are `UiUpdated`.
+    fn ui_document_at_revision(
+        &self,
+        run_id: &str,
+        ui_id: &str,
+        revision: u64,
+    ) -> Result<Option<UiDocument>, PantheonError> {
+        let entries = self.supervisor.replay(run_id)?;
+        for e in &entries {
+            match &e.event {
+                Event::UiContent {
+                    ui_id: id,
+                    document,
+                    ..
+                } if id == ui_id && revision == 0 => {
+                    return Ok(Some(document.clone()));
+                }
+                Event::UiUpdated {
+                    ui_id: id,
+                    revision: r,
+                    document,
+                    ..
+                } if id == ui_id && *r == revision => {
+                    return Ok(Some(document.clone()));
+                }
+                _ => {}
+            }
+        }
+        Ok(None)
+    }
+
+    /// Submit a UI action from a client. Validates the submission against
+    /// the published document, rejects replays, audits the attempt, and
+    /// dispatches:
+    ///
+    /// - `Approval`: the run must be parked on this card; records the
+    ///   decision and resumes the turn with it as the `render_ui` result.
+    /// - `Submit`/`Tool`: executes the bound tool through
+    ///   `execute_gated` - the registry's policy choke point. A document
+    ///   cannot invent tools (unknown names fail) and cannot escalate:
+    ///   anything the policy would not Allow is rejected, never bypassed.
+    /// - `Local`: rejected - local actions never reach the runtime.
+    ///
+    /// Params are validated but never persisted (form `Secret` fields must
+    /// not land in the ledger); the triggered tool call gets its own
+    /// `ToolStarted` event like any other execution.
+    pub fn submit_ui_action(
+        &self,
+        run_id: &str,
+        sub: &UiActionSubmission,
+    ) -> Result<UiActionOutcome, PantheonError> {
+        let deny = |code: &str, cause: String| {
+            PantheonError::new(
+                code,
+                Layer::Agent,
+                false,
+                cause,
+                "see the UI protocol docs",
+                "",
+            )
+        };
+        // Serialize the check -> emit -> dispatch sequence. Without
+        // this, two concurrent submissions (same or different nonces)
+        // could interleave: both pass the replay/park checks, then both
+        // execute. The lock makes the ledger the single source of truth
+        // for exactly-once.
+        let _guard = self
+            .ui_action_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (doc, latest_rev) = self
+            .latest_ui_document(run_id, &sub.ui_id)?
+            .ok_or_else(|| {
+                deny(
+                    "UI_UNKNOWN",
+                    format!("no published UI document {:?}", sub.ui_id),
+                )
+            })?;
+        // Revision pinning: the client acts on what it displayed. A
+        // submission against a superseded revision is rejected rather
+        // than executing a possibly-redefined action under the old
+        // display (TOCTOU between render and click).
+        if sub.revision != latest_rev {
+            return Err(deny(
+                "UI_STALE",
+                format!(
+                    "document {:?} is at revision {latest_rev}, action targeted revision {}; re-render and retry",
+                    sub.ui_id, sub.revision
+                ),
+            ));
+        }
+        sub.validate_against(&doc).map_err(|e| {
+            deny(
+                "UI_BAD_ACTION",
+                format!("invalid UI action submission: {e}"),
+            )
+        })?;
+        // Idempotency: (ui_id, nonce) replays are rejected. The audit
+        // event is the durable record; the ledger scan is the check.
+        let entries = self.supervisor.replay(run_id)?;
+        let replayed = entries.iter().any(|e| {
+            matches!(&e.event, Event::UiActionSubmitted { ui_id, nonce, .. }
+                if ui_id == &sub.ui_id && nonce == &sub.nonce)
+        });
+        if replayed {
+            return Err(deny(
+                "UI_REPLAY",
+                "this action was already submitted (nonce replay)".to_string(),
+            ));
+        }
+        let action = doc
+            .find_action(&sub.node_id, &sub.action_id)
+            .ok_or_else(|| deny("UI_UNKNOWN", "unknown action".to_string()))?;
+        // Approval park check BEFORE the audit event: emitting
+        // UiActionSubmitted resolves the park (pending_ui_action treats
+        // any submission for the document as resolution), so a stale
+        // decision must be rejected before it can corrupt park state.
+        // The captured call_id is reused below; the park cannot change
+        // under us (no awaits between here and dispatch).
+        let approval_call = if matches!(&action.kind, ActionKind::Approval { .. }) {
+            let (parked_ui, call_id) = self.pending_ui_action(run_id)?.ok_or_else(|| {
+                deny(
+                    "UI_STALE",
+                    "no pending UI approval for this document".to_string(),
+                )
+            })?;
+            if parked_ui != sub.ui_id {
+                return Err(deny(
+                    "UI_STALE",
+                    "this document is not the pending approval".to_string(),
+                ));
+            }
+            Some(call_id)
+        } else {
+            None
+        };
+        // Audit: every accepted attempt is recorded, whatever follows.
+        // The revision is recorded so park resolution can classify the
+        // submission against the exact document it targeted.
+        self.supervisor.emit(Event::UiActionSubmitted {
+            run_id: run_id.into(),
+            ui_id: sub.ui_id.clone(),
+            revision: sub.revision,
+            node_id: sub.node_id.clone(),
+            action_id: sub.action_id.clone(),
+            nonce: sub.nonce.clone(),
+        })?;
+        match &action.kind {
+            ActionKind::Local => Err(deny(
+                "UI_BAD_ACTION",
+                "local actions never reach the runtime".to_string(),
+            )),
+            ActionKind::Approval { decision } => {
+                let call_id = approval_call.expect("park checked above");
+                let approved = matches!(decision, pantheon_api::ui::ApprovalDecision::Grant);
+                let text = if approved {
+                    "operator approved".to_string()
+                } else {
+                    "operator denied".to_string()
+                };
+                // The resumed turn sees the decision as the render_ui
+                // tool result, exactly like ask_user answers.
+                let msg =
+                    Message::tool(&call_id, text).with_provenance(Provenance::system("pantheon"));
+                self.supervisor.emit(Event::ToolMessage {
+                    run_id: run_id.into(),
+                    message: msg,
+                })?;
+                self.supervisor.emit(Event::ToolCompleted {
+                    run_id: run_id.into(),
+                    call_id: call_id.clone(),
+                    tool: RENDER_UI_TOOL_NAME.into(),
+                    provenance: Provenance::system("pantheon"),
+                })?;
+                Ok(UiActionOutcome::Decided { approved })
+            }
+            ActionKind::Submit { tool } | ActionKind::Tool { tool, .. } => {
+                let mut params = serde_json::Map::new();
+                if let ActionKind::Tool { fixed_params, .. } = &action.kind {
+                    for (k, v) in fixed_params {
+                        params.insert(k.clone(), v.clone());
+                    }
+                }
+                for (k, v) in &sub.params {
+                    params.insert(k.clone(), v.clone());
+                }
+                let args = serde_json::Value::Object(params).to_string();
+                // The ledger is durable: secret form values must never
+                // land in ToolStarted args. The tool itself still gets
+                // the real values; only the recorded args are redacted.
+                let recorded_args = redact_ui_tool_args(&doc, &sub.node_id, &args);
+                // Synthetic call id, unique per attempt: the UI action
+                // was never a model tool call, but the tool lifecycle
+                // events key on call_id, so every attempt gets one.
+                let call_id = format!("uia-{}-{}", sub.ui_id, sub.nonce);
+                let provenance = Provenance::untrusted(tool);
+                self.supervisor.emit(Event::ToolStarted {
+                    run_id: run_id.into(),
+                    call_id: call_id.clone(),
+                    tool: tool.clone(),
+                    args: recorded_args,
+                    provenance: provenance.clone(),
+                })?;
+                let (reg, _) = self.build_tool_registry();
+                let outcome = reg.execute_gated(&self.policy, tool, &args);
+                // Gate refusals (unknown tool, capability denial) are a
+                // UI-layer rejection, not a tool result. Anything else -
+                // including a tool that ran and failed - is the action's
+                // result, exactly like the normal tool path.
+                let denied_code = match &outcome {
+                    Err(e) if e.code == "TOOL_DENIED" || e.code == "TOOL_UNKNOWN" => {
+                        Some(e.code.clone())
+                    }
+                    _ => None,
+                };
+                let text = tool_result_text(outcome);
+                self.supervisor.emit(Event::ToolOutput {
+                    run_id: run_id.into(),
+                    call_id: call_id.clone(),
+                    tool: tool.clone(),
+                    truncated: false,
+                    provenance: provenance.clone(),
+                })?;
+                let tool_msg = Message::tool(&call_id, &text).with_provenance(provenance.clone());
+                self.supervisor.emit(Event::ToolMessage {
+                    run_id: run_id.into(),
+                    message: tool_msg,
+                })?;
+                self.supervisor.emit(Event::ToolCompleted {
+                    run_id: run_id.into(),
+                    call_id: call_id.clone(),
+                    tool: tool.clone(),
+                    provenance,
+                })?;
+                // Report the tool's own result; a gate refusal surfaces
+                // as UI_TOOL_DENIED so the client can distinguish it
+                // from a tool that ran and failed. Approval-gated tools
+                // are fail-closed: UI actions cannot park for approval
+                // (that would need a second approval lifecycle parallel
+                // to the tool-approval flow). The message tells the
+                // model the supported alternatives.
+                if let Some(code) = denied_code {
+                    let detail = if code == "TOOL_UNKNOWN" {
+                        format!("tool '{tool}' is not in the registry")
+                    } else if reg.required_capabilities(tool, &args).iter().any(|c| {
+                        self.policy.check(c) == pantheon_api::capability::Decision::Approval
+                    }) {
+                        format!(
+                            "tool '{tool}' needs operator approval, which UI actions cannot request; \
+                             use an approval card for the decision, or bind a tool the policy allows"
+                        )
+                    } else {
+                        format!("tool '{tool}' is denied by the capability policy")
+                    };
+                    Err(deny("UI_TOOL_DENIED", detail))
+                } else {
+                    Ok(UiActionOutcome::Executed { result: text })
+                }
+            }
+        }
+    }
+}
+
+/// Redact secret form values from UI-triggered tool args before they
+/// are recorded in `ToolStarted`. The tool itself receives the real
+/// values; only the durable event is scrubbed. Non-form actions and
+/// non-secret fields pass through unchanged.
+fn redact_ui_tool_args(doc: &UiDocument, node_id: &str, args: &str) -> String {
+    let secrets: Vec<String> = doc
+        .root
+        .find(node_id)
+        .and_then(|n| match &n.component {
+            pantheon_api::ui::Component::Form(f) => Some(f),
+            _ => None,
+        })
+        .map(|f| {
+            f.fields
+                .iter()
+                .filter(|fd| matches!(fd.field_type, pantheon_api::ui::FieldType::Secret))
+                .map(|fd| fd.name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    if secrets.is_empty() {
+        return args.to_string();
+    }
+    let mut v: serde_json::Value = match serde_json::from_str(args) {
+        Ok(v) => v,
+        Err(_) => return args.to_string(),
+    };
+    if let Some(map) = v.as_object_mut() {
+        for s in &secrets {
+            if let Some(slot) = map.get_mut(s) {
+                *slot = serde_json::Value::String("[redacted]".to_string());
+            }
+        }
+    }
+    v.to_string()
+}
+
+/// What a UI action submission resolved to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiActionOutcome {
+    /// A Submit/Tool action executed; the tool's result text for the client.
+    Executed { result: String },
+    /// An approval-card decision was recorded; the parked turn resumes
+    /// with the decision as the `render_ui` tool result.
+    Decided { approved: bool },
 }
 
 fn aerr(code: &str, cause: String) -> PantheonError {
@@ -5671,22 +6576,77 @@ pub fn rebuild_messages(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Mess
 /// message and must never reach the provider as one. This sibling keeps it
 /// so display paths (the TUI transcript) can show the imported session's
 /// original deliberation in order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptItem {
     Message(Message),
     Reasoning(String),
+    /// A published UI document at its latest revision. Rebuild applies
+    /// UiContent then UiUpdateds in ledger order and emits one item per
+    /// ui_id, so a resumed session shows the current view, not the
+    /// history of edits.
+    Ui {
+        ui_id: String,
+        revision: u64,
+        document: UiDocument,
+    },
 }
 
 /// Rebuild the display transcript: messages plus imported reasoning traces,
 /// in ledger order.
 pub fn rebuild_transcript(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<TranscriptItem> {
     let mut out = Vec::new();
+    // ui_id -> index in `out` of its TranscriptItem::Ui, for revision
+    // application.
+    let mut ui_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for e in entries {
         match e.event {
             Event::AssistantMessage { message, .. } | Event::ToolMessage { message, .. } => {
                 out.push(TranscriptItem::Message(message));
             }
             Event::ImportedReasoning { text, .. } => out.push(TranscriptItem::Reasoning(text)),
+            Event::UiContent {
+                ui_id, document, ..
+            } => {
+                let idx = out.len();
+                ui_index.insert(ui_id.clone(), idx);
+                out.push(TranscriptItem::Ui {
+                    ui_id,
+                    revision: 0,
+                    document,
+                });
+            }
+            Event::UiUpdated {
+                ui_id,
+                revision,
+                document,
+                ..
+            } => {
+                if let Some(&idx) = ui_index.get(&ui_id) {
+                    // Apply only forward revisions: out-of-order replays
+                    // cannot regress a live view.
+                    if let TranscriptItem::Ui {
+                        revision: cur,
+                        document: cur_doc,
+                        ..
+                    } = &mut out[idx]
+                    {
+                        if revision > *cur {
+                            *cur = revision;
+                            *cur_doc = document;
+                        }
+                    }
+                } else {
+                    // Update without a base (truncated history): treat as
+                    // the base so the content is not lost.
+                    let idx = out.len();
+                    ui_index.insert(ui_id.clone(), idx);
+                    out.push(TranscriptItem::Ui {
+                        ui_id,
+                        revision,
+                        document,
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -6603,5 +7563,1343 @@ mod delegate_tool_tests {
             .ledger_reopen_run(run_id)
             .expect("reopen");
         assert_eq!(session.cancel_reason(run_id, no_token), None);
+    }
+
+    // --- structured UI -------------------------------------------------
+
+    use pantheon_api::ui::{
+        ActionKind as UiActionKind, ApprovalCard, ApprovalDecision, Component as UiComponent,
+        FieldType, Form, FormField, Markdown as UiMarkdown, UiActionSubmission, UiDocument, UiNode,
+    };
+
+    fn ui_test_doc() -> UiDocument {
+        UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "turn1-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Form(Form {
+                    title: Some("Deploy".to_string()),
+                    description: None,
+                    fields: vec![FormField {
+                        name: "target".to_string(),
+                        label: "Target".to_string(),
+                        field_type: FieldType::Select {
+                            options: vec!["staging".to_string(), "prod".to_string()],
+                        },
+                        required: true,
+                        default: None,
+                        placeholder: None,
+                    }],
+                    submit: pantheon_api::ui::ActionRef {
+                        action_id: "deploy".to_string(),
+                        label: "Deploy".to_string(),
+                        kind: UiActionKind::Tool {
+                            tool: "list_dir".to_string(),
+                            fixed_params: serde_json::json!({"path": "."})
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        },
+                    },
+                }),
+            },
+        }
+    }
+
+    fn ui_run(session: &Session, run_id: &str) {
+        session
+            .supervisor
+            .emit(Event::RunStarted {
+                run_id: run_id.to_string(),
+            })
+            .expect("RunStarted");
+    }
+
+    #[test]
+    fn publish_one_ui_emits_content_event() {
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-publish";
+        ui_run(&session, run_id);
+        let doc = ui_test_doc();
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, revision, is_update, unknown) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        assert_eq!(ui_id, "turn1-ui_0");
+        assert_eq!(revision, 0);
+        assert!(!is_update);
+        assert!(unknown.is_empty());
+        let (back, rev) = session
+            .latest_ui_document(run_id, &ui_id)
+            .expect("lookup")
+            .expect("found");
+        assert_eq!(rev, 0);
+        assert_eq!(back.id, doc.id);
+    }
+
+    #[test]
+    fn publish_one_ui_rejects_invalid_documents() {
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-bad";
+        ui_run(&session, run_id);
+        // Not JSON.
+        assert!(session.publish_one_ui(run_id, "t", "nope").is_err());
+        // Missing document.
+        assert!(session
+            .publish_one_ui(run_id, "t", r#"{"ui_id": "x"}"#)
+            .is_err());
+        // Version mismatch.
+        let mut doc = ui_test_doc();
+        doc.version = 99;
+        let args = serde_json::json!({ "document": doc }).to_string();
+        assert!(session.publish_one_ui(run_id, "t", &args).is_err());
+    }
+
+    #[test]
+    fn publish_one_ui_revision_flow() {
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-rev";
+        ui_run(&session, run_id);
+        let doc = ui_test_doc();
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        // Revision of a live document.
+        let mut doc2 = ui_test_doc();
+        if let UiComponent::Form(f) = &mut doc2.root.component {
+            f.title = Some("Deploy v2".to_string());
+        }
+        let args2 = serde_json::json!({ "document": doc2, "ui_id": ui_id }).to_string();
+        let (ui_id2, revision, is_update, _) = session
+            .publish_one_ui(run_id, "turn1", &args2)
+            .expect("revise");
+        assert_eq!(ui_id2, ui_id);
+        assert_eq!(revision, 1);
+        assert!(is_update);
+        // Revision of an unknown id fails.
+        let args3 = serde_json::json!({ "document": ui_test_doc(), "ui_id": "nope" }).to_string();
+        assert!(session.publish_one_ui(run_id, "turn1", &args3).is_err());
+    }
+
+    #[test]
+    fn submit_ui_action_executes_bound_tool() {
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-exec";
+        ui_run(&session, run_id);
+        let doc = ui_test_doc();
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        let sub = UiActionSubmission {
+            revision: 0,
+            ui_id: ui_id.clone(),
+            node_id: "root".to_string(),
+            action_id: "deploy".to_string(),
+            params: serde_json::json!({"target": "staging"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            nonce: "n1".to_string(),
+        };
+        match session.submit_ui_action(run_id, &sub).expect("submit") {
+            UiActionOutcome::Executed { result } => {
+                assert!(!result.is_empty(), "list_dir returns a listing");
+            }
+            UiActionOutcome::Decided { .. } => panic!("expected execution"),
+        }
+        // Replay of the same nonce is rejected.
+        let err = session.submit_ui_action(run_id, &sub).expect_err("replay");
+        assert_eq!(err.code, "UI_REPLAY");
+    }
+
+    #[test]
+    fn approval_gated_tool_denial_is_actionable() {
+        // An approval-gated tool bound to a UI action is refused
+        // fail-closed, and the message tells the model the supported
+        // alternatives (approval card / allowed tool).
+        let (mut session, _dir) = test_session();
+        // Gate shell: the coder preset allows it, we need Approval.
+        session.policy = session
+            .policy
+            .clone()
+            .approval(pantheon_api::capability::Capability::ShellExecute);
+        let run_id = "run-ui-approval-gated";
+        ui_run(&session, run_id);
+        // shell requires approval under the test policy (mutating).
+        let doc = UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "turn1-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Form(pantheon_api::ui::Form {
+                    title: None,
+                    description: None,
+                    fields: vec![FormField {
+                        name: "confirm".to_string(),
+                        label: "Confirm".to_string(),
+                        field_type: FieldType::Boolean,
+                        required: false,
+                        default: None,
+                        placeholder: None,
+                    }],
+                    submit: pantheon_api::ui::ActionRef {
+                        action_id: "run".to_string(),
+                        label: "Run".to_string(),
+                        kind: UiActionKind::Tool {
+                            tool: "shell".to_string(),
+                            fixed_params: serde_json::json!({"command": "echo hi"})
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        },
+                    },
+                }),
+            },
+        };
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        let sub = UiActionSubmission {
+            ui_id,
+            revision: 0,
+            node_id: "root".to_string(),
+            action_id: "run".to_string(),
+            params: Default::default(),
+            nonce: "n1".to_string(),
+        };
+        let err = session.submit_ui_action(run_id, &sub).expect_err("gated");
+        assert_eq!(err.code, "UI_TOOL_DENIED");
+        assert!(
+            err.cause.contains("needs operator approval") && err.cause.contains("approval card"),
+            "actionable denial: {}",
+            err.cause
+        );
+    }
+
+    #[test]
+    fn submit_ui_action_rejects_bad_submissions() {
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-badsub";
+        ui_run(&session, run_id);
+        let doc = ui_test_doc();
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        let sub = |params: serde_json::Value, nonce: &str| UiActionSubmission {
+            revision: 0,
+            ui_id: ui_id.clone(),
+            node_id: "root".to_string(),
+            action_id: "deploy".to_string(),
+            params: params.as_object().unwrap().clone(),
+            nonce: nonce.to_string(),
+        };
+        // Unknown document.
+        let mut s = sub(serde_json::json!({"target": "staging"}), "n1");
+        s.ui_id = "nope".to_string();
+        assert_eq!(
+            session
+                .submit_ui_action(run_id, &s)
+                .expect_err("unknown")
+                .code,
+            "UI_UNKNOWN"
+        );
+        // Missing required field.
+        let s = sub(serde_json::json!({}), "n2");
+        assert_eq!(
+            session
+                .submit_ui_action(run_id, &s)
+                .expect_err("params")
+                .code,
+            "UI_BAD_ACTION"
+        );
+        // Bad select value.
+        let s = sub(serde_json::json!({"target": "moon"}), "n3");
+        assert_eq!(
+            session
+                .submit_ui_action(run_id, &s)
+                .expect_err("params")
+                .code,
+            "UI_BAD_ACTION"
+        );
+        // Unknown action id.
+        let mut s = sub(serde_json::json!({"target": "staging"}), "n4");
+        s.action_id = "nope".to_string();
+        assert_eq!(
+            session
+                .submit_ui_action(run_id, &s)
+                .expect_err("action")
+                .code,
+            "UI_BAD_ACTION"
+        );
+    }
+
+    #[test]
+    fn submit_ui_action_cannot_invent_tools() {
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-invent";
+        ui_run(&session, run_id);
+        let mut doc = ui_test_doc();
+        if let UiComponent::Form(f) = &mut doc.root.component {
+            f.submit.kind = UiActionKind::Tool {
+                tool: "rm_rf_everything".to_string(),
+                fixed_params: Default::default(),
+            };
+        }
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        let sub = UiActionSubmission {
+            ui_id,
+            revision: 0,
+            node_id: "root".to_string(),
+            action_id: "deploy".to_string(),
+            params: serde_json::json!({"target": "staging"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            nonce: "n1".to_string(),
+        };
+        let err = session.submit_ui_action(run_id, &sub).expect_err("invent");
+        assert_eq!(err.code, "UI_TOOL_DENIED");
+    }
+
+    #[test]
+    fn submit_ui_action_denied_tool_is_rejected_not_bypassed() {
+        // A deny-all policy: even list_dir must be rejected, never
+        // executed, and the denial must come from the normal
+        // capability gate (no UI bypass).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session = Session::new(
+            dir.path().to_path_buf(),
+            Policy::default(),
+            ModelPolicy {
+                reasoning_budget: None,
+                reasoning: ReasoningLevel::default(),
+                default: DefaultModel {
+                    provider: "local".into(),
+                    model: "default".into(),
+                },
+                fallbacks: FallbackChain { fallbacks: vec![] },
+                auxiliaries: vec![],
+            },
+            SecretsBroker::from_system_env(),
+        )
+        .expect("session");
+        let run_id = "run-ui-deny";
+        ui_run(&session, run_id);
+        let doc = ui_test_doc();
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        let sub = UiActionSubmission {
+            ui_id,
+            revision: 0,
+            node_id: "root".to_string(),
+            action_id: "deploy".to_string(),
+            params: serde_json::json!({"target": "staging"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            nonce: "n1".to_string(),
+        };
+        let err = session.submit_ui_action(run_id, &sub).expect_err("denied");
+        assert_eq!(err.code, "UI_TOOL_DENIED");
+        assert!(
+            err.cause.contains("denied by the capability policy"),
+            "denial surfaces the capability gate: {}",
+            err.cause
+        );
+    }
+
+    #[test]
+    fn submit_ui_action_redacts_secrets_and_emits_tool_lifecycle() {
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-secret";
+        ui_run(&session, run_id);
+        let doc = UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "turn1-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Form(Form {
+                    title: None,
+                    description: None,
+                    fields: vec![FormField {
+                        name: "token".to_string(),
+                        label: "Token".to_string(),
+                        field_type: FieldType::Secret,
+                        required: true,
+                        default: None,
+                        placeholder: None,
+                    }],
+                    submit: pantheon_api::ui::ActionRef {
+                        action_id: "go".to_string(),
+                        label: "Go".to_string(),
+                        kind: UiActionKind::Tool {
+                            tool: "list_dir".to_string(),
+                            fixed_params: serde_json::json!({"path": "."})
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        },
+                    },
+                }),
+            },
+        };
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        let secret = "super-secret-token-123";
+        let sub = UiActionSubmission {
+            revision: 0,
+            ui_id: ui_id.clone(),
+            node_id: "root".to_string(),
+            action_id: "go".to_string(),
+            params: serde_json::json!({"token": secret})
+                .as_object()
+                .unwrap()
+                .clone(),
+            nonce: "n1".to_string(),
+        };
+        match session.submit_ui_action(run_id, &sub).expect("submit") {
+            UiActionOutcome::Executed { .. } => {}
+            UiActionOutcome::Decided { .. } => panic!("expected execution"),
+        }
+        // The ledger must carry the full tool lifecycle, with the
+        // secret scrubbed from the recorded args.
+        let entries = session.supervisor.replay(run_id).expect("replay");
+        let started = entries
+            .iter()
+            .find_map(|e| match &e.event {
+                Event::ToolStarted { call_id, args, .. } if call_id.starts_with("uia-") => {
+                    Some(args.clone())
+                }
+                _ => None,
+            })
+            .expect("ToolStarted for the UI action");
+        assert!(
+            !started.contains(secret),
+            "secret must not appear in recorded ToolStarted args: {started}"
+        );
+        assert!(
+            started.contains("[redacted]"),
+            "secret field is marked redacted: {started}"
+        );
+        let completed = entries.iter().any(|e| {
+            matches!(&e.event, Event::ToolCompleted { call_id, .. } if call_id.starts_with("uia-"))
+        });
+        assert!(completed, "ToolCompleted closes the UI action's lifecycle");
+    }
+
+    #[test]
+    fn submit_ui_action_rejects_stale_revision() {
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-stale-rev";
+        ui_run(&session, run_id);
+        let doc = ui_test_doc();
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        // Revise the document.
+        let mut doc2 = ui_test_doc();
+        if let UiComponent::Form(f) = &mut doc2.root.component {
+            f.title = Some("Deploy v2".to_string());
+        }
+        let args2 = serde_json::json!({ "document": doc2, "ui_id": ui_id }).to_string();
+        let (_, rev, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args2)
+            .expect("revise");
+        assert_eq!(rev, 1);
+        // Submit against the old revision: rejected, even though the
+        // action ids are identical.
+        let sub = UiActionSubmission {
+            ui_id: ui_id.clone(),
+            revision: 0,
+            node_id: "root".to_string(),
+            action_id: "deploy".to_string(),
+            params: serde_json::json!({"target": "staging"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            nonce: "n1".to_string(),
+        };
+        let err = session
+            .submit_ui_action(run_id, &sub)
+            .expect_err("stale rev");
+        assert_eq!(err.code, "UI_STALE");
+        // Current revision works.
+        let mut sub2 = sub;
+        sub2.revision = 1;
+        sub2.nonce = "n2".to_string();
+        assert!(session.submit_ui_action(run_id, &sub2).is_ok());
+    }
+
+    #[test]
+    fn submit_ui_action_rejects_redefined_action() {
+        // TOCTOU: rev 0 binds "deploy" to list_dir; rev 1 rebinds it to
+        // shell. A submission pinned to rev 0 must not execute rev 1's
+        // binding, and vice versa.
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-redefine";
+        ui_run(&session, run_id);
+        let doc = ui_test_doc();
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        let mut doc2 = ui_test_doc();
+        if let UiComponent::Form(f) = &mut doc2.root.component {
+            f.submit.kind = UiActionKind::Tool {
+                tool: "shell".to_string(),
+                fixed_params: serde_json::json!({"command": "echo pwned"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            };
+        }
+        let args2 = serde_json::json!({ "document": doc2, "ui_id": ui_id }).to_string();
+        session
+            .publish_one_ui(run_id, "turn1", &args2)
+            .expect("revise");
+        // Pinned to rev 0 (list_dir): stale, rejected.
+        let sub = UiActionSubmission {
+            ui_id: ui_id.clone(),
+            revision: 0,
+            node_id: "root".to_string(),
+            action_id: "deploy".to_string(),
+            params: serde_json::json!({"target": "staging"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            nonce: "n1".to_string(),
+        };
+        assert_eq!(
+            session
+                .submit_ui_action(run_id, &sub)
+                .expect_err("stale")
+                .code,
+            "UI_STALE"
+        );
+    }
+
+    #[test]
+    fn form_submission_does_not_clear_approval_park() {
+        // Document with BOTH a form and an approval card. The turn parks
+        // on the card; a form submission must execute without resolving
+        // the park.
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-mixed-park";
+        ui_run(&session, run_id);
+        let doc = UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "turn1-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Layout(pantheon_api::ui::Layout {
+                    kind: pantheon_api::ui::LayoutKind::Stack,
+                    children: vec![
+                        UiNode {
+                            id: "form-node".to_string(),
+                            component: UiComponent::Form(pantheon_api::ui::Form {
+                                title: None,
+                                description: None,
+                                fields: vec![FormField {
+                                    name: "target".to_string(),
+                                    label: "Target".to_string(),
+                                    field_type: FieldType::Select {
+                                        options: vec!["staging".to_string()],
+                                    },
+                                    required: true,
+                                    default: None,
+                                    placeholder: None,
+                                }],
+                                submit: pantheon_api::ui::ActionRef {
+                                    action_id: "deploy".to_string(),
+                                    label: "Deploy".to_string(),
+                                    kind: UiActionKind::Tool {
+                                        tool: "list_dir".to_string(),
+                                        fixed_params: serde_json::json!({"path": "."})
+                                            .as_object()
+                                            .unwrap()
+                                            .clone(),
+                                    },
+                                },
+                            }),
+                        },
+                        UiNode {
+                            id: "card-node".to_string(),
+                            component: UiComponent::Approval(ApprovalCard {
+                                title: "Delete?".to_string(),
+                                detail: "Delete 3 files.".to_string(),
+                                approve: pantheon_api::ui::ActionRef {
+                                    action_id: "yes".to_string(),
+                                    label: "Delete".to_string(),
+                                    kind: UiActionKind::Approval {
+                                        decision: ApprovalDecision::Grant,
+                                    },
+                                },
+                                deny: pantheon_api::ui::ActionRef {
+                                    action_id: "no".to_string(),
+                                    label: "Keep".to_string(),
+                                    kind: UiActionKind::Approval {
+                                        decision: ApprovalDecision::Deny,
+                                    },
+                                },
+                                scope_hint: "delete 3 files".to_string(),
+                            }),
+                        },
+                    ],
+                }),
+            },
+        };
+        assert!(doc.has_approval_card());
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        session
+            .supervisor
+            .emit(Event::UiActionRequested {
+                run_id: run_id.to_string(),
+                ui_id: ui_id.clone(),
+                call_id: "call1".to_string(),
+            })
+            .expect("request");
+        assert!(session.pending_ui_action(run_id).expect("p").is_some());
+        // Submit the form action.
+        let sub = UiActionSubmission {
+            ui_id: ui_id.clone(),
+            revision: 0,
+            node_id: "form-node".to_string(),
+            action_id: "deploy".to_string(),
+            params: serde_json::json!({"target": "staging"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            nonce: "n1".to_string(),
+        };
+        match session.submit_ui_action(run_id, &sub).expect("form submit") {
+            UiActionOutcome::Executed { .. } => {}
+            UiActionOutcome::Decided { .. } => panic!("expected execution"),
+        }
+        // The approval park must still be pending.
+        let pending = session
+            .pending_ui_action(run_id)
+            .expect("pending")
+            .expect("park survives form submission");
+        assert_eq!(pending.0, ui_id);
+        // And the approval decision still resolves it.
+        let dec = UiActionSubmission {
+            ui_id: ui_id.clone(),
+            revision: 0,
+            node_id: "card-node".to_string(),
+            action_id: "no".to_string(),
+            params: Default::default(),
+            nonce: "n2".to_string(),
+        };
+        match session.submit_ui_action(run_id, &dec).expect("decide") {
+            UiActionOutcome::Decided { approved } => assert!(!approved),
+            UiActionOutcome::Executed { .. } => panic!("expected decision"),
+        }
+        assert!(session.pending_ui_action(run_id).expect("p").is_none());
+    }
+
+    #[test]
+    fn concurrent_same_nonce_submissions_execute_once() {
+        use std::sync::Arc;
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-concurrent";
+        ui_run(&session, run_id);
+        let doc = ui_test_doc();
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        let session = Arc::new(session);
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let s = Arc::clone(&session);
+            let ui_id = ui_id.clone();
+            handles.push(std::thread::spawn(move || {
+                let sub = UiActionSubmission {
+                    ui_id,
+                    revision: 0,
+                    node_id: "root".to_string(),
+                    action_id: "deploy".to_string(),
+                    params: serde_json::json!({"target": "staging"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    // Same nonce on every thread: exactly one may win.
+                    nonce: "race-nonce".to_string(),
+                };
+                s.submit_ui_action(run_id, &sub)
+                    .map(|_| "executed".to_string())
+                    .unwrap_or_else(|e| e.code.clone())
+            }));
+        }
+        let mut won = 0;
+        let mut replayed = 0;
+        for h in handles {
+            match h.join().expect("thread").as_str() {
+                "executed" => won += 1,
+                "UI_REPLAY" => replayed += 1,
+                other => panic!("unexpected outcome: {other}"),
+            }
+        }
+        assert_eq!(won, 1, "exactly one submission executes");
+        assert_eq!(replayed, 7, "the rest are rejected as replays");
+    }
+
+    #[test]
+    fn e2e_render_ui_batch_to_action_execution() {
+        // End-to-end through the real application path (minus the model
+        // HTTP call): fake model tool call -> publish_ui_batch ->
+        // ledger events -> submit_ui_action -> tool execution ->
+        // transcript rebuild.
+        use pantheon_agent::ToolCall;
+        use pantheon_api::message::ToolCallRef;
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-e2e";
+        ui_run(&session, run_id);
+        let doc = ui_test_doc();
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let calls = vec![ToolCall {
+            name: "render_ui".to_string(),
+            capability: pantheon_api::capability::Capability::Other("render_ui".into()),
+            args: args.clone(),
+        }];
+        let refs = vec![ToolCallRef {
+            id: "call-e2e-1".to_string(),
+            name: "render_ui".to_string(),
+            arguments: args,
+        }];
+        let mut messages = Vec::new();
+        let out = session
+            .publish_ui_batch(run_id, "turn1", &calls, &refs, &mut messages)
+            .expect("publish batch")
+            .expect("consumed");
+        assert_eq!(out.0, vec![0]);
+        assert!(out.1.is_none(), "no approval card: no park");
+        // The tool result is settled and messaged.
+        assert!(
+            messages.iter().any(|m| {
+                format!("{m:?}").contains("call-e2e-1") && format!("{m:?}").contains("ui published")
+            }),
+            "render_ui settled with success: {messages:?}"
+        );
+        // Ledger carries the UiContent.
+        let entries = session.supervisor.replay(run_id).expect("replay");
+        let ui_id = entries
+            .iter()
+            .find_map(|e| match &e.event {
+                Event::UiContent { ui_id, .. } => Some(ui_id.clone()),
+                _ => None,
+            })
+            .expect("UiContent event");
+        // Client submits the form action against the published revision.
+        let sub = UiActionSubmission {
+            ui_id: ui_id.clone(),
+            revision: 0,
+            node_id: "root".to_string(),
+            action_id: "deploy".to_string(),
+            params: serde_json::json!({"target": "staging"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            nonce: "e2e-n1".to_string(),
+        };
+        match session.submit_ui_action(run_id, &sub).expect("submit") {
+            UiActionOutcome::Executed { result } => assert!(!result.is_empty()),
+            UiActionOutcome::Decided { .. } => panic!("expected execution"),
+        }
+        // Full tool lifecycle events are in the ledger.
+        let entries = session.supervisor.replay(run_id).expect("replay2");
+        assert!(entries.iter().any(|e| matches!(
+            &e.event,
+            Event::ToolStarted { call_id, .. } if call_id.starts_with("uia-")
+        )));
+        assert!(entries.iter().any(|e| matches!(
+            &e.event,
+            Event::ToolCompleted { call_id, .. } if call_id.starts_with("uia-")
+        )));
+        // Transcript rebuild surfaces the UI document.
+        let items = rebuild_transcript(entries);
+        assert!(
+            items.iter().any(|i| matches!(
+                i,
+                crate::session::TranscriptItem::Ui { ui_id: id, .. } if id == &ui_id
+            )),
+            "transcript carries the UI block"
+        );
+    }
+
+    #[test]
+    fn crash_between_decision_and_settlement_recovers() {
+        // Simulate a crash after UiActionSubmitted but before the
+        // ToolCompleted: the decision is in the ledger, the parked
+        // call is unsettled. Recovery must complete the settlement
+        // exactly once and clear the park.
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-crash";
+        ui_run(&session, run_id);
+        let doc = UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "turn1-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Approval(ApprovalCard {
+                    title: "Delete?".to_string(),
+                    detail: "Delete 3 files.".to_string(),
+                    approve: pantheon_api::ui::ActionRef {
+                        action_id: "yes".to_string(),
+                        label: "Delete".to_string(),
+                        kind: UiActionKind::Approval {
+                            decision: ApprovalDecision::Grant,
+                        },
+                    },
+                    deny: pantheon_api::ui::ActionRef {
+                        action_id: "no".to_string(),
+                        label: "Keep".to_string(),
+                        kind: UiActionKind::Approval {
+                            decision: ApprovalDecision::Deny,
+                        },
+                    },
+                    scope_hint: "delete 3 files".to_string(),
+                }),
+            },
+        };
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        session
+            .supervisor
+            .emit(Event::UiActionRequested {
+                run_id: run_id.to_string(),
+                ui_id: ui_id.clone(),
+                call_id: "call-crash-1".to_string(),
+            })
+            .expect("request");
+        // The crash: decision recorded, settlement never emitted.
+        session
+            .supervisor
+            .emit(Event::UiActionSubmitted {
+                run_id: run_id.to_string(),
+                ui_id: ui_id.clone(),
+                revision: 0,
+                node_id: "root".to_string(),
+                action_id: "yes".to_string(),
+                nonce: "crash-n1".to_string(),
+            })
+            .expect("submit");
+        assert!(session.pending_ui_action(run_id).expect("p").is_none());
+        // Recovery settles the parked call.
+        assert_eq!(
+            session
+                .settle_unsettled_ui_approvals(run_id)
+                .expect("recover"),
+            1
+        );
+        let entries = session.supervisor.replay(run_id).expect("replay");
+        let completions: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                matches!(&e.event, Event::ToolCompleted { call_id: c, .. } if c == "call-crash-1")
+            })
+            .collect();
+        assert_eq!(completions.len(), 1);
+        // Idempotent: a second recovery pass settles nothing new.
+        assert_eq!(
+            session
+                .settle_unsettled_ui_approvals(run_id)
+                .expect("recover2"),
+            0
+        );
+        let entries = session.supervisor.replay(run_id).expect("replay2");
+        let completions: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                matches!(&e.event, Event::ToolCompleted { call_id: c, .. } if c == "call-crash-1")
+            })
+            .collect();
+        assert_eq!(completions.len(), 1, "still exactly once");
+    }
+
+    #[test]
+    fn e2e_approval_card_batch_parks_and_resumes() {
+        // Approval-mediated end-to-end: batch parks, decision settles
+        // the render_ui call exactly once, and the park clears.
+        use pantheon_agent::{LoopOutcome as AgentLoopOutcome, ToolCall};
+        use pantheon_api::message::ToolCallRef;
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-e2e-approval";
+        ui_run(&session, run_id);
+        let doc = UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "turn1-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Approval(ApprovalCard {
+                    title: "Delete?".to_string(),
+                    detail: "Delete 3 files.".to_string(),
+                    approve: pantheon_api::ui::ActionRef {
+                        action_id: "yes".to_string(),
+                        label: "Delete".to_string(),
+                        kind: UiActionKind::Approval {
+                            decision: ApprovalDecision::Grant,
+                        },
+                    },
+                    deny: pantheon_api::ui::ActionRef {
+                        action_id: "no".to_string(),
+                        label: "Keep".to_string(),
+                        kind: UiActionKind::Approval {
+                            decision: ApprovalDecision::Deny,
+                        },
+                    },
+                    scope_hint: "delete 3 files".to_string(),
+                }),
+            },
+        };
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let calls = vec![ToolCall {
+            name: "render_ui".to_string(),
+            capability: pantheon_api::capability::Capability::Other("render_ui".into()),
+            args: args.clone(),
+        }];
+        let refs = vec![ToolCallRef {
+            id: "call-e2e-2".to_string(),
+            name: "render_ui".to_string(),
+            arguments: args,
+        }];
+        let mut messages = Vec::new();
+        let out = session
+            .publish_ui_batch(run_id, "turn1", &calls, &refs, &mut messages)
+            .expect("publish batch")
+            .expect("consumed");
+        assert_eq!(out.0, vec![0]);
+        let (ui_id, call_id) = match out.1.expect("parks") {
+            AgentLoopOutcome::AwaitingUiAction { ui_id, call_id } => (ui_id, call_id),
+            other => panic!("expected park, got {other:?}"),
+        };
+        assert_eq!(call_id, "call-e2e-2");
+        // The parked call is NOT settled yet: exactly zero tool results
+        // for it in the ledger.
+        let entries = session.supervisor.replay(run_id).expect("replay");
+        let results: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                matches!(&e.event, Event::ToolCompleted { call_id: c, .. } if c == "call-e2e-2")
+            })
+            .collect();
+        assert!(results.is_empty(), "parked call unsettled before decision");
+        assert!(session.pending_ui_action(run_id).expect("p").is_some());
+        // Decide.
+        let sub = UiActionSubmission {
+            ui_id: ui_id.clone(),
+            revision: 0,
+            node_id: "root".to_string(),
+            action_id: "yes".to_string(),
+            params: Default::default(),
+            nonce: "e2e-n2".to_string(),
+        };
+        match session.submit_ui_action(run_id, &sub).expect("decide") {
+            UiActionOutcome::Decided { approved } => assert!(approved),
+            UiActionOutcome::Executed { .. } => panic!("expected decision"),
+        }
+        // Exactly one settlement for the parked call.
+        let entries = session.supervisor.replay(run_id).expect("replay2");
+        let results: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                matches!(&e.event, Event::ToolCompleted { call_id: c, .. } if c == "call-e2e-2")
+            })
+            .collect();
+        assert_eq!(results.len(), 1, "exactly-once settlement");
+        assert!(session.pending_ui_action(run_id).expect("p").is_none());
+    }
+
+    #[test]
+    fn ui_approval_card_parks_and_resolves() {
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-approval";
+        ui_run(&session, run_id);
+        let doc = UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "turn1-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Approval(ApprovalCard {
+                    title: "Delete?".to_string(),
+                    detail: "Delete 3 files.".to_string(),
+                    approve: pantheon_api::ui::ActionRef {
+                        action_id: "yes".to_string(),
+                        label: "Delete".to_string(),
+                        kind: UiActionKind::Approval {
+                            decision: ApprovalDecision::Grant,
+                        },
+                    },
+                    deny: pantheon_api::ui::ActionRef {
+                        action_id: "no".to_string(),
+                        label: "Keep".to_string(),
+                        kind: UiActionKind::Approval {
+                            decision: ApprovalDecision::Deny,
+                        },
+                    },
+                    scope_hint: "delete 3 files".to_string(),
+                }),
+            },
+        };
+        assert!(doc.has_approval_card());
+        let args = serde_json::json!({ "document": doc }).to_string();
+        // publish_one_ui alone does not park (parking needs the batch
+        // path); emulate the park the way publish_ui_batch does.
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        session
+            .supervisor
+            .emit(Event::UiActionRequested {
+                run_id: run_id.to_string(),
+                ui_id: ui_id.clone(),
+                call_id: "call1".to_string(),
+            })
+            .expect("request");
+        let pending = session
+            .pending_ui_action(run_id)
+            .expect("pending")
+            .expect("parked");
+        assert_eq!(pending.0, ui_id);
+        // Decide: approve.
+        let sub = UiActionSubmission {
+            revision: 0,
+            ui_id: ui_id.clone(),
+            node_id: "root".to_string(),
+            action_id: "yes".to_string(),
+            params: Default::default(),
+            nonce: "n1".to_string(),
+        };
+        match session.submit_ui_action(run_id, &sub).expect("decide") {
+            UiActionOutcome::Decided { approved } => assert!(approved),
+            UiActionOutcome::Executed { .. } => panic!("expected decision"),
+        }
+        // The park is resolved; a second decision is stale.
+        assert!(session
+            .pending_ui_action(run_id)
+            .expect("pending")
+            .is_none());
+        let sub2 = UiActionSubmission {
+            nonce: "n2".to_string(),
+            ..sub
+        };
+        assert_eq!(
+            session
+                .submit_ui_action(run_id, &sub2)
+                .expect_err("stale")
+                .code,
+            "UI_STALE"
+        );
+    }
+
+    #[test]
+    fn rebuild_transcript_applies_ui_revisions_in_order() {
+        use crate::session::rebuild_transcript;
+        let doc1 = UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "t-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Markdown(UiMarkdown {
+                    title: None,
+                    text: "v1".to_string(),
+                }),
+            },
+        };
+        let mut doc2 = doc1.clone();
+        if let UiComponent::Markdown(m) = &mut doc2.root.component {
+            m.text = "v2".to_string();
+        }
+        let entries = vec![
+            pantheon_storage::LedgerEntry {
+                id: 1,
+                run_id: "r".to_string(),
+                seq: 1,
+                ts_ms: 1,
+                event: Event::UiContent {
+                    run_id: "r".to_string(),
+                    turn_id: "t".to_string(),
+                    ui_id: "t-ui_0".to_string(),
+                    document: doc1,
+                },
+            },
+            pantheon_storage::LedgerEntry {
+                id: 2,
+                run_id: "r".to_string(),
+                seq: 2,
+                ts_ms: 2,
+                event: Event::UiUpdated {
+                    run_id: "r".to_string(),
+                    ui_id: "t-ui_0".to_string(),
+                    revision: 1,
+                    document: doc2.clone(),
+                },
+            },
+            // Out-of-order replay must not regress.
+            pantheon_storage::LedgerEntry {
+                id: 3,
+                run_id: "r".to_string(),
+                seq: 3,
+                ts_ms: 3,
+                event: Event::UiUpdated {
+                    run_id: "r".to_string(),
+                    ui_id: "t-ui_0".to_string(),
+                    revision: 0,
+                    document: doc2.clone(),
+                },
+            },
+        ];
+        let items = rebuild_transcript(entries);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            crate::session::TranscriptItem::Ui {
+                revision, document, ..
+            } => {
+                assert_eq!(*revision, 1);
+                if let UiComponent::Markdown(m) = &document.root.component {
+                    assert_eq!(m.text, "v2");
+                } else {
+                    panic!("expected markdown");
+                }
+            }
+            other => panic!("expected Ui, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod consecutive_failure_warning_tests {
+    use super::should_warn_consecutive_failures;
+    use pantheon_agent::Budget;
+
+    #[test]
+    fn warns_at_threshold_before_cap() {
+        // Default budget: warn at 3, cap at 5.
+        let b = Budget::default();
+        assert_eq!(b.warn_consecutive_tool_failures, 3);
+        assert_eq!(b.max_consecutive_tool_failures, 5);
+        // Below threshold: no warning.
+        assert!(!should_warn_consecutive_failures(3, 5, 0, false));
+        assert!(!should_warn_consecutive_failures(3, 5, 1, false));
+        assert!(!should_warn_consecutive_failures(3, 5, 2, false));
+        // At threshold: warn.
+        assert!(should_warn_consecutive_failures(3, 5, 3, false));
+        // Above threshold but below cap: still warn (if not already warned).
+        assert!(should_warn_consecutive_failures(3, 5, 4, false));
+    }
+
+    #[test]
+    fn warns_exactly_once_per_streak() {
+        // Already warned: no second warning even as failures accumulate.
+        assert!(!should_warn_consecutive_failures(3, 5, 3, true));
+        assert!(!should_warn_consecutive_failures(3, 5, 4, true));
+    }
+
+    #[test]
+    fn warning_disabled_when_threshold_zero() {
+        assert!(!should_warn_consecutive_failures(0, 5, 3, false));
+        assert!(!should_warn_consecutive_failures(0, 5, 4, false));
+        assert!(!should_warn_consecutive_failures(0, 5, 5, false));
+    }
+
+    #[test]
+    fn warning_disabled_when_cap_zero() {
+        // Unbounded retries: warnings are tied to the cap being active.
+        assert!(!should_warn_consecutive_failures(3, 0, 3, false));
+        assert!(!should_warn_consecutive_failures(3, 0, 10, false));
+    }
+
+    #[test]
+    fn warning_disabled_when_threshold_at_or_above_cap() {
+        // warn_at >= cap: the warning would fire at or after termination.
+        assert!(!should_warn_consecutive_failures(5, 5, 5, false));
+        assert!(!should_warn_consecutive_failures(6, 5, 6, false));
+        assert!(!should_warn_consecutive_failures(10, 5, 10, false));
+    }
+
+    #[test]
+    fn warning_threshold_boundary() {
+        // warn_at = cap - 1: warning fires exactly one failure before cap.
+        assert!(should_warn_consecutive_failures(4, 5, 4, false));
+        assert!(!should_warn_consecutive_failures(4, 5, 3, false));
+    }
+
+    #[test]
+    fn success_resets_streak_allowing_future_warning() {
+        // After a success, the caller resets tool_failures=0 and
+        // failure_warned=false, so a new streak can warn again.
+        // Simulate: first streak warned at 3, then success resets.
+        assert!(should_warn_consecutive_failures(3, 5, 3, false));
+        // After reset (failures=0, warned=false), no warning yet.
+        assert!(!should_warn_consecutive_failures(3, 5, 0, false));
+        // New streak reaches threshold: warns again.
+        assert!(should_warn_consecutive_failures(3, 5, 3, false));
+    }
+
+    // Integration test for the actual injection helper, using the real
+    // Session and small deterministic mocks for the AgentLoop traits.
+    //
+    // Note: `maybe_warn_consecutive_failures` emits via the Session's own
+    // supervisor (created in `Session::new`), not the loop's `sink`, so
+    // these tests assert on the observable `messages` vector and the
+    // `warned` flag. Event emission is covered by the supervisor's own
+    // tests; here we verify no error is returned from the emit path.
+    mod helper_tests {
+        use super::super::*;
+        use pantheon_api::message::Role;
+        use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy, ReasoningLevel};
+
+        struct VecSink;
+        impl pantheon_agent::EventSink for VecSink {
+            fn emit(&self, _event: Event) {}
+        }
+
+        struct NoopRunner;
+        impl pantheon_agent::ToolRunner for NoopRunner {
+            fn run(&self, _name: &str, _args: &str) -> Result<String, PantheonError> {
+                Ok(String::new())
+            }
+        }
+
+        fn test_session() -> (Session, tempfile::TempDir) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let session = Session::new(
+                dir.path().to_path_buf(),
+                Policy::coder(),
+                ModelPolicy {
+                    reasoning_budget: None,
+                    reasoning: ReasoningLevel::default(),
+                    default: DefaultModel {
+                        provider: "local".into(),
+                        model: "default".into(),
+                    },
+                    fallbacks: FallbackChain { fallbacks: vec![] },
+                    auxiliaries: vec![],
+                },
+                SecretsBroker::from_system_env(),
+            )
+            .expect("session");
+            (session, dir)
+        }
+
+        fn test_loop<'a>(
+            sink: &'a VecSink,
+            runner: &'a NoopRunner,
+            warn_at: u32,
+            cap: u32,
+        ) -> AgentLoop<'a> {
+            AgentLoop {
+                run_id: "test-run".into(),
+                policy: Policy::coder(),
+                budget: Budget {
+                    warn_consecutive_tool_failures: warn_at,
+                    max_consecutive_tool_failures: cap,
+                    ..Budget::default()
+                },
+                sink,
+                tools: runner,
+                spawner: None,
+                swarm_ctx: None,
+                judge: None,
+                cancel: None,
+                depth: 0,
+            }
+        }
+
+        #[test]
+        fn helper_injects_system_message() {
+            let (session, _dir) = test_session();
+            let sink = VecSink;
+            let runner = NoopRunner;
+            let loop_ = test_loop(&sink, &runner, 3, 5);
+
+            let mut messages = vec![Message::user("do the thing")];
+            let mut warned = false;
+
+            // Below threshold: no injection.
+            let fired = session
+                .maybe_warn_consecutive_failures(&loop_, &mut messages, "r1", 2, &mut warned)
+                .expect("helper");
+            assert!(!fired);
+            assert!(!warned);
+            assert_eq!(messages.len(), 1);
+
+            // At threshold: injects.
+            let fired = session
+                .maybe_warn_consecutive_failures(&loop_, &mut messages, "r1", 3, &mut warned)
+                .expect("helper");
+            assert!(fired);
+            assert!(warned);
+            assert_eq!(messages.len(), 2);
+            // Warning is appended after existing messages.
+            assert_eq!(messages[0].role, Role::User);
+            assert_eq!(messages[1].role, Role::System);
+            let text = &messages[1].content;
+            assert!(
+                text.contains("failed consecutively"),
+                "warning text: {text}"
+            );
+            assert!(text.contains("invalid arguments"), "warning text: {text}");
+            assert!(text.contains("different approach"), "warning text: {text}");
+        }
+
+        #[test]
+        fn helper_suppresses_second_warning_in_streak() {
+            let (session, _dir) = test_session();
+            let sink = VecSink;
+            let runner = NoopRunner;
+            let loop_ = test_loop(&sink, &runner, 3, 5);
+
+            let mut messages = Vec::new();
+            let mut warned = false;
+
+            // First warning fires.
+            assert!(session
+                .maybe_warn_consecutive_failures(&loop_, &mut messages, "r1", 3, &mut warned)
+                .expect("helper"));
+            assert_eq!(messages.len(), 1);
+
+            // Streak continues (4 < cap 5): no second warning.
+            let fired = session
+                .maybe_warn_consecutive_failures(&loop_, &mut messages, "r1", 4, &mut warned)
+                .expect("helper");
+            assert!(!fired);
+            assert_eq!(messages.len(), 1, "no duplicate warning");
+        }
+
+        #[test]
+        fn helper_respects_disabled_threshold() {
+            let (session, _dir) = test_session();
+            let sink = VecSink;
+            let runner = NoopRunner;
+            // Warning disabled (0), cap active.
+            let loop_ = test_loop(&sink, &runner, 0, 5);
+
+            let mut messages = Vec::new();
+            let mut warned = false;
+            let fired = session
+                .maybe_warn_consecutive_failures(&loop_, &mut messages, "r1", 4, &mut warned)
+                .expect("helper");
+            assert!(!fired);
+            assert!(messages.is_empty());
+        }
     }
 }
