@@ -254,6 +254,78 @@ pub struct McpReport {
     pub pending_approval: Vec<String>,
 }
 
+/// Caller-supplied capability overrides for projected MCP tools.
+///
+/// `server` maps a server name to the capability for all of its tools
+/// (the CUA driver pattern). `tool` maps an exact `(server, tool)` pair
+/// — built from the authoritative MCP handshake names, never by
+/// splitting the namespaced `mcp_<server>_<tool>` string — to the
+/// capability for that one tool.
+///
+/// Deterministic precedence in [`resolve_tool_capability`]:
+/// per-tool override > per-server override > built-in per-tool
+/// classification > built-in server fallback > [`Capability::NetworkOutbound`].
+#[derive(Debug, Clone, Default)]
+pub struct McpCapabilityOverrides {
+    /// Server name -> capability for all tools of that server.
+    pub server: HashMap<String, Capability>,
+    /// Exact `(server, tool)` handshake pair -> capability for one tool.
+    pub tool: HashMap<(String, String), Capability>,
+}
+
+impl McpCapabilityOverrides {
+    /// Server-level override for one server (the CUA driver pattern).
+    pub fn server_level(server: &str, cap: Capability) -> Self {
+        let mut o = Self::default();
+        o.server.insert(server.to_string(), cap);
+        o
+    }
+}
+
+/// Resolve the capability for one projected MCP tool.
+///
+/// Precedence is deterministic: caller per-tool override, then caller
+/// per-server override, then built-in per-tool classification (REA),
+/// then built-in server fallback (REA's restrictive fallback), then the
+/// [`Capability::NetworkOutbound`] default for all other servers.
+///
+/// Fail-closed properties:
+/// * Unknown tools (no per-tool entry anywhere) fall to the server
+///   fallback or the default — never to a *more* permissive capability
+///   than the server's own classification.
+/// * Malformed override keys cannot match: lookup uses exact
+///   `(server, tool)` tuple equality against the handshake pair.
+/// * A resolution failure is impossible by construction (every path
+///   ends at the default); the function is pure and total.
+pub fn resolve_tool_capability(
+    overrides: &McpCapabilityOverrides,
+    server: &str,
+    tool: &str,
+) -> Capability {
+    use std::sync::OnceLock;
+    static REA_TOOLS: OnceLock<HashMap<(String, String), Capability>> = OnceLock::new();
+    let rea_tools = REA_TOOLS.get_or_init(crate::rea::rea_tool_capabilities);
+
+    // 1. Caller per-tool override (exact handshake pair).
+    if let Some(cap) = overrides.tool.get(&(server.to_string(), tool.to_string())) {
+        return cap.clone();
+    }
+    // 2. Caller per-server override.
+    if let Some(cap) = overrides.server.get(server) {
+        return cap.clone();
+    }
+    // 3. Built-in per-tool classification (REA static vs tracing).
+    if let Some(cap) = rea_tools.get(&(server.to_string(), tool.to_string())) {
+        return cap.clone();
+    }
+    // 4. Built-in server fallback (REA: restrictive, parks for approval).
+    if server == crate::rea::REA_SERVER_NAME {
+        return crate::rea::rea_server_capability();
+    }
+    // 5. Default for all other servers (backwards compatible).
+    Capability::NetworkOutbound
+}
+
 /// Sanitize one name segment for the `mcp_<server>_<tool>` namespace:
 /// lowercase alphanumeric runs joined by single underscores; anything
 /// else collapses. Never empty.
@@ -681,7 +753,7 @@ impl McpManager {
                 return report;
             }
         };
-        self.register_names(reg, &names, None)
+        self.register_names(reg, &names, &McpCapabilityOverrides::default())
     }
 
     /// Project one server's tools into the registry, with the same gates
@@ -700,18 +772,32 @@ impl McpManager {
         server: &str,
         capability: Option<Capability>,
     ) -> McpReport {
-        let mut caps = HashMap::new();
+        let mut overrides = McpCapabilityOverrides::default();
         if let Some(cap) = capability {
-            caps.insert(server.to_string(), cap);
+            overrides.server.insert(server.to_string(), cap);
         }
-        self.register_names(reg, &[server.to_string()], Some(&caps))
+        self.register_names(reg, &[server.to_string()], &overrides)
+    }
+
+    /// Project one server's tools with per-tool capability overrides.
+    /// `overrides` carries both server-level and `(server, tool)`
+    /// per-tool entries; see [`McpCapabilityOverrides`] for precedence.
+    /// Built-in classifications (e.g. REA) apply underneath caller
+    /// overrides.
+    pub fn register_server_tools_with(
+        self: &Arc<Self>,
+        reg: &mut ToolRegistry,
+        server: &str,
+        overrides: &McpCapabilityOverrides,
+    ) -> McpReport {
+        self.register_names(reg, &[server.to_string()], overrides)
     }
 
     fn register_names(
         self: &Arc<Self>,
         reg: &mut ToolRegistry,
         names: &[String],
-        caps: Option<&HashMap<String, Capability>>,
+        overrides: &McpCapabilityOverrides,
     ) -> McpReport {
         let mut report = McpReport::default();
         let mut used: HashSet<String> = HashSet::new();
@@ -832,12 +918,18 @@ impl McpManager {
                 // the default policies allow for approved servers. A
                 // `Other("mcp...")` token would deny every MCP tool under
                 // `Policy::coder()`, silently.) A caller may override the
-                // capability for a server it knows: the CUA driver
-                // projects as `ComputerUse`, the inward desktop-control
-                // capability, which parks for human approval by default.
-                let cap = caps
-                    .and_then(|m| m.get(&name).cloned())
-                    .unwrap_or(Capability::NetworkOutbound);
+                // capability per server or per tool (see
+                // [`McpCapabilityOverrides`]): the CUA driver projects as
+                // `ComputerUse`, the inward desktop-control capability,
+                // which parks for human approval by default. Built-in
+                // classifications (e.g. REA's static-vs-tracing split)
+                // apply underneath caller overrides.
+                //
+                // `name`/`def.name` are the authoritative handshake pair;
+                // the lookup never splits the namespaced `mcp_<s>_<t>`
+                // string, so a tool cannot accidentally match another
+                // server or tool.
+                let cap = resolve_tool_capability(overrides, &name, &def.name);
                 let schema = ToolSchema {
                     name: ns.clone(),
                     description: format!("[{}] {}", name, def.description),
@@ -1397,3 +1489,143 @@ fn now_ms() -> u64 {
 // Small deterministic invariants only: naming, sanitizing, backoff,
 // spec equality. Anything with a subprocess, socket, or clock lives in
 // `pantheon-eval` (`eval/tests/mcp_manager.rs`).
+
+#[cfg(test)]
+mod capability_resolution_tests {
+    use super::*;
+
+    fn empty() -> McpCapabilityOverrides {
+        McpCapabilityOverrides::default()
+    }
+
+    #[test]
+    fn default_is_network_outbound_for_unknown_servers() {
+        // Backwards compatibility: servers with no overrides keep the
+        // long-standing default.
+        assert_eq!(
+            resolve_tool_capability(&empty(), "github", "get_issue"),
+            Capability::NetworkOutbound
+        );
+        assert_eq!(
+            resolve_tool_capability(&empty(), "anything", "whatever"),
+            Capability::NetworkOutbound
+        );
+    }
+
+    #[test]
+    fn caller_server_override_beats_default() {
+        // The CUA driver pattern: whole-server override.
+        let o = McpCapabilityOverrides::server_level("cua", Capability::ComputerUse);
+        assert_eq!(
+            resolve_tool_capability(&o, "cua", "click"),
+            Capability::ComputerUse
+        );
+        // Other servers unaffected.
+        assert_eq!(
+            resolve_tool_capability(&o, "github", "get_issue"),
+            Capability::NetworkOutbound
+        );
+    }
+
+    #[test]
+    fn caller_per_tool_beats_caller_server() {
+        let mut o = McpCapabilityOverrides::server_level("srv", Capability::ComputerUse);
+        o.tool.insert(
+            ("srv".to_string(), "read_only_thing".to_string()),
+            Capability::FilesystemRead,
+        );
+        assert_eq!(
+            resolve_tool_capability(&o, "srv", "read_only_thing"),
+            Capability::FilesystemRead
+        );
+        assert_eq!(
+            resolve_tool_capability(&o, "srv", "other_tool"),
+            Capability::ComputerUse
+        );
+    }
+
+    #[test]
+    fn builtin_rea_static_is_filesystem_read() {
+        assert_eq!(
+            resolve_tool_capability(&empty(), "rea", "binary_overview"),
+            Capability::FilesystemRead
+        );
+        assert_eq!(
+            resolve_tool_capability(&empty(), "rea", "analyze_function"),
+            Capability::FilesystemRead
+        );
+    }
+
+    #[test]
+    fn builtin_rea_tracing_is_binary_trace() {
+        assert_eq!(
+            resolve_tool_capability(&empty(), "rea", "trace_feature"),
+            Capability::BinaryTrace
+        );
+        assert_eq!(
+            resolve_tool_capability(&empty(), "rea", "capture_process_scenario"),
+            Capability::BinaryTrace
+        );
+    }
+
+    #[test]
+    fn unknown_rea_tool_falls_back_to_restrictive() {
+        // Fail-closed: a tool REA adds in a future version parks for
+        // approval instead of inheriting the permissive default.
+        assert_eq!(
+            resolve_tool_capability(&empty(), "rea", "some_future_tool"),
+            Capability::BinaryTrace
+        );
+    }
+
+    #[test]
+    fn caller_override_beats_builtin_rea() {
+        // An operator who explicitly classifies a REA tool wins over the
+        // built-in catalogue (e.g. to tighten further).
+        let mut o = McpCapabilityOverrides::default();
+        o.tool.insert(
+            ("rea".to_string(), "binary_overview".to_string()),
+            Capability::BinaryTrace,
+        );
+        assert_eq!(
+            resolve_tool_capability(&o, "rea", "binary_overview"),
+            Capability::BinaryTrace
+        );
+        // Unmentioned REA tools still use the builtin classification.
+        assert_eq!(
+            resolve_tool_capability(&o, "rea", "analyze_function"),
+            Capability::FilesystemRead
+        );
+    }
+
+    #[test]
+    fn similar_names_do_not_cross_match() {
+        // Tuple-keyed lookup: no string splitting, so near-miss names
+        // cannot accidentally inherit another entry's capability.
+        assert_eq!(
+            resolve_tool_capability(&empty(), "rea2", "binary_overview"),
+            Capability::NetworkOutbound
+        );
+        assert_eq!(
+            resolve_tool_capability(&empty(), "myrea", "trace_feature"),
+            Capability::NetworkOutbound
+        );
+        // A server literally named "rea::x" is a different server.
+        assert_eq!(
+            resolve_tool_capability(&empty(), "rea::x", "binary_overview"),
+            Capability::NetworkOutbound
+        );
+    }
+
+    #[test]
+    fn empty_tool_name_does_not_match() {
+        assert_eq!(
+            resolve_tool_capability(&empty(), "rea", ""),
+            Capability::BinaryTrace
+        );
+        assert_eq!(
+            resolve_tool_capability(&empty(), "", "binary_overview"),
+            Capability::NetworkOutbound
+        );
+    }
+}
