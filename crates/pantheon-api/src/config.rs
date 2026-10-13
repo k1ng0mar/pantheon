@@ -2236,7 +2236,7 @@ impl Config {
             // Unknown keys warn on stderr, non-fatal (see
             // KNOWN_CONFIG_KEYS): a typo'd section must be visible, never
             // silently dropped, and never a reason to refuse a load.
-            .map(|cfg| {
+            .inspect(|_| {
                 let unknown = unknown_config_keys(&text);
                 if !unknown.is_empty() {
                     eprintln!(
@@ -2245,7 +2245,6 @@ impl Config {
                         unknown.join(", "),
                     );
                 }
-                cfg
             })
     }
     /// The agent profiles declared in this config, as a resolvable registry.

@@ -169,9 +169,7 @@ mod tests {
     #[test]
     fn unknown_tool_has_no_per_tool_entry() {
         let m = rea_tool_capabilities();
-        assert!(m
-            .get(&(REA_SERVER_NAME.to_string(), "some_future_tool".to_string()))
-            .is_none());
+        assert!(!m.contains_key(&(REA_SERVER_NAME.to_string(), "some_future_tool".to_string())));
     }
 
     #[test]
@@ -180,9 +178,7 @@ mod tests {
         // "rea" on another server, or a server named "rea::x", cannot hit
         // REA's entries because no string splitting is involved.
         let m = rea_tool_capabilities();
-        assert!(m.get(&("other".to_string(), "rea".to_string())).is_none());
-        assert!(m
-            .get(&("rea::x".to_string(), "binary_overview".to_string()))
-            .is_none());
+        assert!(!m.contains_key(&("other".to_string(), "rea".to_string())));
+        assert!(!m.contains_key(&("rea::x".to_string(), "binary_overview".to_string())));
     }
 }
