@@ -1527,6 +1527,7 @@ pub struct ToolCounts {
     pub computer: usize,
     /// LSP + git-undo code-intel tools (0 when the CodeIntel group is
     /// off). LSP is 3 tools, git-undo is 4 tools when the group is on.
+
     pub code_intel: usize,
 }
 
@@ -1543,6 +1544,7 @@ impl ToolCounts {
             + self.websearch
             + self.mcp
             + self.computer
+
             + self.code_intel
     }
 }
@@ -3027,6 +3029,7 @@ impl Session {
         // fancier assistant message). The turn loop intercepts calls
         // before gating; the registry handler only validates.
         register_ui_tool(&mut reg);
+
         let n_builtin = reg.names().len();
         if tools.code_intel {
             let undo_state = self.supervisor.data_dir().join("git_undo");
@@ -3395,6 +3398,8 @@ impl Session {
         }
         let counts = ToolCounts {
             builtin: n_builtin,
+            code_intel: n_codeintel,
+
             skills: n_skills - n_builtin - n_codeintel,
             vault: n_vault - n_skills,
             session_search: n_search - n_vault,
@@ -4261,6 +4266,7 @@ impl Session {
         // Whether the consecutive-failure warning has been emitted for the
         // current streak. Reset alongside tool_failures on any success.
         let mut failure_warned: bool = false;
+
         let outcome = match self.drive(
             &loop_,
             &chain,
@@ -4277,6 +4283,7 @@ impl Session {
             &mut tool_calls_used,
             &mut tool_failures,
             &mut failure_warned,
+
             &watchdog,
             &ledger_poison,
         ) {
@@ -4739,6 +4746,7 @@ impl Session {
         tool_calls_used: &mut u32,
         tool_failures: &mut u32,
         failure_warned: &mut bool,
+
         watchdog: &std::sync::Mutex<TurnWatchdog>,
         ledger_poison: &LedgerPoison,
     ) -> Result<LoopOutcome, PantheonError> {
@@ -4891,6 +4899,7 @@ impl Session {
                     .find(|c| {
                         matches!(
                             self.gate_with_mode(loop_, run_id, &first.name, &first.arguments, c),
+
                             Ok(pantheon_agent::GateOutcome::NeedsApproval { .. })
                         )
                     })
@@ -4964,6 +4973,7 @@ impl Session {
                 for cap in reg.required_capabilities(&tc.name, &tc.arguments) {
                     if let pantheon_agent::GateOutcome::NeedsApproval { .. } =
                         self.gate_with_mode(loop_, run_id, &tc.name, &tc.arguments, &cap)?
+
                     {
                         // Same call, same scope, but the policy now wants
                         // a human. Park again rather than run it: the
@@ -5058,6 +5068,7 @@ impl Session {
                     } else {
                         *tool_failures = 0;
                         *failure_warned = false;
+
                     }
                     // Counted like any executed call: the whole-run budget
                     // seeds from the ledger's ToolCompleted rows, so the
@@ -5100,6 +5111,7 @@ impl Session {
                         *tool_failures,
                         failure_warned,
                     )?;
+
                 }
             }
         }
@@ -5288,6 +5300,7 @@ impl Session {
                     let caps = reg.required_capabilities(&call.name, &call.args);
                     for cap in &caps {
                         match self.gate_with_mode(loop_, run_id, &call.name, &call.args, cap)? {
+
                             pantheon_agent::GateOutcome::Allow => {}
                             pantheon_agent::GateOutcome::NeedsApproval { capability } => {
                                 let scope = approval_scope(&r.id, &call.name, &call.args);
@@ -5379,6 +5392,7 @@ impl Session {
                     } else {
                         *tool_failures = 0;
                         *failure_warned = false;
+
                     }
                     let cap = loop_.budget.max_consecutive_tool_failures;
                     if cap > 0 && *tool_failures >= cap {
@@ -5452,6 +5466,7 @@ impl Session {
                     tool_calls_used,
                     tool_failures,
                     failure_warned,
+
                     watchdog,
                     ledger_poison,
                 )
