@@ -380,10 +380,7 @@ fn load_while_swapping(dir: &Path) -> PythonPlugin {
     for _ in 0..200 {
         match PythonPlugin::load(dir) {
             Ok(p) => return p,
-            Err(e)
-                if e.code == "EXT_MANIFEST_READ"
-                    || e.code == "EXT_NO_ENTRY" =>
-            {
+            Err(e) if e.code == "EXT_MANIFEST_READ" || e.code == "EXT_NO_ENTRY" => {
                 last = Some(e);
                 std::thread::sleep(Duration::from_millis(1));
             }
