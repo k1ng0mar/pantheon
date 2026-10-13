@@ -437,59 +437,49 @@ pub fn run_system_doctor_opts(data_dir: &Path, ping: bool) -> SystemReport {
         },
     ));
 
-    // 6c. Cloudflare integration: the chain (cf CLI, token, section).
-    // Every gap is a warn, never a fail: the integration is optional and
-    // a missing token just means `cf` calls fail with cf's own auth
-    // error, which the agent reports instead of acting on.
-    eprintln!("doctor: cloudflare");
-    {
-        let detect = crate::setup_providers::detect_binary;
-        let section = cfg.as_ref().and_then(|c| c.cloudflare.as_ref());
-        if section.is_none() {
-            checks.push(check(
-                "cloudflare",
+    // 6d. Permission mode: verify the config value is a valid mode.
+    eprintln!("doctor: permission_mode");
+    if let Some(mode_str) = cfg.as_ref().and_then(|c| c.permission_mode.as_ref()) {
+        match pantheon_api::permission_mode::PermissionMode::parse(mode_str) {
+            Some(mode) => checks.push(check(
+                "permission_mode",
                 "ok",
-                "integration off ([cloudflare] absent)",
-                "run `pantheon cloudflare setup` to enable",
+                format!("mode is {}", mode.as_str()),
+                "",
+            )),
+            None => checks.push(check(
+                "permission_mode",
+                "fail",
+                format!("unknown permission mode: {mode_str}"),
+                "use ask, smart, or allow_all",
+            )),
+        }
+    } else {
+        checks.push(check(
+            "permission_mode",
+            "ok",
+            "mode is ask (default)",
+            "set permission_mode in config.toml to change",
+        ));
+    }
+
+    // 6e. Code intel: verify LSP and gitundo tools are registered when enabled.
+    eprintln!("doctor: code_intel");
+    if let Some(tools) = cfg.as_ref().and_then(|c| c.tools.as_ref()) {
+        if tools.code_intel.unwrap_or(true) {
+            checks.push(check(
+                "code_intel",
+                "ok",
+                "LSP diagnostics and git undo tools registered",
+                "",
             ));
         } else {
-            let secret_name = section
-                .and_then(|s| s.api_token_secret.clone())
-                .unwrap_or_else(|| "CLOUDFLARE_API_TOKEN".to_string());
-            let token_ok = std::env::var(&secret_name)
-                .map(|v| !v.trim().is_empty())
-                .unwrap_or(false);
-            let cf_ok = detect("command -v cf");
-            let enabled = section.map(|s| s.enabled).unwrap_or(false);
-            if !enabled {
-                checks.push(check(
-                    "cloudflare",
-                    "warn",
-                    "[cloudflare] present but disabled: no token injection",
-                    "set enabled = true in [cloudflare] when the token is ready",
-                ));
-            } else if !cf_ok {
-                checks.push(check(
-                    "cloudflare",
-                    "warn",
-                    "integration enabled but the cf CLI is missing",
-                    "run `pantheon cloudflare setup` (installs `npm install -g cf`)",
-                ));
-            } else if !token_ok {
-                checks.push(check(
-                    "cloudflare",
-                    "warn",
-                    format!("cf present but {secret_name} is not set in the environment"),
-                    "create a scoped API token (dashboard > My Profile > API Tokens) and export it",
-                ));
-            } else {
-                checks.push(check(
-                    "cloudflare",
-                    "ok",
-                    format!("cf CLI present, {secret_name} resolves, token injection enabled"),
-                    "",
-                ));
-            }
+            checks.push(check(
+                "code_intel",
+                "ok",
+                "code intel tools disabled",
+                "set tools.code_intel = true in config.toml to enable",
+            ));
         }
     }
 

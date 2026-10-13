@@ -5517,20 +5517,6 @@ pub fn run_tui_session_with(
             .unwrap_or_default(),
     );
 
-    // Cloudflare integration (`[cloudflare]` in config.toml). Absent
-    // section = off: the shell tool injects no token, whatever the
-    // broker resolves.
-    session.set_cloudflare_config(
-        file_cfg
-            .as_ref()
-            .and_then(|c| c.cloudflare.clone())
-            .map(|s| pantheon_runtime::tool_config::CloudflareToolConfig {
-                enabled: s.enabled,
-                api_token_secret: s.api_token_secret,
-            })
-            .unwrap_or_default(),
-    );
-
     // Speech-to-text (`[stt]` in config.toml) for the video fallback's
     // audio leg. Absent = frames only, noted honestly in the summary.
     session.set_stt_section(file_cfg.as_ref().and_then(|c| c.stt.clone()));

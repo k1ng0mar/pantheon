@@ -416,9 +416,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
                 skipped: skill_deps_skipped,
             })
         },
-        // The wizard does not configure the Cloudflare integration; absent
-        // section keeps the integration off (no token injection).
-        cloudflare: None,
+
         // The wizard does not configure gateway channels; absent section
         // keeps the previous default.
         gateway: None,

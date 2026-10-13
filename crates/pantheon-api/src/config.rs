@@ -824,13 +824,6 @@ pub struct BudgetSection {
     /// Max tool calls per run. Default 32.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_calls: Option<u32>,
-    /// Stop the run after this many consecutive failed tool calls.
-    /// Default 5. `0` disables the cap. Distinct from `max_tool_calls`:
-    /// that bounds total work, this bounds *fruitless* work, so a model
-    /// retrying the same broken command cannot burn the whole budget.
-    /// Any success resets the streak.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_consecutive_tool_failures: Option<u32>,
     /// Max delegation depth. Default 2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_delegate_depth: Option<u32>,
@@ -1402,35 +1395,6 @@ pub struct SkillDepsSection {
     pub skipped: Vec<String>,
 }
 
-/// Cloudflare integration (`[cloudflare]` in config.toml).
-///
-/// Gates the two things a Cloudflare integration needs: whether the
-/// resolved `CLOUDFLARE_API_TOKEN` may be injected into `cf` child
-/// processes at all (env injection is opt-in, never ambient), and which
-/// secret name holds the token. Absent section = the integration is off:
-/// `cf` calls still classify and still need approval, but the shell child
-/// runs tokenless and every authenticated call fails with cf's own auth
-/// error, which the agent can surface instead of acting on.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct CloudflareSection {
-    /// Master switch. `false` = no token injection, no doctor pass, no
-    /// setup writes. Default false: a config that merely mentions the
-    /// section does not silently enable child-env credentials.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Secret name holding the API token, resolved via the secrets
-    /// broker (env, then keyring, then encrypted file). Default
-    /// `CLOUDFLARE_API_TOKEN`. The broker never logs the value; the
-    /// child env carries it and nothing else about Cloudflare does.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_token_secret: Option<String>,
-    /// Account id pinned for single-account setups (`cf -z`-style
-    /// disambiguation is left to the agent; this pin only feeds
-    /// doctor's account check). Optional.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
-}
-
 /// TUI chrome (`[tui]` in config.toml).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct TuiSection {
@@ -1997,9 +1961,6 @@ pub struct Config {
     /// `skipped` list = everything it checked was found or installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_deps: Option<SkillDepsSection>,
-    /// Cloudflare integration (`[cloudflare]`). Absent = off.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cloudflare: Option<CloudflareSection>,
     /// MCP servers (`[mcp]` / `[mcp.servers.<name>]`). Absent = the
     /// launcher is off. ANCHOR(mcp-workstream): config half of MCP wiring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2107,7 +2068,6 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "websearch",
     "tools",
     "skill_deps",
-    "cloudflare",
     "mcp",
     "plugins",
     "tui",
@@ -3256,7 +3216,6 @@ mod fix_pass4_leaf1_tests {
             websearch: Some(WebsearchSection::default()),
             tools: Some(ToolsSection::default()),
             skill_deps: Some(SkillDepsSection::default()),
-            cloudflare: Some(CloudflareSection::default()),
             mcp: Some(McpSection::default()),
             plugins: HashMap::from([(
                 "x".to_string(),
