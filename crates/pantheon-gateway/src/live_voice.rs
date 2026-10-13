@@ -231,20 +231,20 @@ pub fn wav_to_pcm_16k(bytes: &[u8]) -> Result<Vec<i16>, &'static str> {
     let mut pos = 12usize;
     while pos + 8 <= bytes.len() {
         let id = &bytes[pos..pos + 4];
-        let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().map_err(|_| "wav_bad_fmt")?) as usize;
         let body = pos + 8;
         let end = body.saturating_add(size).min(bytes.len());
         if id == b"fmt " {
             if end - body < 16 {
                 return Err("wav_bad_fmt");
             }
-            let audio_fmt = u16::from_le_bytes(bytes[body..body + 2].try_into().unwrap());
+            let audio_fmt = u16::from_le_bytes(bytes[body..body + 2].try_into().map_err(|_| "wav_bad_fmt")?);
             if audio_fmt != 1 {
                 return Err("wav_unsupported"); // PCM only, no float/ADPCM
             }
-            channels = u16::from_le_bytes(bytes[body + 2..body + 4].try_into().unwrap());
-            rate = u32::from_le_bytes(bytes[body + 4..body + 8].try_into().unwrap());
-            bits = u16::from_le_bytes(bytes[body + 14..body + 16].try_into().unwrap());
+            channels = u16::from_le_bytes(bytes[body + 2..body + 4].try_into().map_err(|_| "wav_bad_fmt")?);
+            rate = u32::from_le_bytes(bytes[body + 4..body + 8].try_into().map_err(|_| "wav_bad_fmt")?);
+            bits = u16::from_le_bytes(bytes[body + 14..body + 16].try_into().map_err(|_| "wav_bad_fmt")?);
             if bits != 8 && bits != 16 {
                 return Err("wav_unsupported");
             }
@@ -269,7 +269,7 @@ pub fn wav_to_pcm_16k(bytes: &[u8]) -> Result<Vec<i16>, &'static str> {
         for ch in 0..channels as usize {
             let off = ch * bytes_per_sample;
             let s: i16 = if bits == 16 {
-                i16::from_le_bytes(frame[off..off + 2].try_into().unwrap())
+                i16::from_le_bytes(frame[off..off + 2].try_into().map_err(|_| "wav_bad_fmt")?)
             } else {
                 ((frame[off] as i16) - 128) * 256
             };
