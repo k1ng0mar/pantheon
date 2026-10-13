@@ -280,8 +280,8 @@ mod tests {
     fn check_empty_config_is_empty() {
         let d = std::env::temp_dir().join("pantheon-mcp-boot-test-empty");
         let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("config.toml"), "[mcp]\n").unwrap();
+        std::fs::create_dir_all(&d).expect("create test dir");
+        std::fs::write(d.join("config.toml"), "[mcp]\n").expect("write config");
         let out = check(&d, Duration::from_secs(2));
         assert!(out.is_empty());
     }
@@ -290,7 +290,7 @@ mod tests {
     fn check_reports_broken_and_unapproved() {
         let d = std::env::temp_dir().join("pantheon-mcp-boot-test-probe");
         let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        std::fs::create_dir_all(&d).expect("create test dir");
         // "broken" is bundled-approved? No - use a name the bundled check
         // will not know, but approve it via the approval store dir so the
         // probe actually runs and fails on the bogus command.
@@ -298,9 +298,9 @@ mod tests {
             d.join("config.toml"),
             "[mcp.servers.broken]\nenabled = true\ncommand = \"pantheon-definitely-not-a-real-binary-xyz\"\n",
         )
-        .unwrap();
+        .expect("write config");
         let mcp_dir = d.join("mcp");
-        std::fs::create_dir_all(&mcp_dir).unwrap();
+        std::fs::create_dir_all(&mcp_dir).expect("create mcp dir");
         std::fs::write(
             mcp_dir.join(".approvals.json"),
             r#"{"broken":{"plugin":"broken","version":"1","dir_hash":"x","approved_at_ms":1}}"#,
@@ -318,7 +318,7 @@ mod tests {
     fn check_skips_unapproved_third_party() {
         let d = std::env::temp_dir().join("pantheon-mcp-boot-test-unapproved");
         let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        std::fs::create_dir_all(&d).expect("create test dir");
         std::fs::write(
             d.join("config.toml"),
             "[mcp.servers.sneaky]\nenabled = true\ncommand = \"echo\"\n",

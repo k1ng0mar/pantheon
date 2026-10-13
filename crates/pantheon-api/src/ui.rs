@@ -1717,7 +1717,7 @@ mod tests {
         assert!(doc.validate().is_ok());
         match &doc.root.component {
             Component::Markdown(m) => assert!(m.text.contains("hologram")),
-            other => panic!("expected markdown fallback, got {:?}", other.tag()),
+            other => panic!("expected markdown fallback, got {}", other.tag()),
         }
     }
 
@@ -1736,7 +1736,7 @@ mod tests {
         // Chart -> table -> (minimal has no table) -> markdown note.
         match &degraded.root.component {
             Component::Markdown(m) => assert!(m.text.contains("unsupported")),
-            other => panic!("expected markdown fallback, got {:?}", other.tag()),
+            other => panic!("expected markdown fallback, got {}", other.tag()),
         }
 
         // A client that supports tables keeps the table step.
@@ -1758,7 +1758,7 @@ mod tests {
         let degraded = degrade_for(&d, &ClientCaps::full());
         match &degraded.root.component {
             Component::Markdown(m) => assert!(m.text.contains("v99")),
-            other => panic!("expected note, got {:?}", other.tag()),
+            other => panic!("expected note, got {}", other.tag()),
         }
     }
 
