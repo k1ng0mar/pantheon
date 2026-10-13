@@ -679,7 +679,7 @@ mod health_tests {
         let d = tmpdir("ok");
         let mut t = ChannelHealthTracker::new(d.clone());
         t.record_poll_ok("telegram");
-        let h = t.states.get("telegram").unwrap();
+        let h = t.states.get("telegram").expect("telegram state exists");
         assert_eq!(h.state, ChannelState::Connected);
         assert_eq!(h.consecutive_failures, 0);
         // Snapshot file written on the unknown->connected transition.
@@ -692,12 +692,12 @@ mod health_tests {
         let mut t = ChannelHealthTracker::new(d);
         for i in 1..HEALTH_DEAD_AFTER {
             t.record_poll_err("telegram", "getUpdates failed [TELEGRAM_HTTP]");
-            let h = t.states.get("telegram").unwrap();
+            let h = t.states.get("telegram").expect("telegram state exists");
             assert_eq!(h.state, ChannelState::Degraded);
             assert_eq!(h.consecutive_failures, i);
         }
         t.record_poll_err("telegram", "getUpdates failed [TELEGRAM_HTTP]");
-        assert_eq!(t.states.get("telegram").unwrap().state, ChannelState::Dead);
+        assert_eq!(t.states.get("telegram").expect("telegram state exists").state, ChannelState::Dead);
     }
 
     #[test]
@@ -708,7 +708,7 @@ mod health_tests {
             "telegram",
             "getUpdates failed [TELEGRAM_HTTP]: 401 unauthorized (token revoked?)",
         );
-        let h = t.states.get("telegram").unwrap();
+        let h = t.states.get("telegram").expect("telegram state exists");
         assert_eq!(h.state, ChannelState::Dead);
     }
 
@@ -719,7 +719,7 @@ mod health_tests {
         t.record_poll_err("telegram", "boom");
         t.record_poll_err("telegram", "boom");
         t.record_poll_ok("telegram");
-        let h = t.states.get("telegram").unwrap();
+        let h = t.states.get("telegram").expect("telegram state exists");
         assert_eq!(h.state, ChannelState::Connected);
         assert_eq!(h.consecutive_failures, 0);
         assert!(h.last_error.is_none());
@@ -733,7 +733,7 @@ mod health_tests {
         for _ in 0..10 {
             t.record_send_rate_limited("telegram", &err);
         }
-        let h = t.states.get("telegram").unwrap();
+        let h = t.states.get("telegram").expect("telegram state exists");
         assert_eq!(h.state, ChannelState::Degraded);
         assert_eq!(h.consecutive_failures, 0);
     }
@@ -744,9 +744,9 @@ mod health_tests {
         let mut t = ChannelHealthTracker::new(d);
         t.record_send_ok("discord");
         t.record_dead_letter("discord", "[DISCORD_HTTP] 404");
-        let h = t.states.get("discord").unwrap();
+        let h = t.states.get("discord").expect("discord state exists");
         assert_eq!(h.state, ChannelState::Dead);
-        assert!(h.last_error.as_deref().unwrap().contains("dead-lettered"));
+        assert!(h.last_error.as_deref().expect("last error set").contains("dead-lettered"));
     }
 
     #[test]
@@ -764,15 +764,15 @@ mod health_tests {
         )
         .unwrap();
         let v = channel_health_json(&data_dir);
-        let channels = v.get("channels").unwrap().as_array().unwrap();
+        let channels = v.get("channels").expect("channels present").as_array().expect("channels is array");
         assert_eq!(channels.len(), 2);
         // Sorted by name: discord first.
-        assert_eq!(channels[0].get("name").unwrap(), "discord");
+        assert_eq!(channels[0].get("name").expect("name present"), "discord");
         assert_eq!(
             channels[0].get("stale"),
             Some(&serde_json::Value::Bool(true))
         );
-        assert_eq!(channels[1].get("name").unwrap(), "telegram");
+        assert_eq!(channels[1].get("name").expect("name present"), "telegram");
         assert!(channels[1].get("stale").is_none());
     }
 
@@ -780,6 +780,6 @@ mod health_tests {
     fn reader_empty_without_gateway_dir() {
         let data_dir = tmpdir("reader-empty");
         let v = channel_health_json(&data_dir);
-        assert_eq!(v.get("channels").unwrap().as_array().unwrap().len(), 0);
+        assert_eq!(v.get("channels").expect("channels present").as_array().expect("channels is array").len(), 0);
     }
 }

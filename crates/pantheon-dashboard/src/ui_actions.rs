@@ -184,14 +184,14 @@ mod tests {
             Response::Buffered { body, .. } => {
                 serde_json::from_slice(body).expect("response is json")
             }
-            _ => panic!("expected buffered response"),
+            _ => panic!("expected buffered response, got other response type"),
         }
     }
 
     fn resp_status(resp: &Response) -> u16 {
         match resp {
             Response::Buffered { status, .. } => *status,
-            _ => panic!("expected buffered response"),
+            _ => panic!("expected buffered response, got other response type"),
         }
     }
 
@@ -383,7 +383,7 @@ mod tests {
             match h.join().expect("thread") {
                 200 => ok += 1,
                 409 => conflicted += 1,
-                s => panic!("unexpected status {s}"),
+                s => panic!("unexpected status {s}, expected 200 or 409"),
             }
         }
         assert_eq!(ok, 1, "exactly one executes");
@@ -496,7 +496,7 @@ mod tests {
         let resp = submit_ui_action(&app, "r1", &post_req(body));
         let raw = match &resp {
             Response::Buffered { body, .. } => String::from_utf8(body.clone()).unwrap(),
-            _ => panic!("buffered"),
+            _ => panic!("expected buffered response"),
         };
         assert!(
             !raw.contains("super-secret-value"),
