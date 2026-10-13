@@ -697,7 +697,13 @@ mod health_tests {
             assert_eq!(h.consecutive_failures, i);
         }
         t.record_poll_err("telegram", "getUpdates failed [TELEGRAM_HTTP]");
-        assert_eq!(t.states.get("telegram").expect("telegram state exists").state, ChannelState::Dead);
+        assert_eq!(
+            t.states
+                .get("telegram")
+                .expect("telegram state exists")
+                .state,
+            ChannelState::Dead
+        );
     }
 
     #[test]
@@ -746,7 +752,11 @@ mod health_tests {
         t.record_dead_letter("discord", "[DISCORD_HTTP] 404");
         let h = t.states.get("discord").expect("discord state exists");
         assert_eq!(h.state, ChannelState::Dead);
-        assert!(h.last_error.as_deref().expect("last error set").contains("dead-lettered"));
+        assert!(h
+            .last_error
+            .as_deref()
+            .expect("last error set")
+            .contains("dead-lettered"));
     }
 
     #[test]
@@ -764,7 +774,11 @@ mod health_tests {
         )
         .unwrap();
         let v = channel_health_json(&data_dir);
-        let channels = v.get("channels").expect("channels present").as_array().expect("channels is array");
+        let channels = v
+            .get("channels")
+            .expect("channels present")
+            .as_array()
+            .expect("channels is array");
         assert_eq!(channels.len(), 2);
         // Sorted by name: discord first.
         assert_eq!(channels[0].get("name").expect("name present"), "discord");
@@ -780,6 +794,13 @@ mod health_tests {
     fn reader_empty_without_gateway_dir() {
         let data_dir = tmpdir("reader-empty");
         let v = channel_health_json(&data_dir);
-        assert_eq!(v.get("channels").expect("channels present").as_array().expect("channels is array").len(), 0);
+        assert_eq!(
+            v.get("channels")
+                .expect("channels present")
+                .as_array()
+                .expect("channels is array")
+                .len(),
+            0
+        );
     }
 }

@@ -263,7 +263,10 @@ mod tests {
         assert_eq!(f.name, "ui_content");
         assert_eq!(f.id, 7);
         assert!(f.text.contains("t-ui_0"), "{}", f.text);
-        let comp = f.component.as_ref().expect("component frame carries component payload");
+        let comp = f
+            .component
+            .as_ref()
+            .expect("component frame carries component payload");
         assert_eq!(comp["id"], "t-ui_0");
         assert_eq!(comp["root"]["type"], "markdown");
     }

@@ -210,6 +210,10 @@ impl PaletteState {
 
 /// A single block in the conversation transcript.
 #[derive(Debug, Clone)]
+// ToolCall is intentionally larger than the other variants: it carries the
+// full tool card state (name, args, timing, error, tokens) inline. Boxing it
+// would touch every construction and match site for a marginal layout win.
+#[allow(clippy::large_enum_variant)]
 pub enum BlockKind {
     UserMessage(String),
     AssistantMessage(String),
@@ -5365,6 +5369,9 @@ fn stream_run() -> Option<String> {
 }
 
 /// Internal event types that flow from the worker thread to the TUI loop.
+// Model carries a full ModelEvent inline; boxing it would add indirection
+// on a hot path (every streamed delta) for a marginal layout win.
+#[allow(clippy::large_enum_variant)]
 enum TuiEvent {
     /// A model streaming event. `run_id` is the stream's owner, tagged by
     /// the worker thread at send time (via `set_stream_run`), so a model

@@ -1527,7 +1527,6 @@ pub struct ToolCounts {
     pub computer: usize,
     /// LSP + git-undo code-intel tools (0 when the CodeIntel group is
     /// off). LSP is 3 tools, git-undo is 4 tools when the group is on.
-
     pub code_intel: usize,
 }
 
@@ -1544,7 +1543,6 @@ impl ToolCounts {
             + self.websearch
             + self.mcp
             + self.computer
-
             + self.code_intel
     }
 }
@@ -4282,7 +4280,6 @@ impl Session {
             &mut tool_calls_used,
             &mut tool_failures,
             &mut failure_warned,
-
             &watchdog,
             &ledger_poison,
         ) {
@@ -4898,7 +4895,6 @@ impl Session {
                     .find(|c| {
                         matches!(
                             self.gate_with_mode(loop_, run_id, &first.name, &first.arguments, c),
-
                             Ok(pantheon_agent::GateOutcome::NeedsApproval { .. })
                         )
                     })
@@ -4972,7 +4968,6 @@ impl Session {
                 for cap in reg.required_capabilities(&tc.name, &tc.arguments) {
                     if let pantheon_agent::GateOutcome::NeedsApproval { .. } =
                         self.gate_with_mode(loop_, run_id, &tc.name, &tc.arguments, &cap)?
-
                     {
                         // Same call, same scope, but the policy now wants
                         // a human. Park again rather than run it: the
@@ -5067,7 +5062,6 @@ impl Session {
                     } else {
                         *tool_failures = 0;
                         *failure_warned = false;
-
                     }
                     // Counted like any executed call: the whole-run budget
                     // seeds from the ledger's ToolCompleted rows, so the
@@ -5110,7 +5104,6 @@ impl Session {
                         *tool_failures,
                         failure_warned,
                     )?;
-
                 }
             }
         }
@@ -5299,7 +5292,6 @@ impl Session {
                     let caps = reg.required_capabilities(&call.name, &call.args);
                     for cap in &caps {
                         match self.gate_with_mode(loop_, run_id, &call.name, &call.args, cap)? {
-
                             pantheon_agent::GateOutcome::Allow => {}
                             pantheon_agent::GateOutcome::NeedsApproval { capability } => {
                                 let scope = approval_scope(&r.id, &call.name, &call.args);
@@ -5391,7 +5383,6 @@ impl Session {
                     } else {
                         *tool_failures = 0;
                         *failure_warned = false;
-
                     }
                     let cap = loop_.budget.max_consecutive_tool_failures;
                     if cap > 0 && *tool_failures >= cap {
@@ -5465,7 +5456,6 @@ impl Session {
                     tool_calls_used,
                     tool_failures,
                     failure_warned,
-
                     watchdog,
                     ledger_poison,
                 )
