@@ -2902,6 +2902,12 @@ mod gateway_multi_agent_tests {
             set_profile_override(Some(name.to_string()));
             OverrideGuard { _lock }
         }
+        fn clear() -> Self {
+            let lock = OVERRIDES_LOCK.get_or_init(|| std::sync::Mutex::new(()));
+            let _lock = lock.lock().unwrap_or_else(|e| e.into_inner());
+            set_profile_override(None);
+            OverrideGuard { _lock }
+        }
     }
     impl Drop for OverrideGuard {
         fn drop(&mut self) {
@@ -3002,6 +3008,7 @@ mod gateway_multi_agent_tests {
     fn anonymous_when_nothing_declared_and_nothing_asked() {
         // The pre-profiles behavior is untouched: no [agents] table and no
         // override means anonymous, not an error.
+        let _guard = OverrideGuard::clear();
         let cfg = Config::default();
         assert!(cfg.resolve_profile(None).unwrap().is_none());
     }
