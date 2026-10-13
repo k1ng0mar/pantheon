@@ -297,6 +297,15 @@ pub enum BlockKind {
         message: String,
         fallback: FallbackOutcome,
     },
+    /// Structured UI published by the agent (`render_ui`, protocol
+    /// `pantheon_api::ui`). Rendered by the component renderer
+    /// (`ui_render`); `revision` tracks `UiUpdated` application so
+    /// out-of-order replays cannot regress the view.
+    Ui {
+        ui_id: String,
+        revision: u64,
+        document: pantheon_api::ui::UiDocument,
+    },
 }
 
 /// What the fallback chain did after a provider failure.
@@ -409,6 +418,61 @@ pub struct ClarifyRequest {
     pub options: Vec<String>,
 }
 
+/// An in-progress form fill: the operator answers a published form's
+/// fields one at a time in the composer. `values` accumulates validated
+/// entries; `index` is the field being answered.
+pub struct FormFill {
+    pub ui_id: String,
+    pub revision: u64,
+    pub node_id: String,
+    pub action_id: String,
+    pub title: String,
+    pub fields: Vec<pantheon_api::ui::FormField>,
+    pub index: usize,
+    pub values: serde_json::Map<String, serde_json::Value>,
+}
+
+impl FormFill {
+    fn current(&self) -> Option<&pantheon_api::ui::FormField> {
+        self.fields.get(self.index)
+    }
+
+    /// Human-readable prompt for the current field, shown above the
+    /// composer while filling.
+    fn prompt(&self) -> String {
+        match self.current() {
+            None => "form complete".to_string(),
+            Some(f) => {
+                let total = self.fields.len();
+                let n = self.index + 1;
+                let type_hint = match &f.field_type {
+                    pantheon_api::ui::FieldType::Text => "text",
+                    pantheon_api::ui::FieldType::LongText => "long text",
+                    pantheon_api::ui::FieldType::Number => "number",
+                    pantheon_api::ui::FieldType::Boolean => "true/false",
+                    pantheon_api::ui::FieldType::Secret => "secret (masked)",
+                    pantheon_api::ui::FieldType::Select { options } => {
+                        return format!(
+                            "form [{n}/{total}] {}: pick 1-{} ({}){}",
+                            f.label,
+                            options.len(),
+                            options.join(", "),
+                            if f.required { " *" } else { "" }
+                        )
+                    }
+                };
+                let req = if f.required { " *" } else { "" };
+                let def = f
+                    .default
+                    .as_deref()
+                    .map(|d| format!(" [default: {d}]"))
+                    .unwrap_or_default();
+                format!("form [{n}/{total}] {} ({type_hint}){req}{def}", f.label)
+            }
+        }
+    }
+}
+
 /// A parked approval: (scope, tool name, tool args). The scope is
 /// `call_id:tool:args`; the name/args are parsed out of it so a
 /// re-entered session can render the card without the live `last_tool`.
@@ -454,6 +518,14 @@ pub struct TuiState {
     /// Set when a run parks on approval: (run_id, scope/call_id).
     /// Drives the permission card; cleared by grant/deny.
     pub pending_approval: Option<(String, String)>,
+    /// Set when a run parks on a UI approval card:
+    /// (run_id, ui_id, call_id). Drives the UI decision card; cleared by
+    /// the operator's submit through `Session::submit_ui_action`.
+    pub pending_ui_approval: Option<(String, String, String)>,
+    /// The operator is filling a published form field-by-field in the
+    /// composer. Captures all keys until submit (Enter on last field) or
+    /// cancel (Esc).
+    pub form_fill: Option<FormFill>,
     /// A retryable provider failure whose chain verdict has not arrived
     /// yet. Resolved by the next Fallback / Exhausted / Attempt event;
     /// never rendered on its own, so the card can say whether a
@@ -720,6 +792,8 @@ impl Default for TuiState {
             status_line: String::from("ready"),
             is_inputting: false,
             pending_approval: None,
+            pending_ui_approval: None,
+            form_fill: None,
             pending_provider_failure: None,
             pending_reflect: None,
             reflect_running: false,
@@ -883,6 +957,8 @@ impl TuiState {
             status_line: String::from("ready"),
             is_inputting: false,
             pending_approval: None,
+            pending_ui_approval: None,
+            form_fill: None,
             pending_provider_failure: None,
             pending_reflect: None,
             reflect_running: false,
@@ -1532,6 +1608,10 @@ fn event_run_id(ev: &RuntimeErrorEvent) -> Option<&str> {
         | E::ContextCompressed { run_id, .. }
         | E::SessionTitled { run_id, .. }
         | E::TodosUpdated { run_id, .. }
+        | E::UiContent { run_id, .. }
+        | E::UiUpdated { run_id, .. }
+        | E::UiActionRequested { run_id, .. }
+        | E::UiActionSubmitted { run_id, .. }
         | E::BrowserActivity { run_id, .. }
         | E::ScheduledTaskFailed { run_id, .. }
         | E::ScheduledTaskRecovered { run_id, .. }
@@ -1540,6 +1620,31 @@ fn event_run_id(ev: &RuntimeErrorEvent) -> Option<&str> {
 }
 
 impl TuiState {
+    /// Whether a submitted UI action was an approval-card decision, by
+    /// the action's kind in the displayed document. Used to clear the
+    /// pending-approval modal only for real decisions.
+    fn ui_action_is_approval(
+        &self,
+        ui_id: &str,
+        revision: u64,
+        node_id: &str,
+        action_id: &str,
+    ) -> bool {
+        self.blocks
+            .iter()
+            .rev()
+            .find_map(|b| match &b.kind {
+                BlockKind::Ui {
+                    ui_id: id,
+                    revision: rev,
+                    document,
+                } if id == ui_id && *rev == revision => Some(document),
+                _ => None,
+            })
+            .and_then(|doc| doc.find_action(node_id, action_id))
+            .is_some_and(|a| matches!(a.kind, pantheon_api::ui::ActionKind::Approval { .. }))
+    }
+
     /// Toggle the session sidebar (`^b`). At ≥100 cols this flips the
     /// split sidebar; below 100 cols it flips the floating overlay,
     /// which is never open by default.
@@ -1967,6 +2072,84 @@ impl TuiState {
                 self.blocks.push(TranscriptBlock {
                     kind: BlockKind::Status(format!("steered: {text}")),
                 });
+            }
+            // Structured UI, published by the agent through `render_ui`.
+            // The document is stored raw; `render_block` degrades it to
+            // this client's capabilities at draw time.
+            RuntimeErrorEvent::UiContent {
+                ui_id, document, ..
+            } => {
+                if document.validate().is_ok() {
+                    self.blocks.push(TranscriptBlock {
+                        kind: BlockKind::Ui {
+                            ui_id: ui_id.clone(),
+                            revision: 0,
+                            document: document.clone(),
+                        },
+                    });
+                    self.scroll_to_bottom();
+                }
+            }
+            // Live revision: replace the block only when the revision is
+            // newer, so out-of-order replays cannot regress the view.
+            RuntimeErrorEvent::UiUpdated {
+                ui_id,
+                revision,
+                document,
+                ..
+            } => {
+                if document.validate().is_err() {
+                    return;
+                }
+                if let Some(block) = self
+                    .blocks
+                    .iter_mut()
+                    .rev()
+                    .find(|b| matches!(&b.kind, BlockKind::Ui { ui_id: id, .. } if id == ui_id))
+                {
+                    if let BlockKind::Ui {
+                        revision: cur,
+                        document: cur_doc,
+                        ..
+                    } = &mut block.kind
+                    {
+                        if *revision > *cur {
+                            *cur = *revision;
+                            *cur_doc = document.clone();
+                        }
+                    }
+                }
+            }
+            // The turn parked on a UI approval card: modal decision, like
+            // the approval card (a approve, d deny, Esc deny).
+            RuntimeErrorEvent::UiActionRequested {
+                run_id,
+                ui_id,
+                call_id,
+            } => {
+                self.pending_ui_approval = Some((run_id.clone(), ui_id.clone(), call_id.clone()));
+                self.status_line = "UI decision required".into();
+                self.scroll_to_bottom();
+            }
+            // A UI action resolved elsewhere (another client): clear the
+            // modal only when the submission was an approval DECISION.
+            // Form/tool submissions on the same document must not clear
+            // the pending card (the runtime's park resolution is
+            // classified the same way).
+            RuntimeErrorEvent::UiActionSubmitted {
+                ui_id,
+                revision,
+                node_id,
+                action_id,
+                ..
+            } => {
+                if let Some((_, pending_ui, _)) = &self.pending_ui_approval {
+                    if pending_ui == ui_id
+                        && self.ui_action_is_approval(ui_id, *revision, node_id, action_id)
+                    {
+                        self.pending_ui_approval = None;
+                    }
+                }
             }
             _ => {}
         }
@@ -2617,6 +2800,16 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
                 pantheon_runtime::session::TranscriptItem::Reasoning(text) => {
                     BlockKind::Thinking(text)
                 }
+                // Structured UI: rebuilt at its latest revision.
+                pantheon_runtime::session::TranscriptItem::Ui {
+                    ui_id,
+                    revision,
+                    document,
+                } => BlockKind::Ui {
+                    ui_id,
+                    revision,
+                    document,
+                },
             };
             state.blocks.push(TranscriptBlock { kind });
         }
@@ -3581,6 +3774,15 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
 /// bottom input row and the splash's centered input so both always show
 /// the same draft.
 fn composer_text(state: &TuiState) -> String {
+    // Secret form fields never echo: the composer shows dots while the
+    // real value sits in `state.input` until submit.
+    if let Some(fill) = &state.form_fill {
+        if let Some(f) = fill.current() {
+            if matches!(f.field_type, pantheon_api::ui::FieldType::Secret) {
+                return "•".repeat(state.input.chars().count().min(64));
+            }
+        }
+    }
     if state.vim.enabled && state.is_inputting {
         // Vim: draw the cursor at the modal (row, col) instead of the
         // trailing `_`. Normal shows a bar before the char under the
@@ -3876,6 +4078,18 @@ fn render_footer(f: &mut Frame, area: Rect, state: &TuiState) {
     let mut sweeping = false;
     let (icon, color, word): (String, Color, String) = if state.pending_approval.is_some() {
         ("●".to_string(), th.warning, "awaiting approval".to_string())
+    } else if state.pending_ui_approval.is_some() {
+        (
+            "⬢".to_string(),
+            th.warning,
+            "awaiting UI decision".to_string(),
+        )
+    } else if state.form_fill.is_some() {
+        (
+            "▣".to_string(),
+            th.primary,
+            "filling form (esc cancel)".to_string(),
+        )
     } else if state.pending_clarify.is_some() {
         ("?".to_string(), th.primary, "awaiting input".to_string())
     } else if state.interrupted {
@@ -4830,6 +5044,25 @@ fn render_block(
                 lines.push(clip_line_spans(line, term_width as usize));
             }
         }
+        BlockKind::Ui {
+            ui_id,
+            revision,
+            document,
+        } => {
+            // Structured agent output: degrade to this client's
+            // capabilities first, then render natively. The header names
+            // the document so actions can address it.
+            let caps = crate::ui_render::tui_caps();
+            let degraded = pantheon_api::ui::degrade_for(document, &caps);
+            lines.push(Line::from(Span::styled(
+                format!("⬢ ui {ui_id}"),
+                Style::default().fg(th.dim),
+            )));
+            for line in crate::ui_render::render_ui_node(&degraded.root, th, term_width) {
+                lines.push(clip_line_spans(line, term_width as usize));
+            }
+            let _ = revision;
+        }
         BlockKind::ProviderError {
             provider,
             model,
@@ -5592,6 +5825,9 @@ fn spawn_bg_task(
             Ok(pantheon_agent::LoopOutcome::AwaitingInput { question, .. }) => Err(format!(
                 "parked on user input: '{question}'; answer with \
                  `pantheon run --taskID {run_id} --input '<answer>'`"
+            )),
+            Ok(pantheon_agent::LoopOutcome::AwaitingUiAction { ui_id, .. }) => Err(format!(
+                "parked on a UI decision for '{ui_id}' on run {run_id}; decide it from the session UI"
             )),
             Ok(pantheon_agent::LoopOutcome::Canceled { .. }) => Err("canceled".to_string()),
             Ok(pantheon_agent::LoopOutcome::Denied { capability }) => {
@@ -6522,6 +6758,277 @@ fn answer_clarify(
     }
 }
 
+/// Start filling the most recent published form, if any. Field values
+/// are collected in the composer one at a time; Enter advances, Esc
+/// cancels, and the final Enter validates + submits through
+/// `Session::submit_ui_action`.
+fn start_form_fill(state: &mut TuiState) -> bool {
+    let found = state.blocks.iter().rev().find_map(|b| match &b.kind {
+        BlockKind::Ui {
+            ui_id,
+            revision,
+            document,
+        } => document
+            .actions()
+            .into_iter()
+            .find_map(|(node_id, action)| match &action.kind {
+                pantheon_api::ui::ActionKind::Submit { .. } => {
+                    if let Some(node) = document.root.find(node_id) {
+                        if let pantheon_api::ui::Component::Form(f) = &node.component {
+                            return Some((
+                                ui_id.clone(),
+                                *revision,
+                                node_id.to_string(),
+                                action.action_id.clone(),
+                                f.title.clone().unwrap_or_else(|| "form".to_string()),
+                                f.fields.clone(),
+                            ));
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            }),
+        _ => None,
+    });
+    match found {
+        Some((ui_id, revision, node_id, action_id, title, fields)) => {
+            state.form_fill = Some(FormFill {
+                ui_id,
+                revision,
+                node_id,
+                action_id,
+                title,
+                fields,
+                index: 0,
+                values: serde_json::Map::new(),
+            });
+            state.input.clear();
+            state.is_inputting = true;
+            let prompt = state
+                .form_fill
+                .as_ref()
+                .map(|f| f.prompt())
+                .unwrap_or_default();
+            state.status_line = prompt;
+            state.scroll_to_bottom();
+            true
+        }
+        None => {
+            state.status_line = "no fillable form in the transcript".into();
+            false
+        }
+    }
+}
+
+/// Validate one field value the operator typed. Returns the JSON value
+/// to store, or an error string for the status line.
+fn validate_form_input(
+    field: &pantheon_api::ui::FormField,
+    raw: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    use pantheon_api::ui::FieldType;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        if field.required {
+            return Err(format!("{} is required", field.label));
+        }
+        if let Some(d) = &field.default {
+            return Ok(Some(serde_json::Value::String(d.clone())));
+        }
+        return Ok(None);
+    }
+    match &field.field_type {
+        FieldType::Text | FieldType::LongText | FieldType::Secret => {
+            Ok(Some(serde_json::Value::String(raw.to_string())))
+        }
+        FieldType::Number => raw
+            .parse::<f64>()
+            .map(|n| {
+                Some(
+                    serde_json::Number::from_f64(n)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::String(raw.to_string())),
+                )
+            })
+            .map_err(|_| format!("{}: not a number", field.label)),
+        FieldType::Boolean => match raw.to_lowercase().as_str() {
+            "true" | "yes" | "y" | "1" => Ok(Some(serde_json::Value::Bool(true))),
+            "false" | "no" | "n" | "0" => Ok(Some(serde_json::Value::Bool(false))),
+            _ => Err(format!("{}: enter true/false", field.label)),
+        },
+        FieldType::Select { options } => {
+            // Accept a 1-based index or the option text.
+            if let Ok(n) = raw.parse::<usize>() {
+                if n >= 1 && n <= options.len() {
+                    return Ok(Some(serde_json::Value::String(options[n - 1].clone())));
+                }
+            }
+            if let Some(exact) = options.iter().find(|o| o.eq_ignore_ascii_case(raw)) {
+                return Ok(Some(serde_json::Value::String(exact.clone())));
+            }
+            Err(format!(
+                "{}: pick 1-{} or one of: {}",
+                field.label,
+                options.len(),
+                options.join(", ")
+            ))
+        }
+    }
+}
+
+/// Advance the form fill: validate the current field, store it, move to
+/// the next field or submit when done.
+fn advance_form_fill(state: &mut TuiState, session: &Arc<Session>) {
+    let mut fill = match state.form_fill.take() {
+        Some(f) => f,
+        None => return,
+    };
+    let Some(field) = fill.current().cloned() else {
+        state.status_line = "form has no fields".into();
+        return;
+    };
+    let raw = std::mem::take(&mut state.input);
+    match validate_form_input(&field, &raw) {
+        Err(e) => {
+            state.form_fill = Some(fill);
+            state.input = raw;
+            state.status_line = e;
+        }
+        Ok(None) => {
+            // Skipped optional field.
+            fill.index += 1;
+            finish_or_continue_fill(state, session, fill);
+        }
+        Ok(Some(v)) => {
+            fill.values.insert(field.name.clone(), v);
+            fill.index += 1;
+            finish_or_continue_fill(state, session, fill);
+        }
+    }
+}
+
+fn finish_or_continue_fill(state: &mut TuiState, session: &Arc<Session>, fill: FormFill) {
+    if fill.index < fill.fields.len() {
+        let prompt = fill.prompt();
+        state.form_fill = Some(fill);
+        state.status_line = prompt;
+        return;
+    }
+    // All fields answered: submit.
+    let run = state.session_id.clone();
+    let nonce = format!(
+        "tui-{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        fill.ui_id
+    );
+    let sub = pantheon_api::ui::UiActionSubmission {
+        ui_id: fill.ui_id.clone(),
+        revision: fill.revision,
+        node_id: fill.node_id.clone(),
+        action_id: fill.action_id.clone(),
+        params: fill.values,
+        nonce,
+    };
+    let title = fill.title.clone();
+    match session.submit_ui_action(&run, &sub) {
+        Ok(pantheon_runtime::session::UiActionOutcome::Executed { result }) => {
+            let preview: String = result.chars().take(300).collect();
+            state.add_status(format!("form '{title}' submitted: {preview}"));
+            state.status_line = "form submitted".into();
+        }
+        Ok(pantheon_runtime::session::UiActionOutcome::Decided { .. }) => {
+            state.status_line = "unexpected decision outcome".into();
+        }
+        Err(e) => {
+            state.add_status(format!("form '{title}' failed: {e}"));
+            state.status_line = format!("submit failed: {}", e.cause);
+        }
+    }
+    state.is_inputting = false;
+}
+
+/// Decide a parked UI approval card: builds the submission for the
+/// card's approve/deny action and submits it, then resumes the turn.
+fn decide_ui_approval(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+    approve: bool,
+) {
+    let Some((run, ui_id, call_id)) = state.pending_ui_approval.take() else {
+        return;
+    };
+    // Find the card's approve/deny action ids in the published document,
+    // pinning the displayed revision: the decision must target what the
+    // operator actually saw.
+    let found = state.blocks.iter().rev().find_map(|b| match &b.kind {
+        BlockKind::Ui {
+            ui_id: id,
+            revision,
+            document,
+        } if id == &ui_id => document
+            .actions()
+            .into_iter()
+            .find_map(|(node_id, action)| {
+                let want = if approve {
+                    pantheon_api::ui::ApprovalDecision::Grant
+                } else {
+                    pantheon_api::ui::ApprovalDecision::Deny
+                };
+                match &action.kind {
+                    pantheon_api::ui::ActionKind::Approval { decision } if *decision == want => {
+                        Some((*revision, node_id.to_string(), action.action_id.clone()))
+                    }
+                    _ => None,
+                }
+            }),
+        _ => None,
+    });
+    let Some((revision, node_id, action_id)) = found else {
+        state.status_line = "UI approval card not found".into();
+        state.pending_ui_approval = Some((run, ui_id, call_id));
+        return;
+    };
+    let nonce = format!(
+        "tui-{}-{ui_id}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        if approve { "approve" } else { "deny" }
+    );
+    let sub = pantheon_api::ui::UiActionSubmission {
+        ui_id: ui_id.clone(),
+        revision,
+        node_id,
+        action_id,
+        params: serde_json::Map::new(),
+        nonce,
+    };
+    match session.submit_ui_action(&run, &sub) {
+        Ok(pantheon_runtime::session::UiActionOutcome::Decided { approved }) => {
+            state.status_line = if approved {
+                "approved; resuming".into()
+            } else {
+                "denied".into()
+            };
+            resume_parked_turn(state, session, tx, &run);
+        }
+        Ok(pantheon_runtime::session::UiActionOutcome::Executed { .. }) => {
+            state.status_line = "unexpected execution outcome".into();
+            state.pending_ui_approval = Some((run, ui_id, call_id));
+        }
+        Err(e) => {
+            state.pending_ui_approval = Some((run, ui_id, call_id));
+            state.status_line = format!("decision failed: {}", e.cause);
+        }
+    }
+}
+
 /// Run a destructive slash command the user confirmed on the amber card.
 fn run_confirmed_action(state: &mut TuiState, action: ConfirmAction) {
     match action {
@@ -7224,6 +7731,33 @@ fn tui_loop(
                     terminal.draw(|f| render(state, f))?;
                     continue;
                 }
+                if state.form_fill.is_some() {
+                    // Form fill modal: the composer collects one field at
+                    // a time. Enter validates + advances (submits on the
+                    // last field), Esc cancels, everything else types.
+                    // Vim modes are bypassed while filling.
+                    match key.code {
+                        KeyCode::Esc => {
+                            state.form_fill = None;
+                            state.input.clear();
+                            state.is_inputting = false;
+                            state.status_line = "form cancelled".into();
+                        }
+                        KeyCode::Enter => {
+                            advance_form_fill(state, &session);
+                        }
+                        KeyCode::Backspace => {
+                            state.input.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            state.input.push(c);
+                        }
+                        _ => {}
+                    }
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
                 if state.rewind_offer.is_some() {
                     // Explicit confirm: y rewinds, n/Esc dismisses.
                     match key.code {
@@ -7566,6 +8100,18 @@ fn tui_loop(
                                 }
                                 _ => {}
                             }
+                        } else if state.pending_ui_approval.is_some() {
+                            // UI approval card: a approve, d deny.
+                            // (y/n kept as aliases, mirroring the approval card.)
+                            match c {
+                                'a' | 'A' | 'y' | 'Y' => {
+                                    decide_ui_approval(state, &session, tx, true);
+                                }
+                                'd' | 'D' | 'n' | 'N' => {
+                                    decide_ui_approval(state, &session, tx, false);
+                                }
+                                _ => {}
+                            }
                         } else if let Some(answer) = clarify_digit {
                             answer_clarify(state, &session, tx, &answer);
                         } else if state.pending_confirm.is_some() {
@@ -7629,6 +8175,10 @@ fn tui_loop(
                                 }
                                 _ => {}
                             }
+                        } else if (c == 'F') && state.input.is_empty() && !state.is_inputting {
+                            // Fill the most recent published form (uppercase
+                            // only, empty composer: never steals typed text).
+                            start_form_fill(state);
                         } else if state.vim.enabled {
                             // Vim: the composer is a modal buffer. Normal
                             // mode interprets the key as a motion/edit;
@@ -7797,6 +8347,11 @@ fn tui_loop(
                                 state.active_run = None;
                                 drain_queued_message(state, &session, tx);
                             }
+                        } else if state.pending_ui_approval.is_some() {
+                            // Esc denies the UI approval card, mirroring
+                            // the approval card's Esc behavior.
+                            decide_ui_approval(state, &session, tx, false);
+                            state.status_line = "denied".into();
                         } else if state.pending_clarify.is_some() {
                             let run = state.session_id.clone();
                             state.pending_clarify.take();
@@ -8192,6 +8747,16 @@ fn export_transcript(blocks: &[TranscriptBlock], session_id: &str, format: &str)
                     .join("\n");
                 ("todos", format!("working on {remaining} to-dos:\n{body}"))
             }
+            BlockKind::Ui {
+                ui_id, document, ..
+            } => (
+                "ui",
+                format!(
+                    "[{ui_id}] ({})\n{}",
+                    document.root.component.tag(),
+                    pantheon_api::ui::text_summary(&document.root)
+                ),
+            ),
             BlockKind::ProviderError {
                 provider,
                 model,
@@ -8979,6 +9544,16 @@ fn handle_slash_inner(
                                 pantheon_runtime::session::TranscriptItem::Reasoning(text) => {
                                     BlockKind::Thinking(text)
                                 }
+                                // Structured UI: rebuilt at its latest revision.
+                                pantheon_runtime::session::TranscriptItem::Ui {
+                                    ui_id,
+                                    revision,
+                                    document,
+                                } => BlockKind::Ui {
+                                    ui_id,
+                                    revision,
+                                    document,
+                                },
                             };
                             state.blocks.push(TranscriptBlock { kind });
                         }

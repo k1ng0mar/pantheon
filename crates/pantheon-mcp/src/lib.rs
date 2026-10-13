@@ -18,6 +18,7 @@ pub mod client;
 pub mod framed;
 pub mod http;
 pub mod manager;
+pub mod rea;
 
 pub use bundled::{
     bundled_catalog, find_bundled, is_bundled, is_bundled_enabled, set_bundled_enabled,

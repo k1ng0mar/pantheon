@@ -257,6 +257,11 @@ pub fn format_text(frame: &UiFrame) -> String {
             .and_then(|u| u.as_str())
             .map(|u| u.to_string())
             .unwrap_or_default(),
+        crate::stream::UiFrameKind::Component => {
+            // Text channels get the summary line; full document rides
+            // the frame JSON for capable clients.
+            format!("[ui component] {}", frame.text)
+        }
     }
 }
 /// Thread -> run affinity so one SSE stream multiplexes many runs.

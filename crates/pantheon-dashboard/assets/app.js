@@ -670,9 +670,337 @@ renderers.inspector = async function () {
     const title = r.title || ("Run " + id.slice(0, 12));
     const TERMINAL = { completed: 1, failed: 1, canceled: 1 };
     const isLive = !TERMINAL[r.status];
+
+/* Structured UI component renderer (UI protocol v1).
+   Renders the typed UiDocument JSON shipped on transcript items with
+   type "ui". Everything is escaped with esc() first - no raw HTML from
+   the document ever reaches the DOM. Interactive actions (form submit,
+   approval decisions) post to POST /api/runs/:id/ui-action, which
+   delegates to Session::submit_ui_action; see the agent-native UI
+   actions section below. */
+/* ---------------- agent-native UI actions ----------------
+   Interactive client for the UI protocol (docs/ui-protocol.md).
+   Every submission goes to POST /api/runs/:id/ui-action, which
+   delegates to Session::submit_ui_action. The dashboard never
+   validates actions itself beyond JSON shape; the runtime is the
+   authority for the action registry, revision pinning, nonces,
+   and the capability gate. */
+
+/* Data attributes identifying one action target. ctx carries the run,
+   document, and displayed revision from the timeline item. */
+function uiActionCtx(ctx, node) {
+  var attrs =
+    ' data-ui-run="' + esc(ctx.runId || "") + '"' +
+    ' data-ui-doc="' + esc(ctx.uiId || "") + '"' +
+    ' data-ui-node="' + esc((node && node.id) || "") + '"' +
+    ' data-ui-rev="' + esc(String(ctx.revision == null ? 0 : ctx.revision)) + '"';
+  return { attrs: attrs };
+}
+
+/* One form field -> labelled input. Secret fields are password inputs;
+   values are never logged or echoed anywhere client-side. */
+function uiFieldHtml(f, fi) {
+  var name = f.name || ("field" + fi);
+  var label = esc(f.label || name) + (f.required ? " *" : "");
+  var fid = "ui-f-" + fi + "-" + name.replace(/[^a-zA-Z0-9_-]/g, "_");
+  var req = f.required ? " required" : "";
+  var ph = f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "";
+  var def = f.default != null ? String(f.default) : "";
+  var ft = (f.field_type && f.field_type.type) || "text";
+  var input;
+  if (ft === "long_text") {
+    input = '<textarea id="' + fid + '" data-ui-field="' + esc(name) + '"' + req + ph + ">" + esc(def) + "</textarea>";
+  } else if (ft === "number") {
+    input = '<input id="' + fid + '" type="number" data-ui-field="' + esc(name) + '"' + req + ph +
+      (def !== "" ? ' value="' + esc(def) + '"' : "") + ">";
+  } else if (ft === "boolean") {
+    input = '<input id="' + fid + '" type="checkbox" data-ui-field="' + esc(name) + '"' +
+      (def === "true" ? " checked" : "") + '><span class="text-faint"> ' + esc(f.label || name) + "</span>";
+    label = (f.required ? esc(f.label || name) + " *" : "");
+  } else if (ft === "secret") {
+    input = '<input id="' + fid + '" type="password" data-ui-field="' + esc(name) + '" autocomplete="off"' + req + ph + ">";
+  } else if (ft === "select") {
+    var opts = ((f.field_type && f.field_type.options) || []).map(function (o) {
+      return '<option value="' + esc(o) + '"' + (o === def ? " selected" : "") + ">" + esc(o) + "</option>";
+    }).join("");
+    input = '<select id="' + fid + '" data-ui-field="' + esc(name) + '"' + req + ">" + opts + "</select>";
+  } else {
+    input = '<input id="' + fid + '" type="text" data-ui-field="' + esc(name) + '"' + req + ph +
+      (def !== "" ? ' value="' + esc(def) + '"' : "") + ">";
+  }
+  return '<div class="ui-field"><label for="' + fid + '">' + label + "</label>" + input + "</div>";
+}
+
+/* Collect form values from a .ui-form container. Returns {params} or
+   {error} for client-side required-field validation. Types are kept
+   simple: the runtime validates against the form schema. */
+function uiCollectParams(formEl) {
+  var params = {};
+  var missing = null;
+  Array.prototype.forEach.call(formEl.querySelectorAll("[data-ui-field]"), function (el) {
+    var name = el.getAttribute("data-ui-field");
+    var v;
+    if (el.type === "checkbox") v = el.checked;
+    else if (el.type === "number") v = el.value === "" ? null : Number(el.value);
+    else v = el.value;
+    if (el.required && (v === "" || v === null || v === undefined || v === false && el.type === "checkbox" && el.required)) {
+      if (el.type === "checkbox") { if (!el.checked) missing = missing || name; }
+      else missing = missing || name;
+    }
+    if (v !== "" && v !== null && v !== undefined) params[name] = v;
+  });
+  if (missing) return { error: "required field missing: " + missing };
+  return { params: params };
+}
+
+function uiStatusEl(btn) {
+  var wrap = btn.closest(".ui-actions");
+  return wrap ? wrap.querySelector("[data-ui-status]") : null;
+}
+
+function uiSetState(btn, state, text) {
+  var wrap = btn.closest(".ui-form, .ui-approval");
+  var status = uiStatusEl(btn);
+  if (status) {
+    status.textContent = text || "";
+    status.dataset.s = state;
+  }
+  if (wrap) {
+    Array.prototype.forEach.call(wrap.querySelectorAll("button"), function (b) {
+      b.disabled = state === "submitting";
+    });
+  }
+}
+
+/* Submit one UI action. Payload mirrors UiActionSubmission exactly:
+   ui_id + revision (the displayed revision) + node_id + action_id +
+   params + a fresh nonce. */
+async function submitUiAction(btn, kind) {
+  var runId = btn.getAttribute("data-ui-run");
+  var uiId = btn.getAttribute("data-ui-doc");
+  var nodeId = btn.getAttribute("data-ui-node");
+  var rev = parseInt(btn.getAttribute("data-ui-rev") || "0", 10);
+  var actionId = btn.getAttribute("data-ui-action");
+  if (!runId || !uiId || !nodeId || !actionId) {
+    uiSetState(btn, "error", "missing action context; reload the run");
+    return;
+  }
+  var params = {};
+  if (kind === "form") {
+    var formEl = btn.closest(".ui-form");
+    var collected = uiCollectParams(formEl);
+    if (collected.error) {
+      uiSetState(btn, "error", collected.error);
+      return;
+    }
+    params = collected.params;
+  }
+  uiSetState(btn, "submitting", "submitting…");
+  var nonce = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(16).slice(2);
+  try {
+    var res = await api("POST", "/api/runs/" + encodeURIComponent(runId) + "/ui-action", {
+      ui_id: uiId,
+      revision: rev,
+      node_id: nodeId,
+      action_id: actionId,
+      params: params,
+      nonce: nonce,
+    });
+    if (res.outcome === "decided") {
+      uiSetState(btn, "success", res.approved ? "approved — resuming run" : "denied");
+    } else if (res.outcome === "executed") {
+      var preview = String(res.result || "").slice(0, 200);
+      uiSetState(btn, "success", "done" + (preview ? ": " + preview : ""));
+    } else {
+      uiSetState(btn, "success", "submitted");
+    }
+    // Refresh the run view so revisions and results appear.
+    setTimeout(function () { if (renderers.inspector) renderers.inspector(); }, 1200);
+  } catch (e) {
+    var msg = (e && e.message) || "submission failed";
+    if (e && (e.status === 409)) {
+      uiSetState(btn, "error", "stale: the document was revised — reloading");
+      setTimeout(function () { if (renderers.inspector) renderers.inspector(); }, 1200);
+    } else {
+      uiSetState(btn, "error", msg);
+    }
+  }
+}
+
+/* Delegated wiring for UI action controls. Called on the inspector
+   root after render; a single listener covers forms, approvals, and
+   any future action-bearing components. */
+function wireUiActions(root) {
+  if (!root || root.dataset.uiWired) return;
+  root.dataset.uiWired = "1";
+  root.addEventListener("click", function (ev) {
+    var t = ev.target;
+    var btn = t && t.closest ? t.closest("[data-ui-submit], [data-ui-decide]") : null;
+    if (!btn || !root.contains(btn) || btn.disabled) return;
+    ev.preventDefault();
+    if (btn.hasAttribute("data-ui-submit")) submitUiAction(btn, "form");
+    else submitUiAction(btn, "decision");
+  });
+  // Enter submits the focused form; buttons keep native behavior.
+  root.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Enter") return;
+    var t = ev.target;
+    if (!t || t.tagName === "TEXTAREA" || t.tagName === "BUTTON") return;
+    var form = t.closest ? t.closest(".ui-form") : null;
+    if (!form || !root.contains(form)) return;
+    var btn = form.querySelector("[data-ui-submit]");
+    if (btn && !btn.disabled) {
+      ev.preventDefault();
+      submitUiAction(btn, "form");
+    }
+  });
+}
+
+function renderUi(doc, ctx) {
+  if (!doc || !doc.root) return '<div class="ui-empty text-faint">Empty UI document.</div>';
+  return '<div class="ui-doc">' + renderUiNode(doc.root, ctx) + "</div>";
+}
+function renderUiNode(node, ctx) {
+  if (!node || typeof node.type !== "string") return "";
+  var pad = "";
+  ctx = ctx || {};
+  switch (node.type) {
+    case "markdown": {
+      var t = "";
+      if (node.title) t += '<div class="ui-title">' + esc(node.title) + "</div>";
+      return '<div class="ui-md">' + t + renderMd(node.text || "") + "</div>";
+    }
+    case "table": {
+      var h = "";
+      if (node.title) h += '<div class="ui-title">' + esc(node.title) + "</div>";
+      var head = "<tr>" + (node.headers || []).map(function (c) { return "<th>" + esc(c) + "</th>"; }).join("") + "</tr>";
+      var rows = (node.rows || []).map(function (r) {
+        return "<tr>" + r.map(function (c) { return "<td>" + esc(c) + "</td>"; }).join("") + "</tr>";
+      }).join("");
+      return '<div class="ui-table-wrap">' + h + '<table class="ui-table"><thead>' + head + "</thead><tbody>" + rows + "</tbody></table></div>";
+    }
+    case "chart": {
+      var title = node.title ? '<div class="ui-title">' + esc(node.title) + "</div>" : "";
+      if (node.chart_type === "bar" && node.series && node.series.length) {
+        var s0 = node.series[0] || { values: [] };
+        var max = Math.max.apply(null, s0.values.concat([1]));
+        var bars = (node.labels || []).map(function (lb, i) {
+          var v = s0.values[i] || 0;
+          var pct = Math.max(2, Math.round((v / max) * 100));
+          return '<div class="ui-bar-row"><span class="ui-bar-label">' + esc(lb) + '</span>' +
+            '<span class="ui-bar-track"><span class="ui-bar-fill" style="width:' + pct + '%"></span></span>' +
+            '<span class="ui-bar-val mono">' + esc(String(v)) + "</span></div>";
+        }).join("");
+        return '<div class="ui-chart">' + title + bars + "</div>";
+      }
+      var vals = ((node.series || [])[0] || {}).values || [];
+      return '<div class="ui-chart">' + title + '<div class="text-faint">chart (' + esc(node.chart_type || "?") +
+        "): " + vals.map(function (v) { return esc(String(v)); }).join(", ") + "</div></div>";
+    }
+    case "metrics": {
+      var cards = (node.items || []).map(function (m) {
+        return '<div class="ui-metric"><div class="ui-metric-val">' + esc(m.value) + "</div>" +
+          '<div class="ui-metric-label">' + esc(m.label) + "</div>" +
+          (m.delta ? '<div class="ui-metric-delta">' + esc(m.delta) + "</div>" : "") + "</div>";
+      }).join("");
+      return '<div class="ui-metrics">' + cards + "</div>";
+    }
+    case "list": {
+      var items = (node.items || []).map(function (it) {
+        var label = typeof it === "string" ? it : it.label || "";
+        var st = typeof it === "string" ? "" : " [" + esc(it.state || "") + "]";
+        return "<li>" + esc(label) + st + "</li>";
+      }).join("");
+      return '<div class="ui-list">' + (node.title ? '<div class="ui-title">' + esc(node.title) + "</div>" : "") +
+        "<ul>" + items + "</ul></div>";
+    }
+    case "code":
+      return '<div class="ui-code"><div class="ui-title mono">' + esc(node.language || "code") + '</div><pre>' + esc(node.code || "") + "</pre></div>";
+    case "refs": {
+      var refs = (node.items || []).map(function (r) {
+        return '<div class="ui-ref"><a href="' + esc(r.url || "#") + '" target="_blank" rel="noopener">' + esc(r.title || r.url || "") + "</a>" +
+          (r.note ? '<div class="text-faint">' + esc(r.note) + "</div>" : "") + "</div>";
+      }).join("");
+      return '<div class="ui-refs">' + refs + "</div>";
+    }
+    case "form": {
+      var formCtx = uiActionCtx(ctx, node);
+      var fields = (node.fields || []).map(function (f, fi) {
+        return uiFieldHtml(f, fi);
+      }).join("");
+      var submitLabel = node.submit && node.submit.label ? node.submit.label : "Submit";
+      var submitAction = node.submit && node.submit.action_id ? node.submit.action_id : "submit";
+      return '<div class="ui-form">' + (node.title ? '<div class="ui-title">' + esc(node.title) + "</div>" : "") +
+        (node.description ? '<div class="text-faint">' + esc(node.description) + "</div>" : "") +
+        fields +
+        '<div class="ui-actions"><button class="btn small primary" data-ui-submit ' + formCtx.attrs +
+        ' data-ui-action="' + esc(submitAction) + '">' + esc(submitLabel) + "</button> " +
+        '<span class="ui-status text-faint" data-ui-status role="status"></span></div></div>';
+    }
+    case "task_list": {
+      var tasks = (node.items || []).map(function (t) {
+        var box = t.state === "done" ? "☑" : t.state === "failed" ? "☒" : "☐";
+        return '<div class="ui-task"><span>' + box + "</span> " + esc(t.label || "") + "</div>";
+      }).join("");
+      return '<div class="ui-tasks">' + (node.title ? '<div class="ui-title">' + esc(node.title) + "</div>" : "") + tasks + "</div>";
+    }
+    case "progress": {
+      var pct = node.total > 0 ? Math.round((node.done / node.total) * 100) : 0;
+      return '<div class="ui-progress"><div class="ui-title">' + esc(node.label || "progress") + " " + pct + '%</div>' +
+        '<div class="ui-bar-track"><div class="ui-bar-fill" style="width:' + pct + '%"></div></div></div>';
+    }
+    case "details":
+      return "<details class='ui-details'><summary>" + esc(node.summary || "details") + "</summary><div>" + renderUiNode(node.body, ctx) + "</div></details>";
+    case "diff": {
+      var files = (node.files || []).map(function (f) {
+        var hunks = (f.hunks || []).map(function (h) {
+          var lines = (h.lines || []).map(function (l) {
+            var cls = l.kind === "add" ? "ui-diff-add" : l.kind === "del" ? "ui-diff-del" : "";
+            var sign = l.kind === "add" ? "+" : l.kind === "del" ? "-" : " ";
+            return '<div class="ui-diff-line ' + cls + '">' + esc(sign + (l.text || "")) + "</div>";
+          }).join("");
+          return '<div class="ui-diff-hunk"><div class="text-faint mono">' + esc(h.header || "") + "</div>" + lines + "</div>";
+        }).join("");
+        return '<div class="ui-diff-file"><div class="ui-title mono">' + esc(f.path || "") + "</div>" + hunks + "</div>";
+      }).join("");
+      return '<div class="ui-diff">' + files + "</div>";
+    }
+    case "approval": {
+      var ap = node.approve || {};
+      var dn = node.deny || {};
+      var apCtx = uiActionCtx(ctx, node);
+      return '<div class="ui-approval"><div class="ui-title">⚠ ' + esc(node.title || "Approval needed") + "</div>" +
+        "<div>" + renderMd(node.detail || "") + "</div>" +
+        (node.scope_hint ? '<div class="text-faint">scope: ' + esc(node.scope_hint) + "</div>" : "") +
+        '<div class="ui-actions"><button class="btn small primary" data-ui-decide="approve" ' + apCtx.attrs +
+        ' data-ui-action="' + esc(ap.action_id || "approve") + '">' + esc(ap.label || "Approve") + "</button> " +
+        '<button class="btn small" data-ui-decide="deny" ' + apCtx.attrs +
+        ' data-ui-action="' + esc(dn.action_id || "deny") + '">' + esc(dn.label || "Deny") + "</button> " +
+        '<span class="ui-status text-faint" data-ui-status role="status"></span></div></div>';
+    }
+    case "layout": {
+      var kids = "";
+      if (node.kind === "tabs") {
+        kids = (node.children || []).map(function (c, i) {
+          return "<details class='ui-tab'" + (i === 0 ? " open" : "") + "><summary>" + esc(c.title || ("Tab " + (i + 1))) + "</summary>" + renderUiNode(c.node || c, ctx) + "</details>";
+        }).join("");
+      } else {
+        kids = (node.children || []).map(function (c) { return '<div class="ui-layout-child">' + renderUiNode(c.node || c, ctx) + "</div>"; }).join("");
+      }
+      return '<div class="ui-layout">' + kids + "</div>";
+    }
+    case "custom":
+      return '<div class="ui-custom">' + renderUiNode(node.fallback, ctx) + "</div>";
+    default:
+      return '<div class="ui-unknown text-faint">(unsupported component: ' + esc(node.type) + ")</div>";
+  }
+  return pad;
+}
     const transcript = (r.transcript || []).map((m, i) =>
       m.type === "reasoning"
         ? '<div class="msg" data-role="reason"><div class="m-role">reasoning</div><div class="m-body">' + esc(m.content) + "</div></div>"
+        : m.type === "ui"
+        ? '<div class="msg" data-role="ui"><div class="m-role">ui <span class="mono text-faint">' + esc(m.ui_id || "") + " rev " + esc(String(m.revision == null ? 0 : m.revision)) + '</span></div><div class="m-body">' + renderUi(m.document, { runId: id, uiId: m.ui_id, revision: m.revision }) + "</div></div>"
         : '<div class="msg" data-role="' + esc(m.role) + '"><div class="m-role">' + esc(m.role) + '</div><div class="m-body">' + renderMd(m.content) + '</div><div class="link-cards" id="lp-' + i + '"></div></div>'
     ).join("");
     setView(
@@ -763,6 +1091,9 @@ renderers.inspector = async function () {
     // from GET /api/link-preview, rendered under the message. Capped so a
     // link-heavy transcript cannot fan out unboundedly; failures are silent.
     const lpByUrl = {};
+    // Agent-native UI actions: wire forms, approval cards, and action
+    // buttons rendered in the transcript (delegated; survives re-render).
+    wireUiActions(document.getElementById("view"));
     (r.transcript || []).forEach((m, i) => {
       if (m.type !== "message" || m.role !== "assistant") return;
       const urls = String(m.content || "").match(/https?:\/\/[^\s<>"')\]]+/g) || [];

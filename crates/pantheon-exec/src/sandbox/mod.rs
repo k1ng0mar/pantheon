@@ -116,6 +116,7 @@ impl SandboxLevel {
             | Capability::BrowserAct
             | Capability::BrowserFillLogin
             | Capability::ComputerUse
+            | Capability::BinaryTrace
             | Capability::SecretsUse
             | Capability::AgentSpawn
             | Capability::MemoryConfirm

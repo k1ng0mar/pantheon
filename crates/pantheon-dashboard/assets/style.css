@@ -948,3 +948,55 @@ code.inline {
 .contract-k { display: inline-block; min-width: 26px; font-weight: 700; color: var(--text); font-size: 10px;
   text-transform: uppercase; letter-spacing: .05em; }
 .av.xs { width: 22px; height: 22px; font-size: 9px; }
+
+/* Structured UI components (UI protocol v1) */
+.ui-doc { display: flex; flex-direction: column; gap: 10px; }
+.ui-title { font-weight: 700; margin-bottom: 4px; }
+.ui-empty { padding: 8px; }
+.ui-table-wrap { overflow-x: auto; }
+.ui-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.ui-table th, .ui-table td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+.ui-table th { background: var(--bg-soft); }
+.ui-chart { display: flex; flex-direction: column; gap: 4px; }
+.ui-bar-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.ui-bar-label { min-width: 80px; color: var(--text-faint); }
+.ui-bar-track { flex: 1; height: 10px; background: var(--bg-soft); border-radius: 5px; overflow: hidden; }
+.ui-bar-fill { display: block; height: 100%; background: var(--accent); }
+.ui-bar-val { min-width: 48px; text-align: right; }
+.ui-metrics { display: flex; gap: 10px; flex-wrap: wrap; }
+.ui-metric { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; min-width: 110px; }
+.ui-metric-val { font-size: 18px; font-weight: 700; }
+.ui-metric-label { font-size: 11px; color: var(--text-faint); }
+.ui-metric-delta { font-size: 11px; color: var(--accent-strong); }
+.ui-list ul { margin: 4px 0; padding-left: 20px; }
+.ui-code pre { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; font-size: 12px; }
+.ui-ref { margin: 4px 0; }
+.ui-form { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+.ui-field label { font-weight: 600; font-size: 12px; display: block; margin-bottom: 2px; }
+.ui-field input[type="text"], .ui-field input[type="number"], .ui-field input[type="password"], .ui-field textarea, .ui-field select {
+  width: 100%; max-width: 420px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--fg); font-size: 13px;
+}
+.ui-field textarea { min-height: 64px; resize: vertical; }
+.ui-field input:focus, .ui-field textarea:focus, .ui-field select:focus {
+  outline: 2px solid var(--accent, #4d7cfe); outline-offset: 1px;
+}
+.ui-actions { display: flex; gap: 8px; margin-top: 6px; align-items: center; flex-wrap: wrap; }
+.ui-status { font-size: 12px; }
+.ui-status[data-s="submitting"] { color: var(--faint); }
+.ui-status[data-s="success"] { color: var(--ok, #2ea043); }
+.ui-status[data-s="error"] { color: var(--err, #f85149); }
+.ui-tasks { display: flex; flex-direction: column; gap: 3px; }
+.ui-task { font-size: 13px; }
+.ui-progress { display: flex; flex-direction: column; gap: 4px; }
+.ui-details { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+.ui-details summary { cursor: pointer; font-weight: 600; }
+.ui-tab { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; margin-bottom: 4px; }
+.ui-tab summary { cursor: pointer; font-weight: 600; }
+.ui-layout { display: flex; flex-direction: column; gap: 8px; }
+.ui-diff-file { margin-bottom: 8px; }
+.ui-diff-line { font-family: monospace; font-size: 12px; padding: 1px 8px; white-space: pre-wrap; }
+.ui-diff-add { background: rgba(46, 160, 67, 0.15); }
+.ui-diff-del { background: rgba(248, 81, 73, 0.15); }
+.ui-approval { border: 1px solid var(--warn-border, #d4a017); border-radius: 8px; padding: 10px; background: var(--warn-soft, rgba(212, 160, 23, 0.08)); }
+.ui-unknown { font-style: italic; }

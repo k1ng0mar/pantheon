@@ -266,6 +266,7 @@ fn budget_for(cfg: Option<&Config>) -> pantheon_agent::Budget {
             max_delegate_depth: nz(b.max_delegate_depth, 2),
             allow_child_spawn: true,
             max_consecutive_tool_failures: 5,
+            warn_consecutive_tool_failures: 3,
         },
     }
 }

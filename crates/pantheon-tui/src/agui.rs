@@ -196,6 +196,7 @@ pub fn cmd_serve(args: &[String]) {
             bind_all,
             on_approval: Some(approval_callback()),
             send_locks: Default::default(),
+            ui_action_locks: Default::default(),
             turn_children: Default::default(),
             swarm: pantheon_dashboard::swarm::orchestrator_for(&dir),
         },
