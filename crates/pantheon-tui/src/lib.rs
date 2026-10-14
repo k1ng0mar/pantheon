@@ -102,7 +102,6 @@ mod schedule_self_heal;
 pub mod send;
 pub mod session_summary;
 mod setup_wizard;
-mod skill_deps;
 mod skills;
 pub mod stats;
 pub mod swarm;

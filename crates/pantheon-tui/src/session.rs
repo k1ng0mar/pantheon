@@ -9534,6 +9534,7 @@ fn handle_slash_inner(
         return;
     }
     if cmd == "/doctor" {
+        #[allow(deprecated)]
         let rep = crate::doctor::run_system_doctor(&crate::terminal::data_dir());
         for c in &rep.checks {
             let glyph = match c.status.as_str() {

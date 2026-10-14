@@ -248,7 +248,7 @@ fn cmd_setup(data_dir: &Path) {
         .unwrap_or(false);
         if ok {
             println!("  installing cf ...");
-            let ok = crate::skill_deps::shell_install("npm install -g cf");
+            let ok = pantheon_doctor::skill_deps::shell_install("npm install -g cf");
             if ok {
                 println!("  cf installed");
             } else {
