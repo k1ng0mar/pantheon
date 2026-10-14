@@ -443,7 +443,11 @@ impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
             // to reintroduce a secret after the scrub ran. Fails open.
             return Ok(self.redaction.scrub(&transformed));
         }
-        self.registry.execute(name, args)
+        // No hooks: still scrub. A bare Session (tests, embedded use) must
+        // not be the one path where an injected secret echoes back.
+        self.registry
+            .execute(name, args)
+            .map(|out| self.redaction.scrub(&out))
     }
 }
 
@@ -501,7 +505,9 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let Some(mgr) = self.hooks else {
-            return Ok(serde_json::Value::String(self.run_registered(name, args)?));
+            // No hooks: still scrub — see RegRunner::run.
+            let out = self.run_registered(name, args)?;
+            return Ok(serde_json::Value::String(self.redaction.scrub(&out)));
         };
         // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy plugin
         // blocks the call rather than waving it through. Returned as a
