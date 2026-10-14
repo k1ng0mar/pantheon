@@ -42,11 +42,21 @@ impl ModelCost {
 /// a row that has just a `base_url` and no `auto` is a known endpoint you can
 /// point at but no curated models yet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderMeta {
     pub id: String,
     pub label: String,
     pub base_url: String,
     pub api_mode: ApiMode,
+    /// Fields Codex validates that pantheon currently accepts silently.
+    /// A typo in a catalog row ships as a live provider with wrong behavior
+    /// instead of failing at load time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_refresh_ms: Option<u64>,
+    #[serde(default)]
+    pub reserved: bool,
     /// Env var that overrides the base URL, e.g. `PANTHEON_BASE_OPENAI`.
     #[serde(default)]
     pub base_env: String,
@@ -175,7 +185,16 @@ pub fn catalog() -> &'static Catalog {
 static CUSTOM: RwLock<Vec<ProviderMeta>> = RwLock::new(Vec::new());
 
 /// Register (or replace, by id) a user-defined provider. Idempotent.
+/// Reserved built-in ids are rejected: a custom provider must not silently
+/// override a cataloged one.
 pub fn register_custom_provider(meta: ProviderMeta) {
+    if catalog()
+        .providers
+        .iter()
+        .any(|p| p.id == meta.id && p.reserved)
+    {
+        return;
+    }
     if let Ok(mut customs) = CUSTOM.write() {
         if let Some(slot) = customs.iter_mut().find(|p| p.id == meta.id) {
             *slot = meta;

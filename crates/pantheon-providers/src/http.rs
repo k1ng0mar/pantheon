@@ -136,8 +136,62 @@ pub fn http_timeout() -> Duration {
 /// HTTP call (chat, aux, voice, embeddings) goes through this so none
 /// runs without a deadline.
 pub fn http_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(http_timeout()).build()
+    ureq::AgentBuilder::new()
+        .timeout(http_timeout())
+        .redirects(0)
+        .build()
 }
+
+/// SSRF guard: resolve the URL's host and reject anything that is not a
+/// public IP. Called on every outbound provider request before ureq runs.
+pub fn validate_url(url: &str) -> Result<(), PantheonError> {
+    let err = |code: &str, cause: String| PantheonError::new(
+        code,
+        pantheon_api::error::Layer::Provider,
+        false,
+        cause,
+        "remove the private URL from config or use a public provider",
+        url.to_string(),
+    );
+    let parsed = match url::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return Err(err("PROVIDER_URL", format!("invalid URL: {url}"))),
+    };
+    let host = match parsed.host_str() {
+        Some(h) => h,
+        None => return Err(err("PROVIDER_URL", format!("no host in URL: {url}"))),
+    };
+    let port = parsed.port_or_known_default().unwrap_or(0);
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<std::net::IpAddr> = match (host, port).to_socket_addrs() {
+        Ok(iter) => iter.map(|s| s.ip()).collect(),
+        Err(e) => return Err(err("PROVIDER_DNS", format!("cannot resolve {host}: {e}"))),
+    };
+    if addrs.is_empty() {
+        return Err(err("PROVIDER_DNS", format!("no addresses for host: {host}")));
+    }
+    for ip in &addrs {
+        if !is_public_ip(*ip) {
+            return Err(err(
+                "SSRF_BLOCKED",
+                format!("{host} resolves to private address {ip}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => !(v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_broadcast() || v4.is_documentation() || v4.is_unspecified()),
+        std::net::IpAddr::V6(v6) => !(v6.is_loopback() || v6.is_unspecified() || is_unique_local_v6(v6)),
+    }
+}
+
+fn is_unique_local_v6(ip: std::net::Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xfe00) == 0xfc00
+}
+
 
 /// `(name, value)` for the key header: `Authorization` sends
 /// `Bearer <key>`; any other configured name (e.g. Xiaomi MiMo's
@@ -240,6 +294,7 @@ pub fn retry_after_secs(err: &PantheonError) -> Option<u64> {
 }
 
 fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, PantheonError> {
+    validate_url(&req.url)?;
     let mut r = agent.post(&req.url);
     for (k, v) in &req.headers {
         r = r.set(k, v);
