@@ -1193,7 +1193,14 @@ fn run_delegate_child(
     // The child is now observable: the delegation counts.
     budget_guard.commit();
     let outcome = (driver.drive_child)(&child_session, &child_run, &full_task);
-    let result = map_child_outcome(&driver.model_policy, agent, &full_task, &child_run, outcome);
+    let result = map_child_outcome(
+        &driver.model_policy,
+        agent,
+        &full_task,
+        &child_run,
+        outcome,
+        &driver.supervisor,
+    );
     let failed_detail = result
         .as_ref()
         .err()
@@ -1222,6 +1229,12 @@ fn run_delegate_child(
 /// Every non-Answered outcome - and a child that reports failure - is a
 /// structured error: the parent must never mistake them for done.
 ///
+/// A stopped child (canceled, budget exhausted) keeps its error code,
+/// but the error now carries a ```partial-handoff block with what the
+/// child completed, what was still pending, and a transcript excerpt -
+/// captured read-only from the child's ledger, fail-open. Stopping hands
+/// back partial work instead of discarding it.
+///
 /// Approval and input parks surface the CHILD's run id, capability, and
 /// scope so the operator can resolve them against the child run. The
 /// parent run cannot grant them: [`Supervisor::grant`] matches scopes
@@ -1232,6 +1245,7 @@ fn map_child_outcome(
     task: &str,
     child_run: &str,
     outcome: Result<LoopOutcome, PantheonError>,
+    supervisor: &Supervisor,
 ) -> Result<String, PantheonError> {
     let outcome = outcome?;
     match outcome {
@@ -1293,22 +1307,57 @@ fn map_child_outcome(
             "check the child agent's policy",
             "",
         )),
-        pantheon_agent::LoopOutcome::Canceled { reason } => Err(PantheonError::new(
-            "SWARM_CHILD_CANCELED",
-            Layer::Agent,
-            false,
-            format!("child agent {agent} was canceled: {reason}"),
-            "retry the delegation",
-            "",
-        )),
-        pantheon_agent::LoopOutcome::BudgetExhausted { cap } => Err(PantheonError::new(
-            "SWARM_CHILD_BUDGET",
-            Layer::Agent,
-            false,
-            format!("child agent {agent} exhausted {cap}"),
-            "raise the budget or simplify the task",
-            "",
-        )),
+        pantheon_agent::LoopOutcome::Canceled { reason } => {
+            // The stop hands back partial work: what the child completed,
+            // what was still pending, and a transcript excerpt - captured
+            // read-only from the child's ledger, fail-open. The code still
+            // says canceled; the handoff lets the parent resume instead of
+            // restarting. (Parent-facing tool results are scrubbed against
+            // the redaction registry downstream, so a secret the child
+            // echoed cannot leak through the handoff.)
+            let handoff = crate::partial_handoff::capture_partial_handoff(
+                supervisor,
+                child_run,
+                agent,
+                "canceled",
+                &reason,
+            );
+            Err(PantheonError::new(
+                "SWARM_CHILD_CANCELED",
+                Layer::Agent,
+                false,
+                format!(
+                    "child agent {agent} was canceled: {reason}\n\n```{}\n{}\n```",
+                    crate::partial_handoff::HANDOFF_FENCE,
+                    handoff.to_json()
+                ),
+                "resume from the handoff above (completed steps + pending items), or retry the delegation",
+                "",
+            ))
+        }
+        pantheon_agent::LoopOutcome::BudgetExhausted { cap } => {
+            // Same handoff as a cancel: an exhausted budget is a stop with
+            // partial work, not a failure with nothing to show.
+            let handoff = crate::partial_handoff::capture_partial_handoff(
+                supervisor,
+                child_run,
+                agent,
+                "budget_exhausted",
+                &format!("exhausted {cap}"),
+            );
+            Err(PantheonError::new(
+                "SWARM_CHILD_BUDGET",
+                Layer::Agent,
+                false,
+                format!(
+                    "child agent {agent} exhausted {cap}\n\n```{}\n{}\n```",
+                    crate::partial_handoff::HANDOFF_FENCE,
+                    handoff.to_json()
+                ),
+                "resume from the handoff above with a larger budget, or simplify the remaining work",
+                "",
+            ))
+        }
         pantheon_agent::LoopOutcome::AwaitingApproval { capability, scope } => {
             Err(PantheonError::new(
                 "SWARM_CHILD_APPROVAL",
@@ -4096,6 +4145,10 @@ impl Session {
                 // immediately and the child session runs on its own
                 // thread (Session: Send). The parent keeps working.
                 registry: pantheon_agent::SubagentRegistry,
+                /// Supervisor handle for partial-handoff capture: when a
+                /// threaded child is stopped, its ledger is read through
+                /// this handle. Cloned per spawn; cheap to share.
+                supervisor: Supervisor,
             }
             impl pantheon_agent::SubagentSpawner for SessionSpawner {
                 fn spawn_handle(
@@ -4162,6 +4215,10 @@ impl Session {
                     // registry before the thread starts.
                     let agent_owned = agent.clone();
                     let task_owned = task.clone();
+                    // Cloned for the child thread: partial-handoff capture
+                    // reads the child's ledger through this handle when the
+                    // child is stopped.
+                    let supervisor = self.supervisor.clone();
                     let handle = self
                         .registry
                         .spawn_child("", &agent, depth, &task, move || {
@@ -4175,6 +4232,7 @@ impl Session {
                                 &task_owned,
                                 &child_run,
                                 outcome,
+                                &supervisor,
                             )
                         })?;
                     // The child is registered and running: the delegation counts.
@@ -4229,6 +4287,7 @@ impl Session {
                 budget_section,
                 run_id: run_id.to_string(),
                 registry: pantheon_agent::SubagentRegistry::new(caps),
+                supervisor: self.supervisor.clone(),
             }) as Box<dyn pantheon_agent::SubagentSpawner>
         });
         let loop_ = AgentLoop {

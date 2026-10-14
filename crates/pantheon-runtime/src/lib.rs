@@ -27,6 +27,7 @@ pub mod desktop_takeover;
 pub mod judge;
 pub mod nightly_tools;
 pub mod operation;
+pub mod partial_handoff;
 pub mod pipeline;
 pub mod pipeline_runner;
 pub mod rpc;
