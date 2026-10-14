@@ -62,7 +62,7 @@ providers:
     prominent: true
     tag: Major frontier lab, native Messages API
     models:
-      - model: claude-opus-4
+      - model: claude-opus-4-8
         context_limit: 200000
         max_output_tokens: 32000
         tools: true
@@ -70,7 +70,7 @@ providers:
         reasoning: true
         streaming: true
         cost: { input_per_mtok_usd: 15.00, output_per_mtok_usd: 75.00 }
-      - model: claude-sonnet-4
+      - model: claude-sonnet-4-6
         context_limit: 200000
         max_output_tokens: 64000
         tools: true
@@ -88,7 +88,7 @@ providers:
     prominent: true
     tag: Multimodal, cheap/free tier, OpenAI compatibility layer
     models:
-      - model: gemini-2.0-flash
+      - model: gemini-2.5-flash
         context_limit: 1000000
         max_output_tokens: 8192
         tools: true
@@ -208,7 +208,15 @@ providers:
     prominent: true
     tag: Cheap reasoning, Chinese lab
     models:
-      - model: deepseek-chat
+      - model: deepseek-flash
+        context_limit: 1000000
+        max_output_tokens: 384000
+        tools: true
+        vision: true
+        reasoning: true
+        streaming: true
+        cost: { input_per_mtok_usd: 0.15, output_per_mtok_usd: 0.60 }
+      - model: deepseek-v4-pro
         context_limit: 128000
         max_output_tokens: 8192
         tools: true
@@ -216,14 +224,6 @@ providers:
         reasoning: true
         streaming: true
         cost: { input_per_mtok_usd: 0.27, output_per_mtok_usd: 1.10 }
-      - model: deepseek-reasoner
-        context_limit: 64000
-        max_output_tokens: 8192
-        tools: true
-        vision: false
-        reasoning: true
-        streaming: true
-        cost: { input_per_mtok_usd: 1.10, output_per_mtok_usd: 4.40 }
       - model: deepseek-flash
         context_limit: 1000000
         max_output_tokens: 384000
@@ -269,7 +269,7 @@ providers:
 
   - id: qwen
     label: Qwen / Alibaba Cloud
-    base_url: https://dashscope.aliyuncs.com/compatible/v1
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     api_mode: openai
     base_env: PANTHEON_BASE_QWEN
     key_env: DASHSCOPE_API_KEY
