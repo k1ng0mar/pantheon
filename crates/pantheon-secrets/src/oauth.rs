@@ -936,7 +936,12 @@ mod tests {
                 let text = String::from_utf8_lossy(&line).to_lowercase();
                 if text.starts_with("content-length:") {
                     head.extend_from_slice(&line);
-                    let len: usize = text["content-length:".len()..].trim().parse().unwrap_or(0);
+                    let len: usize = text
+                        .strip_prefix("content-length:")
+                        .unwrap_or("")
+                        .trim()
+                        .parse()
+                        .unwrap_or(0);
                     // Keep reading to the blank line, then read the body.
                     loop {
                         let mut l2 = Vec::new();
