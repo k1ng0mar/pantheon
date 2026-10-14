@@ -17,6 +17,7 @@ pub mod builtins;
 pub mod gitundo_tools;
 pub mod lsp_tools;
 pub mod memory_tools;
+pub mod oauth_tools;
 pub mod plugin_tools;
 pub mod safewrite_tools;
 pub mod session_search_tools;
