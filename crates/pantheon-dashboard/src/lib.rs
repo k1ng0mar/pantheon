@@ -42,6 +42,7 @@ mod logins;
 mod logs;
 mod mcp;
 mod memory;
+mod oauth;
 mod plugin_import;
 mod plugins;
 mod profiles;
@@ -566,6 +567,8 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("POST", "desktop", "heartbeat", "", "") => desktop::heartbeat(app, req),
         ("POST", "desktop", "input", "", "") => desktop::input(app, req),
         ("POST", "desktop", "release", "", "") => desktop::release(app, req),
+        // OAuth connection status (mobile app)
+        ("GET", "oauth", "status", "", "") => oauth::status(app, req),
         // Logs
         ("GET", "logs", "", "", "") => logs::tail(app, req),
         ("GET", "logs", "stream", "", "") => logs::stream(app, req),
@@ -1614,6 +1617,41 @@ mod route_tests {
             let resp = dispatch(&app, &json_req("POST", path, body));
             assert_eq!(status_of(&resp), 404, "{path} must 404");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `GET /api/oauth/status` returns the mobile contract: four provider
+    /// rows with exactly `id`, `connected`, `scopes`, `expires_at` - and
+    /// no token material - on a fresh data dir.
+    #[test]
+    fn oauth_status_route_returns_mobile_contract() {
+        let (app, dir) = test_app();
+        let resp = dispatch(&app, &plain_req("GET", "/api/oauth/status"));
+        assert_eq!(status_of(&resp), 200, "oauth status must load");
+        let body = match &resp {
+            Response::Buffered { body, .. } => body.clone(),
+            _ => panic!("expected a buffered response"),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        let providers = v["providers"].as_array().expect("providers array");
+        assert_eq!(providers.len(), 4, "github, google, notion, spotify");
+        for p in providers {
+            assert!(p["id"].is_string(), "row has id");
+            assert!(p["connected"].is_boolean(), "row has connected");
+            assert!(p["scopes"].is_array(), "row has scopes");
+            assert!(
+                p["expires_at"].is_null(),
+                "disconnected row has null expires_at"
+            );
+            // Contract shape: exactly these four keys, nothing else.
+            let keys: Vec<&str> = p.as_object().unwrap().keys().map(String::as_str).collect();
+            assert_eq!(keys.len(), 4, "no extra keys in provider row");
+        }
+        let raw = String::from_utf8_lossy(&body);
+        assert!(
+            !raw.contains("token"),
+            "status response must not mention token material"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
