@@ -28,7 +28,7 @@ use pantheon_memory::{recall_via as mem_recall, LayerKind, MemoryBackend};
 use pantheon_providers::http::HttpTransport;
 use pantheon_providers::model_event::{ModelEvent, ModelEventSink};
 use pantheon_providers::ProviderChain;
-use pantheon_secrets::{SecretValue, SecretsBroker};
+use pantheon_secrets::{RedactionRegistry, SecretValue, SecretsBroker};
 use pantheon_tools::builtins::{
     register_builtins_with, BuiltinOptions, ShellChildEvent, ShellChildHook,
 };
@@ -401,6 +401,9 @@ struct RegRunner<'a> {
     registry: &'a ToolRegistry,
     hooks: Option<&'a ExtensionManager>,
     run_id: String,
+    /// Exact-value redaction registry: every model-facing tool result is
+    /// scrubbed against the secrets this run injected.
+    redaction: Arc<RedactionRegistry>,
 }
 impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
     fn run(&self, name: &str, args: &str) -> Result<String, PantheonError> {
@@ -427,7 +430,7 @@ impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
             let out = self.registry.execute(name, args)?;
             // Transform last: the plugin sees the real output and may replace
             // it. Fails OPEN, so redaction degrades to no-op, never to outage.
-            return Ok(mgr.fire_transform(
+            let transformed = mgr.fire_transform(
                 pantheon_extensions::Hook::TransformToolResult,
                 &self.run_id,
                 "runtime",
@@ -435,9 +438,16 @@ impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
                     .into_iter()
                     .collect(),
                 &out,
-            ));
+            );
+            // Scrub AFTER the extension transform: a plugin must not be able
+            // to reintroduce a secret after the scrub ran. Fails open.
+            return Ok(self.redaction.scrub(&transformed));
         }
-        self.registry.execute(name, args)
+        // No hooks: still scrub. A bare Session (tests, embedded use) must
+        // not be the one path where an injected secret echoes back.
+        self.registry
+            .execute(name, args)
+            .map(|out| self.redaction.scrub(&out))
     }
 }
 
@@ -457,6 +467,9 @@ struct RegistryToolAdapter<'a> {
     /// current call context so context-aware tools (delegate) can key
     /// durable side effects to their own step.
     call_id: String,
+    /// Exact-value redaction registry: every model-facing tool result is
+    /// scrubbed against the secrets this run injected.
+    redaction: Arc<RedactionRegistry>,
 }
 
 impl<'a> RegistryToolAdapter<'a> {
@@ -492,7 +505,9 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let Some(mgr) = self.hooks else {
-            return Ok(serde_json::Value::String(self.run_registered(name, args)?));
+            // No hooks: still scrub — see RegRunner::run.
+            let out = self.run_registered(name, args)?;
+            return Ok(serde_json::Value::String(self.redaction.scrub(&out)));
         };
         // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy plugin
         // blocks the call rather than waving it through. Returned as a
@@ -517,16 +532,19 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
         let out = self.run_registered(name, args)?;
         // Transform last: the plugin sees the real output and may replace
         // it. Fails OPEN, so redaction degrades to no-op, never to outage.
+        let transformed = mgr.fire_transform(
+            pantheon_extensions::Hook::TransformToolResult,
+            &self.run_id,
+            "runtime",
+            [("tool".to_string(), name.to_string())]
+                .into_iter()
+                .collect(),
+            &out,
+        );
+        // Scrub AFTER the extension transform: a plugin must not be able
+        // to reintroduce a secret after the scrub ran. Fails open.
         Ok(serde_json::Value::String(
-            mgr.fire_transform(
-                pantheon_extensions::Hook::TransformToolResult,
-                &self.run_id,
-                "runtime",
-                [("tool".to_string(), name.to_string())]
-                    .into_iter()
-                    .collect(),
-                &out,
-            ),
+            self.redaction.scrub(&transformed),
         ))
     }
     fn translate_result(
@@ -2571,6 +2589,7 @@ impl Session {
             hooks: Some(&self.hooks),
             run_id: run_id.to_string(),
             call_id: call_id.to_string(),
+            redaction: self.secrets.redaction_registry(),
         };
         let operation_id = format!("{run_id}:{call_id}");
         let op = run_tool_operation(
@@ -3031,6 +3050,19 @@ impl Session {
             );
         }
         let n_vault = reg.names().len();
+        // OAuth connector tools (`github_api` / `google_api` / `notion_api` /
+        // `spotify_api`): broker-side API requests for connected apps. The
+        // token never leaves the broker and every handed-out access token is
+        // registered with the redaction registry, so responses are scrubbed
+        // before reaching the model. Unconnected apps fail closed with the
+        // `pantheon oauth login <app>` remediation. Always registered: the
+        // tools carry NetworkOutbound and fail closed without a connection.
+        pantheon_tools::oauth_tools::register_oauth_tools(
+            &mut reg,
+            pantheon_tools::oauth_tools::OAuthToolOptions {
+                data_dir: self.supervisor.data_dir().to_path_buf(),
+            },
+        );
         // Session search: the model can look up prior/active conversations
         // by content. Same trust level as reading the ledger (FilesystemRead).
         register_session_search(
@@ -3938,6 +3970,7 @@ impl Session {
             registry: &reg,
             hooks: Some(&self.hooks),
             run_id: run_id.to_string(),
+            redaction: self.secrets.redaction_registry(),
         };
         let _ = &sink;
         // Title generation runs in parallel with the first turn (not before
@@ -7397,6 +7430,7 @@ mod delegate_tool_tests {
             hooks: None,
             run_id: "run-e2e".to_string(),
             call_id: "call_e2e".to_string(),
+            redaction: RedactionRegistry::for_scope("test-adapter-redaction"),
         };
         let out = adapter
             .execute(&serde_json::json!({

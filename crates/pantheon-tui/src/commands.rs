@@ -298,6 +298,11 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "runtime",
         },
         CommandMeta {
+            name: "oauth",
+            desc: "connect hosted apps via local OAuth2: login/status/logout",
+            category: "runtime",
+        },
+        CommandMeta {
             name: "send",
             desc: "push a message to a surface: /send <telegram|discord|mobile|home> <message>",
             category: "runtime",

@@ -1546,6 +1546,9 @@ timeout_ms = 5000
         "gateway" => {
             crate::gateway::cmd_gateway(&args);
         }
+        "oauth" => {
+            crate::oauth::cmd_oauth(&args);
+        }
         "init" => {
             crate::init::cmd_init(&args);
         }
