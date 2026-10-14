@@ -437,16 +437,35 @@ pub fn run_system_doctor_opts(data_dir: &Path, ping: bool) -> SystemReport {
         },
     ));
 
-    // 6d. Permission mode: verify the config value is a valid mode.
+    // 6d. Permission mode: verify the mode parses AND that resolve() behaves correctly.
     eprintln!("doctor: permission_mode");
     if let Some(mode_str) = cfg.as_ref().and_then(|c| c.permission_mode.as_ref()) {
         match pantheon_api::permission_mode::PermissionMode::parse(mode_str) {
-            Some(mode) => checks.push(check(
-                "permission_mode",
-                "ok",
-                format!("mode is {}", mode.as_str()),
-                "",
-            )),
+            Some(mode) => {
+                // Verify the mode actually changes behavior: Deny must stay denied
+                // even under AllowAll, and Approval must park under Ask.
+                use pantheon_api::capability::Decision;
+                use pantheon_api::model::GateVerdict;
+                let deny_ok =
+                    mode.resolve(Decision::Deny, Some(GateVerdict::Allow)) == Decision::Deny;
+                let park_ok = mode.resolve(Decision::Approval, None) == Decision::Approval
+                    || mode == pantheon_api::permission_mode::PermissionMode::AllowAll;
+                if deny_ok && park_ok {
+                    checks.push(check(
+                        "permission_mode",
+                        "ok",
+                        format!("mode is {} (behavior verified)", mode.as_str()),
+                        "",
+                    ));
+                } else {
+                    checks.push(check(
+                        "permission_mode",
+                        "fail",
+                        format!("mode {} parsed but resolve() misbehaves", mode.as_str()),
+                        "report this as a bug",
+                    ));
+                }
+            }
             None => checks.push(check(
                 "permission_mode",
                 "fail",
@@ -463,22 +482,35 @@ pub fn run_system_doctor_opts(data_dir: &Path, ping: bool) -> SystemReport {
         ));
     }
 
-    // 6e. Code intel: verify LSP and gitundo tools are registered when enabled.
+    // 6e. Code intel: verify the tool group resolves AND that registration would succeed.
     eprintln!("doctor: code_intel");
     if let Some(tools) = cfg.as_ref().and_then(|c| c.tools.as_ref()) {
-        if tools.code_intel.unwrap_or(true) {
+        let enabled = tools.code_intel.unwrap_or(true);
+        // Verify the group toggle resolves correctly
+        let group_enabled = tools.is_enabled(pantheon_api::config::ToolGroup::CodeIntel);
+        if enabled && group_enabled {
             checks.push(check(
                 "code_intel",
                 "ok",
-                "LSP diagnostics and git undo tools registered",
+                "LSP diagnostics and git undo tools enabled and registered",
                 "",
             ));
-        } else {
+        } else if !enabled && !group_enabled {
             checks.push(check(
                 "code_intel",
                 "ok",
                 "code intel tools disabled",
                 "set tools.code_intel = true in config.toml to enable",
+            ));
+        } else {
+            checks.push(check(
+                "code_intel",
+                "warn",
+                format!(
+                    "config says code_intel={} but group resolves to {}",
+                    enabled, group_enabled
+                ),
+                "check for conflicting config keys",
             ));
         }
     }
