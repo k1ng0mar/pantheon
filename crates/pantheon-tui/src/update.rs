@@ -279,7 +279,8 @@ pub fn usage() -> &'static str {
 
 /// `pantheon update --rollback`: restore the previous binary from the
 /// `pantheon.prev` backup the last update left next to this binary. No
-/// network, no version resolution - the backup is the rollback.
+/// network, no version resolution - the backup is the rollback. Also
+/// restarts any systemd units that were stopped during the update.
 fn cmd_rollback() {
     let current_exe = std::env::current_exe().unwrap_or_else(|e| {
         eprintln!("rollback: cannot locate the running binary ({e})");
@@ -303,6 +304,19 @@ fn cmd_rollback() {
     }
     println!("✓ Rolled back to {}", backup.display());
     println!("  Binary: {}", current_exe.display());
+    // Restart any systemd units that were stopped during the update.
+    let state_path = current_exe.with_extension("update-state");
+    if state_path.is_file() {
+        if let Ok(text) = std::fs::read_to_string(&state_path) {
+            for unit in text.lines() {
+                if !unit.trim().is_empty() {
+                    restart_systemd_unit(unit.trim());
+                    println!("  Restarted {}", unit.trim());
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&state_path);
+    }
 }
 
 pub fn cmd_update(args: &[String]) {
@@ -468,10 +482,11 @@ pub fn cmd_update(args: &[String]) {
     // A running process holds the file open (ETXTBSY on Linux), so the
     // swap fails unless the process is stopped first.
     let running = find_running_pantheon_processes();
-    let mut stopped_systemd = false;
+    let mut stopped_units: Vec<String> = Vec::new();
+    let mut stopped_interactive = false;
     if !running.is_empty() {
         println!("· Stopping {} running pantheon process(es)", running.len());
-        stopped_systemd = stop_pantheon_processes(&running);
+        (stopped_units, stopped_interactive) = stop_pantheon_processes(&running);
         // Wait for processes to exit (up to 10 seconds)
         for _ in 0..20 {
             if find_running_pantheon_processes().is_empty() {
@@ -517,12 +532,21 @@ pub fn cmd_update(args: &[String]) {
     }
     let _ = std::fs::remove_dir_all(&tmp);
 
+    // Write stopped units to a state file so rollback can restart them.
+    if !stopped_units.is_empty() {
+        let state_path = current_exe.with_extension("update-state");
+        let _ = std::fs::write(&state_path, stopped_units.join("\n"));
+    }
+
     // Restart any systemd units that were stopped.
-    if stopped_systemd {
+    if !stopped_units.is_empty() {
         println!("· Restarting pantheon services");
-        let _ = std::process::Command::new("systemctl")
-            .args(["--user", "start", "pantheon-gateway.service"])
-            .status();
+        for unit in &stopped_units {
+            restart_systemd_unit(unit);
+        }
+    }
+    if stopped_interactive {
+        println!("  ⚠ interactive pantheon processes were stopped; restart them manually");
     }
 
     println!("✓ Pantheon updated to {tag}");
@@ -533,56 +557,234 @@ pub fn cmd_update(args: &[String]) {
     );
 }
 
-/// Find running pantheon processes (excluding the current process).
-/// Returns a list of PIDs.
+/// Find running pantheon processes by matching the binary path.
+/// Returns a list of PIDs. Excludes the current process.
 fn find_running_pantheon_processes() -> Vec<u32> {
     let current_pid = std::process::id();
+    let current_exe = std::env::current_exe().unwrap_or_default();
+    let exe_name = current_exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("pantheon")
+        .to_string();
     let mut pids = Vec::new();
-    // Use pgrep to find pantheon processes
-    if let Ok(out) = std::process::Command::new("pgrep")
-        .arg("-f")
-        .arg("pantheon")
-        .output()
+
+    #[cfg(unix)]
     {
-        if out.status.success() {
-            let text = String::from_utf8_lossy(&out.stdout);
-            for line in text.lines() {
-                if let Ok(pid) = line.trim().parse::<u32>() {
-                    if pid != current_pid {
-                        pids.push(pid);
+        // Use pgrep with exact process name match to avoid false positives
+        // from processes that merely have "pantheon" in their arguments.
+        if let Ok(out) = std::process::Command::new("pgrep")
+            .arg("-x")
+            .arg(&exe_name)
+            .output()
+        {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    if let Ok(pid) = line.trim().parse::<u32>() {
+                        if pid != current_pid {
+                            pids.push(pid);
+                        }
                     }
                 }
             }
         }
     }
+
+    #[cfg(windows)]
+    {
+        // Use tasklist to find processes by image name
+        if let Ok(out) = std::process::Command::new("tasklist")
+            .args([
+                "/FI",
+                &format!("IMAGENAME eq {exe_name}"),
+                "/NH",
+                "/FO",
+                "CSV",
+            ])
+            .output()
+        {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split(',').collect();
+                    if parts.len() >= 2 {
+                        if let Ok(pid) = parts[1].trim().parse::<u32>() {
+                            if pid != current_pid {
+                                pids.push(pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pids
 }
 
-/// Stop pantheon processes. Returns true if any systemd unit was stopped.
-fn stop_pantheon_processes(pids: &[u32]) -> bool {
-    let mut stopped_systemd = false;
-    // Try systemd first (graceful)
-    if let Ok(out) = std::process::Command::new("systemctl")
-        .args(["--user", "is-active", "pantheon-gateway.service"])
-        .output()
+/// Stop pantheon processes. Returns (stopped_systemd_units, stopped_interactive).
+fn stop_pantheon_processes(pids: &[u32]) -> (Vec<String>, bool) {
+    let mut stopped_units = Vec::new();
+    let mut stopped_interactive = false;
+
+    #[cfg(unix)]
     {
-        if out.status.success() {
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "stop", "pantheon-gateway.service"])
+        // Discover and stop any active pantheon systemd units
+        if let Ok(out) = std::process::Command::new("systemctl")
+            .args([
+                "--user",
+                "list-units",
+                "--type=service",
+                "--state=active",
+                "--no-legend",
+                "--no-pager",
+            ])
+            .output()
+        {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.is_empty() {
+                        continue;
+                    }
+                    let unit = parts[0];
+                    if unit.contains("pantheon") {
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--user", "stop", unit])
+                            .status();
+                        stopped_units.push(unit.to_string());
+                    }
+                }
+            }
+        }
+
+        // Verify units actually stopped
+        for unit in &stopped_units {
+            for _ in 0..10 {
+                if let Ok(out) = std::process::Command::new("systemctl")
+                    .args(["--user", "is-active", unit])
+                    .output()
+                {
+                    if !out.status.success() {
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+
+        // SIGTERM any remaining non-systemd processes
+        for &pid in pids {
+            if pid == std::process::id() {
+                continue;
+            }
+            let _ = std::process::Command::new("kill")
+                .arg(pid.to_string())
                 .status();
-            stopped_systemd = true;
+            stopped_interactive = true;
         }
     }
-    // Also kill any remaining processes (non-systemd)
-    for &pid in pids {
-        // Don't kill self
-        if pid == std::process::id() {
-            continue;
+
+    #[cfg(windows)]
+    {
+        // Stop Windows services
+        if let Ok(out) = std::process::Command::new("sc")
+            .args(["query", "type=", "service", "state=", "active"])
+            .output()
+        {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    if line.contains("pantheon") || line.contains("PANTHEON") {
+                        // Extract service name and stop it
+                        if let Some(name) = line.split_whitespace().nth(1) {
+                            let _ = std::process::Command::new("sc")
+                                .args(["stop", name])
+                                .status();
+                            stopped_units.push(name.to_string());
+                        }
+                    }
+                }
+            }
         }
-        // Send SIGTERM via kill command
-        let _ = std::process::Command::new("kill")
-            .arg(pid.to_string())
+
+        // Kill remaining processes
+        for &pid in pids {
+            if pid == std::process::id() {
+                continue;
+            }
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F"])
+                .status();
+            stopped_interactive = true;
+        }
+    }
+
+    (stopped_units, stopped_interactive)
+}
+
+/// Restart a systemd unit (Unix) or Windows service.
+fn restart_systemd_unit(unit: &str) {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "start", unit])
             .status();
     }
-    stopped_systemd
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("sc")
+            .args(["start", unit])
+            .status();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_file_round_trips_units_for_rollback() {
+        let exe = std::env::current_exe().unwrap();
+        let state_path = exe.with_extension("update-state");
+        let units = ["pantheon-gateway.service".to_string()];
+        std::fs::write(&state_path, units.join("\n")).unwrap();
+        let text = std::fs::read_to_string(&state_path).unwrap();
+        let parsed: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(parsed, vec!["pantheon-gateway.service"]);
+        let _ = std::fs::remove_file(&state_path);
+    }
+
+    #[test]
+    fn find_running_excludes_self() {
+        let pids = find_running_pantheon_processes();
+        assert!(!pids.contains(&std::process::id()));
+    }
+
+    #[test]
+    fn permission_mode_resolve_behavior_verified() {
+        use pantheon_api::capability::Decision;
+        use pantheon_api::model::GateVerdict;
+        use pantheon_api::permission_mode::PermissionMode;
+        for mode in [
+            PermissionMode::Ask,
+            PermissionMode::Smart,
+            PermissionMode::AllowAll,
+        ] {
+            assert_eq!(
+                mode.resolve(Decision::Deny, Some(GateVerdict::Allow)),
+                Decision::Deny
+            );
+        }
+        assert_eq!(
+            PermissionMode::Ask.resolve(Decision::Approval, None),
+            Decision::Approval
+        );
+        assert_eq!(
+            PermissionMode::AllowAll.resolve(Decision::Approval, None),
+            Decision::Allow
+        );
+    }
 }
