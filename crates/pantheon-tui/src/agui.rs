@@ -199,6 +199,7 @@ pub fn cmd_serve(args: &[String]) {
             ui_action_locks: Default::default(),
             turn_children: Default::default(),
             swarm: pantheon_dashboard::swarm::orchestrator_for(&dir),
+            desktop: Default::default(),
         },
     ));
     // Single-token invariant: the gateway's auth context is built from the

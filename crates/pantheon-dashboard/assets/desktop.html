@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Screen — Pantheon desktop watch</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0e14; color: #e6e9ef; font: 14px/1.5 system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #11151d; border-bottom: 1px solid #1f2633; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  #status { font-size: 12px; color: #9aa4b2; }
+  #status .live { color: #22d3ee; }
+  .controls { display: flex; gap: 8px; padding: 10px 16px; background: #11151d; border-bottom: 1px solid #1f2633; }
+  button { background: #1c2330; color: #e6e9ef; border: 1px solid #2c3648; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  input[type=text] { background: #0b0e14; color: #e6e9ef; border: 1px solid #2c3648; border-radius: 6px; padding: 6px 10px; }
+  main { display: flex; justify-content: center; padding: 12px; }
+  #screen { max-width: 100%; border: 1px solid #1f2633; border-radius: 4px; background: #000; }
+  #note { font-size: 12px; color: #6b7484; padding: 8px 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bot Screen</h1>
+  <span id="status">connecting…</span>
+</header>
+<div class="controls">
+  <label>fps <input type="text" id="fps" value="2" size="2"></label>
+  <button id="btnFps">Restart stream</button>
+</div>
+<main><img id="screen" alt="live desktop"></main>
+<div id="note">Watch-only: live frames from the CUA-driven desktop. Human takeover arrives in Phase B.</div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const token = params.get("token") || "";
+const img = $("screen"), statusEl = $("status");
+let ws = null, objectUrl = null;
+
+function setStatus(text, live) {
+  statusEl.innerHTML = live ? '<span class="live">' + text + "</span>" : text;
+}
+
+function connect() {
+  if (ws) ws.close();
+  const fps = Math.min(10, Math.max(1, parseInt($("fps").value, 10) || 2));
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host +
+    "/api/desktop/stream?fps=" + fps + "&token=" + encodeURIComponent(token);
+  ws = new WebSocket(url);
+  ws.binaryType = "blob";
+  ws.onopen = () => setStatus("stream connected — watching", true);
+  ws.onmessage = ev => {
+    if (typeof ev.data === "string") {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === "ready") setStatus("streaming at " + msg.fps + " fps — watching", true);
+        if (msg.type === "error") setStatus("capture error: " + msg.message, false);
+      } catch (e) { /* ignore */ }
+      return;
+    }
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    objectUrl = URL.createObjectURL(ev.data);
+    img.src = objectUrl;
+  };
+  ws.onclose = () => setStatus("stream closed — retrying…", false);
+  ws.onerror = () => setStatus("stream error", false);
+}
+
+$("btnFps").addEventListener("click", connect);
+connect();
+</script>
+</body>
+</html>

@@ -23,6 +23,7 @@ pub mod agui;
 pub mod agui_serve;
 pub mod computer;
 pub mod delegate_budget;
+pub mod desktop_takeover;
 pub mod judge;
 pub mod nightly_tools;
 pub mod operation;

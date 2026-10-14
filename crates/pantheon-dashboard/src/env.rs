@@ -191,6 +191,7 @@ mod env_redaction_tests {
             ui_action_locks: Default::default(),
             turn_children: Default::default(),
             swarm: swarm::orchestrator_for(&dir),
+            desktop: Default::default(),
         };
         (app, dir)
     }
