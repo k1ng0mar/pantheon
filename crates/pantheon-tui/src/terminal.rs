@@ -1,7 +1,7 @@
 //! pantheon terminal: thin dispatch over the runtime. No business logic here.
 use pantheon_api::capability::Policy;
 use pantheon_api::events::Event;
-use pantheon_extensions::{doctor, ExtensionManager, Hook, RunnerConfig};
+use pantheon_extensions::{ExtensionManager, Hook, RunnerConfig};
 use pantheon_memory::{markdown, BackendSelection, LayerKind, MemoryStore, Proposal, Provenance};
 use pantheon_runtime::{new_run_id, Supervisor};
 use std::collections::{HashMap, HashSet};
@@ -537,15 +537,6 @@ fn runs_help() {
     eprintln!("  no run id: list runs and their status");
     eprintln!("  <run_id>:  full event trace for one run");
     eprintln!("  --metrics: one-line counts folded from the ledger");
-}
-
-fn doctor_help() {
-    eprintln!("usage: pantheon doctor [--ping] [--json|--human] [<plugin_dir>]");
-    eprintln!("  no args:     system preflight (human-readable; --json for JSON)");
-    eprintln!("  <plugin_dir>: verify one plugin directory");
-    eprintln!("  --ping:      also probe the configured model provider's endpoint");
-    eprintln!("  --json:      machine-readable JSON on stdout");
-    eprintln!("  --human:     human-readable output (the default)");
 }
 
 /// Closest known verbs to `unknown`, nearest first (up to `max_n`).
@@ -1541,60 +1532,9 @@ timeout_ms = 5000
             }
         }
         "doctor" => {
-            // Flags: --ping (reachability probe), --json / --human
-            // (output format; human is the default). The plugin dir is the
-            // first non-flag positional; an unknown `--*` is a usage
-            // error, not a plugin directory named "--ping".
-            let mut ping = false;
-            let mut json = false;
-            let mut plugin_dir: Option<&str> = None;
-            for a in args.iter().skip(2) {
-                match a.as_str() {
-                    "--help" | "-h" => {
-                        doctor_help();
-                        std::process::exit(0);
-                    }
-                    "--ping" => ping = true,
-                    "--json" => json = true,
-                    "--human" => json = false,
-                    s if s.starts_with('-') => {
-                        eprintln!("doctor: unexpected flag {s:?}");
-                        doctor_help();
-                        std::process::exit(2);
-                    }
-                    s => {
-                        if plugin_dir.is_none() {
-                            plugin_dir = Some(s);
-                        }
-                    }
-                }
-            }
-            match plugin_dir {
-                Some(dir) => {
-                    // Plugin-dir form: keep the original extension doctor.
-                    let rep = doctor(std::path::Path::new(dir));
-                    if json {
-                        print_json("doctor", &rep);
-                    } else {
-                        print!("{}", crate::doctor::render_plugin_doctor_human(&rep));
-                    }
-                    if !rep.ok {
-                        std::process::exit(1);
-                    }
-                }
-                None => {
-                    // System doctor: config, model, ledger, memory, plugins.
-                    let rep = crate::doctor::run_system_doctor_opts(&data_dir(), ping);
-                    if json {
-                        print_json("doctor", &rep);
-                    } else {
-                        print!("{}", crate::doctor::render_human(&rep));
-                    }
-                    if !rep.ok {
-                        std::process::exit(1);
-                    }
-                }
-            }
+            // The diagnostics engine owns arg parsing, rendering, and
+            // exit codes; terminal dispatch just hands off.
+            crate::doctor::cmd_doctor(&args, &data_dir())
         }
         "serve" => {
             crate::agui::cmd_serve(&args);

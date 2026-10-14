@@ -518,12 +518,12 @@ fn run_full(
 /// which skill needs it), then install-or-skip per missing item.
 /// Returns the skipped ids for `[skill_deps].skipped`.
 fn run_skill_deps_screen_tui() -> Vec<String> {
-    crate::skill_deps::run_skill_deps_screen(
+    pantheon_doctor::skill_deps::run_skill_deps_screen(
         &mut |line: &str| println!("pantheon: {line}"),
         &mut |question: &str, def: bool| {
             crate::prompt::pick_confirm("Skill dependencies", question, def)
         },
-        &mut crate::skill_deps::shell_install,
+        &mut pantheon_doctor::skill_deps::shell_install,
         &crate::setup_providers::detect_binary,
     )
 }
