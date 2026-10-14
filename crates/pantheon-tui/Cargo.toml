@@ -37,6 +37,8 @@ pantheon-storage = { path = "../pantheon-storage" }
 pantheon-nightly = { path = "../pantheon-nightly" }
 # Web dashboard (std-only HTTP control plane). Driven by `pantheon dashboard`.
 pantheon-dashboard = { path = "../pantheon-dashboard" }
+# Structured diagnostics engine (`pantheon doctor`, `GET /api/health`).
+pantheon-doctor = { path = "../pantheon-doctor" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 ratatui = "0.30"

@@ -2372,6 +2372,7 @@ dependencies = [
  "libc",
  "pantheon-agent",
  "pantheon-api",
+ "pantheon-doctor",
  "pantheon-exec",
  "pantheon-extensions",
  "pantheon-gateway",
@@ -2395,6 +2396,21 @@ dependencies = [
  "url",
  "windows-sys 0.52.0",
  "zip",
+]
+
+[[package]]
+name = "pantheon-doctor"
+version = "1.1.2"
+dependencies = [
+ "chrono",
+ "pantheon-api",
+ "pantheon-exec",
+ "pantheon-extensions",
+ "pantheon-memory",
+ "pantheon-providers",
+ "pantheon-storage",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2644,6 +2660,7 @@ dependencies = [
  "pantheon-agent",
  "pantheon-api",
  "pantheon-dashboard",
+ "pantheon-doctor",
  "pantheon-exec",
  "pantheon-extensions",
  "pantheon-gateway",

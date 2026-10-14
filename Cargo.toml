@@ -24,6 +24,11 @@ members = [
   # pantheon-tui is the one terminal application: the `pantheon` binary
   # (interactive session + non-interactive verbs) lives here.
   "crates/pantheon-tui",
+  # Structured diagnostics engine behind `pantheon doctor` and
+  # `GET /api/health`: findings, registry + orchestrator, checks,
+  # renderers, and the health contract. Shared by the TUI and the
+  # gateway.
+  "crates/pantheon-doctor",
   # Handoff binary for self-update: `pantheon update` spawns this detached,
   # then exits. The helper swaps the main binary via rename(2) and restarts
   # services. Ships in the release tarball alongside `pantheon`.

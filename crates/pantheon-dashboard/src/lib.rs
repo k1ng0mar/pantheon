@@ -576,6 +576,8 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         // Gateway
         ("GET", "gateway", "status", "", "") => system::gateway_status(app),
         ("POST", "gateway", "restart", "", "") => system::gateway_restart(app, req),
+        // System health: the shared diagnostics engine as JSON.
+        ("GET", "health", "", "", "") => system::health(app),
         // Reflection / consolidation
         ("GET", "reflect", "status", "", "") => system::reflect_status(app),
         ("POST", "reflect", "run", "", "") => system::reflect_run(app, req),
