@@ -559,10 +559,13 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("GET", "browser", "status", "", "") => browser::status(app, req),
         ("GET", "browser", "stream", "", "") => browser::stream(app, req),
         ("POST", "browser", "input", "", "") => browser::input(app, req),
-        // Bot Screen: live desktop watch (CUA driver). Human takeover
-        // (takeover/heartbeat/input/release) lands in Phase B.
+        // Bot Screen: live desktop watch + human takeover (CUA driver)
         ("GET", "desktop", "status", "", "") => desktop::status(app, req),
         ("GET", "desktop", "stream", "", "") => desktop::stream(app, req),
+        ("POST", "desktop", "takeover", "", "") => desktop::takeover(app, req),
+        ("POST", "desktop", "heartbeat", "", "") => desktop::heartbeat(app, req),
+        ("POST", "desktop", "input", "", "") => desktop::input(app, req),
+        ("POST", "desktop", "release", "", "") => desktop::release(app, req),
         // Logs
         ("GET", "logs", "", "", "") => logs::tail(app, req),
         ("GET", "logs", "stream", "", "") => logs::stream(app, req),

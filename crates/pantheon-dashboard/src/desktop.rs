@@ -1,5 +1,4 @@
-//! Bot Screen (Phase A — watch): live desktop watch for the CUA-driven
-//! desktop.
+//! Bot Screen: live desktop watch + human takeover for the CUA-driven desktop.
 //!
 //! Mirrors `browser.rs`'s take-control pattern, but the "backend" is the
 //! CUA driver (`cua-driver`, trycua/cua) the agent loop drives as an MCP
@@ -17,19 +16,32 @@
 //! Endpoints (all under `/api/`, so dashboard token auth applies):
 //!
 //! * `GET /api/desktop/status` → `{enabled, driver, controller, viewers,
-//!   taken_since, last_activity}`. Config-only plus a lock-free read of
-//!   the takeover lease file; never fails.
+//!   taken_since, last_activity}`. Config-only; never fails.
 //! * `GET /api/desktop/stream?fps=<1-10>` → **WebSocket**. One
 //!   `{"type":"ready",...}` text frame, then binary PNG/JPEG frames at the
 //!   requested rate (default 2). Capture failures arrive as
 //!   `{"type":"error","message":...}` text frames; the stream keeps going.
+//!   Client → server messages are ignored - input goes through
+//!   `POST /api/desktop/input`.
+//! * `POST /api/desktop/takeover` → `{lease_id, expires_in_ms}`. Fails 409
+//!   while a live lease is held (or 503 when computer-use is disabled).
+//! * `POST /api/desktop/heartbeat` → `{lease_id}` keeps a lease alive.
+//! * `POST /api/desktop/input` → `{lease_id, action, ...}`; closed action
+//!   set: `click` (x, y), `type` (text), `press` (key), `scroll`
+//!   (dx, dy, x?, y?), `drag` (x1, y1, x2, y2). Coordinates clamp to the
+//!   reported screen size when known.
+//! * `POST /api/desktop/release` → `{lease_id}` → `{ok, summary}`; the
+//!   summary also lands in the agent's next computer-use tool result (see
+//!   `pantheon_runtime::desktop_takeover`).
 //!
-//! Frames go to the human viewer only and never enter model context.
-//! Human takeover (lease, input, release) is Phase B and lives in the
-//! same module; the lease file format it uses is defined in
-//! `pantheon_runtime::desktop_takeover`.
+//! Takeover state lives in `<data_dir>/desktop-takeover.json` so the
+//! dashboard and the agent loop — possibly different processes — see the
+//! same lease. While a lease is live, the agent loop's `PreToolCall` path
+//! parks computer-use tools with "human has control". Frames go to the
+//! human viewer only and never enter model context.
 
 use crate::{
+    bad_json, body_json,
     browser::{ts_rfc3339, ws_text, HeadReplay},
     err_json, json_ok, App,
 };
@@ -46,11 +58,7 @@ const DRIVER_SERVER: &str = pantheon_runtime::computer::CUA_DRIVER_SERVER;
 
 /// Raw MCP tool names on the driver, discovered at runtime from the
 /// projected registry (the `mcp_cua-driver_` prefix is stripped).
-/// Screenshot is all Phase A (watch) needs; the input tools are
-/// discovered here so the capability map is validated up front, and
-/// Phase B (takeover/input) reads them.
 #[derive(Debug)]
-#[allow(dead_code)] // input-tool fields are read by Phase B
 pub(crate) struct DesktopTools {
     screenshot: String,
     click: Option<String>,
@@ -376,6 +384,116 @@ fn capture_png(driver: &DesktopDriver) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Clamp a point to the reported screen. Unknown screen size passes
+/// through (the driver validates); the clamp is a client-bug backstop,
+/// not the security boundary — token auth and the closed action set
+/// are.
+fn clamp_xy(x: f64, y: f64, screen: Option<(u32, u32)>) -> (i64, i64) {
+    match screen {
+        Some((w, h)) => (
+            (x.round() as i64).clamp(0, w as i64),
+            (y.round() as i64).clamp(0, h as i64),
+        ),
+        None => (x.round() as i64, y.round() as i64),
+    }
+}
+
+/// Map one take-control action to (raw driver tool, args, audit detail).
+/// Pure function — unit-tested. `detail` is display-safe by construction:
+/// typed text never lands in it (it may contain credentials), mirroring
+/// `browser.rs`'s `takeover_activity`.
+pub(crate) fn input_plan(
+    action: &str,
+    body: &serde_json::Value,
+    screen: Option<(u32, u32)>,
+    tools: &DesktopTools,
+) -> Result<(String, serde_json::Value, String), String> {
+    let num = |key: &str| -> Result<f64, String> {
+        body.get(key)
+            .and_then(|v| v.as_f64())
+            .filter(|f| f.is_finite())
+            .ok_or_else(|| format!("'{key}' must be a finite number"))
+    };
+    let str_field = |key: &str| -> Result<String, String> {
+        body.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| format!("'{key}' must be a non-empty string"))
+    };
+    let need = |tool: Option<&String>, what: &str| -> Result<String, String> {
+        tool.cloned()
+            .ok_or_else(|| format!("driver exposes no {what} tool"))
+    };
+    match action {
+        "click" => {
+            let (x, y) = clamp_xy(num("x")?, num("y")?, screen);
+            Ok((
+                need(tools.click.as_ref(), "click")?,
+                serde_json::json!({"x": x, "y": y}),
+                format!("click at ({x}, {y})"),
+            ))
+        }
+        "type" => {
+            let text = str_field("text")?;
+            Ok((
+                need(tools.type_text.as_ref(), "type")?,
+                serde_json::json!({"text": text}),
+                "typing into a field".to_string(),
+            ))
+        }
+        "press" => {
+            let key = str_field("key")?;
+            Ok((
+                need(tools.press.as_ref(), "press")?,
+                serde_json::json!({"key": key}),
+                format!("pressed {key}"),
+            ))
+        }
+        "scroll" => {
+            let dx = body
+                .get("dx")
+                .and_then(|v| v.as_f64())
+                .filter(|f| f.is_finite())
+                .unwrap_or(0.0);
+            let dy = body
+                .get("dy")
+                .and_then(|v| v.as_f64())
+                .filter(|f| f.is_finite())
+                .unwrap_or(0.0);
+            let (x, y) = match (
+                body.get("x").and_then(|v| v.as_f64()),
+                body.get("y").and_then(|v| v.as_f64()),
+            ) {
+                (Some(x), Some(y)) => clamp_xy(x, y, screen),
+                // Anchor at screen center when known; drivers scroll
+                // relative deltas, so the anchor only needs to be sane.
+                _ => screen
+                    .map(|(w, h)| (w as i64 / 2, h as i64 / 2))
+                    .unwrap_or((0, 0)),
+            };
+            Ok((
+                need(tools.scroll.as_ref(), "scroll")?,
+                serde_json::json!({"x": x, "y": y, "dx": dx, "dy": dy}),
+                format!("scroll ({dx}, {dy})"),
+            ))
+        }
+        "drag" => {
+            let (x1, y1) = clamp_xy(num("x1")?, num("y1")?, screen);
+            let (x2, y2) = clamp_xy(num("x2")?, num("y2")?, screen);
+            Ok((
+                need(tools.drag.as_ref(), "drag")?,
+                serde_json::json!({"x1": x1, "y1": y1, "x2": x2, "y2": y2}),
+                format!("drag ({x1}, {y1}) to ({x2}, {y2})"),
+            ))
+        }
+        other => Err(format!(
+            "unknown action '{other}': click | type | press | scroll | drag"
+        )),
+    }
+}
+
 /// `GET /api/desktop/status` → `{enabled, driver, controller, viewers,
 /// taken_since, last_activity}`. Config-only; never fails.
 pub fn status(app: &App, _req: &Request) -> Response {
@@ -435,6 +553,268 @@ pub fn status(app: &App, _req: &Request) -> Response {
         "taken_since": taken_since,
         "last_activity": last_activity,
     }))
+}
+
+/// `POST /api/desktop/takeover` → `{lease_id, expires_in_ms}`.
+/// 409 while a live, heartbeating lease is held; a lease whose heartbeat
+/// lapsed >30s is claimable.
+pub fn takeover(app: &App, _req: &Request) -> Response {
+    if let Err(r) = computer_section(app) {
+        return r;
+    }
+    let now = takeover::now_ms();
+    let res = takeover::with_takeover_locked(&app.data_dir, |file| {
+        if !takeover::claimable(file) {
+            let holder = file
+                .lease
+                .as_ref()
+                .map(|l| l.holder.clone())
+                .unwrap_or_default();
+            let since = file.lease.as_ref().map(|l| l.acquired_at_ms).unwrap_or(0);
+            return Err((holder, since));
+        }
+        let lease = takeover::TakeoverLease {
+            lease_id: takeover::new_lease_id(),
+            holder: "dashboard".to_string(),
+            acquired_at_ms: now,
+            expires_at_ms: now + takeover::LEASE_TTL_MS,
+            last_heartbeat_ms: now,
+            actions: Vec::new(),
+        };
+        let id = lease.lease_id.clone();
+        file.lease = Some(lease);
+        // A fresh takeover supersedes any release note: the new holder's
+        // actions are what the next tool result should narrate.
+        file.last_release = None;
+        Ok(id)
+    });
+    match res {
+        Err(e) => err_json(
+            500,
+            "DESKTOP_LOCK",
+            &format!("takeover state unavailable: {e}"),
+        ),
+        Ok(Err((holder, since))) => err_json(
+            409,
+            "DESKTOP_CONTROLLED",
+            &format!(
+                "desktop is already controlled by {holder} (since {})",
+                ts_rfc3339(since)
+            ),
+        ),
+        Ok(Ok(id)) => json_ok(serde_json::json!({
+            "lease_id": id,
+            "expires_in_ms": takeover::LEASE_TTL_MS,
+        })),
+    }
+}
+
+/// `POST /api/desktop/heartbeat` `{lease_id}` → `{ok, expires_in_ms}`.
+pub fn heartbeat(app: &App, req: &Request) -> Response {
+    let body = match body_json(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let lease_id = match body
+        .get("lease_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(id) => id.to_string(),
+        None => return bad_json("lease_id is required"),
+    };
+    let now = takeover::now_ms();
+    let res = takeover::with_takeover_locked(&app.data_dir, |file| match file.lease.as_mut() {
+        Some(l) if l.lease_id == lease_id && now < l.expires_at_ms => {
+            l.last_heartbeat_ms = now;
+            l.expires_at_ms = now + takeover::LEASE_TTL_MS;
+            Ok(())
+        }
+        _ => Err(()),
+    });
+    match res {
+        Err(e) => err_json(
+            500,
+            "DESKTOP_LOCK",
+            &format!("takeover state unavailable: {e}"),
+        ),
+        Ok(Err(())) => err_json(
+            409,
+            "DESKTOP_NO_LEASE",
+            "no live takeover for this lease_id",
+        ),
+        Ok(Ok(())) => json_ok(serde_json::json!({
+            "ok": true,
+            "expires_in_ms": takeover::LEASE_TTL_MS,
+        })),
+    }
+}
+
+/// `POST /api/desktop/input` `{lease_id, action, ...}` — one human input
+/// action into the desktop. Requires a live, matching lease.
+pub fn input(app: &App, req: &Request) -> Response {
+    let body = match body_json(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let lease_id = match body
+        .get("lease_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(id) => id.to_string(),
+        None => return bad_json("lease_id is required"),
+    };
+    let action = match body
+        .get("action")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(a) => a.to_string(),
+        None => return bad_json("action is required"),
+    };
+    // Verify the lease BEFORE touching the driver: a wrong lease_id must
+    // not spawn anything.
+    let live = takeover::with_takeover_locked(
+        &app.data_dir,
+        |file| matches!(&file.lease, Some(l) if l.lease_id == lease_id && takeover::now_ms() < l.expires_at_ms),
+    );
+    match live {
+        Err(e) => {
+            return err_json(
+                500,
+                "DESKTOP_LOCK",
+                &format!("takeover state unavailable: {e}"),
+            )
+        }
+        Ok(false) => {
+            return err_json(
+                409,
+                "DESKTOP_NO_LEASE",
+                "no live takeover for this lease_id",
+            )
+        }
+        Ok(true) => {}
+    }
+    let driver = match driver_for(app) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let screen = *driver.screen.lock().unwrap_or_else(|e| e.into_inner());
+    let (tool, args, detail) = match input_plan(&action, &body, screen, &driver.tools) {
+        Ok(t) => t,
+        Err(e) => return bad_json(&e),
+    };
+    let result = match driver.manager.call_tool(DRIVER_SERVER, &tool, &args) {
+        Ok(v) => pantheon_mcp::result_text(&v),
+        Err(e) => return err_json(502, "DESKTOP_INPUT", &format!("driver input failed: {e}")),
+    };
+    // Record the action for the audit trail and release summary.
+    // Best-effort: the input already happened; a dead ledger must not
+    // fail it. Re-verify the lease still matches before appending.
+    let now = takeover::now_ms();
+    let _ = takeover::with_takeover_locked(&app.data_dir, |file| {
+        if let Some(l) = file.lease.as_mut() {
+            if l.lease_id == lease_id {
+                l.actions.push(takeover::TakeoverAction {
+                    action: action.clone(),
+                    detail: detail.clone(),
+                    at_ms: now,
+                });
+            }
+        }
+    });
+    // Keep the result short; it may echo coordinates but never secrets
+    // (typed text is never in `detail`, and the result is the driver's
+    // terse acknowledgement).
+    let short = {
+        let line = result.lines().next().unwrap_or("ok");
+        const MAX: usize = 300;
+        if line.len() > MAX {
+            format!("{}...", &line[..MAX])
+        } else {
+            line.to_string()
+        }
+    };
+    json_ok(serde_json::json!({
+        "ok": true,
+        "action": action,
+        "detail": detail,
+        "result": short,
+    }))
+}
+
+/// `POST /api/desktop/release` `{lease_id}` → `{ok, summary}`. Ends the
+/// lease; the summary is returned here, kept for the agent's next
+/// computer-use tool result, and the lease file retains it as the audit
+/// record.
+pub fn release(app: &App, req: &Request) -> Response {
+    let body = match body_json(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let lease_id = match body
+        .get("lease_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(id) => id.to_string(),
+        None => return bad_json("lease_id is required"),
+    };
+    // Distinguish corrupt state (409: take over again) from simply no
+    // lease (404/409): with_takeover_locked reads corrupt as default,
+    // which would hide the difference.
+    match std::fs::read_to_string(takeover::lease_path(&app.data_dir)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return err_json(409, "DESKTOP_NO_LEASE", "no live takeover to release")
+        }
+        Ok(raw) => {
+            if serde_json::from_str::<takeover::TakeoverFile>(&raw).is_err() {
+                return err_json(
+                    409,
+                    "DESKTOP_STATE_CORRUPT",
+                    "takeover state unreadable; take over again to establish a fresh lease",
+                );
+            }
+        }
+        Err(e) => {
+            return err_json(
+                500,
+                "DESKTOP_LOCK",
+                &format!("takeover state unavailable: {e}"),
+            )
+        }
+    }
+    let now = takeover::now_ms();
+    let res = takeover::with_takeover_locked(&app.data_dir, |file| match file.lease.take() {
+        Some(lease) if lease.lease_id == lease_id => {
+            let summary = takeover::release_summary(&lease);
+            file.last_release = Some(takeover::ReleaseRecord {
+                summary: summary.clone(),
+                at_ms: now,
+                consumed: false,
+            });
+            Ok(summary)
+        }
+        Some(lease) => {
+            file.lease = Some(lease);
+            Err("lease_id does not match the live takeover".to_string())
+        }
+        None => Err("no live takeover to release".to_string()),
+    });
+    match res {
+        Err(e) => err_json(
+            500,
+            "DESKTOP_LOCK",
+            &format!("takeover state unavailable: {e}"),
+        ),
+        Ok(Err(msg)) => err_json(409, "DESKTOP_NO_LEASE", &msg),
+        Ok(Ok(summary)) => json_ok(serde_json::json!({ "ok": true, "summary": summary })),
+    }
 }
 
 /// Replays the already-consumed HTTP request head, then delegates to the
@@ -548,6 +928,104 @@ fn serve_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_tools() -> DesktopTools {
+        DesktopTools {
+            screenshot: "screenshot".to_string(),
+            click: Some("click".to_string()),
+            type_text: Some("type_text".to_string()),
+            press: Some("press_key".to_string()),
+            scroll: Some("scroll".to_string()),
+            drag: Some("drag".to_string()),
+            screen_size: Some("get_screen_size".to_string()),
+        }
+    }
+
+    #[test]
+    fn unknown_action_rejected_with_valid_set() {
+        let err = input_plan("rm", &serde_json::json!({}), None, &test_tools())
+            .expect_err("unknown action");
+        assert!(
+            err.contains("click | type | press | scroll | drag"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn click_maps_and_clamps() {
+        let (tool, args, detail) = input_plan(
+            "click",
+            &serde_json::json!({"x": 5000.0, "y": -10.0}),
+            Some((1920, 1080)),
+            &test_tools(),
+        )
+        .expect("click");
+        assert_eq!(tool, "click");
+        assert_eq!(args, serde_json::json!({"x": 1920, "y": 0}));
+        assert_eq!(detail, "click at (1920, 0)");
+    }
+
+    #[test]
+    fn click_without_screen_passes_through() {
+        let (_, args, _) = input_plan(
+            "click",
+            &serde_json::json!({"x": 100.0, "y": 200.0}),
+            None,
+            &test_tools(),
+        )
+        .expect("click");
+        assert_eq!(args, serde_json::json!({"x": 100, "y": 200}));
+    }
+
+    #[test]
+    fn click_rejects_non_numbers() {
+        input_plan(
+            "click",
+            &serde_json::json!({"x": "a", "y": 1.0}),
+            None,
+            &test_tools(),
+        )
+        .expect_err("non-numeric x");
+    }
+
+    #[test]
+    fn type_never_echoes_text_in_detail() {
+        let (tool, args, detail) = input_plan(
+            "type",
+            &serde_json::json!({"text": "s3cr3t-p@ssw0rd"}),
+            None,
+            &test_tools(),
+        )
+        .expect("type");
+        assert_eq!(tool, "type_text");
+        assert_eq!(args, serde_json::json!({"text": "s3cr3t-p@ssw0rd"}));
+        assert_eq!(detail, "typing into a field");
+        assert!(
+            !detail.contains("s3cr3t"),
+            "typed text must never land in the audit detail"
+        );
+        input_plan(
+            "type",
+            &serde_json::json!({"text": "   "}),
+            None,
+            &test_tools(),
+        )
+        .expect_err("blank text");
+    }
+
+    #[test]
+    fn missing_driver_tool_is_a_clear_error() {
+        let mut tools = test_tools();
+        tools.drag = None;
+        let err = input_plan(
+            "drag",
+            &serde_json::json!({"x1": 1.0, "y1": 1.0, "x2": 2.0, "y2": 2.0}),
+            None,
+            &tools,
+        )
+        .expect_err("missing drag tool");
+        assert!(err.contains("no drag tool"), "{err}");
+    }
 
     #[test]
     fn resolve_tools_requires_screenshot() {

@@ -404,10 +404,19 @@ struct RegRunner<'a> {
     /// Exact-value redaction registry: every model-facing tool result is
     /// scrubbed against the secrets this run injected.
     redaction: Arc<RedactionRegistry>,
+    /// Data dir for the Bot Screen takeover gate: computer-use tools park
+    /// while a human holds the desktop (see `desktop_takeover_gate`).
+    data_dir: PathBuf,
 }
 impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
     fn run(&self, name: &str, args: &str) -> Result<String, PantheonError> {
-        if let Some(mgr) = self.hooks {
+        let computer_use = crate::desktop_takeover::is_computer_use_tool(name);
+        if computer_use {
+            if let Some(refusal) = desktop_takeover_gate(&self.data_dir, name) {
+                return Ok(refusal);
+            }
+        }
+        let mut out = if let Some(mgr) = self.hooks {
             // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy
             // plugin blocks the call rather than waving it through.
             let verdict = mgr.fire_gate(
@@ -441,13 +450,43 @@ impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
             );
             // Scrub AFTER the extension transform: a plugin must not be able
             // to reintroduce a secret after the scrub ran. Fails open.
-            return Ok(self.redaction.scrub(&transformed));
+            self.redaction.scrub(&transformed)
+        } else {
+            // No hooks: still scrub. A bare Session (tests, embedded use)
+            // must not be the one path where an injected secret echoes back.
+            self.registry
+                .execute(name, args)
+                .map(|out| self.redaction.scrub(&out))?
+        };
+        if computer_use {
+            desktop_takeover_release_note(&self.data_dir, &mut out);
         }
-        // No hooks: still scrub. A bare Session (tests, embedded use) must
-        // not be the one path where an injected secret echoes back.
-        self.registry
-            .execute(name, args)
-            .map(|out| self.redaction.scrub(&out))
+        Ok(out)
+    }
+}
+
+/// Bot Screen gate: park computer-use tools while a human holds the
+/// desktop. Returns Some(refusal) when the named call must not run;
+/// None otherwise (including for non-computer-use tools, which this
+/// gate never touches).
+fn desktop_takeover_gate(data_dir: &Path, name: &str) -> Option<String> {
+    if !crate::desktop_takeover::is_computer_use_tool(name) {
+        return None;
+    }
+    match crate::desktop_takeover::check_takeover(data_dir) {
+        crate::desktop_takeover::Gate::Free => None,
+        crate::desktop_takeover::Gate::Parked { since_ms } => {
+            Some(crate::desktop_takeover::parked_refusal(since_ms))
+        }
+    }
+}
+
+/// Append a pending human-takeover release summary to a successful
+/// computer-use tool result, so the run resumes with context. No-op when
+/// there is no pending summary.
+fn desktop_takeover_release_note(data_dir: &Path, out: &mut String) {
+    if let Some(note) = crate::desktop_takeover::take_release_note(data_dir) {
+        out.push_str(&crate::desktop_takeover::release_note_suffix(&note));
     }
 }
 
@@ -470,6 +509,8 @@ struct RegistryToolAdapter<'a> {
     /// Exact-value redaction registry: every model-facing tool result is
     /// scrubbed against the secrets this run injected.
     redaction: Arc<RedactionRegistry>,
+    /// Data dir for the Bot Screen takeover gate (see RegRunner).
+    data_dir: PathBuf,
 }
 
 impl<'a> RegistryToolAdapter<'a> {
@@ -504,48 +545,57 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
             .get("args")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let Some(mgr) = self.hooks else {
-            // No hooks: still scrub — see RegRunner::run.
-            let out = self.run_registered(name, args)?;
-            return Ok(serde_json::Value::String(self.redaction.scrub(&out)));
-        };
-        // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy plugin
-        // blocks the call rather than waving it through. Returned as a
-        // tool-shaped refusal so the model can see why and try something
-        // else, instead of the run dying.
-        let verdict = mgr.fire_gate(
-            pantheon_extensions::Hook::PreToolCall,
-            &self.run_id,
-            "runtime",
-            [
-                ("tool".to_string(), name.to_string()),
-                ("args".to_string(), args.to_string()),
-            ]
-            .into_iter()
-            .collect(),
-        );
-        if let pantheon_extensions::GateDecision::Deny { reason, .. } = verdict {
-            return Ok(serde_json::Value::String(format!(
-                "[blocked by extension policy] {reason}"
-            )));
+        let computer_use = crate::desktop_takeover::is_computer_use_tool(name);
+        if computer_use {
+            if let Some(refusal) = desktop_takeover_gate(&self.data_dir, name) {
+                return Ok(serde_json::Value::String(refusal));
+            }
         }
-        let out = self.run_registered(name, args)?;
-        // Transform last: the plugin sees the real output and may replace
-        // it. Fails OPEN, so redaction degrades to no-op, never to outage.
-        let transformed = mgr.fire_transform(
-            pantheon_extensions::Hook::TransformToolResult,
-            &self.run_id,
-            "runtime",
-            [("tool".to_string(), name.to_string())]
+        let mut out = if let Some(mgr) = self.hooks {
+            // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy
+            // plugin blocks the call rather than waving it through.
+            // Returned as a tool-shaped refusal so the model can see why
+            // and try something else, instead of the run dying.
+            let verdict = mgr.fire_gate(
+                pantheon_extensions::Hook::PreToolCall,
+                &self.run_id,
+                "runtime",
+                [
+                    ("tool".to_string(), name.to_string()),
+                    ("args".to_string(), args.to_string()),
+                ]
                 .into_iter()
                 .collect(),
-            &out,
-        );
-        // Scrub AFTER the extension transform: a plugin must not be able
-        // to reintroduce a secret after the scrub ran. Fails open.
-        Ok(serde_json::Value::String(
-            self.redaction.scrub(&transformed),
-        ))
+            );
+            if let pantheon_extensions::GateDecision::Deny { reason, .. } = verdict {
+                return Ok(serde_json::Value::String(format!(
+                    "[blocked by extension policy] {reason}"
+                )));
+            }
+            let out = self.run_registered(name, args)?;
+            // Transform last: the plugin sees the real output and may replace
+            // it. Fails OPEN, so redaction degrades to no-op, never to outage.
+            let transformed = mgr.fire_transform(
+                pantheon_extensions::Hook::TransformToolResult,
+                &self.run_id,
+                "runtime",
+                [("tool".to_string(), name.to_string())]
+                    .into_iter()
+                    .collect(),
+                &out,
+            );
+            // Scrub AFTER the extension transform: a plugin must not be able
+            // to reintroduce a secret after the scrub ran. Fails open.
+            self.redaction.scrub(&transformed)
+        } else {
+            // No hooks: still scrub — see RegRunner::run.
+            let out = self.run_registered(name, args)?;
+            self.redaction.scrub(&out)
+        };
+        if computer_use {
+            desktop_takeover_release_note(&self.data_dir, &mut out);
+        }
+        Ok(serde_json::Value::String(out))
     }
     fn translate_result(
         &self,
@@ -2590,6 +2640,7 @@ impl Session {
             run_id: run_id.to_string(),
             call_id: call_id.to_string(),
             redaction: self.secrets.redaction_registry(),
+            data_dir: self.supervisor.data_dir().to_path_buf(),
         };
         let operation_id = format!("{run_id}:{call_id}");
         let op = run_tool_operation(
@@ -3971,6 +4022,7 @@ impl Session {
             hooks: Some(&self.hooks),
             run_id: run_id.to_string(),
             redaction: self.secrets.redaction_registry(),
+            data_dir: self.supervisor.data_dir().to_path_buf(),
         };
         let _ = &sink;
         // Title generation runs in parallel with the first turn (not before
@@ -7431,6 +7483,7 @@ mod delegate_tool_tests {
             run_id: "run-e2e".to_string(),
             call_id: "call_e2e".to_string(),
             redaction: RedactionRegistry::for_scope("test-adapter-redaction"),
+            data_dir: dir.path().to_path_buf(),
         };
         let out = adapter
             .execute(&serde_json::json!({
