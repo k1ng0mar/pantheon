@@ -94,6 +94,7 @@ fn rate_provider(id: &str) {
         auth_command: None,
         auth_refresh_ms: None,
         reserved: false,
+        allowed_params: vec![],
     });
 }
 

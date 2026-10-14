@@ -778,6 +778,7 @@ fn pick_custom_provider() -> Option<(String, Option<CustomProviderSpec>)> {
             auth_command: None,
             auth_refresh_ms: None,
             reserved: false,
+            allowed_params: vec![],
         },
     );
     let spec = CustomProviderSpec {
@@ -1610,8 +1611,9 @@ mod tests {
             auth_command: None,
             auth_refresh_ms: None,
             reserved: false,
-        }
-    }
+            allowed_params: vec![],
+            }
+            }
 
     fn model_with_cost(input: Option<f64>) -> ModelMeta {
         ModelMeta {

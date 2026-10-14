@@ -57,6 +57,12 @@ pub struct ProviderMeta {
     pub auth_refresh_ms: Option<u64>,
     #[serde(default)]
     pub reserved: bool,
+    /// Sampling params this provider accepts. Absent = send everything.
+    /// Present = drop any param not in this list before the request goes
+    /// out. Providers that reject unknown fields (Azure, newer Anthropic)
+    /// need this to avoid 400s on params they do not recognize.
+    #[serde(default)]
+    pub allowed_params: Vec<String>,
     /// Env var that overrides the base URL, e.g. `PANTHEON_BASE_OPENAI`.
     #[serde(default)]
     pub base_env: String,

@@ -367,6 +367,7 @@ pub struct AuxWire {
     pub key_header: String,
     pub api_mode: ApiMode,
     pub max_tokens: u32,
+    pub provider_id: String,
 }
 
 /// Resolve everything one aux turn needs: base, mode, key.
@@ -387,6 +388,7 @@ pub fn resolve_aux_wire(
         key_header,
         api_mode,
         max_tokens,
+        provider_id: provider_id.to_string(),
     })
 }
 
@@ -410,6 +412,7 @@ pub fn aux_vision_request(
             &wire.base,
             &wire.key,
             &wire.key_header,
+            &wire.provider_id,
             model,
             &messages,
             &[],

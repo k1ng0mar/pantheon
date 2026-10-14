@@ -227,6 +227,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                         &base,
                         one_key,
                         &key_header,
+                        &model.provider,
                         &model.model,
                         messages,
                         &self.tools,
