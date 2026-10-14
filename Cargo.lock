@@ -2482,6 +2482,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pantheon-helper"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "pantheon-mcp"
 version = "1.1.2"
 dependencies = [

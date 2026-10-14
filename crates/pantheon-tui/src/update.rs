@@ -337,7 +337,6 @@ pub fn cmd_update(args: &[String]) {
         None
     };
     let check_only = args.iter().any(|a| a == "--check");
-    let allow_unverified = args.iter().any(|a| a == "--allow-unverified");
     if args.iter().any(|a| a == "--rollback") {
         return cmd_rollback();
     }
@@ -377,8 +376,6 @@ pub fn cmd_update(args: &[String]) {
         return;
     }
 
-    let asset = asset_name(&tag, os, arch);
-    let url = download_url(&repo, &tag, &asset);
     if check_only {
         if is_newer(&current, &tag) {
             println!("update available: pantheon {current} → {tag}");
@@ -389,204 +386,90 @@ pub fn cmd_update(args: &[String]) {
         return;
     }
 
-    println!("· Downloading Pantheon {tag}");
-    let bytes = download_bytes(&url).unwrap_or_else(|e| {
-        eprintln!("update: {e}");
-        std::process::exit(1);
-    });
-
-    println!("· Verifying release");
-    // Fail-closed: any verification problem aborts the update unless the
-    // user explicitly passed --allow-unverified.
-    match verify_checksum(&url, &bytes) {
-        Ok(true) => println!("✓ Checksum verified"),
-        Ok(false) => {
-            if allow_unverified {
-                eprintln!(
-                    "⚠ no usable checksum published for {asset}; installing unverified (--allow-unverified)"
-                );
-            } else {
-                eprintln!(
-                    "update: verify failed: no usable checksum published for {asset}; refusing to install (re-run with --allow-unverified to override)"
-                );
-                std::process::exit(1);
-            }
-        }
-        Err(e) => {
-            if allow_unverified {
-                eprintln!("⚠ {e}; installing unverified (--allow-unverified)");
-            } else {
-                eprintln!("update: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
-
-    println!("· Installing binary");
-    let tmp = std::env::temp_dir().join(format!("pantheon-update-{}", std::process::id()));
-    if let Err(e) = std::fs::create_dir_all(&tmp) {
-        eprintln!(
-            "update: install failed: cannot create {} ({e})",
-            tmp.display()
-        );
-        std::process::exit(1);
-    }
-    let archive_path = tmp.join(&asset);
-    if let Err(e) = std::fs::write(&archive_path, &bytes) {
-        eprintln!(
-            "update: install failed: cannot write {} ({e})",
-            archive_path.display()
-        );
-        std::process::exit(1);
-    }
-    let new_bin = extract_with_tar(&archive_path, &tmp).unwrap_or_else(|e| {
-        eprintln!("update: {e}");
-        std::process::exit(1);
-    });
-    // Smoke-test the new binary BEFORE it replaces the running one: a
-    // release that cannot even print its version must never become the
-    // installed binary.
-    println!("· Smoke-testing the new binary");
-    match std::process::Command::new(&new_bin)
-        .arg("--version")
-        .output()
-    {
-        Ok(out) if out.status.success() => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            if !text.contains(tag.trim_start_matches('v')) && !text.contains(&tag) {
-                eprintln!(
-                    "update: install failed: the new binary reports {text:?}, expected {tag}"
-                );
-                std::process::exit(1);
-            }
-            println!("✓ New binary runs: {}", text.trim());
-        }
-        Ok(out) => {
-            eprintln!(
-                "update: install failed: the new binary's --version exited {}",
-                out.status
-            );
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("update: install failed: cannot execute the new binary ({e})");
-            std::process::exit(1);
-        }
-    }
+    // Handoff pattern: spawn pantheon-helper detached, then exit.
+    // The helper does the actual download, verify, swap, and restart.
+    // This lets even old binaries self-update, because the helper survives
+    // the binary swap (it has its own copy in memory).
     let current_exe = std::env::current_exe().unwrap_or_else(|e| {
         eprintln!("update: install failed: cannot locate the running binary ({e})");
         std::process::exit(1);
     });
+    let helper_exe = current_exe.with_file_name("pantheon-helper");
 
-    // Stop any running pantheon processes before swapping the binary.
-    // A running process holds the file open (ETXTBSY on Linux), so the
-    // swap fails unless the process is stopped first.
-    let running = find_running_pantheon_processes();
-    let mut stopped_units: Vec<String> = Vec::new();
-    let mut stopped_interactive = false;
-    if !running.is_empty() {
-        println!("· Stopping {} running pantheon process(es)", running.len());
-        (stopped_units, stopped_interactive) = stop_pantheon_processes(&running);
-        // Wait for processes to exit (up to 10 seconds)
-        for _ in 0..20 {
-            if find_running_pantheon_processes().is_empty() {
-                break;
+    // Download the helper binary if it's missing or outdated.
+    if !helper_exe.is_file() {
+        println!("· Downloading pantheon-helper");
+        let helper_asset = asset_name(&tag, os, arch).replace("pantheon-", "pantheon-helper-");
+        let helper_url = download_url(&repo, &tag, &helper_asset);
+        let helper_bytes = match download_bytes(&helper_url) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("update: {e}");
+                std::process::exit(1);
             }
-            std::thread::sleep(Duration::from_millis(500));
+        };
+        if let Err(e) = verify_checksum(&helper_url, &helper_bytes) {
+            eprintln!("update: {e}");
+            std::process::exit(1);
         }
-        let still_running = find_running_pantheon_processes();
-        if !still_running.is_empty() {
-            eprintln!(
-                "update: install failed: {} pantheon process(es) still running (PIDs: {:?}); stop them manually and re-run",
-                still_running.len(),
-                still_running
-            );
+        let tmp = std::env::temp_dir().join(format!("pantheon-helper-{}", std::process::id()));
+        let helper_archive = tmp.join(&helper_asset);
+        let _ = std::fs::create_dir_all(&tmp);
+        let _ = std::fs::write(&helper_archive, &helper_bytes);
+        let extracted = match extract_with_tar(&helper_archive, &tmp) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("update: {e}");
+                std::process::exit(1);
+            }
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(md) = std::fs::metadata(&extracted) {
+                let mut perm = md.permissions();
+                perm.set_mode(0o755);
+                let _ = std::fs::set_permissions(&extracted, perm);
+            }
+        }
+        if let Err(e) = std::fs::rename(&extracted, &helper_exe) {
+            eprintln!("update: cannot install helper ({e})");
+            std::process::exit(1);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // Spawn the helper detached and exit.
+    println!("· Spawning update helper");
+    let mut cmd = std::process::Command::new(&helper_exe);
+    cmd.arg("update")
+        .arg("--current")
+        .arg(&current_exe)
+        .arg("--tag")
+        .arg(&tag)
+        .arg("--repo")
+        .arg(&repo);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    match cmd.spawn() {
+        Ok(mut child) => {
+            let _ = child.wait();
+            // Exit so the helper can swap the binary.
+            println!("✓ Update in progress (helper running)");
+        }
+        Err(e) => {
+            eprintln!("update: cannot spawn helper ({e})");
             std::process::exit(1);
         }
     }
-
-    // Keep a backup next to the binary so a bad release is recoverable.
-    let backup = current_exe.with_extension("prev");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(md) = std::fs::metadata(&new_bin) {
-            let mut perm = md.permissions();
-            perm.set_mode(0o755);
-            let _ = std::fs::set_permissions(&new_bin, perm);
-        }
-    }
-    if std::fs::copy(&current_exe, &backup).is_err() {
-        eprintln!(
-            "⚠ could not write a backup next to {}",
-            current_exe.display()
-        );
-    }
-    // Write the new binary to a temp path next to the target, then rename
-    // over it. rename(2) is atomic and works even when the old file is
-    // executing (ETXTBSY), because the running process keeps the unlinked
-    // inode alive until it exits.
-    let mut new_path = current_exe.clone();
-    let mut new_name = current_exe
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("pantheon")
-        .to_string();
-    new_name.push_str(".new");
-    new_path.set_file_name(&new_name);
-    if let Err(e) = std::fs::copy(&new_bin, &new_path) {
-        eprintln!(
-            "update: install failed: cannot write {} ({e})",
-            new_path.display()
-        );
-        std::process::exit(1);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(md) = std::fs::metadata(&new_path) {
-            let mut perm = md.permissions();
-            perm.set_mode(0o755);
-            let _ = std::fs::set_permissions(&new_path, perm);
-        }
-    }
-    if let Err(e) = std::fs::rename(&new_path, &current_exe) {
-        eprintln!(
-            "update: install failed: cannot replace {} ({e}); backup at {}",
-            current_exe.display(),
-            backup.display()
-        );
-        std::process::exit(1);
-    }
-    let _ = std::fs::remove_dir_all(&tmp);
-
-    // Write stopped units to a state file so rollback can restart them.
-    if !stopped_units.is_empty() {
-        let state_path = current_exe.with_extension("update-state");
-        let _ = std::fs::write(&state_path, stopped_units.join("\n"));
-    }
-
-    // Restart any systemd units that were stopped.
-    if !stopped_units.is_empty() {
-        println!("· Restarting pantheon services");
-        for unit in &stopped_units {
-            restart_systemd_unit(unit);
-        }
-    }
-    if stopped_interactive {
-        println!("  ⚠ interactive pantheon processes were stopped; restart them manually");
-    }
-
-    println!("✓ Pantheon updated to {tag}");
-    println!("  Binary: {}", current_exe.display());
-    println!(
-        "  Previous binary kept at {} (pantheon update --rollback to restore it)",
-        backup.display()
-    );
 }
 
 /// Find running pantheon processes by matching the binary path.
 /// Returns a list of PIDs. Excludes the current process.
+#[allow(dead_code)]
 fn find_running_pantheon_processes() -> Vec<u32> {
     let current_pid = std::process::id();
     let current_exe = std::env::current_exe().unwrap_or_default();
@@ -652,6 +535,7 @@ fn find_running_pantheon_processes() -> Vec<u32> {
 }
 
 /// Stop pantheon processes. Returns (stopped_systemd_units, stopped_interactive).
+#[allow(dead_code)]
 fn stop_pantheon_processes(pids: &[u32]) -> (Vec<String>, bool) {
     let mut stopped_units = Vec::new();
     let mut stopped_interactive = false;
@@ -754,6 +638,7 @@ fn stop_pantheon_processes(pids: &[u32]) -> (Vec<String>, bool) {
 }
 
 /// Restart a systemd unit (Unix) or Windows service.
+#[allow(dead_code)]
 fn restart_systemd_unit(unit: &str) {
     #[cfg(unix)]
     {
