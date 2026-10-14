@@ -20,6 +20,7 @@ pub mod filevault;
 pub mod gateway_tokens;
 pub mod keychain;
 pub mod logins;
+pub mod redaction;
 pub mod value;
 pub mod vault;
 
@@ -34,5 +35,6 @@ pub use gateway_tokens::{
 };
 pub use keychain::KeychainVault;
 pub use logins::{LoginCredential, LoginStore, LOGINS_FILE, LOGINS_META_FILE, MASKED};
+pub use redaction::RedactionRegistry;
 pub use value::SecretValue;
 pub use vault::{MemoryVault, ReadOnlyVault, SecretVault};

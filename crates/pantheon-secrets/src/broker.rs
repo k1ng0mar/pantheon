@@ -14,13 +14,14 @@
 
 use crate::env::EnvVault;
 use crate::error::SecretsError;
+use crate::redaction::RedactionRegistry;
 use crate::value::SecretValue;
 use crate::vault::SecretVault;
 use std::path::Path;
 use std::sync::Arc;
 
 /// Resolves and injects secrets for a run.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SecretsBroker {
     /// Durable backends behind `Arc`: every vault guards its state with a
     /// `Mutex` and takes `&self`, so sharing is sound - and `clone()` keeps
@@ -34,6 +35,22 @@ pub struct SecretsBroker {
     /// host vars beyond the curated minimum (PATH); manifest-declared names
     /// only cross the boundary on an explicit operator allowlist hit.
     plugin_env_allowlist: Vec<String>,
+    /// Exact-value redaction registry. `inject` records every handed-out
+    /// value here; the session scrubs model-facing tool output against it.
+    /// Shared by `Arc`, so clones register into the same registry instead
+    /// of silently splitting it.
+    redaction: Arc<RedactionRegistry>,
+}
+
+impl Default for SecretsBroker {
+    fn default() -> Self {
+        Self {
+            durable: Vec::new(),
+            env: EnvVault::default(),
+            plugin_env_allowlist: Vec::new(),
+            redaction: RedactionRegistry::for_scope("default"),
+        }
+    }
 }
 
 impl Clone for SecretsBroker {
@@ -46,6 +63,7 @@ impl Clone for SecretsBroker {
             durable: self.durable.clone(),
             env: self.env.clone(),
             plugin_env_allowlist: self.plugin_env_allowlist.clone(),
+            redaction: Arc::clone(&self.redaction),
         }
     }
 }
@@ -72,6 +90,7 @@ impl SecretsBroker {
             durable,
             env: EnvVault::system(),
             plugin_env_allowlist: Vec::new(),
+            redaction: RedactionRegistry::for_scope("default"),
         }
     }
 
@@ -131,6 +150,7 @@ impl SecretsBroker {
             durable,
             env: EnvVault::system(),
             plugin_env_allowlist: Vec::new(),
+            redaction: RedactionRegistry::for_scope("default"),
         })
     }
 
@@ -172,6 +192,22 @@ impl SecretsBroker {
         self
     }
 
+    /// Scope the redaction registry to `scope` (a data dir or profile home),
+    /// so multiplexed scopes never cross-scrub: scrubbing scope B's output
+    /// with scope A's values would confirm to B that those bytes exist.
+    /// The default scope is shared process-wide and is correct for
+    /// single-scope processes.
+    pub fn with_redaction_scope(mut self, scope: &str) -> Self {
+        self.redaction = RedactionRegistry::for_scope(scope);
+        self
+    }
+
+    /// The exact-value redaction registry this broker registers into.
+    /// The session scrubs model-facing tool output against it.
+    pub fn redaction_registry(&self) -> Arc<RedactionRegistry> {
+        Arc::clone(&self.redaction)
+    }
+
     /// The plugin env allowlist (see [`Self::with_plugin_env_allowlist`]).
     pub fn plugin_env_allowlist(&self) -> &[String] {
         &self.plugin_env_allowlist
@@ -206,8 +242,19 @@ impl SecretsBroker {
     ///
     /// The returned value must be passed to the execution boundary directly;
     /// it must never be logged or embedded into model context.
+    ///
+    /// Every handed-out value is registered with the redaction registry
+    /// (fill-time registration): the exact bytes are recorded before they
+    /// can appear in any tool result, so a later echo is scrubbed before it
+    /// reaches the model. Registration never fails the injection.
     pub fn inject(&self, name: &str) -> Result<Option<SecretValue>, SecretsError> {
-        self.resolve(name)
+        let result = self.resolve(name);
+        if let Ok(Some(ref value)) = result {
+            if !value.is_empty() {
+                self.redaction.register(value.expose());
+            }
+        }
+        result
     }
 
     /// Store into the first durable vault that can accept it (error when
@@ -381,5 +428,62 @@ mod broker_redaction_tests {
             );
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Exact-value registry wiring: `inject` registers every handed-out value
+/// so the session's model-facing scrub can catch later echoes.
+#[cfg(test)]
+mod broker_registry_tests {
+    use super::*;
+
+    #[test]
+    fn inject_registers_value_for_scrubbing() {
+        // EnvVault normalizes lookups through PANTHEON_SECRET_<NAME>;
+        // seed the map under the normalized key (no process-env races).
+        let broker = SecretsBroker::new()
+            .with_env(EnvVault::from_map(vec![(
+                "PANTHEON_SECRET_TEST_REGISTRY_SECRET",
+                "registry-s3cr3t-789",
+            )]))
+            .with_redaction_scope("test-broker-registry");
+        let value = broker
+            .inject("TEST_REGISTRY_SECRET")
+            .expect("inject resolves")
+            .expect("secret is present");
+        assert!(!value.is_empty());
+        let scrubbed = broker
+            .redaction_registry()
+            .scrub("echoed: registry-s3cr3t-789!");
+        assert_eq!(scrubbed, "echoed: [redacted-secret]!");
+    }
+
+    #[test]
+    fn clone_shares_the_registry() {
+        let broker = SecretsBroker::new()
+            .with_env(EnvVault::from_map(vec![(
+                "PANTHEON_SECRET_TEST_REGISTRY_CLONE",
+                "clone-s3cr3t-456",
+            )]))
+            .with_redaction_scope("test-broker-registry-clone");
+        let clone = broker.clone();
+        clone
+            .inject("TEST_REGISTRY_CLONE")
+            .expect("inject resolves")
+            .expect("secret is present");
+        // Registered through the clone, visible through the original.
+        let scrubbed = broker.redaction_registry().scrub("clone-s3cr3t-456");
+        assert_eq!(scrubbed, "[redacted-secret]");
+    }
+
+    #[test]
+    fn absent_secret_registers_nothing() {
+        let broker = SecretsBroker::new().with_redaction_scope("test-broker-registry-absent");
+        let missing = broker.inject("TEST_REGISTRY_DEFINITELY_ABSENT").unwrap();
+        assert!(missing.is_none());
+        assert_eq!(
+            broker.redaction_registry().scrub("clean text"),
+            "clean text"
+        );
     }
 }
