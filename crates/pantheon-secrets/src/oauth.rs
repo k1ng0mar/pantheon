@@ -1,4 +1,4 @@
-//! Local-first OAuth2 connectors (GitHub, Google).
+//! Local-first OAuth2 connectors (GitHub, Google, Notion, Spotify).
 //!
 //! Unlike hosted connector designs, tokens live in the local durable
 //! vaults (OS keychain, else the encrypted file vault): there is no
@@ -10,8 +10,11 @@
 //! tool result is scrubbed before it reaches the model.
 //!
 //! Client IDs come from the environment (`PANTHEON_OAUTH_<APP>_CLIENT_ID`);
-//! client secrets are never required: both providers run the RFC 8252
-//! public-client loopback flow with PKCE S256 (RFC 7636).
+//! client secrets are never required. All four providers run the RFC 8252
+//! public-client loopback flow with PKCE S256 (RFC 7636). Notion
+//! additionally honors `PANTHEON_OAUTH_NOTION_CLIENT_SECRET`: when set,
+//! the token exchange uses HTTP Basic (`client_id:client_secret`); when
+//! absent, the PKCE public-client flow is used.
 
 use crate::error::{validate_name, SecretsError};
 use crate::value::SecretValue;
@@ -21,10 +24,22 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// How the token endpoint authenticates this client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenAuth {
+    /// Public client: PKCE only, no secret (GitHub, Google, Spotify).
+    Pkce,
+    /// Optional HTTP Basic `client_id:client_secret` (Notion): used when
+    /// `PANTHEON_OAUTH_NOTION_CLIENT_SECRET` is set, PKCE otherwise. A
+    /// Notion integration configured as a public client works without it;
+    /// one configured confidential needs it.
+    BasicOptional,
+}
+
 /// Static OAuth2 provider definition. Pure data: no secrets here.
 #[derive(Debug, Clone, Copy)]
 pub struct OAuthProvider {
-    /// Stable id: `github` or `google`.
+    /// Stable id: `github`, `google`, `notion`, `spotify`.
     pub id: &'static str,
     pub display: &'static str,
     pub auth_url: &'static str,
@@ -36,6 +51,9 @@ pub struct OAuthProvider {
     /// Extra query params on the authorization URL (Google needs
     /// `access_type=offline` for a refresh token to be issued).
     pub extra_auth_params: &'static [(&'static str, &'static str)],
+    /// Extra headers on broker-side API requests (Notion's version pin).
+    pub extra_headers: &'static [(&'static str, &'static str)],
+    pub token_auth: TokenAuth,
     /// Env var carrying the OAuth client ID (public identifier, not a
     /// secret - but read from env so installs never bake one in).
     pub client_id_env: &'static str,
@@ -49,6 +67,11 @@ pub const GITHUB: OAuthProvider = OAuthProvider {
     api_base: "https://api.github.com",
     default_scopes: &["read:user", "repo"],
     extra_auth_params: &[],
+    extra_headers: &[
+        ("Accept", "application/vnd.github+json"),
+        ("X-GitHub-Api-Version", "2022-11-28"),
+    ],
+    token_auth: TokenAuth::Pkce,
     client_id_env: "PANTHEON_OAUTH_GITHUB_CLIENT_ID",
 };
 
@@ -60,13 +83,46 @@ pub const GOOGLE: OAuthProvider = OAuthProvider {
     api_base: "https://www.googleapis.com",
     default_scopes: &["openid", "email", "profile"],
     extra_auth_params: &[("access_type", "offline"), ("prompt", "consent")],
+    extra_headers: &[],
+    token_auth: TokenAuth::Pkce,
     client_id_env: "PANTHEON_OAUTH_GOOGLE_CLIENT_ID",
 };
 
-/// All supported providers, in CLI/tool display order.
-pub const PROVIDERS: &[OAuthProvider] = &[GITHUB, GOOGLE];
+pub const NOTION: OAuthProvider = OAuthProvider {
+    id: "notion",
+    display: "Notion",
+    auth_url: "https://api.notion.com/v1/oauth/authorize",
+    token_url: "https://api.notion.com/v1/oauth/token",
+    api_base: "https://api.notion.com/v1",
+    // Notion grants capabilities at the integration level, not via scopes.
+    default_scopes: &[],
+    extra_auth_params: &[],
+    extra_headers: &[("Notion-Version", "2022-06-28")],
+    token_auth: TokenAuth::BasicOptional,
+    client_id_env: "PANTHEON_OAUTH_NOTION_CLIENT_ID",
+};
 
-/// Look up a provider by id (`github` or `google`).
+pub const SPOTIFY: OAuthProvider = OAuthProvider {
+    id: "spotify",
+    display: "Spotify",
+    auth_url: "https://accounts.spotify.com/authorize",
+    token_url: "https://accounts.spotify.com/api/token",
+    api_base: "https://api.spotify.com/v1",
+    default_scopes: &[
+        "user-read-playback-state",
+        "user-modify-playback-state",
+        "user-read-currently-playing",
+    ],
+    extra_auth_params: &[],
+    extra_headers: &[],
+    token_auth: TokenAuth::Pkce,
+    client_id_env: "PANTHEON_OAUTH_SPOTIFY_CLIENT_ID",
+};
+
+/// All supported providers, in CLI/tool display order.
+pub const PROVIDERS: &[OAuthProvider] = &[GITHUB, GOOGLE, NOTION, SPOTIFY];
+
+/// Look up a provider by id (`github`, `google`, `notion`, `spotify`).
 pub fn provider(id: &str) -> Option<OAuthProvider> {
     PROVIDERS.iter().find(|p| p.id == id).copied()
 }
@@ -302,10 +358,27 @@ fn post_token(
     agent: &ureq::Agent,
     prov_id: &str,
     token_url: &str,
+    token_auth: TokenAuth,
+    client_id: &str,
     params: &[(&str, &str)],
 ) -> Result<TokenResponse, SecretsError> {
     validate_name(prov_id)?;
-    let req = agent.post(token_url).set("Accept", "application/json");
+    let mut req = agent.post(token_url).set("Accept", "application/json");
+    if token_auth == TokenAuth::BasicOptional {
+        // Notion confidential integrations authenticate the token exchange
+        // with HTTP Basic. Public integrations leave the env var unset and
+        // fall through to the PKCE public-client exchange below.
+        if let Ok(secret) = std::env::var("PANTHEON_OAUTH_NOTION_CLIENT_SECRET") {
+            if !secret.trim().is_empty() {
+                let creds = base64_encode(format!("{client_id}:{secret}").as_bytes());
+                // The secret travels only in this header, over TLS, and is
+                // never logged. It is NOT registered for redaction: it is a
+                // static credential the model must never be able to trigger
+                // the use of, let alone see.
+                req = req.set("Authorization", &format!("Basic {creds}"));
+            }
+        }
+    }
     let resp = req.send_form(params).map_err(|e| match e {
         ureq::Error::Status(code, r) => {
             let detail = r.into_string().unwrap_or_default();
@@ -377,7 +450,15 @@ fn exchange_code(
         ("client_id", client_id),
         ("code_verifier", verifier),
     ];
-    Ok(post_token(agent, prov.id, prov.token_url, &params)?.into_token())
+    Ok(post_token(
+        agent,
+        prov.id,
+        prov.token_url,
+        prov.token_auth,
+        client_id,
+        &params,
+    )?
+    .into_token())
 }
 
 /// Refresh an access token (RFC 6749 §6). `client_id` is a parameter so
@@ -393,7 +474,15 @@ fn refresh_access_token_with(
         ("refresh_token", refresh_token),
         ("client_id", client_id),
     ];
-    let mut token = post_token(agent, prov.id, prov.token_url, &params)?.into_token();
+    let mut token = post_token(
+        agent,
+        prov.id,
+        prov.token_url,
+        prov.token_auth,
+        client_id,
+        &params,
+    )?
+    .into_token();
     // Providers that do not rotate the refresh token (Google) omit it:
     // keep the old one rather than losing the ability to refresh.
     if token.refresh_token.is_none() {
@@ -686,10 +775,13 @@ impl SecretsBroker {
         }
         let token = OAuthStore::new(self).ensure_valid_token(app)?;
         let agent = http_agent();
-        let req = agent
+        let mut req = agent
             .request(&method, url)
             .set("Authorization", &format!("Bearer {}", token.expose()))
             .set("Accept", "application/json");
+        for (k, v) in prov.extra_headers {
+            req = req.set(k, v);
+        }
         let result = match body {
             Some(b) => req.set("Content-Type", "application/json").send_string(b),
             None => req.call(),
@@ -776,12 +868,12 @@ mod tests {
     fn delete_removes_all_records() {
         let broker = test_broker();
         let store = OAuthStore::new(&broker);
-        store.save("google", &test_token("access-x")).unwrap();
-        assert!(store.status("google").unwrap().connected);
-        store.delete("google").unwrap();
-        assert!(!store.status("google").unwrap().connected);
+        store.save("spotify", &test_token("access-x")).unwrap();
+        assert!(store.status("spotify").unwrap().connected);
+        store.delete("spotify").unwrap();
+        assert!(!store.status("spotify").unwrap().connected);
         // Deleting twice is a no-op, per the vault contract.
-        store.delete("google").unwrap();
+        store.delete("spotify").unwrap();
     }
 
     #[test]
@@ -804,8 +896,8 @@ mod tests {
     fn not_connected_fails_closed() {
         let broker = test_broker();
         let store = OAuthStore::new(&broker);
-        let err = store.ensure_valid_token("google").unwrap_err();
-        assert!(err.to_string().contains("pantheon oauth login google"));
+        let err = store.ensure_valid_token("notion").unwrap_err();
+        assert!(err.to_string().contains("pantheon oauth login notion"));
     }
 
     #[test]
@@ -930,7 +1022,7 @@ mod tests {
         let leaked: &'static str = Box::leak(token_url.into_boxed_str());
         let prov = OAuthProvider {
             token_url: leaked,
-            ..GOOGLE
+            ..SPOTIFY
         };
         let agent = ureq::AgentBuilder::new().try_proxy_from_env(false).build();
         let err = refresh_access_token_with(&agent, prov, "cid", "bad").unwrap_err();
@@ -949,12 +1041,12 @@ mod tests {
         assert!(err.to_string().contains("outside github api base"));
         // Wrong provider base entirely.
         let err = broker
-            .oauth_request("google", "GET", "https://api.github.com/user", None)
+            .oauth_request("notion", "GET", "https://api.github.com/user", None)
             .unwrap_err();
-        assert!(err.to_string().contains("outside google api base"));
+        assert!(err.to_string().contains("outside notion api base"));
         // Disallowed method.
         let err = broker
-            .oauth_request("github", "TRACE", "https://api.github.com/user", None)
+            .oauth_request("spotify", "TRACE", "https://api.spotify.com/v1/me", None)
             .unwrap_err();
         assert!(err.to_string().contains("unsupported oauth method"));
         // Unknown app.
@@ -965,9 +1057,9 @@ mod tests {
     }
 
     #[test]
-    fn provider_table_has_two_apps() {
-        assert_eq!(PROVIDERS.len(), 2);
-        for id in ["github", "google"] {
+    fn provider_table_has_four_apps() {
+        assert_eq!(PROVIDERS.len(), 4);
+        for id in ["github", "google", "notion", "spotify"] {
             assert!(provider(id).is_some(), "{id}");
         }
         assert!(provider("eviltwin").is_none());
