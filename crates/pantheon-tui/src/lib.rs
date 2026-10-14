@@ -87,6 +87,7 @@ mod model_catalog;
 pub mod nightly_cli;
 pub mod nightly_repair;
 pub mod notify;
+mod oauth;
 mod pipeline;
 pub mod plugin_remote;
 mod plugin_toggle;
