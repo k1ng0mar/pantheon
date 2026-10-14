@@ -33,6 +33,7 @@
 mod approvals;
 mod browser;
 mod config;
+pub mod desktop;
 mod env;
 mod experts;
 mod ideas;
@@ -106,6 +107,9 @@ pub struct App {
     /// [`swarm::SubprocessWorker`]; the `[judge]` aux transport resolves
     /// from the dashboard's config.toml at construction.
     pub swarm: std::sync::Arc<pantheon_runtime::swarm_exec::SwarmOrchestrator>,
+    /// Lazily-initialized Bot Screen (desktop watch + takeover) driver
+    /// handle; one per dashboard process, shared by all viewers.
+    pub desktop: std::sync::Mutex<Option<std::sync::Arc<desktop::DesktopDriver>>>,
 }
 
 impl App {
@@ -355,6 +359,7 @@ const TOKENS_CSS: &str = include_str!("../assets/tokens.css");
 const APP_JS: &str = include_str!("../assets/app.js");
 const MANIFEST_JSON: &str = include_str!("../assets/manifest.json");
 const SW_JS: &str = include_str!("../assets/sw.js");
+const DESKTOP_HTML: &str = include_str!("../assets/desktop.html");
 const ICON_192: &[u8] = include_bytes!("../assets/icon-192.png");
 const ICON_512: &[u8] = include_bytes!("../assets/icon-512.png");
 
@@ -423,6 +428,16 @@ fn dispatch(app: &App, req: &Request) -> Response {
     }
     if req.method == "GET" && segs == ["icon-512.png"] {
         return Response::ok_bytes("image/png", ICON_512);
+    }
+    if req.method == "GET" && segs == ["desktop.html"] {
+        // Bot Screen: standalone desktop viewer (live watch + takeover).
+        // Public like the shell: it cannot do anything without the token.
+        return Response::Buffered {
+            status: 200,
+            content_type: "text/html; charset=utf-8",
+            body: DESKTOP_HTML.as_bytes().to_vec(),
+            extra_headers: Vec::new(),
+        };
     }
     if segs.first().map(String::as_str) != Some("api") {
         return Response::not_found();
@@ -544,6 +559,10 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("GET", "browser", "status", "", "") => browser::status(app, req),
         ("GET", "browser", "stream", "", "") => browser::stream(app, req),
         ("POST", "browser", "input", "", "") => browser::input(app, req),
+        // Bot Screen: live desktop watch (CUA driver). Human takeover
+        // (takeover/heartbeat/input/release) lands in Phase B.
+        ("GET", "desktop", "status", "", "") => desktop::status(app, req),
+        ("GET", "desktop", "stream", "", "") => desktop::stream(app, req),
         // Logs
         ("GET", "logs", "", "", "") => logs::tail(app, req),
         ("GET", "logs", "stream", "", "") => logs::stream(app, req),
@@ -659,6 +678,7 @@ impl HttpMount for DashboardMount {
                     Some(
                         "style.css"
                             | "app.js"
+                            | "desktop.html"
                             | "manifest.json"
                             | "sw.js"
                             | "icon-192.png"
@@ -738,6 +758,7 @@ pub fn run(cfg: DashboardConfig) -> ! {
         ui_action_locks: Default::default(),
         turn_children: Default::default(),
         swarm: swarm::orchestrator_for(&cfg.data_dir),
+        desktop: Default::default(),
     };
     let mount = DashboardMount::new(app);
     let auth = mount.auth_ctx();
@@ -830,6 +851,7 @@ mod route_tests {
             ui_action_locks: Default::default(),
             turn_children: Default::default(),
             swarm: swarm::orchestrator_for(&dir),
+            desktop: Default::default(),
         };
         (app, dir)
     }

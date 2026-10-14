@@ -115,7 +115,7 @@ fn latest_activity(app: &App, session: &str) -> serde_json::Value {
 /// Format epoch millis as RFC-3339 UTC (`2026-09-30T15:14:27.123Z`).
 /// Hand-rolled civil date (Howard Hinnant's algorithm): the dashboard
 /// is std-only and this is the only place that needs an ISO timestamp.
-fn ts_rfc3339(ms: i64) -> String {
+pub(crate) fn ts_rfc3339(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
     let millis = ms.rem_euclid(1000);
     let z = secs.div_euclid(86400) + 719468;
@@ -301,14 +301,14 @@ pub fn input(app: &App, req: &Request) -> Response {
 /// Replays the already-consumed HTTP request head, then delegates to the
 /// socket, so `tungstenite::accept` can parse the WS handshake itself
 /// the same trick live voice uses.
-struct HeadReplay {
-    head: Vec<u8>,
-    pos: usize,
-    stream: TcpStream,
+pub(crate) struct HeadReplay {
+    pub(crate) head: Vec<u8>,
+    pub(crate) pos: usize,
+    pub(crate) stream: TcpStream,
 }
 
 impl HeadReplay {
-    fn stream_mut(&mut self) -> &mut TcpStream {
+    pub(crate) fn stream_mut(&mut self) -> &mut TcpStream {
         &mut self.stream
     }
 }
@@ -384,7 +384,7 @@ fn frame_dir_for(session: &str, nonce: &str) -> std::path::PathBuf {
     ))
 }
 
-fn ws_text(ws: &mut tungstenite::WebSocket<HeadReplay>, text: &str) {
+pub(crate) fn ws_text(ws: &mut tungstenite::WebSocket<HeadReplay>, text: &str) {
     let _ = ws.send(tungstenite::Message::Text(text.to_string().into()));
 }
 

@@ -165,6 +165,7 @@ mod tests {
             ui_action_locks: Default::default(),
             turn_children: Default::default(),
             swarm: crate::swarm::orchestrator_for(&dir),
+            desktop: Default::default(),
         };
         (app, dir)
     }

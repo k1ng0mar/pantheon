@@ -95,6 +95,7 @@ fn cmd_dashboard(args: &[String]) {
             ui_action_locks: Default::default(),
             turn_children: Default::default(),
             swarm: pantheon_dashboard::swarm::orchestrator_for(&dir),
+            desktop: Default::default(),
         },
     ));
     // Single-token invariant: the gateway's auth context comes from the
