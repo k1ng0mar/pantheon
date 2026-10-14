@@ -334,7 +334,7 @@ fn cmd_models(dd: &std::path::Path, args: &[String]) {
         "anthropic" => ApiMode::Anthropic,
         _ => ApiMode::OpenAi,
     };
-    match crate::model::fetch_models(&sec.base_url, &key, mode) {
+    match crate::model::fetch_models(&sec.base_url, &key, mode, name.as_str()) {
         Ok(ids) => {
             println!("  {} model(s) live at the endpoint", ids.len());
             for id in &ids {

@@ -410,8 +410,15 @@ pub fn key_header_for(provider_id: &str) -> String {
         .unwrap_or_else(default_auth_header)
 }
 
-/// API key for a provider: env override → `fallback` (the configured key).
+/// API key for a provider: `fallback` (broker-resolved) → env override.
+/// The broker-resolved key (from `[model].api_key_env` or the keychain)
+/// takes precedence over the raw vendor env var, matching the documented
+/// chain: flags > config > env. The env var is a fallback for when the
+/// broker has no opinion.
 pub fn key_for(provider_id: &str, fallback: &str) -> String {
+    if !fallback.is_empty() {
+        return fallback.to_string();
+    }
     let env_name = provider(provider_id)
         .map(|p| {
             if p.key_env.is_empty() {
@@ -421,5 +428,5 @@ pub fn key_for(provider_id: &str, fallback: &str) -> String {
             }
         })
         .unwrap_or_else(|| format!("PANTHEON_KEY_{}", provider_id.to_uppercase()));
-    std::env::var(env_name).unwrap_or_else(|_| fallback.to_string())
+    std::env::var(env_name).unwrap_or_default()
 }

@@ -622,6 +622,7 @@ pub fn fetch_models(
     base_url: &str,
     key: &str,
     mode: pantheon_providers::catalog::ApiMode,
+    provider_id: &str,
 ) -> Result<Vec<String>, String> {
     let base = trim_slash(base_url.trim());
     let url = format!("{base}/models");
@@ -638,7 +639,12 @@ pub fn fetch_models(
                     .set("anthropic-version", ANTHROPIC_VERSION);
             }
             pantheon_providers::catalog::ApiMode::OpenAi => {
-                req = req.set("Authorization", &format!("Bearer {first}"));
+                let header = pantheon_providers::catalog::key_header_for(provider_id);
+                if header == "Authorization" {
+                    req = req.set("Authorization", &format!("Bearer {first}"));
+                } else {
+                    req = req.set(&header, first);
+                }
             }
         }
     }
@@ -1238,23 +1244,24 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
     };
 
     // 4. fetch + pick model.
-    let mut model_ids = match fetch_models(&fetch_base, &effective_keys, api_mode) {
-        Ok(ids) => {
-            println!("  fetched {} models from {fetch_base}", ids.len());
-            ids
-        }
-        Err(e) => {
-            eprintln!("  fetch failed: {e}");
-            // Curated catalog rows still let you pick something known-good.
-            let curated: Vec<String> = catalog::provider(&provider_id)
-                .map(|p| p.models.iter().map(|m| m.model.clone()).collect())
-                .unwrap_or_default();
-            if !curated.is_empty() {
-                println!("  falling back to {} cataloged models", curated.len());
+    let mut model_ids =
+        match fetch_models(&fetch_base, &effective_keys, api_mode, provider_id.as_str()) {
+            Ok(ids) => {
+                println!("  fetched {} models from {fetch_base}", ids.len());
+                ids
             }
-            curated
-        }
-    };
+            Err(e) => {
+                eprintln!("  fetch failed: {e}");
+                // Curated catalog rows still let you pick something known-good.
+                let curated: Vec<String> = catalog::provider(&provider_id)
+                    .map(|p| p.models.iter().map(|m| m.model.clone()).collect())
+                    .unwrap_or_default();
+                if !curated.is_empty() {
+                    println!("  falling back to {} cataloged models", curated.len());
+                }
+                curated
+            }
+        };
     let manual = "Type a model id manually...".to_string();
     model_ids.push(manual.clone());
     let model_items: Vec<PickItem> = model_ids
