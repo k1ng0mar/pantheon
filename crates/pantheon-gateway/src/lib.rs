@@ -20,6 +20,7 @@ pub mod http;
 pub mod live_voice;
 pub mod mcp_boot;
 pub mod notify;
+pub mod rendezvous;
 pub mod schedule_delivery;
 pub mod scheduler;
 pub mod service;
@@ -53,6 +54,10 @@ pub use live_voice::{
 };
 pub use notify::{
     command_for, desktop_notify, detect_notifier, escape_applescript, escape_powershell, Notifier,
+};
+pub use rendezvous::{
+    is_running as gateway_singleton_running, try_acquire as gateway_try_acquire,
+    AcquireOutcome as GatewayAcquireOutcome, GatewayLock,
 };
 pub use schedule_delivery::{
     build_summary, deliver_best_effort, deliver_summary, deliver_to_home_session,
