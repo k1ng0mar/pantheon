@@ -20,6 +20,7 @@ pub mod filevault;
 pub mod gateway_tokens;
 pub mod keychain;
 pub mod logins;
+pub mod oauth;
 pub mod redaction;
 pub mod value;
 pub mod vault;
