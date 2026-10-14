@@ -60,7 +60,7 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: build
-        run: cargo build --release --locked --bin pantheon --target ${{ matrix.target }}
+        run: cargo build --release --locked --bin pantheon --bin pantheon-helper --target ${{ matrix.target }}
 
       - name: package (unix)
         if: matrix.os != 'windows'
@@ -70,9 +70,10 @@ jobs:
           staged="$RUNNER_TEMP/stage"
           mkdir -p "$staged"
           cp "target/${{ matrix.target }}/release/pantheon" "$staged/pantheon"
-          chmod +x "$staged/pantheon"
+          cp "target/${{ matrix.target }}/release/pantheon-helper" "$staged/pantheon-helper"
+          chmod +x "$staged/pantheon" "$staged/pantheon-helper"
           asset="pantheon-${{ github.ref_name }}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
-          tar -czf "$RUNNER_TEMP/$asset" -C "$staged" pantheon
+          tar -czf "$RUNNER_TEMP/$asset" -C "$staged" pantheon pantheon-helper
           (cd "$RUNNER_TEMP" && sha256sum "$asset" > "$asset.sha256")
           echo "ASSET=$asset" >> "$GITHUB_ENV"
 
@@ -83,8 +84,9 @@ jobs:
           $staged = Join-Path $env:RUNNER_TEMP "stage"
           New-Item -ItemType Directory -Force -Path $staged | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/pantheon.exe" (Join-Path $staged "pantheon.exe")
+          Copy-Item "target/${{ matrix.target }}/release/pantheon-helper.exe" (Join-Path $staged "pantheon-helper.exe")
           $asset = "pantheon-${{ github.ref_name }}-${{ matrix.os }}-${{ matrix.arch }}.zip"
-          Compress-Archive -Path (Join-Path $staged "pantheon.exe") -DestinationPath (Join-Path $env:RUNNER_TEMP $asset)
+          Compress-Archive -Path (Join-Path $staged "pantheon.exe"),(Join-Path $staged "pantheon-helper.exe") -DestinationPath (Join-Path $env:RUNNER_TEMP $asset)
           $hash = (Get-FileHash (Join-Path $env:RUNNER_TEMP $asset) -Algorithm SHA256).Hash.ToLower()
           "$hash  $asset" | Out-File -FilePath (Join-Path $env:RUNNER_TEMP "$asset.sha256") -Encoding ascii
           "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
