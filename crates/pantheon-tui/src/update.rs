@@ -522,7 +522,35 @@ pub fn cmd_update(args: &[String]) {
             current_exe.display()
         );
     }
-    if let Err(e) = std::fs::copy(&new_bin, &current_exe) {
+    // Write the new binary to a temp path next to the target, then rename
+    // over it. rename(2) is atomic and works even when the old file is
+    // executing (ETXTBSY), because the running process keeps the unlinked
+    // inode alive until it exits.
+    let mut new_path = current_exe.clone();
+    let mut new_name = current_exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("pantheon")
+        .to_string();
+    new_name.push_str(".new");
+    new_path.set_file_name(&new_name);
+    if let Err(e) = std::fs::copy(&new_bin, &new_path) {
+        eprintln!(
+            "update: install failed: cannot write {} ({e})",
+            new_path.display()
+        );
+        std::process::exit(1);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(md) = std::fs::metadata(&new_path) {
+            let mut perm = md.permissions();
+            perm.set_mode(0o755);
+            let _ = std::fs::set_permissions(&new_path, perm);
+        }
+    }
+    if let Err(e) = std::fs::rename(&new_path, &current_exe) {
         eprintln!(
             "update: install failed: cannot replace {} ({e}); backup at {}",
             current_exe.display(),
