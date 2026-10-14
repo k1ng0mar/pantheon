@@ -28,6 +28,7 @@
 
 providers:
   - id: openai
+    reserved: true
     label: OpenAI
     base_url: https://api.openai.com/v1
     api_mode: openai
@@ -54,6 +55,7 @@ providers:
         cost: { input_per_mtok_usd: 0.15, output_per_mtok_usd: 0.60 }
 
   - id: anthropic
+    reserved: true
     label: Anthropic
     base_url: https://api.anthropic.com/v1
     api_mode: anthropic
@@ -80,6 +82,7 @@ providers:
         cost: { input_per_mtok_usd: 3.00, output_per_mtok_usd: 15.00 }
 
   - id: google
+    reserved: true
     label: Google AI Studio
     base_url: https://generativelanguage.googleapis.com/v1beta/openai
     api_mode: openai
@@ -108,6 +111,7 @@ providers:
         cost: { input_per_mtok_usd: 1.25, output_per_mtok_usd: 5.00 }
 
   - id: vertex
+    reserved: true
     label: Google Vertex AI
     base_url: https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/endpoints/openapi
     api_mode: openai
@@ -118,6 +122,7 @@ providers:
     models: []
 
   - id: bedrock
+    reserved: true
     label: AWS Bedrock
     base_url: https://bedrock-runtime.{region}.amazonaws.com/openai/v1
     api_mode: openai
@@ -128,6 +133,7 @@ providers:
     models: []
 
   - id: azure
+    reserved: true
     label: Azure AI Foundry
     base_url: https://{resource}.openai.azure.com/openai/v1
     api_mode: openai
@@ -141,6 +147,7 @@ providers:
     models: []
 
   - id: huggingface
+    reserved: true
     label: Hugging Face Inference Providers
     base_url: https://router.huggingface.co/v1
     api_mode: openai
@@ -151,6 +158,7 @@ providers:
     models: []
 
   - id: openrouter
+    reserved: true
     label: OpenRouter
     base_url: https://openrouter.ai/api/v1
     api_mode: openai
@@ -161,6 +169,7 @@ providers:
     models: []
 
   - id: fireworks
+    reserved: true
     label: Fireworks AI
     base_url: https://api.fireworks.ai/inference/v1
     api_mode: openai
@@ -171,6 +180,7 @@ providers:
     models: []
 
   - id: together
+    reserved: true
     label: Together AI
     base_url: https://api.together.xyz/v1
     api_mode: openai
@@ -181,6 +191,7 @@ providers:
     models: []
 
   - id: groq
+    reserved: true
     label: Groq
     base_url: https://api.groq.com/openai/v1
     api_mode: openai
@@ -200,6 +211,7 @@ providers:
         cost: { input_per_mtok_usd: 0.15, output_per_mtok_usd: 0.60 }
 
   - id: deepseek
+    reserved: true
     label: DeepSeek
     base_url: https://api.deepseek.com/v1
     api_mode: openai
@@ -234,6 +246,7 @@ providers:
         cost: { input_per_mtok_usd: 0.15, output_per_mtok_usd: 0.60 }
 
   - id: mistral
+    reserved: true
     label: Mistral AI
     base_url: https://api.mistral.ai/v1
     api_mode: openai
@@ -251,6 +264,7 @@ providers:
         streaming: true
 
   - id: xai
+    reserved: true
     label: xAI
     base_url: https://api.x.ai/v1
     api_mode: openai
@@ -268,6 +282,7 @@ providers:
         streaming: true
 
   - id: qwen
+    reserved: true
     label: Qwen / Alibaba Cloud
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     api_mode: openai
@@ -286,6 +301,7 @@ providers:
         cost: { input_per_mtok_usd: 0.55, output_per_mtok_usd: 1.65 }
 
   - id: zhipu
+    reserved: true
     label: Zhipu AI / GLM
     base_url: https://open.bigmodel.cn/api/paas/v4
     api_mode: openai
@@ -311,6 +327,7 @@ providers:
         cost: { input_per_mtok_usd: 0.15, output_per_mtok_usd: 0.50 }
 
   - id: moonshot
+    reserved: true
     label: Moonshot AI
     base_url: https://api.moonshot.ai/v1
     api_mode: openai
@@ -328,6 +345,7 @@ providers:
         streaming: true
 
   - id: minimax
+    reserved: true
     label: MiniMax
     base_url: https://api.minimax.io/v1
     api_mode: openai
@@ -341,6 +359,7 @@ providers:
     models: []
 
   - id: nvidia-nim
+    reserved: true
     label: NVIDIA NIM
     base_url: https://integrate.api.nvidia.com/v1
     api_mode: openai
@@ -351,6 +370,7 @@ providers:
     models: []
 
   - id: cloudflare
+    reserved: true
     label: Cloudflare Workers AI
     base_url: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1
     api_mode: openai
@@ -361,6 +381,7 @@ providers:
     models: []
 
   - id: deepinfra
+    reserved: true
     label: DeepInfra
     base_url: https://api.deepinfra.com/v1/openai
     api_mode: openai
@@ -371,6 +392,7 @@ providers:
     models: []
 
   - id: novita
+    reserved: true
     label: Novita AI
     base_url: https://api.novita.ai/openai/v1
     api_mode: openai
@@ -381,6 +403,7 @@ providers:
     models: []
 
   - id: cerebras
+    reserved: true
     label: Cerebras
     base_url: https://api.cerebras.ai/v1
     api_mode: openai
@@ -399,6 +422,7 @@ providers:
         streaming: true
 
   - id: sambanova
+    reserved: true
     label: SambaNova
     base_url: https://api.sambanova.ai/v1
     api_mode: openai
@@ -409,6 +433,7 @@ providers:
     models: []
 
   - id: nebius
+    reserved: true
     label: Nebius Token Factory
     base_url: https://api.tokenfactory.nebius.com/v1
     api_mode: openai
@@ -419,6 +444,7 @@ providers:
     models: []
 
   - id: upstage
+    reserved: true
     label: Upstage
     base_url: https://api.upstage.ai/v1
     api_mode: openai
@@ -429,6 +455,7 @@ providers:
     models: []
 
   - id: cohere
+    reserved: true
     label: Cohere
     base_url: https://api.cohere.ai/compatibility/v1
     api_mode: openai
@@ -439,6 +466,7 @@ providers:
     models: []
 
   - id: perplexity
+    reserved: true
     label: Perplexity
     base_url: https://api.perplexity.ai
     api_mode: openai
@@ -449,6 +477,7 @@ providers:
     models: []
 
   - id: mimo
+    reserved: true
     label: Xiaomi MiMo
     base_url: https://api.xiaomimimo.com/v1
     api_mode: openai
@@ -460,6 +489,7 @@ providers:
     models: []
 
   - id: nous
+    reserved: true
     label: Nous Research
     base_url: https://inference-api.nousresearch.com/v1
     api_mode: openai
@@ -477,6 +507,7 @@ providers:
         reasoning: true
 
   - id: tokenrouter
+    reserved: true
     label: TokenRouter
     base_url: https://api.tokenrouter.com/v1
     api_mode: openai
@@ -487,6 +518,7 @@ providers:
     models: []
 
   - id: gmi
+    reserved: true
     label: GMI cloud
     base_url: https://api.gmi-serving.com/v1
     api_mode: openai
@@ -497,6 +529,7 @@ providers:
     models: []
 
   - id: bai
+    reserved: true
     label: B.ai
     base_url: https://api.b.ai/v1
     api_mode: openai
@@ -507,6 +540,7 @@ providers:
     models: []
 
   - id: experiential
+    reserved: true
     label: Experiential Labs
     base_url: https://api.experientiallabs.ai/v1
     api_mode: openai
@@ -517,6 +551,7 @@ providers:
     models: []
 
   - id: agnes
+    reserved: true
     label: Agnes
     base_url: https://apihub.agnes-ai.com/v1
     api_mode: openai
@@ -527,6 +562,7 @@ providers:
     models: []
 
   - id: xkiro
+    reserved: true
     label: Xkiro
     base_url: https://api.xkiro.com/v1
     api_mode: openai
@@ -537,6 +573,7 @@ providers:
     models: []
 
   - id: local
+    reserved: true
     label: Local (Ollama)
     base_url: http://127.0.0.1:11434/v1
     api_mode: openai
@@ -547,6 +584,7 @@ providers:
     models: []
 
   - id: lmstudio
+    reserved: true
     label: LM Studio
     base_url: http://127.0.0.1:1234/v1
     api_mode: openai
@@ -557,6 +595,7 @@ providers:
     models: []
 
   - id: router
+    reserved: true
     label: Local llm-router
     base_url: http://127.0.0.1:8015/v1
     api_mode: openai

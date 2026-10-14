@@ -80,6 +80,9 @@ fn rate_provider(id: &str) {
         dev: false,
         recommended: false,
         tag: "rate-test".to_string(),
+        auth_command: None,
+        auth_refresh_ms: None,
+        reserved: false,
     });
 }
 

@@ -775,6 +775,9 @@ fn pick_custom_provider() -> Option<(String, Option<CustomProviderSpec>)> {
             recommended: false,
             dev: false,
             tag: "custom".into(),
+            auth_command: None,
+            auth_refresh_ms: None,
+            reserved: false,
         },
     );
     let spec = CustomProviderSpec {
@@ -1604,6 +1607,9 @@ mod tests {
             recommended,
             dev: false,
             tag: String::new(),
+            auth_command: None,
+            auth_refresh_ms: None,
+            reserved: false,
         }
     }
 

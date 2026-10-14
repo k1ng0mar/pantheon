@@ -14,6 +14,7 @@ serde = { version = "1", features = ["derive"] }
 # The provider catalog is YAML-backed.
 serde_yaml = "0.9"
 ureq = { version = "2", default-features = false, features = ["tls", "json", "proxy-from-env", "native-certs"] }
+url = "2"
 
 [dev-dependencies]
 toml = "0.8"

@@ -715,6 +715,9 @@ pub fn register_custom_providers(cfg: &Config) {
                 recommended: false,
                 dev: false,
                 tag: "custom".into(),
+                auth_command: None,
+                auth_refresh_ms: None,
+                reserved: false,
             },
         );
     }
