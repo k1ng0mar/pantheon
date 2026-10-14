@@ -3050,6 +3050,19 @@ impl Session {
             );
         }
         let n_vault = reg.names().len();
+        // OAuth connector tools (`github_api` / `google_api` / `notion_api` /
+        // `spotify_api`): broker-side API requests for connected apps. The
+        // token never leaves the broker and every handed-out access token is
+        // registered with the redaction registry, so responses are scrubbed
+        // before reaching the model. Unconnected apps fail closed with the
+        // `pantheon oauth login <app>` remediation. Always registered: the
+        // tools carry NetworkOutbound and fail closed without a connection.
+        pantheon_tools::oauth_tools::register_oauth_tools(
+            &mut reg,
+            pantheon_tools::oauth_tools::OAuthToolOptions {
+                data_dir: self.supervisor.data_dir().to_path_buf(),
+            },
+        );
         // Session search: the model can look up prior/active conversations
         // by content. Same trust level as reading the ledger (FilesystemRead).
         register_session_search(
