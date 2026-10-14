@@ -170,6 +170,27 @@ pub fn gateway_status(_app: &App) -> Response {
     }))
 }
 
+/// `GET /api/health` - the `pantheon.health/v1` contract.
+///
+/// Runs the shared diagnostics engine (the same checks `pantheon
+/// doctor` runs) and renders the health document the mobile Health
+/// page consumes. Read-only: the opt-in provider reachability probe
+/// stays off here (a GET must not do network I/O), and progress goes
+/// nowhere (there is no stderr consumer on a request thread).
+pub fn health(app: &App) -> Response {
+    let ext_dir = match std::env::var("PANTHEON_EXT_DIR") {
+        Ok(d) if !d.trim().is_empty() => Path::new(&d).to_path_buf(),
+        _ => app.data_dir.join("extensions"),
+    };
+    let ctx = pantheon_doctor::DoctorCtx::new(app.data_dir.clone(), ext_dir);
+    let report = pantheon_doctor::Registry::core().run(&ctx, None);
+    let doc = pantheon_doctor::build_health_response(&report);
+    match serde_json::to_string(&doc) {
+        Ok(body) => Response::ok_json(body),
+        Err(e) => err_json(500, "HEALTH", &format!("serialize health report: {e}")),
+    }
+}
+
 /// `POST /api/gateway/restart` - `{confirm: true}`. Restarts via the real
 /// `pantheon gateway restart` path, in the background (200).
 ///
@@ -377,6 +398,66 @@ mod tests {
         assert_eq!(
             doc.get("nightly").and_then(|t| t.get("enabled")),
             Some(&toml::Value::Boolean(true))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `GET /api/health` serves the `pantheon.health/v1` contract: six
+    /// subsystems, the issue rollup, and a valid overall value - even
+    /// against an empty data dir (which reads as unhealthy, never as
+    /// a fake healthy).
+    #[test]
+    fn health_endpoint_serves_v1_contract() {
+        let (app, dir) = test_app();
+        let (status, body) = buffered(health(&app));
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        let v: serde_json::Value =
+            serde_json::from_slice(&body).expect("health body is valid JSON");
+        assert_eq!(v["schema"], "pantheon.health/v1");
+        assert!(
+            ["healthy", "degraded", "unhealthy", "unknown"]
+                .contains(&v["overall"].as_str().unwrap_or("")),
+            "overall must be a contract value: {v}"
+        );
+        let subs = v["subsystems"].as_array().expect("subsystems array");
+        assert_eq!(subs.len(), 6);
+        let ids: Vec<&str> = subs.iter().filter_map(|s| s["id"].as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "runtime",
+                "providers",
+                "memory",
+                "tools",
+                "security",
+                "config"
+            ]
+        );
+        for s in subs {
+            assert!(
+                ["healthy", "review", "down", "unknown"]
+                    .contains(&s["status"].as_str().unwrap_or("")),
+                "subsystem status must be a contract value: {s}"
+            );
+            assert!(s["checks"].is_array());
+        }
+        assert_eq!(
+            v["issue_count"].as_u64().unwrap() as usize,
+            v["issues"].as_array().unwrap().len()
+        );
+        // core_runtime mirrors the runtime subsystem; the label must
+        // agree with the status (channel-token presence is
+        // environment-dependent, so only the agreement is asserted).
+        let core_status = v["core_runtime"]["status"].as_str().unwrap();
+        let core_label = v["core_runtime"]["label"].as_str().unwrap();
+        assert_eq!(
+            core_label,
+            match core_status {
+                "healthy" => "Healthy",
+                "review" => "Review",
+                "down" => "Down",
+                _ => "Unknown",
+            }
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
