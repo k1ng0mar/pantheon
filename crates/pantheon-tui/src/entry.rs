@@ -128,6 +128,7 @@ pub fn run() {
             // exit. This is the "invalid config" arm of the bare-command
             // auto-pick: onboarding when fresh, repair guidance when
             // broken, a session when healthy.
+            #[allow(deprecated)]
             let report = crate::doctor::run_system_doctor(&data_dir);
             eprintln!("pantheon: the config file is broken, so there is no session to open.");
             let mut shown = 0;

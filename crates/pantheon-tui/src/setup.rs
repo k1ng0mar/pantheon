@@ -316,12 +316,12 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
     // installs behind the user's back. The interactive stdin path runs
     // the full install-or-skip screen.
     let skill_deps_skipped = if assume_defaults {
-        crate::skill_deps::detect_all_skipped(&crate::setup_providers::detect_binary)
+        pantheon_doctor::skill_deps::detect_all_skipped(&crate::setup_providers::detect_binary)
     } else {
-        crate::skill_deps::run_skill_deps_screen(
+        pantheon_doctor::skill_deps::run_skill_deps_screen(
             &mut |line: &str| println!("pantheon: {line}"),
             &mut |q: &str, d: bool| Some(confirm(q, d)),
-            &mut crate::skill_deps::shell_install,
+            &mut pantheon_doctor::skill_deps::shell_install,
             &crate::setup_providers::detect_binary,
         )
     };
