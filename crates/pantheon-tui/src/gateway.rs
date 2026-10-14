@@ -635,6 +635,25 @@ fn run_gateway_foreground() {
     // start only when their token and the allowlist are present; otherwise
     // the process warns and keeps running.
     let data_dir = crate::terminal::data_dir();
+    // Single-flight: one gateway per data dir. A second `gateway run`
+    // would double-fire the scheduler and double-deliver webhook-driven
+    // channels, so it exits instead of starting. The lock is OS-held for
+    // the process lifetime and releases if the process dies, so there is
+    // no stale state to clean up.
+    let _gateway_singleton = match pantheon_gateway::rendezvous::try_acquire(&data_dir) {
+        Ok(pantheon_gateway::rendezvous::AcquireOutcome::Acquired(lock)) => lock,
+        Ok(pantheon_gateway::rendezvous::AcquireOutcome::HeldBy { pid }) => {
+            match pid {
+                Some(pid) => eprintln!("gateway: already running (pid {pid})"),
+                None => eprintln!("gateway: already running"),
+            }
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("gateway: cannot take singleton lock: {e}");
+            std::process::exit(1);
+        }
+    };
     // MCP boot health check: probe enabled MCP servers at startup and log
     // unreachable ones, so a broken server is visible instead of silently
     // absent from the tool list.
@@ -1124,6 +1143,19 @@ fn service_ctl(action: ServiceAction) {
                     m.as_str()
                 ),
                 None => println!("gateway: not installed (pantheon gateway start)"),
+            }
+            // Singleton state: whether a `gateway run` process currently
+            // holds the data-dir lock, independent of the service manager
+            // above (a foreground run is not a unit).
+            match pantheon_gateway::rendezvous::try_acquire(&data_dir) {
+                Ok(pantheon_gateway::rendezvous::AcquireOutcome::Acquired(_)) => {
+                    println!("singleton: not running")
+                }
+                Ok(pantheon_gateway::rendezvous::AcquireOutcome::HeldBy { pid }) => match pid {
+                    Some(pid) => println!("singleton: running (pid {pid})"),
+                    None => println!("singleton: running"),
+                },
+                Err(e) => println!("singleton: unknown ({e})"),
             }
         }
     }

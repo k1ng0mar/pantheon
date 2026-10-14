@@ -13,6 +13,11 @@ aes-gcm = "0.10"
 rand = "0.8"
 zeroize = { version = "1", features = ["std"] }
 keyring = "4"
+# HTTP for the OAuth token endpoint and broker-side API requests: the
+# workspace-standard client (same feature set as pantheon-mcp).
+ureq = { version = "2", default-features = false, features = ["tls", "json", "proxy-from-env", "native-certs"] }
+# SHA-256 for PKCE S256 code challenges (RFC 7636).
+sha2 = "0.11"
 # Direct core dep so the store is an explicit seam: production resolves
 # entries through the platform store the `keyring` crate installs, while
 # tests can install keyring's in-memory sample store first (feature below)

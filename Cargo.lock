@@ -2484,6 +2484,7 @@ dependencies = [
 name = "pantheon-gateway"
 version = "1.1.2"
 dependencies = [
+ "fs2",
  "pantheon-api",
  "pantheon-mcp",
  "pantheon-providers",
@@ -2619,7 +2620,9 @@ dependencies = [
  "rand 0.8.8",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
+ "ureq",
  "zeroize",
 ]
 
@@ -2643,6 +2646,7 @@ dependencies = [
  "pantheon-extensions",
  "pantheon-memory",
  "pantheon-providers",
+ "pantheon-secrets",
  "pantheon-storage",
  "serde",
  "serde_json",
