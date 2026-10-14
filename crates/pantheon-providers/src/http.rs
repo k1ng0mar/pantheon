@@ -293,11 +293,24 @@ pub fn retry_after_secs(err: &PantheonError) -> Option<u64> {
     crate::error_kind::retry_after_secs_from_cause(&err.cause)
 }
 
+/// Wire attribution headers stamped on every outbound provider request.
+/// Lets providers identify traffic coming from pantheon (abuse tracking,
+/// quota attribution, debugging) without parsing user agents.
+pub fn attribution_headers() -> Vec<(String, String)> {
+    vec![
+        ("x-app".into(), "pantheon".into()),
+        ("x-client-version".into(), env!("CARGO_PKG_VERSION").into()),
+    ]
+}
+
 fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, PantheonError> {
     validate_url(&req.url)?;
     let mut r = agent.post(&req.url);
     for (k, v) in &req.headers {
         r = r.set(k, v);
+    }
+    for (k, v) in attribution_headers() {
+        r = r.set(&k, &v);
     }
     r.send_string(&req.body).map_err(|e| match e {
         ureq::Error::Status(code, resp) => {
