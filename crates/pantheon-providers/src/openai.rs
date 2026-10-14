@@ -102,6 +102,7 @@ pub fn request(
     base_url: &str,
     api_key: &str,
     key_header: &str,
+    provider_id: &str,
     model: &str,
     messages: &[Message],
     tools: &[ToolSchema],
@@ -142,6 +143,15 @@ pub fn request(
     if !tools.is_empty() {
         if let Some(choice) = tool_choice_value(&opts.tool_choice) {
             body["tool_choice"] = choice;
+        }
+    }
+    // Filter sampling params by the provider's allowed list. Providers that
+    // reject unknown fields (Azure, newer Anthropic) need this to avoid 400s.
+    if let Some(p) = crate::catalog::provider(provider_id) {
+        if !p.allowed_params.is_empty() {
+            let allowed: std::collections::HashSet<&str> =
+                p.allowed_params.iter().map(|s| s.as_str()).collect();
+            body.as_object_mut().unwrap().retain(|k, _| allowed.contains(k.as_str()));
         }
     }
     let (header_name, auth_value) = crate::http::auth_header_pair(key_header, api_key);
@@ -530,6 +540,7 @@ mod openai_max_tokens_tests {
             "https://api.example.test/v1",
             "k",
             "Authorization",
+            "test-provider",
             "test-model",
             &[],
             &[],

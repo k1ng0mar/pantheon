@@ -142,6 +142,7 @@ providers:
     # Foundry's /openai/v1 takes the API key in the `api-key` header (Azure
     # convention), not `Authorization: Bearer` - the OpenAI default.
     key_header: api-key
+    allowed_params: [max_tokens, temperature, top_p, stream, stream_options, tool_choice, response_format, reasoning_effort]
     prominent: true
     tag: Resource template - set PANTHEON_BASE_AZURE; model id is the deployment name
     models: []
