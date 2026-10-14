@@ -24,6 +24,11 @@ members = [
   # pantheon-tui is the one terminal application: the `pantheon` binary
   # (interactive session + non-interactive verbs) lives here.
   "crates/pantheon-tui",
+  # Structured diagnostics engine behind `pantheon doctor` and
+  # `GET /api/health`: findings, registry + orchestrator, checks,
+  # renderers, and the health contract. Shared by the TUI and the
+  # dashboard so the two surfaces cannot disagree.
+  "crates/pantheon-doctor",
   # Unified nightly self-improvement: one ledger scan feeds signal
   # proposals (skill/persona/lesson) and memory promotion, with
   # eval-gating, replay validation (strict improvement), approvals,
