@@ -2319,7 +2319,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "pantheon-agent",
  "pantheon-api",
@@ -2342,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-agent"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "pantheon-api",
  "serde",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-api"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-dashboard"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "flate2",
  "libc",
@@ -2433,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-exec"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "landlock",
  "libc",
@@ -2453,7 +2453,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-extensions"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "libc",
  "pantheon-api",
@@ -2466,7 +2466,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-gateway"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "pantheon-api",
  "pantheon-mcp",
@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-mcp"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "pantheon-api",
  "pantheon-exec",
@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-memory"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "pantheon-api",
  "rusqlite",
@@ -2507,7 +2507,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-migration"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "pantheon-api",
  "pantheon-extensions",
@@ -2521,7 +2521,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-nightly"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "pantheon-api",
  "pantheon-memory",
@@ -2535,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-providers"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "pantheon-agent",
  "pantheon-api",
@@ -2549,7 +2549,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-runtime"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "libc",
  "pantheon-agent",
@@ -2574,7 +2574,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-scheduler"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "fs2",
  "pantheon-api",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-secrets"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "aes-gcm",
  "keyring",
@@ -2601,7 +2601,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-storage"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "pantheon-api",
  "rusqlite",
@@ -2612,7 +2612,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-tools"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "pantheon-api",
  "pantheon-exec",
@@ -2627,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-tui"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "crossterm",
@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "pantheon-web"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "chromiumoxide",
  "futures",
