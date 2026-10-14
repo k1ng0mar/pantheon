@@ -463,6 +463,33 @@ pub fn cmd_update(args: &[String]) {
         eprintln!("update: install failed: cannot locate the running binary ({e})");
         std::process::exit(1);
     });
+
+    // Stop any running pantheon processes before swapping the binary.
+    // A running process holds the file open (ETXTBSY on Linux), so the
+    // swap fails unless the process is stopped first.
+    let running = find_running_pantheon_processes();
+    let mut stopped_systemd = false;
+    if !running.is_empty() {
+        println!("· Stopping {} running pantheon process(es)", running.len());
+        stopped_systemd = stop_pantheon_processes(&running);
+        // Wait for processes to exit (up to 10 seconds)
+        for _ in 0..20 {
+            if find_running_pantheon_processes().is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let still_running = find_running_pantheon_processes();
+        if !still_running.is_empty() {
+            eprintln!(
+                "update: install failed: {} pantheon process(es) still running (PIDs: {:?}); stop them manually and re-run",
+                still_running.len(),
+                still_running
+            );
+            std::process::exit(1);
+        }
+    }
+
     // Keep a backup next to the binary so a bad release is recoverable.
     let backup = current_exe.with_extension("prev");
     #[cfg(unix)]
@@ -490,10 +517,72 @@ pub fn cmd_update(args: &[String]) {
     }
     let _ = std::fs::remove_dir_all(&tmp);
 
+    // Restart any systemd units that were stopped.
+    if stopped_systemd {
+        println!("· Restarting pantheon services");
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "start", "pantheon-gateway.service"])
+            .status();
+    }
+
     println!("✓ Pantheon updated to {tag}");
     println!("  Binary: {}", current_exe.display());
     println!(
         "  Previous binary kept at {} (pantheon update --rollback to restore it)",
         backup.display()
     );
+}
+
+/// Find running pantheon processes (excluding the current process).
+/// Returns a list of PIDs.
+fn find_running_pantheon_processes() -> Vec<u32> {
+    let current_pid = std::process::id();
+    let mut pids = Vec::new();
+    // Use pgrep to find pantheon processes
+    if let Ok(out) = std::process::Command::new("pgrep")
+        .arg("-f")
+        .arg("pantheon")
+        .output()
+    {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                if let Ok(pid) = line.trim().parse::<u32>() {
+                    if pid != current_pid {
+                        pids.push(pid);
+                    }
+                }
+            }
+        }
+    }
+    pids
+}
+
+/// Stop pantheon processes. Returns true if any systemd unit was stopped.
+fn stop_pantheon_processes(pids: &[u32]) -> bool {
+    let mut stopped_systemd = false;
+    // Try systemd first (graceful)
+    if let Ok(out) = std::process::Command::new("systemctl")
+        .args(["--user", "is-active", "pantheon-gateway.service"])
+        .output()
+    {
+        if out.status.success() {
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "stop", "pantheon-gateway.service"])
+                .status();
+            stopped_systemd = true;
+        }
+    }
+    // Also kill any remaining processes (non-systemd)
+    for &pid in pids {
+        // Don't kill self
+        if pid == std::process::id() {
+            continue;
+        }
+        // Send SIGTERM via kill command
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status();
+    }
+    stopped_systemd
 }
