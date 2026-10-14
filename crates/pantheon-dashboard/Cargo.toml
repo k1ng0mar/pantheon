@@ -32,6 +32,9 @@ pantheon-web = { path = "../pantheon-web" }
 # the `[judge]` aux model resolves through the providers aux HTTP helpers.
 pantheon-agent = { path = "../pantheon-agent" }
 pantheon-providers = { path = "../pantheon-providers" }
+# Structured diagnostics engine: `GET /api/health` runs the same checks
+# as `pantheon doctor`, no duplicated logic.
+pantheon-doctor = { path = "../pantheon-doctor" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
