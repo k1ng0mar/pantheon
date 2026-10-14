@@ -618,6 +618,27 @@ pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// `anthropic-version` and rejects `Authorization: Bearer`. Sending the OpenAI
 /// header to an Anthropic-wire endpoint fails auth, which reads as "this
 /// endpoint has no models" rather than as a credential problem.
+/// Cached model list, keyed by provider identity (base_url + key hash).
+struct DiscoveryCache {
+    key: String,
+    etag: Option<String>,
+    ids: Vec<String>,
+    fetched_at: std::time::Instant,
+}
+
+static DISCOVERY: std::sync::Mutex<Option<DiscoveryCache>> =
+    std::sync::Mutex::new(None);
+
+const DISCOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn cache_key(base_url: &str, key: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    base_url.hash(&mut h);
+    key.hash(&mut h);
+    format!("{:x}", h.finish())
+}
+
 pub fn fetch_models(
     base_url: &str,
     key: &str,
@@ -627,6 +648,17 @@ pub fn fetch_models(
     let base = trim_slash(base_url.trim());
     let url = format!("{base}/models");
     let first = first_key(key);
+    let ck = cache_key(base, first);
+
+    // Check cache first: key must match and TTL must not have expired.
+    if let Ok(cache) = DISCOVERY.lock() {
+        if let Some(ref c) = *cache {
+            if c.key == ck && c.fetched_at.elapsed() < DISCOVERY_TTL && !c.ids.is_empty() {
+                return Ok(c.ids.clone());
+            }
+        }
+    }
+
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
         .build();
@@ -648,6 +680,14 @@ pub fn fetch_models(
             }
         }
     }
+    // Send If-None-Match if we have an ETag.
+    if let Ok(cache) = DISCOVERY.lock() {
+        if let Some(ref c) = *cache {
+            if let Some(ref etag) = c.etag {
+                req = req.set("If-None-Match", etag);
+            }
+        }
+    }
     let resp = req.call().map_err(|e| match e {
         ureq::Error::Status(code, r) => {
             let body = r.into_string().unwrap_or_default();
@@ -656,6 +696,20 @@ pub fn fetch_models(
         }
         e => format!("{url}: {e}"),
     })?;
+    // 304 Not Modified: keep cached list.
+    if resp.status() == 304 {
+        if let Ok(mut cache) = DISCOVERY.lock() {
+            if let Some(ref mut c) = *cache {
+                c.fetched_at = std::time::Instant::now();
+            }
+        }
+        if let Ok(cache) = DISCOVERY.lock() {
+            if let Some(ref c) = *cache {
+                return Ok(c.ids.clone());
+            }
+        }
+    }
+    let etag = resp.header("etag").map(|s| s.to_string());
     let body = resp.into_string().map_err(|e| format!("read {url}: {e}"))?;
     let v: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("parse {url}: {e}"))?;
@@ -681,6 +735,16 @@ pub fn fetch_models(
     if ids.is_empty() {
         return Err(format!("{url} returned no models"));
     }
+    // Update cache.
+    if let Ok(mut cache) = DISCOVERY.lock() {
+        *cache = Some(DiscoveryCache {
+            key: ck.clone(),
+            etag,
+            ids: ids.clone(),
+            fetched_at: std::time::Instant::now(),
+        });
+    }
+    let _ = &ck;
     Ok(ids)
 }
 
