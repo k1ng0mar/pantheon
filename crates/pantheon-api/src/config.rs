@@ -2185,6 +2185,9 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "tui",
     "custom_providers",
     "agents",
+    "egress",
+    "admin",
+    "routing",
 ];
 
 /// Unknown top-level keys in a config document, sorted. Pure so the

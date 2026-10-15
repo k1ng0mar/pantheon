@@ -771,8 +771,6 @@ pub fn chat_secrets(cfg: Option<&Config>) -> pantheon_secrets::SecretsBroker {
     }
 }
 
-/// Resolve the model policy for one session: explicit override > environment >
-/// `config.toml` > the hardcoded local default, plus the configured fallback
 /// Build model policy with phase-aware routing applied.
 ///
 /// If `[routing]` has a pin for `task_type`, it overrides the default
