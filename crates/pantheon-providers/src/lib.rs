@@ -2,7 +2,7 @@
 //! (failure-only, runtime-controlled), auxiliary models for scoped
 //! capabilities. NO routing - locked decision.
 
-mod answer_line;
+pub mod answer_line;
 pub mod anthropic;
 pub mod catalog;
 pub mod chain;
@@ -14,6 +14,7 @@ pub mod http;
 pub mod judge;
 pub mod model_event;
 pub mod openai;
+pub mod sigv4;
 pub mod title;
 pub mod verify;
 pub mod video;

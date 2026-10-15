@@ -67,6 +67,9 @@ pub struct ProviderMeta {
     /// `key_for` checks these in order; the first connected app wins.
     #[serde(default)]
     pub oauth_apps: Vec<String>,
+    /// Use SigV4 signing instead of Bearer auth (AWS Bedrock).
+    #[serde(default)]
+    pub sigv4: bool,
     /// Per-provider reasoning effort mapping. Empty = send `reasoning_effort`
     /// verbatim. Present = rewrite the global level to the provider's wire
     /// value (e.g. DeepSeek wants `max`, Anthropic wants `high`).

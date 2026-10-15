@@ -384,6 +384,23 @@ pub fn attribution_headers() -> Vec<(String, String)> {
 fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, PantheonError> {
     validate_url(&req.url)?;
     let mut r = agent.post(&req.url);
+    // SigV4 for Bedrock: sign the request and replace the Authorization header.
+    if req.url.contains("bedrock-runtime.") && req.url.contains(".amazonaws.com") {
+        if let Some(creds) = crate::sigv4::SigV4Creds::from_env() {
+            let region = req.url.split('.').nth(1).unwrap_or("us-east-1");
+            let auth = crate::sigv4::sign_request(
+                "POST",
+                &req.url,
+                "",
+                &req.headers,
+                req.body.as_bytes(),
+                region,
+                "bedrock",
+                &creds,
+            );
+            r = r.set("Authorization", &auth);
+        }
+    }
     for (k, v) in &req.headers {
         r = r.set(k, v);
     }

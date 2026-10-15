@@ -85,6 +85,7 @@ fn rate_provider(id: &str) {
         reserved: false,
         allowed_params: vec![],
         oauth_apps: vec![],
+        sigv4: false,
         reasoning_map: Default::default(),
     });
 }
