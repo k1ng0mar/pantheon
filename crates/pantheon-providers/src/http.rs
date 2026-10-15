@@ -142,8 +142,67 @@ pub fn http_agent() -> ureq::Agent {
         .build()
 }
 
+/// Egress policy for outbound provider requests.
+#[derive(Debug, Clone)]
+pub struct EgressPolicy {
+    /// `Off` = no restriction, `Allowlist` = only listed hosts, `Offline` = deny all.
+    pub mode: EgressMode,
+    /// Host suffixes allowed when mode is `Allowlist`. Empty = deny all.
+    pub allowlist: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgressMode {
+    Off,
+    Allowlist,
+    Offline,
+}
+
+impl Default for EgressPolicy {
+    fn default() -> Self {
+        Self {
+            mode: EgressMode::Off,
+            allowlist: Vec::new(),
+        }
+    }
+}
+
+static EGRESS: std::sync::RwLock<EgressPolicy> = std::sync::RwLock::new(EgressPolicy {
+    mode: EgressMode::Off,
+    allowlist: Vec::new(),
+});
+
+/// Install the egress policy. Called at CLI startup from config.
+pub fn set_egress_policy(policy: EgressPolicy) {
+    if let Ok(mut guard) = EGRESS.write() {
+        *guard = policy;
+    }
+}
+
+/// Read the current egress policy.
+pub fn egress_policy() -> EgressPolicy {
+    EGRESS.read().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// Check whether `host` is permitted by the policy.
+fn egress_allows_host(host: &str) -> bool {
+    let policy = egress_policy();
+    match policy.mode {
+        EgressMode::Off => true,
+        EgressMode::Offline => false,
+        EgressMode::Allowlist => {
+            let host = host.to_lowercase();
+            policy.allowlist.iter().any(|allowed| {
+                let allowed = allowed.to_lowercase();
+                host == allowed || host.ends_with(&format!(".{allowed}"))
+            })
+        }
+    }
+}
+
 /// SSRF guard: resolve the URL's host and reject anything that is not a
 /// public IP. Called on every outbound provider request before ureq runs.
+/// Also enforces the egress policy (allowlist/offline).
 pub fn validate_url(url: &str) -> Result<(), PantheonError> {
     let err = |code: &str, cause: String| {
         PantheonError::new(
@@ -163,6 +222,12 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
         Some(h) => h,
         None => return Err(err("PROVIDER_URL", format!("no host in URL: {url}"))),
     };
+    if !egress_allows_host(host) {
+        return Err(err(
+            "EGRESS_BLOCKED",
+            format!("{host} is not permitted by egress policy"),
+        ));
+    }
     let port = parsed.port_or_known_default().unwrap_or(0);
     use std::net::ToSocketAddrs;
     let addrs: Vec<std::net::IpAddr> = match (host, port).to_socket_addrs() {
