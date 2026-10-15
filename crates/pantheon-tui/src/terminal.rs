@@ -263,6 +263,9 @@ fn run_delivered_task(
                 allowlist: egress.allowlist.clone(),
             });
         }
+        if let Some(ref admin) = cfg.admin {
+            crate::config::set_admin_policy(admin.clone());
+        }
     }
     let model_policy = build_model_policy(file_cfg.as_ref(), None, None);
     let allow_memory = file_cfg

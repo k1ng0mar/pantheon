@@ -349,6 +349,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             binary: None,
         }),
         egress: None,
+        admin: None,
         websearch: websearch.as_ref().map(|a| super::config::WebsearchSection {
             enabled: Some(true),
             provider: Some(a.id.clone()),
