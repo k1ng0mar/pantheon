@@ -780,6 +780,7 @@ fn pick_custom_provider() -> Option<(String, Option<CustomProviderSpec>)> {
             reserved: false,
             allowed_params: vec![],
             oauth_apps: vec![],
+            reasoning_map: Default::default(),
         },
     );
     let spec = CustomProviderSpec {
@@ -1614,6 +1615,7 @@ mod tests {
             reserved: false,
             allowed_params: vec![],
             oauth_apps: vec![],
+            reasoning_map: Default::default(),
         }
     }
 

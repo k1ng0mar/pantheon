@@ -67,6 +67,11 @@ pub struct ProviderMeta {
     /// `key_for` checks these in order; the first connected app wins.
     #[serde(default)]
     pub oauth_apps: Vec<String>,
+    /// Per-provider reasoning effort mapping. Empty = send `reasoning_effort`
+    /// verbatim. Present = rewrite the global level to the provider's wire
+    /// value (e.g. DeepSeek wants `max`, Anthropic wants `high`).
+    #[serde(default)]
+    pub reasoning_map: std::collections::HashMap<String, String>,
     /// Env var that overrides the base URL, e.g. `PANTHEON_BASE_OPENAI`.
     #[serde(default)]
     pub base_env: String,

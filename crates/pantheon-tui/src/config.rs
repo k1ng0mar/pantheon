@@ -720,6 +720,7 @@ pub fn register_custom_providers(cfg: &Config) {
                 reserved: false,
                 allowed_params: vec![],
                 oauth_apps: vec![],
+                reasoning_map: Default::default(),
             },
         );
     }
