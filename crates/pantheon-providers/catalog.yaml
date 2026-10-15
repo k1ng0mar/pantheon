@@ -135,8 +135,9 @@ providers:
     api_mode: openai
     base_env: PANTHEON_BASE_BEDROCK
     key_env: AWS_BEARER_TOKEN_BEDROCK
+    sigv4: true
     prominent: true
-    tag: Region template - Bearer auth only (long-term API key or 12h token from aws-bedrock-token-generator); model ids are inference-profile ids (us.anthropic.claude-sonnet-4-6, global.openai.gpt-5.6-terra); SigV4 not implemented
+    tag: Region template - SigV4 auth via AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY; model ids are inference-profile ids (us.anthropic.claude-sonnet-4-6, global.openai.gpt-5.6-terra)
     models: []
 
   - id: azure
