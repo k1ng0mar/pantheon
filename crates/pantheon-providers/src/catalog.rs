@@ -138,6 +138,12 @@ pub struct ModelMeta {
     pub streaming: bool,
     #[serde(default)]
     pub cost: ModelCost,
+    /// Picker ordering: higher sorts first. Default 0.
+    #[serde(default)]
+    pub priority: i32,
+    /// Cache pricing per million tokens (prompt caching). Absent = no cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_cost: Option<ModelCost>,
 }
 
 fn default_true() -> bool {
@@ -299,6 +305,8 @@ pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
         reasoning: false,
         streaming: true,
         cost: ModelCost::default(),
+        priority: 0,
+        cache_cost: None,
     }
 }
 
