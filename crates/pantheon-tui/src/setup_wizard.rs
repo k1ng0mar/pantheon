@@ -1636,6 +1636,7 @@ mod tests {
             },
             priority: 0,
             cache_cost: None,
+            aliases: vec![],
         }
     }
 
