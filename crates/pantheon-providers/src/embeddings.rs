@@ -191,6 +191,7 @@ impl EmbedClient {
                 (header_name, auth_value),
             ],
             body: serde_json::to_string(&body).map_err(|e| eerr("EMBED_SER", e.to_string()))?,
+            use_sigv4: false,
         };
         let resp = self.transport.post(&req)?;
         Self::parse_embeddings_response(&resp, texts.len())

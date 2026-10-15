@@ -779,6 +779,7 @@ impl VideoClient {
                 ("Content-Type".to_string(), "application/json".to_string()),
             ],
             body,
+            use_sigv4: false,
         };
         let raw = self.transport.post(&request).map_err(|e| {
             verr(
@@ -836,6 +837,7 @@ impl VideoClient {
                 ("Content-Type".to_string(), "application/json".to_string()),
             ],
             body,
+            use_sigv4: false,
         };
         let raw = self.transport.post(&request).map_err(|e| {
             verr(

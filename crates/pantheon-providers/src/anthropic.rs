@@ -240,6 +240,7 @@ pub fn request(
             ("Content-Type".into(), "application/json".into()),
         ],
         body: body.to_string(),
+        use_sigv4: false,
     }
 }
 
@@ -679,6 +680,7 @@ mod stream_truncation_tests {
             url: "https://api.example.test/v1/messages".into(),
             headers: vec![],
             body: "{}".into(),
+            use_sigv4: false,
         }
     }
 

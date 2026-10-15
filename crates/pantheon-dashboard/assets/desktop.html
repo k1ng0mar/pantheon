@@ -1,51 +1,375 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bot Screen — Pantheon desktop watch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  :root { color-scheme: dark; }
-  body { margin: 0; background: #0b0e14; color: #e6e9ef; font: 14px/1.5 system-ui, sans-serif; }
-  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #11151d; border-bottom: 1px solid #1f2633; }
-  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-  #status { font-size: 12px; color: #9aa4b2; }
-  #status .live { color: #22d3ee; }
-  .controls { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; background: #11151d; border-bottom: 1px solid #1f2633; }
-  button { background: #1c2330; color: #e6e9ef; border: 1px solid #2c3648; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
-  button:disabled { opacity: .4; cursor: default; }
-  button.take { border-color: #22d3ee; color: #22d3ee; }
-  input[type=text] { background: #0b0e14; color: #e6e9ef; border: 1px solid #2c3648; border-radius: 6px; padding: 6px 10px; }
-  main { display: flex; justify-content: center; padding: 12px; }
-  #screen { max-width: 100%; border: 1px solid #1f2633; border-radius: 4px; background: #000; cursor: crosshair; }
-  #lease { font-size: 12px; color: #9aa4b2; padding: 0 16px 12px; }
-  #note { font-size: 12px; color: #6b7484; padding: 8px 16px; }
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d13;
+    --panel: #131722;
+    --panel-header: #10141e;
+    --border: #1f2738;
+    --border-soft: #18202f;
+    --text: #edf0f7;
+    --text-dim: #9aa4b6;
+    --text-faint: #626e84;
+    --accent: #7223ff;
+    --accent-hover: #5d1be0;
+    --accent-soft: rgba(114, 35, 255, 0.16);
+    --accent-border: rgba(114, 35, 255, 0.45);
+    --accent-text: #a87dff;
+    --green: #22c55e;
+    --green-soft: rgba(34, 197, 94, 0.14);
+    --amber: #f59e0b;
+    --amber-soft: rgba(245, 158, 11, 0.14);
+    --red: #ef4444;
+    --red-soft: rgba(239, 68, 68, 0.14);
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 20px;
+    background: var(--panel-header);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    backdrop-filter: blur(12px);
+  }
+  .brand-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .brand-mark {
+    width: 24px;
+    height: 24px;
+    flex: none;
+    border-radius: 6px;
+    background: var(--accent);
+    display: inline-block;
+    position: relative;
+    box-shadow: 0 0 12px var(--accent-border);
+  }
+  .brand-mark::after {
+    content: "";
+    position: absolute;
+    inset: 5px 4px;
+    border: 2px solid #fff;
+    border-top: 0;
+    border-left: 0;
+    border-radius: 0 0 3px 0;
+    transform: rotate(45deg) translate(-1px, -1px);
+    opacity: 0.95;
+  }
+  header h1 {
+    font-size: 14px;
+    margin: 0;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .status-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  #status {
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--border-soft);
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+  }
+  #status .live {
+    color: var(--green);
+    font-weight: 600;
+  }
+  @keyframes status-pulse {
+    0% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.3); opacity: 0.6; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--amber);
+    display: inline-block;
+  }
+  .status-dot.active {
+    background: var(--green);
+    animation: status-pulse 2s infinite ease-in-out;
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  button {
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 550;
+    background: var(--panel-header);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 6px 12px;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    transition: all 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  button:hover:not(:disabled) {
+    background: var(--border);
+    border-color: var(--text-faint);
+  }
+  button:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+  button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  button.take {
+    background: var(--accent-soft);
+    border-color: var(--accent-border);
+    color: var(--accent-text);
+  }
+  button.take:hover:not(:disabled) {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    box-shadow: 0 0 12px var(--accent-border);
+  }
+  button.held-active {
+    background: var(--green-soft);
+    border-color: var(--green);
+    color: var(--green);
+  }
+  .input-wrap {
+    display: flex;
+    align-items: center;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    overflow: hidden;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .input-wrap:focus-within {
+    border-color: var(--accent-border);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  input[type=text] {
+    background: transparent;
+    color: var(--text);
+    border: 0;
+    padding: 6px 10px;
+    font-family: inherit;
+    font-size: 12.5px;
+    outline: none;
+  }
+  input[type=text]::placeholder {
+    color: var(--text-faint);
+  }
+  .input-wrap button {
+    border: 0;
+    border-left: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    padding: 6px 10px;
+    box-shadow: none;
+  }
+  .input-wrap button:hover:not(:disabled) {
+    background: var(--border-soft);
+  }
+  .fps-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--text-dim);
+    background: var(--bg);
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+  }
+  .fps-label input {
+    background: transparent;
+    border: 0;
+    color: var(--text);
+    width: 24px;
+    text-align: center;
+    font-family: var(--mono);
+    font-weight: 600;
+    outline: none;
+  }
+  #lease {
+    font-size: 12px;
+    padding: 0 20px;
+    min-height: 0;
+    transition: all 0.2s ease;
+  }
+  #lease:not(:empty) {
+    padding: 8px 20px;
+    background: var(--accent-soft);
+    border-bottom: 1px solid var(--accent-border);
+    color: var(--accent-text);
+    font-weight: 500;
+  }
+  main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: radial-gradient(circle at center, #101522 0%, #080a0f 100%);
+  }
+  .viewport-frame {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+    overflow: hidden;
+    background: #000;
+    display: inline-flex;
+    max-width: 100%;
+  }
+  #screen {
+    max-width: 100%;
+    max-height: calc(100vh - 180px);
+    display: block;
+    cursor: crosshair;
+  }
+  #note {
+    font-size: 11.5px;
+    color: var(--text-faint);
+    padding: 10px 20px;
+    background: var(--panel-header);
+    border-top: 1px solid var(--border-soft);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .kbd-hint {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: var(--border-soft);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--text-dim);
+  }
+  @media (max-width: 768px) {
+    header, .controls, #note { padding-left: 12px; padding-right: 12px; }
+    .controls { gap: 8px; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>Bot Screen</h1>
-  <span id="status">connecting…</span>
+  <div class="brand-group">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <h1>Pantheon <span style="color:var(--text-faint);font-weight:400">/</span> Bot Screen</h1>
+  </div>
+  <div class="status-wrapper">
+    <div id="status"><span class="status-dot" id="statusDot"></span><span>connecting…</span></div>
+    <button id="btnFullscreen" title="Toggle Fullscreen" style="padding:5px 8px;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+    </button>
+  </div>
 </header>
+
 <div class="controls">
-  <button id="btnTake" class="take">Take over</button>
-  <button id="btnRelease" disabled>Release</button>
-  <input type="text" id="typeText" placeholder="type text…" size="24">
-  <button id="btnType" disabled>Type</button>
-  <input type="text" id="pressKey" placeholder="key (Enter, Tab…)" size="16">
-  <button id="btnPress" disabled>Press</button>
-  <label>fps <input type="text" id="fps" value="2" size="2"></label>
-  <button id="btnFps">Restart stream</button>
+  <div class="control-group">
+    <button id="btnTake" class="take">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6z"/></svg>
+      Take over
+    </button>
+    <button id="btnRelease" disabled>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 9h6v6H9z"/></svg>
+      Release
+    </button>
+  </div>
+
+  <div class="input-wrap">
+    <input type="text" id="typeText" placeholder="Type text into remote session…" size="26">
+    <button id="btnType" disabled title="Send keystrokes (Enter)">Send</button>
+  </div>
+
+  <div class="input-wrap">
+    <input type="text" id="pressKey" placeholder="Special key (Enter, Tab, Esc)…" size="20">
+    <button id="btnPress" disabled title="Send key combination">Press</button>
+  </div>
+
+  <div class="control-group" style="margin-left:auto;">
+    <label class="fps-label">FPS <input type="text" id="fps" value="2" size="2"></label>
+    <button id="btnFps">Restart stream</button>
+  </div>
 </div>
+
 <div id="lease"></div>
-<main><img id="screen" alt="live desktop"></main>
-<div id="note">Watch-only until you take over. Clicking the screen clicks the desktop — only while you hold the takeover lease. Heartbeat refreshes it every 10s; 30s of silence makes the lease claimable.</div>
+
+<main>
+  <div class="viewport-frame">
+    <img id="screen" alt="live desktop">
+  </div>
+</main>
+
+<div id="note">
+  <div><strong>Watch-only mode</strong> until you take over. Clicking on the screen forwards clicks when holding the takeover lease.</div>
+  <div><span class="kbd-hint">Enter</span> inside inputs to submit • Lease heartbeat every 10s</div>
+</div>
+
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const token = params.get("token") || "";
-const img = $("screen"), statusEl = $("status"), leaseEl = $("lease");
+const img = $("screen"), statusEl = $("status"), leaseEl = $("lease"), statusDot = $("statusDot");
 let leaseId = null, heartbeatTimer = null, ws = null, objectUrl = null;
 
 function api(path, body) {
@@ -57,7 +381,8 @@ function api(path, body) {
 }
 
 function setStatus(text, live) {
-  statusEl.innerHTML = live ? '<span class="live">' + text + "</span>" : text;
+  statusEl.innerHTML = '<span class="status-dot' + (live ? " active" : "") + '"></span>' +
+    (live ? '<span class="live">' + text + "</span>" : '<span>' + text + '</span>');
 }
 
 function connect() {
@@ -67,12 +392,12 @@ function connect() {
     "/api/desktop/stream?fps=" + fps + "&token=" + encodeURIComponent(token);
   ws = new WebSocket(url);
   ws.binaryType = "blob";
-  ws.onopen = () => setStatus("stream connected — watching", true);
+  ws.onopen = () => setStatus("connected — streaming", true);
   ws.onmessage = ev => {
     if (typeof ev.data === "string") {
       try {
         const msg = JSON.parse(ev.data);
-        if (msg.type === "ready") setStatus("streaming at " + msg.fps + " fps — watching", true);
+        if (msg.type === "ready") setStatus(msg.fps + " FPS active", true);
         if (msg.type === "error") setStatus("capture error: " + msg.message, false);
       } catch (e) { /* ignore */ }
       return;
@@ -81,7 +406,7 @@ function connect() {
     objectUrl = URL.createObjectURL(ev.data);
     img.src = objectUrl;
   };
-  ws.onclose = () => setStatus("stream closed — retrying…", false);
+  ws.onclose = () => setStatus("stream disconnected — retrying…", false);
   ws.onerror = () => setStatus("stream error", false);
 }
 
@@ -90,7 +415,13 @@ function setHeld(held) {
   $("btnRelease").disabled = !held;
   $("btnType").disabled = !held;
   $("btnPress").disabled = !held;
-  leaseEl.textContent = held ? "You hold the desktop — the agent's cursor is parked." : "";
+  if (held) {
+    $("btnTake").classList.add("held-active");
+    leaseEl.textContent = "⚡ You hold the desktop takeover lease — the agent's cursor is parked. Clicks forward directly.";
+  } else {
+    $("btnTake").classList.remove("held-active");
+    leaseEl.textContent = "";
+  }
 }
 
 function input(body) {
@@ -105,7 +436,7 @@ function input(body) {
 }
 
 img.addEventListener("click", ev => {
-  if (!leaseId) { leaseEl.textContent = "Take over first — watchers can't click."; return; }
+  if (!leaseId) { leaseEl.textContent = "Take over first — watchers cannot click directly."; return; }
   const r = img.getBoundingClientRect();
   input({ action: "click", x: Math.round((ev.clientX - r.left) / r.width * (img.naturalWidth || r.width)),
                            y: Math.round((ev.clientY - r.top) / r.height * (img.naturalHeight || r.height)) });
@@ -136,15 +467,34 @@ $("btnRelease").addEventListener("click", () => {
   });
 });
 
-$("btnType").addEventListener("click", () => {
+const sendTypeText = () => {
   const t = $("typeText").value;
   if (t) { input({ action: "type", text: t }); $("typeText").value = ""; }
-});
-$("btnPress").addEventListener("click", () => {
+};
+const sendPressKey = () => {
   const k = $("pressKey").value;
   if (k) { input({ action: "press", key: k }); $("pressKey").value = ""; }
+};
+
+$("btnType").addEventListener("click", sendTypeText);
+$("typeText").addEventListener("keydown", ev => {
+  if (ev.key === "Enter") { ev.preventDefault(); sendTypeText(); }
 });
+
+$("btnPress").addEventListener("click", sendPressKey);
+$("pressKey").addEventListener("keydown", ev => {
+  if (ev.key === "Enter") { ev.preventDefault(); sendPressKey(); }
+});
+
 $("btnFps").addEventListener("click", connect);
+
+$("btnFullscreen").addEventListener("click", () => {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  } else {
+    document.exitFullscreen().catch(() => {});
+  }
+});
 
 connect();
 </script>

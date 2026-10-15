@@ -231,29 +231,85 @@ pub fn render_diff_lines(
     lines: &[DiffLine],
     th: &crate::session::theme::Theme,
 ) -> Vec<Line<'static>> {
-    lines
-        .iter()
-        .map(|l| match l {
-            DiffLine::FileHeader(p) => Line::from(Span::styled(
-                format!("│  diff {p}"),
-                Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
-            )),
-            DiffLine::Hunk(h) => {
-                Line::from(Span::styled(format!("│  {h}"), Style::default().fg(th.dim)))
+    let adds = lines.iter().filter(|l| matches!(l, DiffLine::Add(_))).count();
+    let dels = lines.iter().filter(|l| matches!(l, DiffLine::Del(_))).count();
+    let stats = if adds > 0 || dels > 0 {
+        format!(" (+{adds} -{dels})")
+    } else {
+        String::new()
+    };
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(lines.len() + 2);
+    let mut in_card = false;
+
+    for l in lines {
+        match l {
+            DiffLine::FileHeader(p) => {
+                if in_card {
+                    out.push(Line::from(Span::styled(
+                        "╰──────────────────────────────────────────",
+                        Style::default().fg(th.dim),
+                    )));
+                }
+                out.push(Line::from(vec![
+                    Span::styled("╭─ diff ", Style::default().fg(th.dim)),
+                    Span::styled(
+                        p.clone(),
+                        Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(stats.clone(), Style::default().fg(th.emphasis)),
+                    Span::styled(" ─", Style::default().fg(th.dim)),
+                ]));
+                in_card = true;
             }
-            DiffLine::Context(c) => Line::from(format!("│   {c}")),
-            DiffLine::Add(a) => Line::from(Span::styled(
-                format!("│  +{a}"),
-                Style::default().fg(th.success),
-            )),
-            DiffLine::Del(d) => Line::from(Span::styled(
-                format!("│  -{d}"),
-                Style::default().fg(th.failure),
-            )),
-            DiffLine::Truncated(n) => Line::from(Span::styled(
-                format!("│  ... {n} more lines"),
-                Style::default().fg(th.dim).add_modifier(Modifier::ITALIC),
-            )),
-        })
-        .collect()
+            DiffLine::Hunk(h) => {
+                out.push(Line::from(vec![
+                    Span::styled("│  ", Style::default().fg(th.dim)),
+                    Span::styled(
+                        h.clone(),
+                        Style::default().fg(th.dim).add_modifier(Modifier::ITALIC),
+                    ),
+                ]));
+            }
+            DiffLine::Context(c) => {
+                out.push(Line::from(vec![
+                    Span::styled("│   ", Style::default().fg(th.dim)),
+                    Span::styled(c.clone(), Style::default().fg(th.body)),
+                ]));
+            }
+            DiffLine::Add(a) => {
+                out.push(Line::from(vec![
+                    Span::styled(
+                        "│ + ",
+                        Style::default().fg(th.success).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(a.clone(), Style::default().fg(th.success)),
+                ]));
+            }
+            DiffLine::Del(d) => {
+                out.push(Line::from(vec![
+                    Span::styled(
+                        "│ - ",
+                        Style::default().fg(th.failure).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(d.clone(), Style::default().fg(th.failure)),
+                ]));
+            }
+            DiffLine::Truncated(n) => {
+                out.push(Line::from(vec![
+                    Span::styled("│   ", Style::default().fg(th.dim)),
+                    Span::styled(
+                        format!("... {n} more lines"),
+                        Style::default().fg(th.dim).add_modifier(Modifier::ITALIC),
+                    ),
+                ]));
+            }
+        }
+    }
+    if in_card {
+        out.push(Line::from(Span::styled(
+            "╰──────────────────────────────────────────",
+            Style::default().fg(th.dim),
+        )));
+    }
+    out
 }
