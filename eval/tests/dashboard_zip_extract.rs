@@ -27,6 +27,7 @@ fn test_app(dir: &std::path::Path) -> App {
             std::sync::Arc::new(pantheon_runtime::swarm_exec::ScriptedWorker::new()),
             None,
         )),
+        desktop: Default::default(),
     }
 }
 
