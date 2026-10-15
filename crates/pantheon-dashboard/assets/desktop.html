@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Screen — Pantheon desktop watch</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0e14; color: #e6e9ef; font: 14px/1.5 system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #11151d; border-bottom: 1px solid #1f2633; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  #status { font-size: 12px; color: #9aa4b2; }
+  #status .live { color: #22d3ee; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; background: #11151d; border-bottom: 1px solid #1f2633; }
+  button { background: #1c2330; color: #e6e9ef; border: 1px solid #2c3648; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.take { border-color: #22d3ee; color: #22d3ee; }
+  input[type=text] { background: #0b0e14; color: #e6e9ef; border: 1px solid #2c3648; border-radius: 6px; padding: 6px 10px; }
+  main { display: flex; justify-content: center; padding: 12px; }
+  #screen { max-width: 100%; border: 1px solid #1f2633; border-radius: 4px; background: #000; cursor: crosshair; }
+  #lease { font-size: 12px; color: #9aa4b2; padding: 0 16px 12px; }
+  #note { font-size: 12px; color: #6b7484; padding: 8px 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bot Screen</h1>
+  <span id="status">connecting…</span>
+</header>
+<div class="controls">
+  <button id="btnTake" class="take">Take over</button>
+  <button id="btnRelease" disabled>Release</button>
+  <input type="text" id="typeText" placeholder="type text…" size="24">
+  <button id="btnType" disabled>Type</button>
+  <input type="text" id="pressKey" placeholder="key (Enter, Tab…)" size="16">
+  <button id="btnPress" disabled>Press</button>
+  <label>fps <input type="text" id="fps" value="2" size="2"></label>
+  <button id="btnFps">Restart stream</button>
+</div>
+<div id="lease"></div>
+<main><img id="screen" alt="live desktop"></main>
+<div id="note">Watch-only until you take over. Clicking the screen clicks the desktop — only while you hold the takeover lease. Heartbeat refreshes it every 10s; 30s of silence makes the lease claimable.</div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const token = params.get("token") || "";
+const img = $("screen"), statusEl = $("status"), leaseEl = $("lease");
+let leaseId = null, heartbeatTimer = null, ws = null, objectUrl = null;
+
+function api(path, body) {
+  return fetch(path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  }).then(r => r.json().then(j => ({ status: r.status, body: j })));
+}
+
+function setStatus(text, live) {
+  statusEl.innerHTML = live ? '<span class="live">' + text + "</span>" : text;
+}
+
+function connect() {
+  if (ws) ws.close();
+  const fps = Math.min(10, Math.max(1, parseInt($("fps").value, 10) || 2));
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host +
+    "/api/desktop/stream?fps=" + fps + "&token=" + encodeURIComponent(token);
+  ws = new WebSocket(url);
+  ws.binaryType = "blob";
+  ws.onopen = () => setStatus("stream connected — watching", true);
+  ws.onmessage = ev => {
+    if (typeof ev.data === "string") {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === "ready") setStatus("streaming at " + msg.fps + " fps — watching", true);
+        if (msg.type === "error") setStatus("capture error: " + msg.message, false);
+      } catch (e) { /* ignore */ }
+      return;
+    }
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    objectUrl = URL.createObjectURL(ev.data);
+    img.src = objectUrl;
+  };
+  ws.onclose = () => setStatus("stream closed — retrying…", false);
+  ws.onerror = () => setStatus("stream error", false);
+}
+
+function setHeld(held) {
+  $("btnTake").disabled = held;
+  $("btnRelease").disabled = !held;
+  $("btnType").disabled = !held;
+  $("btnPress").disabled = !held;
+  leaseEl.textContent = held ? "You hold the desktop — the agent's cursor is parked." : "";
+}
+
+function input(body) {
+  if (!leaseId) return;
+  api("/api/desktop/input", Object.assign({ lease_id: leaseId }, body))
+    .then(({ status, body }) => {
+      if (status !== 200) {
+        leaseEl.textContent = "input rejected: " + (body.message || body.code || status);
+        if (status === 409) { leaseId = null; setHeld(false); }
+      }
+    });
+}
+
+img.addEventListener("click", ev => {
+  if (!leaseId) { leaseEl.textContent = "Take over first — watchers can't click."; return; }
+  const r = img.getBoundingClientRect();
+  input({ action: "click", x: Math.round((ev.clientX - r.left) / r.width * (img.naturalWidth || r.width)),
+                           y: Math.round((ev.clientY - r.top) / r.height * (img.naturalHeight || r.height)) });
+});
+
+$("btnTake").addEventListener("click", () => {
+  api("/api/desktop/takeover").then(({ status, body }) => {
+    if (status === 200) {
+      leaseId = body.lease_id;
+      setHeld(true);
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = setInterval(() => {
+        api("/api/desktop/heartbeat", { lease_id: leaseId }).then(({ status }) => {
+          if (status !== 200) { leaseId = null; clearInterval(heartbeatTimer); setHeld(false); leaseEl.textContent = "lease lost"; }
+        });
+      }, 10000);
+    } else {
+      leaseEl.textContent = "takeover rejected: " + (body.message || body.code || status);
+    }
+  });
+});
+
+$("btnRelease").addEventListener("click", () => {
+  if (!leaseId) return;
+  api("/api/desktop/release", { lease_id: leaseId }).then(({ body }) => {
+    leaseEl.textContent = "released: " + (body.summary || "ok");
+    leaseId = null; clearInterval(heartbeatTimer); setHeld(false);
+  });
+});
+
+$("btnType").addEventListener("click", () => {
+  const t = $("typeText").value;
+  if (t) { input({ action: "type", text: t }); $("typeText").value = ""; }
+});
+$("btnPress").addEventListener("click", () => {
+  const k = $("pressKey").value;
+  if (k) { input({ action: "press", key: k }); $("pressKey").value = ""; }
+});
+$("btnFps").addEventListener("click", connect);
+
+connect();
+</script>
+</body>
+</html>

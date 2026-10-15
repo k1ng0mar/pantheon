@@ -33,6 +33,7 @@
 mod approvals;
 mod browser;
 mod config;
+pub mod desktop;
 mod env;
 mod experts;
 mod ideas;
@@ -41,6 +42,7 @@ mod logins;
 mod logs;
 mod mcp;
 mod memory;
+mod oauth;
 mod plugin_import;
 mod plugins;
 mod profiles;
@@ -106,6 +108,9 @@ pub struct App {
     /// [`swarm::SubprocessWorker`]; the `[judge]` aux transport resolves
     /// from the dashboard's config.toml at construction.
     pub swarm: std::sync::Arc<pantheon_runtime::swarm_exec::SwarmOrchestrator>,
+    /// Lazily-initialized Bot Screen (desktop watch + takeover) driver
+    /// handle; one per dashboard process, shared by all viewers.
+    pub desktop: std::sync::Mutex<Option<std::sync::Arc<desktop::DesktopDriver>>>,
 }
 
 impl App {
@@ -355,6 +360,7 @@ const TOKENS_CSS: &str = include_str!("../assets/tokens.css");
 const APP_JS: &str = include_str!("../assets/app.js");
 const MANIFEST_JSON: &str = include_str!("../assets/manifest.json");
 const SW_JS: &str = include_str!("../assets/sw.js");
+const DESKTOP_HTML: &str = include_str!("../assets/desktop.html");
 const ICON_192: &[u8] = include_bytes!("../assets/icon-192.png");
 const ICON_512: &[u8] = include_bytes!("../assets/icon-512.png");
 
@@ -423,6 +429,16 @@ fn dispatch(app: &App, req: &Request) -> Response {
     }
     if req.method == "GET" && segs == ["icon-512.png"] {
         return Response::ok_bytes("image/png", ICON_512);
+    }
+    if req.method == "GET" && segs == ["desktop.html"] {
+        // Bot Screen: standalone desktop viewer (live watch + takeover).
+        // Public like the shell: it cannot do anything without the token.
+        return Response::Buffered {
+            status: 200,
+            content_type: "text/html; charset=utf-8",
+            body: DESKTOP_HTML.as_bytes().to_vec(),
+            extra_headers: Vec::new(),
+        };
     }
     if segs.first().map(String::as_str) != Some("api") {
         return Response::not_found();
@@ -544,6 +560,15 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("GET", "browser", "status", "", "") => browser::status(app, req),
         ("GET", "browser", "stream", "", "") => browser::stream(app, req),
         ("POST", "browser", "input", "", "") => browser::input(app, req),
+        // Bot Screen: live desktop watch + human takeover (CUA driver)
+        ("GET", "desktop", "status", "", "") => desktop::status(app, req),
+        ("GET", "desktop", "stream", "", "") => desktop::stream(app, req),
+        ("POST", "desktop", "takeover", "", "") => desktop::takeover(app, req),
+        ("POST", "desktop", "heartbeat", "", "") => desktop::heartbeat(app, req),
+        ("POST", "desktop", "input", "", "") => desktop::input(app, req),
+        ("POST", "desktop", "release", "", "") => desktop::release(app, req),
+        // OAuth connection status (mobile app)
+        ("GET", "oauth", "status", "", "") => oauth::status(app, req),
         // Logs
         ("GET", "logs", "", "", "") => logs::tail(app, req),
         ("GET", "logs", "stream", "", "") => logs::stream(app, req),
@@ -659,6 +684,7 @@ impl HttpMount for DashboardMount {
                     Some(
                         "style.css"
                             | "app.js"
+                            | "desktop.html"
                             | "manifest.json"
                             | "sw.js"
                             | "icon-192.png"
@@ -738,6 +764,7 @@ pub fn run(cfg: DashboardConfig) -> ! {
         ui_action_locks: Default::default(),
         turn_children: Default::default(),
         swarm: swarm::orchestrator_for(&cfg.data_dir),
+        desktop: Default::default(),
     };
     let mount = DashboardMount::new(app);
     let auth = mount.auth_ctx();
@@ -830,6 +857,7 @@ mod route_tests {
             ui_action_locks: Default::default(),
             turn_children: Default::default(),
             swarm: swarm::orchestrator_for(&dir),
+            desktop: Default::default(),
         };
         (app, dir)
     }
@@ -1589,6 +1617,41 @@ mod route_tests {
             let resp = dispatch(&app, &json_req("POST", path, body));
             assert_eq!(status_of(&resp), 404, "{path} must 404");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `GET /api/oauth/status` returns the mobile contract: four provider
+    /// rows with exactly `id`, `connected`, `scopes`, `expires_at` - and
+    /// no token material - on a fresh data dir.
+    #[test]
+    fn oauth_status_route_returns_mobile_contract() {
+        let (app, dir) = test_app();
+        let resp = dispatch(&app, &plain_req("GET", "/api/oauth/status"));
+        assert_eq!(status_of(&resp), 200, "oauth status must load");
+        let body = match &resp {
+            Response::Buffered { body, .. } => body.clone(),
+            _ => panic!("expected a buffered response"),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        let providers = v["providers"].as_array().expect("providers array");
+        assert_eq!(providers.len(), 4, "github, google, notion, spotify");
+        for p in providers {
+            assert!(p["id"].is_string(), "row has id");
+            assert!(p["connected"].is_boolean(), "row has connected");
+            assert!(p["scopes"].is_array(), "row has scopes");
+            assert!(
+                p["expires_at"].is_null(),
+                "disconnected row has null expires_at"
+            );
+            // Contract shape: exactly these four keys, nothing else.
+            let keys: Vec<&str> = p.as_object().unwrap().keys().map(String::as_str).collect();
+            assert_eq!(keys.len(), 4, "no extra keys in provider row");
+        }
+        let raw = String::from_utf8_lossy(&body);
+        assert!(
+            !raw.contains("token"),
+            "status response must not mention token material"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

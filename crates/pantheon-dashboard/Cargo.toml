@@ -24,6 +24,9 @@ pantheon-extensions = { path = "../pantheon-extensions" }
 # `pantheon_mcp::bundled` directly (no api seam) - dashboard -> mcp is
 # cycle-free (mcp -> tools -> {api, exec, ...}, never dashboard).
 pantheon-mcp = { path = "../pantheon-mcp" }
+# Tool name registry: the desktop module discovers the driver's projected
+# tool names through the same registry the agent loop uses.
+pantheon-tools = { path = "../pantheon-tools" }
 pantheon-migration = { path = "../pantheon-migration" }
 pantheon-gateway = { path = "../pantheon-gateway" }
 pantheon-nightly = { path = "../pantheon-nightly" }
