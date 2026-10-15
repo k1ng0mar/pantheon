@@ -404,10 +404,19 @@ struct RegRunner<'a> {
     /// Exact-value redaction registry: every model-facing tool result is
     /// scrubbed against the secrets this run injected.
     redaction: Arc<RedactionRegistry>,
+    /// Data dir for the Bot Screen takeover gate: computer-use tools park
+    /// while a human holds the desktop (see `desktop_takeover_gate`).
+    data_dir: PathBuf,
 }
 impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
     fn run(&self, name: &str, args: &str) -> Result<String, PantheonError> {
-        if let Some(mgr) = self.hooks {
+        let computer_use = crate::desktop_takeover::is_computer_use_tool(name);
+        if computer_use {
+            if let Some(refusal) = desktop_takeover_gate(&self.data_dir, name) {
+                return Ok(refusal);
+            }
+        }
+        let mut out = if let Some(mgr) = self.hooks {
             // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy
             // plugin blocks the call rather than waving it through.
             let verdict = mgr.fire_gate(
@@ -441,13 +450,43 @@ impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
             );
             // Scrub AFTER the extension transform: a plugin must not be able
             // to reintroduce a secret after the scrub ran. Fails open.
-            return Ok(self.redaction.scrub(&transformed));
+            self.redaction.scrub(&transformed)
+        } else {
+            // No hooks: still scrub. A bare Session (tests, embedded use)
+            // must not be the one path where an injected secret echoes back.
+            self.registry
+                .execute(name, args)
+                .map(|out| self.redaction.scrub(&out))?
+        };
+        if computer_use {
+            desktop_takeover_release_note(&self.data_dir, &mut out);
         }
-        // No hooks: still scrub. A bare Session (tests, embedded use) must
-        // not be the one path where an injected secret echoes back.
-        self.registry
-            .execute(name, args)
-            .map(|out| self.redaction.scrub(&out))
+        Ok(out)
+    }
+}
+
+/// Bot Screen gate: park computer-use tools while a human holds the
+/// desktop. Returns Some(refusal) when the named call must not run;
+/// None otherwise (including for non-computer-use tools, which this
+/// gate never touches).
+fn desktop_takeover_gate(data_dir: &Path, name: &str) -> Option<String> {
+    if !crate::desktop_takeover::is_computer_use_tool(name) {
+        return None;
+    }
+    match crate::desktop_takeover::check_takeover(data_dir) {
+        crate::desktop_takeover::Gate::Free => None,
+        crate::desktop_takeover::Gate::Parked { since_ms } => {
+            Some(crate::desktop_takeover::parked_refusal(since_ms))
+        }
+    }
+}
+
+/// Append a pending human-takeover release summary to a successful
+/// computer-use tool result, so the run resumes with context. No-op when
+/// there is no pending summary.
+fn desktop_takeover_release_note(data_dir: &Path, out: &mut String) {
+    if let Some(note) = crate::desktop_takeover::take_release_note(data_dir) {
+        out.push_str(&crate::desktop_takeover::release_note_suffix(&note));
     }
 }
 
@@ -470,6 +509,8 @@ struct RegistryToolAdapter<'a> {
     /// Exact-value redaction registry: every model-facing tool result is
     /// scrubbed against the secrets this run injected.
     redaction: Arc<RedactionRegistry>,
+    /// Data dir for the Bot Screen takeover gate (see RegRunner).
+    data_dir: PathBuf,
 }
 
 impl<'a> RegistryToolAdapter<'a> {
@@ -504,48 +545,57 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
             .get("args")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let Some(mgr) = self.hooks else {
-            // No hooks: still scrub — see RegRunner::run.
-            let out = self.run_registered(name, args)?;
-            return Ok(serde_json::Value::String(self.redaction.scrub(&out)));
-        };
-        // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy plugin
-        // blocks the call rather than waving it through. Returned as a
-        // tool-shaped refusal so the model can see why and try something
-        // else, instead of the run dying.
-        let verdict = mgr.fire_gate(
-            pantheon_extensions::Hook::PreToolCall,
-            &self.run_id,
-            "runtime",
-            [
-                ("tool".to_string(), name.to_string()),
-                ("args".to_string(), args.to_string()),
-            ]
-            .into_iter()
-            .collect(),
-        );
-        if let pantheon_extensions::GateDecision::Deny { reason, .. } = verdict {
-            return Ok(serde_json::Value::String(format!(
-                "[blocked by extension policy] {reason}"
-            )));
+        let computer_use = crate::desktop_takeover::is_computer_use_tool(name);
+        if computer_use {
+            if let Some(refusal) = desktop_takeover_gate(&self.data_dir, name) {
+                return Ok(serde_json::Value::String(refusal));
+            }
         }
-        let out = self.run_registered(name, args)?;
-        // Transform last: the plugin sees the real output and may replace
-        // it. Fails OPEN, so redaction degrades to no-op, never to outage.
-        let transformed = mgr.fire_transform(
-            pantheon_extensions::Hook::TransformToolResult,
-            &self.run_id,
-            "runtime",
-            [("tool".to_string(), name.to_string())]
+        let mut out = if let Some(mgr) = self.hooks {
+            // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy
+            // plugin blocks the call rather than waving it through.
+            // Returned as a tool-shaped refusal so the model can see why
+            // and try something else, instead of the run dying.
+            let verdict = mgr.fire_gate(
+                pantheon_extensions::Hook::PreToolCall,
+                &self.run_id,
+                "runtime",
+                [
+                    ("tool".to_string(), name.to_string()),
+                    ("args".to_string(), args.to_string()),
+                ]
                 .into_iter()
                 .collect(),
-            &out,
-        );
-        // Scrub AFTER the extension transform: a plugin must not be able
-        // to reintroduce a secret after the scrub ran. Fails open.
-        Ok(serde_json::Value::String(
-            self.redaction.scrub(&transformed),
-        ))
+            );
+            if let pantheon_extensions::GateDecision::Deny { reason, .. } = verdict {
+                return Ok(serde_json::Value::String(format!(
+                    "[blocked by extension policy] {reason}"
+                )));
+            }
+            let out = self.run_registered(name, args)?;
+            // Transform last: the plugin sees the real output and may replace
+            // it. Fails OPEN, so redaction degrades to no-op, never to outage.
+            let transformed = mgr.fire_transform(
+                pantheon_extensions::Hook::TransformToolResult,
+                &self.run_id,
+                "runtime",
+                [("tool".to_string(), name.to_string())]
+                    .into_iter()
+                    .collect(),
+                &out,
+            );
+            // Scrub AFTER the extension transform: a plugin must not be able
+            // to reintroduce a secret after the scrub ran. Fails open.
+            self.redaction.scrub(&transformed)
+        } else {
+            // No hooks: still scrub — see RegRunner::run.
+            let out = self.run_registered(name, args)?;
+            self.redaction.scrub(&out)
+        };
+        if computer_use {
+            desktop_takeover_release_note(&self.data_dir, &mut out);
+        }
+        Ok(serde_json::Value::String(out))
     }
     fn translate_result(
         &self,
@@ -1143,7 +1193,14 @@ fn run_delegate_child(
     // The child is now observable: the delegation counts.
     budget_guard.commit();
     let outcome = (driver.drive_child)(&child_session, &child_run, &full_task);
-    let result = map_child_outcome(&driver.model_policy, agent, &full_task, &child_run, outcome);
+    let result = map_child_outcome(
+        &driver.model_policy,
+        agent,
+        &full_task,
+        &child_run,
+        outcome,
+        &driver.supervisor,
+    );
     let failed_detail = result
         .as_ref()
         .err()
@@ -1172,6 +1229,12 @@ fn run_delegate_child(
 /// Every non-Answered outcome - and a child that reports failure - is a
 /// structured error: the parent must never mistake them for done.
 ///
+/// A stopped child (canceled, budget exhausted) keeps its error code,
+/// but the error now carries a ```partial-handoff block with what the
+/// child completed, what was still pending, and a transcript excerpt -
+/// captured read-only from the child's ledger, fail-open. Stopping hands
+/// back partial work instead of discarding it.
+///
 /// Approval and input parks surface the CHILD's run id, capability, and
 /// scope so the operator can resolve them against the child run. The
 /// parent run cannot grant them: [`Supervisor::grant`] matches scopes
@@ -1182,6 +1245,7 @@ fn map_child_outcome(
     task: &str,
     child_run: &str,
     outcome: Result<LoopOutcome, PantheonError>,
+    supervisor: &Supervisor,
 ) -> Result<String, PantheonError> {
     let outcome = outcome?;
     match outcome {
@@ -1243,22 +1307,57 @@ fn map_child_outcome(
             "check the child agent's policy",
             "",
         )),
-        pantheon_agent::LoopOutcome::Canceled { reason } => Err(PantheonError::new(
-            "SWARM_CHILD_CANCELED",
-            Layer::Agent,
-            false,
-            format!("child agent {agent} was canceled: {reason}"),
-            "retry the delegation",
-            "",
-        )),
-        pantheon_agent::LoopOutcome::BudgetExhausted { cap } => Err(PantheonError::new(
-            "SWARM_CHILD_BUDGET",
-            Layer::Agent,
-            false,
-            format!("child agent {agent} exhausted {cap}"),
-            "raise the budget or simplify the task",
-            "",
-        )),
+        pantheon_agent::LoopOutcome::Canceled { reason } => {
+            // The stop hands back partial work: what the child completed,
+            // what was still pending, and a transcript excerpt - captured
+            // read-only from the child's ledger, fail-open. The code still
+            // says canceled; the handoff lets the parent resume instead of
+            // restarting. (Parent-facing tool results are scrubbed against
+            // the redaction registry downstream, so a secret the child
+            // echoed cannot leak through the handoff.)
+            let handoff = crate::partial_handoff::capture_partial_handoff(
+                supervisor,
+                child_run,
+                agent,
+                "canceled",
+                &reason,
+            );
+            Err(PantheonError::new(
+                "SWARM_CHILD_CANCELED",
+                Layer::Agent,
+                false,
+                format!(
+                    "child agent {agent} was canceled: {reason}\n\n```{}\n{}\n```",
+                    crate::partial_handoff::HANDOFF_FENCE,
+                    handoff.to_json()
+                ),
+                "resume from the handoff above (completed steps + pending items), or retry the delegation",
+                "",
+            ))
+        }
+        pantheon_agent::LoopOutcome::BudgetExhausted { cap } => {
+            // Same handoff as a cancel: an exhausted budget is a stop with
+            // partial work, not a failure with nothing to show.
+            let handoff = crate::partial_handoff::capture_partial_handoff(
+                supervisor,
+                child_run,
+                agent,
+                "budget_exhausted",
+                &format!("exhausted {cap}"),
+            );
+            Err(PantheonError::new(
+                "SWARM_CHILD_BUDGET",
+                Layer::Agent,
+                false,
+                format!(
+                    "child agent {agent} exhausted {cap}\n\n```{}\n{}\n```",
+                    crate::partial_handoff::HANDOFF_FENCE,
+                    handoff.to_json()
+                ),
+                "resume from the handoff above with a larger budget, or simplify the remaining work",
+                "",
+            ))
+        }
         pantheon_agent::LoopOutcome::AwaitingApproval { capability, scope } => {
             Err(PantheonError::new(
                 "SWARM_CHILD_APPROVAL",
@@ -2590,6 +2689,7 @@ impl Session {
             run_id: run_id.to_string(),
             call_id: call_id.to_string(),
             redaction: self.secrets.redaction_registry(),
+            data_dir: self.supervisor.data_dir().to_path_buf(),
         };
         let operation_id = format!("{run_id}:{call_id}");
         let op = run_tool_operation(
@@ -3971,6 +4071,7 @@ impl Session {
             hooks: Some(&self.hooks),
             run_id: run_id.to_string(),
             redaction: self.secrets.redaction_registry(),
+            data_dir: self.supervisor.data_dir().to_path_buf(),
         };
         let _ = &sink;
         // Title generation runs in parallel with the first turn (not before
@@ -4044,6 +4145,10 @@ impl Session {
                 // immediately and the child session runs on its own
                 // thread (Session: Send). The parent keeps working.
                 registry: pantheon_agent::SubagentRegistry,
+                /// Supervisor handle for partial-handoff capture: when a
+                /// threaded child is stopped, its ledger is read through
+                /// this handle. Cloned per spawn; cheap to share.
+                supervisor: Supervisor,
             }
             impl pantheon_agent::SubagentSpawner for SessionSpawner {
                 fn spawn_handle(
@@ -4110,6 +4215,10 @@ impl Session {
                     // registry before the thread starts.
                     let agent_owned = agent.clone();
                     let task_owned = task.clone();
+                    // Cloned for the child thread: partial-handoff capture
+                    // reads the child's ledger through this handle when the
+                    // child is stopped.
+                    let supervisor = self.supervisor.clone();
                     let handle = self
                         .registry
                         .spawn_child("", &agent, depth, &task, move || {
@@ -4123,6 +4232,7 @@ impl Session {
                                 &task_owned,
                                 &child_run,
                                 outcome,
+                                &supervisor,
                             )
                         })?;
                     // The child is registered and running: the delegation counts.
@@ -4177,6 +4287,7 @@ impl Session {
                 budget_section,
                 run_id: run_id.to_string(),
                 registry: pantheon_agent::SubagentRegistry::new(caps),
+                supervisor: self.supervisor.clone(),
             }) as Box<dyn pantheon_agent::SubagentSpawner>
         });
         let loop_ = AgentLoop {
@@ -7431,6 +7542,7 @@ mod delegate_tool_tests {
             run_id: "run-e2e".to_string(),
             call_id: "call_e2e".to_string(),
             redaction: RedactionRegistry::for_scope("test-adapter-redaction"),
+            data_dir: dir.path().to_path_buf(),
         };
         let out = adapter
             .execute(&serde_json::json!({

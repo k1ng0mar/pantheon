@@ -2385,6 +2385,7 @@ dependencies = [
  "pantheon-scheduler",
  "pantheon-secrets",
  "pantheon-storage",
+ "pantheon-tools",
  "pantheon-web",
  "serde",
  "serde_json",
@@ -2577,6 +2578,7 @@ dependencies = [
 name = "pantheon-runtime"
 version = "1.1.2"
 dependencies = [
+ "fs2",
  "libc",
  "pantheon-agent",
  "pantheon-api",
@@ -2591,6 +2593,7 @@ dependencies = [
  "pantheon-storage",
  "pantheon-tools",
  "pantheon-web",
+ "rand 0.8.8",
  "rusqlite",
  "serde",
  "serde_json",
