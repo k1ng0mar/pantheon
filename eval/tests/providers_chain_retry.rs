@@ -95,6 +95,7 @@ fn rate_provider(id: &str) {
         auth_refresh_ms: None,
         reserved: false,
         allowed_params: vec![],
+        oauth_apps: vec![],
     });
 }
 
@@ -138,6 +139,7 @@ fn chain(policy: ModelPolicy, stub: ScriptStub) -> (ProviderChain<ScriptStub>, A
         last_resolved: RefCell::new(None),
         session_max_tokens: None,
         budget_max_tokens: None,
+        oauth_broker: None,
     };
     (chain, clock)
 }

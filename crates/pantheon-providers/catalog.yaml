@@ -496,6 +496,7 @@ providers:
     api_mode: openai
     base_env: PANTHEON_BASE_NOUS
     key_env: NOUS_API_KEY
+    oauth_apps: [github, google, notion, spotify]
     prominent: true
     recommended: true
     tag: Nous Portal API key (NOUS_API_KEY); evaluation tier available
