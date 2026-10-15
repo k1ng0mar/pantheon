@@ -61,6 +61,11 @@ providers:
     api_mode: anthropic
     base_env: PANTHEON_BASE_ANTHROPIC
     key_env: ANTHROPIC_API_KEY
+    reasoning_map:
+      low: low
+      medium: medium
+      high: high
+      max: high
     prominent: true
     tag: Major frontier lab, native Messages API
     models:
@@ -218,6 +223,11 @@ providers:
     api_mode: openai
     base_env: PANTHEON_BASE_DEEPSEEK
     key_env: DEEPSEEK_API_KEY
+    reasoning_map:
+      low: low
+      medium: medium
+      high: high
+      max: max
     prominent: true
     tag: Cheap reasoning, Chinese lab
     models:

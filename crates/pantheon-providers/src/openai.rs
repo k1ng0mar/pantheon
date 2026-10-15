@@ -121,7 +121,11 @@ pub fn request(
     // before, so endpoints that reject unknown fields never see one.
     // Mapped to OpenAI's `reasoning_effort` verbatim (low|medium|high).
     if !matches!(reasoning, pantheon_api::model::ReasoningLevel::Off) {
-        body["reasoning_effort"] = serde_json::Value::String(reasoning.as_str().into());
+        let level = reasoning.as_str();
+        let mapped = crate::catalog::provider(provider_id)
+            .and_then(|p| p.reasoning_map.get(level).cloned())
+            .unwrap_or_else(|| level.to_string());
+        body["reasoning_effort"] = serde_json::Value::String(mapped);
     }
     if stream {
         body["stream"] = serde_json::Value::Bool(true);
