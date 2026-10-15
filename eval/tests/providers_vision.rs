@@ -238,6 +238,7 @@ fn boot() -> (u16, String, tempfile::TempDir) {
             std::sync::Arc::new(pantheon_runtime::swarm_exec::ScriptedWorker::new()),
             None,
         )),
+        desktop: Default::default(),
     };
     let mount = DashboardMount::new(app);
     let auth = mount.auth_ctx();

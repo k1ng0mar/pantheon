@@ -63,6 +63,7 @@ pub fn boot() -> Dash {
         ui_action_locks: Default::default(),
         turn_children: Default::default(),
         swarm: swarm.clone(),
+        desktop: Default::default(),
     };
     let mount = DashboardMount::new(app);
     let auth = mount.auth_ctx();

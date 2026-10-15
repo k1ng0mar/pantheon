@@ -431,6 +431,7 @@ fn boot() -> (u16, String, tempfile::TempDir) {
             Arc::new(pantheon_runtime::swarm_exec::ScriptedWorker::new()),
             None,
         )),
+        desktop: Default::default(),
     };
     let mount = DashboardMount::new(app);
     let auth_ctx = mount.auth_ctx();
