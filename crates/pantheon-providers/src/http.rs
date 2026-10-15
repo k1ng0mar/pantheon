@@ -145,14 +145,16 @@ pub fn http_agent() -> ureq::Agent {
 /// SSRF guard: resolve the URL's host and reject anything that is not a
 /// public IP. Called on every outbound provider request before ureq runs.
 pub fn validate_url(url: &str) -> Result<(), PantheonError> {
-    let err = |code: &str, cause: String| PantheonError::new(
-        code,
-        pantheon_api::error::Layer::Provider,
-        false,
-        cause,
-        "remove the private URL from config or use a public provider",
-        url.to_string(),
-    );
+    let err = |code: &str, cause: String| {
+        PantheonError::new(
+            code,
+            pantheon_api::error::Layer::Provider,
+            false,
+            cause,
+            "remove the private URL from config or use a public provider",
+            url.to_string(),
+        )
+    };
     let parsed = match url::Url::parse(url) {
         Ok(u) => u,
         Err(_) => return Err(err("PROVIDER_URL", format!("invalid URL: {url}"))),
@@ -168,7 +170,10 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
         Err(e) => return Err(err("PROVIDER_DNS", format!("cannot resolve {host}: {e}"))),
     };
     if addrs.is_empty() {
-        return Err(err("PROVIDER_DNS", format!("no addresses for host: {host}")));
+        return Err(err(
+            "PROVIDER_DNS",
+            format!("no addresses for host: {host}"),
+        ));
     }
     for ip in &addrs {
         if !is_public_ip(*ip) {
@@ -183,15 +188,23 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
 
 fn is_public_ip(ip: std::net::IpAddr) -> bool {
     match ip {
-        std::net::IpAddr::V4(v4) => !(v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_broadcast() || v4.is_documentation() || v4.is_unspecified()),
-        std::net::IpAddr::V6(v6) => !(v6.is_loopback() || v6.is_unspecified() || is_unique_local_v6(v6)),
+        std::net::IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified())
+        }
+        std::net::IpAddr::V6(v6) => {
+            !(v6.is_loopback() || v6.is_unspecified() || is_unique_local_v6(v6))
+        }
     }
 }
 
 fn is_unique_local_v6(ip: std::net::Ipv6Addr) -> bool {
     (ip.segments()[0] & 0xfe00) == 0xfc00
 }
-
 
 /// `(name, value)` for the key header: `Authorization` sends
 /// `Bearer <key>`; any other configured name (e.g. Xiaomi MiMo's

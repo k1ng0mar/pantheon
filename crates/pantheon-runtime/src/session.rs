@@ -4042,12 +4042,8 @@ impl Session {
                     )
                 })?
                 .unwrap_or_default();
-            let mut chain = ProviderChain::new(
-                self.policy_snapshot(),
-                transport,
-                reg.schemas(),
-                api_key,
-            );
+            let mut chain =
+                ProviderChain::new(self.policy_snapshot(), transport, reg.schemas(), api_key);
             chain.oauth_broker = Some(self.secrets.clone());
             chain
         };

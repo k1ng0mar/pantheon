@@ -439,6 +439,53 @@ pub fn key_header_for(provider_id: &str) -> String {
         .unwrap_or_else(default_auth_header)
 }
 
+/// Resolved credential for a provider, trying in order:
+/// 1. `fallback` (broker-resolved key)
+/// 2. OAuth apps (if `oauth_apps` is non-empty)
+/// 3. Command-backed auth (if `auth_command` is set)
+/// 4. Env var (`key_env` or `PANTHEON_KEY_<ID>`)
+///
+/// Command auth spawns a subprocess (e.g. `gcloud auth print-access-token`)
+/// and caches the result for `auth_refresh_ms`. This lets short-lived cloud
+/// tokens work without manual refresh.
+pub fn credential_for(
+    provider_id: &str,
+    fallback: &str,
+    broker: Option<&pantheon_secrets::SecretsBroker>,
+) -> String {
+    if !fallback.is_empty() {
+        return fallback.to_string();
+    }
+    if let Some(p) = provider(provider_id) {
+        if !p.oauth_apps.is_empty() {
+            if let Some(b) = broker {
+                for app in &p.oauth_apps {
+                    if let Ok(token) =
+                        pantheon_secrets::oauth::OAuthStore::new(b).ensure_valid_token(app)
+                    {
+                        return token.expose().to_string();
+                    }
+                }
+            }
+        }
+        if let Some(ref cmd) = p.auth_command {
+            if let Some(token) = command_auth_cached(provider_id, cmd, p.auth_refresh_ms) {
+                return token;
+            }
+        }
+    }
+    let env_name = provider(provider_id)
+        .map(|p| {
+            if p.key_env.is_empty() {
+                format!("PANTHEON_KEY_{}", p.id.to_uppercase())
+            } else {
+                p.key_env.clone()
+            }
+        })
+        .unwrap_or_else(|| format!("PANTHEON_KEY_{}", provider_id.to_uppercase()));
+    std::env::var(env_name).unwrap_or_default()
+}
+
 /// API key for a provider: `fallback` (broker-resolved) → env override.
 /// The broker-resolved key (from `[model].api_key_env` or the keychain)
 /// takes precedence over the raw vendor env var, matching the documented
@@ -458,4 +505,40 @@ pub fn key_for(provider_id: &str, fallback: &str) -> String {
         })
         .unwrap_or_else(|| format!("PANTHEON_KEY_{}", provider_id.to_uppercase()));
     std::env::var(env_name).unwrap_or_default()
+}
+
+/// Command-backed auth cache: provider_id → (token, fetched_at).
+static COMMAND_AUTH: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Run `cmd` and return trimmed stdout as a token. Cached for `refresh_ms`.
+fn command_auth_cached(provider_id: &str, cmd: &str, refresh_ms: Option<u64>) -> Option<String> {
+    let ttl = refresh_ms.unwrap_or(300_000);
+    if let Ok(cache) = COMMAND_AUTH.lock() {
+        if let Some((token, fetched_at)) = cache.get(provider_id) {
+            if fetched_at.elapsed() < std::time::Duration::from_millis(ttl) {
+                return Some(token.clone());
+            }
+        }
+    }
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        return None;
+    }
+    if let Ok(mut cache) = COMMAND_AUTH.lock() {
+        cache.insert(
+            provider_id.to_string(),
+            (token.clone(), std::time::Instant::now()),
+        );
+    }
+    Some(token)
 }

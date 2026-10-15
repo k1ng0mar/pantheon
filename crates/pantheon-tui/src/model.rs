@@ -626,8 +626,7 @@ struct DiscoveryCache {
     fetched_at: std::time::Instant,
 }
 
-static DISCOVERY: std::sync::Mutex<Option<DiscoveryCache>> =
-    std::sync::Mutex::new(None);
+static DISCOVERY: std::sync::Mutex<Option<DiscoveryCache>> = std::sync::Mutex::new(None);
 
 const DISCOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
