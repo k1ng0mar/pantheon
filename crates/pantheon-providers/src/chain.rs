@@ -192,6 +192,19 @@ impl<T: ChatTransport> ProviderChain<T> {
             self.budget_max_tokens,
             meta.max_output_tokens,
         );
+        if !pantheon_api::config::admin_allows(&model.provider, &model.model) {
+            return Err(PantheonError::new(
+                "ADMIN_DENIED",
+                Layer::Provider,
+                false,
+                format!(
+                    "provider/model {}/{} is blocked by admin policy",
+                    model.provider, model.model
+                ),
+                "choose a provider/model allowed by your administrator",
+                String::new(),
+            ));
+        }
         let api_mode = catalog::provider(&model.provider)
             .map(|p| p.api_mode)
             .unwrap_or(ApiMode::OpenAi);

@@ -1812,6 +1812,76 @@ fn agent_table_problems(all: &std::collections::HashMap<String, AgentIdentity>) 
     problems
 }
 
+static ADMIN: std::sync::RwLock<Option<AdminSection>> = std::sync::RwLock::new(None);
+
+/// Install the admin policy at CLI startup.
+pub fn set_admin_policy(policy: AdminSection) {
+    if let Ok(mut guard) = ADMIN.write() {
+        *guard = Some(policy);
+    }
+}
+
+/// Check whether a provider/model pair is permitted. No policy = allow.
+pub fn admin_allows(provider: &str, model: &str) -> bool {
+    if let Ok(guard) = ADMIN.read() {
+        if let Some(ref policy) = *guard {
+            return policy.provider_allowed(provider) && policy.model_allowed(provider, model);
+        }
+    }
+    true
+}
+
+/// Admin policy section. Deny wins over allow.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AdminSection {
+    #[serde(default)]
+    pub deny_providers: Vec<String>,
+    #[serde(default)]
+    pub deny_models: Vec<String>,
+    #[serde(default)]
+    pub allow_providers: Vec<String>,
+    #[serde(default)]
+    pub allow_models: Vec<String>,
+}
+
+impl AdminSection {
+    pub fn provider_allowed(&self, provider: &str) -> bool {
+        if self
+            .deny_providers
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(provider))
+        {
+            return false;
+        }
+        if self.allow_providers.is_empty() {
+            return true;
+        }
+        self.allow_providers
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(provider))
+    }
+
+    pub fn model_allowed(&self, provider: &str, model: &str) -> bool {
+        if self
+            .deny_models
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(model))
+        {
+            return false;
+        }
+        if self.allow_models.is_empty() {
+            return true;
+        }
+        self.allow_models
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(model))
+            || self
+                .allow_models
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(&format!("{provider}/{model}")))
+    }
+}
+
 /// Egress policy section from config.toml.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EgressSection {
@@ -1962,6 +2032,9 @@ pub struct Config {
     /// Egress policy for outbound provider requests. Absent = no restriction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress: Option<EgressSection>,
+    /// Admin policy: deny/allow lists for providers and models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin: Option<AdminSection>,
 
     /// Web search (`[websearch]`). Absent = enabled with defaults; the
     /// tool only registers when an API key resolves.
@@ -3229,6 +3302,7 @@ mod fix_pass4_leaf1_tests {
             gateway: Some(GatewaySection::default()),
             computer_use: Some(ComputerUseSection::default()),
             egress: Some(EgressSection::default()),
+            admin: Some(AdminSection::default()),
             websearch: Some(WebsearchSection::default()),
             tools: Some(ToolsSection::default()),
             skill_deps: Some(SkillDepsSection::default()),
