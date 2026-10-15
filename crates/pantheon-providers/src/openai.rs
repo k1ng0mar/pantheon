@@ -151,7 +151,9 @@ pub fn request(
         if !p.allowed_params.is_empty() {
             let allowed: std::collections::HashSet<&str> =
                 p.allowed_params.iter().map(|s| s.as_str()).collect();
-            body.as_object_mut().unwrap().retain(|k, _| allowed.contains(k.as_str()));
+            body.as_object_mut()
+                .unwrap()
+                .retain(|k, _| allowed.contains(k.as_str()));
         }
     }
     let (header_name, auth_value) = crate::http::auth_header_pair(key_header, api_key);
