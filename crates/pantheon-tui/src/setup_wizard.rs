@@ -1636,7 +1636,6 @@ mod tests {
                 input_per_mtok_usd: input,
                 output_per_mtok_usd: None,
             },
-            priority: 0,
             cache_cost: None,
             aliases: vec![],
         }

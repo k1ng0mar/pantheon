@@ -48,6 +48,7 @@ pub struct WireRequest {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
+    pub use_sigv4: bool,
 }
 
 /// Tool-call policy for one turn.
@@ -384,8 +385,7 @@ pub fn attribution_headers() -> Vec<(String, String)> {
 fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, PantheonError> {
     validate_url(&req.url)?;
     let mut r = agent.post(&req.url);
-    // SigV4 for Bedrock: sign the request and replace the Authorization header.
-    if req.url.contains("bedrock-runtime.") && req.url.contains(".amazonaws.com") {
+    if req.use_sigv4 {
         if let Some(creds) = crate::sigv4::SigV4Creds::from_env() {
             let region = req.url.split('.').nth(1).unwrap_or("us-east-1");
             let auth = crate::sigv4::sign_request(

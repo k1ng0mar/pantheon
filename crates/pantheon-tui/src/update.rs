@@ -467,178 +467,7 @@ pub fn cmd_update(args: &[String]) {
     }
 }
 
-/// Find running pantheon processes by matching the binary path.
-/// Returns a list of PIDs. Excludes the current process.
-#[allow(dead_code)]
-fn find_running_pantheon_processes() -> Vec<u32> {
-    let current_pid = std::process::id();
-    let current_exe = std::env::current_exe().unwrap_or_default();
-    let exe_name = current_exe
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("pantheon")
-        .to_string();
-    let mut pids = Vec::new();
-
-    #[cfg(unix)]
-    {
-        // Use pgrep with exact process name match to avoid false positives
-        // from processes that merely have "pantheon" in their arguments.
-        if let Ok(out) = std::process::Command::new("pgrep")
-            .arg("-x")
-            .arg(&exe_name)
-            .output()
-        {
-            if out.status.success() {
-                let text = String::from_utf8_lossy(&out.stdout);
-                for line in text.lines() {
-                    if let Ok(pid) = line.trim().parse::<u32>() {
-                        if pid != current_pid {
-                            pids.push(pid);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        // Use tasklist to find processes by image name
-        if let Ok(out) = std::process::Command::new("tasklist")
-            .args([
-                "/FI",
-                &format!("IMAGENAME eq {exe_name}"),
-                "/NH",
-                "/FO",
-                "CSV",
-            ])
-            .output()
-        {
-            if out.status.success() {
-                let text = String::from_utf8_lossy(&out.stdout);
-                for line in text.lines() {
-                    let parts: Vec<&str> = line.split(',').collect();
-                    if parts.len() >= 2 {
-                        if let Ok(pid) = parts[1].trim().parse::<u32>() {
-                            if pid != current_pid {
-                                pids.push(pid);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    pids
-}
-
-/// Stop pantheon processes. Returns (stopped_systemd_units, stopped_interactive).
-#[allow(dead_code)]
-fn stop_pantheon_processes(pids: &[u32]) -> (Vec<String>, bool) {
-    let mut stopped_units = Vec::new();
-    let mut stopped_interactive = false;
-
-    #[cfg(unix)]
-    {
-        // Discover and stop any active pantheon systemd units
-        if let Ok(out) = std::process::Command::new("systemctl")
-            .args([
-                "--user",
-                "list-units",
-                "--type=service",
-                "--state=active",
-                "--no-legend",
-                "--no-pager",
-            ])
-            .output()
-        {
-            if out.status.success() {
-                let text = String::from_utf8_lossy(&out.stdout);
-                for line in text.lines() {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.is_empty() {
-                        continue;
-                    }
-                    let unit = parts[0];
-                    if unit.contains("pantheon") {
-                        let _ = std::process::Command::new("systemctl")
-                            .args(["--user", "stop", unit])
-                            .status();
-                        stopped_units.push(unit.to_string());
-                    }
-                }
-            }
-        }
-
-        // Verify units actually stopped
-        for unit in &stopped_units {
-            for _ in 0..10 {
-                if let Ok(out) = std::process::Command::new("systemctl")
-                    .args(["--user", "is-active", unit])
-                    .output()
-                {
-                    if !out.status.success() {
-                        break;
-                    }
-                }
-                std::thread::sleep(Duration::from_millis(200));
-            }
-        }
-
-        // SIGTERM any remaining non-systemd processes
-        for &pid in pids {
-            if pid == std::process::id() {
-                continue;
-            }
-            let _ = std::process::Command::new("kill")
-                .arg(pid.to_string())
-                .status();
-            stopped_interactive = true;
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        // Stop Windows services
-        if let Ok(out) = std::process::Command::new("sc")
-            .args(["query", "type=", "service", "state=", "active"])
-            .output()
-        {
-            if out.status.success() {
-                let text = String::from_utf8_lossy(&out.stdout);
-                for line in text.lines() {
-                    if line.contains("pantheon") || line.contains("PANTHEON") {
-                        // Extract service name and stop it
-                        if let Some(name) = line.split_whitespace().nth(1) {
-                            let _ = std::process::Command::new("sc")
-                                .args(["stop", name])
-                                .status();
-                            stopped_units.push(name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Kill remaining processes
-        for &pid in pids {
-            if pid == std::process::id() {
-                continue;
-            }
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .status();
-            stopped_interactive = true;
-        }
-    }
-
-    (stopped_units, stopped_interactive)
-}
-
 /// Restart a systemd unit (Unix) or Windows service.
-#[allow(dead_code)]
 fn restart_systemd_unit(unit: &str) {
     #[cfg(unix)]
     {
@@ -656,8 +485,6 @@ fn restart_systemd_unit(unit: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn state_file_round_trips_units_for_rollback() {
         let exe = std::env::current_exe().unwrap();
@@ -674,6 +501,68 @@ mod tests {
     fn find_running_excludes_self() {
         let pids = find_running_pantheon_processes();
         assert!(!pids.contains(&std::process::id()));
+    }
+
+    #[cfg(test)]
+    fn find_running_pantheon_processes() -> Vec<u32> {
+        let current_pid = std::process::id();
+        let current_exe = std::env::current_exe().unwrap_or_default();
+        let exe_name = current_exe
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("pantheon")
+            .to_string();
+        let mut pids = Vec::new();
+
+        #[cfg(unix)]
+        {
+            if let Ok(out) = std::process::Command::new("pgrep")
+                .arg("-x")
+                .arg(&exe_name)
+                .output()
+            {
+                if out.status.success() {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    for line in text.lines() {
+                        if let Ok(pid) = line.trim().parse::<u32>() {
+                            if pid != current_pid {
+                                pids.push(pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            if let Ok(out) = std::process::Command::new("tasklist")
+                .args([
+                    "/FI",
+                    &format!("IMAGENAME eq {exe_name}"),
+                    "/NH",
+                    "/FO",
+                    "CSV",
+                ])
+                .output()
+            {
+                if out.status.success() {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    for line in text.lines() {
+                        let parts: Vec<&str> = line.split(',').collect();
+                        if parts.len() >= 2 {
+                            if let Ok(pid) = parts[1].trim().parse::<u32>() {
+                                if pid != current_pid {
+                                    pids.push(pid);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        pids
     }
 
     #[test]

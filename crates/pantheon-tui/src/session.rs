@@ -4156,12 +4156,34 @@ fn render_footer(f: &mut Frame, area: Rect, state: &TuiState) {
         " - ".to_string()
     };
     let left = left_text;
-    let right = format!(
-        "{} ({}) | / commands",
-        statusbar::fmt_count(live as u64),
-        pct
-    );
     let max = area.width as usize;
+    let right = if state.ready {
+        if max >= 92 {
+            format!(
+                "^b sidebar · ^r history · ^m model · / commands · {} ({})",
+                statusbar::fmt_count(live as u64),
+                pct
+            )
+        } else if max >= 68 {
+            format!(
+                "^b · ^r · / commands · {} ({})",
+                statusbar::fmt_count(live as u64),
+                pct
+            )
+        } else {
+            format!(
+                "{} ({})",
+                statusbar::fmt_count(live as u64),
+                pct
+            )
+        }
+    } else {
+        format!(
+            "{} ({}) | / commands",
+            statusbar::fmt_count(live as u64),
+            pct
+        )
+    };
     // Shed the right side first on narrow terminals; the state always fits.
     let shed = max > 0 && left.chars().count() + 3 + right.chars().count() > max;
     let line = if shed {
@@ -5137,43 +5159,56 @@ fn render_block(
             // marker; the pending card is the amber surface. The tool
             // intent above it stays visually calm.
             match decision {
-                Some(true) => lines.push(Line::from(Span::styled(
-                    "● approved",
-                    Style::default().fg(th.dim),
-                ))),
-                Some(false) => lines.push(Line::from(Span::styled(
-                    "● denied",
-                    Style::default().fg(th.dim),
-                ))),
+                Some(true) => lines.push(Line::from(vec![
+                    Span::styled("✓ Granted", Style::default().fg(th.success).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" · {tool}"), Style::default().fg(th.dim)),
+                ])),
+                Some(false) => lines.push(Line::from(vec![
+                    Span::styled("✕ Denied", Style::default().fg(th.failure).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" · {tool}"), Style::default().fg(th.dim)),
+                ])),
                 None => {
-                    lines.push(Line::from(Span::styled(
-                        format!("⚠ Permission required · {tool}"),
-                        Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        sentence.clone(),
-                        Style::default().fg(th.body),
-                    )));
-                    if !target.is_empty() {
-                        lines.push(Line::from(Span::styled(
-                            target.clone(),
-                            Style::default().fg(th.primary),
-                        )));
-                    }
-                    lines.push(Line::from(""));
+                    let card_w = (term_width as usize).saturating_sub(4).clamp(38, 76);
+                    let title = format!(" ⚠ Permission required · {tool} ");
+                    let border_line = if card_w > title.len() + 4 {
+                        "─".repeat(card_w - title.len() - 3)
+                    } else {
+                        "──".to_string()
+                    };
                     lines.push(Line::from(vec![
-                        Span::styled(
-                            "[a]",
-                            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(" Approve   ", Style::default().fg(th.dim)),
-                        Span::styled(
-                            "[d]",
-                            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(" Deny   ", Style::default().fg(th.dim)),
+                        Span::styled("╭─", Style::default().fg(th.warning)),
+                        Span::styled(title, Style::default().fg(th.warning).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("{border_line}╮"), Style::default().fg(th.warning)),
+                    ]));
+                    for sline in sentence.lines().take(4) {
+                        lines.push(Line::from(vec![
+                            Span::styled("│  ", Style::default().fg(th.warning)),
+                            Span::styled(sline.to_string(), Style::default().fg(th.body)),
+                        ]));
+                    }
+                    if !target.is_empty() {
+                        let prefix = if tool.contains("command") || tool.contains("exec") || tool.contains("shell") {
+                            "$ "
+                        } else {
+                            "→ "
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled("│  ", Style::default().fg(th.warning)),
+                            Span::styled(prefix, Style::default().fg(th.dim)),
+                            Span::styled(target.clone(), Style::default().fg(th.primary).add_modifier(Modifier::BOLD)),
+                        ]));
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled("│  ", Style::default().fg(th.warning)),
+                        Span::styled("[a]", Style::default().fg(th.warning).add_modifier(Modifier::BOLD)),
+                        Span::styled(" Approve   ", Style::default().fg(th.body)),
+                        Span::styled("[d]", Style::default().fg(th.warning).add_modifier(Modifier::BOLD)),
+                        Span::styled(" Deny   ", Style::default().fg(th.body)),
                         Span::styled("[esc]", Style::default().fg(th.dim)),
                         Span::styled(" cancel", Style::default().fg(th.dim)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("╰{}╯", "─".repeat(card_w.saturating_sub(2))), Style::default().fg(th.warning)),
                     ]));
                 }
             }

@@ -35,6 +35,22 @@ impl ModelCost {
         let o = self.output_per_mtok_usd?;
         Some(input_tokens as f64 * i / 1_000_000.0 + output_tokens as f64 * o / 1_000_000.0)
     }
+
+    /// Estimate with cache pricing. When `cache` is Some, input tokens are
+    /// priced at the cache rate instead of the regular input rate. This is
+    /// a conservative estimate: it assumes all input tokens are cached.
+    pub fn estimate_with_cache(
+        &self,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache: Option<&ModelCost>,
+    ) -> Option<f64> {
+        let i = cache
+            .and_then(|c| c.input_per_mtok_usd)
+            .or(self.input_per_mtok_usd)?;
+        let o = self.output_per_mtok_usd?;
+        Some(input_tokens as f64 * i / 1_000_000.0 + output_tokens as f64 * o / 1_000_000.0)
+    }
 }
 
 /// Catalog row: where the provider lives, which wire it speaks, key env vars.
@@ -141,9 +157,6 @@ pub struct ModelMeta {
     pub streaming: bool,
     #[serde(default)]
     pub cost: ModelCost,
-    /// Picker ordering: higher sorts first. Default 0.
-    #[serde(default)]
-    pub priority: i32,
     /// Cache pricing per million tokens (prompt caching). Absent = no cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_cost: Option<ModelCost>,
@@ -317,7 +330,6 @@ pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
         reasoning: false,
         streaming: true,
         cost: ModelCost::default(),
-        priority: 0,
         cache_cost: None,
         aliases: vec![],
     }

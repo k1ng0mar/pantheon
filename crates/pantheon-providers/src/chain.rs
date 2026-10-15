@@ -284,8 +284,11 @@ impl<T: ChatTransport> ProviderChain<T> {
             match &mut result {
                 Ok(turn) => {
                     if let Some(mut usage) = turn.usage {
-                        usage.cost_usd =
-                            meta.cost.estimate(usage.input_tokens, usage.output_tokens);
+                        usage.cost_usd = meta.cost.estimate_with_cache(
+                            usage.input_tokens,
+                            usage.output_tokens,
+                            meta.cache_cost.as_ref(),
+                        );
                         // The adapter baked `cost_cents` at parse time from
                         // `cost_usd: None` (always 0) - it never sees catalog
                         // prices, so the chain owns the fix-up. Cost feeds
