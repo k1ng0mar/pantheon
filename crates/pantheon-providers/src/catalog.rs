@@ -144,6 +144,9 @@ pub struct ModelMeta {
     /// Cache pricing per million tokens (prompt caching). Absent = no cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_cost: Option<ModelCost>,
+    /// Short aliases for this model (e.g. "opus" for "claude-opus-4-8").
+    #[serde(default)]
+    pub aliases: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -268,11 +271,17 @@ pub fn provider(id: &str) -> Option<ProviderMeta> {
     providers().iter().find(|p| p.id == id).cloned()
 }
 
-/// Look up a model's static metadata (exact provider + model match).
+/// Look up a model's static metadata (exact match, then alias match).
 pub fn model(provider_id: &str, model_id: &str) -> Option<&'static ModelMeta> {
-    models()
+    let exact = models()
         .into_iter()
-        .find(|m| m.provider == provider_id && m.model == model_id)
+        .find(|m| m.provider == provider_id && m.model == model_id);
+    if exact.is_some() {
+        return exact;
+    }
+    models().into_iter().find(|m| {
+        m.provider == provider_id && m.aliases.iter().any(|a| a.eq_ignore_ascii_case(model_id))
+    })
 }
 
 /// Model metadata with conservative defaults for unknown models:
@@ -307,6 +316,7 @@ pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
         cost: ModelCost::default(),
         priority: 0,
         cache_cost: None,
+        aliases: vec![],
     }
 }
 

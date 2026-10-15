@@ -70,6 +70,7 @@ providers:
     tag: Major frontier lab, native Messages API
     models:
       - model: claude-opus-4-8
+        aliases: [opus]
         context_limit: 200000
         max_output_tokens: 32000
         tools: true
@@ -78,6 +79,7 @@ providers:
         streaming: true
         cost: { input_per_mtok_usd: 15.00, output_per_mtok_usd: 75.00 }
       - model: claude-sonnet-4-6
+        aliases: [sonnet]
         context_limit: 200000
         max_output_tokens: 64000
         tools: true
