@@ -251,6 +251,19 @@ fn run_delivered_task(
 
     use crate::config::build_model_policy;
     let file_cfg = crate::config::Config::load_or_report(&data_dir());
+    if let Some(ref cfg) = file_cfg {
+        if let Some(ref egress) = cfg.egress {
+            let mode = match egress.mode.as_str() {
+                "allowlist" => pantheon_providers::http::EgressMode::Allowlist,
+                "offline" => pantheon_providers::http::EgressMode::Offline,
+                _ => pantheon_providers::http::EgressMode::Off,
+            };
+            pantheon_providers::http::set_egress_policy(pantheon_providers::http::EgressPolicy {
+                mode,
+                allowlist: egress.allowlist.clone(),
+            });
+        }
+    }
     let model_policy = build_model_policy(file_cfg.as_ref(), None, None);
     let allow_memory = file_cfg
         .as_ref()

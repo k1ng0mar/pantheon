@@ -1812,6 +1812,17 @@ fn agent_table_problems(all: &std::collections::HashMap<String, AgentIdentity>) 
     problems
 }
 
+/// Egress policy section from config.toml.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EgressSection {
+    /// `off` = no restriction, `allowlist` = only listed hosts, `offline` = deny all.
+    #[serde(default)]
+    pub mode: String,
+    /// Host suffixes allowed when mode is `allowlist`. Empty = deny all.
+    #[serde(default)]
+    pub allowlist: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Config {
     /// The agent this install runs as (`agent = "zeus"`). Must name a
@@ -1948,6 +1959,10 @@ pub struct Config {
     /// explicitly (today only `cua-driver`), `binary` to pin its path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub computer_use: Option<ComputerUseSection>,
+    /// Egress policy for outbound provider requests. Absent = no restriction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<EgressSection>,
+
     /// Web search (`[websearch]`). Absent = enabled with defaults; the
     /// tool only registers when an API key resolves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3213,6 +3228,7 @@ mod fix_pass4_leaf1_tests {
             browser: Some(BrowserSection::default()),
             gateway: Some(GatewaySection::default()),
             computer_use: Some(ComputerUseSection::default()),
+            egress: Some(EgressSection::default()),
             websearch: Some(WebsearchSection::default()),
             tools: Some(ToolsSection::default()),
             skill_deps: Some(SkillDepsSection::default()),
