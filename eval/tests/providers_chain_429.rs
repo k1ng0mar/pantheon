@@ -84,6 +84,7 @@ fn rate_provider(id: &str) {
         auth_refresh_ms: None,
         reserved: false,
         allowed_params: vec![],
+        oauth_apps: vec![],
     });
 }
 
@@ -122,6 +123,7 @@ fn rate_limit_retry_after_floors_backoff_and_paces_rotation() {
         last_resolved: RefCell::new(None),
         session_max_tokens: None,
         budget_max_tokens: None,
+        oauth_broker: None,
     };
     let c = Collect(RefCell::new(vec![]));
     let started = std::time::Instant::now();

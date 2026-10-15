@@ -63,6 +63,10 @@ pub struct ProviderMeta {
     /// need this to avoid 400s on params they do not recognize.
     #[serde(default)]
     pub allowed_params: Vec<String>,
+    /// OAuth apps that can authenticate this provider. Empty = API key only.
+    /// `key_for` checks these in order; the first connected app wins.
+    #[serde(default)]
+    pub oauth_apps: Vec<String>,
     /// Env var that overrides the base URL, e.g. `PANTHEON_BASE_OPENAI`.
     #[serde(default)]
     pub base_env: String,

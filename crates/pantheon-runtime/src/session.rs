@@ -4042,7 +4042,14 @@ impl Session {
                     )
                 })?
                 .unwrap_or_default();
-            ProviderChain::new(self.policy_snapshot(), transport, reg.schemas(), api_key)
+            let mut chain = ProviderChain::new(
+                self.policy_snapshot(),
+                transport,
+                reg.schemas(),
+                api_key,
+            );
+            chain.oauth_broker = Some(self.secrets.clone());
+            chain
         };
         // Per-request output cap, resolved per turn by the chain as
         // session (`/tokens`) > `[budget].max_tokens` > the model's

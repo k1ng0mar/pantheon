@@ -719,6 +719,7 @@ pub fn register_custom_providers(cfg: &Config) {
                 auth_refresh_ms: None,
                 reserved: false,
                 allowed_params: vec![],
+                oauth_apps: vec![],
             },
         );
     }

@@ -51,6 +51,9 @@ pub struct ProviderChain<T: ChatTransport> {
     /// `[budget].max_tokens` config value: middle precedence, below the
     /// session override and above the model's known maximum output.
     pub budget_max_tokens: Option<u32>,
+    /// Optional broker for OAuth token resolution. When set and a provider
+    /// declares `oauth_apps`, the chain tries those apps before API keys.
+    pub oauth_broker: Option<pantheon_secrets::SecretsBroker>,
 }
 
 /// Retry budget + backoff shape for one chain entry (Umar's spec:
@@ -145,6 +148,7 @@ impl<T: ChatTransport> ProviderChain<T> {
             last_resolved: RefCell::new(None),
             session_max_tokens: None,
             budget_max_tokens: None,
+            oauth_broker: None,
         }
     }
 
@@ -201,7 +205,22 @@ impl<T: ChatTransport> ProviderChain<T> {
             ""
         };
         let key = catalog::key_for(&model.provider, configured);
-        let mut keys: Vec<String> = key
+        let oauth_key = catalog::provider(&model.provider)
+            .and_then(|provider| {
+                if provider.oauth_apps.is_empty() {
+                    return None;
+                }
+                self.oauth_broker.as_ref().and_then(|broker| {
+                    provider.oauth_apps.iter().find_map(|app| {
+                        pantheon_secrets::oauth::OAuthStore::new(broker)
+                            .ensure_valid_token(app)
+                            .ok()
+                            .map(|token| token.expose().to_string())
+                    })
+                })
+            });
+        let effective_key = oauth_key.unwrap_or(key);
+        let mut keys: Vec<String> = effective_key
             .split(',')
             .map(|k| k.trim().to_string())
             .filter(|k| !k.is_empty())
