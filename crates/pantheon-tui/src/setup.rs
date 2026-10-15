@@ -350,6 +350,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         }),
         egress: None,
         admin: None,
+        routing: None,
         websearch: websearch.as_ref().map(|a| super::config::WebsearchSection {
             enabled: Some(true),
             provider: Some(a.id.clone()),

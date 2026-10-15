@@ -1831,6 +1831,27 @@ pub fn admin_allows(provider: &str, model: &str) -> bool {
     true
 }
 
+/// Phase-aware routing: map task types to model pins.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RoutingSection {
+    /// Task type → model pin. Task types: code, chat, analysis, etc.
+    #[serde(default)]
+    pub pins: std::collections::HashMap<String, ModelPin>,
+}
+
+/// A pinned provider + model pair for a task type.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ModelPin {
+    pub provider: String,
+    pub model: String,
+}
+
+impl RoutingSection {
+    pub fn resolve(&self, task_type: &str) -> Option<&ModelPin> {
+        self.pins.get(task_type)
+    }
+}
+
 /// Admin policy section. Deny wins over allow.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AdminSection {
@@ -2035,6 +2056,9 @@ pub struct Config {
     /// Admin policy: deny/allow lists for providers and models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin: Option<AdminSection>,
+    /// Phase-aware routing: map task types to model pins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingSection>,
 
     /// Web search (`[websearch]`). Absent = enabled with defaults; the
     /// tool only registers when an API key resolves.
@@ -3303,6 +3327,7 @@ mod fix_pass4_leaf1_tests {
             computer_use: Some(ComputerUseSection::default()),
             egress: Some(EgressSection::default()),
             admin: Some(AdminSection::default()),
+            routing: Some(RoutingSection::default()),
             websearch: Some(WebsearchSection::default()),
             tools: Some(ToolsSection::default()),
             skill_deps: Some(SkillDepsSection::default()),

@@ -772,6 +772,33 @@ pub fn chat_secrets(cfg: Option<&Config>) -> pantheon_secrets::SecretsBroker {
 
 /// Resolve the model policy for one session: explicit override > environment >
 /// `config.toml` > the hardcoded local default, plus the configured fallback
+/// Build model policy with phase-aware routing applied.
+///
+/// If `[routing]` has a pin for `task_type`, it overrides the default
+/// provider/model. Explicit `provider`/`model` args still win.
+pub fn build_routed_model_policy(
+    cfg: Option<&Config>,
+    provider: Option<String>,
+    model: Option<String>,
+    task_type: Option<&str>,
+) -> pantheon_api::model::ModelPolicy {
+    let mut policy = build_model_policy(cfg, provider.clone(), model.clone());
+    if provider.is_none() && model.is_none() {
+        if let Some(pin) = cfg
+            .and_then(|c| c.routing.as_ref())
+            .and_then(|r| task_type.and_then(|t| r.resolve(t)))
+        {
+            policy.default = pantheon_api::model::DefaultModel {
+                provider: pin.provider.clone(),
+                model: pin.model.clone(),
+            };
+        }
+    }
+    policy
+}
+
+/// Resolve the model policy for one session: explicit override > environment >
+/// `config.toml` > the hardcoded local default, plus the configured fallback
 /// chain and every auxiliary slot.
 ///
 /// This lives here, not in an interface module, because it is a property of

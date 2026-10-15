@@ -249,7 +249,6 @@ fn run_delivered_task(
     // continues its conversation instead of starting an orphan.
     let run_id = task_id.clone().unwrap_or_else(pantheon_runtime::new_run_id);
 
-    use crate::config::build_model_policy;
     let file_cfg = crate::config::Config::load_or_report(&data_dir());
     if let Some(ref cfg) = file_cfg {
         if let Some(ref egress) = cfg.egress {
@@ -267,7 +266,8 @@ fn run_delivered_task(
             crate::config::set_admin_policy(admin.clone());
         }
     }
-    let model_policy = build_model_policy(file_cfg.as_ref(), None, None);
+    let model_policy =
+        crate::config::build_routed_model_policy(file_cfg.as_ref(), None, None, Some("chat"));
     let allow_memory = file_cfg
         .as_ref()
         .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
