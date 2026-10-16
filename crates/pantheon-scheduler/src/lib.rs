@@ -200,8 +200,8 @@ impl Job {
 
     /// Pin this job to a model (and optionally a provider). Blank pins are
     /// rejected: an empty string would read as "pinned" while behaving as
-    /// "inherit", which is exactly the silent-default confusion Hermes'
-    /// `provider_snapshot` exists to avoid.
+    /// "inherit", which is exactly the silent-default confusion an explicit
+    /// provider snapshot exists to avoid.
     pub fn pin_model(&mut self, model: &str, provider: Option<&str>) -> Result<(), String> {
         let m = model.trim();
         if m.is_empty() {

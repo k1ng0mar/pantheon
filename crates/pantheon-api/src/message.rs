@@ -1,4 +1,4 @@
-//! Canonical conversation messages (OpenAI wire shape, per Hermes study).
+//! Canonical conversation messages (OpenAI wire shape).
 //!
 //! One message type for the whole runtime. Roles: system | user | assistant | tool.
 //! Strict alternation is enforced by the loop, not this type. Tool results ride

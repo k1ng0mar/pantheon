@@ -1,4 +1,4 @@
-//! opencode-style todo card for the transcript.
+//! Todo card for the transcript.
 //!
 //! Standalone by design: it renders [`TodoCardItem`]s with ratatui only,
 //! no pantheon types, so it compiles against ratatui alone. The backend

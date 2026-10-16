@@ -314,7 +314,7 @@ pub fn cmd_plugins(args: &[String]) {
             std::process::exit(2);
         }
         // Bare `pantheon plugins`: the interactive toggle screen on a
-        // TTY (Hermes-style), plain list when piped.
+        // TTY table, plain list when piped.
         None => {
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 crate::plugin_toggle::run_toggle_screen(&dd);

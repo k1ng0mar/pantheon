@@ -1,4 +1,4 @@
-//! Screenshot harness for the Hermes-inspired transcript blocks.
+//! Screenshot harness for the transcript blocks.
 //!
 //! Renders a demo screen (tab bar, transcript, footer) through
 //! `TestBackend` and writes it as a PNG. Temporary visual-verification
@@ -115,7 +115,7 @@ fn demo_lines(th: &Theme) -> Vec<Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("  team-chat ", Style::default().fg(th.tab_idle)),
-            dim(th, "                          Hermes-style transcript pass"),
+            dim(th, "                          transcript pass"),
         ]),
         Line::from(""),
         // User message.

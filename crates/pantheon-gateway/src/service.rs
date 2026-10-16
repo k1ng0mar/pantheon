@@ -1,7 +1,7 @@
 //! Silent user-scope service install for the gateway.
 //!
-//! Hermes installs its gateway service unconditionally at setup, in user
-//! scope, without prompting - "always safe to call". This module is
+//! Some harnesses install their gateway service unconditionally at setup,
+//! in user scope, without prompting - "always safe to call". This module is
 //! Pantheon's equivalent. [`install`] detects the platform's service
 //! manager at runtime and installs accordingly:
 //!

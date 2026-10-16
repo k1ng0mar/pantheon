@@ -1,5 +1,5 @@
 //! The agent-facing `todo` tool: replace the whole session todo list in
-//! one call (opencode/Claude-Code style).
+//! one call.
 //!
 //! The tool owns the shared in-memory list (the session, `/todos`, and
 //! the TUI card read the same state). Durability crosses into the run's

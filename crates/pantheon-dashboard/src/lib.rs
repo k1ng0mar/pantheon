@@ -7,7 +7,7 @@
 //! config file, the `.env` key store, log files, skills, MCP declarations,
 //! the gateway service, and the reflection/consolidation engines.
 //!
-//! Security model (Hermes v0.17 learned this the hard way):
+//! Security model (hardened after past incidents):
 //! - A random 256-bit per-instance token is generated at startup and
 //!   printed as `http://<bind>:<port>/?token=...`. Every `/api/*`
 //!   request must carry it as `X-Pantheon-Token` or `?token=`.

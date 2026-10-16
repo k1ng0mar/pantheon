@@ -17,7 +17,7 @@
 //!
 //! Counts come from the transcript blocks: user messages, assistant
 //! texts, and tool calls. The `Messages:` total folds all three in, with
-//! the breakdown naming user messages and tool calls - the Hermes shape.
+//! the breakdown naming user messages and tool calls.
 
 use std::time::Duration;
 

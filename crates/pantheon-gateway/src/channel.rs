@@ -86,8 +86,8 @@ pub struct ChannelError {
     /// The platform's own "wait this long" hint, when it gave one. Discord
     /// sends `Retry-After` (seconds); Telegram sends `parameters.retry_after`
     /// in the 429 JSON body. Honoring it is the difference between backing
-    /// off and hammering: Hermes keeps the same reference data in
-    /// `platforms/pairing/_rate_limits.json`.
+    /// off and hammering; equivalent reference data ships in a bundled
+    /// rate-limits file.
     pub retry_after_secs: Option<u64>,
 }
 impl ChannelError {

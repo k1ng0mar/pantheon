@@ -168,7 +168,7 @@ pub fn resolve_websearch_section(s: &WebsearchSection) -> pantheon_runtime::Webs
     cfg
 }
 
-/// Hermes-style aux inheritance: `provider = "default"` (or absent/empty)
+/// Default-model aux inheritance: `provider = "default"` (or absent/empty)
 /// inherits the default model's provider; an absent/empty `model` inherits
 /// the default model's model. Explicit values always win - slots stay
 /// independent, they just don't have to repeat the default. Pure so tests
@@ -217,7 +217,7 @@ fn resolve_aux_key_env(
 }
 
 /// Resolve one slot's target from its section + env pair, applying
-/// Hermes-style inheritance against the default model. `PANTHEON_*` env
+/// Inheritance against the default model. `PANTHEON_*` env
 /// overrides win field-wise over the section; `"default"`/empty then
 /// inherits. Returns `None` when nothing is pinned at all (no section,
 /// no env) or when even the default target is empty - the `auto`

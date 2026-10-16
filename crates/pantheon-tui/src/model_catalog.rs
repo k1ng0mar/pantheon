@@ -30,6 +30,8 @@ pub struct LiveModel {
     pub id: String,
     pub input_per_mtok_usd: Option<f64>,
     pub output_per_mtok_usd: Option<f64>,
+    /// `context_length` (or `max_context_length`) reported by the endpoint.
+    pub context_limit: Option<u64>,
 }
 
 /// Why a live fetch failed.
@@ -151,6 +153,11 @@ fn parse_models_body(body: &str) -> Result<Vec<LiveModel>, FetchError> {
             id: id.to_string(),
             input_per_mtok_usd: per_mtok(pricing.and_then(|p| p.get("prompt"))),
             output_per_mtok_usd: per_mtok(pricing.and_then(|p| p.get("completion"))),
+            context_limit: entry
+                .get("context_length")
+                .or_else(|| entry.get("max_context_length"))
+                .or_else(|| entry.get("context_limit"))
+                .and_then(|v| v.as_u64()),
         });
     }
     Ok(out)
@@ -216,7 +223,7 @@ pub fn merge_model_rows(curated: &[CatalogModel], live: &[LiveModel]) -> Vec<Mod
         }
         rows.push(ModelRow {
             id: l.id.clone(),
-            context_limit: None,
+            context_limit: l.context_limit,
             input_per_mtok_usd: l.input_per_mtok_usd,
             output_per_mtok_usd: l.output_per_mtok_usd,
             curated: false,

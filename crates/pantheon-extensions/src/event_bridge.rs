@@ -26,8 +26,8 @@ pub struct HookFire {
 
 /// Whether per-delta streaming hooks are enabled. Off by default: the runner
 /// spawns a process per fire and `ModelDelta` arrives per token, so leaving
-/// this on would be a self-inflicted stall. Hermes reaches the same conclusion
-/// ("off the token path").
+/// this on would be a self-inflicted stall. Other runtimes reach the same
+/// conclusion ("off the token path").
 fn stream_deltas_enabled() -> bool {
     matches!(
         std::env::var("PANTHEON_HOOK_STREAM_DELTA").as_deref(),
@@ -54,8 +54,8 @@ pub fn dispatch(ev: &Event) -> Option<HookFire> {
             kv(&[("run_id", run_id), ("model", model)]),
         ),
         ModelCompleted { run_id } => {
-            // A completed model turn is also the close of its stream. Hermes
-            // keeps these distinct because a provider can emit deltas across
+            // A completed model turn is also the close of its stream. Others
+            // keep these distinct because a provider can emit deltas across
             // several `ModelRequested`s in one turn; here the request is the
             // unit, so one event closes exactly one stream.
             (Hook::PostApiRequest, kv(&[("run_id", run_id)]))

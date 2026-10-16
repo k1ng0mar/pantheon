@@ -1,7 +1,7 @@
 //! Model policy: NO routing. Default + ordered fallbacks (failure-only,
 //! runtime-controlled) + auxiliary models for scoped capabilities.
 //!
-//! Mirrors Hermes behavior: one configured default, a fallback chain, and
+//! One configured default, a fallback chain, and
 //! auxiliary models for helpers (embeddings, rerank, vision, extraction...).
 //! The agent never selects. The runtime does.
 //!

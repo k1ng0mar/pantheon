@@ -1,4 +1,4 @@
-//! Interactive plugin toggle screen: Hermes-style list with space/enter
+//! Interactive plugin toggle screen: list with space/enter
 //! to toggle.
 //!
 //! Lists every plugin (bundled + third-party) with kind, version,

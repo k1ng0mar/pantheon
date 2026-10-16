@@ -240,7 +240,7 @@ pub enum BlockKind {
     },
     Status(String),
     /// Live todo checklist card, rendered inline in the transcript with
-    /// the opencode-style card (`todo_card_lines`). Present only while
+    /// the inline card (`todo_card_lines`). Present only while
     /// the sidebar is hidden (narrow terminal or toggled off): in wide
     /// mode the sidebar's todo view owns this. One live block, updated
     /// in place as the plan progresses - never duplicated, removed when
@@ -638,7 +638,7 @@ pub struct TuiState {
     /// Pending double-Esc rewind confirmation. `Some` while the operator
     /// decides; `y` confirms, `n`/Esc dismisses.
     pub rewind_offer: Option<RewindOffer>,
-    /// Session tabs (opencode-style top bar). Rebuilt from
+    /// Session tabs (top bar). Rebuilt from
     /// `ledger_list_runs`; refreshed on /new, resume, tab switch and turn
     /// completion so titles and busy badges stay current.
     pub tabs: crate::tabs::TabList,
@@ -741,7 +741,7 @@ pub struct TuiState {
     /// renders the todo UI; the status bar reads the count.
     pub todo_count: usize,
     /// Live todo items for the transcript card, synced from the runtime
-    /// session each frame by `refresh_todos`. Rendered opencode-style at
+    /// session each frame by `refresh_todos`. Rendered inline at
     /// the transcript tail while non-empty.
     pub todo_items: Vec<crate::todo_card::TodoCardItem>,
     /// Running shells for the status bar's `{n} shells` segment. A plain
@@ -1176,7 +1176,7 @@ impl TuiState {
     }
 
     /// Live token estimate: ~4 chars per token, updated on every streamed
-    /// delta so the counter ticks like Claude Code's. Snapped to the
+    /// delta so the counter ticks smoothly. Snapped to the
     /// authoritative number when Usage arrives.
     fn bump_estimate(&mut self, text: &str) {
         self.turn_estimate += (text.len() as u32).div_ceil(4);
@@ -2606,7 +2606,7 @@ fn refresh_todos(state: &mut TuiState, session: &Arc<Session>) {
 }
 
 /// Keep the inline transcript todo card in sync. When the sidebar is
-/// gone (narrow terminal, or toggled off) the opencode-style card
+/// gone (narrow terminal, or toggled off) the inline card
 /// lives in the transcript instead, so the plan stays visible without
 /// any keybind: one live block, updated in place as todos progress.
 /// Wide mode removes it again - the sidebar owns it there. Idempotent
@@ -3856,7 +3856,7 @@ fn composer_line_spans(
     spans
 }
 
-/// opencode-style composer: a rounded box with a dim border and a blue
+/// Composer: a rounded box with a dim border and a blue
 /// left accent, a prompt row, and a `provider · model · effort` row
 /// (variant in blue, effort in orange). Exactly 4 rows tall; too-small
 /// areas fall back to a single bare prompt row.
@@ -3947,7 +3947,7 @@ fn composer_prompt_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> V
 
 /// The composer's `profile · provider · model · effort` row: profile in
 /// body bold (when a profile is active), provider in blue bold, model in
-/// body, effort in orange - the opencode signature. The model string is
+/// body, effort in orange. The model string is
 /// `provider/model`; the provider segment replaces the old Build/Plan
 /// variant (the mode already shows in the sidebar tag). The profile
 /// segment is the active `[agents.<name>]` table name (`state.variant`,
@@ -4575,7 +4575,7 @@ fn render_splash(f: &mut Frame, area: Rect, state: &TuiState) {
         ));
     }
     head.push(Line::from(""));
-    // Update hint, opencode-style; blank when up to date.
+    // Update hint; blank when up to date.
     if let Some(tag) = &state.update_hint {
         head.push(centered_line(
             Line::from(Span::styled(
@@ -4591,7 +4591,7 @@ fn render_splash(f: &mut Frame, area: Rect, state: &TuiState) {
 
     // Input zone: centered composer box (or the reflect card while
     // proposals are pending - it owns the keyboard then, like the
-    // bottom row does), plus the dim key hint under it, opencode-style.
+    // bottom row does), plus the dim key hint under it.
     let box_w = 64.min(w.saturating_sub(8)).max(20) as u16;
     let zone_rows: usize = if state.pending_reflect.is_some() {
         9
@@ -4685,7 +4685,7 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
                     live_tokens,
                 },
             );
-            // Airy, opencode-style: messages breathe with two blank
+            // Airy: messages breathe with two blank
             // lines after them; compact cards keep one.
             lines.push(Line::from(""));
             if matches!(
@@ -4916,7 +4916,7 @@ fn render_block(
     match &block.kind {
         BlockKind::UserMessage(text) => {
             // Colored sender label, no chrome: whitespace + color are
-            // the only separators, opencode-style.
+            // the only separators.
             lines.push(Line::from(Span::styled(
                 "You",
                 Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
@@ -5064,7 +5064,7 @@ fn render_block(
             )));
         }
         BlockKind::Todos(items) => {
-            // The opencode-style card, inline: same lines the sidebar's
+            // The inline card: same lines the sidebar's
             // todo view renders, clipped to the transcript width.
             for line in crate::todo_card::todo_card_lines(items) {
                 lines.push(clip_line_spans(line, term_width as usize));
@@ -6148,7 +6148,7 @@ fn do_set(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
 }
 
 /// `/nightly [on|off|status]` - the unified self-improvement pass,
-/// OpenClaw-`/dreaming` style. Bare `/nightly` runs a manual one-shot
+/// Overnight-dreaming style. Bare `/nightly` runs a manual one-shot
 /// pass on a worker thread (eval-gating and replay can take minutes; the
 /// TUI never blocks). `on`/`off` persist the explicit `[nightly] enabled`
 /// flag to config.toml (the same flag the dashboard toggle and a manual

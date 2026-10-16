@@ -78,7 +78,7 @@ pub enum Hook {
     /// A streamed text delta arrived. Observer, and **off by default**: the
     /// runner spawns a process per fire, and this fires per token. Enable
     /// with `PANTHEON_HOOK_STREAM_DELTA=1` only if a plugin truly needs it.
-    /// Hermes makes the same call ("off the token path").
+    /// Other runtimes make the same call ("off the token path").
     OnStreamDelta,
     /// A model response stream closed. Observer.
     OnStreamEnd,

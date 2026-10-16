@@ -42,7 +42,7 @@ pub struct ModelSection {
 /// below are aliases so existing construction sites keep compiling
 /// untouched.
 ///
-/// Hermes-style inheritance: `provider = "default"` (or omitted) inherits
+/// Default inheritance: `provider = "default"` (or omitted) inherits
 /// `[model]`'s provider, an empty/omitted `model` inherits `[model]`'s
 /// model, and an omitted `api_key_env` on a default-inheriting provider
 /// inherits `[model].api_key_env`. Each slot stays independent - pin a
@@ -61,7 +61,7 @@ pub struct AuxSection {
     /// a default-inheriting provider inherits `[model].api_key_env`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
-    /// Per-aux request timeout in seconds (Hermes-style `timeout`).
+    /// Per-aux request timeout in seconds (`timeout`).
     /// Absent = the client's built-in default for the capability
     /// (10s title/judge, 15s embeddings, 30s compression, 60s
     /// reflection/consolidation/repair, 120s everything else).
@@ -430,7 +430,7 @@ pub struct ReflectSection {
     /// provider inherits `[model].api_key_env`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
-    /// Per-aux request timeout in seconds (Hermes-style `timeout`).
+    /// Per-aux request timeout in seconds (`timeout`).
     /// Absent = the client's built-in default for the capability
     /// (10s title/judge, 15s embeddings, 30s compression, 60s
     /// reflection/consolidation, 120s everything else).
@@ -509,7 +509,7 @@ pub struct ConsolidationSection {
     /// provider inherits `[model].api_key_env`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
-    /// Per-aux request timeout in seconds (Hermes-style `timeout`).
+    /// Per-aux request timeout in seconds (`timeout`).
     /// Absent = the client's built-in default for the capability
     /// (10s title/judge, 15s embeddings, 30s compression, 60s
     /// reflection/consolidation, 120s everything else).
@@ -1767,7 +1767,7 @@ pub struct SecretsSection {
 /// describe exactly what is missing instead of failing to parse.
 /// `[agents.<name>]`: a durable identity for one persistent agent (§4).
 ///
-/// The audit's gap: Hermes ships this as `profile.yaml` + `SOUL.md` +
+/// The audit's gap: other harnesses ship this as `profile.yaml` + `SOUL.md` +
 /// `MEMORY.md`/`USER.md` (the 6 `_PROFILE_IDENTITY_MARKERS` files), while
 /// Pantheon had no identity config at all - every run was anonymous.
 /// This is the durable half: name, persona source files, memory namespace,
@@ -2459,7 +2459,7 @@ impl Config {
         // Every aux section validates identically: a resolvable
         // api_key_env when named, and a non-zero timeout. Empty
         // provider/model is valid - it inherits the `[model]` target
-        // (Hermes-style), so there is no "empty field" error anymore.
+        // (default-inheriting), so there is no "empty field" error anymore.
         fn aux_problem(
             name: &str,
             api_key_env: &Option<String>,

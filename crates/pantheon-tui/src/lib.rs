@@ -83,6 +83,7 @@ pub mod mcp;
 pub mod mentions;
 mod migrate;
 mod model;
+mod model_browser;
 mod model_catalog;
 pub mod nightly_cli;
 pub mod nightly_repair;
@@ -117,7 +118,7 @@ pub mod yank;
 // TUI-A: session tab bar model + rendering (startup splash lives in terminal).
 mod tabs;
 
-// Agent todo card: opencode-style "Working on N to-dos" widget, rendered
+// Agent todo card: "Working on N to-dos" widget, rendered
 // with ratatui only. The visual track wires it into the transcript.
 pub mod todo_card;
 

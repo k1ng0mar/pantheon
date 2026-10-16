@@ -9,7 +9,7 @@
 //! The mechanism is one check body with two callers, not two implementations.
 //! Each entry below pairs a `diagnose` (read-only, always runs first) with a
 //! `repair` (mutates, only when `diagnose` found something). This is the shape
-//! Hermes uses in `hermes_cli/doctor_report.py::doctor_check`, where
+//! The established doctor/report shape, where
 //! `should_fix` is a bool handed to the same function. The first version of
 //! this file was a `repair check|runs` subcommand pair that re-implemented a
 //! narrow slice of `doctor` and called it coverage; that is the failure this

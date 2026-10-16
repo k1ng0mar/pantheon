@@ -574,7 +574,11 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
                     }
                 }
             } else if let Some(env) = cfg.model.as_ref().and_then(|m| m.api_key_env.clone()) {
-                println!("make sure {env} is exported before starting a session");
+                if std::env::var(&env).map(|v| !v.trim().is_empty()).unwrap_or(false) {
+                    println!("API key: {env} configured");
+                } else {
+                    println!("make sure {env} is exported before starting a session");
+                }
             } else if let Some(provider) = cfg.model.as_ref().map(|m| m.provider.as_str()) {
                 // A bare endpoint is not evidence that it is unauthenticated.
                 // Local servers usually need no key, but a hosted
