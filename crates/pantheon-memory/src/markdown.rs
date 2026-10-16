@@ -1,4 +1,4 @@
-//! Native MEMORY.md interface (Hermes-style flat file).
+//! Native MEMORY.md interface (flat file).
 //!
 //! Auto-syncs Agent-layer records with a markdown file at the project root.
 //! Format: each record becomes a section with `# <key>` heading followed by

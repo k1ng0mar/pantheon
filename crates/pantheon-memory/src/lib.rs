@@ -157,7 +157,7 @@ fn merr(code: &str, cause: String, remediation: &str) -> PantheonError {
 pub enum LayerKind {
     /// Persists across everything. Widest scope, hardest to write.
     Global,
-    /// One agent's personal memory (Hermes MEMORY.md analogue).
+    /// One agent's personal memory file.
     Agent,
     /// Project-scoped.
     Project,

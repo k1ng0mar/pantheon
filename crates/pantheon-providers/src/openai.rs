@@ -1,7 +1,7 @@
 //! OpenAI-compatible chat-completions adapter (spec §5 + §14).
 //!
-//! Wire format follows the OpenAI chat-completions shape (studied from
-//! Hermes): messages system|user|assistant|tool, tools as
+//! Wire format follows the OpenAI chat-completions shape:
+//! messages system|user|assistant|tool, tools as
 //! {"type":"function","function":{...}}, tool_calls on the assistant row,
 //! tool results on role:"tool" rows keyed by tool_call_id.
 //!

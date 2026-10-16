@@ -51,7 +51,7 @@ pub struct Theme {
 pub const DEFAULT_THEME: &str = "pantheon";
 
 impl Theme {
-    /// The default theme: opencode-style transcript on near-black.
+    /// The default theme: flat transcript on near-black.
     pub fn pantheon() -> Self {
         Self {
             name: "pantheon",
@@ -59,17 +59,17 @@ impl Theme {
             success: Color::Rgb(74, 222, 128),
             warning: Color::Rgb(251, 191, 36),
             failure: Color::Rgb(248, 113, 113),
-            dim: Color::Rgb(140, 145, 160),
+            dim: Color::Rgb(107, 114, 128),
             tab_active: Color::White,
-            tab_idle: Color::DarkGray,
-            tab_active_bg: Color::Rgb(42, 25, 68),
-            heading: Color::Rgb(168, 125, 255),
-            code: Color::Rgb(134, 239, 172),
-            emphasis: Color::Rgb(253, 224, 71),
-            body: Color::Rgb(235, 238, 245),
+            tab_idle: Color::Rgb(107, 114, 128),
+            tab_active_bg: Color::Rgb(0, 0, 0),
+            heading: Color::White,
+            code: Color::Rgb(237, 237, 237),
+            emphasis: Color::Rgb(240, 163, 94),
+            body: Color::Rgb(237, 237, 237),
             input_accent: Color::Rgb(147, 95, 255),
-            bg: Color::Rgb(14, 15, 20),
-            panel: Color::Rgb(24, 26, 36),
+            bg: Color::Rgb(0, 0, 0),
+            panel: Color::Rgb(0, 0, 0),
         }
     }
 

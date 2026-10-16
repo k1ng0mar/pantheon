@@ -172,21 +172,38 @@ fn pick_model_key_env(
     // The env var name: a custom endpoint already named its key env on
     // its own screen; a catalog provider is asked here.
     let (name, label) = match custom {
-        Some(spec) => (spec.key_env.clone()?, "Custom endpoint".to_string()),
+        Some(spec) => {
+            let derived = spec.key_env.clone().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| {
+                let mut sanitized = String::new();
+                for c in spec.name.chars() {
+                    if c.is_ascii_alphanumeric() {
+                        sanitized.push(c.to_ascii_uppercase());
+                    } else {
+                        sanitized.push('_');
+                    }
+                }
+                if sanitized.is_empty() {
+                    "CUSTOM".to_string()
+                } else {
+                    format!("CUSTOM_{}_API_KEY", sanitized)
+                }
+            });
+            (derived, "Custom endpoint".to_string())
+        }
         None => {
             let meta = pantheon_providers::catalog::provider(provider);
             let label = meta
                 .as_ref()
                 .map(|m| m.label.clone())
                 .unwrap_or_else(|| provider.to_string());
-            let prefill = meta.map(|m| m.key_env.clone()).unwrap_or_default();
-            let answer = crate::prompt::pick_text(
-                "API key",
-                &format!("{step} · Env var holding the {label} API key (empty = none)"),
-                &prefill,
-            )?;
-            let name = answer.trim().to_string();
-            if name.is_empty() {
+            // Default the env var to the provider's standard name (e.g.
+            // OPENROUTER_API_KEY) and save the value into `<data_dir>/.env`
+            // below instead of making the user export anything. The name is
+            // still configurable through the custom-endpoint path.
+            let name = meta
+                .map(|m| m.key_env.clone())
+                .unwrap_or_default();
+            if name.trim().is_empty() {
                 return None;
             }
             (name, label)
@@ -699,6 +716,16 @@ fn pick_provider(step: &str) -> Option<(String, Option<CustomProviderSpec>)> {
             if let Some(note) = provider_note(id) {
                 println!("{note}");
             }
+            if id == "local" {
+                // Local Ollama is a self-hosted runtime, not just an
+                // endpoint: warn when it is not reachable so the user is not
+                // surprised by a 401-free 404 on first chat.
+                let ollama_present = crate::setup_providers::detect_binary("command -v ollama");
+                if !ollama_present {
+                    println!("pantheon: Ollama was not found on PATH.");
+                    println!("  install it first, then `ollama serve` and `ollama pull <model>`");
+                }
+            }
             Some((id.to_string(), None))
         }
     }
@@ -748,19 +775,10 @@ fn pick_custom_provider() -> Option<(String, Option<CustomProviderSpec>)> {
         "anthropic" => pantheon_providers::catalog::ApiMode::Anthropic,
         _ => pantheon_providers::catalog::ApiMode::OpenAi,
     };
-    let key_env = crate::prompt::pick_text(
-        "Custom endpoint",
-        "Env var holding the API key (empty = none)",
-        "PANTHEON_KEY_CUSTOM",
-    )?;
-    let key_env = {
-        let k = key_env.trim();
-        if k.is_empty() {
-            None
-        } else {
-            Some(k.to_string())
-        }
-    };
+    // Derive the env var name automatically (CUSTOM_<NAME>_API_KEY) and
+    // collect the value in a single follow-up. The endpoint URL is the
+    // identity the user just typed; the env name is a derived handle.
+    let key_env: Option<String> = None;
     pantheon_providers::catalog::register_custom_provider(
         pantheon_providers::catalog::ProviderMeta {
             id: "custom".into(),
@@ -768,7 +786,7 @@ fn pick_custom_provider() -> Option<(String, Option<CustomProviderSpec>)> {
             base_url: url.clone(),
             api_mode,
             base_env: String::new(),
-            key_env: key_env.clone().unwrap_or_default(),
+            key_env: String::new(),
             key_header: String::new(),
             models: Vec::new(),
             prominent: true,
@@ -968,12 +986,17 @@ fn pick_tools() -> Vec<ToolGroup> {
         .iter()
         .map(|g| Item::new(g.label(), g.key()).desc(tool_group_desc(*g)))
         .collect();
-    // Every group is preselected: the runtime gates each one - Computer
-    // Use included - behind the ToolGroup toggle, the CUA driver binary,
-    // the MCP server approval, and per-call human approval under the
-    // default policy. Checking the box offers the capability; the
-    // runtime still asks before it acts.
-    let preselected: Vec<&str> = ToolGroup::all().iter().map(|g| g.key()).collect();
+    // Everything except Extensions is preselected: the runtime gates each
+    // one - Computer Use included - behind the ToolGroup toggle, the CUA
+    // driver binary, the MCP server approval, and per-call human
+    // approval under the default policy. Extensions (MCP/plugin servers)
+    // start off so a first run does not force an MCP-setup screen into
+    // the core config flow; opting in enables it on demand.
+    let preselected: Vec<&str> = ToolGroup::all()
+        .iter()
+        .filter(|g| **g != ToolGroup::Plugins)
+        .map(|g| g.key())
+        .collect();
     match crate::prompt::pick_many(
         "Tools",
         "Space toggles \u{00b7} enter confirms \u{2014} session search stays on and is not listed",

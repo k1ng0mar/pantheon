@@ -1,4 +1,4 @@
-//! Session tab bar (opencode-style): one tab per open session across the
+//! Session tab bar: one tab per open session across the
 //! top of the TUI.
 //!
 //! This module owns the *model* and the *rendering* of the tab bar, plus the

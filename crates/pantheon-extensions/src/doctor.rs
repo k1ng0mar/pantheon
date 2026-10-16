@@ -1,4 +1,4 @@
-//! skill doctor: loud preflight for any plugin dir. Mirrors the OpenClaw
+//! skill doctor: loud preflight for any plugin dir. Targets the classic
 //! silent-death complaints: missing env, missing bins, bad manifest,
 //! missing entry, dangerous hooks. Non-zero problems => loud report.
 use crate::hooks::Hook;

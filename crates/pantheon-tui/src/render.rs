@@ -11,7 +11,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::widget::{Confirm, MultiSelect, Row, Select, TextInput};
 
@@ -35,10 +35,14 @@ fn visible_rows_for(height: u16, uses_meta: bool) -> usize {
     }
 }
 
+// Borders were dropped: the look is a flat, title-led
+// surface rather than a boxed widget. The list/date height accounting in
+// `draw_list` still adds a small margin; `window()` subtracts the title
+// and hint lines, so the change only removes the chrome.
 fn frame_box(title: &str) -> Block<'static> {
-    Block::bordered()
-        .border_type(BorderType::Rounded)
-        .title(format!(" {title} "))
+    Block::default()
+        .title(format!(" {} ", title))
+        .title_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
 }
 
 /// Render one row to one or two lines: the label line, then a dim
@@ -55,7 +59,9 @@ fn row_lines(r: &Row) -> Vec<Line<'static>> {
     head.push(Span::styled(
         r.label.clone(),
         if r.selected {
-            Style::default().add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         },
@@ -69,7 +75,7 @@ fn row_lines(r: &Row) -> Vec<Line<'static>> {
     if !r.tag.is_empty() {
         head.push(Span::styled(
             format!("  [{}]", r.tag),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(Color::Magenta),
         ));
     }
     if !r.enabled {

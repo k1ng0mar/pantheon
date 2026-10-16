@@ -1,4 +1,4 @@
-//! Hermes-inspired transcript blocks, adapted to Pantheon's look.
+//! Transcript blocks for the session view.
 //!
 //! Pure renderers: every block maps to `Vec<Line<'static>>` given the
 //! theme. No terminal types, no session state - the same split as
@@ -30,7 +30,7 @@ use crate::session::theme::Theme;
 /// How many output lines a collapsed shell card keeps visible.
 pub const SHELL_VISIBLE_LINES: usize = 8;
 
-/// `4.0s`, `0.4s` - the Hermes-style duration suffix.
+/// `4.0s`, `0.4s` duration suffix.
 pub fn fmt_duration(d: Duration) -> String {
     format!("{:.1}s", d.as_secs_f64())
 }

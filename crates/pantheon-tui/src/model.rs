@@ -1185,13 +1185,10 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
         let cfg = Config::load(&dd).unwrap_or_default();
         let rows: Vec<ProviderRow> = match &target {
             Target::Auxiliary(_) => order_providers_key_first(&dd, &cfg, catalog::all_providers()),
-            Target::Default => catalog::all_providers()
-                .into_iter()
-                .map(|meta| ProviderRow {
-                    meta,
-                    stored_key_env: None,
-                })
-                .collect(),
+            // Key-aware ordering + status tags: providers that already have
+            // a key locally rise to the top, instead of
+            // showing a flat `needs [ENV]` wall.
+            Target::Default => order_providers_key_first(&dd, &cfg, catalog::all_providers()),
         };
         let customs: Vec<String> = {
             let mut n: Vec<String> = cfg.custom_providers.keys().cloned().collect();
@@ -1207,14 +1204,16 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
                 } else {
                     format!("{} models", p.models.len())
                 };
-                let key_tag = if row.stored_key_env.is_some() {
-                    " · key on file"
+                let status = if row.stored_key_env.is_some() {
+                    "● connected"
+                } else if matches!(p.id.as_str(), "local" | "ollama" | "lmstudio" | "ollama_cloud") {
+                    "● local"
                 } else {
-                    ""
+                    "○ needs key"
                 };
                 PickItem {
                     label: format!("{} ({})", p.label, p.id),
-                    desc: format!("{} · {} · {n}{key_tag}", p.base_url, p.tag),
+                    desc: format!("{} · {} · {} · {status}", p.base_url, p.tag, n),
                 }
             })
             .collect();
@@ -1327,18 +1326,29 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
         };
     let manual = "Type a model id manually...".to_string();
     model_ids.push(manual.clone());
-    let model_items: Vec<PickItem> = model_ids
+    let model_rows: Vec<crate::model_catalog::ModelRow> = model_ids
         .iter()
-        .map(|m| PickItem {
-            label: m.clone(),
-            desc: if m == &manual {
-                "endpoint has no /models, or id not listed".into()
-            } else {
-                String::new()
-            },
+        .map(|id| crate::model_catalog::ModelRow {
+            id: id.clone(),
+            context_limit: None,
+            input_per_mtok_usd: None,
+            output_per_mtok_usd: None,
+            curated: false,
         })
         .collect();
-    let model_idx = pick(&format!("pick a model on {provider_id}"), &model_items)?;
+    let browse = match crate::model_browser::browse(
+        &format!("pick a model on {provider_id}"),
+        &model_rows,
+    ) {
+        Some(b) => b,
+        None => return None,
+    };
+    let model_idx = browse.index;
+    match browse.action {
+        crate::model_browser::ModelAction::SetDefault => println!("  set as default selection"),
+        crate::model_browser::ModelAction::Use => println!("  selected for this run"),
+        crate::model_browser::ModelAction::Test => println!("  connection test requested"),
+    }
     // A hand-typed id is the operator telling us what this endpoint serves, so
     // it gets written down. A picked-from-fetch id does not: it came from the
     // endpoint and will be fetched again next time.

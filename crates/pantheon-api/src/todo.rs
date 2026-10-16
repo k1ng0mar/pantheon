@@ -4,7 +4,7 @@
 //! the event ledger (pantheon-storage) persists it per run, and the TUI
 //! renders it as a card. This module is the single definition they all
 //! share. Status strings are `pending` / `in_progress` / `completed` on
-//! the wire (opencode/Claude-Code style); `activeForm` is the optional
+//! the wire; `activeForm` is the optional
 //! present-tense phrasing shown while an item is in progress.
 
 use serde::{Deserialize, Serialize};
@@ -45,8 +45,8 @@ impl TodoStatus {
 
 /// One entry on the agent's todo list.
 ///
-/// Wire format is camelCase (`activeForm`), matching the opencode /
-/// Claude-Code tool schema the model sees.
+/// Wire format is camelCase (`activeForm`), matching the tool schema
+/// the model sees.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TodoItem {

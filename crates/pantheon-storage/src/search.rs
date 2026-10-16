@@ -125,7 +125,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Max chars of tool output indexed per chunk - tool results can be huge
-/// and would drown the lexical index (same tradeoff Hermes makes at 8192).
+/// and would drown the lexical index (other local indexes make the same tradeoff at 8192).
 const TOOL_CHUNK_MAX: usize = 8192;
 /// Max chars of a message indexed per chunk.
 const MESSAGE_CHUNK_MAX: usize = 4096;
