@@ -14,8 +14,8 @@ use chrono::{DateTime, Local};
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind,
-        KeyModifiers,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event as CtEvent, KeyCode, KeyEventKind, KeyModifiers,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -102,7 +102,6 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/yank [N]", "copy last answer (or its Nth code block) to clipboard"),
     ("/steer <text>", "redirect the running turn mid-flight (normal message when idle)"),
     ("/runs [N]", "recent runs (default 10)"),
-    ("/history", "interactive searchable history (pick + resume)"),
     ("/resume [ID]", "resume a run by id"),
     ("/title [TITLE]", "show this conversation's title, or rename it"),
     ("/project [new|set|clear|list|move]", "named project buckets for sessions"),
@@ -5945,7 +5944,12 @@ pub fn run_tui_session_with(
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     let mut terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
 
     let mut state = TuiState::new(pantheon_runtime::new_run_id(), header_model, tokens_max);
@@ -6025,7 +6029,12 @@ pub fn run_tui_session_with(
     // Remove any painted thumbnails/preview before leaving the alternate
     // screen; some terminals persist Kitty images otherwise.
     let _ = state.img.clear_painted();
-    execute!(stdout, LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        stdout,
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        DisableBracketedPaste
+    )?;
     result
 }
 
@@ -7963,7 +7972,27 @@ fn tui_loop(
         terminal.draw(|f| render(state, f))?;
 
         if event::poll(Duration::from_millis(100))? {
-            if let CtEvent::Key(key) = event::read()? {
+            let event = event::read()?;
+            // Bracketed paste (drag-drop, clipboard): insert the text
+            // literally into the composer. Pasted text is never treated as
+            // keystrokes, so a leading `/` from a dropped absolute path
+            // can't open the command palette.
+            if let CtEvent::Paste(text) = event {
+                if !state.is_inputting {
+                    state.is_inputting = true;
+                }
+                if state.vim.enabled {
+                    for c in text.chars() {
+                        vim::insert_char(&mut state.input, &mut state.vim, c);
+                    }
+                } else {
+                    state.input.push_str(&text);
+                }
+                state.tick();
+                terminal.draw(|f| render(state, f))?;
+                continue;
+            }
+            if let CtEvent::Key(key) = event {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
@@ -9428,6 +9457,21 @@ fn apply_reasoning_level(
             level.as_str()
         )),
     }
+    // Verify against the model catalog: the wire sends `reasoning_effort`
+    // whenever the level isn't off, so flag models that don't advertise
+    // reasoning support before the provider silently ignores it (or 400s).
+    // Unknown models (custom endpoints) can't be verified - they stay
+    // silent.
+    if !matches!(level, pantheon_api::model::ReasoningLevel::Off) {
+        let (provider, model_id) = session.default_model();
+        if let Some(meta) = pantheon_providers::catalog::model(&provider, &model_id) {
+            if !meta.reasoning {
+                state.add_status(format!(
+                    "note: {provider}/{model_id} doesn't advertise reasoning support - the provider may ignore this level"
+                ));
+            }
+        }
+    }
 }
 
 /// Copy the last assistant message - or its nth fenced code block - to
@@ -10608,10 +10652,9 @@ fn handle_slash_inner(
         });
         return;
     }
-    if cmd == "/sessions" || cmd == "/history" {
+    if cmd == "/sessions" {
         // Interactive searchable picker: Enter reopens the picked run as
-        // a tab (parked sessions included). Shared by /sessions (the
-        // reopen-UI) and /history (the resume-UI); both route through
+        // a tab (parked sessions included).
         // switch_to_run, which now maintains the explicit open-tab list.
         // The permanent home session is auto-created on first access and
         // pinned first, ahead of every ordinary session.

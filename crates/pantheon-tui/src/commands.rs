@@ -203,11 +203,6 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "agent",
         },
         CommandMeta {
-            name: "history",
-            desc: "searchable run history",
-            category: "session",
-        },
-        CommandMeta {
             name: "title",
             desc: "show or rename this conversation",
             category: "session",
