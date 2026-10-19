@@ -307,7 +307,7 @@ impl StdioBackend {
 
     /// One request/response exchange. Never panics; timeout kills the child.
     fn call(&self, req: &serde_json::Value) -> Result<serde_json::Value, PantheonError> {
-        use std::io::{BufRead, BufReader, Write};
+        use std::io::{BufRead, BufReader, Read, Write};
         use std::process::{Command, Stdio};
         let mut child = Command::new(&self.command)
             .args(&self.args)
@@ -341,11 +341,10 @@ impl StdioBackend {
         })?;
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            // `Take` caps the reads at the oversize limit + 1 so an
+            // `take` caps the reads at the oversize limit + 1 so an
             // oversized (or newline-less) response is detected as
             // `MEM_PLUGIN_OVERSIZE` instead of buffering without bound.
-            let mut reader =
-                std::io::Read::take(BufReader::new(stdout), crate::MAX_RESPONSE_BYTES as u64 + 1);
+            let mut reader = BufReader::new(stdout).take(crate::MAX_RESPONSE_BYTES as u64 + 1);
             let mut line = String::new();
             let res = reader.read_line(&mut line).map(|n| (n, line));
             let _ = tx.send(res);
@@ -371,7 +370,7 @@ impl StdioBackend {
                 ));
             }
         };
-        if n as usize > crate::MAX_RESPONSE_BYTES {
+        if n > crate::MAX_RESPONSE_BYTES {
             let _ = child.kill();
             let _ = child.wait();
             return Err(perr(

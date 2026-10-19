@@ -101,11 +101,6 @@ pub struct BackendInfo {
     pub role: &'static str,
     /// What the user must supply to use it.
     pub needs: &'static str,
-    /// Whether this backend can serve interactive browser commands.
-    /// Extraction-only backends stay runtime-supported but out of the
-    /// setup picker: offering them as *the* browser backend configures
-    /// an agent that cannot click, fill, or navigate.
-    pub interactive: bool,
 }
 
 /// Every backend with its role, in picker order.
@@ -116,42 +111,36 @@ pub fn all_backends() -> Vec<BackendInfo> {
             name: "GSD Browser",
             role: "Default interactive backend: versioned refs, semantic act (act --intent), vault, stealth.",
             needs: "gsd-browser on PATH (or [browser] binary) plus Chrome/Chromium on the host.",
-            interactive: true,
         },
         BackendInfo {
             kind: BackendKind::ChromiumOxide,
             name: "Native CDP (chromiumoxide)",
             role: "Local raw-CDP fallback: exactly-pinned chromiumoxide 0.9.1, no CLI or Node sidecar.",
             needs: "Chrome/Chromium on the host. Pantheon builds the ref model itself on the AX tree.",
-            interactive: true,
         },
         BackendInfo {
             kind: BackendKind::Steel,
             name: "Steel",
             role: "Hosted or self-hosted browser sessions over REST + CDP via the official steel-rs SDK.",
             needs: "STEEL_API_KEY (cloud) or a self-hosted Steel base URL.",
-            interactive: true,
         },
         BackendInfo {
             kind: BackendKind::Browserbase,
             name: "Browserbase",
             role: "Cloud fallback: session REST API, raw CDP websocket per session.",
             needs: "BROWSERBASE_API_KEY and a Browserbase project id.",
-            interactive: true,
         },
         BackendInfo {
             kind: BackendKind::Playwright,
             name: "Playwright CLI",
             role: "Mature fallback: industry-standard engine via the official stateful agent CLI.",
             needs: "`playwright-cli` (@playwright/cli) on PATH; downloads its own browsers.",
-            interactive: true,
         },
         BackendInfo {
             kind: BackendKind::Camofox,
             name: "Camoufox",
             role: "Anti-detect fallback: patched Firefox via the official Python launcher (Juggler, no CDP), driven through a JSON-over-stdio shim.",
             needs: "`pip install \"camoufox[geoip]\"` plus `python -m camoufox fetch`; configure fingerprint in `[browser.camofox]`.",
-            interactive: true,
         },
     ]
 }

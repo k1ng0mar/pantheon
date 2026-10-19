@@ -46,10 +46,7 @@ impl SearchProvider for KeenableFreeProvider {
     }
 
     fn search(&self, query: &str, opts: &SearchOptions) -> Result<Vec<SearchResult>, SearchError> {
-        let url = format!(
-            "{}/v1/search/public",
-            self.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/v1/search/public", self.base_url.trim_end_matches('/'));
         let body = serde_json::json!({
             "query": query,
             "max_results": opts.max_results,

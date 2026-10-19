@@ -45,7 +45,7 @@ pub use exa::{ExaProvider, EXA_API_KEY};
 pub use exa_free::ExaFreeProvider;
 pub use firecrawl::{FirecrawlProvider, FIRECRAWL_API_KEY};
 pub use firecrawl_free::FirecrawlFreeProvider;
-pub use keenable::{KeenableFreeProvider, APP_TITLE as KEENABLE_APP_TITLE};
+pub use keenable::KeenableFreeProvider;
 pub use marginalia::MarginaliaProvider;
 pub use ollama::{OllamaProvider, OLLAMA_API_KEY};
 pub use parallel::ParallelFreeProvider;

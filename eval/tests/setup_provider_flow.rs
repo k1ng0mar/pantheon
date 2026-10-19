@@ -28,14 +28,11 @@ fn websearch_rows_come_from_the_registry_recommended_first() {
 }
 
 #[test]
-fn browser_rows_cover_every_interactive_backend() {
+fn browser_rows_cover_every_backend() {
     let rows = sp::browser_providers();
-    // Interactive registry backends, plus the Steel self-hosted split
-    // row; extraction-only backends stay runtime-supported but out of
-    // the picker.
+    // Every registry backend, plus the Steel self-hosted split row.
     let mut expected: Vec<&str> = pantheon_web::browser::all_backends()
         .into_iter()
-        .filter(|b| b.interactive)
         .map(|b| b.kind.id())
         .collect();
     expected.push("steel_selfhosted");
@@ -44,7 +41,7 @@ fn browser_rows_cover_every_interactive_backend() {
     expected.sort_unstable();
     assert_eq!(
         row_ids, expected,
-        "wizard rows must match the interactive browser backends"
+        "wizard rows must match the browser backends"
     );
     assert!(
         !rows.iter().any(|r| r.id == "lightpanda"),
@@ -140,7 +137,7 @@ fn tts_rows_cover_every_registry_backend() {
 
 #[test]
 fn memory_rows_exclude_the_fake_backend() {
-    let rows = sp::memory_providers(std::path::Path::new("/nonexistent-pantheon-memory-plugins"));
+    let rows = sp::memory_providers(std::path::Path::new("/nonexistent"));
     assert!(!rows.iter().any(|r| r.id == "fake"), "test double offered");
     let native = rows.iter().find(|r| r.id == "native").expect("native row");
     assert!(native.recommended, "native is the runtime default");
@@ -185,7 +182,7 @@ key = "sekrit"
 
 #[test]
 fn memory_key_env_follows_each_rows_own_auth_contract() {
-    let rows = sp::memory_providers(std::path::Path::new("/nonexistent-pantheon-memory-plugins"));
+    let rows = sp::memory_providers(std::path::Path::new("/nonexistent"));
     // Rows whose runtime contract documents a standard key var get that
     // var collected; genuinely keyless rows never see a key prompt.
     let keyed = [
@@ -430,7 +427,12 @@ fn skill_deps_screen_follows_the_skills_tick() {
 fn keyless_fallback_rows_need_no_follow_ups_and_construct_keyless() {
     use pantheon_tui::setup_providers::ProviderKind;
     let rows = sp::websearch_providers();
-    for id in ["exa_free", "parallel_free", "firecrawl_free", "keenable_free"] {
+    for id in [
+        "exa_free",
+        "parallel_free",
+        "firecrawl_free",
+        "keenable_free",
+    ] {
         let row = rows.iter().find(|r| r.id == id).expect(id);
         assert!(
             matches!(row.kind, ProviderKind::Keyless),

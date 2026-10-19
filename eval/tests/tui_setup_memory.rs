@@ -33,7 +33,9 @@ fn native_memory_needs_no_followups_and_leaves_working_state() {
     let dir = tempdir().unwrap();
     // The native backend id, resolved from the registry - never
     // hardcoded, so a registry rename updates the expectation here.
-    let native_id = recommended_row(&setup_providers::memory_providers(std::path::Path::new("/nonexistent-pantheon-memory-plugins"))).id;
+    // /nonexistent: no user-plugins dir, only built-in rows.
+    let rows = setup_providers::memory_providers(std::path::Path::new("/nonexistent"));
+    let native_id = recommended_row(&rows).id;
 
     // The zero-friction answer: the id alone, no key env, no URL, no
     // options - the shape a Screen 8 "Pantheon Native" pick produces.

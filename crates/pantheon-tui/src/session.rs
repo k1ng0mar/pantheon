@@ -4171,11 +4171,7 @@ fn render_footer(f: &mut Frame, area: Rect, state: &TuiState) {
                 pct
             )
         } else {
-            format!(
-                "{} ({})",
-                statusbar::fmt_count(live as u64),
-                pct
-            )
+            format!("{} ({})", statusbar::fmt_count(live as u64), pct)
         }
     } else {
         format!(
@@ -5160,11 +5156,17 @@ fn render_block(
             // intent above it stays visually calm.
             match decision {
                 Some(true) => lines.push(Line::from(vec![
-                    Span::styled("✓ Granted", Style::default().fg(th.success).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "✓ Granted",
+                        Style::default().fg(th.success).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(format!(" · {tool}"), Style::default().fg(th.dim)),
                 ])),
                 Some(false) => lines.push(Line::from(vec![
-                    Span::styled("✕ Denied", Style::default().fg(th.failure).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "✕ Denied",
+                        Style::default().fg(th.failure).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(format!(" · {tool}"), Style::default().fg(th.dim)),
                 ])),
                 None => {
@@ -5177,7 +5179,10 @@ fn render_block(
                     };
                     lines.push(Line::from(vec![
                         Span::styled("╭─", Style::default().fg(th.warning)),
-                        Span::styled(title, Style::default().fg(th.warning).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            title,
+                            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(format!("{border_line}╮"), Style::default().fg(th.warning)),
                     ]));
                     for sline in sentence.lines().take(4) {
@@ -5187,7 +5192,10 @@ fn render_block(
                         ]));
                     }
                     if !target.is_empty() {
-                        let prefix = if tool.contains("command") || tool.contains("exec") || tool.contains("shell") {
+                        let prefix = if tool.contains("command")
+                            || tool.contains("exec")
+                            || tool.contains("shell")
+                        {
                             "$ "
                         } else {
                             "→ "
@@ -5195,21 +5203,31 @@ fn render_block(
                         lines.push(Line::from(vec![
                             Span::styled("│  ", Style::default().fg(th.warning)),
                             Span::styled(prefix, Style::default().fg(th.dim)),
-                            Span::styled(target.clone(), Style::default().fg(th.primary).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                target.clone(),
+                                Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+                            ),
                         ]));
                     }
                     lines.push(Line::from(vec![
                         Span::styled("│  ", Style::default().fg(th.warning)),
-                        Span::styled("[a]", Style::default().fg(th.warning).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            "[a]",
+                            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(" Approve   ", Style::default().fg(th.body)),
-                        Span::styled("[d]", Style::default().fg(th.warning).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            "[d]",
+                            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(" Deny   ", Style::default().fg(th.body)),
                         Span::styled("[esc]", Style::default().fg(th.dim)),
                         Span::styled(" cancel", Style::default().fg(th.dim)),
                     ]));
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("╰{}╯", "─".repeat(card_w.saturating_sub(2))), Style::default().fg(th.warning)),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("╰{}╯", "─".repeat(card_w.saturating_sub(2))),
+                        Style::default().fg(th.warning),
+                    )]));
                 }
             }
         }

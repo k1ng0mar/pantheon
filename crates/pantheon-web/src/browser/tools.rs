@@ -629,19 +629,19 @@ pub fn register_browser_tools(
     |_, _| Ok(vec!["reload".into()]),
     );
     register_tool(
-    reg,
-    &ctx,
-    "browser_snapshot",
-    &format!(
-        "Capture the page's interactive elements as a list of refs like @v1:e1. \
+        reg,
+        &ctx,
+        "browser_snapshot",
+        &format!(
+            "Capture the page's interactive elements as a list of refs like @v1:e1. \
          Always snapshot before clicking/typing: refs are INVALIDATED on any page change \
          (stale refs error - take a fresh snapshot, never retry the old ref). {SEARCH_VS_BROWSE}"
-    ),
-    serde_json::json!({}),
-    &[],
-    true,
-    None,
-    |_, _| Ok(vec!["snapshot".into()]),
+        ),
+        serde_json::json!({}),
+        &[],
+        true,
+        None,
+        |_, _| Ok(vec!["snapshot".into()]),
     );
     register_tool(
         reg,

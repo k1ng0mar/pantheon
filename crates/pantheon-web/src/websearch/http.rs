@@ -159,17 +159,22 @@ pub fn mcp_text_payload(body: &str) -> Result<String, super::error::SearchError>
                     .collect()
             })
             .unwrap_or_default();
-        if result.and_then(|r| r.get("isError")).and_then(|v| v.as_bool()) == Some(true) {
+        if result
+            .and_then(|r| r.get("isError"))
+            .and_then(|v| v.as_bool())
+            == Some(true)
+        {
             let msg = texts.join(" ");
-            return Err(SearchError::RequestFailed(
-                if msg.trim().is_empty() {
-                    "MCP tool call failed".to_string()
-                } else {
-                    msg
-                },
-            ));
+            return Err(SearchError::RequestFailed(if msg.trim().is_empty() {
+                "MCP tool call failed".to_string()
+            } else {
+                msg
+            }));
         }
-        Ok(texts.into_iter().find(|t| !t.is_empty()).map(str::to_string))
+        Ok(texts
+            .into_iter()
+            .find(|t| !t.is_empty())
+            .map(str::to_string))
     }
 
     let stripped = body.trim();

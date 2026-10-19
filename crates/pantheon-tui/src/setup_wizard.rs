@@ -162,11 +162,7 @@ fn ensure_answer_key(data_dir: &Path, answer: &setup_providers::ProviderAnswer, 
 /// a `Chosen` answer with a key gets its value prompt immediately, so
 /// the flow is pick → paste → next group. Skipped/cancelled picks pass
 /// through untouched.
-fn collect_pick_key(
-    data_dir: &Path,
-    pick: &setup_providers::ProviderPick,
-    label: &str,
-) {
+fn collect_pick_key(data_dir: &Path, pick: &setup_providers::ProviderPick, label: &str) {
     if let setup_providers::ProviderPick::Chosen(a) = pick {
         ensure_answer_key(data_dir, a, label);
     }
@@ -218,9 +214,7 @@ fn pick_model_key_env(
             // OPENROUTER_API_KEY) and save the value into `<data_dir>/.env`
             // below instead of making the user export anything. The name is
             // still configurable through the custom-endpoint path.
-            let name = meta
-                .map(|m| m.key_env.clone())
-                .unwrap_or_default();
+            let name = meta.map(|m| m.key_env.clone()).unwrap_or_default();
             if name.trim().is_empty() {
                 return None;
             }
@@ -516,7 +510,6 @@ fn run_full(
         pick_gateways(data_dir);
     }
 
-
     // The service-install permission screen: the last screen in Full
     // Setup, after every other screen. Declining is clean and never
     // re-asked; confirming installs via the shared `pantheon init`
@@ -758,7 +751,10 @@ fn pick_provider(step: &str) -> Option<(String, Option<CustomProviderSpec>)> {
             // `pantheon model --list`, removable) instead of a silent
             // fork the user cannot see.
             let meta = pantheon_providers::catalog::provider(id);
-            let base = meta.as_ref().map(|m| m.base_url.clone()).unwrap_or_default();
+            let base = meta
+                .as_ref()
+                .map(|m| m.base_url.clone())
+                .unwrap_or_default();
             let typed = crate::prompt::pick_text(
                 "Provider",
                 &format!("Base URL for {id} (Enter keeps {base})"),

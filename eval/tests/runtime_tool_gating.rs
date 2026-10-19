@@ -130,9 +130,8 @@ fn tasks_group_gates_registration_and_ships_guidance_together() {
             s.set_tool_enablement(none);
         }
         let mut reg = ToolRegistry::new();
-        let poison = std::sync::Arc::new(
-            <pantheon_runtime::session::LedgerPoison as Default>::default(),
-        );
+        let poison =
+            std::sync::Arc::new(<pantheon_runtime::session::LedgerPoison as Default>::default());
         let healthy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let _cleanup = s.register_turn_tools(&mut reg, "tasks-gate", &poison, &healthy);
         let dir = s.supervisor.data_dir().to_path_buf();
@@ -142,20 +141,24 @@ fn tasks_group_gates_registration_and_ships_guidance_together() {
     // Default: group on, todo present, guidance in the system prompt.
     let (reg, s, dir) = turn_registry("tasks-default", false);
     assert!(
-        names(&reg).iter().any(|t| t == pantheon_api::todo::TODO_TOOL_NAME),
+        names(&reg)
+            .iter()
+            .any(|t| t == pantheon_api::todo::TODO_TOOL_NAME),
         "todo tool missing with Tasks on"
     );
-    assert!(s.system_prompt_contains_todos(), "guidance missing with Tasks on");
+    assert!(s.todo_guidance_active(), "guidance missing with Tasks on");
     let _ = std::fs::remove_dir_all(&dir);
 
     // Off: no todo tool, no guidance.
     let (reg, s, dir) = turn_registry("tasks-off", true);
     assert!(
-        !names(&reg).iter().any(|t| t == pantheon_api::todo::TODO_TOOL_NAME),
+        !names(&reg)
+            .iter()
+            .any(|t| t == pantheon_api::todo::TODO_TOOL_NAME),
         "todo registered while Tasks is off"
     );
     assert!(
-        !s.system_prompt_contains_todos(),
+        !s.todo_guidance_active(),
         "guidance present while Tasks is off"
     );
     let _ = std::fs::remove_dir_all(&dir);

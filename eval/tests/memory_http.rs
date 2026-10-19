@@ -3,7 +3,10 @@
 use pantheon_memory::http_backend::HttpBackend;
 use pantheon_memory::{LayerKind, MemoryBackend};
 
-fn stub_server(status: u16, body: impl ToString + Send + 'static) -> (String, std::thread::JoinHandle<()>) {
+fn stub_server(
+    status: u16,
+    body: impl ToString + Send + 'static,
+) -> (String, std::thread::JoinHandle<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let body = body.to_string();
@@ -25,11 +28,6 @@ fn stub_server(status: u16, body: impl ToString + Send + 'static) -> (String, st
             }
         }
         let reason = if status == 200 { "OK" } else { "Error" };
-        let resp = format!(
-            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            ""
-        );
         let prelude = format!(
             "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
@@ -143,10 +141,7 @@ fn stub_post_capture(status: u16, body: &'static str) -> (String, std::thread::J
                 Ok(n) => received.extend_from_slice(&buf[..n]),
                 Err(_) => break received.len(),
             }
-            if let Some(pos) = received
-                .windows(4)
-                .position(|w| w == b"\r\n\r\n")
-            {
+            if let Some(pos) = received.windows(4).position(|w| w == b"\r\n\r\n") {
                 let head = String::from_utf8_lossy(&received[..pos]).to_string();
                 let len: usize = head
                     .lines()
