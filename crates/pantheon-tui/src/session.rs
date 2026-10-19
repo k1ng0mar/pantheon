@@ -56,11 +56,12 @@ pub mod vim;
 /// `/<skill>`) are documentation-only and are skipped by the palette.
 const COMMANDS: &[(&str, &str)] = &[
     ("/help", "this list"),
-    ("/models [FILTER]", "providers first, then models - Enter switches"),
-    ("/model [P M]", "show the current model, or switch to one"),
+    ("/model [FILTER|P M]", "browse keyed providers, or switch to P/M directly"),
     ("/reasoning [LVL]", "reasoning effort: off|minimal|low|medium|high|xhigh|max"),
     ("/remember KEY TEXT", "remember this (agent memory, user trust)"),
     ("/goal [TEXT]", "set/show the session goal (iteration-limited)"),
+    ("/goal pause", "pause the goal loop"),
+    ("/goal continue", "resume a paused goal"),
     ("/goal clear", "drop the session goal"),
     ("/goal iterations N", "retune the goal's iteration budget"),
     ("/tokens [N|off]", "show/set the per-response output token cap (default: uncapped)"),
@@ -218,7 +219,16 @@ impl PaletteState {
 /// a fixed-height popup.
 const PALETTE_VISIBLE_ROWS: usize = 10;
 
-/// Data rows visible in the /models pickers at the overlay's maximum
+/// Rows the /reasoning picker shows without scrolling: all seven levels
+/// fit the fixed-height popup; the constant keeps `reasoning_move`
+/// honest on short terminals.
+const REASONING_VISIBLE_ROWS: usize = 7;
+
+/// Data rows visible in the /history overlay at its maximum height:
+/// the card clamps to 24 rows (2 border + 3 header + 2 footer).
+const HISTORY_VISIBLE_ROWS: usize = 17;
+
+/// Data rows visible in the /model pickers at the overlay's maximum
 /// height: the card clamps to 22 rows (2 border + 3 header + 2 footer).
 const PICKER_VISIBLE_ROWS: usize = 15;
 
@@ -226,7 +236,7 @@ const PICKER_VISIBLE_ROWS: usize = 15;
 /// rows. The window only moves when the selection would leave it: past
 /// the bottom edge pushes it down, above the top edge pulls it up, and a
 /// shorter list resets it to the top.
-fn clamp_scroll(sel: usize, scroll: usize, len: usize, visible: usize) -> usize {
+pub(crate) fn clamp_scroll(sel: usize, scroll: usize, len: usize, visible: usize) -> usize {
     if visible == 0 || len <= visible {
         return 0;
     }
@@ -398,7 +408,7 @@ pub struct TranscriptBlock {
     pub kind: BlockKind,
 }
 
-/// One selectable row in the /models browser: a provider/model pair plus
+/// One selectable row in the /model browser: a provider/model pair plus
 /// the context window the catalog declares (`None` = unknown, shown as ?).
 /// A row with an empty `model_id` is a provider with no curated models;
 /// Enter on it explains how to switch with an explicit id instead.
@@ -410,7 +420,7 @@ pub struct ModelRow {
     pub ctx: Option<u32>,
 }
 
-/// One provider in the `/models` provider picker: the label shown, the
+/// One provider in the `/model` provider picker: the label shown, the
 /// id used to drill into its models, and how many curated models it
 /// carries (0 = provider with no catalog entries yet).
 #[derive(Debug, Clone)]
@@ -436,13 +446,17 @@ pub struct RewindOffer {
 }
 
 /// A `/goal` objective with its iteration budget. Each agent turn
-/// started while a goal is active consumes one iteration; at the cap
-/// the TUI refuses new turns until the user raises or clears the goal.
+/// started while a goal is active consumes one iteration; at the cap -
+/// or while paused - the TUI refuses new turns until the user raises
+/// (`/goal iterations N`), resumes (`/goal continue`), or clears
+/// (`/goal clear`) the goal.
 #[derive(Debug, Clone, Default)]
 pub struct ActiveGoal {
     pub text: String,
     pub iterations_used: u32,
     pub max_iterations: u32,
+    /// `/goal pause` sets this: the loop holds until `/goal continue`.
+    pub paused: bool,
 }
 
 /// An `ask_user` question parked on a run: what the clarify card shows
@@ -593,6 +607,9 @@ pub struct TuiState {
     pub history_input: String,
     /// Selected index into the filtered history list.
     pub history_sel: usize,
+    /// First visible row of the history overlay: the list scrolls so the
+    /// selection never leaves the visible window.
+    pub history_scroll: usize,
     /// The project of the session that opened the history picker
     /// (`None` = unassigned). The picker defaults to showing only this
     /// project; ctrl+a toggles the all-projects view.
@@ -603,7 +620,7 @@ pub struct TuiState {
     /// Inline rename in the history picker: Some((run_id, buffer))
     /// while ctrl+r is editing a row's title. Enter commits, Esc cancels.
     pub history_rename: Option<(String, String)>,
-    /// Open model-browser overlay: Some(rows) while /models is open.
+    /// Open model-browser overlay: Some(rows) while /model is open.
     pub models: Option<Vec<ModelRow>>,
     /// Live filter typed into the models overlay.
     pub models_input: String,
@@ -612,7 +629,7 @@ pub struct TuiState {
     /// First visible row of the models overlay: the list scrolls so the
     /// selection never leaves the visible window.
     pub models_scroll: usize,
-    /// Open provider picker: Some(rows) while the /models provider list
+    /// Open provider picker: Some(rows) while the /model provider list
     /// is open. Picking a provider drills into `models` scoped to it;
     /// Esc in models returns here, Esc here closes both.
     pub providers: Option<Vec<ProviderRow>>,
@@ -630,6 +647,15 @@ pub struct TuiState {
     /// Up/Down to move, Enter to run, Esc to dismiss. While open it owns
     /// the keyboard like the mention picker.
     pub palette: Option<PaletteState>,
+    /// Open reasoning-level picker: bare `/reasoning` lists the levels,
+    /// Up/Down to move, Enter to set, Esc to close.
+    pub reasoning_picker: bool,
+    /// Selected index into `REASONING_LEVELS` while the picker is open.
+    pub reasoning_sel: usize,
+    /// First visible row of the reasoning picker.
+    pub reasoning_scroll: usize,
+    /// Spelling of the level active when the picker opened, marked `●`.
+    pub reasoning_cur: String,
     /// Pre-tool file snapshots keyed by tool call id, for inline diffs.
     /// Snapshots are taken at ToolStarted and consumed at ToolCompleted.
     pub pending_snaps: std::collections::HashMap<String, Vec<crate::diffview::FileSnapshot>>,
@@ -845,6 +871,7 @@ impl Default for TuiState {
             history: None,
             history_input: String::new(),
             history_sel: 0,
+            history_scroll: 0,
             history_own_project: None,
             history_all_projects: false,
             history_rename: None,
@@ -859,6 +886,10 @@ impl Default for TuiState {
             providers_scroll: 0,
             mention: None,
             palette: None,
+            reasoning_picker: false,
+            reasoning_sel: 0,
+            reasoning_scroll: 0,
+            reasoning_cur: String::new(),
             pending_snaps: std::collections::HashMap::new(),
             title: None,
             queued_message: None,
@@ -1012,6 +1043,7 @@ impl TuiState {
             history: None,
             history_input: String::new(),
             history_sel: 0,
+            history_scroll: 0,
             history_own_project: None,
             history_all_projects: false,
             history_rename: None,
@@ -1026,6 +1058,10 @@ impl TuiState {
             providers_scroll: 0,
             mention: None,
             palette: None,
+            reasoning_picker: false,
+            reasoning_sel: 0,
+            reasoning_scroll: 0,
+            reasoning_cur: String::new(),
             pending_snaps: std::collections::HashMap::new(),
             title: None,
             queued_message: None,
@@ -1115,14 +1151,36 @@ impl TuiState {
     }
 
     /// Move the overlay selection by n, clamped to the filtered list.
+    /// The scroll window follows the selection (see [`clamp_scroll`]).
     pub fn history_move(&mut self, n: isize) {
         let len = self.filtered_history().len();
         if len == 0 {
             self.history_sel = 0;
+            self.history_scroll = 0;
             return;
         }
         let sel = self.history_sel as isize + n;
         self.history_sel = sel.clamp(0, len as isize - 1) as usize;
+        self.history_scroll = clamp_scroll(
+            self.history_sel,
+            self.history_scroll,
+            len,
+            HISTORY_VISIBLE_ROWS,
+        );
+    }
+
+    /// Move the reasoning-picker selection by n, clamped to the level list.
+    /// The scroll window follows the selection (see [`clamp_scroll`]).
+    pub fn reasoning_move(&mut self, n: isize) {
+        let len = REASONING_LEVELS.len();
+        let sel = self.reasoning_sel as isize + n;
+        self.reasoning_sel = sel.clamp(0, len as isize - 1) as usize;
+        self.reasoning_scroll = clamp_scroll(
+            self.reasoning_sel,
+            self.reasoning_scroll,
+            len,
+            REASONING_VISIBLE_ROWS,
+        );
     }
 
     /// Close the overlay and reset its state.
@@ -1130,6 +1188,7 @@ impl TuiState {
         self.history = None;
         self.history_input.clear();
         self.history_sel = 0;
+        self.history_scroll = 0;
         self.history_own_project = None;
         self.history_all_projects = false;
         self.history_rename = None;
@@ -2329,7 +2388,9 @@ impl TuiState {
     /// Extracted so the rule is testable against the shipped code.
     pub fn goal_refusal(&self) -> Option<String> {
         let g = self.goal.as_ref()?;
-        if g.iterations_used >= g.max_iterations {
+        if g.paused {
+            Some("goal paused - /goal continue to resume, /goal clear to drop it.".to_string())
+        } else if g.iterations_used >= g.max_iterations {
             Some(format!(
                 "goal iteration budget exhausted ({}/{}). /goal iterations N to raise it, /goal clear to drop the goal.",
                 g.iterations_used, g.max_iterations
@@ -2340,9 +2401,13 @@ impl TuiState {
     }
 
     /// Consume one goal iteration. Call when a turn starts under a goal.
+    /// Paused goals refuse turns before this runs; the guard here is
+    /// belt-and-braces.
     pub fn consume_goal_iteration(&mut self) {
         if let Some(g) = self.goal.as_mut() {
-            g.iterations_used = g.iterations_used.saturating_add(1);
+            if !g.paused {
+                g.iterations_used = g.iterations_used.saturating_add(1);
+            }
         }
     }
 
@@ -3020,6 +3085,9 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
     if state.palette.is_some() {
         render_palette(f, f.area(), state);
     }
+    if state.reasoning_picker {
+        render_reasoning_picker(f, f.area(), state);
+    }
 }
 
 /// The `/` command palette: a centered popup listing the filtered
@@ -3142,6 +3210,76 @@ fn render_palette(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_widget(Paragraph::new(list).scroll((scroll as u16, 0)), list_area);
 }
 
+/// Reasoning-level picker popup: bare `/reasoning` lists the seven
+/// levels with the current one marked `\u{25cf}`. Up/Down moves, Enter sets
+/// the level (saved to `[model]`), Esc closes. `/reasoning budget`
+/// stays a typed subcommand - it has no fixed list to browse.
+fn render_reasoning_picker(f: &mut Frame, area: Rect, state: &TuiState) {
+    let th = &state.theme;
+    let w: u16 = 34;
+    let h = (REASONING_LEVELS.len() as u16 + 4).min(area.height.saturating_sub(2).max(6));
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 3;
+    let popup = Rect::new(x, y, w.min(area.width.max(1)), h);
+    f.render_widget(Clear, popup);
+
+    // Borders plus the 2-line footer; the level list scrolls in what
+    // remains so the selection never leaves the visible window.
+    let visible = (h as usize).saturating_sub(2 + 2).max(1);
+    let scroll = clamp_scroll(
+        state.reasoning_sel,
+        state.reasoning_scroll,
+        REASONING_LEVELS.len(),
+        visible,
+    );
+    let inner = w.saturating_sub(2) as usize;
+
+    let mut list: Vec<Line> = Vec::with_capacity(REASONING_LEVELS.len());
+    for (i, level) in REASONING_LEVELS.iter().enumerate() {
+        let selected = i == state.reasoning_sel;
+        let marker = if state.reasoning_cur.as_str() == *level {
+            "\u{25cf} "
+        } else {
+            "  "
+        };
+        let text = format!("{marker}{level}");
+        let padded = format!("{text:<inner$}");
+        let style = if selected {
+            Style::default()
+                .fg(th.body)
+                .bg(th.tab_active_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(th.body)
+        };
+        list.push(Line::from(Span::styled(padded, style)));
+    }
+    let footer = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Enter sets   Esc closes",
+            Style::default().fg(th.dim),
+        )),
+    ];
+    let block = Block::bordered()
+        .border_style(Style::default().fg(th.primary))
+        .title(Span::styled(
+            " reasoning ",
+            Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+        ));
+    f.render_widget(block, popup);
+    let inner_area = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let [list_area, footer_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(inner_area);
+    f.render_widget(Paragraph::new(list).scroll((scroll as u16, 0)), list_area);
+    f.render_widget(Paragraph::new(footer), footer_area);
+}
+
 /// Subtle column divider: a 1-cell column with a slightly lighter
 /// background tint than the surrounding #121212/#1E1E1E. No glyphs
 /// the box-drawing ban still stands.
@@ -3218,20 +3356,26 @@ fn render_mention_picker(f: &mut Frame, area: Rect, state: &TuiState) {
         width: w,
         height: h,
     };
-    let mut lines = vec![Line::from(Span::styled(
+    // The list scrolls under the fixed-height popup so the selection
+    // never leaves the visible window (see `clamp_scroll`).
+    let visible = (h as usize).saturating_sub(2 + 1).max(1);
+    let scroll = clamp_scroll(picker.sel, picker.scroll, picker.files.len(), visible);
+
+    let header = vec![Line::from(Span::styled(
         format!(
             "  @{} - type to filter, Enter to insert, Esc to cancel",
             picker.input
         ),
         Style::default().fg(th.primary),
     ))];
+    let mut list: Vec<Line> = Vec::with_capacity(picker.files.len().max(1));
     if picker.files.is_empty() {
-        lines.push(Line::from(Span::styled(
+        list.push(Line::from(Span::styled(
             "  (no matching files)",
             Style::default().fg(th.failure),
         )));
     }
-    for (i, path) in picker.files.iter().enumerate().take(10) {
+    for (i, path) in picker.files.iter().enumerate() {
         // The selected row wears the theme's tab highlight wash - an
         // explicit background, like every other picker. Reverse video
         // renders terminal-dependent and is never used for selections.
@@ -3245,15 +3389,24 @@ fn render_mention_picker(f: &mut Frame, area: Rect, state: &TuiState) {
         };
         let shown: String = path.chars().take((w as usize).saturating_sub(6)).collect();
         let padded = format!("  {shown:<pad$}", pad = (w as usize).saturating_sub(4));
-        lines.push(Line::from(Span::styled(padded, style)));
+        list.push(Line::from(Span::styled(padded, style)));
     }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(th.primary))
         .title(" attach file ");
-    let para = Paragraph::new(lines).block(block);
     f.render_widget(Clear, area);
-    f.render_widget(para, area);
+    f.render_widget(block, area);
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: w.saturating_sub(2),
+        height: h.saturating_sub(2),
+    };
+    let [header_area, list_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner_area);
+    f.render_widget(Paragraph::new(header), header_area);
+    f.render_widget(Paragraph::new(list).scroll((scroll as u16, 0)), list_area);
 }
 
 /// Searchable scrollable history overlay: /history. Type-to-filter,
@@ -3280,7 +3433,7 @@ fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
 
     let runs = state.filtered_history();
     let renaming = state.history_rename.clone();
-    let mut lines = vec![
+    let header = vec![
         Line::from(Span::styled("  Search", Style::default().fg(th.dim))),
         Line::from(vec![
             Span::styled("  ", Style::default()),
@@ -3289,8 +3442,13 @@ fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
         ]),
         Line::from(""),
     ];
+    // List lines plus, for each data row, its line index: date group
+    // headers are purely visual, so selection (row units) and scrolling
+    // (line units) need the map between them.
+    let mut list: Vec<Line> = Vec::with_capacity(runs.len().max(1));
+    let mut row_lines: Vec<usize> = Vec::with_capacity(runs.len());
     if runs.is_empty() {
-        lines.push(Line::from(Span::styled(
+        list.push(Line::from(Span::styled(
             "  (no matches)",
             Style::default().fg(th.failure),
         )));
@@ -3301,11 +3459,12 @@ fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
         let day = fmt_day(*ts);
         if day != last_day {
             last_day = day.clone();
-            lines.push(Line::from(Span::styled(
+            list.push(Line::from(Span::styled(
                 format!("  {day}"),
                 Style::default().fg(th.heading).add_modifier(Modifier::BOLD),
             )));
         }
+        row_lines.push(list.len());
         let glyph = match status.as_str() {
             "completed" => "\u{2713}",
             "failed" => "\u{d7}",
@@ -3356,16 +3515,32 @@ fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
         } else {
             Style::default().fg(th.body)
         };
-        lines.push(Line::from(Span::styled(padded, style)));
+        list.push(Line::from(Span::styled(padded, style)));
     }
-    lines.push(Line::from(""));
+    // The list scrolls so the selection never leaves the visible
+    // window: convert the row-unit scroll window to line units through
+    // the row map, then clamp (see `clamp_scroll`).
+    let visible = (h as usize).saturating_sub(2 + 3 + 2).max(1);
+    let scroll = if runs.is_empty() {
+        0
+    } else {
+        let sel_row = state.history_sel.min(runs.len() - 1);
+        let scroll_row = state.history_scroll.min(runs.len() - 1);
+        clamp_scroll(
+            row_lines[sel_row],
+            row_lines[scroll_row],
+            list.len(),
+            visible,
+        )
+    };
+    let mut footer = vec![Line::from("")];
     if renaming.is_some() {
-        lines.push(Line::from(Span::styled(
+        footer.push(Line::from(Span::styled(
             "  Enter saves   Esc cancels",
             Style::default().fg(th.dim),
         )));
     } else {
-        lines.push(Line::from(Span::styled(
+        footer.push(Line::from(Span::styled(
             "  delete ctrl+d    rename ctrl+r    all projects ctrl+a",
             Style::default().fg(th.dim),
         )));
@@ -3375,16 +3550,29 @@ fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
     } else {
         state.history_own_project.as_deref().unwrap_or("sessions")
     };
-    let card = Paragraph::new(lines).block(
-        Block::bordered()
-            .border_type(BorderType::Double)
-            .border_style(Style::default().fg(th.primary))
-            .title(Span::styled(
-                format!(" {scope} "),
-                Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
-            )),
-    );
+    let card = Block::bordered()
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(th.primary))
+        .title(Span::styled(
+            format!(" {scope} "),
+            Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+        ));
     f.render_widget(card, area);
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: w.saturating_sub(2),
+        height: h.saturating_sub(2),
+    };
+    let [header_area, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .areas(inner_area);
+    f.render_widget(Paragraph::new(header), header_area);
+    f.render_widget(Paragraph::new(list).scroll((scroll as u16, 0)), list_area);
+    f.render_widget(Paragraph::new(footer), footer_area);
 }
 
 /// Draw the reflection approval card: eval-gated skill/persona proposals
@@ -3436,7 +3624,7 @@ fn render_reflect_card(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_widget(card, area);
 }
 
-/// Provider picker: the first level of `/models`. Search header,
+/// Provider picker: the first level of `/model`. Search header,
 /// alphabetical provider rows, full-bleed selection wash in the theme's
 /// tab highlight color. Enter drills into the provider's models.
 fn render_providers(f: &mut Frame, area: Rect, state: &TuiState) {
@@ -3532,11 +3720,11 @@ fn render_providers(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_widget(Paragraph::new(footer), footer_area);
 }
 
-/// Searchable model browser overlay: /models. Type-to-filter across
+/// Searchable model browser overlay: /model. Type-to-filter across
 /// provider and model names, Up/Down to move, Enter to switch the live
 /// session's default model, Esc to close. Same overlay contract as
 /// /history, rendered as a centered list.
-/// Model list: the second level of `/models`, scoped to the provider
+/// Model list: the second level of `/model`, scoped to the provider
 /// picked in the provider list. Layout follows the reference: Search
 /// header, one row per model with the current model marked `●`, the ctx
 /// limit right-aligned as the badge column, a full-bleed selection wash
@@ -6034,62 +6222,175 @@ fn do_btw(
     state.bg_tasks.push(task);
 }
 
-/// `/goal [text]` - set or show the session's objective. Each agent turn
-/// started while a goal is active consumes one iteration; at the cap the
-/// TUI refuses new turns until `/goal iterations N` raises it or
-/// `/goal clear` drops it. The text is mirrored into the runtime session
-/// so the model keeps pursuing it across turns.
+/// `/goal` - the session objective, verb-driven like Hermes' /goal
+/// skill over Pantheon's iteration budget. Each agent turn started while
+/// a goal is active consumes one iteration; at the cap - or while paused -
+/// the TUI refuses new turns until `/goal iterations N` raises the cap,
+/// `/goal continue` resumes, or `/goal clear` drops the goal. The text is
+/// mirrored into the runtime session so the model keeps pursuing it
+/// across turns.
+///
+/// Verbs: `set <text>` (or bare text), `status`/`show`, `pause`,
+/// `continue` (`resume`, `unpause`), `clear` (`stop`, `done`),
+/// `iterations <n>`. A leading `--` sets verbatim text that starts with
+/// a control word (`/goal -- pause the cron`).
 fn do_goal(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
     let arg = cmd.strip_prefix("/goal").map(str::trim).unwrap_or("");
-    if arg.is_empty() {
-        match state.goal.clone() {
-            Some(g) => {
-                state.add_status(format!("goal: {}", g.text));
-                state.add_status(format!(
-                    "iterations: {}/{}",
-                    g.iterations_used, g.max_iterations
-                ));
+    // Verbatim set: the goal text itself starts with a control word.
+    if let Some(text) = arg.strip_prefix("--").map(str::trim) {
+        goal_set(state, session, text);
+        return;
+    }
+    let (verb, rest) = match arg.split_once(char::is_whitespace) {
+        Some((v, r)) => (v.to_ascii_lowercase(), r.trim()),
+        None => (arg.to_ascii_lowercase(), ""),
+    };
+    match verb.as_str() {
+        "" | "status" | "show" => goal_show(state),
+        "set" => goal_set(state, session, rest),
+        "pause" => goal_pause(state, rest),
+        "continue" | "resume" | "unpause" => goal_continue(state, rest),
+        // Destructive verbs only match bare: `/goal stop the presses`
+        // is goal text, not a clear.
+        "clear" | "stop" | "done" if rest.is_empty() => goal_clear(state, session),
+        "iterations" => goal_iterations(state, rest),
+        _ => goal_set(state, session, arg),
+    }
+}
+
+/// `/goal`, `/goal status`, `/goal show`: the objective, its budget, and
+/// whether the loop is paused.
+fn goal_show(state: &mut TuiState) {
+    match state.goal.clone() {
+        Some(g) => {
+            state.add_status(format!("goal: {}", g.text));
+            state.add_status(format!(
+                "iterations: {}/{}",
+                g.iterations_used, g.max_iterations
+            ));
+            if g.paused {
+                state.add_status("paused - /goal continue to resume".into());
             }
-            None => state.add_status("no active goal - /goal <text> to set one".into()),
         }
-        return;
+        None => state.add_status("no active goal - /goal <text> to set one".into()),
     }
-    if arg == "clear" {
-        state.goal = None;
-        session.set_goal(None);
-        state.add_status("goal cleared".into());
-        return;
-    }
-    // `/goal iterations <n>` adjusts the cap; anything else - even text
-    // starting with "iterations" - is goal text.
-    if let Some(rest) = arg
-        .strip_prefix("iterations")
-        .map(str::trim)
-        .filter(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()))
-    {
-        match rest.parse::<u32>() {
-            Ok(n) if n > 0 => match state.goal.as_mut() {
-                Some(g) => {
-                    g.max_iterations = n;
-                    state.add_status(format!("goal iteration limit: {n}"));
-                }
-                None => state.add_status("no active goal - /goal <text> first".into()),
-            },
-            _ => state.add_status("usage: /goal iterations <n> (n >= 1)".into()),
-        }
+}
+
+/// `/goal set <text>` (or bare `/goal <text>`): replace the objective.
+/// Resets the iteration count and unpauses.
+fn goal_set(state: &mut TuiState, session: &Arc<Session>, text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        state.add_status(
+            "usage: /goal <text>  (verbs: set, status, show, pause, continue, clear, iterations)"
+                .into(),
+        );
         return;
     }
     let max_iterations = crate::config::Config::load_or_report(&crate::terminal::data_dir())
         .map(|c| c.goal_iterations())
         .unwrap_or(10);
-    let text = arg.to_string();
-    session.set_goal(Some(text.clone()));
+    let previous = state
+        .goal
+        .as_ref()
+        .map(|g| g.text.clone())
+        .unwrap_or_default();
+    session.set_goal(Some(text.to_string()));
     state.goal = Some(ActiveGoal {
-        text: text.clone(),
+        text: text.to_string(),
         iterations_used: 0,
         max_iterations,
+        paused: false,
     });
     state.add_status(format!("goal set ({max_iterations} iterations): {text}"));
+    if !previous.is_empty() && previous != text {
+        state.add_status(format!("(replaced the previous goal)\n  was: {previous}"));
+    }
+}
+
+/// `/goal pause`: hold the loop. New turns are refused until `/goal
+/// continue`. Trailing words are ignored with a note - a control verb
+/// never sets goal text (use `/goal -- <text>` for that).
+fn goal_pause(state: &mut TuiState, rest: &str) {
+    enum Outcome {
+        Paused(String),
+        AlreadyPaused,
+        NoGoal,
+    }
+    let outcome = match state.goal.as_mut() {
+        Some(g) if g.paused => Outcome::AlreadyPaused,
+        Some(g) => {
+            g.paused = true;
+            Outcome::Paused(g.text.clone())
+        }
+        None => Outcome::NoGoal,
+    };
+    match &outcome {
+        Outcome::Paused(text) => state.add_status(format!("goal paused: {text}")),
+        Outcome::AlreadyPaused => state.add_status("goal already paused".into()),
+        Outcome::NoGoal => state.add_status("no active goal - /goal <text> to set one".into()),
+    }
+    if !rest.is_empty() && !matches!(outcome, Outcome::NoGoal) {
+        state.add_status(
+            "(ignored trailing words: a control verb never sets goal text - use /goal -- <text> when the goal really starts with a control word)".into(),
+        );
+    }
+}
+
+/// `/goal continue` (`resume`, `unpause`): resume a paused goal.
+fn goal_continue(state: &mut TuiState, rest: &str) {
+    enum Outcome {
+        Resumed(String),
+        NotPaused,
+        NoGoal,
+    }
+    let outcome = match state.goal.as_mut() {
+        Some(g) if !g.paused => Outcome::NotPaused,
+        Some(g) => {
+            g.paused = false;
+            Outcome::Resumed(g.text.clone())
+        }
+        None => Outcome::NoGoal,
+    };
+    match &outcome {
+        Outcome::Resumed(text) => state.add_status(format!("goal resumed: {text}")),
+        Outcome::NotPaused => state.add_status("goal is not paused".into()),
+        Outcome::NoGoal => state.add_status("no active goal - /goal <text> to set one".into()),
+    }
+    if !rest.is_empty() && !matches!(outcome, Outcome::NoGoal) {
+        state.add_status(
+            "(ignored trailing words: a control verb never sets goal text - use /goal -- <text> when the goal really starts with a control word)".into(),
+        );
+    }
+}
+
+/// `/goal clear` (`stop`, `done` when bare): drop the objective.
+fn goal_clear(state: &mut TuiState, session: &Arc<Session>) {
+    if state.goal.is_some() {
+        state.goal = None;
+        session.set_goal(None);
+        state.add_status("goal cleared".into());
+    } else {
+        state.add_status("no active goal".into());
+    }
+}
+
+/// `/goal iterations <n>`: retune the iteration budget.
+fn goal_iterations(state: &mut TuiState, rest: &str) {
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+        state.add_status("usage: /goal iterations <n> (n >= 1)".into());
+        return;
+    }
+    match rest.parse::<u32>() {
+        Ok(n) if n > 0 => match state.goal.as_mut() {
+            Some(g) => {
+                g.max_iterations = n;
+                state.add_status(format!("goal iteration limit: {n}"));
+            }
+            None => state.add_status("no active goal - /goal <text> first".into()),
+        },
+        _ => state.add_status("usage: /goal iterations <n> (n >= 1)".into()),
+    }
 }
 
 /// `/todos` - inspect the session's todo list. Read-only: the agent
@@ -7666,6 +7967,26 @@ fn tui_loop(
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+                if state.reasoning_picker {
+                    match key.code {
+                        KeyCode::Up => state.reasoning_move(-1),
+                        KeyCode::Down => state.reasoning_move(1),
+                        KeyCode::Esc => state.reasoning_picker = false,
+                        KeyCode::Enter => {
+                            let spelling = REASONING_LEVELS[state.reasoning_sel];
+                            state.reasoning_picker = false;
+                            if let Some(level) =
+                                pantheon_api::model::ReasoningLevel::parse(spelling)
+                            {
+                                apply_reasoning_level(state, &session, level);
+                            }
+                        }
+                        _ => {}
+                    }
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
+                    continue;
+                }
                 if state.models.is_some() {
                     match key.code {
                         KeyCode::Char(c) => state.models_input.push(c),
@@ -7836,6 +8157,7 @@ fn tui_loop(
                         KeyCode::Char('a') if ctrl => {
                             state.history_all_projects = !state.history_all_projects;
                             state.history_sel = 0;
+                            state.history_scroll = 0;
                         }
                         KeyCode::Char(c) => state.history_input.push(c),
                         KeyCode::Backspace => {
@@ -8698,7 +9020,7 @@ fn collaboration_store() -> Result<pantheon_storage::CollaborationStore, String>
 }
 
 /// Distinct providers from model rows, alphabetical by label, with
-/// curated-model counts. Drives the `/models` provider picker; a
+/// curated-model counts. Drives the `/model` provider picker; a
 /// provider with no catalog entries still lists (count 0) so its
 /// models stay reachable via `/model <provider> <id>`.
 fn provider_rows(rows: &[ModelRow]) -> Vec<ProviderRow> {
@@ -8727,7 +9049,41 @@ fn provider_rows(rows: &[ModelRow]) -> Vec<ProviderRow> {
     providers
 }
 
-/// Every selectable row for the /models browser: one per curated model,
+/// Open the /model provider browser: the first level lists providers,
+/// picking one drills into its models. Only providers with a key on file
+/// are listed - without a key the switch would fail at the first
+/// request. An optional filter pre-fills the picker's search box.
+fn open_model_browser(state: &mut TuiState, filter: String) {
+    let rows = build_model_rows();
+    if rows.is_empty() {
+        state.add_status("no models in the provider catalog".into());
+        return;
+    }
+    let dd = crate::terminal::data_dir();
+    let cfg = crate::config::Config::load(&dd).unwrap_or_default();
+    let rows: Vec<ModelRow> = rows
+        .into_iter()
+        .filter(|r| {
+            pantheon_providers::catalog::provider(&r.provider_id)
+                .map(|p| crate::model::provider_has_key(&dd, &cfg, &r.provider_id, &p.key_env))
+                .unwrap_or(false)
+        })
+        .collect();
+    if rows.is_empty() {
+        state.add_status("no providers with keys on file - add one with: pantheon setup".into());
+        return;
+    }
+    // Distinct providers, alphabetical by label, with curated-model
+    // counts.
+    let providers = provider_rows(&rows);
+    state.providers = Some(providers);
+    state.providers_input = filter;
+    state.providers_sel = 0;
+    state.providers_scroll = 0;
+    state.models_close();
+}
+
+/// Every selectable row for the /model browser: one per curated model,
 /// plus one per provider with no curated models (empty `model_id`; Enter
 /// on those explains the explicit-id path instead of switching).
 fn build_model_rows() -> Vec<ModelRow> {
@@ -9043,6 +9399,37 @@ fn persist_reasoning(
     cfg.save(dd).map_err(|e| e.cause.clone())
 }
 
+/// The seven reasoning levels the /reasoning picker offers, in wire
+/// order. Kept as spellings (not the enum) so the picker renders them
+/// directly and parses back with `ReasoningLevel::parse`.
+const REASONING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Apply one reasoning level to the live session and persist it: the
+/// shared body behind `/reasoning <level>` and the /reasoning picker.
+/// The live budget override (if any) is carried through, never wiped.
+fn apply_reasoning_level(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    level: pantheon_api::model::ReasoningLevel,
+) {
+    if let Err(e) = session.set_reasoning(level) {
+        state.add_status(format!("/reasoning: {e}"));
+        return;
+    }
+    state.effort = Some(level.as_str().to_string());
+    match persist_reasoning(
+        &crate::terminal::data_dir(),
+        level,
+        session.reasoning_budget(),
+    ) {
+        Ok(()) => state.add_status(format!("reasoning → {} (saved)", level.as_str())),
+        Err(e) => state.add_status(format!(
+            "reasoning → {} for this session; save failed: {e}",
+            level.as_str()
+        )),
+    }
+}
+
 /// Copy the last assistant message - or its nth fenced code block - to
 /// the system clipboard. `/yank` copies the whole message, `/yank 2` the
 /// second code block. Best-effort: reports which backend was used, or
@@ -9121,7 +9508,7 @@ fn do_yank(state: &mut TuiState, arg: &str) {
 /// Slash command entry: every command echoes, and its status output is
 /// captured into one `Command` transcript block (titled result; `/help`
 /// as a two-column table). Commands that open an overlay (/history,
-/// /models, the editor) or push their own decision card skip the block.
+/// /model, the editor) or push their own decision card skip the block.
 /// Append late async output to a slash command's result block. Finds the
 /// most recent `Command` block whose command starts with `cmd_prefix`
 /// (`/reflect` covers `/reflect`, `/consolidate`, `/nightly`) and
@@ -9811,60 +10198,28 @@ fn handle_slash_inner(
         }
         return;
     }
-    if cmd == "/models" || cmd.starts_with("/models ") {
-        // Two-level flow: /models opens the provider list; picking one
-        // drills into that provider's models. Optional filter applies to
-        // the provider list, the same as opening it and typing.
-        let filter = cmd.strip_prefix("/models").unwrap_or("").trim().to_string();
-        let rows = build_model_rows();
-        if rows.is_empty() {
-            state.add_status("no models in the provider catalog".into());
-            return;
+    if cmd == "/model" || cmd.starts_with("/model ") {
+        // One command serves both jobs: bare `/model` (or `/model
+        // <filter>`) opens the provider/model browser; `/model
+        // <provider> <id>` switches directly.
+        let arg = cmd.strip_prefix("/model").unwrap_or("").trim();
+        let parts: Vec<&str> = arg.split_whitespace().collect();
+        match parts.as_slice() {
+            [] => open_model_browser(state, String::new()),
+            [filter] => open_model_browser(state, (*filter).to_string()),
+            [provider, id] => apply_model_switch(state, session, provider, id),
+            _ => state.add_status("usage: /model [filter]  or  /model <provider> <id>".into()),
         }
-        // Distinct providers, alphabetical by label, with curated-model
-        // counts. A provider with no catalog entries still lists so its
-        // models can be reached via /model <provider> <id>.
-        let providers = provider_rows(&rows);
-        state.providers = Some(providers);
-        state.providers_input = filter;
-        state.providers_sel = 0;
-        state.providers_scroll = 0;
-        state.models_close();
-        return;
-    }
-    if cmd == "/model" {
-        let (p, m) = session.default_model();
-        state.add_status(format!("model: {p}/{m}"));
-        state.add_status("switch with: /model <provider> <id>  (or /models to browse)".into());
-        return;
-    }
-    if let Some(rest) = cmd.strip_prefix("/model ") {
-        let parts: Vec<&str> = rest.split_whitespace().collect();
-        if parts.len() != 2 {
-            state.add_status("usage: /model <provider> <id>  (or /models to browse)".into());
-            return;
-        }
-        apply_model_switch(state, session, parts[0], parts[1]);
         return;
     }
     if cmd == "/reasoning" {
-        let level = session.reasoning();
-        match session.reasoning_budget() {
-            Some(b) => state.add_status(format!(
-                "reasoning: {} + budget {b} (budget wins on budget wires)",
-                level.as_str()
-            )),
-            None => state.add_status(format!("reasoning: {}", level.as_str())),
-        }
-        state.add_status(
-            "set with: /reasoning off|minimal|low|medium|high|xhigh|max  (saved to [model])".into(),
-        );
-        state.add_status(
-            "exact budget with: /reasoning budget <tokens>|off  (Anthropic wire only)".into(),
-        );
-        state.add_status(
-            "maps to reasoning_effort (OpenAI wire) or a thinking budget (Anthropic wire); endpoints without support may ignore or reject it".into(),
-        );
+        // One command serves both jobs: bare `/reasoning` opens the
+        // level picker; `/reasoning <level>` sets it directly.
+        let cur = session.reasoning().as_str().to_string();
+        state.reasoning_cur = cur.clone();
+        state.reasoning_sel = REASONING_LEVELS.iter().position(|l| *l == cur).unwrap_or(0);
+        state.reasoning_scroll = 0;
+        state.reasoning_picker = true;
         return;
     }
     if let Some(rest) = cmd.strip_prefix("/reasoning budget") {
@@ -9897,26 +10252,7 @@ fn handle_slash_inner(
     if let Some(rest) = cmd.strip_prefix("/reasoning ") {
         let arg = rest.trim();
         match pantheon_api::model::ReasoningLevel::parse(arg) {
-            Some(level) => {
-                if let Err(e) = session.set_reasoning(level) {
-                    state.add_status(format!("/reasoning: {e}"));
-                    return;
-                }
-                state.effort = Some(level.as_str().to_string());
-                // Carry the live budget through: setting a level must not
-                // silently wipe an override set earlier (and vice versa).
-                match persist_reasoning(
-                    &crate::terminal::data_dir(),
-                    level,
-                    session.reasoning_budget(),
-                ) {
-                    Ok(()) => state.add_status(format!("reasoning → {} (saved)", level.as_str())),
-                    Err(e) => state.add_status(format!(
-                        "reasoning → {} for this session; save failed: {e}",
-                        level.as_str()
-                    )),
-                }
-            }
+            Some(level) => apply_reasoning_level(state, session, level),
             None => {
                 state.add_status("usage: /reasoning off|minimal|low|medium|high|xhigh|max".into());
             }
@@ -10291,6 +10627,7 @@ fn handle_slash_inner(
                     state.history = Some(runs);
                     state.history_input.clear();
                     state.history_sel = 0;
+                    state.history_scroll = 0;
                     // The picker defaults to the opener's project
                     // (None = unassigned); ctrl+a toggles all projects.
                     state.history_own_project = supervisor

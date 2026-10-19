@@ -18,7 +18,7 @@ That opens the app. It needs a real terminal; without one it tells you to use `p
 - **Rewind** (double-`Esc`, then confirm): undo the last turn in the view. History is never rewritten; the rewind is recorded as its own entry.
 - **Editor** (`Ctrl+E`): a fullscreen editor for writing long messages.
 
-Useful commands: `/models` (browse AI models, Enter switches), `/model [provider]` (show or change the current model), `/reasoning [off|minimal|low|medium|high|xhigh|max]` (how hard the model thinks), `/runs` (browse conversations), `/resume <id>` (open one), `/history`, `/status`, `/name <title>`, `/agent [name]`, `/agents`, `/remember KEY TEXT` (save a memory), `/skills [filter]`, `/settings`, `/gateway`, `/doctor`, `/sessions` (live sessions), `/new`, `/compress`, `/export [markdown|json]`, `/clear`, `/exit`, `/goal [text]` (set a goal for this session), `/tokens [n|off]` (cap spending), `/set [key value]` (change limits on the fly).
+Useful commands: `/model` (browse AI models from keyed providers, Enter switches; `/model <provider> <id>` switches directly), `/reasoning` (pick how hard the model thinks), `/runs` (browse conversations), `/resume <id>` (open one), `/history`, `/status`, `/name <title>`, `/agent [name]`, `/agents`, `/remember KEY TEXT` (save a memory), `/skills [filter]`, `/settings`, `/gateway`, `/doctor`, `/sessions` (live sessions), `/new`, `/compress`, `/export [markdown|json]`, `/clear`, `/exit`, `/goal [text]` (set a goal for this session), `/tokens [n|off]` (cap spending), `/set [key value]` (change limits on the fly).
 
 Open a specific conversation from the shell: `pantheon --resume [id]`.
 

@@ -389,6 +389,10 @@ fn fmt_bytes(n: usize) -> String {
 /// Interactive `@` picker state, owned by the TUI loop. `anchor` is the
 /// byte offset in the prompt input where the triggering `@` sits, so
 /// selecting a file replaces `@<filter>` with `@<path> ` in place.
+///
+/// Rows the popup shows without scrolling: it grows to fit the file
+/// list up to this many rows, then the list scrolls under it.
+const MENTION_VISIBLE_ROWS: usize = 10;
 #[derive(Debug)]
 pub struct MentionPicker {
     pub cwd: PathBuf,
@@ -396,6 +400,9 @@ pub struct MentionPicker {
     pub input: String,
     pub files: Vec<String>,
     pub sel: usize,
+    /// First visible row: the popup scrolls so the selection never
+    /// leaves the visible window.
+    pub scroll: usize,
 }
 
 impl MentionPicker {
@@ -406,6 +413,7 @@ impl MentionPicker {
             input: String::new(),
             files: Vec::new(),
             sel: 0,
+            scroll: 0,
         };
         p.requery();
         p
@@ -415,15 +423,23 @@ impl MentionPicker {
     pub fn requery(&mut self) {
         self.files = list_files(&self.cwd, &self.input);
         self.sel = 0;
+        self.scroll = 0;
     }
 
     pub fn move_sel(&mut self, n: isize) {
         if self.files.is_empty() {
             self.sel = 0;
+            self.scroll = 0;
             return;
         }
         let len = self.files.len() as isize;
         self.sel = (self.sel as isize + n).clamp(0, len - 1) as usize;
+        self.scroll = crate::session::clamp_scroll(
+            self.sel,
+            self.scroll,
+            self.files.len(),
+            MENTION_VISIBLE_ROWS,
+        );
     }
 
     pub fn selected(&self) -> Option<&str> {

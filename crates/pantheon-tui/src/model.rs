@@ -518,6 +518,23 @@ fn read_stored_key(data_dir: &std::path::Path, env: &str) -> Option<String> {
         })
 }
 
+/// True when the provider has a key on file: the first candidate env var
+/// (vendor `key_env`, config `api_key_env`, or `PANTHEON_KEY_<ID>`) is set
+/// in the process env or `<data_dir>/.env`. Powers the /model browser's
+/// keyed-only provider list.
+pub(crate) fn provider_has_key(
+    data_dir: &std::path::Path,
+    cfg: &Config,
+    provider_id: &str,
+    meta_key_env: &str,
+) -> bool {
+    stored_key_env(
+        data_dir,
+        &provider_key_candidates(cfg, provider_id, meta_key_env),
+    )
+    .is_some()
+}
+
 /// Order provider rows for the aux picker: providers with a key on
 /// file first (tagged `key on file`), then the rest in catalog order
 /// (recommended first - `all_providers` already yields that order).

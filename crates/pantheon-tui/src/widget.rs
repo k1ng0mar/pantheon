@@ -1,7 +1,7 @@
 //! The TUI component layer.
 //!
 //! Every interactive element in the Pantheon terminal product is one of these
-//! five widgets. Setup, `/models`, `/sessions`, and the command palette are
+//! five widgets. Setup, `/model`, `/sessions`, and the command palette are
 //! compositions of them, not separate implementations.
 //!
 //! # Design rules

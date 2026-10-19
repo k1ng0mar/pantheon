@@ -21,7 +21,7 @@ pub struct CommandMeta {
 }
 
 impl CommandMeta {
-    /// The slash form, e.g. `/models`.
+    /// The slash form, e.g. `/model`.
     pub fn slash(&self) -> String {
         format!("/{}", self.name)
     }
@@ -47,13 +47,8 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
     let mut m = BTreeMap::new();
     for c in [
         CommandMeta {
-            name: "models",
-            desc: "browse and switch model",
-            category: "model",
-        },
-        CommandMeta {
             name: "model",
-            desc: "switch the active model",
+            desc: "browse and switch model",
             category: "model",
         },
         CommandMeta {
