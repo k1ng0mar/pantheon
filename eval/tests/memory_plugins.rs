@@ -97,6 +97,95 @@ fn ok_script(dir: &Path, json: &str) -> StdioBackend {
     StdioBackend::new("sh".into(), vec![p.to_string_lossy().to_string()], 2000)
 }
 
+/// The whole manifest path against a live local service: manifest file
+/// -> registry -> instantiate -> real HTTP read. This is the full
+/// integration contract the picker selection point promises.
+
+#[test]
+fn http_manifest_full_path_to_a_real_service() {
+    let dir = tmp_dir("httpfull");
+    // Loopback service speaking list_agent: [["k","v"]]
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 8192];
+        let mut end = 0usize;
+        while end < buf.len() {
+            match std::io::Read::read(&mut stream, &mut buf[end..]) {
+                Ok(0) => break,
+                Ok(n) => end += n,
+                Err(_) => break,
+            }
+            if buf[..end].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let body = b"[[\"k\",\"v\"]]";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        std::io::Write::write_all(&mut stream, resp.as_bytes()).unwrap();
+        std::io::Write::write_all(&mut stream, body).unwrap();
+    });
+    let plug = dir.join("memory-plugins");
+    std::fs::create_dir_all(&plug).unwrap();
+    std::fs::write(
+        plug.join("mybrain.toml"),
+        format!(
+            "name = \"mybrain\"\nlabel = \"MyBrain\"\nkind = \"http\"\nurl = \"http://{addr}\"\n"
+        ),
+    )
+    .unwrap();
+    let mut reg = BackendRegistry::with_defaults();
+    load_dir(&mut reg, &dir);
+    let backend = reg
+        .instantiate_selected(&BackendSelection {
+            name: "mybrain".into(),
+            options: Default::default(),
+        })
+        .expect("a valid http manifest instantiates");
+    let rows = backend.list_agent("nyx").expect("real read over the wire");
+    assert_eq!(rows, vec![("k".to_string(), "v".to_string())]);
+    server.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The startup failure line for a backend that will not open: names the
+/// backend, the error, the consequence, and the fix, and says plainly
+/// that switching backends is not migration (nothing was moved).
+
+#[test]
+fn unavailable_backends_report_loudly() {
+    let sel = BackendSelection {
+        name: "mybrain".into(),
+        options: Default::default(),
+    };
+    let err = pantheon_api::error::PantheonError::new(
+        "MEM_BACKEND_CONFIG",
+        pantheon_api::error::Layer::Memory,
+        false,
+        "no url configured",
+        "check the memory plugin manifest and its service",
+        "",
+    );
+    let msg = pantheon_memory::unavailable_message(&sel, &err);
+    assert!(msg.contains("mybrain"), "{}", msg);
+    assert!(msg.contains("MEM_BACKEND_CONFIG"), "{}", msg);
+    assert!(msg.contains("WITHOUT memory"), "{}", msg);
+    assert!(msg.contains("switching backends is not migration"), "{}", msg);
+    // Native failures use the plain name (no quotes around a punctuated id).
+    let native = pantheon_memory::unavailable_message(
+        &BackendSelection {
+            name: "native".into(),
+            options: Default::default(),
+        },
+        &err,
+    );
+    assert!(native.contains("backend 'native'"), "{}", native);
+}
+
 /// A stdio plugin answers a recall request; proves the whole path
 /// (spawn -> JSON in -> JSON out -> typed hits).
 
@@ -181,6 +270,93 @@ fn stdio_backend_timeout_kills_the_child() {
         .recall(&policy, &["nyx"], &[LayerKind::Agent], "q", 5)
         .unwrap_err();
     assert_eq!(err.code, "MEM_PLUGIN_TIMEOUT");
+}
+
+/// Malformed JSON is a structured decode error, never a panic: the typo'd
+/// or half-written bridge surfaces as one loud line, not a wedged session.
+
+#[test]
+fn stdio_backend_malformed_json_is_a_decode_error() {
+    let dir = tmp_dir("badjson");
+    let backend = ok_script(&dir, "this is not json at all");
+    let policy = pantheon_api::capability::Policy::coder_with_memory();
+    let err = backend
+        .recall(&policy, &["nyx"], &[LayerKind::Agent], "q", 5)
+        .unwrap_err();
+    assert_eq!(err.code, "MEM_PLUGIN_DECODE");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A plugin that crashes without producing output bounds to the explicit
+/// empty-response error: fail loudly, never a hang, never fake data.
+
+#[test]
+fn stdio_backend_crash_with_no_output_is_explicit() {
+    let dir = tmp_dir("crash");
+    let backend = responder(&dir, "exit 1");
+    let backend = StdioBackend::new("sh".into(), vec![backend.to_string_lossy().to_string()], 2000);
+    let policy = pantheon_api::capability::Policy::coder_with_memory();
+    let hits = backend
+        .recall(&policy, &["nyx"], &[LayerKind::Agent], "q", 5);
+    assert!(matches!(
+        hits.unwrap_err().code.as_str(),
+        "MEM_PLUGIN_EMPTY" | "MEM_PLUGIN_IO" | "MEM_PLUGIN_DECODE"
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An oversized response is capped: the read stops at the limit and the
+/// error names the cap, so a buggy bridge cannot exhaust memory streaming
+/// a gigabyte. Long (~65MB line via python), well over the 64 MiB cap.
+
+#[test]
+fn stdio_backend_oversized_response_is_capped() {
+    let dir = tmp_dir("oversize");
+    let body = "python3 -c \"print('x' * 68000000)\"";
+    let backend = responder(&dir, body);
+    let backend = StdioBackend::new(
+        "sh".into(),
+        vec![backend.to_string_lossy().to_string()],
+        30_000,
+    );
+    let policy = pantheon_api::capability::Policy::coder_with_memory();
+    let err = backend
+        .recall(&policy, &["nyx"], &[LayerKind::Agent], "q", 5)
+        .unwrap_err();
+    assert_eq!(err.code, "MEM_PLUGIN_OVERSIZE");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Missing response fields default, they do not break the round trip:
+/// `ok:true` with no `hits`, `record`, `rows`, `found`, or `removed`.
+
+#[test]
+fn stdio_backend_missing_fields_default() {
+    let dir = tmp_dir("missing");
+    let backend = ok_script(&dir, r#"{"ok":true}"#);
+    let policy = pantheon_api::capability::Policy::coder_with_memory();
+
+    let hits = backend
+        .recall(&policy, &["nyx"], &[LayerKind::Agent], "q", 5)
+        .unwrap();
+    assert!(hits.is_empty(), "no hits field -> empty, not an error");
+
+    let rows = backend.list_agent("nyx").unwrap();
+    assert!(rows.is_empty(), "no rows field -> empty");
+
+    let found = backend.get(LayerKind::Agent, "nyx", "k").unwrap();
+    assert!(
+        found.is_none(),
+        "found absent -> not found, never a fake record"
+    );
+
+    let removed = backend.forget(LayerKind::Agent, "nyx", "k").unwrap();
+    assert!(
+        !removed,
+        "removed absent -> false: a forget that the backend did not confirm \
+must not be reported as deleted"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A manifest-declared stdio plugin is selectable by name and its

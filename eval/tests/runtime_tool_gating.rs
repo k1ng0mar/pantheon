@@ -92,6 +92,11 @@ fn all_groups_off_registry_has_no_gated_tools_but_keeps_session_search() {
         "vault_read",
         "vault_search",
         "vault_list",
+        // CodeIntel: gitundo + lsp tools are the whole group.
+        "gitundo.list",
+        "lsp.open",
+        "lsp.diagnostics",
+        "lsp.shutdown",
     ] {
         assert!(
             !n.iter().any(|t| t == tool),
@@ -109,6 +114,51 @@ fn all_groups_off_registry_has_no_gated_tools_but_keeps_session_search() {
         "session_search must always be registered, got: {n:?}"
     );
     let _ = std::fs::remove_dir_all(s.supervisor.data_dir());
+}
+
+/// Tasks default-on: with no `[tools]` section the todo tool ships in the
+/// per-turn registry and its system-prompt guidance rides the prompt -
+/// and both drop off together, so the model is never told to use a tool
+/// that does not exist.
+#[test]
+fn tasks_group_gates_registration_and_ships_guidance_together() {
+    fn turn_registry(tag: &str, tasks_off: bool) -> (ToolRegistry, Session, std::path::PathBuf) {
+        let s = gating_session(tag);
+        if tasks_off {
+            let mut none = ToolEnablement::none();
+            none.tasks = false;
+            s.set_tool_enablement(none);
+        }
+        let mut reg = ToolRegistry::new();
+        let poison = std::sync::Arc::new(
+            <pantheon_runtime::session::LedgerPoison as Default>::default(),
+        );
+        let healthy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let _cleanup = s.register_turn_tools(&mut reg, "tasks-gate", &poison, &healthy);
+        let dir = s.supervisor.data_dir().to_path_buf();
+        (reg, s, dir)
+    }
+
+    // Default: group on, todo present, guidance in the system prompt.
+    let (reg, s, dir) = turn_registry("tasks-default", false);
+    assert!(
+        names(&reg).iter().any(|t| t == pantheon_api::todo::TODO_TOOL_NAME),
+        "todo tool missing with Tasks on"
+    );
+    assert!(s.system_prompt_contains_todos(), "guidance missing with Tasks on");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Off: no todo tool, no guidance.
+    let (reg, s, dir) = turn_registry("tasks-off", true);
+    assert!(
+        !names(&reg).iter().any(|t| t == pantheon_api::todo::TODO_TOOL_NAME),
+        "todo registered while Tasks is off"
+    );
+    assert!(
+        !s.system_prompt_contains_todos(),
+        "guidance present while Tasks is off"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

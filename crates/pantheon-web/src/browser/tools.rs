@@ -15,11 +15,6 @@
 //! * Other interactive backends (chromiumoxide, Steel, Browserbase,
 //!   Playwright): the interactive surface without `browser_act` - none of
 //!   them has gsd's semantic-intent engine, so the tool is not offered.
-//! * Lightpanda (extraction-only): `browser_navigate`, `browser_extract`,
-//!   `browser_page_source`, `browser_screenshot` only. Interactive
-//!   commands are refused by the backend itself too
-//!   ([`UnsupportedCommand`](super::error::BrowserError::UnsupportedCommand));
-//!   not registering them keeps the model's tool list honest.
 //!
 //! Search-vs-browse is taught in the tool descriptions: `web_search` is
 //! for *looking something up* (facts, docs, prices, error messages);
@@ -564,8 +559,7 @@ fn fill_login(ctx: &Ctx, store: &LoginStore, args: &str) -> Result<String, Panth
 /// Register the `browser_*` toolset. When `opts.enabled` is false this
 /// registers nothing and returns `Ok`. The tool surface adapts to
 /// `opts.backend`: the full interactive surface on GSD, the interactive
-/// surface without `browser_act` on the other interactive backends, and
-/// the fetch/extract-only surface on Lightpanda.
+/// surface without `browser_act` on the other backends.
 pub fn register_browser_tools(
     reg: &mut ToolRegistry,
     opts: BrowserOptions,
@@ -573,8 +567,8 @@ pub fn register_browser_tools(
     if !opts.enabled {
         return Ok(());
     }
-    // Fail fast on misconfiguration (missing API key, no Lightpanda
-    // transport, ...) instead of registering dead tools. Construction is
+    // Fail fast on misconfiguration (missing API key, unreachable
+    // endpoint, ...) instead of registering dead tools. Construction is
     // lazy: no network, no subprocess, no browser launch happens here
     // backends connect on first `invoke`.
     let backend = build_backend(opts.backend, &opts.backend_config)?;
@@ -587,9 +581,6 @@ pub fn register_browser_tools(
         login_store: opts.login_store,
         last_url: Arc::new(Mutex::new(HashMap::new())),
     };
-    // Lightpanda never gets the interactive tools (its backend refuses
-    // them too - this just keeps the tool list honest).
-    let interactive = !kind.is_extraction_only();
 
     register_tool(
         reg,
@@ -602,179 +593,175 @@ pub fn register_browser_tools(
         None,
         |_, v| Ok(vec!["navigate".into(), arg_str(&v, "url")?]),
     );
-    // Everything between here and `browser_extract` is the interactive
-    // surface: history, snapshots, refs, typing, waiting. Lightpanda
-    // (extraction-only) skips it.
-    if interactive {
-        register_tool(
-            reg,
-            &ctx,
-            "browser_back",
-            "Go back one page in the browser history.",
-            serde_json::json!({}),
-            &[],
-            false,
-            None,
-            |_, _| Ok(vec!["back".into()]),
-        );
-        register_tool(
-            reg,
-            &ctx,
-            "browser_forward",
-            "Go forward one page in the browser history.",
-            serde_json::json!({}),
-            &[],
-            false,
-            None,
-            |_, _| Ok(vec!["forward".into()]),
-        );
-        register_tool(
+    // The interactive surface: history, snapshots, refs, typing,
+    // waiting. Every remaining backend serves it.
+    register_tool(
         reg,
         &ctx,
-        "browser_reload",
-        "Reload the current page. Refs from the previous snapshot are invalidated - snapshot again before interacting.",
+        "browser_back",
+        "Go back one page in the browser history.",
         serde_json::json!({}),
         &[],
         false,
         None,
-        |_, _| Ok(vec!["reload".into()]),
+        |_, _| Ok(vec!["back".into()]),
     );
-        register_tool(
+    register_tool(
         reg,
         &ctx,
-        "browser_snapshot",
-        &format!(
-            "Capture the page's interactive elements as a list of refs like @v1:e1. \
-             Always snapshot before clicking/typing: refs are INVALIDATED on any page change \
-             (stale refs error - take a fresh snapshot, never retry the old ref). {SEARCH_VS_BROWSE}"
-        ),
+        "browser_forward",
+        "Go forward one page in the browser history.",
         serde_json::json!({}),
         &[],
-        true,
-        None,
-        |_, _| Ok(vec!["snapshot".into()]),
-    );
-        register_tool(
-            reg,
-            &ctx,
-            "browser_click_ref",
-            "Click the element identified by a ref from the latest browser_snapshot (e.g. @v1:e1).",
-            serde_json::json!({ "ref": str_prop("Ref from the latest snapshot, e.g. @v1:e1") }),
-            &["ref"],
-            false,
-            None,
-            |_, v| Ok(vec!["click-ref".into(), arg_str(&v, "ref")?]),
-        );
-        register_tool(
-            reg,
-            &ctx,
-            "browser_hover_ref",
-            "Hover over the element identified by a ref from the latest browser_snapshot.",
-            serde_json::json!({ "ref": str_prop("Ref from the latest snapshot, e.g. @v1:e1") }),
-            &["ref"],
-            false,
-            None,
-            |_, v| Ok(vec!["hover-ref".into(), arg_str(&v, "ref")?]),
-        );
-        register_tool(
-            reg,
-            &ctx,
-            "browser_fill_ref",
-            "Fill a form field identified by a ref from the latest browser_snapshot with text.",
-            serde_json::json!({
-                "ref": str_prop("Ref from the latest snapshot, e.g. @v1:e1"),
-                "text": str_prop("Text to fill into the field"),
-            }),
-            &["ref", "text"],
-            false,
-            None,
-            |_, v| {
-                Ok(vec![
-                    "fill-ref".into(),
-                    arg_str(&v, "ref")?,
-                    arg_str(&v, "text")?,
-                ])
-            },
-        );
-        register_tool(
-        reg,
-        &ctx,
-        "browser_click",
-        "Click an element by CSS selector. Prefer browser_snapshot + browser_click_ref when you can see the element - selectors are brittle.",
-        serde_json::json!({ "selector": str_prop("CSS selector of the element to click") }),
-        &["selector"],
         false,
         None,
-        |_, v| Ok(vec!["click".into(), arg_str(&v, "selector")?]),
+        |_, _| Ok(vec!["forward".into()]),
     );
-        register_tool(
+    register_tool(
+    reg,
+    &ctx,
+    "browser_reload",
+    "Reload the current page. Refs from the previous snapshot are invalidated - snapshot again before interacting.",
+    serde_json::json!({}),
+    &[],
+    false,
+    None,
+    |_, _| Ok(vec!["reload".into()]),
+    );
+    register_tool(
+    reg,
+    &ctx,
+    "browser_snapshot",
+    &format!(
+        "Capture the page's interactive elements as a list of refs like @v1:e1. \
+         Always snapshot before clicking/typing: refs are INVALIDATED on any page change \
+         (stale refs error - take a fresh snapshot, never retry the old ref). {SEARCH_VS_BROWSE}"
+    ),
+    serde_json::json!({}),
+    &[],
+    true,
+    None,
+    |_, _| Ok(vec!["snapshot".into()]),
+    );
+    register_tool(
         reg,
         &ctx,
-        "browser_type",
-        "Type text into an element by CSS selector. Prefer browser_snapshot + browser_fill_ref when you can see the field.",
+        "browser_click_ref",
+        "Click the element identified by a ref from the latest browser_snapshot (e.g. @v1:e1).",
+        serde_json::json!({ "ref": str_prop("Ref from the latest snapshot, e.g. @v1:e1") }),
+        &["ref"],
+        false,
+        None,
+        |_, v| Ok(vec!["click-ref".into(), arg_str(&v, "ref")?]),
+    );
+    register_tool(
+        reg,
+        &ctx,
+        "browser_hover_ref",
+        "Hover over the element identified by a ref from the latest browser_snapshot.",
+        serde_json::json!({ "ref": str_prop("Ref from the latest snapshot, e.g. @v1:e1") }),
+        &["ref"],
+        false,
+        None,
+        |_, v| Ok(vec!["hover-ref".into(), arg_str(&v, "ref")?]),
+    );
+    register_tool(
+        reg,
+        &ctx,
+        "browser_fill_ref",
+        "Fill a form field identified by a ref from the latest browser_snapshot with text.",
         serde_json::json!({
-            "selector": str_prop("CSS selector of the input"),
-            "text": str_prop("Text to type"),
+            "ref": str_prop("Ref from the latest snapshot, e.g. @v1:e1"),
+            "text": str_prop("Text to fill into the field"),
         }),
-        &["selector", "text"],
+        &["ref", "text"],
         false,
         None,
         |_, v| {
             Ok(vec![
-                "type".into(),
-                arg_str(&v, "selector")?,
+                "fill-ref".into(),
+                arg_str(&v, "ref")?,
                 arg_str(&v, "text")?,
             ])
         },
     );
-        register_tool(
-            reg,
-            &ctx,
-            "browser_press",
-            "Press a keyboard key (e.g. Enter, Escape, Tab, ArrowDown).",
-            serde_json::json!({ "key": str_prop("Key name, e.g. Enter") }),
-            &["key"],
-            false,
-            None,
-            |_, v| Ok(vec!["press".into(), arg_str(&v, "key")?]),
-        );
-        register_tool(
+    register_tool(
+    reg,
+    &ctx,
+    "browser_click",
+    "Click an element by CSS selector. Prefer browser_snapshot + browser_click_ref when you can see the element - selectors are brittle.",
+    serde_json::json!({ "selector": str_prop("CSS selector of the element to click") }),
+    &["selector"],
+    false,
+    None,
+    |_, v| Ok(vec!["click".into(), arg_str(&v, "selector")?]),
+    );
+    register_tool(
+    reg,
+    &ctx,
+    "browser_type",
+    "Type text into an element by CSS selector. Prefer browser_snapshot + browser_fill_ref when you can see the field.",
+    serde_json::json!({
+        "selector": str_prop("CSS selector of the input"),
+        "text": str_prop("Text to type"),
+    }),
+    &["selector", "text"],
+    false,
+    None,
+    |_, v| {
+        Ok(vec![
+            "type".into(),
+            arg_str(&v, "selector")?,
+            arg_str(&v, "text")?,
+        ])
+    },
+    );
+    register_tool(
         reg,
         &ctx,
-        "browser_wait_for",
-        "Wait until a condition holds on the page. Conditions: selector_visible, selector_hidden, url_contains, text_visible, text_hidden, delay (pauses --value milliseconds), network_idle. Use after navigation before snapshotting a JS-heavy page.",
-        serde_json::json!({
-            "condition": str_prop("Condition to wait for: selector_visible | selector_hidden | url_contains | text_visible | text_hidden | delay | network_idle"),
-            "value": str_prop("Condition value: CSS selector, URL substring, text, or milliseconds for delay"),
-            "timeout_ms": str_prop("Maximum wait in milliseconds (gsd-browser only)"),
-        }),
-        &["condition"],
+        "browser_press",
+        "Press a keyboard key (e.g. Enter, Escape, Tab, ArrowDown).",
+        serde_json::json!({ "key": str_prop("Key name, e.g. Enter") }),
+        &["key"],
         false,
         None,
-        |_, v| {
-            let mut argv = vec![
-                "wait-for".into(),
-                "--condition".into(),
-                arg_str(&v, "condition")?,
-            ];
-            if let Some(val) = arg_opt_str(&v, "value") {
-                argv.push("--value".into());
-                argv.push(val);
-            }
-            if let Some(ms) = arg_opt_str(&v, "timeout_ms") {
-                argv.push("--timeout".into());
-                argv.push(ms);
-            }
-            Ok(argv)
-        },
+        |_, v| Ok(vec!["press".into(), arg_str(&v, "key")?]),
+    );
+    register_tool(
+    reg,
+    &ctx,
+    "browser_wait_for",
+    "Wait until a condition holds on the page. Conditions: selector_visible, selector_hidden, url_contains, text_visible, text_hidden, delay (pauses --value milliseconds), network_idle. Use after navigation before snapshotting a JS-heavy page.",
+    serde_json::json!({
+        "condition": str_prop("Condition to wait for: selector_visible | selector_hidden | url_contains | text_visible | text_hidden | delay | network_idle"),
+        "value": str_prop("Condition value: CSS selector, URL substring, text, or milliseconds for delay"),
+        "timeout_ms": str_prop("Maximum wait in milliseconds (gsd-browser only)"),
+    }),
+    &["condition"],
+    false,
+    None,
+    |_, v| {
+        let mut argv = vec![
+            "wait-for".into(),
+            "--condition".into(),
+            arg_str(&v, "condition")?,
+        ];
+        if let Some(val) = arg_opt_str(&v, "value") {
+            argv.push("--value".into());
+            argv.push(val);
+        }
+        if let Some(ms) = arg_opt_str(&v, "timeout_ms") {
+            argv.push("--timeout".into());
+            argv.push(ms);
+        }
+        Ok(argv)
+    },
     );
 
-        // Credential autofill: snapshot → locate fields → fill from the
-        // vault. Inside the interactive surface (Lightpanda has no
-        // snapshot/fill), and only when a login store is wired - otherwise
-        // the tool is not registered at all.
-        register_fill_login(reg, &ctx);
-    } // end of the interactive surface
+    // Credential autofill: snapshot → locate fields → fill from the
+    // vault. Inside the interactive surface, and only when a login
+    // store is wired - otherwise the tool is not registered at all.
+    register_fill_login(reg, &ctx);
 
     register_tool(
         reg,

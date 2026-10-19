@@ -10,7 +10,6 @@ use super::backend::BrowserBackend;
 use super::browserbase::{BrowserbaseBackend, BrowserbaseConfig};
 use super::camofox::{CamofoxBackend, CamofoxConfig};
 use super::error::BrowserError;
-use super::lightpanda::{LightpandaBackend, LightpandaConfig};
 use super::native::{NativeBackend, NativeConfig};
 use super::playwright::{PlaywrightBackend, PlaywrightConfig};
 use super::steel::{SteelBackend, SteelConfig};
@@ -34,9 +33,6 @@ pub enum BackendKind {
     /// Cloud fallback: `POST /v1/sessions` returns a raw CDP `wss://`
     /// URL, driven over that websocket directly.
     Browserbase,
-    /// Extraction specialist: CDP to Lightpanda. Fetch/extract workloads
-    /// only - never the interactive backend.
-    Lightpanda,
     /// Mature fallback: `playwright-cli` (`@playwright/cli`) subprocess.
     Playwright,
     /// Anti-detect fallback: patched-Firefox (Camoufox) through a
@@ -47,13 +43,12 @@ pub enum BackendKind {
 
 impl BackendKind {
     /// All backends, in config-picker order (default first).
-    pub fn all() -> [BackendKind; 7] {
+    pub fn all() -> [BackendKind; 6] {
         [
             BackendKind::Gsd,
             BackendKind::ChromiumOxide,
             BackendKind::Steel,
             BackendKind::Browserbase,
-            BackendKind::Lightpanda,
             BackendKind::Playwright,
             BackendKind::Camofox,
         ]
@@ -66,7 +61,6 @@ impl BackendKind {
             BackendKind::ChromiumOxide => "chromiumoxide",
             BackendKind::Steel => "steel",
             BackendKind::Browserbase => "browserbase",
-            BackendKind::Lightpanda => "lightpanda",
             BackendKind::Playwright => "playwright",
             BackendKind::Camofox => "camofox",
         }
@@ -83,18 +77,11 @@ impl BackendKind {
             }
             "steel" => Some(BackendKind::Steel),
             "browserbase" => Some(BackendKind::Browserbase),
-            "lightpanda" => Some(BackendKind::Lightpanda),
             "playwright" | "playwright-cli" => Some(BackendKind::Playwright),
             // Upstream spells it "Camoufox"; accept both.
             "camofox" | "camoufox" => Some(BackendKind::Camofox),
             _ => None,
         }
-    }
-
-    /// True for the extraction-only backend: the tool layer registers the
-    /// reduced fetch/extract surface instead of the interactive one.
-    pub fn is_extraction_only(self) -> bool {
-        matches!(self, BackendKind::Lightpanda)
     }
 }
 
@@ -114,6 +101,11 @@ pub struct BackendInfo {
     pub role: &'static str,
     /// What the user must supply to use it.
     pub needs: &'static str,
+    /// Whether this backend can serve interactive browser commands.
+    /// Extraction-only backends stay runtime-supported but out of the
+    /// setup picker: offering them as *the* browser backend configures
+    /// an agent that cannot click, fill, or navigate.
+    pub interactive: bool,
 }
 
 /// Every backend with its role, in picker order.
@@ -124,42 +116,42 @@ pub fn all_backends() -> Vec<BackendInfo> {
             name: "GSD Browser",
             role: "Default interactive backend: versioned refs, semantic act (act --intent), vault, stealth.",
             needs: "gsd-browser on PATH (or [browser] binary) plus Chrome/Chromium on the host.",
+            interactive: true,
         },
         BackendInfo {
             kind: BackendKind::ChromiumOxide,
             name: "Native CDP (chromiumoxide)",
             role: "Local raw-CDP fallback: exactly-pinned chromiumoxide 0.9.1, no CLI or Node sidecar.",
             needs: "Chrome/Chromium on the host. Pantheon builds the ref model itself on the AX tree.",
+            interactive: true,
         },
         BackendInfo {
             kind: BackendKind::Steel,
             name: "Steel",
             role: "Hosted or self-hosted browser sessions over REST + CDP via the official steel-rs SDK.",
             needs: "STEEL_API_KEY (cloud) or a self-hosted Steel base URL.",
+            interactive: true,
         },
         BackendInfo {
             kind: BackendKind::Browserbase,
             name: "Browserbase",
             role: "Cloud fallback: session REST API, raw CDP websocket per session.",
             needs: "BROWSERBASE_API_KEY and a Browserbase project id.",
-        },
-        BackendInfo {
-            kind: BackendKind::Lightpanda,
-            name: "Lightpanda",
-            role: "Extraction specialist only: fetch/extract workloads. Never the interactive backend.",
-            needs: "`browser.lightpanda_cdp_url` pointing at a running `lightpanda serve` CDP endpoint.",
+            interactive: true,
         },
         BackendInfo {
             kind: BackendKind::Playwright,
             name: "Playwright CLI",
             role: "Mature fallback: industry-standard engine via the official stateful agent CLI.",
             needs: "`playwright-cli` (@playwright/cli) on PATH; downloads its own browsers.",
+            interactive: true,
         },
         BackendInfo {
             kind: BackendKind::Camofox,
             name: "Camoufox",
             role: "Anti-detect fallback: patched Firefox via the official Python launcher (Juggler, no CDP), driven through a JSON-over-stdio shim.",
             needs: "`pip install \"camoufox[geoip]\"` plus `python -m camoufox fetch`; configure fingerprint in `[browser.camofox]`.",
+            interactive: true,
         },
     ]
 }
@@ -179,8 +171,6 @@ pub struct BackendConfig {
     pub steel: SteelConfig,
     /// Browserbase settings: resolved API key + project id.
     pub browserbase: BrowserbaseConfig,
-    /// Lightpanda settings: CDP URL or binary.
-    pub lightpanda: LightpandaConfig,
     /// Playwright settings: CLI binary path.
     pub playwright: PlaywrightConfig,
     /// Camoufox settings: Python shim + fingerprint options
@@ -208,7 +198,6 @@ impl BackendConfig {
             BackendKind::Gsd | BackendKind::Playwright | BackendKind::ChromiumOxide => Ok(()),
             BackendKind::Steel => self.steel.validate(),
             BackendKind::Browserbase => self.browserbase.validate(),
-            BackendKind::Lightpanda => self.lightpanda.validate(),
             BackendKind::Camofox => self.camofox.validate(),
         }
     }
@@ -250,10 +239,6 @@ pub fn build_backend(
             timeout_secs: timeout,
             ..cfg.browserbase.clone()
         })),
-        BackendKind::Lightpanda => Arc::new(LightpandaBackend::new(LightpandaConfig {
-            timeout_secs: timeout,
-            ..cfg.lightpanda.clone()
-        })?),
         BackendKind::Playwright => Arc::new(PlaywrightBackend::new(PlaywrightConfig {
             timeout_secs: timeout,
             ..cfg.playwright.clone()

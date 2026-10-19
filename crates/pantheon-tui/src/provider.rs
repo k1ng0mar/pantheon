@@ -17,9 +17,10 @@
 
 use super::config::{self, Config};
 use crate::model::{
-    builtin_provider_id, ensure_template_vars, flag, flags, has_flag, key_status,
-    normalize_base_url, parse_api_mode, parse_set_pairs, pick, print_template_status, prompt_line,
-    valid_provider_id, wire_mode_items, PickItem,
+    api_mode_is_auto, builtin_provider_id, ensure_template_vars, flag, flags, has_flag,
+    key_status, normalize_base_url, parse_api_mode, parse_set_pairs, pick,
+    print_template_status, prompt_line, resolve_wire_mode, sniff_wire_mode, valid_provider_id,
+    wire_mode_items, PickItem,
 };
 use pantheon_providers::catalog::{self, ApiMode};
 use std::io::IsTerminal;
@@ -149,11 +150,16 @@ fn cmd_add(rest: &[String]) {
 
     // 3. wire mode.
     let api_mode = if flag(rest, "--api-mode").is_some() || !interactive {
-        api_mode_flag(rest)
+        let mode = api_mode_flag(rest);
+        if api_mode_is_auto(flag(rest, "--api-mode").as_deref()) {
+            sniff_wire_mode(&url)
+        } else {
+            mode
+        }
     } else {
         match pick("wire mode", &wire_mode_items()) {
-            Some(1) => ApiMode::Anthropic,
-            _ => ApiMode::OpenAi,
+            Some(idx) => resolve_wire_mode(idx, &url),
+            None => sniff_wire_mode(&url),
         }
     };
 
@@ -173,7 +179,7 @@ fn cmd_add(rest: &[String]) {
         });
     let key_env_default = config::provider_key_env(&name, stored_key_env.as_deref());
     let (key_env, raw_keys) = if interactive {
-        let ke = prompt_line("Key env var", &key_env_default);
+        let ke = key_env_default.clone();
         let existing = super::dotenv::read_dotenv_value(&dd, &ke).filter(|v| !v.trim().is_empty());
         if let Some(cur) = &existing {
             println!("  current: {} (empty keeps)", crate::model::mask_key(cur));

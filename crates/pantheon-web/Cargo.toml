@@ -20,7 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", default-features = false, features = ["tls", "json", "proxy-from-env", "native-certs"] }
 # Native CDP backend (chromiumoxide) + the shared CDP driver used by the
-# Steel/Browserbase/Lightpanda backends. Pinned exact: CDP schema drift
+# Steel/Browserbase backends. Pinned exact: CDP schema drift
 # broke 0.6 against Chrome 142, so the version is a deliberate pin, not a
 # range. tokio is here only to drive chromiumoxide's async API behind the
 # sync BrowserBackend trait (one shared runtime, block_on per call).

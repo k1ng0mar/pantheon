@@ -290,7 +290,7 @@ const PLUGIN_SPECS: &[PluginSpec] = &[
         name: "openviking",
         label: "OpenViking (self-host only) via a thin bridge - point `url` at a bridge exposing Pantheon's /v1/memory protocol; OpenViking's own REST (:1933) does not speak it",
         default_url: None,
-        auth: "root_api_key from ov.conf via PANTHEON_MEMORY_OPENVKING_KEY (sent to the bridge as Bearer; OpenViking itself uses X-API-Key)",
+        auth: "root_api_key from ov.conf via PANTHEON_MEMORY_OPENVIKING_KEY (sent to the bridge as Bearer; OpenViking itself uses X-API-Key)",
         deployment: DeploymentKind::SelfHosted,
     },
     PluginSpec {

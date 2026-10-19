@@ -13,7 +13,6 @@ headless operation). Nothing else gets added without Umar's explicit call.
 | 2 | **`chromiumoxide` 0.9** | Native CDP fallback | Native Rust crate, CDP websocket, tokio | Chrome's footprint only | Apache-2.0/MIT, free | ✅ Verified live 2026-09-29 (Chrome 152): navigate, snapshot, extract, wait-for, stale refs - no schema-drift breakage |
 | 3 | **Steel** | Cloud / self-host | REST + raw CDP websocket; official Rust SDK (`steel-rs`) | Self-host: ~4GB base, ~200-500MB/session; cloud: zero | Apache-2.0 core; cloud Launch $0 + usage ($0.10/hr browser) | ⛔ Blocked: no API key on 2026-09-29 |
 | 4 | **Browserbase** | Cloud | `POST /v1/sessions` → raw CDP `wss://` URL; no SDK needed | Cloud only | Free tier (1 browser-hr); Dev $20/mo (100 hrs, then $0.12/hr) | ⛔ Blocked: no API key on 2026-09-29 |
-| 5 | **Lightpanda** | Extraction only | Sidecar `lightpanda serve` → CDP WS (preferred), or direct `--cdp-url` | ~10-24MB RSS baseline; ~140 instances on 8GB | AGPL-3.0, free (commercial license on request) - Umar explicitly waived the AGPL concern | ⛔ Blocked: no binary/server on 2026-09-29 |
 | 6 | **`@playwright/cli`** | Official fallback | Subprocess CLI (`--json`), stateful sessions | Heaviest local (~200MB - 1GB/instance) + Node | Apache-2.0, free | ⚠️ CLI help verified live; no real browser session yet |
 
 ## Backend details
@@ -77,17 +76,6 @@ returns a raw CDP websocket URL, fed into Pantheon's CDP driver. No SDK
 needed. Stealth, proxies, CAPTCHA solving on by default; session recordings
 and live-view debug URLs.
 
-### 5. Lightpanda (extraction only)
-A from-scratch headless engine (not Chromium): own HTML parser/DOM with V8
-for JS. Deliberately a **reduced surface**: only `navigate`, `extract`,
-`page-source`, and `screenshot` are registered - no interaction tools, no
-waits, no refs. Transport: a running `lightpanda serve` CDP URL, the only
-supported transport (binary launch is not supported - Lightpanda's CLI is
-not Chromium-flag-compatible, so there is no honest way to launch it
-through chromiumoxide's browser config).
-Restricted to commands that can run honestly against its CDP support; anything
-else fails loudly with `UnsupportedCommand` rather than pretending.
-
 ### 6. `@playwright/cli` (official fallback)
 Microsoft's official stateful agent CLI (`npx @playwright/cli`), wrapped as a
 subprocess. Session-scoped: `playwright-cli -s=<session> --json <command>`.
@@ -103,7 +91,7 @@ fallback, not the default.
 
 ```toml
 [browser]
-backend = "gsd"            # gsd | chromiumoxide | steel | browserbase | lightpanda | playwright
+backend = "gsd"            # gsd | chromiumoxide | steel | browserbase | playwright (+ steel via setup picker as cloud or self-hosted)
 binary = "/path/to/gsd-browser"   # gsd-browser binary; PATH when unset
 act_require_approval = true       # browser_act parks for human approval
 idle_timeout_secs = 900
@@ -112,7 +100,6 @@ steel_api_key_secret = "STEEL_API_KEY"       # unset = Steel unusable
 steel_base_url = "..."                       # self-hosted Steel; unset = cloud
 browserbase_api_key_secret = "BROWSERBASE_API_KEY"
 browserbase_project_id = "..."
-lightpanda_cdp_url = "ws://..."   # running `lightpanda serve`; the only Lightpanda transport
 playwright_binary = "/path/to/playwright-cli"
 chrome_binary = "/path/to/chrome" # chromiumoxide; unset = auto-detect
 headless = true
@@ -133,8 +120,6 @@ today), revisit it then; don't pre-build.
 ## Open items (2026-09-29)
 - Steel/Browserbase: live-verify once keys exist (contract tests are written;
   blocked on credentials).
-- Lightpanda: verify against a real server once available (blocked on
-  binary/server).
 - Playwright CLI: run a real browser session (binary never launched headless
   Chrome in this environment yet).
 - `pantheon-eval` (the crate this task's test plan assumed) does not exist in

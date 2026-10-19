@@ -70,15 +70,7 @@ Implementation compiles: `POST /v1/sessions` (key + project id) → raw CDP
 values. Live verification is **blocked**: no `BROWSERBASE_API_KEY` /
 project id on 2026-09-29.
 
-## 5. Lightpanda - ⛔ blocked (no binary/server)
-
-Implementation compiles with the reduced extraction-only surface
-(`navigate`, `extract`, `page-source`, `screenshot`) and binary-launch
-arguments matching Lightpanda's Chromium-style flags (binary mode audited
-2026-09-29: flags are correct per the pre-existing implementation; the
-`serve`-mode lifecycle could not be exercised). Live verification is
-**blocked**: no Lightpanda binary or running server was available on
-2026-09-29.
+## 5. Lightpanda - removed (extraction-only; never interactive, never live-verified)
 
 ## 6. `@playwright/cli` - ⚠️ partially verified
 

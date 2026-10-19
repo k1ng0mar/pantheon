@@ -178,21 +178,14 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         }
         _ => api_key_env,
     };
+    // Fallback chains live under `pantheon fallback` - setup never
+    // prompts for one. A pre-filled answer is still honored.
     let mut fallbacks = Vec::new();
-    let fb_provider = answers.fallback_provider.clone().or_else(|| {
-        if assume_defaults {
-            None
-        } else if confirm("Add a fallback model?", false) {
-            Some(prompt("Fallback provider", Some("local")))
-        } else {
-            None
-        }
-    });
-    if let Some(fp) = fb_provider {
-        let fm = answers
-            .fallback_model
-            .clone()
-            .unwrap_or_else(|| prompt("Fallback model", Some("llama3.2")));
+    // Both halves must be pre-filled; there is no prompt here by design.
+    if let (Some(fp), Some(fm)) = (
+        answers.fallback_provider.clone(),
+        answers.fallback_model.clone(),
+    ) {
         if !fp.is_empty() && !fm.is_empty() {
             fallbacks.push(FallbackEntry {
                 provider: fp,
@@ -236,6 +229,8 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         answers.websearch.clone(),
         group_on(ToolGroup::WebSearch),
         assume_defaults,
+        data_dir,
+        None,
     );
     let browser = resolve_provider(
         "browser",
@@ -243,6 +238,8 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         answers.browser.clone(),
         group_on(ToolGroup::Browser),
         assume_defaults,
+        data_dir,
+        None,
     );
     let (stt, tts) = if group_on(ToolGroup::Voice) {
         // A wizard-skipped backend resolves to nothing - never the
@@ -258,6 +255,8 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
                 answers.stt.clone(),
                 true,
                 assume_defaults,
+                data_dir,
+                None,
             )
         };
         let tts = if answers.skipped_tts {
@@ -269,6 +268,8 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
                 answers.tts.clone(),
                 true,
                 assume_defaults,
+                data_dir,
+                None,
             )
         };
         (stt, tts)
@@ -284,7 +285,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
     } else if let Some(a) = answers.memory.clone() {
         Some(validated_answer(
             "memory",
-            &setup_providers::memory_providers(),
+            &setup_providers::memory_providers(data_dir),
             a,
         ))
     } else if existing.name != "native" {
@@ -295,8 +296,10 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
     } else {
         default_or_prompt(
             "memory",
-            setup_providers::memory_providers(),
+            setup_providers::memory_providers(data_dir),
             assume_defaults,
+            data_dir,
+            Some("bring your own memory system: `pantheon memory backend scaffold NAME [http|stdio]` lists it here"),
         )
     };
     // Computer use: one driver today (cua-driver). A disabled group
@@ -308,6 +311,8 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         answers.computer.clone(),
         group_on(ToolGroup::ComputerUse),
         assume_defaults,
+        data_dir,
+        None,
     );
 
     // Skill dependencies: third-party packages the skill library
@@ -625,6 +630,8 @@ fn default_or_prompt(
     what: &str,
     metas: Vec<ProviderMeta>,
     assume_defaults: bool,
+    data_dir: &Path,
+    hint: Option<&str>,
 ) -> Option<ProviderAnswer> {
     let meta = setup_providers::recommended_provider(&metas)
         .or_else(|| metas.first())?
@@ -633,6 +640,9 @@ fn default_or_prompt(
         return Some(default_answer(&meta));
     }
     println!("{what} provider:");
+    if let Some(hint) = hint {
+        println!("  ({hint})");
+    }
     for p in &metas {
         println!("  {:<12} {}", p.id, p.name);
     }
@@ -640,11 +650,18 @@ fn default_or_prompt(
         let choice = prompt(&format!("{what} provider"), Some(&meta.id));
         if let Some(m) = setup_providers::find_provider(&metas, &choice) {
             let m = m.clone();
-            return setup_providers::complete_answer(
+            let answer = setup_providers::complete_answer(
                 &m,
                 &mut |label, prefill| Some(prompt(label, Some(prefill))),
                 &mut |question, def| Some(confirm(question, def)),
-            );
+            )?;
+            // Pick → paste → next group, the same contract the wizard
+            // follows: the value is asked once, right after the pick,
+            // and only when the var is not already set in this shell.
+            if let Some(env) = answer.key_env.as_deref() {
+                collect_answer_key(data_dir, what, env);
+            }
+            return Some(answer);
         }
         let ids = metas
             .iter()
@@ -652,6 +669,41 @@ fn default_or_prompt(
             .collect::<Vec<_>>()
             .join(", ");
         println!("unknown provider '{choice}'; choose one of: {ids}");
+    }
+}
+
+/// Text-mode counterpart of the wizard's key collection: pasted value
+/// goes to `<data_dir>/.env` (mode 0600) and is exported in-process so
+/// the rest of this setup run can use it. Empty input leaves the var
+/// unset without re-asking (doctor reports the gap later). Only for
+/// keys whose standard var is not already set - switching providers
+/// therefore never overwrites another provider's existing key.
+fn collect_answer_key(data_dir: &Path, what: &str, env: &str) {
+    let already = std::env::var(env)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if already {
+        return;
+    }
+    let value = prompt(
+        &format!(
+            "{what}: paste the key for {env} (saved to .env; empty = skip)"
+        ),
+        Some(""),
+    );
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    match super::dotenv::upsert_dotenv(data_dir, env, value) {
+        Ok(()) => {
+            std::env::set_var(env, value);
+            println!("key written: {}/.env ({env})", data_dir.display());
+        }
+        Err(e) => {
+            eprintln!("setup: could not save the key to .env: {e}");
+            eprintln!("setup: export {env}=... yourself before starting a session");
+        }
     }
 }
 
@@ -669,8 +721,16 @@ fn default_answer(meta: &ProviderMeta) -> ProviderAnswer {
         ProviderKind::Cloud { env_var } => {
             answer.key_env = Some(env_var.clone());
         }
-        ProviderKind::SelfHosted { default_url, .. } => {
+        ProviderKind::SelfHosted {
+            default_url,
+            key_env,
+            ..
+        } => {
             answer.url = non_empty(default_url.clone());
+            // --yes is scripted: record the standard name, never prompt.
+            // The value comes from the user's shell (agent doctor
+            // reports the gap when neither is set).
+            answer.key_env = key_env.clone();
         }
         ProviderKind::Local { local } => {
             if !setup_providers::detect_binary(&local.detect_cmd) {
@@ -689,19 +749,22 @@ fn default_answer(meta: &ProviderMeta) -> ProviderAnswer {
 /// Resolve one provider-backed group: a disabled tool group resolves
 /// to nothing (the section is not written); a pre-set answer is
 /// validated; otherwise the recommended provider resolves.
+#[allow(clippy::too_many_arguments)]
 fn resolve_provider(
     what: &str,
     metas: Vec<ProviderMeta>,
     pre: Option<ProviderAnswer>,
     group_on: bool,
     assume_defaults: bool,
+    data_dir: &Path,
+    hint: Option<&str>,
 ) -> Option<ProviderAnswer> {
     if !group_on {
         return None;
     }
     match pre {
         Some(a) => Some(validated_answer(what, &metas, a)),
-        None => default_or_prompt(what, metas, assume_defaults),
+        None => default_or_prompt(what, metas, assume_defaults, data_dir, hint),
     }
 }
 
@@ -716,11 +779,15 @@ fn browser_section(a: &ProviderAnswer) -> BrowserSection {
         "steel" => {
             s.steel_api_key_secret = a.key_env.clone();
         }
+        // Setup-only row id: same backend, instance URL instead of a
+        // cloud key. The config stores the real backend id so the
+        // runtime never sees the picker fiction.
+        "steel_selfhosted" => {
+            s.backend = Some("steel".to_string());
+            s.steel_base_url = a.url.clone();
+        }
         "browserbase" => {
             s.browserbase_api_key_secret = a.key_env.clone();
-        }
-        "lightpanda" => {
-            s.lightpanda_cdp_url = a.url.clone();
         }
         _ => {}
     }

@@ -359,12 +359,37 @@ fn url_host(url: &str) -> Option<String> {
 fn http_conn_err(method: &str, url: &str, e: ureq::Error) -> PantheonError {
     match e {
         ureq::Error::Status(code, resp) => {
-            let body = resp.into_string().unwrap_or_default();
-            let parsed: ErrorResponse = serde_json::from_str(&body).unwrap_or_default();
+            let body = capped_body(&format!("{method} {url}"), resp).unwrap_or_default();
+            let parsed: ErrorResponse = serde_json::from_slice(&body).unwrap_or_default();
             remote_error(&parsed, code, &format!("{method} {url}"))
         }
         e => merr("MEM_HTTP_CONN", format!("{method} {url}: {e}")),
     }
+}
+
+/// Read a response body capped at [`crate::MAX_RESPONSE_BYTES`]. A buggy
+/// or hostile bridge streaming an unlimited body is a bounded
+/// `MEM_HTTP_OVERSIZE` error, not an unbounded buffer.
+fn capped_body(endpoint: &str, resp: ureq::Response) -> Result<Vec<u8>, PantheonError> {
+    use std::io::Read;
+    let status = resp.status();
+    let mut reader = resp
+        .into_reader()
+        .take(crate::MAX_RESPONSE_BYTES as u64 + 1);
+    let mut body = Vec::new();
+    reader
+        .read_to_end(&mut body)
+        .map_err(|e| merr("MEM_HTTP_BODY", format!("{endpoint}: {e}")))?;
+    if body.len() > crate::MAX_RESPONSE_BYTES {
+        return Err(merr(
+            "MEM_HTTP_OVERSIZE",
+            format!(
+                "{endpoint}: response exceeds the {}MB memory-backend response cap (HTTP {status})",
+                crate::MAX_RESPONSE_BYTES / (1024 * 1024)
+            ),
+        ));
+    }
+    Ok(body)
 }
 
 fn read_response(
@@ -372,14 +397,12 @@ fn read_response(
     url: &str,
     resp: ureq::Response,
 ) -> Result<HttpResponse, PantheonError> {
+    let endpoint = format!("{method} {url}");
     let status = resp.status();
-    let body = resp
-        .into_string()
-        .map_err(|e| merr("MEM_HTTP_BODY", format!("{method} {url}: {e}")))?
-        .into_bytes();
+    let body = capped_body(&endpoint, resp)?;
     if status >= 400 {
         let parsed: ErrorResponse = serde_json::from_slice(&body).unwrap_or_default();
-        return Err(remote_error(&parsed, status, &format!("{method} {url}")));
+        return Err(remote_error(&parsed, status, &endpoint));
     }
     Ok(HttpResponse { status, body })
 }

@@ -426,6 +426,36 @@ pub fn clamp_trust(
     }
 }
 
+/// Hard ceiling on ONE response from any non-native memory backend, both
+/// transports: an stdio plugin's response line and an HTTP bridge's
+/// response body. Per-record payloads are already capped at 4096 bytes
+/// (`max_bytes`), so even a recall with hundreds of hits sits far below
+/// this; the cap exists so a buggy or hostile backend cannot exhaust
+/// memory by streaming an unlimited body. Exceeding it is an explicit
+/// `MEM_HTTP_OVERSIZE` / `MEM_PLUGIN_OVERSIZE` error, never a linger.
+pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
+/// The startup line for a memory backend that failed to open. Session
+/// degrades to no memory in that case — never a silent SQLite fallback —
+/// and this reports the failure loudly instead of leaving the operator to
+/// discover the outage as "the agent forgot everything". Pure (returns
+/// the text) so tests can pin the wording and callers choose the stream.
+pub fn unavailable_message(sel: &crate::backend::BackendSelection, err: &PantheonError) -> String {
+    let backend = if sel.name == "native" {
+        "native".to_string()
+    } else {
+        sel.name.clone()
+    };
+    format!(
+        "pantheon: memory backend '{backend}' is unavailable: {} {} — running WITHOUT memory \
+(memory tools are not registered this session, so recall/write calls fail loudly rather \
+than being silently dropped). Fix the backend or switch back with \
+`pantheon memory backend select {backend}`; existing memories stay where they were - \
+switching backends is not migration.",
+        err.code, err.cause
+    )
+}
+
 /// Error codes a Pantheon-protocol memory server may legitimately return
 /// in the `error`/`code` field. The field is attacker-controlled and must
 /// never become a `PantheonError` code verbatim (code/log spoofing), so

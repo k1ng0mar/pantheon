@@ -9,7 +9,7 @@ The model picks by intent. "What does this error mean" → search. "Check my ord
 
 ## Web search
 
-Nine providers are built in, with **TinyFish** the recommended default (free, no card, rank-stable): TinyFish, Tavily, Ollama Web Search, Exa, Marginalia (keyless), Brave Search, Firecrawl, SearXNG (self-hosted), and Perplexity Search. Keyed providers need an API key, e.g.:
+Fourteen providers are built in, with **TinyFish** the recommended default (free, no card, rank-stable): TinyFish, Tavily, Ollama Web Search, Exa, Marginalia (keyless), Brave Search, Firecrawl, SearXNG (self-hosted), Perplexity Search, plus keyless fallbacks Exa/Parallel/Firecrawl/Keenable (anonymous shared-quota endpoints) and DuckDuckGo via a local `ddgs` binary. Keyed providers need an API key, e.g.:
 
 ```sh
 pantheon secrets set TINYFISH_API_KEY <your-key>  # or TAVILY_API_KEY, EXA_API_KEY, ... for another provider
@@ -20,7 +20,7 @@ Without the provider's auth requirement met, `web_search` simply doesn't appear 
 ```toml
 [websearch]
 enabled = true
-provider = "tinyfish"   # one of: tinyfish (recommended), tavily, ollama, exa, marginalia, brave, firecrawl, searxng, perplexity
+provider = "tinyfish"   # one of: tinyfish (recommended), tavily, ollama, exa, marginalia, brave, firecrawl, searxng, perplexity, exa_free, parallel_free, firecrawl_free, keenable_free, ddgs
 # api_key_secret = "TINYFISH_API_KEY"  # optional override; absent = the provider's default secret name
 max_results = 8
 ```

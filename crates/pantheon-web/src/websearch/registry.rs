@@ -11,7 +11,12 @@
 //! returns a boxed [`SearchProvider`] or a human-readable reason it can't.
 
 use super::brave::{BraveProvider, BRAVE_API_KEY, DEFAULT_BASE_URL as BRAVE_BASE};
+use super::ddgs::DdgsProvider;
 use super::exa::{ExaProvider, DEFAULT_BASE_URL as EXA_BASE, EXA_API_KEY};
+use super::exa_free::{ExaFreeProvider, DEFAULT_BASE_URL as EXA_FREE_BASE};
+use super::firecrawl_free::{FirecrawlFreeProvider, DEFAULT_BASE_URL as FIRECRAWL_FREE_BASE};
+use super::keenable::{KeenableFreeProvider, DEFAULT_BASE_URL as KEENABLE_BASE};
+use super::parallel::{ParallelFreeProvider, DEFAULT_BASE_URL as PARALLEL_FREE_BASE};
 use super::firecrawl::{FirecrawlProvider, DEFAULT_BASE_URL as FIRECRAWL_BASE, FIRECRAWL_API_KEY};
 use super::marginalia::{MarginaliaProvider, DEFAULT_BASE_URL as MARGINALIA_BASE};
 use super::ollama::{OllamaProvider, DEFAULT_BASE_URL as OLLAMA_BASE, OLLAMA_API_KEY};
@@ -36,6 +41,13 @@ pub enum ProviderAuth {
     /// Self-hosted: no key, but the user must point it at their instance.
     /// `default_url` is the prefill when nothing is configured.
     SelfHosted { default_url: &'static str },
+    /// Local binary: no key, but a program must exist on `PATH`. The
+    /// wizard detects it and offers install-or-skip.
+    Local {
+        detect_cmd: &'static str,
+        install_hint: &'static str,
+        install_cmd: Option<&'static str>,
+    },
 }
 
 /// One row in the setup picker's provider list. All fields are
@@ -127,6 +139,48 @@ pub fn all_providers() -> Vec<ProviderInfo> {
             blurb: "Raw ranked results with best-in-class dates; prepaid only, no free tier.",
             recommended: false,
         },
+        // Keyless fallbacks below: shared public quotas, expect rate
+        // limits. Never recommended; they catch what the keyed
+        // providers miss when no key is configured.
+        ProviderInfo {
+            id: "exa_free",
+            name: "Exa (anonymous)",
+            auth: ProviderAuth::Keyless,
+            blurb: "Exa's public endpoint, no key; shared quota, expect throttling.",
+            recommended: false,
+        },
+        ProviderInfo {
+            id: "parallel_free",
+            name: "Parallel (anonymous)",
+            auth: ProviderAuth::Keyless,
+            blurb: "Parallel's public endpoint, no key; shared quota, expect throttling.",
+            recommended: false,
+        },
+        ProviderInfo {
+            id: "firecrawl_free",
+            name: "Firecrawl (anonymous)",
+            auth: ProviderAuth::Keyless,
+            blurb: "Firecrawl's public endpoint, no key; shared quota, expect throttling.",
+            recommended: false,
+        },
+        ProviderInfo {
+            id: "keenable_free",
+            name: "Keenable (anonymous)",
+            auth: ProviderAuth::Keyless,
+            blurb: "Keenable's public endpoint, no key; shared quota, expect throttling.",
+            recommended: false,
+        },
+        ProviderInfo {
+            id: "ddgs",
+            name: "DuckDuckGo (local ddgs)",
+            auth: ProviderAuth::Local {
+                detect_cmd: "command -v ddgs",
+                install_hint: "DuckDuckGo metasearch needs the `ddgs` package (`python3 -m pip install ddgs`; on Debian/Ubuntu you may need `apt install python3-pip` first); scraping-adjacent, results vary.",
+                install_cmd: Some("python3 -m pip install ddgs"),
+            },
+            blurb: "Local DuckDuckGo metasearch via the `ddgs` binary; no key, scraping-adjacent.",
+            recommended: false,
+        },
     ]
 }
 
@@ -142,7 +196,7 @@ pub fn provider_info(id: &str) -> Option<ProviderInfo> {
 pub fn default_key_env(id: &str) -> Option<&'static str> {
     match provider_info(id)?.auth {
         ProviderAuth::ApiKey { env_var } => Some(env_var),
-        ProviderAuth::Keyless | ProviderAuth::SelfHosted { .. } => None,
+        ProviderAuth::Keyless | ProviderAuth::SelfHosted { .. } | ProviderAuth::Local { .. } => None,
     }
 }
 
@@ -195,6 +249,15 @@ pub fn build_provider(
         )),
         "marginalia" => Arc::new(MarginaliaProvider::with_base_url(base(MARGINALIA_BASE))),
         "searxng" => Arc::new(SearxngProvider::new(base(DEFAULT_INSTANCE_URL))),
+        "exa_free" => Arc::new(ExaFreeProvider::with_base_url(base(EXA_FREE_BASE))),
+        "parallel_free" => {
+            Arc::new(ParallelFreeProvider::with_base_url(base(PARALLEL_FREE_BASE)))
+        }
+        "firecrawl_free" => {
+            Arc::new(FirecrawlFreeProvider::with_base_url(base(FIRECRAWL_FREE_BASE)))
+        }
+        "keenable_free" => Arc::new(KeenableFreeProvider::with_base_url(base(KEENABLE_BASE))),
+        "ddgs" => Arc::new(DdgsProvider::new()),
         _ => return Err(format!("unknown web search provider '{id}'")),
     };
     Ok(provider)

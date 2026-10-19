@@ -341,13 +341,17 @@ impl StdioBackend {
         })?;
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
+            // `Take` caps the reads at the oversize limit + 1 so an
+            // oversized (or newline-less) response is detected as
+            // `MEM_PLUGIN_OVERSIZE` instead of buffering without bound.
+            let mut reader =
+                std::io::Read::take(BufReader::new(stdout), crate::MAX_RESPONSE_BYTES as u64 + 1);
             let mut line = String::new();
-            let res = reader.read_line(&mut line).map(|_| line);
+            let res = reader.read_line(&mut line).map(|n| (n, line));
             let _ = tx.send(res);
         });
-        let line = match rx.recv_timeout(self.timeout) {
-            Ok(Ok(l)) => l,
+        let (n, line) = match rx.recv_timeout(self.timeout) {
+            Ok(Ok(pair)) => pair,
             Ok(Err(e)) => {
                 return Err(perr(
                     "MEM_PLUGIN_IO",
@@ -367,6 +371,18 @@ impl StdioBackend {
                 ));
             }
         };
+        if n as usize > crate::MAX_RESPONSE_BYTES {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(perr(
+                "MEM_PLUGIN_OVERSIZE",
+                format!(
+                    "{} response exceeds the {}MB memory-backend response cap",
+                    self.command,
+                    crate::MAX_RESPONSE_BYTES / (1024 * 1024)
+                ),
+            ));
+        }
         let line = line.trim();
         if line.is_empty() {
             return Err(perr(

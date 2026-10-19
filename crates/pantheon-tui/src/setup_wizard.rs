@@ -147,6 +147,31 @@ fn ensure_key_value(data_dir: &Path, name: &str, label: &str, step: &str) {
     }
 }
 
+/// Collect a tool provider's key value when its env var is not already
+/// set: masked paste → `<data_dir>/.env` → in-process export, the same
+/// path model keys take. Empty/skipped leaves it unset; the runtime
+/// skips keyless providers cleanly and `doctor` reports the gap.
+/// Keyless/local answers carry no `key_env` and pass through untouched.
+fn ensure_answer_key(data_dir: &Path, answer: &setup_providers::ProviderAnswer, label: &str) {
+    if let Some(env) = answer.key_env.as_deref() {
+        ensure_key_value(data_dir, env, label, label);
+    }
+}
+
+/// Pick → key collection in one step: after a provider choice lands,
+/// a `Chosen` answer with a key gets its value prompt immediately, so
+/// the flow is pick → paste → next group. Skipped/cancelled picks pass
+/// through untouched.
+fn collect_pick_key(
+    data_dir: &Path,
+    pick: &setup_providers::ProviderPick,
+    label: &str,
+) {
+    if let setup_providers::ProviderPick::Chosen(a) = pick {
+        ensure_answer_key(data_dir, a, label);
+    }
+}
+
 /// Configure the model provider's API key: the env var name the config
 /// stores under `[model].api_key_env`, plus the value when the var is
 /// not already set. Esc (or an empty name) means none. `None` here is
@@ -172,25 +197,18 @@ fn pick_model_key_env(
     // The env var name: a custom endpoint already named its key env on
     // its own screen; a catalog provider is asked here.
     let (name, label) = match custom {
-        Some(spec) => {
-            let derived = spec.key_env.clone().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| {
-                let mut sanitized = String::new();
-                for c in spec.name.chars() {
-                    if c.is_ascii_alphanumeric() {
-                        sanitized.push(c.to_ascii_uppercase());
-                    } else {
-                        sanitized.push('_');
-                    }
-                }
-                if sanitized.is_empty() {
-                    "CUSTOM".to_string()
-                } else {
-                    format!("CUSTOM_{}_API_KEY", sanitized)
-                }
-            });
+        // True custom endpoint (id is not a builtin): the handle derives
+        // from the endpoint host. A builtin override keeps the catalog's
+        // standard env name - the key did not move, only the URL did.
+        Some(spec) if !crate::model::builtin_provider_id(&spec.name) => {
+            let derived = spec
+                .key_env
+                .clone()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| custom_key_env(&spec.base_url));
             (derived, "Custom endpoint".to_string())
         }
-        None => {
+        _ => {
             let meta = pantheon_providers::catalog::provider(provider);
             let label = meta
                 .as_ref()
@@ -235,13 +253,22 @@ fn run_recommended(
         setup_providers::complete_recommended("Web search", setup_providers::websearch_providers());
     let browser_pick =
         setup_providers::complete_recommended("Browser", setup_providers::browser_providers());
-    // Memory native is keyless, so this call records silently.
-    let memory_pick =
-        setup_providers::complete_recommended("Memory", setup_providers::memory_providers());
+    // Memory gets a picker (not the silent recommended default): the
+    // backend choice matters and bridges need a URL.
+    let memory_pick = setup_providers::pick_provider(
+        "Memory",
+        "Choose a memory backend \u{2014} bring your own: pantheon memory backend scaffold NAME [http|stdio]",
+        setup_providers::memory_providers(data_dir),
+    );
     let computer_pick = setup_providers::complete_recommended(
         "Computer use",
         setup_providers::computer_providers(),
     );
+    // Pick → paste → next group: keyed answers collect their value now.
+    collect_pick_key(data_dir, &websearch_pick, "Web search");
+    collect_pick_key(data_dir, &browser_pick, "Browser");
+    collect_pick_key(data_dir, &memory_pick, "Memory");
+    collect_pick_key(data_dir, &computer_pick, "Computer use");
     let websearch = setup_providers::apply_pick(
         &mut tools,
         &mut skipped,
@@ -279,6 +306,8 @@ fn run_recommended(
             provider: Some(provider),
             model,
             api_key_env,
+            // Fallback chains live under `pantheon fallback`, never in
+            // setup: these stay None so `run_setup` writes no fallback.
             fallback_provider: None,
             fallback_model: None,
             policy: Some(PolicyPreset::Coder),
@@ -372,6 +401,7 @@ fn run_full(
     answers.memory_enabled = tools.contains(&ToolGroup::Memory);
     answers.computer_use_enabled = tools.contains(&ToolGroup::ComputerUse);
     answers.extensions_enabled = tools.contains(&ToolGroup::Plugins);
+    answers.skills_enabled = tools.contains(&ToolGroup::Skills);
     // The Gateway screen is Full-only: chat-surface tokens are a
     // power-user surface and stay out of Recommended entirely.
     answers.gateways_enabled = true;
@@ -397,6 +427,7 @@ fn run_full(
             "Choose the backend behind the browser tools",
             setup_providers::browser_providers(),
         );
+        collect_pick_key(data_dir, &pick, "Browser");
         setup_providers::apply_pick(&mut tools, &mut skipped, ToolGroup::Browser, &pick)
     } else {
         None
@@ -408,6 +439,7 @@ fn run_full(
             "Choose the provider behind the `web_search` tool",
             setup_providers::websearch_providers(),
         );
+        collect_pick_key(data_dir, &pick, "Web search");
         setup_providers::apply_pick(&mut tools, &mut skipped, ToolGroup::WebSearch, &pick)
     } else {
         None
@@ -429,6 +461,8 @@ fn run_full(
             "Choose the TTS backend",
             setup_providers::tts_providers(),
         );
+        collect_pick_key(data_dir, &stt_pick, "Speech to text");
+        collect_pick_key(data_dir, &tts_pick, "Text to speech");
         setup_providers::apply_voice_picks(&mut tools, &mut skipped, &stt_pick, &tts_pick)
     } else {
         setup_providers::VoicePicks::default()
@@ -437,9 +471,10 @@ fn run_full(
     let memory = if wants(Section::Memory) {
         let pick = setup_providers::pick_provider(
             "Memory",
-            "Choose a memory backend",
-            setup_providers::memory_providers(),
+            "Choose a memory backend \u{2014} bring your own: pantheon memory backend scaffold NAME [http|stdio]",
+            setup_providers::memory_providers(data_dir),
         );
+        collect_pick_key(data_dir, &pick, "Memory");
         setup_providers::apply_pick(&mut tools, &mut skipped, ToolGroup::Memory, &pick)
     } else {
         None
@@ -481,18 +516,6 @@ fn run_full(
         pick_gateways(data_dir);
     }
 
-    let (fallback_provider, fallback_model, fallback_custom) = if wants(Section::Fallback) {
-        match pick_provider("Fallback provider") {
-            Some((fp, fc)) => {
-                let fk = pick_model_key_env(data_dir, &fp, fc.as_ref(), "Fallback key");
-                let model = pick_model(&fp, fc.as_ref(), fk.as_deref(), "Fallback model");
-                (Some(fp), model, fc)
-            }
-            None => (None, None, None),
-        }
-    } else {
-        (None, None, None)
-    };
 
     // The service-install permission screen: the last screen in Full
     // Setup, after every other screen. Declining is clean and never
@@ -506,8 +529,10 @@ fn run_full(
             provider: Some(provider),
             model,
             api_key_env,
-            fallback_provider,
-            fallback_model,
+            // Fallback chains live under `pantheon fallback`, never in
+            // setup: these stay None so `run_setup` writes no fallback.
+            fallback_provider: None,
+            fallback_model: None,
             policy,
             tools: Some(tools),
             websearch,
@@ -517,10 +542,7 @@ fn run_full(
             memory,
             computer,
             key: None,
-            // The custom endpoint row is named "custom" either way; the
-            // fallback's spec wins when both picks used the Custom row
-            // with different URLs.
-            custom_provider: fallback_custom.or(custom),
+            custom_provider: custom,
             skipped_tools: skipped,
             skipped_stt: voice.skipped_stt,
             skipped_tts: voice.skipped_tts,
@@ -686,10 +708,14 @@ fn provider_item(m: &pantheon_providers::catalog::ProviderMeta) -> Item {
 }
 
 /// Pick a model provider. Returns the provider id plus, for the Custom
-/// row, the endpoint spec `run_setup` persists to
-/// `[custom_providers.custom]` - the in-memory registration alone does
+/// row or an edited preset URL, the endpoint spec `run_setup` persists
+/// to `[custom_providers.<id>]` - the in-memory registration alone does
 /// not survive the process, so the wizard used to write a config
 /// pointing at an endpoint only it remembered.
+///
+/// Existing custom endpoints appear as ordinary rows below the presets
+/// (no separate section); the Custom row creates a new one without
+/// overwriting an existing `custom` id.
 ///
 /// The first screen is a shortlist with a "Show all providers..." row;
 /// a first-run user should not face 35 rows. Expanding lists every
@@ -726,7 +752,68 @@ fn pick_provider(step: &str) -> Option<(String, Option<CustomProviderSpec>)> {
                     println!("  install it first, then `ollama serve` and `ollama pull <model>`");
                 }
             }
-            Some((id.to_string(), None))
+            // The endpoint, shown for every provider: Enter keeps the
+            // catalog URL, typing replaces it. An edit becomes an
+            // override row shadowing the builtin (visible in
+            // `pantheon model --list`, removable) instead of a silent
+            // fork the user cannot see.
+            let meta = pantheon_providers::catalog::provider(id);
+            let base = meta.as_ref().map(|m| m.base_url.clone()).unwrap_or_default();
+            let typed = crate::prompt::pick_text(
+                "Provider",
+                &format!("Base URL for {id} (Enter keeps {base})"),
+                &base,
+            )?;
+            let typed = typed.trim();
+            let url = if typed.is_empty() {
+                base.clone()
+            } else {
+                crate::model::normalize_base_url(typed)
+            };
+            if url != base && !base.is_empty() {
+                println!("  saving as an override of builtin '{id}'");
+                let mode = meta
+                    .as_ref()
+                    .map(|m| m.api_mode)
+                    .unwrap_or(pantheon_providers::catalog::ApiMode::OpenAi);
+                let api_mode = match mode {
+                    pantheon_providers::catalog::ApiMode::Anthropic => "anthropic",
+                    _ => "openai",
+                }
+                .to_string();
+                let spec = CustomProviderSpec {
+                    name: id.to_string(),
+                    base_url: url,
+                    api_mode,
+                    key_env: None,
+                };
+                pantheon_providers::catalog::register_custom_provider(
+                    pantheon_providers::catalog::ProviderMeta {
+                        id: id.into(),
+                        label: format!("{id} (override)"),
+                        base_url: spec.base_url.clone(),
+                        api_mode: mode,
+                        base_env: String::new(),
+                        key_env: String::new(),
+                        key_header: String::new(),
+                        models: Vec::new(),
+                        prominent: false,
+                        recommended: false,
+                        dev: false,
+                        tag: "override".into(),
+                        auth_command: None,
+                        auth_refresh_ms: None,
+                        reserved: false,
+                        allowed_params: vec![],
+                        oauth_apps: vec![],
+                        sigv4: false,
+                        reasoning_map: Default::default(),
+                    },
+                );
+                Some((id.to_string(), Some(spec)))
+            } else {
+                Some((id.to_string(), None))
+            }
         }
     }
 }
@@ -750,39 +837,94 @@ fn pick_provider_full(subtitle: &str) -> Option<(String, Option<CustomProviderSp
     Some((chosen, None))
 }
 
-/// The Custom endpoint flow: base URL, wire format, key env var.
-/// Registered through the same path `pantheon provider add` uses, so a
-/// custom endpoint set up in the wizard is a real catalog entry and not
-/// a string only this wizard remembers.
+/// First free custom id: `custom`, then `custom-2`, .... The wizard
+/// used to always write `custom`, silently overwriting a previous custom
+/// endpoint with the same id.
+fn free_custom_name() -> String {
+    if pantheon_providers::catalog::provider("custom").is_none() {
+        return "custom".to_string();
+    }
+    let mut n = 2u32;
+    loop {
+        let cand = format!("custom-{n}");
+        if pantheon_providers::catalog::provider(&cand).is_none() {
+            return cand;
+        }
+        n += 1;
+    }
+}
+
+/// Derive the key handle from the endpoint host:
+/// `https://api.example.com/v1` → `CUSTOM_API_EXAMPLE_COM_API_KEY`.
+/// Host-derived, so two customs never share a var and the name says
+/// where the key goes.
+fn custom_key_env(base_url: &str) -> String {
+    let host = base_url
+        .split("://")
+        .nth(1)
+        .unwrap_or(base_url)
+        .split('/')
+        .next()
+        .unwrap_or("");
+    let mut slug = String::new();
+    for c in host.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_uppercase());
+        } else if !slug.ends_with('_') {
+            slug.push('_');
+        }
+    }
+    let slug = slug.trim_matches('_');
+    if slug.is_empty() {
+        "CUSTOM_API_KEY".to_string()
+    } else {
+        format!("CUSTOM_{slug}_API_KEY")
+    }
+}
+
+/// The Custom endpoint flow: base URL, wire format, then the key value
+/// on the next screen. Registered through the same path
+/// `pantheon provider add` uses, so a custom endpoint set up in the
+/// wizard is a real catalog entry and not a string only this wizard
+/// remembers.
 fn pick_custom_provider() -> Option<(String, Option<CustomProviderSpec>)> {
-    let url =
+    let raw =
         crate::prompt::pick_text("Custom endpoint", "Base URL", "https://api.example.com/v1")?;
-    if url.trim().is_empty() {
+    if raw.trim().is_empty() {
         return None;
     }
-    // Wire format: the runtime maps anything that is not "anthropic"
-    // to OpenAI, so ask rather than assume.
+    let url = crate::model::normalize_base_url(raw.trim());
+    let name = free_custom_name();
+    if name != "custom" {
+        println!("  id 'custom' is taken - using '{name}'");
+    }
+    // Wire format. Auto sniffs the URL just typed; Gemini rides the
+    // OpenAI wire through Google's compatibility endpoint, so it needs
+    // no special transport.
     let api_mode = match crate::prompt::pick_one(
         "Custom endpoint",
         "Wire format",
         vec![
+            Item::new("Auto-detect", "auto")
+                .desc("Anthropic host → /messages, otherwise /chat/completions"),
             Item::new("OpenAI-compatible", "openai").desc("OpenAI-style /v1 API"),
             Item::new("Anthropic", "anthropic").desc("Anthropic Messages API"),
+            Item::new("Gemini", "gemini").desc("Google's OpenAI-compatible endpoint"),
         ],
     )?
     .as_str()
     {
         "anthropic" => pantheon_providers::catalog::ApiMode::Anthropic,
+        "auto" => crate::model::sniff_wire_mode(&url),
         _ => pantheon_providers::catalog::ApiMode::OpenAi,
     };
-    // Derive the env var name automatically (CUSTOM_<NAME>_API_KEY) and
-    // collect the value in a single follow-up. The endpoint URL is the
-    // identity the user just typed; the env name is a derived handle.
+    // No key-env prompt: the handle derives from the host and the value
+    // is collected on the key screen.
     let key_env: Option<String> = None;
     pantheon_providers::catalog::register_custom_provider(
         pantheon_providers::catalog::ProviderMeta {
-            id: "custom".into(),
-            label: "Custom endpoint".into(),
+            id: name.clone(),
+            label: format!("Custom endpoint ({name})"),
             base_url: url.clone(),
             api_mode,
             base_env: String::new(),
@@ -803,7 +945,7 @@ fn pick_custom_provider() -> Option<(String, Option<CustomProviderSpec>)> {
         },
     );
     let spec = CustomProviderSpec {
-        name: "custom".to_string(),
+        name: name.clone(),
         base_url: url,
         api_mode: match api_mode {
             pantheon_providers::catalog::ApiMode::Anthropic => "anthropic".to_string(),
@@ -811,7 +953,7 @@ fn pick_custom_provider() -> Option<(String, Option<CustomProviderSpec>)> {
         },
         key_env,
     };
-    Some(("custom".into(), Some(spec)))
+    Some((name, Some(spec)))
 }
 
 /// Curated catalog entries normalized for the live-list merge.
@@ -911,32 +1053,11 @@ fn pick_model(
         }
     };
 
-    let mut rows = crate::model_catalog::merge_model_rows(&curated, &live);
-    // Float a recommendation to the top so a newcomer is not asked to
-    // know what each id is. A curated row wins (catalog order is the
-    // tested order); with only live rows, the first listed leads.
-    let rec_idx =
-        rows.iter()
-            .position(|r| r.curated)
-            .or(if rows.is_empty() { None } else { Some(0) });
-    if let Some(i) = rec_idx {
-        let rec = rows.remove(i);
-        rows.insert(0, rec);
-    }
+    let rows = crate::model_catalog::merge_model_rows(&curated, &live);
 
     let mut items: Vec<Item> = Vec::new();
-    for (idx, row) in rows.iter().enumerate() {
+    for row in rows.iter() {
         let mut item = Item::new(row.id.clone(), format!("{provider}/{}", row.id));
-        if idx == 0 {
-            // The floated recommendation: a right tag plus a one-line
-            // reason, so the choice is explained rather than asserted.
-            let reason = if row.curated {
-                "Pantheon's tested default"
-            } else {
-                "first model the endpoint listed"
-            };
-            item = item.tag("recommended").desc(reason);
-        }
         // Context and price go on their own dim line, not the right tag,
         // so a long "131k · $0.15 in / $0.60 out" never clips against
         // the model id on a narrow terminal.

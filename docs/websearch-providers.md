@@ -138,13 +138,19 @@ Requirement: server-side HTTP API returning JSON (title/url/snippet/dates), call
 10. **Kagi** - opt-in for users who already pay for it.
 
 Auth summary: user-supplied API key → TinyFish (free, no card), Tavily, Ollama (free account), Exa, Brave, Firecrawl, Perplexity, Kagi.
-Keyless → Marginalia. Self-hosted/local → SearXNG, OpenSERP.
+Keyless → Marginalia, Exa/Parallel/Firecrawl/Keenable anonymous endpoints. Self-hosted/local → SearXNG, OpenSERP, ddgs.
 
 ## Implementation status (2026-09-29)
 
-Nine providers are built in as `SearchProvider` implementations in
+Fourteen providers are built in as `SearchProvider` implementations in
 `crates/pantheon-web/src/websearch/` (blocking HTTP via ureq; the trait is
-sync). OpenSERP and Kagi were not picked and are not implemented.
+sync, except `ddgs` which shells out to its binary). OpenSERP and Kagi were
+not picked and are not implemented.
+
+Five keyless fallbacks were added later (all live-probed 2026-10-16):
+Exa/Parallel anonymous MCP endpoints, Firecrawl's public `/v2/search`,
+Keenable's public `/v1/search/public`, and local `ddgs` (shells out to
+the `ddgs` binary; raw DuckDuckGo HTTP stays non-viable per §10).
 
 | Provider | File | Auth | Key env var | Dates mapped |
 |---|---|---|---|---|
@@ -167,7 +173,7 @@ code: Ollama's Bearer scheme (unverifiable without a key) and Firecrawl's
 Provider registry for the setup picker: `pantheon_web::websearch`
 re-exports `all_providers() -> Vec<ProviderInfo>`, `provider_info(id)`,
 `default_key_env(id)`, `build_provider(id, key, base_url_override)`,
-plus `ProviderAuth::{ApiKey { env_var }, Keyless, SelfHosted { default_url }}`
+plus `ProviderAuth::{ApiKey { env_var }, Keyless, SelfHosted { default_url }, Local { .. }}`
 and `ProviderInfo { id, name, auth, blurb }`. Provider ids are stable and
 match `[websearch] provider` config values and `SearchProvider::name()`.
 
