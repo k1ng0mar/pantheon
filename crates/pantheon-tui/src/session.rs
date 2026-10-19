@@ -136,7 +136,7 @@ const KEY_HINTS: &[(&str, &str)] = &[
     ("Ctrl+B", "toggle sidebar"),
     ("Ctrl+G", "sidebar: activity / todo view"),
     ("Tab", "toggle Build / Plan mode"),
-    ("Shift+Tab", "cycle permissions: ask / smart / allow_all"),
+    ("Shift+Tab", "previous session"),
     ("/", "command palette (type to filter, Enter runs)"),
     ("Esc Esc (idle)", "offer to rewind the last turn"),
     ("/exit, /quit", "leave pantheon"),
@@ -794,6 +794,10 @@ pub struct TuiState {
     /// Per-block first content line, refreshed every transcript render.
     /// Backs click-to-toggle on collapsible block headers.
     pub block_line_starts: Vec<usize>,
+    /// Tab bar geometry + clickable ranges from the last render, for
+    /// tab switching and the `+` new-tab click.
+    pub tab_bar_area: Option<Rect>,
+    pub tab_hits: Vec<(u16, u16, crate::tabs::TabHit)>,
     /// Modal vim editing state for the composer (`/vim` to toggle).
     /// Off by default; when off, input behaves exactly as before.
     pub vim: vim::VimState,
@@ -944,6 +948,8 @@ impl Default for TuiState {
             theme: theme::Theme::pantheon(),
             show_shortcuts: false,
             block_line_starts: Vec::new(),
+            tab_bar_area: None,
+            tab_hits: Vec::new(),
             vim: vim::VimState::new(),
             git_label: None,
             git_checked_at: Instant::now(),
@@ -1123,6 +1129,8 @@ impl TuiState {
             theme: theme::Theme::pantheon(),
             show_shortcuts: false,
             block_line_starts: Vec::new(),
+            tab_bar_area: None,
+            tab_hits: Vec::new(),
             vim: vim::VimState::new(),
             git_label: None,
             git_checked_at: Instant::now(),
@@ -2244,8 +2252,11 @@ impl TuiState {
             }
             // Title generation (aux or /name) lands as a durable event;
             // the header follows it with no polling.
-            RuntimeErrorEvent::SessionTitled { title, .. } => {
+            RuntimeErrorEvent::SessionTitled { run_id, title, .. } => {
                 self.title = Some(title.clone());
+                // The tab bar shows the id stem until now; sync it so the
+                // fresh title appears without waiting for a refresh.
+                self.tabs.set_title(run_id, title);
             }
             // Mid-turn steering delivered: mark it visibly in the
             // transcript so the redirect is obvious, distinct from an
@@ -3104,7 +3115,9 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
             Constraint::Length(1), // plugin / version line
         ])
         .areas(f.area());
-        crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+        let tab_hits = crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+        state.tab_bar_area = Some(tab_area);
+        state.tab_hits = tab_hits;
         render_splash(f, splash_area, state);
         render_splash_bottom(f, bottom_area, state);
     } else {
@@ -3120,7 +3133,9 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
                 Constraint::Length(1), // footer
             ]);
             let [tab_area, body_area, alerts_area, footer_area] = outer.areas(f.area());
-            crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+            let tab_hits = crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+            state.tab_bar_area = Some(tab_area);
+            state.tab_hits = tab_hits;
             render_body(state, f, body_area);
             render_alerts(f, alerts_area, state);
             render_footer(f, footer_area, state);
@@ -3131,7 +3146,9 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
                 Constraint::Length(1), // footer
             ]);
             let [tab_area, body_area, footer_area] = outer.areas(f.area());
-            crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+            let tab_hits = crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+            state.tab_bar_area = Some(tab_area);
+            state.tab_hits = tab_hits;
             render_body(state, f, body_area);
             render_footer(f, footer_area, state);
         }
@@ -5064,6 +5081,46 @@ fn toggle_block_at_click(state: &mut TuiState, col: u16, row: u16) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+/// Click handling for the tab bar: a tab switches to it, the
+/// trailing `+` opens a new session tab. Returns true when the click
+/// landed on a tab-bar target.
+fn click_tab_bar(state: &mut TuiState, session: &Arc<Session>, col: u16, row: u16) -> bool {
+    let area = match state.tab_bar_area {
+        Some(a) => a,
+        None => return false,
+    };
+    if row != area.y || col < area.x || col >= area.x.saturating_add(area.width) {
+        return false;
+    }
+    let x = col - area.x;
+    let hit = state
+        .tab_hits
+        .iter()
+        .find(|(x0, x1, _)| x >= *x0 && x < *x1)
+        .map(|(_, _, h)| *h);
+    match hit {
+        Some(crate::tabs::TabHit::NewTab) => {
+            new_tab(state, session, "new tab (unsaved until the first turn)");
+            refresh_tabs(state, session);
+            true
+        }
+        Some(crate::tabs::TabHit::Switch(i)) => {
+            let id = state.tabs.tabs().get(i).map(|t| t.run_id.clone());
+            match id {
+                Some(id) if id != state.session_id => {
+                    switch_to_run(state, session, &id, "resumed");
+                    refresh_tabs(state, session);
+                    true
+                }
+                // Clicking the active tab: swallow, don't toggle blocks.
+                Some(_) => true,
+                None => false,
+            }
+        }
+        None => false,
     }
 }
 
@@ -8137,13 +8194,16 @@ fn tui_loop(
                 continue;
             }
             if let CtEvent::Mouse(me) = &event {
-                // Click a collapsible block header (thinking, `$ cmd`
-                // output, diffs) to expand/collapse it, opencode-style.
-                if matches!(me.kind, MouseEventKind::Down(MouseButton::Left))
-                    && toggle_block_at_click(state, me.column, me.row)
-                {
-                    state.tick();
-                    terminal.draw(|f| render(state, f))?;
+                // Left-click: tab bar first (switch tab / `+` for a new
+                // one), then collapsible transcript block headers,
+                // opencode-style.
+                if matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
+                    let handled = click_tab_bar(state, &session, me.column, me.row)
+                        || toggle_block_at_click(state, me.column, me.row);
+                    if handled {
+                        state.tick();
+                        terminal.draw(|f| render(state, f))?;
+                    }
                 }
                 continue;
             }
@@ -8581,6 +8641,21 @@ fn tui_loop(
                 }
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     match key.code {
+                        // Ctrl+Tab / Ctrl+Shift+Tab: these never reach
+                        // tab_key_action below (this block catches every
+                        // Ctrl-modified key first), so cycle here.
+                        KeyCode::Tab => {
+                            if let Some(id) = state.tabs.cycle_next().map(str::to_string) {
+                                switch_to_run(state, &session, &id, "resumed");
+                            }
+                            refresh_tabs(state, &session);
+                        }
+                        KeyCode::BackTab => {
+                            if let Some(id) = state.tabs.cycle_prev().map(str::to_string) {
+                                switch_to_run(state, &session, &id, "resumed");
+                            }
+                            refresh_tabs(state, &session);
+                        }
                         KeyCode::Char('o') | KeyCode::Char('O') => state.toggle_timeline(),
                         KeyCode::Char('b') | KeyCode::Char('B') => {
                             // Toggle the session sidebar: the 75/25
@@ -8689,9 +8764,10 @@ fn tui_loop(
                     terminal.draw(|f| render(state, f))?;
                     continue;
                 }
-                // Shift+Tab cycles the permission mode (Ask -> Smart ->
-                // AllowAll). Kept off plain Tab so the existing plan
-                // toggle is untouched.
+                // Bare BackTab cycles the permission mode (Ask -> Smart ->
+                // AllowAll). Shift+Tab never reaches here: tab_key_action
+                // above maps BackTab+SHIFT to previous-tab. Kept off
+                // plain Tab so the existing plan toggle is untouched.
                 if key.code == KeyCode::BackTab
                     || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
                 {
