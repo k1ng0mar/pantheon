@@ -222,11 +222,11 @@ fn drive(sup: &Supervisor, data_dir: &std::path::Path, run_id: &str, spec: &str)
         data_dir: data_dir.clone(),
         policy: policy.clone(),
     };
-    // The evaluator runs only when PANTHEON_PIPELINE_EVAL=1; otherwise the
-    // accept-all evaluator applies (the review gate still gates).
+    // The evaluator runs by default; PANTHEON_PIPELINE_EVAL=0 disables it
+    // (the human gate still gates regardless).
     let eval_enabled = std::env::var("PANTHEON_PIPELINE_EVAL")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
+        .map(|v| v != "0")
+        .unwrap_or(true);
     let noop = AcceptAllEvaluator;
     let strict = RuntimeEvaluator {
         data_dir: data_dir.clone(),

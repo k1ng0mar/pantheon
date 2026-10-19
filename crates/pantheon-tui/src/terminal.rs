@@ -345,7 +345,9 @@ fn usage() -> String {
     s.push_str("TALK TO IT\n");
     s.push_str("  run  --taskID <id> [--say TEXT] [--fail CODE] [--ext]\n");
     s.push_str("        [--deliver session|telegram|discord]\n");
-    s.push_str("        run a task by id; delivery defaults to an in-session turn\n\n");
+    s.push_str("        run a task by id; delivery defaults to an in-session turn\n");
+    s.push_str("  send --to telegram|discord|mobile|home \"message\"\n");
+    s.push_str("        push a message to a gateway surface\n\n");
 
     s.push_str("INSPECT A RUN\n");
     s.push_str("  runs                         list runs and their status\n");
@@ -380,7 +382,8 @@ fn usage() -> String {
     s.push_str("EXTEND\n");
     s.push_str("  skills list|import <name>|doctor        SKILL.md skills\n");
     s.push_str("  plugins list|install|enable|disable     capability plugins\n");
-    s.push_str("  extensions                    list loaded extensions\n");
+    s.push_str("extensions [approve <name>|revoke <name>|pending|list]\n");
+    s.push_str("                                manage extension approvals\n");
     s.push_str("  hook <name> [--session S] [--platform P]  fire a hook\n");
     s.push_str("  mcp list [--json]             MCP servers a migration declared\n");
     s.push_str("  migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp> [path]\n");
@@ -399,7 +402,8 @@ fn usage() -> String {
 
     s.push_str("RUN UNATTENDED\n");
     s.push_str("  schedule <task> --30m | list|pause|resume|cancel|run <id>\n");
-    s.push_str("  swarm status [<id>] | list   previously recorded swarms (spawn unsupported)\n");
+    s.push_str("  swarm <N> \"task\" [--roles a,b] [--delivery telegram|discord]\n");
+    s.push_str("  swarm status [<id>] | list   swarm state + history\n");
     s.push_str("  gateway [run|start|stop|restart|status]\n");
     s.push_str("        always-on service: chat surfaces + scheduled tasks\n");
     s.push_str("  serve [--port N] [--host H]   AG-UI SSE + RPC server\n");
@@ -425,6 +429,7 @@ fn usage() -> String {
 const KNOWN_VERBS: &[&str] = &[
     "audit",
     "backup",
+    "config",
     "consolidate",
     "dashboard",
     "doctor",
@@ -449,6 +454,7 @@ const KNOWN_VERBS: &[&str] = &[
     "run",
     "runs",
     "schedule",
+    "send",
     "serve",
     "setup",
     "skills",
@@ -1528,15 +1534,88 @@ timeout_ms = 5000
         }
         "extensions" => {
             let mgr = load_mgr();
-            let names = mgr.names();
-            if names.is_empty() {
-                // Silence reads as "the command did nothing". Say what
-                // happened and where to put an extension.
-                println!("no extensions loaded");
-                println!("drop a plugin.yaml in {}", ext_dir().display());
-            } else {
-                for n in &names {
-                    println!("{n}");
+            let ext_dir = ext_dir();
+            match args.get(2).map(String::as_str) {
+                Some("approve") => {
+                    let name = match args.get(3) {
+                        Some(n) if !n.is_empty() => n.clone(),
+                        _ => {
+                            eprintln!("usage: pantheon extensions approve <name>");
+                            std::process::exit(2);
+                        }
+                    };
+                    let pending_list = mgr.pending();
+                    let pending = pending_list.iter().find(|p| p.name == name);
+                    match pending {
+                        Some(p) => {
+                            match pantheon_api::approval::record_approval_for(
+                                &ext_dir,
+                                &p.name,
+                                &p.version,
+                                &p.dir,
+                            ) {
+                                Ok(_) => println!("approved {name} (v{})", p.version),
+                                Err(e) => {
+                                    eprintln!("extensions approve: {e}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                        None => {
+                            eprintln!("extensions approve: no pending plugin named '{name}'");
+                            eprintln!("pending:");
+                            for p in pending_list {
+                                eprintln!("  {} (v{})", p.name, p.version);
+                            }
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Some("revoke") => {
+                    let name = match args.get(3) {
+                        Some(n) if !n.is_empty() => n.clone(),
+                        _ => {
+                            eprintln!("usage: pantheon extensions revoke <name>");
+                            std::process::exit(2);
+                        }
+                    };
+                    match pantheon_api::approval::revoke_approval_for(&ext_dir, &name) {
+                        Ok(true) => println!("revoked {name}"),
+                        Ok(false) => eprintln!("extensions revoke: no approval for '{name}'"),
+                        Err(e) => {
+                            eprintln!("extensions revoke: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Some("pending") => {
+                    let pending_list = mgr.pending();
+                    if pending_list.is_empty() {
+                        println!("no pending extensions");
+                    } else {
+                        println!("pending extensions:");
+                        for p in pending_list {
+                            println!("  {} (v{})", p.name, p.version);
+                        }
+                    }
+                }
+                _ => {
+                    let names = mgr.names();
+                    if names.is_empty() {
+                        println!("no extensions loaded");
+                        println!("drop a plugin.yaml in {}", ext_dir.display());
+                    } else {
+                        for n in &names {
+                            println!("{n}");
+                        }
+                    }
+                    let pending_list = mgr.pending();
+                    if !pending_list.is_empty() {
+                        println!("pending approval:");
+                        for p in pending_list {
+                            println!("  {} (v{})", p.name, p.version);
+                        }
+                    }
                 }
             }
         }
@@ -1692,6 +1771,9 @@ timeout_ms = 5000
         }
         "mcp" => {
             crate::mcp::cmd_mcp(&args[2..]);
+        }
+        "send" => {
+            crate::send::cmd_send(&args);
         }
         _ => {
             match classify_first_arg(&args) {
