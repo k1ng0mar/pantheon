@@ -8,7 +8,7 @@
 //! 1. pick a provider: recommended first, preselected on the
 //!    recommended row, provider notes in the descriptions;
 //! 2. follow-up by kind: [`ProviderKind::Keyless`] asks nothing;
-//!    [`ProviderKind::Cloud`] asks for the ENV VAR NAME holding the key
+//!    [`ProviderKind::Cloud`] takes the standard env var name silently
 //!    (never the value; the wizard never handles secrets);
 //!    [`ProviderKind::SelfHosted`] asks for the instance URL;
 //!    [`ProviderKind::Local`] detects the binary, and when it is missing
@@ -31,6 +31,8 @@
 
 use crate::widget::Item;
 use pantheon_api::config::ToolGroup;
+use std::collections::HashSet;
+use std::path::Path;
 
 /// One follow-up question a provider needs beyond the pick itself.
 #[derive(Debug, Clone)]
@@ -70,8 +72,15 @@ pub enum ProviderKind {
     /// User-run instance: ask for its URL. `required` providers reprompt
     /// on empty; optional ones fall back to the backend's own default
     /// (memory bridges read env/`default_url` when `options.url` is
-    /// unset).
-    SelfHosted { default_url: String, required: bool },
+    /// unset). Some self-hosted rows can also need auth (a memory bridge
+    /// with a key on it, for example): those carry `key_env` - the
+    /// standard name is asked silently and the value pasted once, the
+    /// same contract Cloud rows follow.
+    SelfHosted {
+        default_url: String,
+        required: bool,
+        key_env: Option<String>,
+    },
     /// Local binary: detect, then install-or-skip.
     Local { local: LocalMeta },
 }
@@ -91,6 +100,20 @@ pub struct ProviderMeta {
     pub kind: ProviderKind,
     /// Follow-up questions asked after the pick.
     pub extra: Vec<ExtraField>,
+}
+
+impl ProviderMeta {
+    /// The standard key env var this row collects, if any: Cloud rows
+    /// always; SelfHosted rows only when they carry one (a memory
+    /// bridge with auth on it). The wizard and tests use this to pin
+    /// the collect-the-key contract per row.
+    pub fn key_env(&self) -> Option<&str> {
+        match &self.kind {
+            ProviderKind::Cloud { env_var } => Some(env_var),
+            ProviderKind::SelfHosted { key_env, .. } => key_env.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 /// The wizard's answer for one provider-backed group.
@@ -370,18 +393,16 @@ pub fn complete_answer(
     match &meta.kind {
         ProviderKind::Keyless => {}
         ProviderKind::Cloud { env_var } => {
-            let env = ask(
-                &format!(
-                    "Env var holding the {} API key (empty = provider default)",
-                    meta.name
-                ),
-                env_var,
-            )?;
-            answer.key_env = non_empty(env).or(Some(env_var.clone()));
+            // The standard name IS the answer: asking the user to retype
+            // it is a flaw. A custom name stays available through flags
+            // (`--websearch-key-env` etc.), which pre-fill the answer
+            // instead of prompting.
+            answer.key_env = Some(env_var.clone());
         }
         ProviderKind::SelfHosted {
             default_url,
             required,
+            key_env,
         } => {
             // A provider with no default URL that requires one cannot
             // work without it, so an empty answer reprompts instead of
@@ -409,6 +430,10 @@ pub fn complete_answer(
                 }
                 println!("pantheon: a URL is required for {}", meta.name);
             }
+            // Populated rows that can need auth: record the standard
+            // var NAME here; the value paste happens right after the
+            // pick (wizard) or the pick prompt (text setup).
+            answer.key_env = key_env.clone();
         }
         ProviderKind::Local { local } => {
             if detect_binary(&local.detect_cmd) {
@@ -531,9 +556,21 @@ pub fn websearch_providers() -> Vec<ProviderMeta> {
                     env_var: env_var.to_string(),
                 },
                 ProviderAuth::Keyless => ProviderKind::Keyless,
+                ProviderAuth::Local {
+                    detect_cmd,
+                    install_hint,
+                    install_cmd,
+                } => ProviderKind::Local {
+                    local: LocalMeta {
+                        detect_cmd: detect_cmd.to_string(),
+                        install_hint: install_hint.to_string(),
+                        install_cmd: install_cmd.map(str::to_string),
+                    },
+                },
                 ProviderAuth::SelfHosted { default_url } => ProviderKind::SelfHosted {
                     default_url: default_url.to_string(),
                     required: true,
+                    key_env: None,
                 },
             };
             ProviderMeta {
@@ -553,8 +590,11 @@ pub fn websearch_providers() -> Vec<ProviderMeta> {
 /// the backend needs, this maps it onto the generic flow.
 pub fn browser_providers() -> Vec<ProviderMeta> {
     use pantheon_web::browser::BackendKind;
-    pantheon_web::browser::all_backends()
+    // Steel Cloud and Steel self-hosted are separate rows: one screen
+    // cannot honestly ask for both a cloud key and an instance URL.
+    let mut rows: Vec<ProviderMeta> = pantheon_web::browser::all_backends()
         .into_iter()
+        .filter(|b| b.interactive)
         .map(|b| {
             let (kind, extra) = match b.kind {
                 BackendKind::Gsd => (
@@ -581,12 +621,7 @@ pub fn browser_providers() -> Vec<ProviderMeta> {
                     ProviderKind::Cloud {
                         env_var: "STEEL_API_KEY".into(),
                     },
-                    vec![ExtraField {
-                        key: "steel_base_url".into(),
-                        prompt: "Self-hosted Steel base URL (empty = Steel cloud)".into(),
-                        default: String::new(),
-                        required: false,
-                    }],
+                    Vec::new(),
                 ),
                 BackendKind::Browserbase => (
                     ProviderKind::Cloud {
@@ -599,16 +634,6 @@ pub fn browser_providers() -> Vec<ProviderMeta> {
                         required: true,
                     }],
                 ),
-                BackendKind::Lightpanda => (
-                    ProviderKind::SelfHosted {
-                        // No compiled default: the backend needs a
-                        // running `lightpanda serve`, so the URL is
-                        // required (the flow reprompts on empty).
-                        default_url: String::new(),
-                        required: true,
-                    },
-                    Vec::new(),
-                ),
                 BackendKind::Playwright => (
                     ProviderKind::Local {
                         local: LocalMeta {
@@ -619,14 +644,19 @@ pub fn browser_providers() -> Vec<ProviderMeta> {
                     },
                     Vec::new(),
                 ),
+                // Local-tooling norm: the install chain bootstraps
+                // everything the backend needs (pip itself included),
+                // so a bare system Python is not a dead end. The fetch
+                // pulls a ~150MB browser binary; headless servers may
+                // also need OS libs (libgtk-3-0, libasound2) - the hint
+                // says so when the one-liner cannot cover it.
                 BackendKind::Camofox => (
                     ProviderKind::Local {
                         local: LocalMeta {
                             detect_cmd: "python3 -c \"import camoufox\"".into(),
-                            install_hint: pantheon_web::browser::CAMOFOX_INSTALL_INSTRUCTIONS
-                                .into(),
+                            install_hint: "needs Python 3 with pip (`apt install python3-pip` on Debian/Ubuntu, or `python3 -m ensurepip`), then the package plus its fetched browser (~150MB; headless servers may also need libgtk-3-0 and libasound2)".into(),
                             install_cmd: Some(
-                                "pip install \"camoufox[geoip]\" && python -m camoufox fetch".into(),
+                                "python3 -m pip install \"camoufox[geoip]\" && python3 -m camoufox fetch".into(),
                             ),
                         },
                     },
@@ -645,7 +675,20 @@ pub fn browser_providers() -> Vec<ProviderMeta> {
                 extra,
             }
         })
-        .collect()
+        .collect();
+    rows.push(ProviderMeta {
+        id: "steel_selfhosted".to_string(),
+        name: "Steel (self-hosted)".to_string(),
+        blurb: "Your own Steel instance over REST + CDP. Needs: the instance base URL (no cloud key).".to_string(),
+        recommended: false,
+        kind: ProviderKind::SelfHosted {
+            default_url: String::new(),
+            required: true,
+            key_env: None,
+        },
+        extra: Vec::new(),
+    });
+    rows
 }
 
 /// STT backends from the `pantheon-providers` voice registry.
@@ -740,22 +783,48 @@ pub fn tts_providers() -> Vec<ProviderMeta> {
         .collect()
 }
 
-/// Memory backends from the `pantheon-memory` registry. `native` needs
-/// nothing; every other backend is a bridge whose URL and key resolve
-/// from `options.url`/`options.key` or the fixed env convention
-/// `PANTHEON_MEMORY_<NAME>_URL` / `PANTHEON_MEMORY_<NAME>_KEY` - the
-/// wizard requires the URL (no compiled default exists; the env var is
-/// a runtime fallback, not a wizard escape hatch) and names the env
-/// vars, but never collects the key value. The `fake` backend is a test
-/// double and never offered.
-pub fn memory_providers() -> Vec<ProviderMeta> {
-    pantheon_memory::BackendRegistry::with_defaults()
+/// Memory backends from the `pantheon-memory` registry, plus any user
+/// memory-plugin manifests under `<data_dir>/memory-plugins` - the same
+/// loader the runtime uses, so the picker shows exactly what
+/// `pantheon memory backend list` would. `native` needs nothing; other
+/// bridge backends are self-hosted rows whose URL and key resolve from
+/// `options.url`/`options.key` or the fixed env convention
+/// `PANTHEON_MEMORY_<NAME>_URL` / `PANTHEON_MEMORY_<NAME>_KEY`. User
+/// plugins ask nothing at all: the manifest already carries its
+/// URL/key/command (and, for stdio, the exec consent), so plugging in
+/// someone's own memory system is pick-and-go. The `fake` backend is a
+/// test double and never offered.
+pub fn memory_providers(data_dir: &Path) -> Vec<ProviderMeta> {
+    let default_names: HashSet<String> = pantheon_memory::BackendRegistry::with_defaults()
+        .catalog()
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
+    let plugin_names: HashSet<String> = pantheon_memory::BackendRegistry::with_plugins(data_dir)
+        .catalog()
+        .into_iter()
+        .map(|b| b.name)
+        .filter(|n| !default_names.contains(n))
+        .collect();
+    pantheon_memory::BackendRegistry::with_plugins(data_dir)
         .catalog()
         .into_iter()
         .filter(|b| b.name != "fake")
         .map(|b| {
             let native = b.name == "native";
-            let kind = if native {
+            let is_plugin = plugin_names.contains(&b.name);
+            let prefix = b.name.to_uppercase().replace('-', "_");
+            // Builtin rows whose auth notes name the standard key var
+            // (e.g. hindsight-cloud, mem0, openviking, galaxymem via a
+            // bridge) get that var collected; genuinely keyless rows
+            // (byterover, hindsight-local, mnemosyne, mnemopi,
+            // sharpshooter) never see a key prompt. User plugins never
+            // see one either: their key (if any) lives in the manifest.
+            let std_key = format!("PANTHEON_MEMORY_{prefix}_KEY");
+            let key_env = (!native && b.auth.contains(&std_key)).then(|| std_key);
+            let kind = if native || is_plugin {
+                // Native works out of the box; a user plugin is
+                // configured inside its manifest, so both ask nothing.
                 ProviderKind::Keyless
             } else {
                 ProviderKind::SelfHosted {
@@ -765,11 +834,19 @@ pub fn memory_providers() -> Vec<ProviderMeta> {
                     // so an empty answer must reprompt rather than write a
                     // URL-less selection the runtime would fail closed on.
                     required: true,
+                    key_env,
                 }
             };
-            let prefix = b.name.to_uppercase().replace('-', "_");
             let blurb = if native {
                 b.auth.clone()
+            } else if is_plugin {
+                let where_conf =
+                    format!("configured in memory-plugins/{}.toml, nothing to enter here", b.name);
+                if b.auth.is_empty() {
+                    format!("{}: {where_conf}", b.label)
+                } else {
+                    format!("{}: {} ({where_conf})", b.label, b.auth)
+                }
             } else {
                 format!(
                     "{}. url/key: options or $PANTHEON_MEMORY_{prefix}_URL / $PANTHEON_MEMORY_{prefix}_KEY",

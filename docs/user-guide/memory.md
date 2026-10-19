@@ -56,6 +56,36 @@ When Pantheon discovers a procedure that works reliably, it can be saved as a sk
 pantheon skills list|import|doctor
 ```
 
+## Using your own memory system
+
+The native store is the zero-config default; other memories plug in
+without ceremony:
+
+- **Any service speaking the bridge protocol** (or a thin bridge you run
+  in front of one that doesn't): scaffold a plugin manifest and select
+  it.
+
+  ```sh
+  pantheon memory backend scaffold NAME [http|stdio]
+  # edit memory-plugins/NAME.toml (url/key, or command+args for stdio),
+  # then:
+  pantheon memory backend select NAME
+  ```
+
+- A manifest is a manifest: stdio commands run as a child process, so
+  they carry `allow_exec = true` as explicit consent.
+- Setup shows every manifest you've installed alongside the built-in
+  backends, and asks nothing for them.
+- **Switching backends is not migration**: each backend keeps its own
+  store. Selecting a different one starts empty and does not move your
+  memories; select your old backend again to read them.
+
+Failure is loud, not silent: if a backend cannot open, Pantheon says so
+at startup and runs **without** memory rather than quietly pretending.
+
+Contract details — trust boundaries, timeouts, response caps, error
+codes — live in [memory-backends.md](../memory-backends.md).
+
 ## See also
 
 - [Agents](agents.md): whose memory is whose

@@ -140,7 +140,6 @@ fn browser_defaults_match_documented_behavior() {
         Some("BROWSERBASE_API_KEY")
     );
     assert!(cfg.browserbase_project_id.is_none());
-    assert!(cfg.lightpanda_cdp_url.is_none());
     assert!(cfg.playwright_binary.is_none());
     assert!(cfg.chrome_binary.is_none());
     assert!(cfg.headless);

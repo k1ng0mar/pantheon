@@ -992,7 +992,7 @@ pub struct BrowserSection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// Backend id: `gsd` (default), `chromiumoxide`, `steel`,
-    /// `browserbase`, `lightpanda`, `playwright`, or `camofox`. Unknown
+    /// `browserbase`, `playwright`, or `camofox`. Unknown
     /// ids warn and fall back to `gsd`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
@@ -1033,13 +1033,6 @@ pub struct BrowserSection {
     /// Browserbase project id (required by `POST /v1/sessions`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browserbase_project_id: Option<String>,
-    /// CDP websocket URL of a running Lightpanda server
-    /// (`lightpanda serve`). The only Lightpanda transport: binary
-    /// launch is not supported (its CLI is not
-    /// Chromium-flag-compatible), so run `lightpanda serve` yourself
-    /// and point this at it. Unset = Lightpanda backend unusable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lightpanda_cdp_url: Option<String>,
     /// Path to the `playwright-cli` binary (`@playwright/cli`).
     /// Absent = resolved from PATH.
     #[serde(default, skip_serializing_if = "Option::is_none")]

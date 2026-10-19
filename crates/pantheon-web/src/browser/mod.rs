@@ -1,5 +1,5 @@
 //! Browser automation for Pantheon: agent-facing `browser_*` tools backed
-//! by a seven-backend lineup behind the [`BrowserBackend`] trait seam.
+//! by a six-backend lineup behind the [`BrowserBackend`] trait seam.
 //!
 //! ## The lineup
 //!
@@ -11,8 +11,6 @@
 //!   cloud and self-host share one implementation (configurable base URL).
 //! * Browserbase - cloud fallback: session REST API, raw CDP websocket
 //!   per session.
-//! * Lightpanda - extraction/fetch only, never interactive (allowlisted
-//!   command surface enforced before any connection).
 //! * Playwright - official stateful `@playwright/cli` subprocess fallback.
 //! * Camoufox - anti-detect fallback: patched Firefox through the
 //!   official Python launcher (Juggler protocol, no CDP), driven by a
@@ -93,7 +91,6 @@ pub mod cdp;
 pub mod error;
 pub mod fill;
 pub mod lifecycle;
-pub mod lightpanda;
 pub mod native;
 pub mod playwright;
 pub mod proc;
@@ -108,9 +105,6 @@ pub use browserbase::{BrowserbaseBackend, BrowserbaseConfig, BROWSERBASE_API_KEY
 pub use camofox::{CamofoxBackend, CamofoxConfig, CAMOFOX_INSTALL_INSTRUCTIONS};
 pub use error::{BrowserError, INSTALL_INSTRUCTIONS};
 pub use lifecycle::{sanitize_session_name, SessionManager};
-pub use lightpanda::{
-    LightpandaBackend, LightpandaConfig, ALLOWED_COMMANDS as LIGHTPANDA_COMMANDS,
-};
 pub use native::{NativeBackend, NativeConfig};
 pub use playwright::{PlaywrightBackend, PlaywrightConfig};
 pub use registry::{all_backends, build_backend, BackendConfig, BackendInfo, BackendKind};

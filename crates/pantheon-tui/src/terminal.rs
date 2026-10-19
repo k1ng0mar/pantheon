@@ -1089,6 +1089,12 @@ pub fn run() {
                                 "selection saved: {}",
                                 dd.join("memory-backend.toml").display()
                             );
+                            // Selection is not migration: each backend owns
+                            // its own store, so the previous backend's
+                            // memories stay with it until it is selected
+                            // again. Saying so prevents "it lost my notes"
+                            // as a bug report.
+                            println!("existing memories stay with their backend; nothing is migrated - select it again to read them");
                         }
                         Some("scaffold") => {
                             let name = match args.get(4) {
@@ -1145,6 +1151,18 @@ timeout_ms = 5000
                             if let Err(e) = std::fs::write(&path, template) {
                                 eprintln!("memory backend scaffold: {e}");
                                 std::process::exit(1);
+                            }
+                            // Operator-only permissions: manifests carry a
+                            // service key in plaintext (`key = "..."`), so
+                            // a scaffolded file must never be group/world
+                            // readable (same posture as .env, 0600).
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = std::fs::set_permissions(
+                                    &path,
+                                    std::fs::Permissions::from_mode(0o600),
+                                );
                             }
                             println!("scaffolded {}", path.display());
                             println!("edit it, then: pantheon memory backend select {name}");

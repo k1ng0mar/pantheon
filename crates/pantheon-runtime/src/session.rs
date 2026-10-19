@@ -1681,9 +1681,17 @@ impl Session {
         // The operator's selected memory backend: native SQLite by
         // default, a registry provider when one is configured. A backend
         // that fails to open degrades to no memory rather than
-        // pretending a backend is active.
+        // pretending a backend is active - and the failure is reported
+        // loudly here, so an outage is never discovered as "the agent
+        // forgot everything".
         let memory_selection = pantheon_memory::load_selection(&data_dir);
-        let memory = pantheon_memory::open_selected(&data_dir).ok();
+        let memory = match pantheon_memory::open_selected(&data_dir) {
+            Ok(mem) => Some(mem),
+            Err(e) => {
+                eprintln!("{}", pantheon_memory::unavailable_message(&memory_selection, &e));
+                None
+            }
+        };
         let sup = Supervisor::open(data_dir.clone())?;
         // The configured permission mode, resolved once at construction.
         // Absent or unparseable reads as `Ask`, the conservative default:
@@ -2387,6 +2395,26 @@ impl Session {
             .lock()
             .map(|t| t.is_enabled(group))
             .unwrap_or(false)
+    }
+
+    /// Append the todo planning guidance only when the Tasks group is on
+    /// (the tool is registered iff the same flag says so) - the model is
+    /// never told to use a tool that does not exist. Extracted so the
+    /// guidance/registration coupling has a directly testable seam.
+    fn with_todo_guidance(&self, system_prompt: String) -> String {
+        if self.tools_on(pantheon_api::config::ToolGroup::Tasks) {
+            format!("{system_prompt}\n\n{TODO_SYSTEM_GUIDANCE}")
+        } else {
+            system_prompt
+        }
+    }
+
+    /// Test seam for the todo guidance coupling: with Tasks on, the
+    /// prompt carries the guidance; with it off, it does not.
+    #[doc(hidden)]
+    pub fn system_prompt_contains_todos(&self) -> bool {
+        self.with_todo_guidance(String::new())
+            .contains(TODO_SYSTEM_GUIDANCE)
     }
 
     /// Install the resolved MCP launcher config: replaces the manager's
@@ -3920,11 +3948,7 @@ impl Session {
         // it is always present, whether or not a list exists yet. Only
         // include it when the tool is actually registered (ToolGroup::Tasks
         // on); otherwise the model is told to use a tool that doesn't exist.
-        let system_prompt = if self.tools_on(pantheon_api::config::ToolGroup::Tasks) {
-            format!("{system_prompt}\n\n{TODO_SYSTEM_GUIDANCE}")
-        } else {
-            system_prompt
-        };
+        let system_prompt = self.with_todo_guidance(system_prompt);
         // Nightly persona overlay: approved persona proposals (evals +
         // replay + explicit human approval - `decide(approve = true)` is
         // the only writer to the persona namespace) shape the preamble

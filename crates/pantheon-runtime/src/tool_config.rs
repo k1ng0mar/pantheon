@@ -40,9 +40,6 @@ pub struct BrowserToolConfig {
     pub browserbase_api_key_secret: Option<String>,
     /// Browserbase project id (required by `POST /v1/sessions`).
     pub browserbase_project_id: Option<String>,
-    /// CDP websocket URL of a running Lightpanda server. The only
-    /// transport; `None` = Lightpanda backend unusable.
-    pub lightpanda_cdp_url: Option<String>,
     /// Path to the `playwright-cli` binary. `None` = resolved from PATH.
     pub playwright_binary: Option<PathBuf>,
     /// Path to the Chrome/Chromium binary for the `chromiumoxide`
@@ -70,7 +67,6 @@ impl Default for BrowserToolConfig {
             steel_base_url: None,
             browserbase_api_key_secret: Some("BROWSERBASE_API_KEY".to_string()),
             browserbase_project_id: None,
-            lightpanda_cdp_url: None,
             playwright_binary: None,
             chrome_binary: None,
             headless: true,
@@ -400,11 +396,6 @@ pub fn resolve_browser_section(s: &pantheon_api::config::BrowserSection) -> Brow
             cfg.browserbase_project_id = Some(id);
         }
     }
-    if let Some(url) = s.lightpanda_cdp_url.clone() {
-        if !url.trim().is_empty() {
-            cfg.lightpanda_cdp_url = Some(url);
-        }
-    }
     if let Some(bin) = s.playwright_binary.clone() {
         if !bin.trim().is_empty() {
             cfg.playwright_binary = Some(std::path::PathBuf::from(bin));
@@ -531,10 +522,6 @@ pub fn browser_backend_config(
             api_key: resolve_secret(cfg.browserbase_api_key_secret.as_deref()),
             project_id: cfg.browserbase_project_id.clone(),
             base_url: None,
-            timeout_secs: timeout,
-        },
-        lightpanda: b::LightpandaConfig {
-            cdp_url: cfg.lightpanda_cdp_url.clone(),
             timeout_secs: timeout,
         },
         playwright: b::PlaywrightConfig {

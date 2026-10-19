@@ -291,20 +291,30 @@ pub(crate) fn count_keys(stacked: &str) -> usize {
     stacked.split(',').filter(|k| !k.trim().is_empty()).count()
 }
 
-/// Parse `--api-mode openai|openai-compatible|anthropic`. Exits 2 on
-/// anything else so both verbs reject the same way.
+/// Parse `--api-mode openai|anthropic|gemini|auto`. Exits 2 on
+/// anything else so both verbs reject the same way. `gemini` rides the
+/// OpenAI wire through Google's compatibility endpoint; `auto` sniffs
+/// the URL's host (needs the base URL, so callers resolve it after
+/// they know the endpoint).
 pub(crate) fn parse_api_mode(raw: Option<&str>) -> ApiMode {
     match raw {
         None => ApiMode::OpenAi,
         Some(m) => match m.trim().to_ascii_lowercase().as_str() {
             "anthropic" => ApiMode::Anthropic,
-            "openai" | "openai-compatible" => ApiMode::OpenAi,
+            "openai" | "openai-compatible" | "gemini" => ApiMode::OpenAi,
+            "auto" => ApiMode::OpenAi,
             _ => {
-                eprintln!("unknown --api-mode {m:?} (openai|anthropic)");
+                eprintln!("unknown --api-mode {m:?} (openai|anthropic|gemini|auto)");
                 std::process::exit(2);
             }
         },
     }
+}
+
+/// Whether `--api-mode` asked for host-sniffing. Callers that know the
+/// base URL apply [`sniff_wire_mode`] when this is true.
+pub(crate) fn api_mode_is_auto(raw: Option<&str>) -> bool {
+    matches!(raw.map(|m| m.trim().to_ascii_lowercase()).as_deref(), Some("auto"))
 }
 
 /// Parse repeatable `--set VAR=value` pairs. Exits 2 on a bad entry so
@@ -578,7 +588,9 @@ fn select_keys(
             };
         }
     }
-    let key_env = prompt("Key env var", key_env_default);
+    // No name prompt: the standard name is the answer (custom names via
+    // `--api-key-env`). The value prompt below is the only question.
+    let key_env = key_env_default.to_string();
     let existing = super::dotenv::read_dotenv_value(dd, &key_env).filter(|v| !v.trim().is_empty());
     if let Some(cur) = &existing {
         println!("  current: {} (empty keeps)", mask_key(cur));
@@ -1147,6 +1159,10 @@ pub(crate) fn builtin_provider_id(id: &str) -> bool {
 pub(crate) fn wire_mode_items() -> Vec<PickItem> {
     vec![
         PickItem {
+            label: "Auto-detect".into(),
+            desc: "Anthropic host → /messages, otherwise /chat/completions".into(),
+        },
+        PickItem {
             label: "OpenAI-compatible".into(),
             desc: "/chat/completions".into(),
         },
@@ -1154,7 +1170,45 @@ pub(crate) fn wire_mode_items() -> Vec<PickItem> {
             label: "Anthropic".into(),
             desc: "/messages".into(),
         },
+        PickItem {
+            label: "Gemini".into(),
+            desc: "Google's OpenAI-compatible endpoint".into(),
+        },
     ]
+}
+
+/// Guess the wire mode from the base URL's host. Anthropic hosts speak
+/// `/messages`; everything else is assumed OpenAI-compatible (that
+/// includes Google's `.../v1beta/openai` endpoint and all aggregators).
+/// A heuristic for the "Auto-detect" picker row - an explicit pick
+/// always wins over this.
+pub(crate) fn sniff_wire_mode(base_url: &str) -> ApiMode {
+    let host = base_url
+        .split("://")
+        .nth(1)
+        .unwrap_or(base_url)
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if host.contains("anthropic") {
+        ApiMode::Anthropic
+    } else {
+        ApiMode::OpenAi
+    }
+}
+
+/// Map a wire-mode picker index onto [`ApiMode`]. `auto_idx` is the
+/// Auto-detect row: it sniffs the URL. Gemini rides the OpenAI wire
+/// through Google's compatibility endpoint - there is no separate
+/// native-Gemini transport, so picking it never writes a mode the
+/// runtime cannot honor.
+pub(crate) fn resolve_wire_mode(idx: usize, base_url: &str) -> ApiMode {
+    match idx {
+        0 => sniff_wire_mode(base_url),
+        2 => ApiMode::Anthropic,
+        _ => ApiMode::OpenAi,
+    }
 }
 
 /// The full interactive flow for one scope: provider → base URL + wire
@@ -1243,20 +1297,24 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
     };
     let (provider_id, base_url, api_mode, key_env_default, is_custom) = {
         let url = normalize_base_url(&prompt("Base URL or :port", &p.base_url));
-        let mode_items = wire_mode_items();
-        let default_mode = match p.api_mode {
-            ApiMode::OpenAi => 0,
-            ApiMode::Anthropic => 1,
-        };
-        println!(
-            "Wire mode [{}]:",
-            if default_mode == 0 {
-                "openai"
+        // Untouched preset: the catalog mode is authoritative, no
+        // question. Edited URLs and customs still get the picker (Auto
+        // first), since the wire is genuinely unknown there.
+        let overridden_or_custom = was_custom || url != p.base_url;
+        let mode = if !overridden_or_custom {
+            p.api_mode
+        } else {
+            let mode_items = wire_mode_items();
+            println!("Wire mode [auto]:");
+            let mode_idx = pick("wire mode", &mode_items).unwrap_or(0);
+            if mode_idx == 0 {
+                // Auto: sniff the (possibly edited) URL, so a pasted
+                // Anthropic endpoint does not silently get the OpenAI wire.
+                sniff_wire_mode(&url)
             } else {
-                "anthropic"
+                resolve_wire_mode(mode_idx, &url)
             }
-        );
-        let mode_idx = pick("wire mode", &mode_items).unwrap_or(default_mode);
+        };
         let key_env = if p.key_env.is_empty() {
             format!("PANTHEON_KEY_{}", config::sanitize_env_suffix(&p.id))
         } else {
@@ -1272,23 +1330,16 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
         (
             p.id,
             url,
-            if mode_idx == 1 {
-                ApiMode::Anthropic
-            } else {
-                ApiMode::OpenAi
-            },
+            mode,
             key_env,
             was_custom || overridden,
         )
     };
 
-    // 3. keys → .env. In the aux flow a provider with a key on file
-    // offers to reuse the stored key instead of re-prompting; "no"
-    // falls through to the normal prompts and overwrites.
-    let stored = match &target {
-        Target::Auxiliary(_) => stored_key_env.as_deref(),
-        Target::Default => None,
-    };
+    // 3. keys → .env. A provider with a key on file offers to reuse the
+    // stored key instead of re-prompting; "no" falls through to the
+    // normal prompts and overwrites.
+    let stored = stored_key_env.as_deref();
     let ks = select_keys(prompt, &dd, &key_env_default, stored);
     let key_env = ks.key_env;
     let raw_keys = ks.raw_keys;
@@ -1306,39 +1357,67 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
     };
 
     // 4. fetch + pick model.
-    let mut model_ids =
-        match fetch_models(&fetch_base, &effective_keys, api_mode, provider_id.as_str()) {
-            Ok(ids) => {
-                println!("  fetched {} models from {fetch_base}", ids.len());
-                ids
-            }
-            Err(e) => {
-                eprintln!("  fetch failed: {e}");
-                // Curated catalog rows still let you pick something known-good.
-                let curated: Vec<String> = catalog::provider(&provider_id)
-                    .map(|p| p.models.iter().map(|m| m.model.clone()).collect())
-                    .unwrap_or_default();
-                if !curated.is_empty() {
-                    println!("  falling back to {} cataloged models", curated.len());
-                }
-                curated
-            }
-        };
-    let manual = "Type a model id manually...".to_string();
-    model_ids.push(manual.clone());
-    let model_rows: Vec<crate::model_catalog::ModelRow> = model_ids
-        .iter()
-        .map(|id| crate::model_catalog::ModelRow {
-            id: id.clone(),
-            context_limit: None,
-            input_per_mtok_usd: None,
-            output_per_mtok_usd: None,
-            curated: false,
+    // Curated rows carry context windows and costs, so the table can
+    // show metadata even when the endpoint's /models reply is sparse.
+    // Curated entries win on metadata; live-only ids keep live pricing.
+    let curated_rows: Vec<crate::model_catalog::CatalogModel> = catalog::provider(&provider_id)
+        .map(|p| {
+            p.models
+                .iter()
+                .map(|m| crate::model_catalog::CatalogModel {
+                    id: m.model.clone(),
+                    context_limit: m.context_limit.map(u64::from),
+                    input_per_mtok_usd: m.cost.input_per_mtok_usd,
+                    output_per_mtok_usd: m.cost.output_per_mtok_usd,
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
+    let live = if effective_keys.is_empty() {
+        crate::model_catalog::fetch_live_models(&fetch_base)
+    } else {
+        crate::model_catalog::fetch_live_models_keyed(&fetch_base, &effective_keys, api_mode)
+    };
+    let mut model_rows: Vec<crate::model_catalog::ModelRow> = match live {
+        Ok(live) => {
+            println!("  fetched {} models from {fetch_base}", live.len());
+            crate::model_catalog::merge_model_rows(&curated_rows, &live)
+        }
+        Err(e) => {
+            eprintln!("  fetch failed: {e:?}");
+            if !curated_rows.is_empty() {
+                println!("  falling back to {} cataloged models", curated_rows.len());
+            }
+            curated_rows
+                .iter()
+                .cloned()
+                .map(|c| crate::model_catalog::ModelRow {
+                    id: c.id,
+                    context_limit: c.context_limit,
+                    input_per_mtok_usd: c.input_per_mtok_usd,
+                    output_per_mtok_usd: c.output_per_mtok_usd,
+                    curated: true,
+                })
+                .collect()
+        }
+    };
+    // Popular-first, not alphabetical: curated rows (catalog order is the
+    // tested order) lead, then live-only ids in endpoint order. The
+    // manual entry stays last so it never moves under the cursor.
+    model_rows.sort_by_key(|r| !r.curated);
+    let manual = "Add custom model...".to_string();
+    let manual_idx = model_rows.len();
+    model_rows.push(crate::model_catalog::ModelRow {
+        id: manual.clone(),
+        context_limit: None,
+        input_per_mtok_usd: None,
+        output_per_mtok_usd: None,
+        curated: false,
+    });
     let browse = match crate::model_browser::browse(
         &format!("pick a model on {provider_id}"),
         &model_rows,
+        Some(manual_idx),
     ) {
         Some(b) => b,
         None => return None,
@@ -1352,7 +1431,7 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
     // A hand-typed id is the operator telling us what this endpoint serves, so
     // it gets written down. A picked-from-fetch id does not: it came from the
     // endpoint and will be fetched again next time.
-    let manual_typed = model_ids[model_idx] == manual;
+    let manual_typed = model_idx == manual_idx;
     let model = if manual_typed {
         loop {
             let m = prompt("Model id", "");
@@ -1361,7 +1440,7 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
             }
         }
     } else {
-        model_ids[model_idx].clone()
+        model_rows[model_idx].id.clone()
     };
     if manual_typed && is_custom {
         match config::remember_custom_model(&data_dir(), &provider_id, &model) {
@@ -1710,7 +1789,9 @@ pub fn cmd_model(args: &[String]) {
             usage();
         }
         let known = catalog::provider(&provider);
-        let api_mode = match flag(&rest, "--api-mode").as_deref() {
+        let mode_flag = flag(&rest, "--api-mode");
+        let auto_mode = api_mode_is_auto(mode_flag.as_deref());
+        let api_mode = match mode_flag.as_deref() {
             None => known
                 .as_ref()
                 .map(|p| p.api_mode)
@@ -1753,6 +1834,13 @@ pub fn cmd_model(args: &[String]) {
             eprintln!("endpoint config: {e}");
             std::process::exit(2);
         }
+        // `--api-mode auto` sniffs the resolved endpoint host now that the
+        // base URL is known.
+        let api_mode = if auto_mode {
+            sniff_wire_mode(&template_base)
+        } else {
+            api_mode
+        };
         let choice = ModelChoice {
             provider: provider.clone(),
             model: model.clone(),

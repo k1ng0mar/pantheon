@@ -5,7 +5,7 @@
 //! backends: the native local backend ([`super::native`], launched
 //! Chrome), Steel ([`super::steel`]) and Browserbase
 //! ([`super::browserbase`]) - both of which hand us a websocket URL
-//! and Lightpanda ([`super::lightpanda`], extraction-only subset).
+//! (raw-CDP subset).
 //!
 //! ## CDP schema drift
 //!
@@ -156,8 +156,8 @@ enum Connector {
     },
 }
 
-/// Raw-CDP driver shared by the native, Steel, Browserbase and
-/// Lightpanda backends. Connection is lazy: nothing dials out until the
+/// Raw-CDP driver shared by the native, Steel and Browserbase
+/// backends. Connection is lazy: nothing dials out until the
 /// first command.
 pub struct CdpDriver {
     connector: Connector,
@@ -193,7 +193,7 @@ impl CdpDriver {
         }
     }
 
-    /// Lazy websocket driver (Steel/Browserbase/Lightpanda session URL).
+    /// Lazy websocket driver (Steel/Browserbase session URL).
     /// Returns `Err` immediately when the URL is empty - fail fast at
     /// construction, not on first tool call.
     pub fn connect_lazy(
@@ -834,7 +834,7 @@ pub(crate) fn parse_wait_args(argv: &[String]) -> Result<(String, String), Brows
 }
 
 /// How a canonical `wait-for` is satisfied on the raw-CDP backends
-/// (native, Steel, Browserbase, Lightpanda, Playwright).
+/// (native, Steel, Browserbase, Playwright).
 pub(crate) enum WaitPlan {
     /// Poll a JS boolean expression until it is true.
     Probe(String),

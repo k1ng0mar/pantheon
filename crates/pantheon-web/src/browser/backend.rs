@@ -12,15 +12,13 @@
 //! | `ChromiumOxide` | Native CDP via `chromiumoxide` (=0.9.1, pinned) | Local dependency-free fallback: no CLI/subprocess, single-binary friendly |
 //! | `Steel` | REST session management + raw CDP websocket | Hosted or self-hosted sessions; self-host Docker exposes the same API as cloud, so one implementation with a configurable base URL |
 //! | `Browserbase` | `POST /v1/sessions` → raw CDP `wss://` URL | Cloud fallback; driven over the websocket directly, no SDK |
-//! | `Lightpanda` | CDP websocket to `lightpanda serve` | **Extraction only** - fetch/extract workloads; never the interactive backend. Its tool surface exposes fetch/extract, not interactive act |
 //! | `Playwright` | `playwright-cli` (`@playwright/cli`) subprocess | Mature fallback: industry-standard engine, ref-based snapshots |
 //! | `Camofox` | Long-lived Python shim over JSON-over-stdio (official `camoufox` launcher, Juggler - no CDP) | Anti-detect fallback: patched Firefox; fingerprint config in `[browser.camofox]` |
 //!
 //! Backend selection lives in config (`[browser] backend`, resolved to
 //! [`crate::registry::BackendKind`]); see [`crate::registry`] for the
 //! per-backend settings and [`crate::tools::BrowserOptions`] for how the
-//! tool surface adapts (extraction-only surface for Lightpanda,
-//! `browser_act` only on GSD).
+//! tool surface adapts (`browser_act` only on GSD).
 //!
 //! Deliberately NOT backends: competing agent frameworks and sidecar
 //! transports are never wrapped - wrapping them would invert the

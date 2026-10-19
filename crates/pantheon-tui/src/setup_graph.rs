@@ -29,7 +29,6 @@ pub enum Section {
     Memory,
     ComputerUse,
     Extensions,
-    Fallback,
     ServiceInstall,
     Review,
     Provision,
@@ -56,7 +55,6 @@ impl Section {
             Section::Memory => "memory",
             Section::ComputerUse => "computer",
             Section::Extensions => "extensions",
-            Section::Fallback => "fallback",
             Section::ServiceInstall => "service",
             Section::Review => "review",
             Section::Provision => "install",
@@ -91,7 +89,10 @@ pub struct Answers {
     pub computer_use_enabled: bool,
     pub gateways_enabled: bool,
     pub extensions_enabled: bool,
-    pub fallback_enabled: bool,
+    /// Skills group tick: its dependency screen (third-party packages
+    /// the skill library drives) follows the tick like every other
+    /// group screen - unticking Skills skips it entirely.
+    pub skills_enabled: bool,
     /// True when the selected model declares reasoning support.
     pub model_supports_reasoning: bool,
 }
@@ -168,8 +169,11 @@ pub fn sections(a: &Answers) -> Vec<Section> {
     out.push(Section::Tools);
     // Skill dependencies come right after the Tools screen: the skills
     // are part of the toolset, so their third-party packages are
-    // resolved before the provider screens.
-    out.push(Section::SkillDeps);
+    // resolved before the provider screens. The screen follows the
+    // Skills tick itself - an unticked group skips its screens entirely.
+    if a.skills_enabled {
+        out.push(Section::SkillDeps);
+    }
     if a.browser_enabled {
         out.push(Section::Browser);
     }
@@ -187,9 +191,6 @@ pub fn sections(a: &Answers) -> Vec<Section> {
     }
     if a.extensions_enabled {
         out.push(Section::Extensions);
-    }
-    if a.fallback_enabled {
-        out.push(Section::Fallback);
     }
     // The service-install permission screen: the last real screen in
     // Full, after every provider screen.

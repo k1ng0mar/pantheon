@@ -22,7 +22,10 @@ pub struct BrowserResult {
     pub action: ModelAction,
 }
 
-pub fn browse(title: &str, rows: &[ModelRow]) -> Option<BrowserResult> {
+/// `manual_idx` marks the "Add custom model" row, if present: Enter on
+/// it commits immediately without the details card, since there is no
+/// metadata to show.
+pub fn browse(title: &str, rows: &[ModelRow], manual_idx: Option<usize>) -> Option<BrowserResult> {
     use crossterm::{
         cursor,
         event::{self, Event, KeyCode},
@@ -215,9 +218,19 @@ pub fn browse(title: &str, rows: &[ModelRow]) -> Option<BrowserResult> {
                             action: ModelAction::Use,
                         });
                     }
-                    if !hits.is_empty() {
-                        detail = true;
+                    if hits.is_empty() {
+                        continue;
                     }
+                    // The manual row has no details card: commit straight
+                    // to the free-text prompt.
+                    if Some(hits[selected]) == manual_idx {
+                        leave(&mut stdout);
+                        return Some(BrowserResult {
+                            index: hits[selected],
+                            action: ModelAction::Use,
+                        });
+                    }
+                    detail = true;
                 }
                 KeyCode::Char('s') if detail => {
                     leave(&mut stdout);

@@ -53,7 +53,7 @@ pub enum BrowserError {
     StaleRef { message: String },
     /// The active backend does not implement this canonical command
     /// (e.g. `act-instruction` on the raw-CDP backends, or any
-    /// interactive command on the extraction-only Lightpanda backend).
+    /// interactive command the backend does not implement).
     /// Not a failure of the page or session - pick a different command
     /// or backend.
     UnsupportedCommand { command: String, backend: String },

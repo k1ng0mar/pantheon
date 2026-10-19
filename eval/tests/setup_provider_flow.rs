@@ -7,8 +7,9 @@
 //! - only backends the runtime can actually construct are offered;
 //! - the follow-up flow branches on the provider *kind*, never on the
 //!   provider id;
-//! - cloud follow-ups ask for the env var NAME, never the value.
+//! - cloud follow-ups take the standard env var NAME silently, never the value.
 use pantheon_tui::setup_providers as sp;
+use tempfile::tempdir;
 
 #[test]
 fn websearch_rows_come_from_the_registry_recommended_first() {
@@ -27,22 +28,35 @@ fn websearch_rows_come_from_the_registry_recommended_first() {
 }
 
 #[test]
-fn browser_rows_cover_every_registry_backend() {
+fn browser_rows_cover_every_interactive_backend() {
     let rows = sp::browser_providers();
-    let reg: Vec<String> = pantheon_web::browser::all_backends()
+    // Interactive registry backends, plus the Steel self-hosted split
+    // row; extraction-only backends stay runtime-supported but out of
+    // the picker.
+    let mut expected: Vec<&str> = pantheon_web::browser::all_backends()
         .into_iter()
-        .map(|b| b.kind.id().to_string())
+        .filter(|b| b.interactive)
+        .map(|b| b.kind.id())
         .collect();
+    expected.push("steel_selfhosted");
     let mut row_ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
-    let mut reg_ids: Vec<&str> = reg.iter().map(|s| s.as_str()).collect();
     row_ids.sort_unstable();
-    reg_ids.sort_unstable();
+    expected.sort_unstable();
     assert_eq!(
-        row_ids, reg_ids,
-        "wizard rows must match the browser registry"
+        row_ids, expected,
+        "wizard rows must match the interactive browser backends"
+    );
+    assert!(
+        !rows.iter().any(|r| r.id == "lightpanda"),
+        "extraction-only lightpanda must not be offered as the browser backend"
     );
     let gsd = rows.iter().find(|r| r.id == "gsd").expect("gsd row");
     assert!(gsd.recommended, "gsd is the documented default backend");
+    let steel = rows
+        .iter()
+        .find(|r| r.id == "steel_selfhosted")
+        .expect("steel self-hosted row");
+    assert!(!steel.recommended);
 }
 
 #[test]
@@ -126,24 +140,102 @@ fn tts_rows_cover_every_registry_backend() {
 
 #[test]
 fn memory_rows_exclude_the_fake_backend() {
-    let rows = sp::memory_providers();
+    let rows = sp::memory_providers(std::path::Path::new("/nonexistent-pantheon-memory-plugins"));
     assert!(!rows.iter().any(|r| r.id == "fake"), "test double offered");
     let native = rows.iter().find(|r| r.id == "native").expect("native row");
     assert!(native.recommended, "native is the runtime default");
 }
 
 #[test]
-fn cloud_answer_records_env_name_never_value() {
+fn user_plugin_rows_show_and_ask_nothing() {
+    // Build a tiny plugin manifest where the runtime/registry already
+    // looks for it: <data_dir>/memory-plugins/<name>.toml (http kind,
+    // key optional in the manifest - never an env prompt). This is the
+    // "friendly to other memory systems" door: whatever backend a user
+    // runs, a manifest row appears in the picker and asks nothing.
+    let dir = tempdir().unwrap();
+    let plugins = dir.path().join("memory-plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::write(
+        plugins.join("mymem.toml"),
+        r#"name = "mymem"
+label = "My Mem via bridge"
+kind = "http"
+url = "http://127.0.0.1:9000"
+key = "sekrit"
+"#,
+    )
+    .unwrap();
+    let rows = sp::memory_providers(dir.path());
+    let row = rows
+        .iter()
+        .find(|r| r.id == "mymem")
+        .expect("user plugin row must appear in the picker");
+    assert!(
+        matches!(row.kind, sp::ProviderKind::Keyless),
+        "user plugin asks nothing: config lives in the manifest"
+    );
+    assert!(
+        row.blurb.contains("memory-plugins/mymem.toml"),
+        "blurb points at the manifest"
+    );
+    // Builtin rows are unchanged.
+    assert!(rows.iter().any(|r| r.id == "native"));
+}
+
+#[test]
+fn memory_key_env_follows_each_rows_own_auth_contract() {
+    let rows = sp::memory_providers(std::path::Path::new("/nonexistent-pantheon-memory-plugins"));
+    // Rows whose runtime contract documents a standard key var get that
+    // var collected; genuinely keyless rows never see a key prompt.
+    let keyed = [
+        ("mem0", "PANTHEON_MEMORY_MEM0_KEY"),
+        ("hindsight-cloud", "PANTHEON_MEMORY_HINDSIGHT_CLOUD_KEY"),
+        ("honcho-cloud", "PANTHEON_MEMORY_HONCHO_CLOUD_KEY"),
+        ("supermemory-cloud", "PANTHEON_MEMORY_SUPERMEMORY_CLOUD_KEY"),
+        ("openviking", "PANTHEON_MEMORY_OPENVIKING_KEY"),
+        ("galaxymem", "PANTHEON_MEMORY_GALAXYMEM_KEY"),
+        ("honcho-local", "PANTHEON_MEMORY_HONCHO_LOCAL_KEY"),
+        ("supermemory-local", "PANTHEON_MEMORY_SUPERMEMORY_LOCAL_KEY"),
+    ];
+    for (id, env) in keyed {
+        let row = sp::find_provider(&rows, id).unwrap_or_else(|| panic!("{id} row"));
+        assert_eq!(row.key_env(), Some(env), "{id} standard key var");
+    }
+    let keyless = [
+        "native",
+        "byterover",
+        "hindsight-local",
+        "mnemosyne",
+        "mnemopi",
+        "sharpshooter",
+    ];
+    for id in keyless {
+        let row = sp::find_provider(&rows, id).unwrap_or_else(|| panic!("{id} row"));
+        assert_eq!(row.key_env(), None, "{id} must not get a key prompt");
+    }
+}
+
+#[test]
+fn cloud_answer_takes_the_standard_env_name_without_prompting() {
     let rows = sp::stt_providers();
     let meta = sp::find_provider(&rows, "openai").expect("openai stt");
+    let mut prompts = 0;
     let answer = sp::complete_answer(
         meta,
-        &mut |_label, _prefill| Some("CUSTOM_STT_KEY".to_string()),
+        &mut |_label, _prefill| {
+            prompts += 1;
+            Some("CUSTOM_STT_KEY".to_string())
+        },
         &mut |_, _| Some(false),
     )
     .expect("answer");
     assert_eq!(answer.id, "openai");
-    assert_eq!(answer.key_env.as_deref(), Some("CUSTOM_STT_KEY"));
+    assert_eq!(prompts, 0, "cloud must not prompt for the env var name");
+    assert!(
+        answer.key_env.is_some(),
+        "cloud must record the standard env name silently"
+    );
     assert!(answer.options.is_empty());
 }
 
@@ -194,7 +286,8 @@ fn required_extra_field_reprompts_on_empty() {
 #[test]
 fn cancel_aborts_the_answer() {
     let rows = sp::websearch_providers();
-    let answer = sp::complete_answer(&rows[0], &mut |_, _| None, &mut |_, _| None);
+    let meta = sp::find_provider(&rows, "searxng").expect("searxng");
+    let answer = sp::complete_answer(meta, &mut |_, _| None, &mut |_, _| None);
     assert!(answer.is_none());
 }
 
@@ -304,4 +397,68 @@ fn full_mode_gates_the_computer_use_screen_on_the_tool_answer() {
         ..Default::default()
     };
     assert!(!sections(&off).contains(&Section::ComputerUse));
+}
+
+/// The skill-deps screen follows the Skills tick: unticking Skills on the
+/// Tools screen removes the dependency screen entirely (the `needed_by`
+/// on every dep is a skill), and the other enabled groups keep theirs.
+#[test]
+fn skill_deps_screen_follows_the_skills_tick() {
+    use pantheon_tui::setup_graph::{sections, Answers, Mode, Section};
+    let on = Answers {
+        mode: Some(Mode::Full),
+        skills_enabled: true,
+        ..Default::default()
+    };
+    assert!(sections(&on).contains(&Section::SkillDeps));
+    let off = Answers {
+        mode: Some(Mode::Full),
+        skills_enabled: false,
+        ..Default::default()
+    };
+    assert!(!sections(&off).contains(&Section::SkillDeps));
+    // Recommended mode has no Tools screen (everything default-on), so
+    // the skill-deps screen runs there regardless.
+    let rec = Answers {
+        mode: Some(Mode::Recommended),
+        ..Default::default()
+    };
+    assert!(sections(&rec).contains(&Section::SkillDeps));
+}
+
+#[test]
+fn keyless_fallback_rows_need_no_follow_ups_and_construct_keyless() {
+    use pantheon_tui::setup_providers::ProviderKind;
+    let rows = sp::websearch_providers();
+    for id in ["exa_free", "parallel_free", "firecrawl_free", "keenable_free"] {
+        let row = rows.iter().find(|r| r.id == id).expect(id);
+        assert!(
+            matches!(row.kind, ProviderKind::Keyless),
+            "{id} must be Keyless so setup asks nothing"
+        );
+        assert!(!row.recommended, "{id} must never be the recommended row");
+        pantheon_web::websearch::build_provider(id, None, None)
+            .unwrap_or_else(|e| panic!("{id} must construct without a key: {e}"));
+    }
+}
+
+#[test]
+fn ddgs_row_is_a_local_binary_with_a_verified_install() {
+    use pantheon_tui::setup_providers::ProviderKind;
+    let rows = sp::websearch_providers();
+    let row = rows.iter().find(|r| r.id == "ddgs").expect("ddgs row");
+    match &row.kind {
+        ProviderKind::Local { local } => {
+            assert_eq!(local.detect_cmd, "command -v ddgs");
+            assert_eq!(
+                local.install_cmd.as_deref(),
+                Some("python3 -m pip install ddgs"),
+                "install must be the verified package install"
+            );
+            assert!(!local.install_hint.is_empty());
+        }
+        other => panic!("ddgs must be a local provider, got {other:?}"),
+    }
+    pantheon_web::websearch::build_provider("ddgs", None, None)
+        .expect("ddgs must construct without a key");
 }
