@@ -108,9 +108,9 @@ Pipeline: read → plan → propose → approval? → write → verify → check
 
 ## 06 RUNTIME
 
-Shipped: `/models` (provider → model browser, filter, Enter switches the
-live default and saves it to `[model]`), `/model [provider id]` (show or
-switch without the browser), `/reasoning [off|minimal|low|medium|high|xhigh|max]` (effort
+Shipped: `/model` (keyed-providers → model browser, filter, Enter switches the
+live default and saves it to `[model]`; `/model <provider> <id>` switches
+without the browser), `/reasoning` (level picker) and `/reasoning [off|minimal|low|medium|high|xhigh|max]` (effort
 for chat turns, saved to `[model].reasoning`; maps to `reasoning_effort`
 on the OpenAI wire and a thinking budget on the Anthropic wire),
 `/remember KEY TEXT` (agent-memory write
@@ -134,7 +134,7 @@ Removed from the surface: `/memory` (`/remember` covers it), `/policy`,
 | SANDBOX | tool card footer `sandbox: docker/pantheon-4f21` |
 | ESCALATION | `⚠ agent requested access outside sandbox` → permission flow |
 | RESOURCES | /status panel: model, tokens in/out, context window; local: device, VRAM, tok/s |
-| ROUTER VIEW | /models browser: providers → models, search across both, ctx window per model |
+| ROUTER VIEW | /model browser: keyed providers → models, search across both, ctx window per model |
 
 ## 07 CONTROL
 
@@ -162,7 +162,7 @@ Removed from the surface: `/memory` (`/remember` covers it), `/policy`,
 ## Interaction layer
 
 - Slash commands: first-class palette with fuzzy search, autocomplete on args
-  (`/model cla` → model list). `/models` = full browser, `/model` = quick switcher.
+  (`/model cla` → filtered browser). `/model` alone browses; `/model <provider> <id>` switches directly.
 - Session tabs: opencode-style bar across the top, `[ 1 title ● │ 2 other ]`.
   Ctrl+Tab cycles, Alt+1-9 jumps (checked before the Char handler; Alt+1
   arrives as Char('1')+ALT). The active tab is bold cyan, inactive tabs dim,
