@@ -17,10 +17,9 @@
 
 use super::config::{self, Config};
 use crate::model::{
-    api_mode_is_auto, builtin_provider_id, ensure_template_vars, flag, flags, has_flag,
-    key_status, normalize_base_url, parse_api_mode, parse_set_pairs, pick,
-    print_template_status, prompt_line, resolve_wire_mode, sniff_wire_mode, valid_provider_id,
-    wire_mode_items, PickItem,
+    api_mode_is_auto, builtin_provider_id, ensure_template_vars, flag, flags, has_flag, key_status,
+    normalize_base_url, parse_api_mode, parse_set_pairs, pick, print_template_status, prompt_line,
+    resolve_wire_mode, sniff_wire_mode, valid_provider_id, wire_mode_items, PickItem,
 };
 use pantheon_providers::catalog::{self, ApiMode};
 use std::io::IsTerminal;

@@ -89,7 +89,9 @@ fn detect_binary(detect_cmd: &str) -> bool {
 fn recommended_answers() -> SetupAnswers {
     let websearch = default_answer(&recommended_row(&setup_providers::websearch_providers()));
     let browser = default_answer(&recommended_row(&setup_providers::browser_providers()));
-    let memory = default_answer(&recommended_row(&setup_providers::memory_providers(std::path::Path::new("/nonexistent-pantheon-memory-plugins"))));
+    // /nonexistent: no user-plugins dir, only built-in rows.
+    let memory_rows = setup_providers::memory_providers(std::path::Path::new("/nonexistent"));
+    let memory = default_answer(&recommended_row(&memory_rows));
     let computer = default_answer(&recommended_row(&setup_providers::computer_providers()));
     let tools: Vec<ToolGroup> = ToolGroup::all()
         .into_iter()

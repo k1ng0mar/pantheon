@@ -1688,7 +1688,10 @@ impl Session {
         let memory = match pantheon_memory::open_selected(&data_dir) {
             Ok(mem) => Some(mem),
             Err(e) => {
-                eprintln!("{}", pantheon_memory::unavailable_message(&memory_selection, &e));
+                eprintln!(
+                    "{}",
+                    pantheon_memory::unavailable_message(&memory_selection, &e)
+                );
                 None
             }
         };
@@ -2409,10 +2412,11 @@ impl Session {
         }
     }
 
-    /// Test seam for the todo guidance coupling: with Tasks on, the
-    /// prompt carries the guidance; with it off, it does not.
+    /// Whether the todo guidance rides the system prompt: true when the
+    /// Tasks group is on, matching when the `todo` tool registers. Test
+    /// seam for the guidance/registration coupling.
     #[doc(hidden)]
-    pub fn system_prompt_contains_todos(&self) -> bool {
+    pub fn todo_guidance_active(&self) -> bool {
         self.with_todo_guidance(String::new())
             .contains(TODO_SYSTEM_GUIDANCE)
     }

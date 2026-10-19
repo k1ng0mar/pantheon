@@ -579,7 +579,10 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
                     }
                 }
             } else if let Some(env) = cfg.model.as_ref().and_then(|m| m.api_key_env.clone()) {
-                if std::env::var(&env).map(|v| !v.trim().is_empty()).unwrap_or(false) {
+                if std::env::var(&env)
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false)
+                {
                     println!("API key: {env} configured");
                 } else {
                     println!("make sure {env} is exported before starting a session");
@@ -686,9 +689,7 @@ fn collect_answer_key(data_dir: &Path, what: &str, env: &str) {
         return;
     }
     let value = prompt(
-        &format!(
-            "{what}: paste the key for {env} (saved to .env; empty = skip)"
-        ),
+        &format!("{what}: paste the key for {env} (saved to .env; empty = skip)"),
         Some(""),
     );
     let value = value.trim();

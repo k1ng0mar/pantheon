@@ -231,8 +231,14 @@ pub fn render_diff_lines(
     lines: &[DiffLine],
     th: &crate::session::theme::Theme,
 ) -> Vec<Line<'static>> {
-    let adds = lines.iter().filter(|l| matches!(l, DiffLine::Add(_))).count();
-    let dels = lines.iter().filter(|l| matches!(l, DiffLine::Del(_))).count();
+    let adds = lines
+        .iter()
+        .filter(|l| matches!(l, DiffLine::Add(_)))
+        .count();
+    let dels = lines
+        .iter()
+        .filter(|l| matches!(l, DiffLine::Del(_)))
+        .count();
     let stats = if adds > 0 || dels > 0 {
         format!(" (+{adds} -{dels})")
     } else {

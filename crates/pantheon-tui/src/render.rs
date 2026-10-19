@@ -40,9 +40,11 @@ fn visible_rows_for(height: u16, uses_meta: bool) -> usize {
 // `draw_list` still adds a small margin; `window()` subtracts the title
 // and hint lines, so the change only removes the chrome.
 fn frame_box(title: &str) -> Block<'static> {
-    Block::default()
-        .title(format!(" {} ", title))
-        .title_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+    Block::default().title(format!(" {} ", title)).title_style(
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 /// Render one row to one or two lines: the label line, then a dim

@@ -39,7 +39,11 @@ fn tmp_path() -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("pantheon-ddgs-{}-{}.json", std::process::id(), nanos))
+    std::env::temp_dir().join(format!(
+        "pantheon-ddgs-{}-{}.json",
+        std::process::id(),
+        nanos
+    ))
 }
 
 impl SearchProvider for DdgsProvider {

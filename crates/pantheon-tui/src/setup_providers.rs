@@ -594,7 +594,6 @@ pub fn browser_providers() -> Vec<ProviderMeta> {
     // cannot honestly ask for both a cloud key and an instance URL.
     let mut rows: Vec<ProviderMeta> = pantheon_web::browser::all_backends()
         .into_iter()
-        .filter(|b| b.interactive)
         .map(|b| {
             let (kind, extra) = match b.kind {
                 BackendKind::Gsd => (
@@ -679,7 +678,9 @@ pub fn browser_providers() -> Vec<ProviderMeta> {
     rows.push(ProviderMeta {
         id: "steel_selfhosted".to_string(),
         name: "Steel (self-hosted)".to_string(),
-        blurb: "Your own Steel instance over REST + CDP. Needs: the instance base URL (no cloud key).".to_string(),
+        blurb:
+            "Your own Steel instance over REST + CDP. Needs: the instance base URL (no cloud key)."
+                .to_string(),
         recommended: false,
         kind: ProviderKind::SelfHosted {
             default_url: String::new(),
@@ -800,14 +801,15 @@ pub fn memory_providers(data_dir: &Path) -> Vec<ProviderMeta> {
         .into_iter()
         .map(|b| b.name)
         .collect();
-    let plugin_names: HashSet<String> = pantheon_memory::BackendRegistry::with_plugins(data_dir)
-        .catalog()
-        .into_iter()
-        .map(|b| b.name)
+    // One registry walk serves both needs: which rows are plugin-only
+    // (blurb shape below) and the rows themselves.
+    let catalog = pantheon_memory::BackendRegistry::with_plugins(data_dir).catalog();
+    let plugin_names: HashSet<String> = catalog
+        .iter()
+        .map(|b| b.name.clone())
         .filter(|n| !default_names.contains(n))
         .collect();
-    pantheon_memory::BackendRegistry::with_plugins(data_dir)
-        .catalog()
+    catalog
         .into_iter()
         .filter(|b| b.name != "fake")
         .map(|b| {
@@ -821,7 +823,7 @@ pub fn memory_providers(data_dir: &Path) -> Vec<ProviderMeta> {
             // sharpshooter) never see a key prompt. User plugins never
             // see one either: their key (if any) lives in the manifest.
             let std_key = format!("PANTHEON_MEMORY_{prefix}_KEY");
-            let key_env = (!native && b.auth.contains(&std_key)).then(|| std_key);
+            let key_env = (!native && b.auth.contains(&std_key)).then_some(std_key);
             let kind = if native || is_plugin {
                 // Native works out of the box; a user plugin is
                 // configured inside its manifest, so both ask nothing.

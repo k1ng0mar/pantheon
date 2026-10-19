@@ -174,7 +174,11 @@ fn unavailable_backends_report_loudly() {
     assert!(msg.contains("mybrain"), "{}", msg);
     assert!(msg.contains("MEM_BACKEND_CONFIG"), "{}", msg);
     assert!(msg.contains("WITHOUT memory"), "{}", msg);
-    assert!(msg.contains("switching backends is not migration"), "{}", msg);
+    assert!(
+        msg.contains("switching backends is not migration"),
+        "{}",
+        msg
+    );
     // Native failures use the plain name (no quotes around a punctuated id).
     let native = pantheon_memory::unavailable_message(
         &BackendSelection {
@@ -294,10 +298,13 @@ fn stdio_backend_malformed_json_is_a_decode_error() {
 fn stdio_backend_crash_with_no_output_is_explicit() {
     let dir = tmp_dir("crash");
     let backend = responder(&dir, "exit 1");
-    let backend = StdioBackend::new("sh".into(), vec![backend.to_string_lossy().to_string()], 2000);
+    let backend = StdioBackend::new(
+        "sh".into(),
+        vec![backend.to_string_lossy().to_string()],
+        2000,
+    );
     let policy = pantheon_api::capability::Policy::coder_with_memory();
-    let hits = backend
-        .recall(&policy, &["nyx"], &[LayerKind::Agent], "q", 5);
+    let hits = backend.recall(&policy, &["nyx"], &[LayerKind::Agent], "q", 5);
     assert!(matches!(
         hits.unwrap_err().code.as_str(),
         "MEM_PLUGIN_EMPTY" | "MEM_PLUGIN_IO" | "MEM_PLUGIN_DECODE"

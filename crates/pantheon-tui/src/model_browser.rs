@@ -39,7 +39,7 @@ pub fn browse(title: &str, rows: &[ModelRow], manual_idx: Option<usize>) -> Opti
     struct Guard;
     impl Drop for Guard {
         fn drop(&mut self) {
-            use crossterm::{terminal::disable_raw_mode, execute, cursor};
+            use crossterm::{cursor, execute, terminal::disable_raw_mode};
             let _ = disable_raw_mode();
             let _ = execute!(std::io::stdout(), cursor::Show);
         }
@@ -149,9 +149,7 @@ pub fn browse(title: &str, rows: &[ModelRow], manual_idx: Option<usize>) -> Opti
                     format!("{label:<max$}")
                 };
                 if row_idx == selected {
-                    println!(
-                        "  {marker} \x1b[1;35m{label}\x1b[0m {ctx:>9}  {inp:>9}  {out:>9}\r"
-                    );
+                    println!("  {marker} \x1b[1;35m{label}\x1b[0m {ctx:>9}  {inp:>9}  {out:>9}\r");
                 } else {
                     println!("  {marker} {label} {ctx:>9}  {inp:>9}  {out:>9}\r");
                 }
@@ -186,7 +184,11 @@ pub fn browse(title: &str, rows: &[ModelRow], manual_idx: Option<usize>) -> Opti
             );
             println!(
                 "  Source    {}\r",
-                if r.curated { "curated + live" } else { "live only" }
+                if r.curated {
+                    "curated + live"
+                } else {
+                    "live only"
+                }
             );
             println!();
             println!("  [Enter] use this model   [s] set as default   [t] test   [Esc] back\r");
@@ -293,7 +295,10 @@ pub fn browse(title: &str, rows: &[ModelRow], manual_idx: Option<usize>) -> Opti
                     filter.pop();
                     selected = 0;
                 }
-                KeyCode::Char('c') if k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                KeyCode::Char('c')
+                    if k.modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
                     leave(&mut stdout);
                     return None;
                 }

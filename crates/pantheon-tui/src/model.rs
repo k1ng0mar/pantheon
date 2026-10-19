@@ -314,7 +314,10 @@ pub(crate) fn parse_api_mode(raw: Option<&str>) -> ApiMode {
 /// Whether `--api-mode` asked for host-sniffing. Callers that know the
 /// base URL apply [`sniff_wire_mode`] when this is true.
 pub(crate) fn api_mode_is_auto(raw: Option<&str>) -> bool {
-    matches!(raw.map(|m| m.trim().to_ascii_lowercase()).as_deref(), Some("auto"))
+    matches!(
+        raw.map(|m| m.trim().to_ascii_lowercase()).as_deref(),
+        Some("auto")
+    )
 }
 
 /// Parse repeatable `--set VAR=value` pairs. Exits 2 on a bad entry so
@@ -1260,7 +1263,10 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
                 };
                 let status = if row.stored_key_env.is_some() {
                     "● connected"
-                } else if matches!(p.id.as_str(), "local" | "ollama" | "lmstudio" | "ollama_cloud") {
+                } else if matches!(
+                    p.id.as_str(),
+                    "local" | "ollama" | "lmstudio" | "ollama_cloud"
+                ) {
                     "● local"
                 } else {
                     "○ needs key"
@@ -1327,13 +1333,7 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
         if overridden {
             println!("  saving as an override of builtin '{}'", p.id);
         }
-        (
-            p.id,
-            url,
-            mode,
-            key_env,
-            was_custom || overridden,
-        )
+        (p.id, url, mode, key_env, was_custom || overridden)
     };
 
     // 3. keys → .env. A provider with a key on file offers to reuse the
@@ -1414,14 +1414,11 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
         output_per_mtok_usd: None,
         curated: false,
     });
-    let browse = match crate::model_browser::browse(
+    let browse = crate::model_browser::browse(
         &format!("pick a model on {provider_id}"),
         &model_rows,
         Some(manual_idx),
-    ) {
-        Some(b) => b,
-        None => return None,
-    };
+    )?;
     let model_idx = browse.index;
     match browse.action {
         crate::model_browser::ModelAction::SetDefault => println!("  set as default selection"),

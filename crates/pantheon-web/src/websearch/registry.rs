@@ -14,12 +14,12 @@ use super::brave::{BraveProvider, BRAVE_API_KEY, DEFAULT_BASE_URL as BRAVE_BASE}
 use super::ddgs::DdgsProvider;
 use super::exa::{ExaProvider, DEFAULT_BASE_URL as EXA_BASE, EXA_API_KEY};
 use super::exa_free::{ExaFreeProvider, DEFAULT_BASE_URL as EXA_FREE_BASE};
+use super::firecrawl::{FirecrawlProvider, DEFAULT_BASE_URL as FIRECRAWL_BASE, FIRECRAWL_API_KEY};
 use super::firecrawl_free::{FirecrawlFreeProvider, DEFAULT_BASE_URL as FIRECRAWL_FREE_BASE};
 use super::keenable::{KeenableFreeProvider, DEFAULT_BASE_URL as KEENABLE_BASE};
-use super::parallel::{ParallelFreeProvider, DEFAULT_BASE_URL as PARALLEL_FREE_BASE};
-use super::firecrawl::{FirecrawlProvider, DEFAULT_BASE_URL as FIRECRAWL_BASE, FIRECRAWL_API_KEY};
 use super::marginalia::{MarginaliaProvider, DEFAULT_BASE_URL as MARGINALIA_BASE};
 use super::ollama::{OllamaProvider, DEFAULT_BASE_URL as OLLAMA_BASE, OLLAMA_API_KEY};
+use super::parallel::{ParallelFreeProvider, DEFAULT_BASE_URL as PARALLEL_FREE_BASE};
 use super::perplexity::{
     PerplexityProvider, DEFAULT_BASE_URL as PERPLEXITY_BASE, PERPLEXITY_API_KEY,
 };
@@ -196,7 +196,9 @@ pub fn provider_info(id: &str) -> Option<ProviderInfo> {
 pub fn default_key_env(id: &str) -> Option<&'static str> {
     match provider_info(id)?.auth {
         ProviderAuth::ApiKey { env_var } => Some(env_var),
-        ProviderAuth::Keyless | ProviderAuth::SelfHosted { .. } | ProviderAuth::Local { .. } => None,
+        ProviderAuth::Keyless | ProviderAuth::SelfHosted { .. } | ProviderAuth::Local { .. } => {
+            None
+        }
     }
 }
 
@@ -250,12 +252,12 @@ pub fn build_provider(
         "marginalia" => Arc::new(MarginaliaProvider::with_base_url(base(MARGINALIA_BASE))),
         "searxng" => Arc::new(SearxngProvider::new(base(DEFAULT_INSTANCE_URL))),
         "exa_free" => Arc::new(ExaFreeProvider::with_base_url(base(EXA_FREE_BASE))),
-        "parallel_free" => {
-            Arc::new(ParallelFreeProvider::with_base_url(base(PARALLEL_FREE_BASE)))
-        }
-        "firecrawl_free" => {
-            Arc::new(FirecrawlFreeProvider::with_base_url(base(FIRECRAWL_FREE_BASE)))
-        }
+        "parallel_free" => Arc::new(ParallelFreeProvider::with_base_url(base(
+            PARALLEL_FREE_BASE,
+        ))),
+        "firecrawl_free" => Arc::new(FirecrawlFreeProvider::with_base_url(base(
+            FIRECRAWL_FREE_BASE,
+        ))),
         "keenable_free" => Arc::new(KeenableFreeProvider::with_base_url(base(KEENABLE_BASE))),
         "ddgs" => Arc::new(DdgsProvider::new()),
         _ => return Err(format!("unknown web search provider '{id}'")),
