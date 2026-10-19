@@ -44,13 +44,14 @@ pub struct Tab {
 }
 
 impl Tab {
-    /// Short human label: the title when present, else the run id stem.
-    /// Mirrors the id-stem convention the /history and /sessions renderers
-    /// use (`skip(4).take(8)`), so a tab and an overlay row agree.
+    /// Short human label: the title when present, else "new session".
+    /// A run id stem (`17924076`) reads as a broken number on a fresh
+    /// tab; the auto-titler replaces this with a real title after the
+    /// first turn.
     pub fn label(&self) -> String {
         match self.title.as_deref().filter(|t| !t.trim().is_empty()) {
             Some(t) => t.chars().take(MAX_LABEL_CHARS).collect(),
-            None => self.run_id.chars().skip(4).take(8).collect(),
+            None => "new session".to_string(),
         }
     }
 }
@@ -125,6 +126,14 @@ impl TabList {
     }
 
     /// Update the approval indicator for one run without rebuilding.
+    /// Set a tab's title in place (SessionTitled), without a full
+    /// rebuild. No-op when the run has no tab.
+    pub fn set_title(&mut self, run_id: &str, title: &str) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.run_id == run_id) {
+            tab.title = Some(title.to_string());
+        }
+    }
+
     pub fn set_approval(&mut self, run_id: &str, approval: bool) {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.run_id == run_id) {
             tab.approval = approval;
@@ -221,9 +230,10 @@ impl TabList {
 /// existing session-selection path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabAction {
-    /// Ctrl+Tab, or `]`: next tab.
+    /// Ctrl+Tab: next tab. (Shift+Tab also reaches here via the
+    /// BackTab+SHIFT fallback in [`tab_key_action`].)
     Next,
-    /// Ctrl+Shift+Tab (or Shift+Tab), or `[`: previous tab.
+    /// Ctrl+Shift+Tab: previous tab.
     Prev,
     /// Alt+1..9: jump to tab N (1-based).
     Jump(usize),
@@ -235,10 +245,9 @@ pub enum TabAction {
 
 /// Map a crossterm key event to a tab action. Pure, no terminal needed.
 ///
-/// Ctrl+Tab/BackTab cycle, Ctrl+T/W open/close, Alt+1..9 jump. Plain
-/// `[`/`]` step prev/next, but the caller gates those to
-/// overview-with-empty-composer so a typed bracket in chat input never
-/// switches tabs (see the tab-key site in session.rs).
+/// Ctrl+Tab/BackTab cycle, Ctrl+T/W open/close, Alt+1..9 jump.
+/// Plain `[`/`]` always type into the chat input (the caller gates them
+/// out); Shift+BackTab falls back to Prev.
 ///
 /// What terminals actually send:
 /// - Ctrl+Tab usually arrives as `Tab` + CONTROL; some send plain Tab or
@@ -289,6 +298,16 @@ const DOT_BUSY: &str = "●";
 const DOT_APPROVAL: &str = "●";
 const DOT_IDLE: &str = "○";
 
+/// Click target in the tab bar, with its x-range relative to the
+/// bar's left edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabHit {
+    /// Switch to tab N (index into [`TabList::tabs`]).
+    Switch(usize),
+    /// The trailing `+`: open a new session tab.
+    NewTab,
+}
+
 /// Render the tab bar into `area` (expects a single row).
 ///
 /// Browser-style: the active tab sits on a subtle wash with bright bold
@@ -297,14 +316,29 @@ const DOT_IDLE: &str = "○";
 /// approval - and `+` at the end opens a new session. When the bar is
 /// wider than the area, a window around the active tab is shown so the
 /// selected tab is never the one clipped away.
+///
+/// Returns the clickable x-ranges (tabs and `+`) for the mouse handler.
+/// An empty tab list still renders the `+` so the bar never vanishes.
 pub fn render_tab_bar(
     f: &mut Frame,
     area: Rect,
     tabs: &TabList,
     theme: &crate::session::theme::Theme,
-) {
-    if area.width == 0 || area.height == 0 || tabs.is_empty() {
-        return;
+) -> Vec<(u16, u16, TabHit)> {
+    let mut hits: Vec<(u16, u16, TabHit)> = Vec::new();
+    if area.width == 0 || area.height == 0 {
+        return hits;
+    }
+    if tabs.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " +",
+                Style::default().fg(theme.dim),
+            ))),
+            area,
+        );
+        hits.push((0, 2, TabHit::NewTab));
+        return hits;
     }
     let width = area.width as usize;
     let active = tabs.active_index();
@@ -347,11 +381,16 @@ pub fn render_tab_bar(
     // part of the name. Amber is approval-only: the dot is the one place
     // outside the approval card that may use it.
     let mut line_spans: Vec<Span> = Vec::new();
-    for i in start..=end {
-        if i > start {
+    let mut x: u16 = 0;
+    for (rel, tab) in tabs.tabs()[start..=end].iter().enumerate() {
+        let i = start + rel;
+        if rel > 0 {
             line_spans.push(Span::styled(TAB_SEP, Style::default().fg(theme.dim)));
+            x += sep_w as u16;
         }
-        let tab = &tabs.tabs()[i];
+        let w = widths[i] as u16;
+        hits.push((x, x + w, TabHit::Switch(i)));
+        x += w;
         let (dot, dot_color) = if tab.approval {
             (DOT_APPROVAL, theme.warning)
         } else if tab.busy {
@@ -382,6 +421,81 @@ pub fn render_tab_bar(
             line_spans.push(Span::raw("  "));
         }
     }
+    hits.push((x, x + 2, TabHit::NewTab));
     line_spans.push(Span::styled(" +", Style::default().fg(theme.dim)));
     f.render_widget(Paragraph::new(Line::from(line_spans)), area);
+    hits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    fn tab(run_id: &str, title: Option<&str>) -> Tab {
+        Tab {
+            run_id: run_id.to_string(),
+            title: title.map(str::to_string),
+            busy: false,
+            approval: false,
+        }
+    }
+
+    #[test]
+    fn untitled_tab_shows_new_session_not_id_stem() {
+        let t = tab("abcdefgh12345678", None);
+        assert_eq!(t.label(), "new session");
+        // Empty/blank titles count as untitled too.
+        let t = tab("abcdefgh12345678", Some("   "));
+        assert_eq!(t.label(), "new session");
+    }
+
+    #[test]
+    fn titled_tab_shows_title_truncated() {
+        let t = tab("abcdefgh12345678", Some("fix the login bug"));
+        assert_eq!(t.label(), "fix the login bug");
+        let long = "a".repeat(100);
+        let t = tab("abcdefgh12345678", Some(&long));
+        assert_eq!(t.label().chars().count(), MAX_LABEL_CHARS);
+    }
+
+    #[test]
+    fn set_title_updates_matching_tab_only() {
+        let mut list = TabList::default();
+        list.refresh_from_explicit(
+            &[
+                ("r1".to_string(), None),
+                ("r2".to_string(), Some("old".to_string())),
+            ],
+            |_| false,
+            "r1",
+        );
+        list.set_title("r1", "fresh title");
+        assert_eq!(list.tabs()[0].label(), "fresh title");
+        assert_eq!(list.tabs()[1].label(), "old");
+        // Unknown run id: no-op, no panic.
+        list.set_title("nope", "x");
+        assert_eq!(list.tabs().len(), 2);
+    }
+
+    #[test]
+    fn ctrl_tab_maps_to_cycle_actions() {
+        assert_eq!(
+            tab_key_action(KeyCode::Tab, KeyModifiers::CONTROL),
+            Some(TabAction::Next)
+        );
+        assert_eq!(
+            tab_key_action(KeyCode::BackTab, KeyModifiers::CONTROL),
+            Some(TabAction::Prev)
+        );
+        // Shift+Tab falls back to Prev.
+        assert_eq!(
+            tab_key_action(KeyCode::BackTab, KeyModifiers::SHIFT),
+            Some(TabAction::Prev)
+        );
+        assert_eq!(
+            tab_key_action(KeyCode::Char('t'), KeyModifiers::CONTROL),
+            Some(TabAction::NewTab)
+        );
+    }
 }

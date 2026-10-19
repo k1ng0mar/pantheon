@@ -14,8 +14,8 @@ use chrono::{DateTime, Local};
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind,
-        KeyModifiers,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event as CtEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -136,7 +136,7 @@ const KEY_HINTS: &[(&str, &str)] = &[
     ("Ctrl+B", "toggle sidebar"),
     ("Ctrl+G", "sidebar: activity / todo view"),
     ("Tab", "toggle Build / Plan mode"),
-    ("Shift+Tab", "cycle permissions: ask / smart / allow_all"),
+    ("Shift+Tab", "previous session"),
     ("/", "command palette (type to filter, Enter runs)"),
     ("Esc Esc (idle)", "offer to rewind the last turn"),
     ("/exit, /quit", "leave pantheon"),
@@ -217,13 +217,22 @@ impl PaletteState {
 pub enum BlockKind {
     UserMessage(String),
     AssistantMessage(String),
-    Thinking(String),
+    /// Reasoning trace. Renders as a collapsible `+ Thought` row via
+    /// [`crate::transcript::ThoughtView`]; the live (streaming) block
+    /// stays expanded, settled ones collapse until clicked.
+    Thinking {
+        text: String,
+        expanded: bool,
+    },
     /// Tool card: running until the matching runtime completion event
     /// sets `ok`. `name` is the registry id (`shell`) - the UI shows
     /// the presentable display name. Args render inline;
     /// `started`/`duration` give the timing, `error` carries the
     /// failure detail, and `tokens` freezes the session token count at
     /// completion (the header shows the live count while running).
+    /// `expanded` toggles the detail on click; `output` holds captured
+    /// stdout for `shell` calls, rendered as a collapsible `$ cmd` card
+    /// via [`crate::transcript::ShellView`].
     ToolCall {
         name: String,
         args: String,
@@ -233,6 +242,8 @@ pub enum BlockKind {
         duration: Option<std::time::Duration>,
         error: Option<String>,
         tokens: Option<u32>,
+        expanded: bool,
+        output: Vec<String>,
     },
     Swarm {
         agents: u32,
@@ -259,7 +270,12 @@ pub enum BlockKind {
     /// Inline unified diff of files a write tool changed, computed from
     /// pre-tool snapshots at ToolCompleted. Rendered red/green; never
     /// affects the ledger.
-    Diff(Vec<crate::diffview::DiffLine>),
+    /// Long diffs collapse behind an `(N more lines)` expander;
+    /// click the header to toggle.
+    Diff {
+        lines: Vec<crate::diffview::DiffLine>,
+        expanded: bool,
+    },
     /// Approval decision card. The tool intent renders calmly above it;
     /// the card itself is the amber decision point. `decision` collapses
     /// the card to a dim one-line marker once resolved.
@@ -712,6 +728,13 @@ pub struct TuiState {
     pub spinner_tick: u64,
     /// Shortcuts overlay (`?`). Fullscreen; owns the keyboard while open.
     pub show_shortcuts: bool,
+    /// Per-block first content line, refreshed every transcript render.
+    /// Backs click-to-toggle on collapsible block headers.
+    pub block_line_starts: Vec<usize>,
+    /// Tab bar geometry + clickable ranges from the last render, for
+    /// tab switching and the `+` new-tab click.
+    pub tab_bar_area: Option<Rect>,
+    pub tab_hits: Vec<(u16, u16, crate::tabs::TabHit)>,
     /// Modal vim editing state for the composer (`/vim` to toggle).
     /// Off by default; when off, input behaves exactly as before.
     pub vim: vim::VimState,
@@ -854,6 +877,9 @@ impl Default for TuiState {
             spinner_tick: 0,
             theme: theme::Theme::pantheon(),
             show_shortcuts: false,
+            block_line_starts: Vec::new(),
+            tab_bar_area: None,
+            tab_hits: Vec::new(),
             vim: vim::VimState::new(),
             git_label: None,
             git_checked_at: Instant::now(),
@@ -890,17 +916,23 @@ fn parse_scope(scope: &str) -> Option<(&str, &str, &str)> {
 /// card. Returns `(action sentence, concrete target)`:
 /// "shell wants to delete:" / "~/notes/old.md". The tool details stay
 /// visually calm - the amber card, not the text, carries the urgency.
+/// Best-effort JSON string-field extraction without pulling serde in
+/// here; tool args arrive as JSON-encoded strings.
+fn json_string_field(args: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let start = args.find(&needle)?;
+    let rest = &args[start + needle.len()..];
+    let rest = rest.trim_start_matches(|c: char| c == ':' || c.is_whitespace());
+    let rest = rest.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 fn describe_tool_action(tool: &str, args: &str) -> (String, String) {
     // Best-effort JSON field extraction without pulling serde in here;
     // args is a JSON-encoded string.
     fn field(args: &str, key: &str) -> Option<String> {
-        let needle = format!("\"{key}\"");
-        let start = args.find(&needle)?;
-        let rest = &args[start + needle.len()..];
-        let rest = rest.trim_start_matches(|c: char| c == ':' || c.is_whitespace());
-        let rest = rest.strip_prefix('"')?;
-        let end = rest.find('"')?;
-        Some(rest[..end].to_string())
+        json_string_field(args, key)
     }
     match tool {
         "shell" => {
@@ -1019,6 +1051,9 @@ impl TuiState {
             spinner_tick: 0,
             theme: theme::Theme::pantheon(),
             show_shortcuts: false,
+            block_line_starts: Vec::new(),
+            tab_bar_area: None,
+            tab_hits: Vec::new(),
             vim: vim::VimState::new(),
             git_label: None,
             git_checked_at: Instant::now(),
@@ -1251,14 +1286,20 @@ impl TuiState {
             ModelEvent::ReasoningDelta { text } => {
                 self.bump_estimate(&text);
                 if let Some(TranscriptBlock {
-                    kind: BlockKind::Thinking(ref mut t),
+                    kind:
+                        BlockKind::Thinking {
+                            text: ref mut t, ..
+                        },
                     ..
                 }) = self.blocks.last_mut()
                 {
                     t.push_str(&text);
                 } else {
                     self.blocks.push(TranscriptBlock {
-                        kind: BlockKind::Thinking(text),
+                        kind: BlockKind::Thinking {
+                            text,
+                            expanded: false,
+                        },
                     });
                 }
             }
@@ -1278,6 +1319,8 @@ impl TuiState {
                         duration: None,
                         error: None,
                         tokens: None,
+                        expanded: false,
+                        output: Vec::new(),
                     },
                 });
             }
@@ -1920,6 +1963,8 @@ impl TuiState {
                         duration: None,
                         error: None,
                         tokens: None,
+                        expanded: false,
+                        output: Vec::new(),
                     },
                 });
             }
@@ -1966,7 +2011,10 @@ impl TuiState {
                     }
                     if !lines.is_empty() {
                         self.blocks.push(TranscriptBlock {
-                            kind: BlockKind::Diff(lines),
+                            kind: BlockKind::Diff {
+                                lines,
+                                expanded: false,
+                            },
                         });
                     }
                 }
@@ -1974,6 +2022,26 @@ impl TuiState {
             RuntimeErrorEvent::ToolOutput { .. } => {
                 // Output content rides the ToolMessage into the transcript;
                 // the card itself flips on ToolCompleted.
+            }
+            RuntimeErrorEvent::ToolMessage { message, .. } => {
+                // Tool result content feeds the shell card: `$ cmd` with
+                // collapsible output, opencode-style. Other tools' results
+                // stay model-side; their cards keep the one-line shape.
+                if !matches!(message.role, pantheon_api::message::Role::Tool) {
+                    return;
+                }
+                let Some(call_id) = message.tool_call_id.clone() else {
+                    return;
+                };
+                let target = self.blocks.iter_mut().rev().find(|b| {
+                    matches!(&b.kind, BlockKind::ToolCall { call_id: c, name, .. } if c == &call_id && name == "shell")
+                });
+                if let Some(block) = target {
+                    if let BlockKind::ToolCall { output, .. } = &mut block.kind {
+                        output.extend(message.content.lines().map(str::to_string));
+                        self.scroll_to_bottom();
+                    }
+                }
             }
             RuntimeErrorEvent::ApprovalRequested { run_id, scope } => {
                 // Park first (map + tab dot), then render the visible card.
@@ -2066,8 +2134,11 @@ impl TuiState {
             }
             // Title generation (aux or /name) lands as a durable event;
             // the header follows it with no polling.
-            RuntimeErrorEvent::SessionTitled { title, .. } => {
+            RuntimeErrorEvent::SessionTitled { run_id, title, .. } => {
                 self.title = Some(title.clone());
+                // The tab bar shows the id stem until now; sync it so the
+                // fresh title appears without waiting for a refresh.
+                self.tabs.set_title(run_id, title);
             }
             // Mid-turn steering delivered: mark it visibly in the
             // transcript so the redirect is obvious, distinct from an
@@ -2801,9 +2872,10 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
                     _ => BlockKind::AssistantMessage(m.content.clone()),
                 },
                 // Imported reasoning traces render as thinking blocks.
-                pantheon_runtime::session::TranscriptItem::Reasoning(text) => {
-                    BlockKind::Thinking(text)
-                }
+                pantheon_runtime::session::TranscriptItem::Reasoning(text) => BlockKind::Thinking {
+                    text,
+                    expanded: false,
+                },
                 // Structured UI: rebuilt at its latest revision.
                 pantheon_runtime::session::TranscriptItem::Ui {
                     ui_id,
@@ -2919,7 +2991,9 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
             Constraint::Length(1), // plugin / version line
         ])
         .areas(f.area());
-        crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+        let tab_hits = crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+        state.tab_bar_area = Some(tab_area);
+        state.tab_hits = tab_hits;
         render_splash(f, splash_area, state);
         render_splash_bottom(f, bottom_area, state);
     } else {
@@ -2935,7 +3009,9 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
                 Constraint::Length(1), // footer
             ]);
             let [tab_area, body_area, alerts_area, footer_area] = outer.areas(f.area());
-            crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+            let tab_hits = crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+            state.tab_bar_area = Some(tab_area);
+            state.tab_hits = tab_hits;
             render_body(state, f, body_area);
             render_alerts(f, alerts_area, state);
             render_footer(f, footer_area, state);
@@ -2946,7 +3022,9 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
                 Constraint::Length(1), // footer
             ]);
             let [tab_area, body_area, footer_area] = outer.areas(f.area());
-            crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+            let tab_hits = crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+            state.tab_bar_area = Some(tab_area);
+            state.tab_hits = tab_hits;
             render_body(state, f, body_area);
             render_footer(f, footer_area, state);
         }
@@ -3734,6 +3812,10 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
         ("Esc", "stop typing"),
         ("Esc x2", "interrupt run / offer rewind"),
         ("PgUp PgDn", "scroll transcript"),
+        (
+            "click block header",
+            "expand / collapse thinking, output, diffs",
+        ),
         ("F2 / Ctrl+O", "turn timeline"),
         ("Ctrl+B", "toggle sidebar"),
         ("Ctrl+G", "sidebar activity / todo view"),
@@ -4638,6 +4720,97 @@ fn render_splash(f: &mut Frame, area: Rect, state: &TuiState) {
 /// the target turn's first block sits at the top. Read-only otherwise
 /// jumping never mutates the transcript. When the user scrolled up, a
 /// dim `Jump to latest ↓` marker anchors to the bottom-right.
+/// Resolve a content line to its block index via the per-frame
+/// first-line map. Pure for tests.
+fn block_at_line(starts: &[usize], line: usize) -> Option<usize> {
+    match starts.binary_search(&line) {
+        Ok(i) => Some(i),
+        Err(0) => None,
+        Err(i) => Some(i - 1),
+    }
+}
+
+/// Click-to-toggle for collapsible block headers (thinking, tool output,
+/// diffs). Only the header line toggles; clicks elsewhere pass through.
+/// Returns true when a block flipped.
+fn toggle_block_at_click(state: &mut TuiState, col: u16, row: u16) -> bool {
+    let view = match &state.img.view {
+        Some(v) => v,
+        None => return false,
+    };
+    if row < view.y || col < view.x || col >= view.x.saturating_add(view.width) {
+        return false;
+    }
+    let line = view.scroll_off.saturating_add((row - view.y) as usize);
+    let idx = match block_at_line(&state.block_line_starts, line) {
+        Some(i) => i,
+        None => return false,
+    };
+    // Header-only: the click must land on the block's first line.
+    if state.block_line_starts.get(idx) != Some(&line) {
+        return false;
+    }
+    let block = match state.blocks.get_mut(idx) {
+        Some(b) => b,
+        None => return false,
+    };
+    match &mut block.kind {
+        BlockKind::Thinking { expanded, .. } => {
+            *expanded = !*expanded;
+            true
+        }
+        BlockKind::ToolCall { expanded, .. } => {
+            *expanded = !*expanded;
+            true
+        }
+        BlockKind::Diff { expanded, .. } => {
+            *expanded = !*expanded;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Click handling for the tab bar: a tab switches to it, the
+/// trailing `+` opens a new session tab. Returns true when the click
+/// landed on a tab-bar target.
+fn click_tab_bar(state: &mut TuiState, session: &Arc<Session>, col: u16, row: u16) -> bool {
+    let area = match state.tab_bar_area {
+        Some(a) => a,
+        None => return false,
+    };
+    if row != area.y || col < area.x || col >= area.x.saturating_add(area.width) {
+        return false;
+    }
+    let x = col - area.x;
+    let hit = state
+        .tab_hits
+        .iter()
+        .find(|(x0, x1, _)| x >= *x0 && x < *x1)
+        .map(|(_, _, h)| *h);
+    match hit {
+        Some(crate::tabs::TabHit::NewTab) => {
+            new_tab(state, session, "new tab (unsaved until the first turn)");
+            refresh_tabs(state, session);
+            true
+        }
+        Some(crate::tabs::TabHit::Switch(i)) => {
+            let id = state.tabs.tabs().get(i).map(|t| t.run_id.clone());
+            match id {
+                Some(id) if id != state.session_id => {
+                    switch_to_run(state, session, &id, "resumed");
+                    refresh_tabs(state, session);
+                    true
+                }
+                // Clicking the active tab: swallow, don't toggle blocks.
+                Some(_) => true,
+                None => false,
+            }
+        }
+        None => false,
+    }
+}
+
 fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
     // Placements are rebuilt every frame: blocks only ever append, but a
     // rewind can drop them, and scroll changes every row.
@@ -4724,6 +4897,10 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
         state.scroll_offset = max_scroll.saturating_sub(target_line);
     }
     let off = max_scroll.saturating_sub(state.scroll_offset) as u16;
+    // Click-to-toggle map: block index -> first content line. Refreshed
+    // every frame; the mouse handler resolves a click to a block header
+    // through this plus the viewport geometry below.
+    state.block_line_starts = block_starts;
     // Viewport geometry for the post-draw image painter: `off` lines are
     // scrolled off the top, content starts at the area's first row (no
     // border since the transcript went borderless).
@@ -4946,37 +5123,16 @@ fn render_block(
             )));
             render_rich_text(lines, output, th, img, term_width);
         }
-        BlockKind::Thinking(text) => {
-            // Reasoning renders distinctly from final text: dim italic,
-            // labeled as thought rather than answer. The live (streaming)
-            // block stays expanded; settled ones collapse to a summary so
-            // old reasoning never crowds out answers.
-            let dim = Style::default().fg(th.dim).add_modifier(Modifier::ITALIC);
-            if is_last {
-                lines.push(Line::from(Span::styled(
-                    "◇ reasoning",
-                    Style::default()
-                        .fg(th.dim)
-                        .add_modifier(Modifier::BOLD | Modifier::ITALIC),
-                )));
-                for line in text.lines().take(40) {
-                    lines.push(Line::from(Span::styled(line.to_string(), dim)));
-                }
-            } else {
-                // Collapsed summary: first line of the thought + size hint.
-                let words = text.split_whitespace().count();
-                let summary = text
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .chars()
-                    .take(80)
-                    .collect::<String>();
-                lines.push(Line::from(Span::styled(
-                    format!("◇ Thought · {words} words · {summary}..."),
-                    dim,
-                )));
-            }
+        BlockKind::Thinking { text, expanded } => {
+            // Reasoning as a collapsible `+ Thought` row: the live
+            // (streaming) block stays expanded, settled ones collapse
+            // until clicked, so old reasoning never crowds out answers.
+            let view = crate::transcript::ThoughtView {
+                text: text.clone(),
+                duration: None,
+                expanded: *expanded || is_last,
+            };
+            lines.extend(view.lines(th));
         }
         BlockKind::ToolCall {
             name,
@@ -4987,61 +5143,85 @@ fn render_block(
             duration,
             error,
             tokens,
+            expanded,
+            output,
         } => {
-            let (glyph, col) = match ok {
-                // A tool still marked running after an interrupt was stopped
-                // from the outside: show that honestly, in dim, instead of
-                // spinning or going amber (amber is reserved for approvals).
-                None if interrupted => ("■", th.dim),
-                None => (icon::RUNNING, th.success),
-                Some(true) => (icon::SUCCESS, th.success),
-                Some(false) => (icon::FAILURE, th.failure),
-            };
-            // Minimal single-line header: `⚙ Execute · 0.4s · 154.2k ✓`.
-            // The token count ticks live while the call runs and freezes
-            // at completion; cards completed before tracking simply omit
-            // it. Tool names render presentable, never raw registry ids.
-            let display = activity::tool_display_name(name);
-            let mut timing = match duration {
-                Some(d) => format!("{:.1}s", d.as_secs_f64()),
-                None => match started {
-                    Some(_) => "...".to_string(),
-                    None => String::new(),
-                },
-            };
-            if !timing.is_empty() {
-                timing = format!(" · {timing}");
-            }
-            let count = match (tokens, ok) {
-                (Some(t), _) => Some(statusbar::fmt_count(*t as u64)),
-                (None, None) => Some(statusbar::fmt_count(live_tokens as u64)),
-                (None, Some(_)) => None,
-            };
-            let tool_dim = Style::default().fg(th.dim);
-            let mut header = vec![
-                Span::styled(format!("{} {display}", icon::TOOL), tool_dim),
-                Span::styled(timing, tool_dim),
-            ];
-            if let Some(c) = count {
-                header.push(Span::styled(format!(" · {c}"), tool_dim));
-            }
-            header.push(Span::styled(format!(" {glyph}"), Style::default().fg(col)));
-            lines.push(Line::from(header));
-            if !args.is_empty() {
-                for line in args.lines().take(6) {
-                    lines.push(Line::from(Span::styled(format!("  {line}"), tool_dim)));
+            // Shell calls with captured stdout render as `$ cmd` cards
+            // with collapsible output, opencode-style. Everything else
+            // keeps the one-line tool row; clicking expands full args.
+            if name == "shell" && !output.is_empty() {
+                let command = json_string_field(args, "command").unwrap_or_else(|| args.clone());
+                let status = match ok {
+                    None if interrupted => crate::transcript::ToolStatus::Interrupted,
+                    None => crate::transcript::ToolStatus::Running,
+                    Some(true) => crate::transcript::ToolStatus::Succeeded,
+                    Some(false) => crate::transcript::ToolStatus::Failed,
+                };
+                let view = crate::transcript::ShellView {
+                    command,
+                    output: output.clone(),
+                    status,
+                    duration: *duration,
+                    expanded: *expanded,
+                };
+                lines.extend(view.lines(th));
+            } else {
+                let (glyph, col) = match ok {
+                    // A tool still marked running after an interrupt was stopped
+                    // from the outside: show that honestly, in dim, instead of
+                    // spinning or going amber (amber is reserved for approvals).
+                    None if interrupted => ("■", th.dim),
+                    None => (icon::RUNNING, th.success),
+                    Some(true) => (icon::SUCCESS, th.success),
+                    Some(false) => (icon::FAILURE, th.failure),
+                };
+                // Minimal single-line header: `⚙ Execute · 0.4s · 154.2k ✓`.
+                // The token count ticks live while the call runs and freezes
+                // at completion; cards completed before tracking simply omit
+                // it. Tool names render presentable, never raw registry ids.
+                let display = activity::tool_display_name(name);
+                let mut timing = match duration {
+                    Some(d) => format!("{:.1}s", d.as_secs_f64()),
+                    None => match started {
+                        Some(_) => "...".to_string(),
+                        None => String::new(),
+                    },
+                };
+                if !timing.is_empty() {
+                    timing = format!(" · {timing}");
                 }
-            }
-            // Failure detail: the worker records the error text on the
-            // card; the card renders it calmly under the header (tools
-            // stay calm - only approvals go amber).
-            if let Some(err) = error {
-                if !err.is_empty() {
-                    for line in err.lines().take(10) {
-                        lines.push(Line::from(Span::styled(
-                            format!("  ✕ {line}"),
-                            Style::default().fg(th.failure),
-                        )));
+                let count = match (tokens, ok) {
+                    (Some(t), _) => Some(statusbar::fmt_count(*t as u64)),
+                    (None, None) => Some(statusbar::fmt_count(live_tokens as u64)),
+                    (None, Some(_)) => None,
+                };
+                let tool_dim = Style::default().fg(th.dim);
+                let mut header = vec![
+                    Span::styled(format!("{} {display}", icon::TOOL), tool_dim),
+                    Span::styled(timing, tool_dim),
+                ];
+                if let Some(c) = count {
+                    header.push(Span::styled(format!(" · {c}"), tool_dim));
+                }
+                header.push(Span::styled(format!(" {glyph}"), Style::default().fg(col)));
+                lines.push(Line::from(header));
+                if !args.is_empty() {
+                    let limit = if *expanded { usize::MAX } else { 6 };
+                    for line in args.lines().take(limit) {
+                        lines.push(Line::from(Span::styled(format!("  {line}"), tool_dim)));
+                    }
+                }
+                // Failure detail: the worker records the error text on the
+                // card; the card renders it calmly under the header (tools
+                // stay calm - only approvals go amber).
+                if let Some(err) = error {
+                    if !err.is_empty() {
+                        for line in err.lines().take(10) {
+                            lines.push(Line::from(Span::styled(
+                                format!("  ✕ {line}"),
+                                Style::default().fg(th.failure),
+                            )));
+                        }
                     }
                 }
             }
@@ -5142,8 +5322,29 @@ fn render_block(
                 Style::default().fg(th.dim),
             )));
         }
-        BlockKind::Diff(diff_lines) => {
-            lines.extend(crate::diffview::render_diff_lines(diff_lines, th));
+        BlockKind::Diff {
+            lines: diff_lines,
+            expanded,
+        } => {
+            // Long diffs collapse behind an `(N more lines)` expander,
+            // opencode-style; click the diff to toggle. Short diffs
+            // render fully - nothing to collapse.
+            const DIFF_VISIBLE_LINES: usize = 12;
+            let rendered = crate::diffview::render_diff_lines(diff_lines, th);
+            let hidden = rendered
+                .len()
+                .checked_sub(DIFF_VISIBLE_LINES)
+                .filter(|&n| n > 0 && !expanded);
+            match hidden {
+                Some(n) => {
+                    lines.extend(rendered.into_iter().take(DIFF_VISIBLE_LINES));
+                    lines.push(Line::from(Span::styled(
+                        format!("  ({n} more lines)"),
+                        Style::default().fg(th.dim),
+                    )));
+                }
+                None => lines.extend(rendered),
+            }
         }
         BlockKind::Approval {
             tool,
@@ -7571,7 +7772,41 @@ fn tui_loop(
         terminal.draw(|f| render(state, f))?;
 
         if event::poll(Duration::from_millis(100))? {
-            if let CtEvent::Key(key) = event::read()? {
+            let event = event::read()?;
+            // Bracketed paste (drag-drop, clipboard): insert the text
+            // literally into the composer. Pasted text is never treated as
+            // keystrokes, so a leading `/` from a dropped absolute path
+            // can't open the command palette.
+            if let CtEvent::Paste(text) = event {
+                if !state.is_inputting {
+                    state.is_inputting = true;
+                }
+                if state.vim.enabled {
+                    for c in text.chars() {
+                        vim::insert_char(&mut state.input, &mut state.vim, c);
+                    }
+                } else {
+                    state.input.push_str(&text);
+                }
+                state.tick();
+                terminal.draw(|f| render(state, f))?;
+                continue;
+            }
+            if let CtEvent::Mouse(me) = &event {
+                // Left-click: tab bar first (switch tab / `+` for a new
+                // one), then collapsible transcript block headers,
+                // opencode-style.
+                if matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
+                    let handled = click_tab_bar(state, &session, me.column, me.row)
+                        || toggle_block_at_click(state, me.column, me.row);
+                    if handled {
+                        state.tick();
+                        terminal.draw(|f| render(state, f))?;
+                    }
+                }
+                continue;
+            }
+            if let CtEvent::Key(key) = event {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
@@ -7981,6 +8216,21 @@ fn tui_loop(
                 }
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     match key.code {
+                        // Ctrl+Tab / Ctrl+Shift+Tab: these never reach
+                        // tab_key_action below (this block catches every
+                        // Ctrl-modified key first), so cycle here.
+                        KeyCode::Tab => {
+                            if let Some(id) = state.tabs.cycle_next().map(str::to_string) {
+                                switch_to_run(state, &session, &id, "resumed");
+                            }
+                            refresh_tabs(state, &session);
+                        }
+                        KeyCode::BackTab => {
+                            if let Some(id) = state.tabs.cycle_prev().map(str::to_string) {
+                                switch_to_run(state, &session, &id, "resumed");
+                            }
+                            refresh_tabs(state, &session);
+                        }
                         KeyCode::Char('o') | KeyCode::Char('O') => state.toggle_timeline(),
                         KeyCode::Char('b') | KeyCode::Char('B') => {
                             // Toggle the session sidebar: the 75/25
@@ -8089,9 +8339,10 @@ fn tui_loop(
                     terminal.draw(|f| render(state, f))?;
                     continue;
                 }
-                // Shift+Tab cycles the permission mode (Ask -> Smart ->
-                // AllowAll). Kept off plain Tab so the existing plan
-                // toggle is untouched.
+                // Bare BackTab cycles the permission mode (Ask -> Smart ->
+                // AllowAll). Shift+Tab never reaches here: tab_key_action
+                // above maps BackTab+SHIFT to previous-tab. Kept off
+                // plain Tab so the existing plan toggle is untouched.
                 if key.code == KeyCode::BackTab
                     || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
                 {
@@ -8733,7 +8984,9 @@ fn export_transcript(blocks: &[TranscriptBlock], session_id: &str, format: &str)
         match &b.kind {
             BlockKind::UserMessage(t) => ("user", t.clone()),
             BlockKind::AssistantMessage(t) => ("agent", t.clone()),
-            BlockKind::Thinking(t) => ("thinking", t.lines().next().unwrap_or("").to_string()),
+            BlockKind::Thinking { text: t, .. } => {
+                ("thinking", t.lines().next().unwrap_or("").to_string())
+            }
             BlockKind::ToolCall {
                 name,
                 args,
@@ -8838,7 +9091,7 @@ fn export_transcript(blocks: &[TranscriptBlock], session_id: &str, format: &str)
                     format!("{provider}/{model}: {kind} - {message} [{fb}]"),
                 )
             }
-            BlockKind::Diff(lines) => (
+            BlockKind::Diff { lines, .. } => (
                 "diff",
                 lines
                     .iter()
@@ -9588,7 +9841,10 @@ fn handle_slash_inner(
                                 }
                                 // Imported reasoning traces render as thinking blocks.
                                 pantheon_runtime::session::TranscriptItem::Reasoning(text) => {
-                                    BlockKind::Thinking(text)
+                                    BlockKind::Thinking {
+                                        text,
+                                        expanded: false,
+                                    }
                                 }
                                 // Structured UI: rebuilt at its latest revision.
                                 pantheon_runtime::session::TranscriptItem::Ui {
@@ -11193,5 +11449,24 @@ mod transcript_redaction_tests {
     fn other_commands_pass_through_untouched() {
         assert_eq!(redact_command_for_transcript("/help"), "/help");
         assert_eq!(redact_command_for_transcript("/env list"), "/env list");
+    }
+
+    #[test]
+    fn block_at_line_resolves_headers_and_bodies() {
+        let starts = vec![0, 5, 12];
+        // Exact header lines resolve to their block.
+        assert_eq!(super::block_at_line(&starts, 0), Some(0));
+        assert_eq!(super::block_at_line(&starts, 5), Some(1));
+        assert_eq!(super::block_at_line(&starts, 12), Some(2));
+        // Body lines resolve to the owning block.
+        assert_eq!(super::block_at_line(&starts, 3), Some(0));
+        assert_eq!(super::block_at_line(&starts, 11), Some(1));
+        assert_eq!(super::block_at_line(&starts, 99), Some(2));
+    }
+
+    #[test]
+    fn block_at_line_empty_map_resolves_nothing() {
+        assert_eq!(super::block_at_line(&[], 0), None);
+        assert_eq!(super::block_at_line(&[], 7), None);
     }
 }
