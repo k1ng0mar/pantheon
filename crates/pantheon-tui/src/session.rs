@@ -166,6 +166,9 @@ pub struct PaletteState {
     pub input: String,
     /// Selected index into the *filtered* list.
     pub sel: usize,
+    /// First visible row: the popup scrolls so the selection never
+    /// leaves the visible window.
+    pub scroll: usize,
 }
 
 impl PaletteState {
@@ -201,10 +204,39 @@ impl PaletteState {
         let len = self.filtered().len();
         if len == 0 {
             self.sel = 0;
+            self.scroll = 0;
             return;
         }
         let sel = self.sel as isize + n;
         self.sel = sel.clamp(0, len as isize - 1) as usize;
+        self.scroll = clamp_scroll(self.sel, self.scroll, len, PALETTE_VISIBLE_ROWS);
+    }
+}
+
+/// Rows the `/` palette shows without scrolling: the popup grows to fit
+/// the filtered list up to this many rows, then the list scrolls under
+/// a fixed-height popup.
+const PALETTE_VISIBLE_ROWS: usize = 10;
+
+/// Data rows visible in the /models pickers at the overlay's maximum
+/// height: the card clamps to 22 rows (2 border + 3 header + 2 footer).
+const PICKER_VISIBLE_ROWS: usize = 15;
+
+/// Scroll offset keeping `sel` inside a `visible`-row window over `len`
+/// rows. The window only moves when the selection would leave it: past
+/// the bottom edge pushes it down, above the top edge pulls it up, and a
+/// shorter list resets it to the top.
+fn clamp_scroll(sel: usize, scroll: usize, len: usize, visible: usize) -> usize {
+    if visible == 0 || len <= visible {
+        return 0;
+    }
+    let max = len - visible;
+    if sel < scroll {
+        sel.min(max)
+    } else if sel >= scroll + visible {
+        (sel + 1 - visible).min(max)
+    } else {
+        scroll.min(max)
     }
 }
 
@@ -577,6 +609,9 @@ pub struct TuiState {
     pub models_input: String,
     /// Selected index into the filtered models list.
     pub models_sel: usize,
+    /// First visible row of the models overlay: the list scrolls so the
+    /// selection never leaves the visible window.
+    pub models_scroll: usize,
     /// Open provider picker: Some(rows) while the /models provider list
     /// is open. Picking a provider drills into `models` scoped to it;
     /// Esc in models returns here, Esc here closes both.
@@ -585,6 +620,9 @@ pub struct TuiState {
     pub providers_input: String,
     /// Selected index into the filtered provider list.
     pub providers_sel: usize,
+    /// First visible row of the provider picker: the list scrolls so the
+    /// selection never leaves the visible window.
+    pub providers_scroll: usize,
     /// Open `@` file-mention picker: while set, keystrokes filter and
     /// navigate the file list instead of reaching the composer.
     pub mention: Option<crate::mentions::MentionPicker>,
@@ -814,9 +852,11 @@ impl Default for TuiState {
             models: None,
             models_input: String::new(),
             models_sel: 0,
+            models_scroll: 0,
             providers: None,
             providers_input: String::new(),
             providers_sel: 0,
+            providers_scroll: 0,
             mention: None,
             palette: None,
             pending_snaps: std::collections::HashMap::new(),
@@ -979,9 +1019,11 @@ impl TuiState {
             models: None,
             models_input: String::new(),
             models_sel: 0,
+            models_scroll: 0,
             providers: None,
             providers_input: String::new(),
             providers_sel: 0,
+            providers_scroll: 0,
             mention: None,
             palette: None,
             pending_snaps: std::collections::HashMap::new(),
@@ -1118,14 +1160,22 @@ impl TuiState {
     }
 
     /// Move the overlay selection by n, clamped to the filtered list.
+    /// The scroll window follows the selection (see [`clamp_scroll`]).
     pub fn models_move(&mut self, n: isize) {
         let len = self.filtered_models().len();
         if len == 0 {
             self.models_sel = 0;
+            self.models_scroll = 0;
             return;
         }
         let sel = self.models_sel as isize + n;
         self.models_sel = sel.clamp(0, len as isize - 1) as usize;
+        self.models_scroll = clamp_scroll(
+            self.models_sel,
+            self.models_scroll,
+            len,
+            PICKER_VISIBLE_ROWS,
+        );
     }
 
     /// Close the overlay and reset its state.
@@ -1133,6 +1183,7 @@ impl TuiState {
         self.models = None;
         self.models_input.clear();
         self.models_sel = 0;
+        self.models_scroll = 0;
     }
 
     /// Providers matching the current filter, alphabetical by label.
@@ -1157,14 +1208,22 @@ impl TuiState {
     }
 
     /// Move the provider-picker selection by n, clamped to the filtered list.
+    /// The scroll window follows the selection (see [`clamp_scroll`]).
     pub fn providers_move(&mut self, n: isize) {
         let len = self.filtered_providers().len();
         if len == 0 {
             self.providers_sel = 0;
+            self.providers_scroll = 0;
             return;
         }
         let sel = self.providers_sel as isize + n;
         self.providers_sel = sel.clamp(0, len as isize - 1) as usize;
+        self.providers_scroll = clamp_scroll(
+            self.providers_sel,
+            self.providers_scroll,
+            len,
+            PICKER_VISIBLE_ROWS,
+        );
     }
 
     /// Close the provider picker and any drilled-in models view.
@@ -1172,6 +1231,7 @@ impl TuiState {
         self.providers = None;
         self.providers_input.clear();
         self.providers_sel = 0;
+        self.providers_scroll = 0;
         self.models_close();
     }
 
@@ -2971,7 +3031,7 @@ fn render_palette(f: &mut Frame, area: Rect, state: &TuiState) {
     };
     let th = &state.theme;
     let items = p.filtered();
-    let rows = items.len().min(10);
+    let rows = items.len().min(PALETTE_VISIBLE_ROWS);
     // Width: longest "name  desc" row, clamped to the terminal.
     let mut inner_w = format!("/{}_", p.input).len();
     for (name, desc) in items.iter().take(rows) {
@@ -2986,75 +3046,100 @@ fn render_palette(f: &mut Frame, area: Rect, state: &TuiState) {
     let y = area.y + (area.height.saturating_sub(height)) / 3;
     let popup = Rect::new(x, y, inner_w, height);
     f.render_widget(Clear, popup);
-    let mut lines: Vec<Line> = Vec::with_capacity(rows + 2);
-    lines.push(Line::from(vec![
-        Span::styled(
-            "/ ",
-            Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(p.input.clone(), Style::default().fg(th.primary)),
-        Span::styled("▌", Style::default().fg(th.primary)),
-    ]));
-    lines.push(Line::from(""));
-    for (i, (name, desc)) in items.iter().take(rows).enumerate() {
+
+    // The list scrolls under the fixed-height popup so the selection
+    // never leaves the visible window (see `clamp_scroll`).
+    let scroll = clamp_scroll(p.sel, p.scroll, items.len(), rows.max(1));
+    // Inside the borders: rows are padded to this width so the selection
+    // wash bleeds edge to edge like the other pickers.
+    let content_w = inner_w.saturating_sub(2) as usize;
+
+    let header = vec![
+        Line::from(vec![
+            Span::styled(
+                "/ ",
+                Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(p.input.clone(), Style::default().fg(th.primary)),
+            Span::styled("▌", Style::default().fg(th.primary)),
+        ]),
+        Line::from(""),
+    ];
+    let mut list: Vec<Line> = Vec::with_capacity(items.len().max(1));
+    for (i, (name, desc)) in items.iter().enumerate() {
         let row = format!("  {name:<22} {desc}");
         // Middle-ellipsis the description when the popup is narrower
         // than the row: the command name stays readable.
-        let row = if row.len() > inner_w as usize - 2 {
-            let keep = inner_w as usize - 5;
+        let row = if row.len() > content_w {
+            let keep = content_w.saturating_sub(3);
             format!("{}...", row.chars().take(keep).collect::<String>())
         } else {
             row
         };
         // The name column is 24 chars wide ("  " + 22 padded): split the
         // row there so the command name keeps its primary color. The
-        // selected row renders reversed, like every other picker.
+        // description is padded so the row fills the popup exactly and
+        // the selection wash bleeds edge to edge.
         let split = row
             .char_indices()
             .nth(24)
             .map(|(b, _)| b)
             .unwrap_or(row.len());
         let (head, tail) = row.split_at(split);
-        let row_style = if i == p.sel {
-            Style::default().add_modifier(Modifier::REVERSED)
-        } else {
+        let tail = format!(
+            "{tail:<pad$}",
+            pad = content_w.saturating_sub(head.chars().count())
+        );
+        // The selected row wears the theme's tab highlight wash - an
+        // explicit background, like every other picker. Reverse video
+        // renders terminal-dependent and is never used for selections.
+        let selected = i == p.sel;
+        let head_style = if selected {
             Style::default()
-        };
-        let head_style = if i == p.sel {
-            row_style.fg(th.primary).add_modifier(Modifier::BOLD)
+                .fg(th.primary)
+                .bg(th.tab_active_bg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(th.primary)
         };
-        let tail_style = if i == p.sel {
-            row_style.fg(th.dim)
+        let tail_style = if selected {
+            Style::default().fg(th.dim).bg(th.tab_active_bg)
         } else {
             Style::default().fg(th.dim)
         };
-        lines.push(Line::from(vec![
+        list.push(Line::from(vec![
             Span::styled(head.to_string(), head_style),
-            Span::styled(tail.to_string(), tail_style),
+            Span::styled(tail, tail_style),
         ]));
     }
     if items.is_empty() {
-        lines.push(Line::from(Span::styled(
+        list.push(Line::from(Span::styled(
             "  no matching command",
             Style::default().fg(th.dim),
         )));
     }
-    let body = Paragraph::new(lines).block(
-        Block::bordered()
-            .title(format!(
-                " commands ({}/{} · Enter run · Esc dismiss) ",
-                if items.is_empty() {
-                    0
-                } else {
-                    (p.sel + 1).min(items.len())
-                },
-                items.len()
-            ))
-            .border_style(Style::default().fg(th.primary)),
-    );
-    f.render_widget(body, popup);
+    let block = Block::bordered()
+        .title(format!(
+            " commands ({}/{} · Enter run · Esc dismiss) ",
+            if items.is_empty() {
+                0
+            } else {
+                (p.sel + 1).min(items.len())
+            },
+            items.len()
+        ))
+        .border_style(Style::default().fg(th.primary));
+    f.render_widget(block, popup);
+    let inner_area = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let [input_area, list_area] =
+        Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner_area);
+    f.render_widget(Paragraph::new(header), input_area);
+    f.render_widget(Paragraph::new(list).scroll((scroll as u16, 0)), list_area);
 }
 
 /// Subtle column divider: a 1-cell column with a slightly lighter
@@ -3147,15 +3232,20 @@ fn render_mention_picker(f: &mut Frame, area: Rect, state: &TuiState) {
         )));
     }
     for (i, path) in picker.files.iter().enumerate().take(10) {
+        // The selected row wears the theme's tab highlight wash - an
+        // explicit background, like every other picker. Reverse video
+        // renders terminal-dependent and is never used for selections.
         let style = if i == picker.sel {
             Style::default()
                 .fg(th.primary)
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                .bg(th.tab_active_bg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
         let shown: String = path.chars().take((w as usize).saturating_sub(6)).collect();
-        lines.push(Line::from(Span::styled(format!("  {shown}"), style)));
+        let padded = format!("  {shown:<pad$}", pad = (w as usize).saturating_sub(4));
+        lines.push(Line::from(Span::styled(padded, style)));
     }
     let block = Block::default()
         .borders(Borders::ALL)
@@ -3364,7 +3454,18 @@ fn render_providers(f: &mut Frame, area: Rect, state: &TuiState) {
     let inner = w.saturating_sub(2) as usize;
 
     let rows = state.filtered_providers();
-    let mut lines = vec![
+    // Data rows visible between the 3-line search header and the 2-line
+    // footer, inside the borders. The list scrolls so the selection
+    // never leaves this window (see `clamp_scroll`).
+    let visible = (h as usize).saturating_sub(2 + 3 + 2).max(1);
+    let scroll = clamp_scroll(
+        state.providers_sel,
+        state.providers_scroll,
+        rows.len(),
+        visible,
+    );
+
+    let header = vec![
         Line::from(Span::styled("  Search", Style::default().fg(th.dim))),
         Line::from(vec![
             Span::styled("  ", Style::default()),
@@ -3373,8 +3474,9 @@ fn render_providers(f: &mut Frame, area: Rect, state: &TuiState) {
         ]),
         Line::from(""),
     ];
+    let mut list: Vec<Line> = Vec::with_capacity(rows.len().max(1));
     if rows.is_empty() {
-        lines.push(Line::from(Span::styled(
+        list.push(Line::from(Span::styled(
             "  (no matches)",
             Style::default().fg(th.failure),
         )));
@@ -3396,23 +3498,38 @@ fn render_providers(f: &mut Frame, area: Rect, state: &TuiState) {
         } else {
             Style::default().fg(th.body)
         };
-        lines.push(Line::from(Span::styled(padded, style)));
+        list.push(Line::from(Span::styled(padded, style)));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Enter opens models   Esc closes",
-        Style::default().fg(th.dim),
-    )));
-    let card = Paragraph::new(lines).block(
-        Block::bordered()
-            .border_type(BorderType::Double)
-            .border_style(Style::default().fg(th.primary))
-            .title(Span::styled(
-                " providers ",
-                Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
-            )),
-    );
+    let footer = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Enter opens models   Esc closes",
+            Style::default().fg(th.dim),
+        )),
+    ];
+    let card = Block::bordered()
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(th.primary))
+        .title(Span::styled(
+            " providers ",
+            Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+        ));
     f.render_widget(card, area);
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: w.saturating_sub(2),
+        height: h.saturating_sub(2),
+    };
+    let [header_area, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .areas(inner_area);
+    f.render_widget(Paragraph::new(header), header_area);
+    f.render_widget(Paragraph::new(list).scroll((scroll as u16, 0)), list_area);
+    f.render_widget(Paragraph::new(footer), footer_area);
 }
 
 /// Searchable model browser overlay: /models. Type-to-filter across
@@ -3439,7 +3556,13 @@ fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
     let inner = w.saturating_sub(2) as usize;
 
     let rows = state.filtered_models();
-    let mut lines = vec![
+    // Data rows visible between the 3-line search header and the 2-line
+    // footer, inside the borders. The list scrolls so the selection
+    // never leaves this window (see `clamp_scroll`).
+    let visible = (h as usize).saturating_sub(2 + 3 + 2).max(1);
+    let scroll = clamp_scroll(state.models_sel, state.models_scroll, rows.len(), visible);
+
+    let header = vec![
         Line::from(Span::styled("  Search", Style::default().fg(th.dim))),
         Line::from(vec![
             Span::styled("  ", Style::default()),
@@ -3448,8 +3571,9 @@ fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
         ]),
         Line::from(""),
     ];
+    let mut list: Vec<Line> = Vec::with_capacity(rows.len().max(1));
     if rows.is_empty() {
-        lines.push(Line::from(Span::styled(
+        list.push(Line::from(Span::styled(
             "  (no matches)",
             Style::default().fg(th.failure),
         )));
@@ -3468,7 +3592,7 @@ fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
             } else {
                 Style::default().fg(th.dim)
             };
-            lines.push(Line::from(Span::styled(padded, style)));
+            list.push(Line::from(Span::styled(padded, style)));
             continue;
         }
         // Badge column: the ctx limit, right-aligned like the
@@ -3511,7 +3635,7 @@ fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
         } else {
             Style::default().fg(th.dim)
         };
-        lines.push(Line::from(vec![
+        list.push(Line::from(vec![
             Span::styled("  ", base),
             Span::styled(marker, marker_style),
             Span::styled(format!(" {model}"), base),
@@ -3519,11 +3643,13 @@ fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
             Span::styled(format!(" {badge}"), badge_style),
         ]));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Enter switches   Esc back to providers",
-        Style::default().fg(th.dim),
-    )));
+    let footer = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Enter switches   Esc back to providers",
+            Style::default().fg(th.dim),
+        )),
+    ];
     let scope = state
         .filtered_models()
         .first()
@@ -3534,16 +3660,29 @@ fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
     } else {
         format!(" models · {scope} ")
     };
-    let card = Paragraph::new(lines).block(
-        Block::bordered()
-            .border_type(BorderType::Double)
-            .border_style(Style::default().fg(th.primary))
-            .title(Span::styled(
-                title,
-                Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
-            )),
-    );
+    let card = Block::bordered()
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(th.primary))
+        .title(Span::styled(
+            title,
+            Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+        ));
     f.render_widget(card, area);
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    let [header_area, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .areas(inner_area);
+    f.render_widget(Paragraph::new(header), header_area);
+    f.render_widget(Paragraph::new(list).scroll((scroll as u16, 0)), list_area);
+    f.render_widget(Paragraph::new(footer), footer_area);
 }
 
 /// Turn-timeline rail: a right-side panel listing one row per user turn
@@ -3590,14 +3729,19 @@ fn render_timeline(f: &mut Frame, area: Rect, state: &TuiState) {
                 .take(inner.saturating_sub(8))
                 .collect::<String>(),
         );
+        // The selected row wears the theme's tab highlight wash - an
+        // explicit background, like every other picker. Reverse video
+        // renders terminal-dependent and is never used for selections.
         let style = if i == sel {
             Style::default()
                 .fg(th.primary)
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                .bg(th.tab_active_bg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
-        lines.push(Line::from(Span::styled(row, style)));
+        let padded = format!("{row:<pad$}", pad = (w as usize).saturating_sub(2));
+        lines.push(Line::from(Span::styled(padded, style)));
     }
     let card = Paragraph::new(lines).block(
         Block::bordered()
@@ -3645,7 +3789,7 @@ fn render_editor(f: &mut Frame, area: Rect, state: &TuiState) {
                 Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::raw(tail));
-            lines.push(Line::from(spans).style(Style::default().add_modifier(Modifier::REVERSED)));
+            lines.push(Line::from(spans).style(Style::default().bg(th.tab_active_bg)));
         } else {
             spans.push(Span::raw(line.clone()));
             lines.push(Line::from(spans));
@@ -7583,6 +7727,7 @@ fn tui_loop(
                                 state.models = Some(rows);
                                 state.models_input.clear();
                                 state.models_sel = 0;
+                                state.models_scroll = 0;
                             }
                         }
                         _ => {}
@@ -7863,10 +8008,12 @@ fn tui_loop(
                             KeyCode::Backspace => {
                                 p.input.pop();
                                 p.sel = 0;
+                                p.scroll = 0;
                             }
                             KeyCode::Char(c) => {
                                 p.input.push(c);
                                 p.sel = 0;
+                                p.scroll = 0;
                             }
                             _ => {}
                         }
@@ -9681,6 +9828,7 @@ fn handle_slash_inner(
         state.providers = Some(providers);
         state.providers_input = filter;
         state.providers_sel = 0;
+        state.providers_scroll = 0;
         state.models_close();
         return;
     }
