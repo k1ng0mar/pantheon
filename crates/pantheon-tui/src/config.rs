@@ -298,6 +298,11 @@ pub fn reflect_aux_model(
     default: &pantheon_api::model::DefaultModel,
 ) -> pantheon_api::model::AuxiliaryModel {
     use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel};
+    // Resolution order: env > [nightly.model] pin > [reflect] > auto.
+    // A [nightly.model] pin means "use this model for the whole nightly
+    // pass" - it is the primary pin, and [reflect] is a finer-grained
+    // override for the reflection step specifically.
+    let nightly = cfg.and_then(|c| c.nightly.as_ref()).and_then(|n| n.model.as_ref());
     let section = cfg.and_then(|c| c.reflect.as_ref());
     let env_provider = std::env::var("PANTHEON_REFLECTION_PROVIDER")
         .ok()
@@ -308,9 +313,11 @@ pub fn reflect_aux_model(
     let (provider, model) = resolve_aux_target(
         env_provider
             .as_deref()
+            .or_else(|| nightly.as_ref().map(|m| m.provider.as_str()))
             .or_else(|| section.and_then(|r| r.provider.as_deref())),
         env_model
             .as_deref()
+            .or_else(|| nightly.as_ref().map(|m| m.model.as_str()))
             .or_else(|| section.and_then(|r| r.model.as_deref())),
         default,
     );
@@ -344,6 +351,11 @@ pub fn consolidation_aux_model(
     default: &pantheon_api::model::DefaultModel,
 ) -> pantheon_api::model::AuxiliaryModel {
     use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel};
+    // Same resolution order as reflect_aux_model: env > [nightly.model]
+    // pin > [consolidation] > auto. The [nightly.model] pin is the
+    // primary pin for the whole nightly pass; [consolidation] is a
+    // finer-grained override for the consolidation step specifically.
+    let nightly = cfg.and_then(|c| c.nightly.as_ref()).and_then(|n| n.model.as_ref());
     let section = cfg.and_then(|c| c.consolidation.as_ref());
     let env_provider = std::env::var("PANTHEON_CONSOLIDATION_PROVIDER")
         .ok()
@@ -354,9 +366,11 @@ pub fn consolidation_aux_model(
     let (provider, model) = resolve_aux_target(
         env_provider
             .as_deref()
+            .or_else(|| nightly.as_ref().map(|m| m.provider.as_str()))
             .or_else(|| section.and_then(|s| s.provider.as_deref())),
         env_model
             .as_deref()
+            .or_else(|| nightly.as_ref().map(|m| m.model.as_str()))
             .or_else(|| section.and_then(|s| s.model.as_deref())),
         default,
     );

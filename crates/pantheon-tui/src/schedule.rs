@@ -1195,6 +1195,22 @@ pub(crate) fn run_job_now(task: &str, sched: &Job, data_dir: &Path) -> JobRunRep
         pantheon_api::capability::Policy::coder()
     };
     let secrets = config::chat_secrets(file_cfg.as_ref());
+    // Honor the scheduled job's agent pin. An empty or default agent
+    // leaves the session on the configured default profile.
+    if !sched.agent.is_empty() && sched.agent != "default" {
+        if let Some(ref cfg) = file_cfg {
+            if let Err(e) = cfg.resolve_profile(Some(&sched.agent)) {
+                return JobRunReport {
+                    run_id: String::new(),
+                    error: Some(format!(
+                        "agent '{}' not found: {}. fix: declare [agents.{}] in config.toml",
+                        sched.agent, e, sched.agent
+                    )),
+                };
+            }
+        }
+        pantheon_api::config::set_profile_override(Some(sched.agent.clone()));
+    }
     let session = match Session::new(data_dir.to_path_buf(), policy, model_policy, secrets) {
         Ok(s) => s,
         Err(e) => {

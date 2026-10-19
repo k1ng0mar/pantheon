@@ -3457,9 +3457,9 @@ impl Session {
                 match spec {
                     None => {
                         if cfg.binary.is_some() {
-                            log_warn!("computer-use: configured [computer_use] binary not found");
+                            eprintln!("computer-use: configured [computer_use] binary not found");
                         } else {
-                            log_warn!("computer-use: cua-driver not found on PATH - install it to enable desktop control");
+                            eprintln!("computer-use: cua-driver not found on PATH - install it to enable desktop control");
                         }
                         0
                     }

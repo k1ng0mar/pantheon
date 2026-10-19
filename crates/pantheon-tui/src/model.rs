@@ -1421,9 +1421,40 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
     )?;
     let model_idx = browse.index;
     match browse.action {
-        crate::model_browser::ModelAction::SetDefault => println!("  set as default selection"),
+        crate::model_browser::ModelAction::SetDefault => {
+            let choice = ModelChoice {
+                provider: provider_id.clone(),
+                model: model_rows[model_idx].id.clone(),
+                base_url: if is_custom { Some(base_url.clone()) } else { None },
+                api_mode,
+                key_env: key_env.clone(),
+                raw_keys: raw_keys.clone(),
+                target: match &target {
+                    Target::Default => Target::Default,
+                    Target::Auxiliary(k) => Target::Auxiliary(k.clone()),
+                },
+            };
+            match crate::model::save_choice(&data_dir(), &choice) {
+                Ok(()) => println!("  set {} on {} as default", choice.model, choice.provider),
+                Err(e) => eprintln!("  could not save default: {e}"),
+            }
+        }
         crate::model_browser::ModelAction::Use => println!("  selected for this run"),
-        crate::model_browser::ModelAction::Test => println!("  connection test requested"),
+        crate::model_browser::ModelAction::Test => {
+            let test_model = model_rows[model_idx].id.clone();
+            println!("  testing {test_model} on {provider_id}...");
+            let key = effective_keys.clone();
+            match crate::model::fetch_models(&base_url, &key, api_mode, &provider_id) {
+                Ok(models) => {
+                    if models.iter().any(|m| m == &test_model) {
+                        println!("  connection ok ({test_model} found)");
+                    } else {
+                        println!("  connection ok ({test_model} not in {} models)", models.len());
+                    }
+                }
+                Err(e) => eprintln!("  connection failed: {e}"),
+            }
+        }
     }
     // A hand-typed id is the operator telling us what this endpoint serves, so
     // it gets written down. A picked-from-fetch id does not: it came from the
