@@ -97,6 +97,18 @@ impl AgentRuntime {
         effective: EffectiveProfile,
         data_dir: impl Into<PathBuf>,
     ) -> Result<Self, PantheonError> {
+        Self::with_caps(supervisor, profiles, effective, data_dir, crate::swarm::Caps::default())
+    }
+
+    /// Build a runtime with an explicit swarm cap set (from a `[swarm]`
+    /// config section). See [`AgentRuntime::new`] for the rest.
+    pub fn with_caps(
+        supervisor: Supervisor,
+        profiles: ProfileRegistry,
+        effective: EffectiveProfile,
+        data_dir: impl Into<PathBuf>,
+        caps: crate::swarm::Caps,
+    ) -> Result<Self, PantheonError> {
         let policy_preset = effective.policy.value.clone();
         let data_dir = data_dir.into();
         let collaboration = CollaborationStore::open(&data_dir.join("collaboration.db"))?;
@@ -105,9 +117,7 @@ impl AgentRuntime {
                 supervisor,
                 // One swarm per process, shared by every profile in it, so
                 // caps bound the whole run rather than each call.
-                swarm: Arc::new(Mutex::new(crate::swarm::Swarm::new(
-                    crate::swarm::Caps::default(),
-                ))),
+                swarm: Arc::new(Mutex::new(crate::swarm::Swarm::new(caps))),
                 profiles,
                 effective,
                 collaboration,

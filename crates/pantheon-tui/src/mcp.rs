@@ -311,18 +311,17 @@ fn status(args: &[String]) {
 /// time: the driver answers to the ComputerUse group and `[computer_use]`,
 /// not to `[mcp.servers]`.
 fn ensure_driver_spec(m: &McpManager, dd: &Path) {
-    if m.spec(pantheon_runtime::computer::CUA_DRIVER_SERVER)
-        .is_some()
-    {
-        return;
-    }
     let cfg = config::Config::load_or_report(dd);
     let section = cfg.as_ref().and_then(|c| c.computer_use.clone());
     let (driver, binary) = match section.as_ref() {
         Some(s) => (s.driver.as_deref(), s.binary.as_deref()),
         None => (None, None),
     };
-    if let Some(spec) = pantheon_runtime::computer::cua_driver_spec(driver, binary) {
+    if let Some(spec) = pantheon_runtime::computer::computer_driver_spec(driver, binary) {
+        let server_name = spec.name.clone();
+        if m.spec(&server_name).is_some() {
+            return;
+        }
         let mut specs: Vec<_> = m
             .spec_names()
             .into_iter()

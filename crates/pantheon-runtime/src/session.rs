@@ -3450,20 +3450,27 @@ impl Session {
             if !cfg.enabled {
                 0
             } else {
-                let spec = crate::computer::cua_driver_spec(
+                let spec = crate::computer::computer_driver_spec(
                     Some(&cfg.driver),
                     cfg.binary.as_ref().and_then(|p| p.to_str()),
                 );
                 match spec {
                     None => {
                         if cfg.binary.is_some() {
-                            eprintln!("computer-use: configured [computer_use] binary not found");
+                            eprintln!(
+                                "computer-use: configured [computer_use] binary not found for driver '{}'",
+                                cfg.driver
+                            );
                         } else {
-                            eprintln!("computer-use: cua-driver not found on PATH - install it to enable desktop control");
+                            eprintln!(
+                                "computer-use: driver '{}' binary not found on PATH - install it or set [computer_use].binary to enable desktop control",
+                                cfg.driver
+                            );
                         }
                         0
                     }
                     Some(spec) => {
+                        let server_name = spec.name.clone();
                         let mut specs: Vec<_> = self
                             .mcp_manager
                             .spec_names()
@@ -3477,7 +3484,7 @@ impl Session {
                         let before = reg.names().len();
                         let report = self.mcp_manager.register_server_tools(
                             &mut reg,
-                            crate::computer::CUA_DRIVER_SERVER,
+                            &server_name,
                             Some(pantheon_api::capability::Capability::ComputerUse),
                         );
                         for (server, reason) in &report.skipped {
@@ -3485,8 +3492,7 @@ impl Session {
                         }
                         if !report.pending_approval.is_empty() {
                             log_warn!(
-                                "computer-use: driver needs approval: pantheon mcp approve {}",
-                                crate::computer::CUA_DRIVER_SERVER
+                                "computer-use: driver needs approval: pantheon mcp approve {server_name}"
                             );
                         }
                         reg.names().len() - before

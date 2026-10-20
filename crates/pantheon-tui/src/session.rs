@@ -5801,11 +5801,13 @@ pub fn run_tui_session_with(
                 .profile_registry()
                 .map_err(pantheon_runtime::profile_err)
                 .and_then(|reg| {
-                    pantheon_runtime::AgentRuntime::new(
+                    let caps = swarm_caps_for(cfg, &effective);
+                    pantheon_runtime::AgentRuntime::with_caps(
                         session.supervisor.clone(),
                         reg,
                         effective,
                         data_dir,
+                        caps,
                     )
                 }) {
                 Ok(agent) => {
@@ -8749,7 +8751,8 @@ fn switch_agent(state: &mut TuiState, session: &Arc<Session>, name: &str) {
     }
 }
 
-/// Build a runtime for `name` from a freshly loaded config.
+/// Build a runtime for `name` from a freshly loaded config. The swarm
+/// caps come from the config's `[swarm]` section (absent = defaults).
 fn agent_for(
     session: &Arc<Session>,
     cfg: &crate::config::Config,
@@ -8758,13 +8761,26 @@ fn agent_for(
 ) -> Result<pantheon_runtime::AgentRuntime, String> {
     let preset = cfg.policy.map(|p| p.as_str()).unwrap_or("coder");
     let effective = registry.resolve(name, preset).map_err(|e| e.to_string())?;
-    pantheon_runtime::AgentRuntime::new(
+    let caps = swarm_caps_for(cfg, &effective);
+    pantheon_runtime::AgentRuntime::with_caps(
         session.supervisor.clone(),
         registry,
         effective,
         crate::terminal::data_dir(),
+        caps,
     )
     .map_err(|e| e.cause)
+}
+
+/// Caps for a run: the `[swarm]` section, with the resolved profile's
+/// `swarm_max_subagents` override winning when set. Absent section =
+/// built-in defaults.
+pub(crate) fn swarm_caps_for(
+    cfg: &crate::config::Config,
+    effective: &pantheon_agent::agent_profile::EffectiveProfile,
+) -> pantheon_runtime::swarm::Caps {
+    let section = cfg.swarm_section();
+    pantheon_runtime::swarm::Caps::for_profile(&section, effective.swarm_max_subagents.value)
 }
 
 /// Declared profiles, flagged with the current one.

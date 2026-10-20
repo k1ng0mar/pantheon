@@ -873,24 +873,42 @@ pub fn memory_providers(data_dir: &Path) -> Vec<ProviderMeta> {
 /// runtime as an MCP server over stdio. Local: detect the binary, offer
 /// the verified install one-liner, or skip.
 pub fn computer_providers() -> Vec<ProviderMeta> {
-    vec![ProviderMeta {
-        id: "cua-driver".into(),
-        name: "CUA Driver".into(),
-        blurb: "Desktop control through the CUA driver (trycua/cua). Drives the real desktop: screenshots, clicks, typing. Needs a graphical session (X11/XWayland on Linux) and a running `cua-driver serve` daemon."
-            .into(),
-        recommended: true,
-        kind: ProviderKind::Local {
-            local: LocalMeta {
-                detect_cmd: "command -v cua-driver".into(),
-                install_hint: "Install with the official installer:\n  /bin/bash -c \"$(curl -fsSL https://cua.ai/driver/install.sh)\"\nLinux needs X11/XWayland; start the daemon inside your graphical session with `cua-driver serve`."
-                    .into(),
-                install_cmd: Some(
-                    "/bin/bash -c \"$(curl -fsSL https://cua.ai/driver/install.sh)\"".into(),
-                ),
+    vec![
+        ProviderMeta {
+            id: "cua-driver".into(),
+            name: "CUA Driver".into(),
+            blurb: "Desktop control through the CUA driver (trycua/cua). Drives the real desktop: screenshots, clicks, typing. Needs a graphical session (X11/XWayland on Linux) and a running `cua-driver serve` daemon."
+                .into(),
+            recommended: true,
+            kind: ProviderKind::Local {
+                local: LocalMeta {
+                    detect_cmd: "command -v cua-driver".into(),
+                    install_hint: "Install with the official installer:\n  /bin/bash -c \"$(curl -fsSL https://cua.ai/driver/install.sh)\"\nLinux needs X11/XWayland; start the daemon inside your graphical session with `cua-driver serve`."
+                        .into(),
+                    install_cmd: Some(
+                        "/bin/bash -c \"$(curl -fsSL https://cua.ai/driver/install.sh)\"".into(),
+                    ),
+                },
             },
+            extra: Vec::new(),
         },
-        extra: Vec::new(),
-    }]
+        ProviderMeta {
+            id: "tapp".into(),
+            name: "Tapp".into(),
+            blurb: "Desktop control through the Tapp MCP server (tapp-mcp). Screenshots, clicks, typing, scrolling, dragging, with an animated cursor overlay showing what the agent is about to do before it does. Built from the tapp workspace; the binary is `tapp-mcp`."
+                .into(),
+            recommended: false,
+            kind: ProviderKind::Local {
+                local: LocalMeta {
+                    detect_cmd: "command -v tapp-mcp".into(),
+                    install_hint: "Build the tapp workspace:\n  cargo build --bin tapp-mcp -p tapp-mcp\nThe binary lands in target/debug/. Pin the path under [computer_use].binary if it is not on PATH."
+                        .into(),
+                    install_cmd: Some("cargo build --bin tapp-mcp -p tapp-mcp".into()),
+                },
+            },
+            extra: Vec::new(),
+        },
+    ]
 }
 
 // ---------------------------------------------------------------------------
