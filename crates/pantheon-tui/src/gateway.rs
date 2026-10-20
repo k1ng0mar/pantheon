@@ -722,11 +722,13 @@ fn run_gateway_foreground() {
                                 .profile_registry()
                                 .map_err(pantheon_runtime::profile_err)
                                 .and_then(|reg| {
-                                    pantheon_runtime::AgentRuntime::new(
+                                    let caps = crate::session::swarm_caps_for(cfg, &effective);
+                                    pantheon_runtime::AgentRuntime::with_caps(
                                         supervisor.clone(),
                                         reg,
                                         effective,
                                         data_dir.clone(),
+                                        caps,
                                     )
                                 });
                             match built {

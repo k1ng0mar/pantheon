@@ -967,11 +967,11 @@ pub struct GoalSection {
 /// `web_search` (`[websearch]`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ComputerUseSection {
-    /// Driver id. Today only `cua-driver` (trycua/cua, MIT). Unknown ids
-    /// warn and fall back to `cua-driver`.
+    /// Driver id: `cua-driver` (trycua/cua, MIT, the default) or `tapp`
+    /// (tapp-mcp). Unknown ids warn and fall back to `cua-driver`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver: Option<String>,
-    /// Path to the `cua-driver` binary. Absent = resolved from PATH.
+    /// Path to the driver binary. Absent = resolved from PATH.
     /// Install: `/bin/bash -c "$(curl -fsSL https://cua.ai/driver/install.sh)"`
     /// (Linux/macOS/Windows; no admin needed). The driver is a background
     /// desktop driver: on Linux it needs X11/XWayland and a running
@@ -2037,10 +2037,10 @@ pub struct Config {
     /// Absent = defaults (text replies everywhere, no per-channel voice).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<GatewaySection>,
-    /// Desktop control through the CUA driver (`[computer_use]`).
+    /// Desktop control through a desktop driver (`[computer_use]`).
     /// Absent = the ComputerUse tool group toggle decides; the driver is
     /// used when its binary is on PATH. Set `driver` to pick the driver
-    /// explicitly (today only `cua-driver`), `binary` to pin its path.
+    /// (`cua-driver`, the default, or `tapp`), `binary` to pin its path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub computer_use: Option<ComputerUseSection>,
     /// Egress policy for outbound provider requests. Absent = no restriction.

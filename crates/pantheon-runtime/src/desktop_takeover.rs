@@ -112,11 +112,13 @@ pub fn lease_path(data_dir: &Path) -> PathBuf {
     data_dir.join(TAKEOVER_FILE)
 }
 
-/// True for the CUA driver's projected MCP tools (`mcp_cua-driver_*`).
-/// Used by the agent-loop gate; the dashboard drives the same tools
-/// through its own manager and is NOT gated here.
+/// True for a desktop driver's projected MCP tools
+/// (`mcp_cua-driver_*`, `mcp_tapp_*`). Used by the agent-loop gate; the
+/// dashboard drives the same tools through its own manager and is NOT
+/// gated here.
 pub fn is_computer_use_tool(name: &str) -> bool {
     name.starts_with(&format!("mcp_{}_", crate::computer::CUA_DRIVER_SERVER))
+        || name.starts_with(&format!("mcp_{}_", crate::computer::TAPP_DRIVER_ID))
 }
 
 /// Agent-loop gate: consult the lease file. Lock-free (reads only);
