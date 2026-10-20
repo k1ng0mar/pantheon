@@ -35,6 +35,7 @@ pub mod session;
 pub mod skill_exec_tool;
 pub mod swarm;
 pub mod swarm_exec;
+pub mod swarm_persist;
 pub mod temporal;
 pub mod tool_config;
 pub mod watchdog;

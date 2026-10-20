@@ -14,7 +14,14 @@
 use pantheon_api::agent_profile::EffectiveProfile;
 use pantheon_runtime::Supervisor;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+/// Shared with the dashboard orchestrator: both the CLI and the orchestrator
+/// read/write the same `<data_dir>/swarms/` dir. The CLI keeps its own
+/// `SwarmRecord` / `SwarmAgent` (field-identical to the orchestrator's
+/// [`pantheon_runtime::swarm_persist::SwarmManifest`]), but routes write and
+/// load through the shared helpers so the two cannot drift.
+pub use pantheon_runtime::swarm_persist::{load_all_manifests, swarms_dir, write_manifest};
 
 /// Arg parsing result for a spawn invocation. Pure data, no process
 /// effects - `parse_swarm_spawn` builds this; the CLI acts on it.
@@ -65,49 +72,68 @@ pub struct SwarmAgent {
     pub status: String,
 }
 
-fn swarms_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join("swarms")
-}
-
-/// Persist (or overwrite) a swarm manifest atomically: tmp file then
-/// rename, matching the rest of the codebase.
+/// Persist (or overwrite) a CLI swarm manifest atomically. Delegates to the
+/// shared [`write_manifest`]: the CLI struct is field-identical to the
+/// orchestrator's shared manifest, so the one writer serves both.
 pub fn write_swarm_manifest(data_dir: &Path, rec: &SwarmRecord) -> Result<(), String> {
-    let dir = swarms_dir(data_dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("swarm dir: {e}"))?;
-    let path = dir.join(format!("{}.json", rec.swarm_id));
-    let tmp = dir.join(format!("{}.json.tmp", rec.swarm_id));
-    let raw = serde_json::to_string_pretty(rec).map_err(|e| format!("serialize swarm: {e}"))?;
-    std::fs::write(&tmp, raw)
-        .and_then(|_| std::fs::rename(&tmp, &path))
-        .map_err(|e| format!("write {}: {e}", path.display()))?;
-    Ok(())
+    let m = to_shared(rec);
+    write_manifest(data_dir, &m)
 }
 
+/// Load every manifest in `swarms/` (both CLI- and orchestrator-written),
+/// newest-first. Delegates to the shared [`load_all_manifests`] so the two
+/// stores never drift, then re-parses as the CLI's `SwarmRecord`.
 pub fn load_all_swarms(data_dir: &Path) -> Vec<SwarmRecord> {
-    let dir = swarms_dir(data_dir);
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(raw) = std::fs::read_to_string(&p) else {
-            continue;
-        };
-        if let Ok(rec) = serde_json::from_str::<SwarmRecord>(&raw) {
-            out.push(rec);
-        }
+    let shared = load_all_manifests(data_dir);
+    shared.into_iter().map(from_shared).collect()
+}
+
+/// Bridge to the shared manifest: drops the CLI-only `created_ms` (the
+/// orchestrator never sets it) and keeps `delivery` (the CLI sets it; the
+/// orchestrator leaves it `None`, which is what `Option` deserializes).
+fn to_shared(rec: &SwarmRecord) -> pantheon_runtime::swarm_persist::SwarmManifest {
+    pantheon_runtime::swarm_persist::SwarmManifest {
+        swarm_id: rec.swarm_id.clone(),
+        task: rec.task.clone(),
+        roles: rec.roles.clone(),
+        agents: rec
+            .agents
+            .iter()
+            .map(|a| pantheon_runtime::swarm_persist::SwarmAgentManifest {
+                label: a.label.clone(),
+                run_id: a.run_id.clone(),
+                role: a.role.clone(),
+                status: a.status.clone(),
+            })
+            .collect(),
+        delivery: rec.delivery.clone(),
+        status: rec.status.clone(),
     }
-    out.sort_by(|a, b| {
-        b.created_ms
-            .cmp(&a.created_ms)
-            .then(b.swarm_id.cmp(&a.swarm_id))
-    });
-    out
+}
+
+/// Bridge from the shared manifest to the CLI `SwarmRecord`. The
+/// orchestrator leaves `delivery` unset (deserializes to `None`) and never
+/// carries a `created_ms`, so it defaults to 0 here. CLI-written files
+/// round-trip through the shared shape with `delivery` preserved.
+fn from_shared(m: pantheon_runtime::swarm_persist::SwarmManifest) -> SwarmRecord {
+    SwarmRecord {
+        swarm_id: m.swarm_id,
+        task: m.task,
+        roles: m.roles,
+        agents: m
+            .agents
+            .into_iter()
+            .map(|a| SwarmAgent {
+                label: a.label,
+                run_id: a.run_id,
+                role: a.role,
+                status: a.status,
+            })
+            .collect(),
+        delivery: m.delivery,
+        created_ms: 0,
+        status: m.status,
+    }
 }
 
 /// Resolve a full or prefix swarm id against stored manifests.
