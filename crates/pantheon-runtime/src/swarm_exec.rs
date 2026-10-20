@@ -552,6 +552,12 @@ pub struct SwarmOrchestrator {
     worker: Arc<dyn SwarmWorker>,
     judge: Option<Arc<dyn JudgeTransport>>,
     next_swarm: AtomicU64,
+    /// When set, every create/retry/settle persists a manifest to
+    /// `<data_dir>/swarms/` so the CLI `swarm list` / `swarm status` sees
+    /// orchestrator swarms alongside CLI swarms. `None` = in-memory only
+    /// (the test builders and any embedder that does not want the disk
+    /// side effect).
+    data_dir: Option<std::path::PathBuf>,
 }
 
 impl SwarmOrchestrator {
@@ -561,6 +567,77 @@ impl SwarmOrchestrator {
             worker,
             judge,
             next_swarm: AtomicU64::new(1),
+            data_dir: None,
+        }
+    }
+
+    /// Same as [`Self::new`] but persisting every manifest to
+    /// `<data_dir>/swarms/`. This is what the dashboard / TUI `/team`
+    /// entry points use, so `swarm list` sees both CLI and orchestrator
+    /// swarms.
+    pub fn with_data_dir(
+        data_dir: std::path::PathBuf,
+        worker: Arc<dyn SwarmWorker>,
+        judge: Option<Arc<dyn JudgeTransport>>,
+    ) -> Self {
+        let mut o = Self::new(worker, judge);
+        o.data_dir = Some(data_dir);
+        o
+    }
+
+    /// Snapshot the orchestrator's in-memory record into a durable
+    /// manifest and write it. Lossy by design: rounds, stages, and the
+    /// judge verdict collapse into the flat `status` string the CLI
+    /// understands. A failed write is logged, never fatal: the in-memory
+    /// record stays authoritative for the live session, and a corrupt
+    /// manifest must not take the swarm down with it.
+    fn persist(&self, rec: &SwarmRecord) {
+        let Some(dd) = &self.data_dir else {
+            return;
+        };
+        let m = crate::swarm_persist::SwarmManifest {
+            swarm_id: rec.id.clone(),
+            task: rec.task.clone(),
+            roles: rec
+                .specs
+                .iter()
+                .map(|s| s.name.clone())
+                .chain(
+                    rec.staged
+                        .as_ref()
+                        .into_iter()
+                        .flat_map(|st| st.plan.stages.iter().map(|s| s.name.clone())),
+                )
+                .collect(),
+            agents: rec
+                .agents
+                .iter()
+                .map(|a| crate::swarm_persist::SwarmAgentManifest {
+                    label: format!("{}:{}:{}", rec.id, a.profile, a.name),
+                    run_id: a.run_id.clone(),
+                    role: a.name.clone(),
+                    status: match a.status {
+                        SwarmAgentStatus::Done => "ok".to_string(),
+                        SwarmAgentStatus::Failed => "error".to_string(),
+                        SwarmAgentStatus::Working | SwarmAgentStatus::Waiting => {
+                            "running".to_string()
+                        }
+                    },
+                })
+                .collect(),
+            delivery: None,
+            status: match rec.status {
+                SwarmStatus::Running => "running".to_string(),
+                SwarmStatus::Judging => "running".to_string(),
+                SwarmStatus::Complete => "complete".to_string(),
+                SwarmStatus::Incomplete => "partial".to_string(),
+            },
+        };
+        if let Err(e) = crate::swarm_persist::write_manifest(dd, &m) {
+            log_warn!(
+                "swarm persist: could not write manifest for '{}': {e}",
+                rec.id
+            );
         }
     }
 
@@ -626,6 +703,7 @@ impl SwarmOrchestrator {
         }
         self.launch_waiting(&mut record)?;
         let view = self.view(&record);
+        self.persist(&record);
         self.swarms
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -760,6 +838,7 @@ impl SwarmOrchestrator {
         });
         self.spawn_stage_agents(&mut record, 0, None)?;
         let view = self.view(&record);
+        self.persist(&record);
         self.swarms
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1341,6 +1420,11 @@ impl SwarmOrchestrator {
             .get_mut(swarm_id)
             .ok_or_else(|| SwarmError::not_found(swarm_id))?;
         self.refresh_locked(record)?;
+        // Persist after refresh: a settled swarm (Running -> Complete /
+        // Incomplete) updates its manifest so `swarm list` / `swarm status`
+        // sees the final state, and a still-running swarm keeps its
+        // manifest current. A failed write is logged, not fatal.
+        self.persist(record);
         Ok(self.view(record))
     }
 
@@ -1506,6 +1590,10 @@ impl SwarmOrchestrator {
         launch?;
         record.status = SwarmStatus::Running;
         record.verdict = None;
+        // Persist the freshly relaunched record: the manifest flips back to
+        // "running" with the new round's agents, so `swarm list` reflects
+        // the retry rather than the stale settled state.
+        self.persist(record);
         Ok(self.view(record))
     }
 }
@@ -2009,6 +2097,76 @@ mod swarm_exec_p1_tests {
         assert!(
             escalation.contains("builder"),
             "note must name the failed member: {escalation}"
+        );
+    }
+
+    /// The orchestrator must persist a manifest to `<data_dir>/swarms/` on
+    /// create and on settle, so the CLI `swarm list` / `swarm status` see
+    /// orchestrator swarms alongside CLI swarms. Verifies the on-disk shape
+    /// is the shared manifest the CLI loader reads.
+    #[test]
+    fn orchestrator_persists_manifest_to_shared_swarms_dir() {
+        let tmp = std::env::temp_dir().join(format!(
+            "pantheon-swarm-persist-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&tmp);
+        let worker = Arc::new(ScriptedWorker::new());
+        let orch = SwarmOrchestrator::with_data_dir(tmp.clone(), worker.clone(), None);
+        let created = orch
+            .create_with_specs("persist task", one_spec(), false)
+            .expect("create");
+        let id = created.id.clone();
+
+        // A manifest must exist on disk immediately after create.
+        let on_disk =
+            crate::swarm_persist::read_manifest(&tmp, &id).expect("manifest on disk after create");
+        assert_eq!(on_disk.swarm_id, id);
+        assert_eq!(on_disk.status, "running");
+        assert_eq!(on_disk.roles, vec!["a".to_string()]);
+        assert_eq!(on_disk.agents.len(), 1);
+
+        // Settle it; the manifest must update to the settled status.
+        let run_id = on_disk.agents[0].run_id.clone();
+        worker.complete(&run_id, "done");
+        let view = orch.status(&id).expect("status");
+        assert_eq!(view.status, SwarmStatus::Complete);
+
+        let settled =
+            crate::swarm_persist::read_manifest(&tmp, &id).expect("manifest after settle");
+        assert_eq!(settled.status, "complete");
+
+        // The shared loader must find it.
+        let all = crate::swarm_persist::load_all_manifests(&tmp);
+        assert!(
+            all.iter()
+                .any(|m| m.swarm_id == id && m.status == "complete"),
+            "shared loader must see the settled orchestrator manifest"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Without a data_dir the orchestrator stays in-memory only: no manifest
+    /// is written, and `persist` is a no-op. The existing test builders
+    /// (`orch_no_judge`) rely on this.
+    #[test]
+    fn orchestrator_without_data_dir_does_not_persist() {
+        let (orch, worker) = orch_no_judge();
+        let created = orch
+            .create_with_specs("no persist", one_spec(), false)
+            .expect("create");
+        // No panic, no file. The in-memory record is authoritative.
+        let run_id = {
+            let swarms = orch.swarms.lock().unwrap_or_else(|e| e.into_inner());
+            swarms.get(&created.id).expect("record").agents[0]
+                .run_id
+                .clone()
+        };
+        worker.complete(&run_id, "ok");
+        assert_eq!(
+            orch.status(&created.id).expect("status").status,
+            SwarmStatus::Complete
         );
     }
 }

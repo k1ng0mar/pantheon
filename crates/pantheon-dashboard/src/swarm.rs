@@ -393,11 +393,19 @@ pub fn judge_transport_for(data_dir: &Path) -> Option<ConfigJudgeTransport> {
 
 /// Production orchestrator for an `App`: subprocess agents plus the
 /// configured `[judge]` transport when one resolves.
+///
+/// Persists a manifest to `<data_dir>/swarms/` on every create / retry /
+/// settle, so the CLI `swarm list` / `swarm status` see orchestrator
+/// swarms alongside CLI swarms.
 pub fn orchestrator_for(data_dir: &Path) -> Arc<SwarmOrchestrator> {
     let worker = Arc::new(SubprocessWorker::new(data_dir.to_path_buf()));
     let judge: Option<Arc<dyn JudgeTransport>> =
         judge_transport_for(data_dir).map(|t| Arc::new(t) as Arc<dyn JudgeTransport>);
-    Arc::new(SwarmOrchestrator::new(worker, judge))
+    Arc::new(SwarmOrchestrator::with_data_dir(
+        data_dir.to_path_buf(),
+        worker,
+        judge,
+    ))
 }
 
 // ---------------------------------------------------------------------------
