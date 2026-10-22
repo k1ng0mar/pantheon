@@ -26,3 +26,6 @@ vendor/rea/
 *.tmp
 __pycache__/
 *.pyc
+
+# nyx scratch: split tooling and diffs from the 2026-10-22 worktree repair
+.nyx-work/
