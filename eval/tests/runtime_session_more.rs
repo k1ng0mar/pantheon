@@ -464,6 +464,25 @@ fn grant_still_allows_fresh_approval() {
         })
         .unwrap();
     sup.grant("run_fresh", "c1:exec:ls").unwrap();
+
+    // The companion TTL test proves a stale request is refused. This one
+    // has to prove the fresh path actually resolves, or the pair would
+    // still pass if `grant` silently accepted everything and wrote nothing.
+    let entries = ledger.replay("run_fresh").unwrap();
+    assert!(
+        entries.iter().any(|e| matches!(
+            &e.event,
+            Event::ApprovalGranted { scope, .. } if scope == "c1:exec:ls"
+        )),
+        "grant must append ApprovalGranted for the scope"
+    );
+    // Once granted the run is no longer parked, so a repeat grant is
+    // refused as not-parked before it reaches the resolved-scope check.
+    let err = sup.grant("run_fresh", "c1:exec:ls").unwrap_err();
+    assert_eq!(err.code, "RT_NOT_PARKED");
+    // A scope that was never requested is not grantable either.
+    let err = sup.grant("run_fresh", "c9:exec:rm").unwrap_err();
+    assert_eq!(err.code, "RT_NOT_PARKED");
 }
 
 // ---------------------------------------------------------------------------
