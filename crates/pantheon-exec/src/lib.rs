@@ -11,6 +11,7 @@
 
 pub mod bundled_skills;
 pub mod cloudflare;
+pub mod codegraph;
 pub mod confine;
 pub mod context;
 pub mod danger;
@@ -27,6 +28,7 @@ pub mod skill_exec;
 pub mod skills;
 pub mod skills_scan;
 pub mod supervisor;
+pub mod worktree;
 
 // Re-exported at the crate root: these were `pantheon_sandbox::...` paths
 // before the sandbox merged into exec.

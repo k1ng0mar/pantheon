@@ -43,3 +43,4 @@ pub mod provenance;
 pub mod temporal;
 pub mod todo;
 pub mod ui;
+pub mod workspace;

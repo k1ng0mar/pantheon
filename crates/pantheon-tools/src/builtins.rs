@@ -9,11 +9,12 @@ use crate::tools::{parse_args, ToolRegistry};
 use pantheon_api::capability::Capability;
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::message::ToolSchema;
+use pantheon_api::workspace::WorkspaceRoot;
 use pantheon_exec::compact_output;
 use pantheon_exec::confine::confine;
 use pantheon_exec::safewrite::{atomic_write, FileEdit, SafeWriter};
 use pantheon_exec::sandbox::{SandboxLevel, SandboxProfile};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 /// Lifecycle event for a `shell` tool child process. Fired on the
@@ -46,14 +47,20 @@ pub type ShellEnvHook = Arc<dyn Fn(&str) -> Vec<(String, String)> + Send + Sync>
 #[derive(Clone)]
 pub struct BuiltinOptions {
     pub safewrite_state_dir: Option<std::path::PathBuf>,
-    /// Workspace root for path confinement of the fs tools. The tool layer
-    /// has no workspace concept of its own, so when this is `None` the
-    /// process working directory is captured here, at registration time.
+    /// Session-scoped workspace root: the boundary every file path is
+    /// confined to and the directory relative paths resolve against.
+    ///
+    /// The handle is read at *call* time, so a session can move to
+    /// another directory (a git worktree, a sibling project) and every
+    /// tool follows it on the next call - no re-registration, no new
+    /// process. `None` captures the process working directory at
+    /// registration time, which is the pre-session behavior.
+    ///
     /// Every `read_file`/`write_file`/`list_dir` path is confined with
-    /// `pantheon_exec::confine` (deny globs, then containment) before any
-    /// read or write - a granted `FilesystemRead`/`FilesystemWrite`
+    /// `pantheon_exec::confine` (deny globs, then containment) before
+    /// any read or write - a granted `FilesystemRead`/`FilesystemWrite`
     /// capability never widens it.
-    pub workspace_root: Option<std::path::PathBuf>,
+    pub workspace: Option<Arc<WorkspaceRoot>>,
     /// Tool-group toggles from `[tools]` in config.toml: a disabled group
     /// is never registered, so it cannot appear in the model's tool list.
     /// `shell` belongs to Terminal; `read_file`/`write_file`/`list_dir`
@@ -82,13 +89,20 @@ pub struct BuiltinOptions {
     /// the runner injects past the scrub. `None` (default) = no extras
     /// ever.
     pub shell_env_hook: Option<ShellEnvHook>,
+    /// Opt-in post-write formatter. `None` = writes are byte-for-byte
+    /// untouched. A formatter failure is reported but never rolls back a
+    /// successful write.
+    pub formatter: Option<Arc<crate::format::Formatter>>,
+    /// Session-scoped persistent terminals. Registered only when the
+    /// Terminal group is enabled and the host supplied a manager.
+    pub pty_manager: Option<Arc<crate::pty_tools::PtyManager>>,
 }
 
 impl std::fmt::Debug for BuiltinOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BuiltinOptions")
             .field("safewrite_state_dir", &self.safewrite_state_dir)
-            .field("workspace_root", &self.workspace_root)
+            .field("workspace", &self.workspace.is_some())
             .field("enable_terminal", &self.enable_terminal)
             .field("enable_files", &self.enable_files)
             .field("enable_ask_user", &self.enable_ask_user)
@@ -96,6 +110,8 @@ impl std::fmt::Debug for BuiltinOptions {
             .field("data_dir", &self.data_dir)
             .field("shell_child_hook", &self.shell_child_hook.is_some())
             .field("shell_env_hook", &self.shell_env_hook.is_some())
+            .field("formatter", &self.formatter.is_some())
+            .field("pty_manager", &self.pty_manager.is_some())
             .finish()
     }
 }
@@ -106,7 +122,7 @@ impl Default for BuiltinOptions {
     fn default() -> Self {
         Self {
             safewrite_state_dir: None,
-            workspace_root: None,
+            workspace: None,
             enable_terminal: true,
             enable_files: true,
             enable_ask_user: true,
@@ -114,6 +130,8 @@ impl Default for BuiltinOptions {
             data_dir: None,
             shell_child_hook: None,
             shell_env_hook: None,
+            formatter: None,
+            pty_manager: None,
         }
     }
 }
@@ -163,21 +181,24 @@ pub fn register_builtins(reg: &mut ToolRegistry) {
 /// atomic write - kept for callers that explicitly want the unsafe path.
 pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
     let sd = opts.safewrite_state_dir.clone();
-    // Workspace root for confinement, captured once at registration: no
-    // workspace concept exists in the tool layer, so this is the process
-    // cwd unless the caller overrides it. Confine errors propagate with
-    // their CONFINE_* codes (deny globs are evaluated before containment,
-    // and independently of the capability gate).
-    let root: std::sync::Arc<PathBuf> = std::sync::Arc::new(
-        opts.workspace_root
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
-    );
+    let pty_manager = opts.pty_manager.clone();
+    // Session-scoped workspace root. The handle is read at *call* time, so
+    // a live worktree move re-roots every tool on its next call without a
+    // re-registration or a new process. `None` pins the process working
+    // directory captured here, which is the pre-session behavior. Confine
+    // errors propagate with their CONFINE_* codes (deny globs are
+    // evaluated before containment, and independently of the capability
+    // gate).
+    let workspace: Arc<WorkspaceRoot> = opts
+        .workspace
+        .clone()
+        .unwrap_or_else(|| Arc::new(WorkspaceRoot::from_cwd()));
     if opts.enable_terminal {
         // 'static closure: the child hook is an Arc, so the clone here
         // is cheap and the registry owns its copy.
         let shell_child_hook = opts.shell_child_hook.clone();
         let shell_env_hook = opts.shell_env_hook.clone();
+        let shell_workspace = workspace.clone();
         reg.register_with(
         ToolSchema {
             name: "shell".into(),
@@ -202,6 +223,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
                 args,
                 shell_child_hook.as_ref(),
                 shell_env_hook.as_ref().map(|h| h(command.as_str())).unwrap_or_default().as_slice(),
+                &shell_workspace,
             )
         },
         Some(Box::new(|args: &str| {
@@ -233,7 +255,12 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
         })),
     );
     }
-    let r0 = root.clone();
+    if opts.enable_terminal {
+        if let Some(manager) = pty_manager {
+            crate::pty_tools::register_pty_tools(reg, manager);
+        }
+    }
+    let r0 = workspace.clone();
     if opts.enable_files {
         reg.register(
             ToolSchema {
@@ -250,7 +277,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             move |args| {
                 let v = parse_args(args)?;
                 let path = arg_str(&v, "path")?;
-                let cpath = confine(Path::new(&path), &r0)?;
+                let cpath = confine(Path::new(&path), &r0.path())?;
                 let raw = std::fs::read_to_string(&cpath).map_err(|e| {
                     crate::tools::tool_err(
                         "TOOL_FS",
@@ -264,7 +291,8 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             },
         );
     }
-    let r1 = root.clone();
+    let r1 = workspace.clone();
+    let formatter = opts.formatter.clone();
     if opts.enable_files {
         reg.register(
         ToolSchema {
@@ -285,7 +313,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             let v = parse_args(args)?;
             let path = arg_str(&v, "path")?;
             // Confine before either write path (safe or unsafe fallback).
-            let cpath = confine(Path::new(&path), &r1)?;
+            let cpath = confine(Path::new(&path), &r1.path())?;
             let content = arg_str(&v, "content")?;
             let expected = v
                 .get("expected_hash")
@@ -297,7 +325,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
                     .map_err(|e| {
                         crate::tools::tool_err("TOOL_FS", Layer::Execution, false, format!("open safewrite state {dir:?}: {e}"), "check tool arguments")
                     })?
-                    .with_workspace_root((*r1).clone());
+                    .with_workspace_root(r1.path());
                 // Capture the current fingerprint so stale edits get
                 // rejected by apply_edits when no explicit hash is given.
                 let expected = expected.or_else(|| {
@@ -317,24 +345,26 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
                     .map_err(|e| {
                         crate::tools::tool_err("TOOL_FS", Layer::Execution, false, format!("safewrite apply {}: {e}", cpath.display()), "check tool arguments")
                     })?;
-                Ok(format!(
+                let msg = format!(
                     "wrote {} bytes to {}; checkpoint={}",
                     content.len(),
                     cpath.display(),
                     receipt.checkpoint_id
-                ))
+                );
+                Ok(append_format(msg, formatter.as_deref(), &cpath))
             } else {
                 // Unsafe fallback: caller opted out of the safe path.
                 atomic_write(&cpath, content.as_bytes())
                     .map_err(|e| {
                         crate::tools::tool_err("TOOL_FS", Layer::Execution, false, format!("write {}: {e}", cpath.display()), "check tool arguments")
                     })?;
-                Ok(format!("wrote {} bytes to {}", content.len(), cpath.display()))
+                let msg = format!("wrote {} bytes to {}", content.len(), cpath.display());
+                Ok(append_format(msg, formatter.as_deref(), &cpath))
             }
         },
     );
     }
-    let r2 = root.clone();
+    let r2 = workspace.clone();
     if opts.enable_files {
         reg.register(
             ToolSchema {
@@ -351,7 +381,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             move |args| {
                 let v = parse_args(args)?;
                 let path = arg_str(&v, "path")?;
-                let cpath = confine(Path::new(&path), &r2)?;
+                let cpath = confine(Path::new(&path), &r2.path())?;
                 let mut names: Vec<String> = std::fs::read_dir(&cpath)
                     .map_err(|e| {
                         crate::tools::tool_err(
@@ -527,15 +557,16 @@ fn run_shell_with_env(
     args: &str,
     child_hook: Option<&ShellChildHook>,
     extra_env: &[(String, String)],
+    workspace: &WorkspaceRoot,
 ) -> Result<String, PantheonError> {
     let v = parse_args(args)?;
     let command = arg_str(&v, "command")?;
     // Shell runs at HIGH isolation: bwrap with dropped caps + no-new-privs
     // + rlimits. The capability gate already ran before we get here.
     let profile = SandboxProfile::from(SandboxLevel::High);
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "/tmp".to_string());
+    // Resolve relative to the session root, not the process cwd: the root
+    // is read here so a worktree move takes effect on the next call.
+    let cwd = workspace.path().to_string_lossy().to_string();
 
     // The spawn hook fires synchronously on this thread right after the
     // child is spawned; the pid doubles as the process-group id (the
@@ -586,6 +617,32 @@ fn run_shell_with_env(
     };
     let compacted = compact_output(&format!("{notice}{raw}"), &Default::default());
     Ok(compacted.text)
+}
+
+/// Run the configured formatter after a successful write. Formatting is
+/// deliberately best-effort: a missing binary, timeout, or syntax error is
+/// surfaced in the tool result, but the write itself is never rolled back.
+fn append_format(
+    mut msg: String,
+    formatter: Option<&crate::format::Formatter>,
+    path: &Path,
+) -> String {
+    let Some(formatter) = formatter else {
+        return msg;
+    };
+    if let Some(outcome) = formatter.format(path) {
+        if outcome.success {
+            msg.push_str(&format!("\nformatted ({})", outcome.command));
+        } else if outcome.output.is_empty() {
+            msg.push_str(&format!("\nformatter failed ({})", outcome.command));
+        } else {
+            msg.push_str(&format!(
+                "\nformatter failed ({}): {}",
+                outcome.command, outcome.output
+            ));
+        }
+    }
+    msg
 }
 
 #[cfg(test)]

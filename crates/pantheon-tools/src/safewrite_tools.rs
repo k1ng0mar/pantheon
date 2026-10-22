@@ -18,6 +18,30 @@ fn jstr(v: &serde_json::Value, key: &str) -> Option<String> {
     v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
 }
 
+/// Serialize a safe-write receipt and, when configured, attach a compact
+/// formatting report. Formatting happens after the atomic apply; a
+/// formatter failure is visible in the result but never turns a successful
+/// write into a failed tool call.
+fn json_out_with_format<T: serde::Serialize>(
+    value: &T,
+    formatter: Option<&crate::format::Formatter>,
+    paths: &[PathBuf],
+) -> Result<String, PantheonError> {
+    let mut v = serde_json::to_value(value)
+        .map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?;
+    if let Some(formatter) = formatter {
+        let report = formatter.format_paths(paths.iter().map(PathBuf::as_path));
+        if !report.is_empty() {
+            v["format"] = serde_json::json!({
+                "summary": report.summary(),
+                "formatted": report.outcomes.iter().filter(|(_, o)| o.success).count(),
+                "failed": report.outcomes.iter().filter(|(_, o)| !o.success).count(),
+            });
+        }
+    }
+    serde_json::to_string_pretty(&v).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))
+}
+
 fn parse_edit_list(v: &serde_json::Value) -> Result<Vec<FileEdit>, PantheonError> {
     let arr = v.get("edits").and_then(|x| x.as_array()).ok_or_else(|| {
         crate::tools::tool_err(
@@ -85,6 +109,8 @@ pub struct SafewriteOptions {
     /// directory is captured at registration time. Every target path is
     /// confined (deny globs, then containment) before any read or write.
     pub workspace_root: Option<PathBuf>,
+    /// Opt-in post-apply formatter. `None` = byte-for-byte untouched.
+    pub formatter: Option<Arc<crate::format::Formatter>>,
 }
 
 /// Register the safe-write toolset on a registry. All mutating tools
@@ -97,6 +123,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
         SafewriteOptions {
             state_dir: default_state_dir,
             workspace_root: None,
+            formatter: None,
         },
     );
 }
@@ -106,6 +133,7 @@ pub fn register_safewrite(reg: &mut ToolRegistry, default_state_dir: PathBuf) {
 /// build, so staged/applied/checkpointed/rolled-back paths are confined.
 pub fn register_safewrite_with(reg: &mut ToolRegistry, opts: SafewriteOptions) {
     let dir: Arc<PathBuf> = Arc::new(opts.state_dir);
+    let formatter = opts.formatter;
     let root: Arc<PathBuf> = Arc::new(
         opts.workspace_root
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
@@ -161,6 +189,7 @@ pub fn register_safewrite_with(reg: &mut ToolRegistry, opts: SafewriteOptions) {
     );
     let d2 = dir.clone();
     let r2 = root.clone();
+    let f2 = formatter.clone();
     reg.register(mk("apply_files", "Validate + checkpoint + atomically apply edits. Fails on stale expected_hash.",
         serde_json::json!({"edits":{"type":"array"},"ledger_seq":{"type":"integer"},"state_dir":{"type":"string"}}), vec!["edits"]),
         Capability::FilesystemWrite, move |args| {
@@ -169,10 +198,12 @@ pub fn register_safewrite_with(reg: &mut ToolRegistry, opts: SafewriteOptions) {
             let w = writer(sd, &r2)?;
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
             let r = w.apply_edits(parse_edit_list(&v)?, seq)?;
-            json_out(&r)
+            let paths: Vec<PathBuf> = r.files.iter().map(|file| file.path.clone()).collect();
+            json_out_with_format(&r, f2.as_deref(), &paths)
         });
     let d3 = dir.clone();
     let r3 = root.clone();
+    let f3 = formatter;
     reg.register(mk("apply_staged", "Atomically apply a staged batch by id.",
         serde_json::json!({"stage_id":{"type":"string"},"ledger_seq":{"type":"integer"},"state_dir":{"type":"string"}}), vec!["stage_id"]),
         Capability::FilesystemWrite, move |args| {
@@ -182,7 +213,8 @@ pub fn register_safewrite_with(reg: &mut ToolRegistry, opts: SafewriteOptions) {
             let sid = jstr(&v, "stage_id").ok_or_else(|| crate::tools::tool_err("TOOL_BAD_ARGS", Layer::Execution, false, "missing 'stage_id'".into(), "check tool arguments"))?;
             let seq = v.get("ledger_seq").and_then(|x| x.as_i64()).unwrap_or(-1);
             let r = w.apply_staged(&sid, seq)?;
-            json_out(&r)
+            let paths: Vec<PathBuf> = r.files.iter().map(|file| file.path.clone()).collect();
+            json_out_with_format(&r, f3.as_deref(), &paths)
         });
     let d4 = dir.clone();
     let r4 = root.clone();

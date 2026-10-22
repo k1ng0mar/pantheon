@@ -233,6 +233,22 @@ impl ToolRegistry {
         }
         self.execute(name, args)
     }
+
+    /// [`execute_gated`] with a call context installed. Code Mode uses this
+    /// so nested delegate/tool calls can still key durable side effects to
+    /// the outer step. The previous context is restored on return.
+    pub fn execute_gated_with_context(
+        &self,
+        policy: &Policy,
+        name: &str,
+        args: &str,
+        ctx: ToolCallContext,
+    ) -> Result<String, PantheonError> {
+        let previous = CURRENT_CALL.with(|c| c.replace(Some(ctx)));
+        let result = self.execute_gated(policy, name, args);
+        CURRENT_CALL.with(|c| *c.borrow_mut() = previous);
+        result
+    }
 }
 
 /// Parse a JSON args string; empty means empty object.
