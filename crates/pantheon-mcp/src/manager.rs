@@ -60,6 +60,7 @@ use pantheon_api::approval::{self, ApprovalRecord, ApprovalStore};
 use pantheon_api::capability::{Capability, Policy};
 use pantheon_api::config::McpServerEntry;
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::logging::now_ms;
 use pantheon_api::message::ToolSchema;
 use pantheon_secrets::SecretsBroker;
 use pantheon_tools::tools::{parse_args, ToolRegistry};
@@ -851,7 +852,7 @@ impl McpManager {
             plugin: name.to_string(),
             version,
             dir_hash: hash,
-            approved_at_ms: now_ms(),
+            approved_at_ms: now_ms() as u64,
         };
         ApprovalStore::open(&scope)
             .record(rec.clone())
@@ -1912,13 +1913,6 @@ fn health_of(st: &ServerState) -> ServerHealth {
         failures: st.failures,
         last_error: st.last_error.clone(),
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 // Small deterministic invariants only: naming, sanitizing, backoff,

@@ -7,6 +7,7 @@
 //! has lost its network connection.
 
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::logging::now_ms;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -47,13 +48,6 @@ impl std::fmt::Display for LostLeaseError {
     }
 }
 impl std::error::Error for LostLeaseError {}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 fn err(code: &str, cause: String) -> PantheonError {
     PantheonError::new(

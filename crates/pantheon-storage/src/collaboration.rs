@@ -34,6 +34,7 @@
 //! decision belongs to the provenance layer at the point of injection.
 
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::logging::now_ms;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -90,13 +91,6 @@ fn cerr(code: &str, cause: String) -> PantheonError {
         "check the collaboration database and retry",
         "",
     )
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// A task id is used in table names, artifact ids, and approval scopes, so it

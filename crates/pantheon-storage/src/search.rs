@@ -12,6 +12,7 @@
 //! Additive by design: nothing here changes run/event handling.
 
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::logging::now_ms;
 use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
@@ -49,14 +50,6 @@ fn err(code: &str, cause: String) -> PantheonError {
         "check the storage path permissions and disk space",
         "",
     )
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// One searchable chunk. Mirrors the ledger\'s event rows so a hit points

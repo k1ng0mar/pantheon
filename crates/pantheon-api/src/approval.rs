@@ -246,13 +246,6 @@ pub fn bytes_hash(bytes: &[u8]) -> String {
     hex_of(h.finalize())
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Persistent approval records for one plugin scope directory
 /// (`<data_dir>/plugins`, `<data_dir>/extensions`, or
 /// `<project>/.pantheon/plugins`).
@@ -351,7 +344,7 @@ pub fn record_approval_for(
         plugin: name.to_string(),
         version: version.to_string(),
         dir_hash: dir_hash(plugin_dir)?,
-        approved_at_ms: now_ms(),
+        approved_at_ms: crate::logging::now_ms() as u64,
     };
     ApprovalStore::open(scope_dir).record(rec.clone())?;
     Ok(rec)

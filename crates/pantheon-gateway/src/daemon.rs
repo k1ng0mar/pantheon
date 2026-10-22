@@ -14,6 +14,7 @@ use crate::channel::{Channel, ChannelEnvelope, ChannelError, ChannelEvent};
 use crate::channel_voice::VoiceOutcome;
 use crate::telegram::{TelegramChannel, TelegramRestTransport, TelegramTransport};
 use crate::OutboundMessage;
+use pantheon_api::logging::now_ms;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,13 +32,6 @@ const HEALTH_DEAD_AFTER: u32 = 5;
 const HEALTH_WRITE_INTERVAL_MS: u64 = 30_000;
 /// A health file older than this means the daemon stopped reporting.
 const HEALTH_STALE_AFTER_MS: u64 = 120_000;
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 /// Channel health state for `GET /api/health/channels` (F-7). The daemon
 /// reports; the dashboard reads via [`channel_health_json`].
@@ -105,7 +99,7 @@ impl ChannelHealthTracker {
     }
 
     fn entry(&mut self, name: &str) -> &mut ChannelHealth {
-        let now = now_ms();
+        let now = now_ms() as u64;
         self.states
             .entry(name.to_string())
             .or_insert(ChannelHealth {
@@ -119,7 +113,7 @@ impl ChannelHealthTracker {
     }
 
     fn record_ok(&mut self, name: &str) {
-        let now = now_ms();
+        let now = now_ms() as u64;
         let h = self.entry(name);
         let transitioned = h.state != ChannelState::Connected;
         h.state = ChannelState::Connected;
@@ -131,7 +125,7 @@ impl ChannelHealthTracker {
     }
 
     fn record_err(&mut self, name: &str, detail: String) {
-        let now = now_ms();
+        let now = now_ms() as u64;
         let h = self.entry(name);
         let prev = h.state;
         if is_auth_failure(&detail) {
@@ -181,7 +175,7 @@ impl ChannelHealthTracker {
     /// A 429 is the platform asking us to slow down, not a channel fault:
     /// mark degraded without spending the failure budget.
     pub fn record_send_rate_limited(&mut self, name: &str, err: &ChannelError) {
-        let now = now_ms();
+        let now = now_ms() as u64;
         let h = self.entry(name);
         let transitioned = h.state != ChannelState::Degraded && h.state != ChannelState::Dead;
         if h.state != ChannelState::Dead {
@@ -194,7 +188,7 @@ impl ChannelHealthTracker {
 
     /// A message exhausted [`MAX_SEND_ATTEMPTS`] and was dead-lettered.
     pub fn record_dead_letter(&mut self, name: &str, detail: &str) {
-        let now = now_ms();
+        let now = now_ms() as u64;
         let h = self.entry(name);
         let transitioned = h.state != ChannelState::Dead;
         h.state = ChannelState::Dead;
@@ -207,7 +201,7 @@ impl ChannelHealthTracker {
     }
 
     fn maybe_write(&mut self, transitioned: bool) {
-        let now = now_ms();
+        let now = now_ms() as u64;
         if transitioned || now.saturating_sub(self.last_write_ms) >= HEALTH_WRITE_INTERVAL_MS {
             self.write();
         }
@@ -237,7 +231,7 @@ impl ChannelHealthTracker {
             });
             let _ = std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default());
         }
-        self.last_write_ms = now_ms();
+        self.last_write_ms = now_ms() as u64;
     }
 }
 
@@ -248,7 +242,7 @@ impl ChannelHealthTracker {
 pub fn channel_health_json(data_dir: &Path) -> serde_json::Value {
     let dir = data_dir.join("gateway");
     let mut channels = Vec::new();
-    let now = now_ms();
+    let now = now_ms() as u64;
     let entries: Vec<_> = std::fs::read_dir(&dir)
         .map(|r| r.filter_map(|e| e.ok()).collect())
         .unwrap_or_default();

@@ -56,19 +56,13 @@
 
 use crate::judge::{judge_completion_with, JudgeTransport, JudgeVerdict};
 use pantheon_api::capability::VERDICT_TOOL_NAME;
+use pantheon_api::logging::now_ms;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Unix milliseconds for manifest ordering.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Globally unique swarm id. A process-local counter reset on every restart
 /// would reuse `sw_1` and overwrite the previous run's manifest, so derive
 /// it from the same time + pid + sequence scheme as run ids.
@@ -719,7 +713,7 @@ impl SwarmOrchestrator {
             id: id.clone(),
             task: task.to_string(),
             judge_enabled: judge,
-            created_ms: now_ms(),
+            created_ms: now_ms() as u64,
             specs: specs.clone(),
             round: 1,
             status: SwarmStatus::Running,
@@ -847,7 +841,7 @@ impl SwarmOrchestrator {
             id: id.clone(),
             task: task.to_string(),
             judge_enabled: judge,
-            created_ms: now_ms(),
+            created_ms: now_ms() as u64,
             specs: plan.stages.iter().flat_map(|s| s.members.clone()).collect(),
             round: 1,
             status: SwarmStatus::Running,

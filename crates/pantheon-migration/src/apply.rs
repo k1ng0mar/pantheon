@@ -31,6 +31,7 @@
 
 use super::{merr, Action, ItemKind, MigrationPlan, PlanItem, Targets};
 use pantheon_api::error::PantheonError;
+use pantheon_api::logging::now_ms;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -155,14 +156,6 @@ impl BackupManifest {
             .collect::<Vec<_>>()
             .join("\n")
     }
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 fn io(code: &str, e: std::io::Error, what: String) -> PantheonError {

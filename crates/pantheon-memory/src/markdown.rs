@@ -13,6 +13,7 @@
 
 use crate::{LayerKind, MemoryStore, Proposal, Provenance};
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::logging::now_ms;
 use std::path::Path;
 
 fn merr(code: &str, cause: String) -> PantheonError {
@@ -24,14 +25,6 @@ fn merr(code: &str, cause: String) -> PantheonError {
         "check the memory.md path and permissions",
         "",
     )
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 fn fnv1a_hex(data: &[u8]) -> String {

@@ -12,6 +12,7 @@
 //! disable list can never brick the registry build. Writes are atomic
 //! (temp file + rename), mirroring the other data-dir stores.
 
+use pantheon_api::logging::now_ms;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -72,11 +73,4 @@ fn write_records(path: &Path, records: &[DisabledTool]) -> Result<(), String> {
     std::fs::write(&tmp, text).map_err(|e| format!("write disable list: {e}"))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("publish disable list: {e}"))?;
     Ok(())
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }

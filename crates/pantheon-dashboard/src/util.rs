@@ -6,12 +6,10 @@ use std::path::{Path, PathBuf};
 
 /// Wall-clock milliseconds since the Unix epoch. Never panics: a clock
 /// before the epoch (or an unreadable one) reads as 0.
-pub(crate) fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+///
+/// Thin re-export of the canonical `pantheon_api::logging::now_ms` rather
+/// than a ninth copy of the same five lines.
+pub(crate) use pantheon_api::logging::now_ms;
 
 /// The project working directory: the process's current dir, or `.` when
 /// it cannot be read.

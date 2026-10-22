@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::confine::confine;
+use pantheon_api::logging::now_ms;
 /// Serialize a tool result to pretty JSON, mapping failure to a
 /// PantheonError. A report that cannot serialize is still a failure worth
 /// reporting, not a reason to panic over whatever it was describing.
@@ -27,13 +28,6 @@ pub fn serr(code: &str, cause: String) -> PantheonError {
         "re-run preview, re-stage after re-reading the file, or roll back to a checkpoint",
         "",
     )
-}
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 pub fn fnv1a_hex(data: &[u8]) -> String {
     let mut h: u64 = 0xcbf29ce484222325;

@@ -6,6 +6,7 @@
 //! the operation or accidentally repeating a completed side effect.
 
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::logging::now_ms;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -129,13 +130,6 @@ fn operation_err(code: &str, cause: String) -> PantheonError {
         "check the operation database and retry",
         "",
     )
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 impl OperationStore {

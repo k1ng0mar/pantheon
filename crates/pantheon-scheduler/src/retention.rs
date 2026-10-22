@@ -15,6 +15,7 @@
 
 use crate::durable::DurableClaimLedger;
 use pantheon_api::config::{Config, DEFAULT_RETENTION_DAYS};
+use pantheon_api::logging::now_ms;
 use std::path::{Path, PathBuf};
 
 /// At most one retention pass per interval; the last-pass timestamp
@@ -28,13 +29,6 @@ pub struct RetentionReport {
     pub events_pruned: usize,
     pub search_chunks_pruned: usize,
     pub claims_pruned: usize,
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// Run the retention pass now: prune ledger events, the FTS search

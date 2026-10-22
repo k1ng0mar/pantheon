@@ -14,6 +14,7 @@
 //! are migrated into `claims` on open and the legacy table is dropped.
 
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::logging::now_ms;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
@@ -44,14 +45,6 @@ const DRAIN_QUEUE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS drain_queue (
 #[derive(Debug)]
 pub struct ClaimStore {
     conn: Mutex<Connection>,
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 fn err(code: &str, cause: String) -> PantheonError {

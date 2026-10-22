@@ -6,6 +6,7 @@
 //! signals so nightly generation can tune itself.
 
 use crate::{bad_json, conflict, err_json, json_ok, App};
+use pantheon_api::logging::now_ms;
 use pantheon_gateway::http::{Request, Response};
 use pantheon_storage::{FeedbackSignal, Idea, IdeaKind, IdeaStatus, IdeaStore};
 use std::collections::HashMap;
@@ -251,14 +252,6 @@ fn finalize(
     store.set_status(&idea.id, status, Some(now_ms()))?;
     store.bump_topic(&idea.topic, accepted)?;
     Ok(())
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 fn truncate(s: &str, max: usize) -> String {

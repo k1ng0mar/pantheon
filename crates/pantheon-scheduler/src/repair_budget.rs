@@ -15,6 +15,7 @@
 //! Skip the investigation (and surface "daily repair budget exhausted"
 //! in the outcome) when it returns false.
 
+use pantheon_api::logging::now_ms;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -35,13 +36,6 @@ struct BudgetFile {
 pub struct RepairBudget {
     path: PathBuf,
     file: BudgetFile,
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// UTC `YYYY-MM-DD` for `now_ms`. Howard Hinnant's civil-date algorithm:

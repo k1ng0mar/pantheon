@@ -2,6 +2,7 @@
 //! ``pantheon logs run_X`` replays them. History is append-only.
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::events::Event;
+use pantheon_api::logging::now_ms;
 use pantheon_api::todo::TodoItem;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -100,14 +101,6 @@ fn valid_artifact_id(task_id: &str) -> bool {
 
 fn valid_mime(mime: &str) -> bool {
     !mime.is_empty() && mime.len() <= 256 && mime.bytes().all(|b| b >= 0x20 && b != 0x7f)
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 fn err(code: &str, cause: String) -> PantheonError {

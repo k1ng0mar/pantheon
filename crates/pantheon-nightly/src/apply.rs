@@ -17,12 +17,12 @@
 
 use crate::propose::{Proposal, ProposalKind, ProposalStatus};
 use crate::NightlyConfig;
+use pantheon_api::logging::now_ms;
 use pantheon_api::provenance::TrustTier;
 use pantheon_memory::{
     LayerKind, MemoryStore, Proposal as MemProposal, Provenance as MemProvenance,
 };
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Where pending (awaiting approval) proposals live.
 pub fn pending_path(data_dir: &Path) -> PathBuf {
@@ -139,13 +139,6 @@ pub fn decide(
     }
     let _ = config;
     Ok(true)
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 fn mem_provenance(source: &str, trust: TrustTier) -> MemProvenance {
