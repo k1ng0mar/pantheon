@@ -26,6 +26,7 @@ fn reg_in(work: &std::path::Path) -> ToolRegistry {
         SafewriteOptions {
             state_dir: fresh("state"),
             workspace_root: Some(work.to_path_buf()),
+            formatter: None,
         },
     );
     reg
