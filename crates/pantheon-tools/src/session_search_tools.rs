@@ -8,25 +8,10 @@
 
 use crate::tools::{parse_args, ToolRegistry};
 use pantheon_api::capability::Capability;
-use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::error::Layer;
 use pantheon_api::message::ToolSchema;
 use pantheon_providers::embeddings::EmbedderClient;
 use std::sync::Arc;
-
-fn arg_str(v: &serde_json::Value, key: &str) -> Result<String, PantheonError> {
-    v.get(key)
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| {
-            crate::tools::tool_err(
-                "TOOL_BAD_ARGS",
-                Layer::Execution,
-                false,
-                format!("missing string arg '{key}'"),
-                "check tool arguments",
-            )
-        })
-}
 
 /// Options for `register_session_search`. The store is shared with the
 /// indexing path so the tool reads exactly what the session wrote.
@@ -59,7 +44,7 @@ pub fn register_session_search(reg: &mut ToolRegistry, opts: SessionSearchOption
         Capability::FilesystemRead,
         move |args| {
             let v = parse_args(args)?;
-            let query = arg_str(&v, "query")?;
+            let query = crate::tools::arg_str(&v, "query")?;
             let limit = v.get("limit").and_then(|x| x.as_u64()).unwrap_or(8) as usize;
             // Embed the query with the indexer's own client so the vector
             // term is comparable. A failed embed is not an error: lexical
