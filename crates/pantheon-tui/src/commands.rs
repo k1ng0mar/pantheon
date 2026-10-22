@@ -218,6 +218,11 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "session",
         },
         CommandMeta {
+            name: "worktree",
+            desc: "managed git worktrees; move re-roots this live session",
+            category: "session",
+        },
+        CommandMeta {
             name: "reset",
             desc: "reset turn state, keeping the session",
             category: "session",

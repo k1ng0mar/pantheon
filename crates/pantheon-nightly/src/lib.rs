@@ -243,6 +243,12 @@ pub fn run_pass(
         config.since_ms,
         config.max_runs,
     )?;
+    let pass_started = NightlyEvent::PassStarted {
+        runs_scanned: scan.runs_scanned,
+        at_ms: at,
+    };
+    audit(&config.data_dir, &pass_started).map_err(nerr)?;
+    events.push(pass_started);
     let signals = scan.signals;
     let candidates = scan.candidates;
     for s in &signals {
@@ -296,10 +302,6 @@ pub fn run_pass(
     );
     proposals.extend(memory_proposals(&weighed));
 
-    events.push(NightlyEvent::PassStarted {
-        runs_scanned: scan.runs_scanned,
-        at_ms: at,
-    });
     for p in &proposals {
         events.push(NightlyEvent::ProposalMade {
             id: p.id.clone(),
@@ -474,6 +476,12 @@ pub fn run_pass(
         at_ms: at,
     });
     for e in &events {
+        if matches!(e, NightlyEvent::PassStarted { .. }) {
+            // The pass start is written immediately after the initial scan,
+            // before any auxiliary calls, so the audit stream has the right
+            // order and in-flight usage can be attributed to this pass.
+            continue;
+        }
         if let Err(err) = audit(&config.data_dir, e) {
             return Err(nerr(format!("audit: {err}")));
         }

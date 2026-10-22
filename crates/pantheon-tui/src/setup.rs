@@ -414,6 +414,9 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             .tools
             .as_ref()
             .and_then(|t| ToolsSection::from_enabled(t)),
+        // Post-edit formatting is opt-in and off by default; the wizard
+        // never enables it, so a setup run leaves the section absent.
+        formatters: None,
         // Skipped skill dependencies: the durable record `pantheon
         // doctor` reports. Empty = the screen found (or installed)
         // everything, so no section is written.

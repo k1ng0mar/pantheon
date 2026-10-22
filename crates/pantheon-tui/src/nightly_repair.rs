@@ -333,7 +333,9 @@ impl ToolRepairAdapter {
                 &mut reg,
                 BuiltinOptions {
                     safewrite_state_dir: Some(self.data_dir.join("safewrite")),
-                    workspace_root: None,
+                    // Probe runs read the process cwd; there is no session
+                    // to move, so the default root is correct here.
+                    workspace: None,
                     enable_terminal: tools.terminal,
                     enable_files: tools.files,
                     enable_ask_user: tools.ask_user,
@@ -345,6 +347,10 @@ impl ToolRepairAdapter {
                     // The nightly repair host never runs `cf` commands
                     // and never injects child env: None matches Default.
                     shell_env_hook: None,
+                    // Probe runs must not rewrite files as a side effect.
+                    formatter: None,
+                    // Replay/probe runs get no persistent terminals.
+                    pty_manager: None,
                 },
             );
             if let Some(mcp) = &self.mcp {

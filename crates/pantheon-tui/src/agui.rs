@@ -139,6 +139,28 @@ pub(crate) fn build_agui_serve_parts(
 pub fn cmd_serve(args: &[String]) {
     use crate::config;
 
+    // `serve acp` is a stdio transport, not a listener. Dispatch it before
+    // the HTTP help/config path: ACP clients may pass `--help` only when a
+    // human asks, and no token or port is involved either way.
+    if args.get(2).map(String::as_str) == Some("acp") {
+        if args.iter().any(|a| a == "--help" || a == "-h") {
+            println!(
+                "pantheon serve acp\n\
+                 \n\
+                 Speak the Agent Client Protocol (ACP) over stdin/stdout.\n\
+                 Use this as the agent command in Zed or another ACP client.\n\
+                 Protocol messages are the only stdout output; diagnostics\n\
+                 go to stderr.\n\
+                 \n\
+                 The session uses the same config.toml, policy, tools, and\n\
+                 ledger as the rest of Pantheon."
+            );
+            return;
+        }
+        crate::acp::run_stdio();
+        return;
+    }
+
     // Help is a question with no side effects: it must print and exit
     // BEFORE any config load, token generation, or bind. (A generated
     // token printed for a `--help` invocation is a live credential on a

@@ -14,8 +14,8 @@ use chrono::{DateTime, Local};
 
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event as CtEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -105,6 +105,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/resume [ID]", "resume a run by id"),
     ("/title [TITLE]", "show this conversation's title, or rename it"),
     ("/project [new|set|clear|list|move]", "named project buckets for sessions"),
+    ("/worktree [move NAME|list|path NAME]", "managed git worktrees; move re-roots this live session"),
     ("/status [run_id]", "this run's status, or another by id"),
     ("/stats", "today's usage from the ledger (same numbers as `pantheon stats`)"),
     ("/agent [name]", "current agent profile, or switch to one"),
@@ -149,6 +150,20 @@ fn help_lines() -> Vec<String> {
     out.push("commands:".to_string());
     for (name, desc) in COMMANDS {
         out.push(format!("  {name:<22} {desc}"));
+    }
+    let custom = crate::custom_commands::discover(
+        &crate::terminal::data_dir(),
+        &crate::skills::project_root(),
+    );
+    if !custom.is_empty() {
+        out.push("custom commands:".to_string());
+        for command in custom {
+            out.push(format!(
+                "  {:<22} {}",
+                format!("/{}", command.name),
+                command.description
+            ));
+        }
     }
     out.push("keys:".to_string());
     for (keys, desc) in KEY_HINTS {
@@ -1315,7 +1330,11 @@ impl TuiState {
                         args: arguments,
                         ok: None,
                         call_id: id,
-                        started: Some(std::time::Instant::now()),
+                        // The runtime emits the canonical ToolStarted event
+                        // after it has finalized the call id. That event
+                        // fills in the start time and adopts this card,
+                        // avoiding a second live card for the same call.
+                        started: None,
                         duration: None,
                         error: None,
                         tokens: None,
@@ -1325,14 +1344,18 @@ impl TuiState {
                 });
             }
             ModelEvent::Usage { usage } => {
-                // Snap: fold the live estimate into the authoritative count.
-                self.tokens_used = usage.total_tokens as u32;
-                self.turn_estimate = 0;
-                // Per-turn in/out for the live status bar. A provider that
-                // reports only totals leaves these at the total split it
-                // gave; a provider that reports nothing leaves them None.
-                self.turn_in = Some(usage.input_tokens);
-                self.turn_out = Some(usage.output_tokens);
+                // A zero row is persisted for successful providers that omit
+                // token metadata, so stats can count the call. Keep the live
+                // estimate in that case instead of replacing it with a
+                // misleading authoritative zero.
+                if usage.input_tokens > 0 || usage.output_tokens > 0 || usage.total_tokens > 0 {
+                    self.tokens_used = usage.total_tokens as u32;
+                    self.turn_estimate = 0;
+                    // Per-turn in/out for the live status bar. A provider
+                    // that reports only totals leaves these at its given split.
+                    self.turn_in = Some(usage.input_tokens);
+                    self.turn_out = Some(usage.output_tokens);
+                }
                 if let Some(cost) = usage.cost_usd {
                     self.cost_cents = (cost * 100.0) as u32;
                 }
@@ -1953,20 +1976,48 @@ impl TuiState {
                         self.pending_snaps.insert(call_id.clone(), snaps);
                     }
                 }
-                self.blocks.push(TranscriptBlock {
-                    kind: BlockKind::ToolCall {
-                        name: tool.clone(),
-                        args: args.clone(),
-                        ok: None,
-                        call_id: call_id.clone(),
-                        started: Some(std::time::Instant::now()),
-                        duration: None,
-                        error: None,
-                        tokens: None,
-                        expanded: false,
-                        output: Vec::new(),
-                    },
+                // Provider streaming already announced the call before the
+                // runtime had its stable id. Adopt that pending card by the
+                // call's name and arguments instead of rendering a duplicate.
+                let pending = self.blocks.iter_mut().find(|block| {
+                    matches!(
+                        &block.kind,
+                        BlockKind::ToolCall {
+                            name: pending_name,
+                            args: pending_args,
+                            started: None,
+                            ..
+                        } if pending_name == tool && pending_args == args
+                    )
                 });
+                if let Some(block) = pending {
+                    if let BlockKind::ToolCall {
+                        args: saved_args,
+                        call_id: saved_id,
+                        started,
+                        ..
+                    } = &mut block.kind
+                    {
+                        *saved_args = args.clone();
+                        *saved_id = call_id.clone();
+                        *started = Some(std::time::Instant::now());
+                    }
+                } else {
+                    self.blocks.push(TranscriptBlock {
+                        kind: BlockKind::ToolCall {
+                            name: tool.clone(),
+                            args: args.clone(),
+                            ok: None,
+                            call_id: call_id.clone(),
+                            started: Some(std::time::Instant::now()),
+                            duration: None,
+                            error: None,
+                            tokens: None,
+                            expanded: false,
+                            output: Vec::new(),
+                        },
+                    });
+                }
             }
             RuntimeErrorEvent::ToolCompleted { tool, call_id, .. } => {
                 // Flip the matching still-running card. Prefer the exact
@@ -2870,6 +2921,28 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
                 pantheon_runtime::session::TranscriptItem::Message(m) => match m.role {
                     pantheon_api::message::Role::User => BlockKind::UserMessage(m.content.clone()),
                     _ => BlockKind::AssistantMessage(m.content.clone()),
+                },
+                pantheon_runtime::session::TranscriptItem::ToolCall {
+                    call_id,
+                    name,
+                    args,
+                    output,
+                    ok,
+                } => BlockKind::ToolCall {
+                    name,
+                    args,
+                    ok,
+                    call_id,
+                    started: None,
+                    duration: None,
+                    error: if ok == Some(false) {
+                        Some(output.join("\n"))
+                    } else {
+                        None
+                    },
+                    tokens: None,
+                    expanded: false,
+                    output,
                 },
                 // Imported reasoning traces render as thinking blocks.
                 pantheon_runtime::session::TranscriptItem::Reasoning(text) => BlockKind::Thinking {
@@ -5698,6 +5771,7 @@ enum TuiEvent {
 pub fn run_tui_session_with(
     data_dir: std::path::PathBuf,
     resume: Option<String>,
+    initial_prompt: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::config;
     use crate::config::build_model_policy;
@@ -5924,6 +5998,7 @@ pub fn run_tui_session_with(
 
     // A resume id means the caller already validated the run exists, so the
     // session opens onto it. Otherwise this is a new run.
+    let is_resume = resume.is_some();
     let run_id = resume.unwrap_or_else(pantheon_runtime::new_run_id);
     if let Err(e) = session.supervisor.start_run(&run_id) {
         // The TUI is not up yet, so this goes straight to stderr and the
@@ -5934,15 +6009,41 @@ pub fn run_tui_session_with(
     }
     // The send path resolves state.session_id at send time, so it must
     // start as the run the loop opens on - not the throwaway id new() made.
-    state.session_id = run_id.clone();
-    // The opening run is the first open tab, and any decisions it parked
-    // (e.g. a previous TUI died mid-approval) hydrate from the ledger so
-    // the card renders on the first frame.
-    seed_open_tabs(&mut state);
-    hydrate_decisions(&mut state, &session, &run_id);
+    if is_resume {
+        // Reuse the reconstruction path as /history and tab switching so a
+        // CLI resume immediately shows the saved conversation.
+        switch_to_run(&mut state, &session, &run_id, "resumed");
+    } else {
+        state.session_id = run_id.clone();
+        // The opening run is the first open tab; hydrate any durable state.
+        seed_open_tabs(&mut state);
+        hydrate_decisions(&mut state, &session, &run_id);
+    }
     refresh_tabs(&mut state, &session);
 
-    let result = tui_loop(&mut terminal, &mut state, session, &tx, &rx, &running);
+    // `pantheon -r <id> "message"` submits a continuation as soon as the
+    // resumed transcript is ready. The normal TUI path remains unchanged.
+    if let Some(prompt) = initial_prompt.filter(|s| !s.trim().is_empty()) {
+        if state.pending_approval.is_some() || state.pending_clarify.is_some() {
+            // A parked run needs its approval/answer before another turn can
+            // start. Keep the requested message ready in the composer.
+            state.input = prompt;
+            state.add_status(
+                "resolve the pending request, then press Enter to send your message".into(),
+            );
+        } else {
+            start_turn(&mut state, &session, &tx, prompt);
+        }
+    }
+
+    let result = tui_loop(
+        &mut terminal,
+        &mut state,
+        session.clone(),
+        &tx,
+        &rx,
+        &running,
+    );
 
     disable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -5950,6 +6051,15 @@ pub fn run_tui_session_with(
     // screen; some terminals persist Kitty images otherwise.
     let _ = state.img.clear_painted();
     execute!(stdout, LeaveAlternateScreen, DisableMouseCapture)?;
+    if result.is_ok() {
+        let summary = match session.supervisor.replay(&state.session_id) {
+            Ok(entries) => {
+                crate::session_summary::SessionSummary::from_state_with_entries(&state, &entries)
+            }
+            Err(_) => crate::session_summary::SessionSummary::from_state(&state),
+        };
+        print!("{}", summary.to_plain_text());
+    }
     result
 }
 
@@ -6992,13 +7102,21 @@ fn answer_clarify(
         return;
     };
     let run = state.session_id.clone();
+    let mcp_elicitation = req.call_id.starts_with("mcp_elicit_");
     match session.supervisor.answer_input(&run, &req.call_id, answer) {
         Ok(()) => {
             state.clarifies.remove(&run);
             state.tabs.set_approval(&run, false);
             state.resolve_clarify_block(answer);
-            state.status_line = "answered; resuming".into();
-            resume_parked_turn(state, session, tx, &run);
+            if mcp_elicitation {
+                // The MCP tool call is still executing on its worker;
+                // answering unblocks it. There is no parked turn to
+                // resume, and starting one would race the live tool.
+                state.status_line = "answered; MCP tool continuing".into();
+            } else {
+                state.status_line = "answered; resuming".into();
+                resume_parked_turn(state, session, tx, &run);
+            }
         }
         Err(e) => {
             state.pending_clarify = Some(req);
@@ -9834,6 +9952,97 @@ fn handle_slash_inner(
         }
     }
 
+    if cmd == "/worktree" || cmd.starts_with("/worktree ") {
+        let rest = cmd.strip_prefix("/worktree").unwrap_or("").trim();
+        let (sub, arg) = match rest.split_once(char::is_whitespace) {
+            Some((s, a)) => (s, a.trim()),
+            None => (rest, ""),
+        };
+        let cwd = session.workspace_root();
+        let manager = match pantheon_exec::worktree::WorktreeManager::new(
+            &cwd,
+            &crate::terminal::data_dir(),
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                state.add_status(format!("/worktree: {e}"));
+                return;
+            }
+        };
+        match sub {
+            "" | "list" => {
+                match manager.list() {
+                    Ok(items) if items.is_empty() => {
+                        state.add_status("no worktrees; create one with `pantheon worktree create <name>`".into());
+                    }
+                    Ok(items) => {
+                        for w in items {
+                            let branch = w.branch.as_deref().unwrap_or("(detached)");
+                            state.add_status(format!("  {branch:<28} {}", w.path.display()));
+                        }
+                    }
+                    Err(e) => state.add_status(format!("/worktree list: {e}")),
+                }
+                return;
+            }
+            "path" => {
+                if arg.is_empty() {
+                    state.add_status("usage: /worktree path <name>".into());
+                    return;
+                }
+                match manager.find(arg) {
+                    Ok(Some(w)) => state.add_status(w.path.display().to_string()),
+                    Ok(None) => state.add_status(format!("no worktree named '{arg}'")),
+                    Err(e) => state.add_status(format!("/worktree path: {e}")),
+                }
+                return;
+            }
+            "move" => {
+                if arg.is_empty() {
+                    state.add_status("usage: /worktree move <name>".into());
+                    return;
+                }
+                let path = match manager.find(arg) {
+                    Ok(Some(w)) => w.path,
+                    Ok(None) => {
+                        state.add_status(format!(
+                            "no worktree named '{arg}'; create it with `pantheon worktree create {arg}`"
+                        ));
+                        return;
+                    }
+                    Err(e) => {
+                        state.add_status(format!("/worktree move: {e}"));
+                        return;
+                    }
+                };
+                if !path.is_dir() {
+                    state.add_status(format!(
+                        "/worktree move: {} is missing; recreate the worktree",
+                        path.display()
+                    ));
+                    return;
+                }
+                match session.set_workspace_root(&path) {
+                    Ok(()) => {
+                        state.refresh_git();
+                        state.add_status(format!(
+                            "moved session to {}; new tool calls use this workspace",
+                            path.display()
+                        ));
+                    }
+                    Err(e) => state.add_status(format!("/worktree move: {e}")),
+                }
+                return;
+            }
+            _ => {
+                state.add_status(
+                    "usage: /worktree [list|path <name>|move <name>]".into(),
+                );
+                return;
+            }
+        }
+    }
+
     if let Some(id) = cmd.strip_prefix("/resume ") {
         let id = id.trim();
         // Prove the run exists before switching; reopen a terminal run.
@@ -9855,6 +10064,28 @@ fn handle_slash_inner(
                                         _ => BlockKind::AssistantMessage(m.content.clone()),
                                     }
                                 }
+                                pantheon_runtime::session::TranscriptItem::ToolCall {
+                                    call_id,
+                                    name,
+                                    args,
+                                    output,
+                                    ok,
+                                } => BlockKind::ToolCall {
+                                    name,
+                                    args,
+                                    ok,
+                                    call_id,
+                                    started: None,
+                                    duration: None,
+                                    error: if ok == Some(false) {
+                                        Some(output.join("\n"))
+                                    } else {
+                                        None
+                                    },
+                                    tokens: None,
+                                    expanded: false,
+                                    output,
+                                },
                                 // Imported reasoning traces render as thinking blocks.
                                 pantheon_runtime::session::TranscriptItem::Reasoning(text) => {
                                     BlockKind::Thinking {
@@ -10837,6 +11068,12 @@ fn handle_slash_inner(
         }
         return;
     }
+    // User-defined commands are checked before skills: an explicitly
+    // configured `/review` should win over an installed skill with the
+    // same name, while built-ins above still win over both.
+    if try_invoke_custom_command(state, session, tx, cmd) {
+        return;
+    }
     // Dynamic skill invocation: /<skill-name> [input...]. Every built-in
     // above takes precedence by dispatch order; this only fires for words
     // the command registry doesn't know. Unknown names fall through to
@@ -10861,6 +11098,43 @@ fn handle_slash_inner(
     if !suggestions.is_empty() {
         state.add_status(format!("did you mean {}?", suggestions.join(", ")));
     }
+}
+
+/// Invoke a project/global custom command. The template is expanded
+/// locally; user arguments are data and never reach a shell. Returns true
+/// when the name matched, even if the turn had to be queued.
+fn try_invoke_custom_command(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+    full_cmd: &str,
+) -> bool {
+    let body = full_cmd.trim().trim_start_matches('/');
+    let (name, arguments) = body
+        .split_once(char::is_whitespace)
+        .map(|(n, a)| (n, a.trim()))
+        .unwrap_or((body, ""));
+    if name.is_empty() || crate::commands::is_builtin(name) {
+        return false;
+    }
+    let commands = crate::custom_commands::discover(
+        &crate::terminal::data_dir(),
+        &crate::skills::project_root(),
+    );
+    let Some(command) = crate::custom_commands::find(&commands, name) else {
+        return false;
+    };
+    let prompt = crate::custom_commands::expand(&command.template, arguments);
+    state.add_user_message(full_cmd.to_string());
+    if !start_turn(state, session, tx, prompt) {
+        state.add_status(format!(
+            "command '{}' queued for after this turn",
+            command.name
+        ));
+    } else {
+        state.add_status(format!("invoking command '{}'", command.name));
+    }
+    true
 }
 
 /// Find an installed skill by name (case-insensitive). Pure lookup over

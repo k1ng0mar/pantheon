@@ -103,6 +103,18 @@ pub enum NightlyEvent {
         pending: usize,
         at_ms: i64,
     },
+    /// Token/cost accounting for one successful auxiliary model call made
+    /// during a nightly pass. Kept in this audit because nightly work has no
+    /// interactive session id to attribute in `pantheon stats`.
+    ModelUsage {
+        provider: String,
+        model: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        total_tokens: u64,
+        cost_usd: Option<f64>,
+        at_ms: i64,
+    },
 }
 
 /// Append one event to the audit log.
@@ -137,15 +149,26 @@ pub fn read_events(data_dir: &Path) -> Vec<NightlyEvent> {
 /// Counts lifecycle events since the last `PassStarted`.
 pub fn last_run_summary(data_dir: &Path) -> Option<String> {
     let events = read_events(data_dir);
-    let start = events
+    let start_idx = events
         .iter()
         .rposition(|e| matches!(e, NightlyEvent::PassStarted { .. }))?;
+    let started_ms = match events.get(start_idx)? {
+        NightlyEvent::PassStarted { at_ms, .. } => *at_ms,
+        _ => return None,
+    };
+    let finished_ms = events[start_idx..]
+        .iter()
+        .find_map(|e| match e {
+            NightlyEvent::PassFinished { at_ms, .. } => Some(*at_ms),
+            _ => None,
+        })
+        .unwrap_or(i64::MAX);
     let mut proposed = 0;
     let mut applied = 0;
     let mut queued = 0;
     let mut rejected = 0;
     let mut escalated = 0;
-    for e in &events[start..] {
+    for e in &events[start_idx..] {
         match e {
             NightlyEvent::ProposalMade { .. } => proposed += 1,
             NightlyEvent::LessonApplied { .. } | NightlyEvent::Applied { .. } => applied += 1,
@@ -155,8 +178,42 @@ pub fn last_run_summary(data_dir: &Path) -> Option<String> {
             _ => {}
         }
     }
+    // Usage callbacks can append before the buffered lifecycle events are
+    // flushed at pass end, so select by their durable timestamp, not JSONL
+    // position. Rewinds do not apply to these maintenance model calls.
+    let usage = events
+        .iter()
+        .fold((0u64, 0u64, 0u64, 0.0f64), |mut totals, e| {
+            if let NightlyEvent::ModelUsage {
+                total_tokens,
+                cost_usd,
+                at_ms,
+                ..
+            } = e
+            {
+                if *at_ms >= started_ms && *at_ms <= finished_ms {
+                    totals.0 += 1;
+                    totals.1 += *total_tokens;
+                    if let Some(cost) = cost_usd {
+                        totals.2 += 1;
+                        totals.3 += *cost;
+                    }
+                }
+            }
+            totals
+        });
+    let usage_summary = if usage.0 == 0 {
+        String::new()
+    } else if usage.2 == 0 {
+        format!(", {} model calls, {} tokens, cost n/a", usage.0, usage.1)
+    } else {
+        format!(
+            ", {} model calls, {} tokens, ${:.4} estimated",
+            usage.0, usage.1, usage.3
+        )
+    };
     Some(format!(
-        "{proposed} proposed, {applied} applied, {queued} awaiting approval, {rejected} rejected, {escalated} escalated"
+        "{proposed} proposed, {applied} applied, {queued} awaiting approval, {rejected} rejected, {escalated} escalated{usage_summary}"
     ))
 }
 

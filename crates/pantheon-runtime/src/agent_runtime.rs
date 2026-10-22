@@ -97,7 +97,13 @@ impl AgentRuntime {
         effective: EffectiveProfile,
         data_dir: impl Into<PathBuf>,
     ) -> Result<Self, PantheonError> {
-        Self::with_caps(supervisor, profiles, effective, data_dir, crate::swarm::Caps::default())
+        Self::with_caps(
+            supervisor,
+            profiles,
+            effective,
+            data_dir,
+            crate::swarm::Caps::default(),
+        )
     }
 
     /// Build a runtime with an explicit swarm cap set (from a `[swarm]`

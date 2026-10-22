@@ -46,7 +46,10 @@
 
 pub mod app;
 pub mod checkpoint;
+pub mod cli_surface;
+pub mod codebase;
 pub mod commands;
+pub mod custom_commands;
 pub mod render;
 pub mod sanitize;
 pub mod session;
@@ -61,6 +64,7 @@ pub use widget::{Confirm, Item, Key, KeyResult, MultiSelect, Select, Selection, 
 // Terminal command modules: argv dispatch and the non-interactive verbs.
 // Private: the binary calls `terminal::run()`; nothing outside this crate
 // reaches past it.
+mod acp;
 mod agui;
 mod args;
 mod backup;
@@ -113,6 +117,7 @@ pub mod team_remote;
 pub mod terminal;
 pub mod transcript;
 mod update;
+mod worktree;
 pub mod yank;
 
 // TUI-A: session tab bar model + rendering (startup splash lives in terminal).

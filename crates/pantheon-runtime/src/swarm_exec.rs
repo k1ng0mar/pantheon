@@ -61,6 +61,26 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Unix milliseconds for manifest ordering.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Globally unique swarm id. A process-local counter reset on every restart
+/// would reuse `sw_1` and overwrite the previous run's manifest, so derive
+/// it from the same time + pid + sequence scheme as run ids.
+fn new_swarm_id() -> String {
+    format!(
+        "sw_{}",
+        crate::new_run_id()
+            .strip_prefix("run_")
+            .unwrap_or("unknown")
+    )
+}
+
 /// Structured swarm error. `http_status` lets the HTTP layer map it
 /// without inventing its own codes.
 #[derive(Debug, Clone)]
@@ -311,6 +331,9 @@ struct SwarmRecord {
     id: String,
     task: String,
     judge_enabled: bool,
+    /// Unix milliseconds at create; preserved across retries so the
+    /// manifest keeps its place in `swarm list`.
+    created_ms: u64,
     /// The agent roster for every round: retry rebuilds the same specs so
     /// profiles-mode swarms keep their profiles across rounds.
     specs: Vec<AgentSpec>,
@@ -551,7 +574,6 @@ pub struct SwarmOrchestrator {
     swarms: Mutex<HashMap<String, SwarmRecord>>,
     worker: Arc<dyn SwarmWorker>,
     judge: Option<Arc<dyn JudgeTransport>>,
-    next_swarm: AtomicU64,
     /// When set, every create/retry/settle persists a manifest to
     /// `<data_dir>/swarms/` so the CLI `swarm list` / `swarm status` sees
     /// orchestrator swarms alongside CLI swarms. `None` = in-memory only
@@ -566,7 +588,6 @@ impl SwarmOrchestrator {
             swarms: Mutex::new(HashMap::new()),
             worker,
             judge,
-            next_swarm: AtomicU64::new(1),
             data_dir: None,
         }
     }
@@ -586,31 +607,29 @@ impl SwarmOrchestrator {
     }
 
     /// Snapshot the orchestrator's in-memory record into a durable
-    /// manifest and write it. Lossy by design: rounds, stages, and the
-    /// judge verdict collapse into the flat `status` string the CLI
-    /// understands. A failed write is logged, never fatal: the in-memory
-    /// record stays authoritative for the live session, and a corrupt
-    /// manifest must not take the swarm down with it.
-    fn persist(&self, rec: &SwarmRecord) {
-        let Some(dd) = &self.data_dir else {
-            return;
-        };
-        let m = crate::swarm_persist::SwarmManifest {
+    /// manifest. `None` when this orchestrator does not persist.
+    ///
+    /// Lossy by design: rounds, stages, and the judge verdict collapse into
+    /// the flat `status` string the CLI understands. Only the current round
+    /// is written: a retry's superseded agents stay in the live record for
+    /// transcripts, but the CLI index should show the roster it can act on.
+    fn manifest_for(&self, rec: &SwarmRecord) -> Option<crate::swarm_persist::SwarmManifest> {
+        self.data_dir.as_ref()?;
+        let mut roles: Vec<String> = Vec::new();
+        for spec in &rec.specs {
+            if !roles.contains(&spec.name) {
+                roles.push(spec.name.clone());
+            }
+        }
+        let current: Vec<&AgentRecord> =
+            rec.agents.iter().filter(|a| a.round == rec.round).collect();
+        let all_failed =
+            !current.is_empty() && current.iter().all(|a| a.status == SwarmAgentStatus::Failed);
+        Some(crate::swarm_persist::SwarmManifest {
             swarm_id: rec.id.clone(),
             task: rec.task.clone(),
-            roles: rec
-                .specs
-                .iter()
-                .map(|s| s.name.clone())
-                .chain(
-                    rec.staged
-                        .as_ref()
-                        .into_iter()
-                        .flat_map(|st| st.plan.stages.iter().map(|s| s.name.clone())),
-                )
-                .collect(),
-            agents: rec
-                .agents
+            roles,
+            agents: current
                 .iter()
                 .map(|a| crate::swarm_persist::SwarmAgentManifest {
                     label: format!("{}:{}:{}", rec.id, a.profile, a.name),
@@ -626,18 +645,35 @@ impl SwarmOrchestrator {
                 })
                 .collect(),
             delivery: None,
+            created_ms: rec.created_ms,
             status: match rec.status {
                 SwarmStatus::Running => "running".to_string(),
                 SwarmStatus::Judging => "running".to_string(),
                 SwarmStatus::Complete => "complete".to_string(),
+                SwarmStatus::Incomplete if all_failed => "failed".to_string(),
                 SwarmStatus::Incomplete => "partial".to_string(),
             },
+        })
+    }
+
+    /// Write a pre-built manifest. A failed write is logged, never fatal:
+    /// the in-memory record stays authoritative for the live session, and a
+    /// corrupt manifest must not take the swarm down with it.
+    fn write_manifest(&self, m: &crate::swarm_persist::SwarmManifest) {
+        let Some(dd) = &self.data_dir else {
+            return;
         };
-        if let Err(e) = crate::swarm_persist::write_manifest(dd, &m) {
+        if let Err(e) = crate::swarm_persist::write_manifest(dd, m) {
             log_warn!(
                 "swarm persist: could not write manifest for '{}': {e}",
-                rec.id
+                m.swarm_id
             );
+        }
+    }
+
+    fn persist(&self, rec: &SwarmRecord) {
+        if let Some(m) = self.manifest_for(rec) {
+            self.write_manifest(&m);
         }
     }
 
@@ -678,11 +714,12 @@ impl SwarmOrchestrator {
         } else {
             judge
         };
-        let id = format!("sw_{}", self.next_swarm.fetch_add(1, Ordering::SeqCst));
+        let id = new_swarm_id();
         let mut record = SwarmRecord {
             id: id.clone(),
             task: task.to_string(),
             judge_enabled: judge,
+            created_ms: now_ms(),
             specs: specs.clone(),
             round: 1,
             status: SwarmStatus::Running,
@@ -802,7 +839,7 @@ impl SwarmOrchestrator {
         } else {
             judge
         };
-        let id = format!("sw_{}", self.next_swarm.fetch_add(1, Ordering::SeqCst));
+        let id = new_swarm_id();
         let lead_name = plan.lead_name.clone();
         let lead_profile = plan.lead_profile.clone();
         let lead_task = build_lead_task(task, &plan);
@@ -810,6 +847,7 @@ impl SwarmOrchestrator {
             id: id.clone(),
             task: task.to_string(),
             judge_enabled: judge,
+            created_ms: now_ms(),
             specs: plan.stages.iter().flat_map(|s| s.members.clone()).collect(),
             round: 1,
             status: SwarmStatus::Running,
@@ -1415,17 +1453,20 @@ impl SwarmOrchestrator {
 
     /// Current status, refreshing agent states from the worker first.
     pub fn status(&self, swarm_id: &str) -> Result<SwarmStatusView, SwarmError> {
-        let mut swarms = self.swarms.lock().unwrap_or_else(|e| e.into_inner());
-        let record = swarms
-            .get_mut(swarm_id)
-            .ok_or_else(|| SwarmError::not_found(swarm_id))?;
-        self.refresh_locked(record)?;
-        // Persist after refresh: a settled swarm (Running -> Complete /
-        // Incomplete) updates its manifest so `swarm list` / `swarm status`
-        // sees the final state, and a still-running swarm keeps its
-        // manifest current. A failed write is logged, not fatal.
-        self.persist(record);
-        Ok(self.view(record))
+        let (view, manifest) = {
+            let mut swarms = self.swarms.lock().unwrap_or_else(|e| e.into_inner());
+            let record = swarms
+                .get_mut(swarm_id)
+                .ok_or_else(|| SwarmError::not_found(swarm_id))?;
+            self.refresh_locked(record)?;
+            (self.view(record), self.manifest_for(record))
+        };
+        // Persist after releasing the lock: a slow disk must not serialize
+        // every other swarm status/transcript call behind this write.
+        if let Some(m) = manifest {
+            self.write_manifest(&m);
+        }
+        Ok(view)
     }
 
     /// Combined transcripts of every agent across all rounds, each
@@ -1521,80 +1562,84 @@ impl SwarmOrchestrator {
     /// spawns them (`waiting` → `working`). Staged swarms are refused:
     /// their review loop is the re-execution mechanism.
     pub fn retry(&self, swarm_id: &str) -> Result<SwarmStatusView, SwarmError> {
-        let mut swarms = self.swarms.lock().unwrap_or_else(|e| e.into_inner());
-        let record = swarms
-            .get_mut(swarm_id)
-            .ok_or_else(|| SwarmError::not_found(swarm_id))?;
-        if record.staged.is_some() {
-            return Err(SwarmError::bad_request(
-                "SWARM_RETRY_REFUSED",
-                "staged swarms re-execute through their review loop; retry is not supported",
-            ));
+        let (view, manifest) = {
+            let mut swarms = self.swarms.lock().unwrap_or_else(|e| e.into_inner());
+            let record = swarms
+                .get_mut(swarm_id)
+                .ok_or_else(|| SwarmError::not_found(swarm_id))?;
+            if record.staged.is_some() {
+                return Err(SwarmError::bad_request(
+                    "SWARM_RETRY_REFUSED",
+                    "staged swarms re-execute through their review loop; retry is not supported",
+                ));
+            }
+            self.refresh_locked(record)?;
+            if record.status != SwarmStatus::Incomplete {
+                return Err(SwarmError::bad_request(
+                    "SWARM_RETRY_REFUSED",
+                    format!(
+                        "swarm is {}, not incomplete: only incomplete swarms can be retried",
+                        record.status.as_str()
+                    ),
+                ));
+            }
+            if record.round >= 3 {
+                return Err(SwarmError::bad_request(
+                    "SWARM_RETRY_REFUSED",
+                    format!("max rounds (3) reached for {}", record.id),
+                ));
+            }
+            let verdict = record.verdict.as_ref().ok_or_else(|| {
+                SwarmError::bad_request(
+                    "SWARM_RETRY_REFUSED",
+                    "no judge verdict to retry from (judge was disabled)",
+                )
+            })?;
+            if verdict.done {
+                return Err(SwarmError::bad_request(
+                    "SWARM_RETRY_REFUSED",
+                    "verdict is done: nothing to retry",
+                ));
+            }
+            let feedback = verdict.notes.clone();
+            record.round += 1;
+            let round = record.round;
+            let base_task = record.task.clone();
+            // Rebuild the same roster (profiles mode keeps its profiles).
+            let specs = record.specs.clone();
+            for spec in &specs {
+                record.agents.push(AgentRecord {
+                    name: spec.name.clone(),
+                    profile: spec.profile.clone(),
+                    run_id: String::new(),
+                    status: SwarmAgentStatus::Waiting,
+                    round,
+                    stage: None,
+                    lead: false,
+                });
+            }
+            // The retry round's task carries the judge's feedback so agents
+            // address what was missing instead of repeating round 1.
+            let retry_task = format!(
+                "{base_task}\n\nJudge feedback from round {} (address every point):\n{feedback}",
+                round - 1
+            );
+            let saved_task = std::mem::replace(&mut record.task, retry_task);
+            let launch = self.launch_waiting(record);
+            // Restore the original task: the feedback is per-round, baked
+            // into what the worker received at spawn.
+            record.task = saved_task;
+            launch?;
+            record.status = SwarmStatus::Running;
+            record.verdict = None;
+            (self.view(record), self.manifest_for(record))
+        };
+        // Persist the freshly relaunched record after releasing the lock:
+        // the manifest flips back to "running" with the new round's agents.
+        if let Some(m) = manifest {
+            self.write_manifest(&m);
         }
-        self.refresh_locked(record)?;
-        if record.status != SwarmStatus::Incomplete {
-            return Err(SwarmError::bad_request(
-                "SWARM_RETRY_REFUSED",
-                format!(
-                    "swarm is {}, not incomplete: only incomplete swarms can be retried",
-                    record.status.as_str()
-                ),
-            ));
-        }
-        if record.round >= 3 {
-            return Err(SwarmError::bad_request(
-                "SWARM_RETRY_REFUSED",
-                format!("max rounds (3) reached for {}", record.id),
-            ));
-        }
-        let verdict = record.verdict.as_ref().ok_or_else(|| {
-            SwarmError::bad_request(
-                "SWARM_RETRY_REFUSED",
-                "no judge verdict to retry from (judge was disabled)",
-            )
-        })?;
-        if verdict.done {
-            return Err(SwarmError::bad_request(
-                "SWARM_RETRY_REFUSED",
-                "verdict is done: nothing to retry",
-            ));
-        }
-        let feedback = verdict.notes.clone();
-        record.round += 1;
-        let round = record.round;
-        let base_task = record.task.clone();
-        // Rebuild the same roster (profiles mode keeps its profiles).
-        let specs = record.specs.clone();
-        for spec in &specs {
-            record.agents.push(AgentRecord {
-                name: spec.name.clone(),
-                profile: spec.profile.clone(),
-                run_id: String::new(),
-                status: SwarmAgentStatus::Waiting,
-                round,
-                stage: None,
-                lead: false,
-            });
-        }
-        // The retry round's task carries the judge's feedback so agents
-        // address what was missing instead of repeating round 1.
-        let retry_task = format!(
-            "{base_task}\n\nJudge feedback from round {} (address every point):\n{feedback}",
-            round - 1
-        );
-        let saved_task = std::mem::replace(&mut record.task, retry_task);
-        let launch = self.launch_waiting(record);
-        // Restore the original task: the feedback is per-round, baked
-        // into what the worker received at spawn.
-        record.task = saved_task;
-        launch?;
-        record.status = SwarmStatus::Running;
-        record.verdict = None;
-        // Persist the freshly relaunched record: the manifest flips back to
-        // "running" with the new round's agents, so `swarm list` reflects
-        // the retry rather than the stale settled state.
-        self.persist(record);
-        Ok(self.view(record))
+        Ok(view)
     }
 }
 
@@ -1844,6 +1889,13 @@ mod swarm_exec_p1_tests {
     impl JudgeTransport for StubJudge {
         fn judge(&self, _prompt: &str) -> Result<String, String> {
             Ok("VERDICT: done".to_string())
+        }
+    }
+
+    struct NotDoneJudge;
+    impl JudgeTransport for NotDoneJudge {
+        fn judge(&self, _prompt: &str) -> Result<String, String> {
+            Ok("VERDICT: not done\nMissing: finish the report".to_string())
         }
     }
 
@@ -2123,6 +2175,7 @@ mod swarm_exec_p1_tests {
             crate::swarm_persist::read_manifest(&tmp, &id).expect("manifest on disk after create");
         assert_eq!(on_disk.swarm_id, id);
         assert_eq!(on_disk.status, "running");
+        assert!(on_disk.created_ms > 0, "created_ms must be stamped");
         assert_eq!(on_disk.roles, vec!["a".to_string()]);
         assert_eq!(on_disk.agents.len(), 1);
 
@@ -2145,6 +2198,91 @@ mod swarm_exec_p1_tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// IDs must be globally unique: a restart (new orchestrator over the
+    /// same data dir) must not reuse the previous session's `sw_1` and
+    /// overwrite its manifest.
+    #[test]
+    fn new_orchestrator_does_not_overwrite_existing_manifests() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let first_worker = Arc::new(ScriptedWorker::new());
+        let first = SwarmOrchestrator::with_data_dir(tmp.path().into(), first_worker, None);
+        let a = first
+            .create_with_specs("first", one_spec(), false)
+            .expect("first create");
+
+        let second_worker = Arc::new(ScriptedWorker::new());
+        let second = SwarmOrchestrator::with_data_dir(tmp.path().into(), second_worker, None);
+        let b = second
+            .create_with_specs("second", one_spec(), false)
+            .expect("second create");
+
+        assert_ne!(a.id, b.id, "restart must not reuse a swarm id");
+        let ma = crate::swarm_persist::read_manifest(tmp.path(), &a.id).expect("first manifest");
+        let mb = crate::swarm_persist::read_manifest(tmp.path(), &b.id).expect("second manifest");
+        assert_eq!(ma.task, "first");
+        assert_eq!(mb.task, "second");
+    }
+
+    /// A swarm where every agent failed is `failed`, not `partial`, in the
+    /// CLI-facing manifest.
+    #[test]
+    fn all_failed_agents_persist_failed_status() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let worker = Arc::new(ScriptedWorker::new());
+        let orch = SwarmOrchestrator::with_data_dir(tmp.path().into(), worker.clone(), None);
+        let created = orch
+            .create_with_specs("fails", one_spec(), false)
+            .expect("create");
+        let run_id = crate::swarm_persist::read_manifest(tmp.path(), &created.id)
+            .expect("manifest")
+            .agents[0]
+            .run_id
+            .clone();
+        worker.fail(&run_id, "boom");
+        let view = orch.status(&created.id).expect("status");
+        assert_eq!(view.status, SwarmStatus::Incomplete);
+        let manifest =
+            crate::swarm_persist::read_manifest(tmp.path(), &created.id).expect("manifest");
+        assert_eq!(manifest.status, "failed");
+    }
+
+    /// After a retry the manifest must contain only the new round's roster,
+    /// not the superseded round's agents (which would double the agent count
+    /// and repeat labels).
+    #[test]
+    fn retry_manifest_replaces_the_previous_round() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let worker = Arc::new(ScriptedWorker::new());
+        let orch = SwarmOrchestrator::with_data_dir(
+            tmp.path().into(),
+            worker.clone(),
+            Some(Arc::new(NotDoneJudge)),
+        );
+        let created = orch
+            .create_with_specs("task", one_spec(), true)
+            .expect("create");
+        let run_id = crate::swarm_persist::read_manifest(tmp.path(), &created.id)
+            .expect("manifest")
+            .agents[0]
+            .run_id
+            .clone();
+        worker.complete(&run_id, "first attempt");
+        let view = orch.status(&created.id).expect("status");
+        assert_eq!(view.status, SwarmStatus::Incomplete);
+
+        let retried = orch.retry(&created.id).expect("retry");
+        assert_eq!(retried.status, SwarmStatus::Running);
+        let manifest =
+            crate::swarm_persist::read_manifest(tmp.path(), &created.id).expect("manifest");
+        assert_eq!(
+            manifest.agents.len(),
+            1,
+            "retry manifest must show only the current round"
+        );
+        assert_eq!(manifest.agents[0].status, "running");
+        assert!(manifest.created_ms > 0);
     }
 
     /// Without a data_dir the orchestrator stays in-memory only: no manifest

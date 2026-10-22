@@ -18,7 +18,7 @@ use pantheon_gateway::http::{Request, Response};
 use pantheon_runtime::session::{rebuild_transcript, TranscriptItem};
 use pantheon_runtime::{new_run_id, Supervisor};
 use pantheon_storage::{Ledger, HOME_SESSION_ID};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// Fallback run mode when the ledger stores none for a run. Mirrors the
@@ -451,6 +451,118 @@ fn transcript_message(
     item
 }
 
+/// Build the dashboard's chat-shaped transcript directly from the ledger.
+/// Model tool requests stay nested in their assistant message, as they were
+/// before the display transcript gained standalone tool cards. Tool result
+/// messages remain separate rows so existing dashboard clients can pair them
+/// through `tool_call_id`.
+fn detail_transcript(
+    entries: &[pantheon_storage::LedgerEntry],
+    tool_starts: &HashMap<String, i64>,
+    tool_ends: &HashMap<String, i64>,
+    child_runs: &HashMap<String, String>,
+) -> Vec<serde_json::Value> {
+    let model_call_ids: HashSet<String> = entries
+        .iter()
+        .filter_map(|entry| match &entry.event {
+            Event::AssistantMessage { message, .. } => Some(
+                message
+                    .tool_calls
+                    .iter()
+                    .map(|call| call.id.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let mut transcript = Vec::new();
+    let mut ui_indices = HashMap::<String, usize>::new();
+
+    for entry in entries {
+        match &entry.event {
+            Event::AssistantMessage { message, .. } if message.role != Role::Tool => {
+                transcript.push(transcript_message(
+                    message,
+                    tool_starts,
+                    tool_ends,
+                    child_runs,
+                ));
+            }
+            Event::ToolMessage { message, .. } => {
+                transcript.push(transcript_message(
+                    message,
+                    tool_starts,
+                    tool_ends,
+                    child_runs,
+                ));
+            }
+            Event::ToolStarted {
+                call_id,
+                tool,
+                args,
+                ..
+            } if !model_call_ids.contains(call_id) => {
+                transcript.push(serde_json::json!({
+                    "type": "tool_call",
+                    "id": call_id,
+                    "name": tool,
+                    "arguments": redact(args),
+                    "output": "",
+                    "ok": tool_ends.contains_key(call_id).then_some(true),
+                    "started_ms": tool_starts.get(call_id).copied(),
+                    "duration_ms": tool_duration_ms(call_id, tool_starts, tool_ends),
+                    "child_run_id": child_runs.get(call_id),
+                }));
+            }
+            Event::ImportedReasoning { text, .. } => {
+                transcript.push(serde_json::json!({
+                    "type": "reasoning",
+                    "content": redact(text),
+                }));
+            }
+            Event::UiContent {
+                ui_id, document, ..
+            } => {
+                let idx = transcript.len();
+                ui_indices.insert(ui_id.clone(), idx);
+                transcript.push(serde_json::json!({
+                    "type": "ui",
+                    "ui_id": ui_id,
+                    "revision": 0,
+                    "document": document,
+                }));
+            }
+            Event::UiUpdated {
+                ui_id,
+                revision,
+                document,
+                ..
+            } => {
+                if let Some(&idx) = ui_indices.get(ui_id) {
+                    let current = transcript[idx]["revision"].as_u64().unwrap_or(0);
+                    if *revision > current {
+                        transcript[idx]["revision"] = serde_json::json!(revision);
+                        transcript[idx]["document"] = serde_json::json!(document);
+                    }
+                } else {
+                    let idx = transcript.len();
+                    ui_indices.insert(ui_id.clone(), idx);
+                    transcript.push(serde_json::json!({
+                        "type": "ui",
+                        "ui_id": ui_id,
+                        "revision": revision,
+                        "document": document,
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    transcript
+}
+
 /// Compact duration for tool timeline rows: `42ms`, `3.2s`.
 fn fmt_tool_ms(ms: i64) -> String {
     if ms < 1000 {
@@ -518,28 +630,7 @@ fn detail_value(app: &App, run_id: &str) -> Result<serde_json::Value, Response> 
             _ => None,
         })
         .collect();
-    let transcript: Vec<serde_json::Value> = rebuild_transcript(entries.clone())
-        .into_iter()
-        .map(|item| match item {
-            TranscriptItem::Message(m) => {
-                transcript_message(&m, &tool_starts, &tool_ends, &child_runs)
-            }
-            TranscriptItem::Reasoning(t) => serde_json::json!({
-                "type": "reasoning",
-                "content": redact(&t),
-            }),
-            TranscriptItem::Ui {
-                ui_id,
-                revision,
-                document,
-            } => serde_json::json!({
-                "type": "ui",
-                "ui_id": ui_id,
-                "revision": revision,
-                "document": document,
-            }),
-        })
-        .collect();
+    let transcript = detail_transcript(&entries, &tool_starts, &tool_ends, &child_runs);
     let timeline: Vec<serde_json::Value> = entries
         .iter()
         .map(|e| timeline_item(e, &tool_starts))
@@ -1112,6 +1203,29 @@ pub fn export(app: &App, req: &Request, run_id: &str) -> Response {
                         let body = m.text_with_image_notes();
                         md.push_str(&format!("## {:?}\n\n{}\n\n", m.role, redact(&body)));
                     }
+                    TranscriptItem::ToolCall {
+                        call_id,
+                        name,
+                        args,
+                        output,
+                        ok,
+                    } => {
+                        let status = match ok {
+                            Some(true) => "completed",
+                            Some(false) => "failed",
+                            None => "pending",
+                        };
+                        md.push_str(&format!(
+                            "## Tool: {name} ({status})\n\nCall: `{call_id}`\n\nArguments:\n\n```json\n{}\n```\n\n",
+                            redact(&args)
+                        ));
+                        if !output.is_empty() {
+                            md.push_str(&format!(
+                                "Output:\n\n```text\n{}\n```\n\n",
+                                redact(&output.join("\n"))
+                            ));
+                        }
+                    }
                     TranscriptItem::Reasoning(t) => {
                         md.push_str(&format!("## Reasoning\n\n{}\n\n", redact(&t)));
                     }
@@ -1142,6 +1256,20 @@ pub fn export(app: &App, req: &Request, run_id: &str) -> Response {
                         // Same `[image: ...]` notes as the markdown export:
                         // JSON is text too, so pictures are named, not dropped.
                         "content": redact(&m.text_with_image_notes()),
+                    }),
+                    TranscriptItem::ToolCall {
+                        call_id,
+                        name,
+                        args,
+                        output,
+                        ok,
+                    } => serde_json::json!({
+                        "type": "tool_call",
+                        "id": call_id,
+                        "name": name,
+                        "arguments": redact(&args),
+                        "output": redact(&output.join("\n")),
+                        "ok": ok,
                     }),
                     TranscriptItem::Reasoning(t) => serde_json::json!({
                         "type": "reasoning",

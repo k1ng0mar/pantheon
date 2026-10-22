@@ -24,6 +24,7 @@
 //! thin compatibility shims over this module.
 
 use pantheon_api::capability::Policy;
+use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::model::{AuxiliaryKind, DefaultModel};
 use pantheon_nightly::{
     decide as nightly_decide, load_escalated, load_pending, run_pass, CompositeReplayRunner,
@@ -31,7 +32,44 @@ use pantheon_nightly::{
     RepairTargets, ReplayRunner, ReplayStore, ReplayTask, SubprocessEvalRunner,
 };
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
+
+struct NightlyUsageSink {
+    data_dir: std::path::PathBuf,
+}
+
+impl pantheon_providers::model_event::AuxiliaryUsageSink for NightlyUsageSink {
+    fn record(
+        &self,
+        provider: &str,
+        model: &str,
+        usage: pantheon_providers::model_event::ModelUsage,
+    ) -> Result<(), PantheonError> {
+        pantheon_nightly::audit(
+            &self.data_dir,
+            &NightlyEvent::ModelUsage {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                total_tokens: usage.total_tokens,
+                cost_usd: usage.cost_usd,
+                at_ms: pantheon_api::logging::now_ms(),
+            },
+        )
+        .map_err(|cause| {
+            PantheonError::new(
+                "NIGHTLY_USAGE_AUDIT",
+                Layer::Storage,
+                true,
+                cause,
+                "check that the nightly audit path is writable",
+                "",
+            )
+        })
+    }
+}
 
 /// Run one bounded nightly pass.
 ///
@@ -116,6 +154,7 @@ pub fn run_one_pass(data_dir: &Path, dry_run: bool) -> Result<PassResult, String
         policy: &pantheon_api::model::ModelPolicy,
         kind: AuxiliaryKind,
         api_key: Option<pantheon_secrets::SecretValue>,
+        usage_sink: Arc<dyn pantheon_providers::model_event::AuxiliaryUsageSink>,
     ) -> pantheon_providers::DistillClient {
         let aux = policy.auxiliary(&kind);
         let timeout_secs = aux.map(|a| a.timeout_secs).unwrap_or(60);
@@ -125,12 +164,28 @@ pub fn run_one_pass(data_dir: &Path, dry_run: bool) -> Result<PassResult, String
                 model: a.model.clone(),
             })
             .unwrap_or_else(|| policy.default.clone());
-        pantheon_providers::DistillClient::new(target, api_key).with_timeout_secs(timeout_secs)
+        pantheon_providers::DistillClient::new(target, api_key)
+            .with_timeout_secs(timeout_secs)
+            .with_usage_sink(usage_sink)
     }
+    let usage_sink: Arc<dyn pantheon_providers::model_event::AuxiliaryUsageSink> =
+        Arc::new(NightlyUsageSink {
+            data_dir: data_dir.to_path_buf(),
+        });
     let router = Router {
-        refine: client_for(&policy, AuxiliaryKind::Reflection, api_key.clone()),
-        distill: client_for(&policy, AuxiliaryKind::Consolidation, api_key.clone()),
-        repair: client_for(&policy, AuxiliaryKind::Repair, api_key),
+        refine: client_for(
+            &policy,
+            AuxiliaryKind::Reflection,
+            api_key.clone(),
+            Arc::clone(&usage_sink),
+        ),
+        distill: client_for(
+            &policy,
+            AuxiliaryKind::Consolidation,
+            api_key.clone(),
+            Arc::clone(&usage_sink),
+        ),
+        repair: client_for(&policy, AuxiliaryKind::Repair, api_key, usage_sink),
     };
 
     // Repair targets: production adapters over the MCP manager, the

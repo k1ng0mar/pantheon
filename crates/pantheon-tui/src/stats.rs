@@ -3,7 +3,9 @@
 //! Usage rows are persisted as `Event::UsageRecorded` (the provider-plane
 //! `Usage` event used to be dropped before reaching the ledger). This
 //! command folds them over a time window - default today - and breaks
-//! the totals down by model, by session (run), and by day.
+//! the totals down by model, by session (run), and by day. Usage measures
+//! provider work actually completed, so rewinding a turn hides its transcript
+//! but does not subtract the tokens or spend already incurred.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -197,6 +199,7 @@ pub fn render_human(r: &StatsReport) -> String {
         fmt_tokens(&r.totals),
         fmt_cost(r.totals.cost_usd, r.totals.priced_calls, r.totals.calls)
     ));
+    out.push_str("note: rewound turns remain included; rewinds do not refund provider usage\n");
     if r.totals.calls == 0 {
         out.push_str("no usage recorded in this window\n");
         return out;
