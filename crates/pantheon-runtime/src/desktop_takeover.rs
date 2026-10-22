@@ -37,12 +37,12 @@ pub const CLAIM_AFTER_MS: i64 = 30_000;
 /// computer-use tool result.
 pub const RELEASE_NOTE_TTL_MS: i64 = 10 * 60 * 1000;
 
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+/// Wall-clock milliseconds since the Unix epoch.
+///
+/// Public re-export of the canonical `pantheon_api::logging::now_ms`; this
+/// is part of the crate's public surface (the dashboard reads leases through
+/// it), so it stays a named re-export rather than a private copy.
+pub use pantheon_api::logging::now_ms;
 
 /// A fresh lease id: 128-bit randomness, hex. Single-purpose bearer for
 /// the takeover holder; never logged. (The dashboard token is the real

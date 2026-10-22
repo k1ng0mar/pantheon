@@ -2,6 +2,7 @@
 //! A frame carries `GenUiRef`; the client fetches bytes from the URL.
 //! Signing is std-only HMAC-SHA256 (compact local implementation) so no
 //! new crates are needed. Secrets come from env at serve time.
+use pantheon_api::logging::now_ms;
 use serde::{Deserialize, Serialize};
 /// Reference to a generated artifact (image, file, card bundle).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,13 +29,6 @@ pub fn valid_task_id(task_id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
 
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 // --- compact SHA-256 (FIPS 180-4), then HMAC over it. ~70 lines, std-only.
 fn sha256(msg: &[u8]) -> [u8; 32] {
     const K: [u32; 64] = [

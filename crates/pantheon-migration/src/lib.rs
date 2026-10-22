@@ -15,6 +15,7 @@
 //!    from the backup set. Archiving must never become a credential exfil path.
 
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::logging::now_ms;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -471,14 +472,6 @@ impl MigrationPlan {
             .filter(|i| i.kind == kind && matches!(i.action, Action::Import { .. }))
             .collect()
     }
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------

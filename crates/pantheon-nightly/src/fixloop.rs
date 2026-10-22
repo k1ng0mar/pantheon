@@ -31,9 +31,9 @@ use crate::gate::{gate, EvalRunner, EvalVerdict};
 use crate::propose::{Proposal, ProposalKind, ProposalStatus};
 use crate::replay::{replay_gate, ReplayRunner, ReplayStore, ReplayVerdict};
 use crate::{NightlyConfig, NightlyLlm};
+use pantheon_api::logging::now_ms;
 use pantheon_api::model::AuxiliaryModel;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// How many diagnose → revise → re-check iterations a failing proposal
 /// gets before escalation. Default 3.
@@ -90,13 +90,6 @@ pub(crate) fn record_escalation(data_dir: &Path, esc: &Escalation) -> Result<(),
     let text =
         serde_json::to_string_pretty(&all).map_err(|e| format!("encode escalations: {e}"))?;
     std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// Proposal kinds explicitly allowed to reach `Validated` with zero

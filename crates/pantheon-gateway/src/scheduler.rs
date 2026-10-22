@@ -11,6 +11,7 @@
 //! so the two can never double-fire an occurrence: the claim is an atomic
 //! first-wins INSERT, and a lost race simply skips.
 
+use pantheon_api::logging::now_ms;
 use pantheon_scheduler::{
     tick::PausedCheck, DurableClaimLedger, RunOutcome, ScheduleKind, TickDecision, TickDriver,
 };
@@ -76,13 +77,6 @@ pub struct TaskOutcome {
 /// `None` (the default) keeps the old behavior of dropping the
 /// completion channel.
 pub type OutcomeSink = Arc<dyn Fn(&str, RunOutcome, Option<TaskOutcome>) + Send + Sync>;
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// Short relative time for status lines: "now", "in 5m", "in 2h 5m",
 /// "in 3d 2h". Pure, so tests assert it without a clock.

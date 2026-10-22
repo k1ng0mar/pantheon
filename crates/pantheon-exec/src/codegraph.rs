@@ -14,9 +14,10 @@
 //! for type-aware navigation; this fills the gap when it is unavailable.
 
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::logging::now_ms;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 
@@ -151,7 +152,7 @@ impl CodeGraph {
                 .then(a.to_name.cmp(&b.to_name))
         });
         graph.edges.dedup();
-        graph.generated_ms = now_ms();
+        graph.generated_ms = now_ms() as u64;
         Ok(graph)
     }
 
@@ -166,7 +167,7 @@ impl CodeGraph {
         if Path::new(&self.root) != root || self.source_fingerprint.is_empty() {
             return false;
         }
-        let age_ms = now_ms().saturating_sub(self.generated_ms);
+        let age_ms = (now_ms() as u64).saturating_sub(self.generated_ms);
         if age_ms > 300_000 {
             return false;
         }
@@ -328,13 +329,6 @@ fn fingerprint_files(root: &Path, files: &[PathBuf]) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) -> Result<(), PantheonError> {

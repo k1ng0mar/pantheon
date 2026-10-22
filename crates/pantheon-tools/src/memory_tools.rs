@@ -13,20 +13,13 @@
 use crate::tools::{parse_args, ToolRegistry};
 use pantheon_api::capability::Capability;
 use pantheon_api::error::{Layer, PantheonError};
+use pantheon_api::logging::now_ms;
 use pantheon_api::message::ToolSchema;
 use pantheon_memory::{
     confirm_via, recall_via, write_via, LayerKind, MemoryBackend, Proposal, Provenance,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// Where tool events go. The runtime session implements this with its
 /// ledger supervisor; tests pass a thread-safe Vec.

@@ -9,7 +9,6 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use pantheon_api::error::PantheonError;
 use pantheon_api::events::Event;
@@ -372,12 +371,11 @@ fn json_str(s: &str) -> String {
 
 pub const DAY_MS: i64 = 86_400_000;
 
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+/// Public re-export of the canonical `pantheon_api::logging::now_ms`.
+///
+/// Part of this module's public surface (`crate::stats::now_ms` is read by
+/// the session), so it stays a named re-export rather than a private copy.
+pub use pantheon_api::logging::now_ms;
 
 /// Start of the UTC day containing `ts_ms`.
 pub fn day_start_ms(ts_ms: i64) -> i64 {

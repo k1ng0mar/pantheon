@@ -9,10 +9,18 @@
 //! `BlockKind::BgResult` block.
 
 use std::sync::{atomic::AtomicBool, Arc};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Max background tasks alive (queued + running) at once.
 pub const MAX_BG_TASKS: usize = 4;
+
+/// Wall-clock milliseconds since the Unix epoch, as `u64`.
+///
+/// Public: `crate::session::bg::now_ms` is read by the activity renderer.
+/// A thin widening wrapper over the canonical
+/// `pantheon_api::logging::now_ms` keeps that signature intact.
+pub fn now_ms() -> u64 {
+    pantheon_api::logging::now_ms() as u64
+}
 
 /// Max chars of the prompt shown in labels and lists.
 pub const LABEL_CHARS: usize = 64;
@@ -61,13 +69,6 @@ pub struct BgTask {
 /// Max captured tool steps per background task (timeline display cap).
 pub const MAX_BG_STEPS: usize = 12;
 
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Short, secret-free label for lists and result blocks: first line of
 /// the prompt, run through the log redactor, capped at `LABEL_CHARS`.
 pub fn task_label(prompt: &str) -> String {
@@ -91,7 +92,7 @@ impl BgTask {
             status: BgStatus::Queued,
             run_id,
             parent_run_id,
-            started_ms: now_ms(),
+            started_ms: now_ms() as u64,
             finished_ms: None,
             output: None,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -107,13 +108,13 @@ impl BgTask {
 
     pub fn finish(&mut self, output: String) {
         self.status = BgStatus::Done;
-        self.finished_ms = Some(now_ms());
+        self.finished_ms = Some(now_ms() as u64);
         self.output = Some(output);
     }
 
     pub fn fail(&mut self, err: String) {
         self.status = BgStatus::Failed;
-        self.finished_ms = Some(now_ms());
+        self.finished_ms = Some(now_ms() as u64);
         self.output = Some(err);
     }
 
@@ -160,7 +161,7 @@ pub fn status_segment(tasks: &[BgTask]) -> Option<String> {
     if n == 0 {
         None
     } else {
-        Some(format!("bg {n} {}", spinner_frame(now_ms())))
+        Some(format!("bg {n} {}", spinner_frame(now_ms() as u64)))
     }
 }
 

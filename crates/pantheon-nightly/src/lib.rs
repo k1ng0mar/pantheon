@@ -97,6 +97,7 @@ pub use signals::{
 pub use state::{state_path, NightlyState};
 
 use pantheon_api::error::PantheonError;
+use pantheon_api::logging::now_ms;
 use pantheon_api::model::ModelPolicy;
 use pantheon_api::provenance::TrustTier;
 use pantheon_memory::MemoryBackend;
@@ -211,14 +212,6 @@ pub struct PassResult {
     pub events: Vec<NightlyEvent>,
     /// Ideas minted by this pass (the Ideas page backend).
     pub ideas_minted: usize,
-}
-
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// Run the full nightly pass: scan → propose → gate → apply → repair → audit.

@@ -20,6 +20,7 @@
 
 use crate::durable::DurableClaimLedger;
 use crate::{Job, OverlapPolicy};
+use pantheon_api::logging::now_ms;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -29,13 +30,6 @@ use std::time::Duration;
 /// must be unique per take, so two crashes in the same millisecond (or
 /// two racing recoveries) cannot share a key.
 static DRAIN_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// Key for one occurrence of a job.
 ///

@@ -10,6 +10,7 @@
 //! as the fallback when the template is deleted or fails to render.
 
 use crate::schedule_self_heal::SelfHealer;
+use pantheon_api::logging::now_ms;
 use pantheon_gateway::schedule_delivery::{self, Deliver};
 use pantheon_gateway::scheduler::{ExecuteFn, FireOutcome, SchedulerLoop, TaskOutcome, TickReport};
 use pantheon_scheduler::{
@@ -857,13 +858,6 @@ pub struct RetentionReport {
     pub events_pruned: usize,
     pub search_chunks_pruned: usize,
     pub claims_pruned: usize,
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// Run the retention pass now: prune ledger events, the FTS search sidecar,
