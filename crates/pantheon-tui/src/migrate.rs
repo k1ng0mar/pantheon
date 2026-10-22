@@ -662,22 +662,30 @@ pub fn dispatch(verb: &str, args: &[String]) {
 /// calls with the full arg tail.
 pub fn cmd_migrate(args: &[String]) {
     let Some(verb) = args.first() else {
-        eprintln!("usage: pantheon migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp|claude> [path]");
-        eprintln!("  detect    which sources are installed here");
-        eprintln!("  show      every detected item and its disposition");
-        eprintln!("  plan      dry run: import / archive / skip (read-only)");
-        eprintln!("  apply     backup, import, validate (the only writer)");
-        eprintln!("  validate  re-check current targets, no writes");
-        eprintln!();
-        eprintln!("  item kinds for --kind:");
-        eprintln!("    skill, agent, rule, command, prompt, extension, persona, memory");
-        eprintln!("    provider, mcp, schedule, channel, session, credentials");
-        eprintln!();
-        eprintln!("  credentials are carried into <data_dir>/.env, pantheon's own key");
-        eprintln!("  store. An existing key is never overwritten; it is reported instead.");
-        eprintln!("  custom providers are written to <data_dir>/providers/imported.toml");
-        eprintln!("  for review; add --merge-providers to also merge them into config.toml.");
+        eprint!("{MIGRATE_USAGE}");
         std::process::exit(2);
     };
+    if matches!(verb.as_str(), "help" | "--help" | "-h") {
+        print!("{MIGRATE_USAGE}");
+        return;
+    }
     dispatch(verb, &args[1..]);
 }
+
+const MIGRATE_USAGE: &str = "\
+usage: pantheon setup migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp|claude> [path]
+  detect    which sources are installed here
+  show      every detected item and its disposition
+  plan      dry run: import / archive / skip (read-only)
+  apply     backup, import, validate (the only writer)
+  validate  re-check current targets, no writes
+
+  item kinds for --kind:
+    skill, agent, rule, command, prompt, extension, persona, memory
+    provider, mcp, schedule, channel, session, credentials
+
+  credentials are carried into <data_dir>/.env, pantheon's own key
+  store. An existing key is never overwritten; it is reported instead.
+  custom providers are written to <data_dir>/providers/imported.toml
+  for review; add --merge-providers to also merge them into config.toml.
+";

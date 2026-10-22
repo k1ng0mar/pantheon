@@ -2549,7 +2549,9 @@ version = "1.1.2"
 dependencies = [
  "pantheon-api",
  "pantheon-exec",
+ "pantheon-secrets",
  "pantheon-tools",
+ "rand 0.8.8",
  "serde",
  "serde_json",
  "ureq",

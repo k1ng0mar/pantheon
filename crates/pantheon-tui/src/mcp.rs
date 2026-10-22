@@ -11,6 +11,11 @@
 //! and asks for confirmation. The approval binds the server's name,
 //! reported version, and a content hash - any upgrade or change
 //! invalidates it and the operator is asked again.
+//!
+//! `resources`, `templates`, `read`, `prompts`, and `prompt` are the
+//! operator view of the same MCP resource/prompt surface the agent sees
+//! as `mcp.resources.*` / `mcp.prompts.*` tools. They connect lazily and
+//! pass through the same approval gate.
 
 use crate::config;
 use crate::terminal::data_dir;
@@ -35,6 +40,7 @@ pub(crate) fn manager_for(dd: &Path) -> McpManager {
     let mcfg =
         config::resolve_mcp_section(cfg.as_ref().and_then(|c| c.mcp.as_ref()), &declarations);
     let m = McpManager::new(dd.to_path_buf());
+    m.set_secrets(secrets.clone());
     m.set_env_resolver(std::sync::Arc::new(move |var: &str| {
         secrets
             .resolve(var)
@@ -122,6 +128,9 @@ fn decl_spec(s: &McpServer) -> McpServerSpec {
         enabled: s.enabled,
         timeout: std::time::Duration::from_secs(30),
         headers: Default::default(),
+        auth: pantheon_mcp::McpAuth::None,
+        scopes: Vec::new(),
+        client_id: None,
     }
 }
 
@@ -170,10 +179,94 @@ pub fn cmd_mcp(args: &[String]) {
         "approve" => approve(args),
         "enable" => set_decl_enabled(args, true),
         "disable" => set_decl_enabled(args, false),
+        "resources" => resources(args),
+        "templates" => templates(args),
+        "read" => read_resource(args),
+        "prompts" => prompts(args),
+        "prompt" => prompt(args),
+        "login" => oauth_login(args),
+        "logout" => oauth_logout(args),
+        "auth" => oauth_auth(args),
         other => {
             eprintln!("mcp: unknown verb '{other}'");
-            eprintln!("  usage: pantheon mcp <list|status|health|approve|enable|disable> [--json]");
+            eprintln!(
+                "  usage: pantheon mcp <list|status|health|approve|enable|disable|resources|templates|read|prompts|prompt|login|logout|auth> [--json]"
+            );
             std::process::exit(2);
+        }
+    }
+}
+
+fn oauth_login(args: &[String]) {
+    let name = need_name(args, "login");
+    let m = manager_for(&data_dir());
+    match m.login_oauth(&name) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("mcp login: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn oauth_logout(args: &[String]) {
+    let name = need_name(args, "logout");
+    let m = manager_for(&data_dir());
+    match m.logout_oauth(&name) {
+        Ok(()) => println!("mcp: forgot OAuth credentials for '{name}'"),
+        Err(e) => {
+            eprintln!("mcp logout: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn oauth_auth(args: &[String]) {
+    let name = need_name(args, "auth");
+    let dd = data_dir();
+    let cfg = config::Config::load_or_report(&dd);
+    let declarations = read_mcp_declarations(&dd);
+    let mcfg =
+        config::resolve_mcp_section(cfg.as_ref().and_then(|c| c.mcp.as_ref()), &declarations);
+    let Some(spec) = mcfg.servers.iter().find(|s| s.name == name) else {
+        eprintln!("mcp auth: no server named '{name}'");
+        std::process::exit(2);
+    };
+    let m = manager_for(&dd);
+    match m.oauth_status(&name) {
+        Ok((connected, scopes, expires_at)) => {
+            if has_json(args) {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "server": name,
+                        "auth": if spec.auth == pantheon_mcp::McpAuth::OAuth { "oauth" } else { "none" },
+                        "connected": connected,
+                        "scopes": scopes,
+                        "expires_at": expires_at,
+                    })
+                );
+            } else if spec.auth != pantheon_mcp::McpAuth::OAuth {
+                println!("{name}: auth = none");
+            } else if connected {
+                let expiry = expires_at
+                    .map(|s| format!(" (expires {s})"))
+                    .unwrap_or_default();
+                println!(
+                    "{name}: oauth connected{expiry}{}",
+                    if scopes.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" scopes={}", scopes.join(","))
+                    }
+                );
+            } else {
+                println!("{name}: oauth not connected (run `pantheon mcp login {name}`)");
+            }
+        }
+        Err(e) => {
+            eprintln!("mcp auth: {e}");
+            std::process::exit(1);
         }
     }
 }
@@ -362,6 +455,217 @@ fn health(args: &[String]) {
     println!("failures: {}", get("failures"));
     if !get("last_error").is_empty() && get("last_error") != "null" {
         println!("error:   {}", get("last_error"));
+    }
+}
+
+fn manager_live(dd: &Path) -> McpManager {
+    let m = manager_for(dd);
+    ensure_driver_spec(&m, dd);
+    m
+}
+
+/// `resources <server> [--json]`: list a server's static resources.
+fn resources(args: &[String]) {
+    let server = need_name(args, "resources");
+    let dd = data_dir();
+    let m = manager_live(&dd);
+    match m.list_resources(&server) {
+        Ok(items) => {
+            if has_json(args) {
+                match serde_json::to_string_pretty(&items) {
+                    Ok(s) => println!("{s}"),
+                    Err(e) => eprintln!("mcp: encode failed: {e}"),
+                }
+                return;
+            }
+            if items.is_empty() {
+                println!("no resources advertised by '{server}'");
+                return;
+            }
+            for r in items {
+                let mime = r.mime_type.as_deref().unwrap_or("-");
+                let title = r.title.as_deref().unwrap_or(&r.name);
+                println!("{:<40} {:<24} {}", r.uri, mime, title);
+                if let Some(d) = r.description {
+                    println!("  {d}");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("mcp: resources from '{server}' failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `templates <server> [--json]`: list parameterized resource templates.
+fn templates(args: &[String]) {
+    let server = need_name(args, "templates");
+    let dd = data_dir();
+    let m = manager_live(&dd);
+    match m.list_resource_templates(&server) {
+        Ok(items) => {
+            if has_json(args) {
+                match serde_json::to_string_pretty(&items) {
+                    Ok(s) => println!("{s}"),
+                    Err(e) => eprintln!("mcp: encode failed: {e}"),
+                }
+                return;
+            }
+            if items.is_empty() {
+                println!("no resource templates advertised by '{server}'");
+                return;
+            }
+            for t in items {
+                let mime = t.mime_type.as_deref().unwrap_or("-");
+                println!("{:<48} {:<24} {}", t.uri_template, mime, t.name);
+                if let Some(d) = t.description {
+                    println!("  {d}");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("mcp: templates from '{server}' failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `read <server> <uri> [--json]`: fetch one resource.
+fn read_resource(args: &[String]) {
+    let server = need_name(args, "read");
+    let Some(uri) = args.get(2) else {
+        eprintln!("mcp read: needs <server> <uri>");
+        std::process::exit(2);
+    };
+    let dd = data_dir();
+    let m = manager_live(&dd);
+    match m.read_resource(&server, uri) {
+        Ok(contents) => {
+            if has_json(args) {
+                match serde_json::to_string_pretty(&contents) {
+                    Ok(s) => println!("{s}"),
+                    Err(e) => eprintln!("mcp: encode failed: {e}"),
+                }
+                return;
+            }
+            for c in contents {
+                if let Some(text) = c.text {
+                    println!("{text}");
+                } else if let Some(blob) = c.blob {
+                    println!(
+                        "[{}] {} bytes of base64 data",
+                        c.mime_type.as_deref().unwrap_or("application/octet-stream"),
+                        blob.len()
+                    );
+                } else {
+                    println!("[{}] (empty resource)", c.uri);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("mcp: read '{uri}' from '{server}' failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `prompts <server> [--json]`: list prompt templates.
+fn prompts(args: &[String]) {
+    let server = need_name(args, "prompts");
+    let dd = data_dir();
+    let m = manager_live(&dd);
+    match m.list_prompts(&server) {
+        Ok(items) => {
+            if has_json(args) {
+                match serde_json::to_string_pretty(&items) {
+                    Ok(s) => println!("{s}"),
+                    Err(e) => eprintln!("mcp: encode failed: {e}"),
+                }
+                return;
+            }
+            if items.is_empty() {
+                println!("no prompts advertised by '{server}'");
+                return;
+            }
+            for p in items {
+                let required: Vec<String> = p
+                    .arguments
+                    .iter()
+                    .filter(|a| a.required)
+                    .map(|a| a.name.clone())
+                    .collect();
+                let suffix = if required.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (required: {})", required.join(", "))
+                };
+                println!("{}{}", p.name, suffix);
+                if let Some(d) = p.description {
+                    println!("  {d}");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("mcp: prompts from '{server}' failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `prompt <server> <name> [--arg key=value]... [--json]`: expand a prompt.
+fn prompt(args: &[String]) {
+    let server = need_name(args, "prompt");
+    let Some(name) = args.get(2) else {
+        eprintln!("mcp prompt: needs <server> <name> [--arg key=value]...");
+        std::process::exit(2);
+    };
+    let mut arguments = serde_json::Map::new();
+    let mut i = 3;
+    while i < args.len() {
+        if args[i] == "--arg" {
+            let Some(kv) = args.get(i + 1) else {
+                eprintln!("mcp prompt: --arg needs key=value");
+                std::process::exit(2);
+            };
+            let Some((k, v)) = kv.split_once('=') else {
+                eprintln!("mcp prompt: --arg needs key=value, got '{kv}'");
+                std::process::exit(2);
+            };
+            arguments.insert(k.to_string(), serde_json::Value::String(v.to_string()));
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    let dd = data_dir();
+    let m = manager_live(&dd);
+    match m.get_prompt(&server, name, &serde_json::Value::Object(arguments)) {
+        Ok(result) => {
+            if has_json(args) {
+                match serde_json::to_string_pretty(&result) {
+                    Ok(s) => println!("{s}"),
+                    Err(e) => eprintln!("mcp: encode failed: {e}"),
+                }
+                return;
+            }
+            if let Some(d) = result.description {
+                println!("{d}\n");
+            }
+            for msg in result.messages {
+                let text = msg
+                    .content
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| msg.content.to_string());
+                println!("[{}] {text}", msg.role);
+            }
+        }
+        Err(e) => {
+            eprintln!("mcp: prompt '{name}' from '{server}' failed: {e}");
+            std::process::exit(1);
+        }
     }
 }
 

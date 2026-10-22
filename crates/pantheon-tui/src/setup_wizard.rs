@@ -1511,6 +1511,9 @@ fn add_mcp_server(existing: &[(String, McpServerEntry)]) -> Option<(String, McpS
         enabled: true,
         timeout_secs: None,
         headers: HashMap::new(),
+        auth: None,
+        scopes: Vec::new(),
+        client_id: None,
     };
     match transport.as_str() {
         "stdio" => {
@@ -1696,6 +1699,9 @@ mod tests {
             enabled: false,
             timeout_secs: None,
             headers: HashMap::new(),
+            auth: None,
+            scopes: Vec::new(),
+            client_id: None,
         }
     }
 

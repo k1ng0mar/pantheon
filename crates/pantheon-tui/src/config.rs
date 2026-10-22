@@ -302,7 +302,9 @@ pub fn reflect_aux_model(
     // A [nightly.model] pin means "use this model for the whole nightly
     // pass" - it is the primary pin, and [reflect] is a finer-grained
     // override for the reflection step specifically.
-    let nightly = cfg.and_then(|c| c.nightly.as_ref()).and_then(|n| n.model.as_ref());
+    let nightly = cfg
+        .and_then(|c| c.nightly.as_ref())
+        .and_then(|n| n.model.as_ref());
     let section = cfg.and_then(|c| c.reflect.as_ref());
     let env_provider = std::env::var("PANTHEON_REFLECTION_PROVIDER")
         .ok()
@@ -355,7 +357,9 @@ pub fn consolidation_aux_model(
     // pin > [consolidation] > auto. The [nightly.model] pin is the
     // primary pin for the whole nightly pass; [consolidation] is a
     // finer-grained override for the consolidation step specifically.
-    let nightly = cfg.and_then(|c| c.nightly.as_ref()).and_then(|n| n.model.as_ref());
+    let nightly = cfg
+        .and_then(|c| c.nightly.as_ref())
+        .and_then(|n| n.model.as_ref());
     let section = cfg.and_then(|c| c.consolidation.as_ref());
     let env_provider = std::env::var("PANTHEON_CONSOLIDATION_PROVIDER")
         .ok()
@@ -1059,6 +1063,9 @@ pub fn resolve_mcp_section(
                 enabled: e.enabled,
                 timeout: Duration::from_secs(e.timeout_secs.filter(|&s| s > 0).unwrap_or(30)),
                 headers: resolve_headers(&e.headers),
+                auth: pantheon_mcp::McpAuth::parse(e.auth.as_deref()).unwrap_or_default(),
+                scopes: e.scopes.clone(),
+                client_id: e.client_id.clone(),
             });
         }
     } else if !declarations.is_empty() {
@@ -1111,6 +1118,9 @@ pub fn resolve_mcp_section(
                 enabled: d.enabled,
                 timeout: Duration::from_secs(30),
                 headers: Default::default(),
+                auth: pantheon_mcp::McpAuth::None,
+                scopes: Vec::new(),
+                client_id: None,
             });
         }
     }

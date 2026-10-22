@@ -5,22 +5,14 @@
 //! [`SessionSummary::to_plain_text`] for printing after the alternate
 //! screen is left (the quit path prints to the restored terminal).
 //!
-//! Wiring (pending the concurrent fix pass, which owns `session.rs`): in
-//! `session.rs`, in the function that calls `tui_loop` (~line 5404),
-//! after `execute!(stdout, LeaveAlternateScreen, DisableMouseCapture)?;`,
-//! add:
-//!
-//! ```ignore
-//! let summary = crate::session_summary::SessionSummary::from_state(&state);
-//! print!("{}", summary.to_plain_text());
-//! ```
-//!
-//! Counts come from the transcript blocks: user messages, assistant
-//! texts, and tool calls. The `Messages:` total folds all three in, with
-//! the breakdown naming user messages and tool calls.
+//! Message and tool-call totals use the ledger when available, because
+//! resumed views do not rebuild every historical tool card and can render
+//! saved tool results as assistant blocks. The `Messages:` total folds all
+//! three in, with the breakdown naming user messages and tool calls.
 
 use std::time::Duration;
 
+use pantheon_api::events::Event;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -42,6 +34,44 @@ pub fn count_blocks(blocks: &[TranscriptBlock]) -> (usize, usize, usize) {
         }
     }
     (user, assistant, tools)
+}
+
+/// Count the effective run history. Ledger replay applies turn rewinds, so
+/// hidden turns stay excluded just as they do in the resumed transcript.
+pub fn count_entries(entries: &[pantheon_storage::LedgerEntry]) -> (usize, usize, usize) {
+    let mut raw_user_messages = 0;
+    let mut persisted_user_messages = 0;
+    let mut assistant = 0;
+    let mut tool_call_ids = std::collections::BTreeSet::new();
+    for entry in entries {
+        match &entry.event {
+            Event::UserMessage { .. } => raw_user_messages += 1,
+            Event::AssistantMessage { message, .. } => {
+                match message.role {
+                    pantheon_api::message::Role::User => persisted_user_messages += 1,
+                    pantheon_api::message::Role::Assistant
+                        if !message.content.trim().is_empty() =>
+                    {
+                        assistant += 1;
+                    }
+                    _ => {}
+                }
+                tool_call_ids.extend(message.tool_calls.iter().map(|call| call.id.clone()));
+            }
+            Event::ToolStarted { call_id, .. } => {
+                tool_call_ids.insert(call_id.clone());
+            }
+            _ => {}
+        }
+    }
+    // Live turns record both the raw retry prompt and its replayable message;
+    // imported sessions only have the replayable row. Count the larger side
+    // so normal turns are not doubled and imports are not omitted.
+    (
+        raw_user_messages.max(persisted_user_messages),
+        assistant,
+        tool_call_ids.len(),
+    )
 }
 
 /// `1h 31m 21s`; `4m 30s`; `45s`.
@@ -67,8 +97,7 @@ pub struct SessionSummary {
 }
 
 impl SessionSummary {
-    /// Build from live TUI state at shutdown. `start_time.elapsed()` is
-    /// the wall-clock session duration.
+    /// Build from visible TUI state as a fallback if ledger replay fails.
     pub fn from_state(state: &TuiState) -> Self {
         let (user_messages, assistant_messages, tool_calls) = count_blocks(&state.blocks);
         Self {
@@ -79,6 +108,35 @@ impl SessionSummary {
             assistant_messages,
             tool_calls,
         }
+    }
+
+    /// Build from durable run counts and live TUI metadata.
+    pub fn from_state_with_counts(
+        state: &TuiState,
+        (user_messages, assistant_messages, tool_calls): (usize, usize, usize),
+    ) -> Self {
+        let mut summary = Self::from_state(state);
+        summary.user_messages = user_messages;
+        summary.assistant_messages = assistant_messages;
+        summary.tool_calls = tool_calls;
+        summary
+    }
+
+    /// Build the goodbye summary from the effective durable history. The
+    /// elapsed time begins at the first retained ledger event, so resuming a
+    /// run does not reset its displayed duration to the current TUI visit.
+    pub fn from_state_with_entries(
+        state: &TuiState,
+        entries: &[pantheon_storage::LedgerEntry],
+    ) -> Self {
+        let mut summary = Self::from_state_with_counts(state, count_entries(entries));
+        if let Some(first_event_ms) = entries.iter().map(|e| e.ts_ms).filter(|ts| *ts > 0).min() {
+            let elapsed_ms = pantheon_api::logging::now_ms()
+                .saturating_sub(first_event_ms)
+                .max(0) as u64;
+            summary.duration = Duration::from_millis(elapsed_ms);
+        }
+        summary
     }
 
     pub fn total_messages(&self) -> usize {
@@ -99,7 +157,7 @@ impl SessionSummary {
     /// Styled lines for in-TUI rendering. Labels dim, values body text;
     /// the resume command in the code color; the "Resume" header amber.
     pub fn lines(&self, th: &Theme) -> Vec<Line<'static>> {
-        let label = |t: &str| Span::styled(format!("{t:<11}"), Style::default().fg(th.dim));
+        let label = |t: &str| Span::styled(format!("{t:<16}"), Style::default().fg(th.dim));
         let value = |t: String| Span::styled(t, Style::default().fg(th.body));
         vec![
             Line::from(Span::styled(
@@ -112,6 +170,14 @@ impl SessionSummary {
                 format!("  pantheon --resume {}", self.session_id),
                 Style::default().fg(th.code),
             )),
+            Line::from(Span::styled(
+                format!("  pantheon -r {} \"your next message\"", self.session_id),
+                Style::default().fg(th.code),
+            )),
+            Line::from(Span::styled(
+                "  The conversation transcript will reopen with the session.",
+                Style::default().fg(th.dim),
+            )),
             Line::from(""),
             Line::from(vec![label("Session:"), value(self.session_id.clone())]),
             Line::from(vec![
@@ -123,6 +189,11 @@ impl SessionSummary {
                 value(fmt_session_duration(self.duration)),
             ]),
             Line::from(vec![label("Messages:"), value(self.messages_value())]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Goodbye. Your session is saved.",
+                Style::default().fg(th.dim),
+            )),
         ]
     }
 
@@ -131,7 +202,8 @@ impl SessionSummary {
     pub fn to_plain_text(&self) -> String {
         let title = self.title.as_deref().unwrap_or("untitled");
         format!(
-            "Resume this session with:\n  pantheon --resume {}\n\n{:<11}{}\n{:<11}{}\n{:<11}{}\n{:<11}{}\n",
+            "Resume this session with:\n  pantheon --resume {}\n  pantheon -r {} \"your next message\"\n  The conversation transcript will reopen with the session.\n\n{:<16}{}\n{:<16}{}\n{:<16}{}\n{:<16}{}\n\nGoodbye. Your session is saved.\n",
+            self.session_id,
             self.session_id,
             "Session:",
             self.session_id,
@@ -188,9 +260,9 @@ mod tests {
         let t = summary().to_plain_text();
         assert!(t.contains("Resume this session with:"), "got:\n{t}");
         assert!(t.contains("pantheon --resume abc123"), "got:\n{t}");
-        assert!(t.contains("Duration:  1h 31m 21s"), "got:\n{t}");
+        assert!(t.contains("Duration:       1h 31m 21s"), "got:\n{t}");
         assert!(
-            t.contains("Messages:  163 (3 user, 158 tool calls)"),
+            t.contains("Messages:       163 (3 user, 158 tool calls)"),
             "got:\n{t}"
         );
     }
@@ -207,7 +279,7 @@ mod tests {
     fn untitled_when_no_title() {
         let mut s = summary();
         s.title = None;
-        assert!(s.to_plain_text().contains("Title:     untitled"));
+        assert!(s.to_plain_text().contains("Title:          untitled"));
     }
 
     #[test]

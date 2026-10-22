@@ -1425,7 +1425,11 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
             let choice = ModelChoice {
                 provider: provider_id.clone(),
                 model: model_rows[model_idx].id.clone(),
-                base_url: if is_custom { Some(base_url.clone()) } else { None },
+                base_url: if is_custom {
+                    Some(base_url.clone())
+                } else {
+                    None
+                },
                 api_mode,
                 key_env: key_env.clone(),
                 raw_keys: raw_keys.clone(),
@@ -1449,7 +1453,10 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
                     if models.iter().any(|m| m == &test_model) {
                         println!("  connection ok ({test_model} found)");
                     } else {
-                        println!("  connection ok ({test_model} not in {} models)", models.len());
+                        println!(
+                            "  connection ok ({test_model} not in {} models)",
+                            models.len()
+                        );
                     }
                 }
                 Err(e) => eprintln!("  connection failed: {e}"),

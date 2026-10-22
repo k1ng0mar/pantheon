@@ -104,7 +104,7 @@ pub fn config_state(data_dir: &Path) -> ConfigState {
 pub fn run() {
     let data_dir = crate::terminal::data_dir();
     match Entry::resolve_state(config_state(&data_dir), None) {
-        Entry::Session { resume } => launch(data_dir, resume),
+        Entry::Session { resume } => launch(data_dir, resume, None),
         Entry::Setup { resume } => {
             // Setup owns the terminal for the whole wizard. It is a TUI
             // screen sequence, not a prompt loop, so there is no text mode
@@ -115,7 +115,7 @@ pub fn run() {
             // with no model would look like a broken agent rather than an
             // unfinished install.
             if is_configured(&data_dir) {
-                launch(data_dir, resume);
+                launch(data_dir, resume, None);
             } else {
                 eprintln!("pantheon: setup did not finish, so there is no session to open.");
                 eprintln!("pantheon: run `pantheon setup` when you are ready.");
@@ -152,14 +152,16 @@ pub fn run() {
 }
 
 /// `pantheon --resume [run_id]`. Same product, same terminal, same rules.
-pub fn run_with_resume(resume: Option<String>) {
+/// A resumed session may also submit its first message up front, so the
+/// prompt travels with the resume instead of needing a second keystroke.
+pub fn run_with_resume_and_prompt(resume: Option<String>, prompt: Option<String>) {
     let data_dir = crate::terminal::data_dir();
     if !is_configured(&data_dir) {
         eprintln!("pantheon: nothing is configured yet, so there is no session to resume.");
         eprintln!("pantheon: run `pantheon setup` first.");
         std::process::exit(1);
     }
-    launch(data_dir, resume);
+    launch(data_dir, resume, prompt);
 }
 
 /// `pantheon --profile <name>` (also `-p`, `--agent`): open the TUI as the
@@ -257,7 +259,7 @@ fn check_local_provider(data_dir: &std::path::Path) {
 /// and then hands the panic to the default hook for the backtrace. An error
 /// return already restores via the session's own cleanup; the hook only fires
 /// on a panic, which would otherwise skip it entirely.
-fn launch(data_dir: std::path::PathBuf, resume: Option<String>) -> ! {
+fn launch(data_dir: std::path::PathBuf, resume: Option<String>, prompt: Option<String>) -> ! {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         eprintln!("pantheon: the terminal interface needs a terminal on stdin and stdout.");
         std::process::exit(1);
@@ -274,7 +276,7 @@ fn launch(data_dir: std::path::PathBuf, resume: Option<String>) -> ! {
         }
         default_hook(info);
     }));
-    let result = crate::session::run_tui_session_with(data_dir, resume);
+    let result = crate::session::run_tui_session_with(data_dir, resume, prompt);
     if let Err(e) = result {
         // The TUI should have restored the screen, but a restore that itself
         // failed is exactly the case where the user needs to be told rather

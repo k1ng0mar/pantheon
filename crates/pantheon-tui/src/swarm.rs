@@ -88,9 +88,8 @@ pub fn load_all_swarms(data_dir: &Path) -> Vec<SwarmRecord> {
     shared.into_iter().map(from_shared).collect()
 }
 
-/// Bridge to the shared manifest: drops the CLI-only `created_ms` (the
-/// orchestrator never sets it) and keeps `delivery` (the CLI sets it; the
-/// orchestrator leaves it `None`, which is what `Option` deserializes).
+/// Bridge to the shared manifest. `created_ms` is shared so both writers
+/// preserve ordering; `delivery` is the CLI's spawn-path field.
 fn to_shared(rec: &SwarmRecord) -> pantheon_runtime::swarm_persist::SwarmManifest {
     pantheon_runtime::swarm_persist::SwarmManifest {
         swarm_id: rec.swarm_id.clone(),
@@ -107,14 +106,12 @@ fn to_shared(rec: &SwarmRecord) -> pantheon_runtime::swarm_persist::SwarmManifes
             })
             .collect(),
         delivery: rec.delivery.clone(),
+        created_ms: rec.created_ms,
         status: rec.status.clone(),
     }
 }
 
-/// Bridge from the shared manifest to the CLI `SwarmRecord`. The
-/// orchestrator leaves `delivery` unset (deserializes to `None`) and never
-/// carries a `created_ms`, so it defaults to 0 here. CLI-written files
-/// round-trip through the shared shape with `delivery` preserved.
+/// Bridge from the shared manifest to the CLI `SwarmRecord`.
 fn from_shared(m: pantheon_runtime::swarm_persist::SwarmManifest) -> SwarmRecord {
     SwarmRecord {
         swarm_id: m.swarm_id,
@@ -131,7 +128,7 @@ fn from_shared(m: pantheon_runtime::swarm_persist::SwarmManifest) -> SwarmRecord
             })
             .collect(),
         delivery: m.delivery,
-        created_ms: 0,
+        created_ms: m.created_ms,
         status: m.status,
     }
 }
@@ -618,4 +615,33 @@ fn reconstruct_from_ledger(sup: &Supervisor, id: &str) -> Option<SwarmRecord> {
         created_ms: 0,
         status: String::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn created_ms_survives_the_shared_manifest_bridge() {
+        let rec = SwarmRecord {
+            swarm_id: "sw_test".to_string(),
+            task: "t".to_string(),
+            roles: vec!["r".to_string()],
+            agents: vec![SwarmAgent {
+                label: "sw_test:r:1".to_string(),
+                run_id: "run_1".to_string(),
+                role: "r".to_string(),
+                status: "ok".to_string(),
+            }],
+            delivery: Some("telegram".to_string()),
+            created_ms: 42,
+            status: "complete".to_string(),
+        };
+        let shared = to_shared(&rec);
+        assert_eq!(shared.created_ms, 42);
+        assert_eq!(shared.delivery.as_deref(), Some("telegram"));
+        let back = from_shared(shared);
+        assert_eq!(back.created_ms, 42);
+        assert_eq!(back.delivery.as_deref(), Some("telegram"));
+    }
 }

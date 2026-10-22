@@ -1,4 +1,5 @@
 //! pantheon terminal: thin dispatch over the runtime. No business logic here.
+use crate::cli_surface::{Invocation, ALL_VERBS, PUBLIC_COMMANDS, PUBLIC_VERBS};
 use pantheon_api::capability::Policy;
 use pantheon_api::events::Event;
 use pantheon_extensions::{ExtensionManager, Hook, RunnerConfig};
@@ -9,13 +10,23 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 pub fn data_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("PANTHEON_DATA_DIR") {
+    if let Some(d) = std::env::var_os("PANTHEON_DATA_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
-    if let Ok(h) = std::env::var("HOME") {
+    if let Some(h) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         return PathBuf::from(h).join(".pantheon");
     }
-    PathBuf::from(".pantheon-data")
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
+        return PathBuf::from(xdg).join("pantheon");
+    }
+    let user = std::env::var_os("USER")
+        .or_else(|| std::env::var_os("USERNAME"))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "default".into());
+    std::env::temp_dir()
+        .join("pantheon")
+        .join(user)
+        .join(".pantheon")
 }
 /// Report a fatal error and exit. Every user-reachable failure path goes
 /// through here so the process never panics on bad state.
@@ -216,12 +227,6 @@ pub(crate) fn print_json<T: serde::Serialize>(label: &str, v: &T) {
     }
 }
 
-/// `pantheon --help`. Grouped by what a user is trying to do, because the
-/// flat verb list was 29 lines of equal weight with no way to tell the two
-/// commands you need daily from the six you install once.
-/// `pantheon --help`. Grouped by what a user is trying to do, because a
-/// flat verb list gives the two commands you need daily the same weight as
-/// the six you install once.
 /// Run a real model turn and hand the answer to a delivery target.
 ///
 /// `--deliver session` is the default and just prints. A channel name means
@@ -335,85 +340,21 @@ pub(crate) fn outcome_text(outcome: &pantheon_agent::LoopOutcome) -> String {
     }
 }
 
-fn usage() -> String {
+/// Canonical `pantheon --help`: the twelve nouns a user needs, with the
+/// historic top-level verbs deliberately left out of the advertisement.
+pub(crate) fn usage() -> String {
     let mut s = String::new();
     s.push_str("pantheon - a durable agent runtime\n\n");
     s.push_str("USAGE\n");
     s.push_str("  pantheon                      open a session (the terminal interface)\n");
-    s.push_str("  pantheon --help | --version\n\n");
+    s.push_str("  pantheon --help | --version\n");
+    s.push_str("  pantheon -r <session-id> [message]  resume and continue a session\n\n");
 
-    s.push_str("TALK TO IT\n");
-    s.push_str("  run  --taskID <id> [--say TEXT] [--fail CODE] [--ext]\n");
-    s.push_str("        [--deliver session|telegram|discord]\n");
-    s.push_str("        run a task by id; delivery defaults to an in-session turn\n");
-    s.push_str("  send --to telegram|discord|mobile|home \"message\"\n");
-    s.push_str("        push a message to a gateway surface\n\n");
-
-    s.push_str("INSPECT A RUN\n");
-    s.push_str("  runs                         list runs and their status\n");
-    s.push_str("  runs <run_id>                full event trace for one run\n");
-    s.push_str("  logs [agent|errors|gateway]  read the log files (-n, -f, --level)\n");
-    s.push_str("  audit <run_id> [OUT.jsonl]   sequence-validated JSONL trajectory\n");
-    s.push_str("  stats [--week|--month|--from D|--to D] [--json]\n");
-    s.push_str("        usage by model, project, session, day\n\n");
-
-    s.push_str("SET UP\n");
-    s.push_str("  setup                         wizard: API key, default model, policy\n");
-    s.push_str("  init                          install the always-on gateway service\n");
-    s.push_str("                                (chat surfaces + scheduled tasks), idempotently\n");
-    s.push_str("  update [--check] [--version TAG]  replace this binary with the latest release\n");
-    s.push_str("  model [--list] [--auxiliary KIND]        provider picker, keys -> .env\n");
-    s.push_str("  provider <add|list|remove>   custom-endpoint registry\n");
-    s.push_str("  config <set|get|edit|path>  read and write config.toml values\n");
-    s.push_str("  providers                    list cataloged providers and models\n");
-    s.push_str("  fallback <add|list|remove>   ordered provider/model fallback chain\n");
-    s.push_str("  doctor [--ping] [<plugin_dir>]  system preflight (or per-plugin)\n");
-    s.push_str(
-        "  repair [--dry-run]              find and fix anything wrong with this install;\n",
-    );
-    s.push_str("                                --dry-run reports without changing anything.\n");
-    s.push_str("                                (pantheon doctor is diagnose-only)\n");
-    s.push_str("  reset [--config|--state|--everything] [--yes]\n");
-    s.push_str("  backup [--list] [--restore DIR --yes]\n");
-    s.push_str("        atomic SQLite snapshots into backups/<UTC-timestamp>/\n");
-    s.push_str("  uninstall [--yes] [--include-secrets]\n");
-    s.push_str("        remove config + data (keeps .env unless --include-secrets)\n\n");
-
-    s.push_str("EXTEND\n");
-    s.push_str("  skills list|import <name>|doctor        SKILL.md skills\n");
-    s.push_str("  plugins list|install|enable|disable     capability plugins\n");
-    s.push_str("extensions [approve <name>|revoke <name>|pending|list]\n");
-    s.push_str("                                manage extension approvals\n");
-    s.push_str("  hook <name> [--session S] [--platform P]  fire a hook\n");
-    s.push_str("  mcp list [--json]             MCP servers a migration declared\n");
-    s.push_str("  migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp> [path]\n");
-    s.push_str("           [--kind K] [--json] [--yes] [--merge-providers]\n\n");
-
-    s.push_str("MEMORY\n");
-    s.push_str("  memory import|export|sync|recall|list|confirm|put|vault|backend\n");
-    s.push_str("  reflect [--dry-run] [on|off|status|log|pending] [--approve ID] [--deny ID]\n");
-    s.push_str("        ledger-native self-improvement: propose, eval-gate, approve, apply\n");
-    s.push_str("  consolidate [--dry-run] [status]\n");
-    s.push_str("        stage/weigh/promote repeated facts into long-term memory\n");
-    s.push_str(
-        "  nightly [--dry-run] [on|off|status|log|pending|escalations|report|replay-tasks]\n",
-    );
-    s.push_str("        [--approve ID] [--deny ID]  nightly pass: repair, memory, tasks\n\n");
-
-    s.push_str("RUN UNATTENDED\n");
-    s.push_str("  schedule <task> --30m | list|pause|resume|cancel|run <id>\n");
-    s.push_str("  swarm <N> \"task\" [--roles a,b] [--delivery telegram|discord]\n");
-    s.push_str("  swarm status [<id>] | list   swarm state + history\n");
-    s.push_str("  gateway [run|start|stop|restart|status]\n");
-    s.push_str("        always-on service: chat surfaces + scheduled tasks\n");
-    s.push_str("  serve [--port N] [--host H]   AG-UI SSE + RPC server\n");
-    s.push_str("  dashboard [--port 7171] [--host 127.0.0.1] [--open]\n");
-    s.push_str("        web control plane: runs, approvals, schedule, config, keys,\n");
-    s.push_str("        logs, skills/MCP, gateway. Per-instance token auth; stays on\n");
-    s.push_str("        localhost unless you put a reverse proxy with real auth in front.\n\n");
-
-    s.push_str("WORKFLOWS\n");
-    s.push_str("  pipeline <sub>                durable 6-stage workflow with human gates\n\n");
+    s.push_str("COMMANDS\n");
+    for (verb, description) in PUBLIC_COMMANDS {
+        s.push_str(&format!("  {verb:<12} {description}\n"));
+    }
+    s.push_str("\n  pantheon <command> --help    details for a command\n\n");
 
     s.push_str("APPROVALS\n");
     s.push_str("  Approvals are answered in the session that raised them. The terminal\n");
@@ -421,48 +362,9 @@ fn usage() -> String {
     s.push_str("  also be answered out of band:\n");
     s.push_str("    pantheon run --taskID <id> --grant <scope>   allow one exact call\n");
     s.push_str("    pantheon run --taskID <id> --deny  <scope>   refuse it\n");
+    s.push_str("\nLegacy top-level spellings (mcp, worktree, runs, ...) still work.\n");
     s
 }
-
-/// OMP RESERVED_TOP_LEVEL_WORDS guard: every top-level dispatch target,
-/// kept in sync with the `match args[1]` arms in `main`.
-const KNOWN_VERBS: &[&str] = &[
-    "audit",
-    "backup",
-    "config",
-    "consolidate",
-    "dashboard",
-    "doctor",
-    "extensions",
-    "fallback",
-    "gateway",
-    "hook",
-    "init",
-    "logs",
-    "mcp",
-    "memory",
-    "migrate",
-    "model",
-    "nightly",
-    "pipeline",
-    "plugins",
-    "provider",
-    "providers",
-    "reflect",
-    "repair",
-    "reset",
-    "run",
-    "runs",
-    "schedule",
-    "send",
-    "serve",
-    "setup",
-    "skills",
-    "stats",
-    "swarm",
-    "uninstall",
-    "update",
-];
 
 /// Classification of argv[1] before it can become a prompt or session input.
 #[derive(Debug, PartialEq, Eq)]
@@ -482,7 +384,7 @@ fn is_flag_arg(s: &str) -> bool {
 }
 
 fn is_known_verb(s: &str) -> bool {
-    KNOWN_VERBS.contains(&s)
+    ALL_VERBS.contains(&s)
 }
 
 fn classify_first_arg(argv: &[String]) -> FirstArg {
@@ -566,7 +468,7 @@ fn runs_help() {
 /// Closest known verbs to `unknown`, nearest first (up to `max_n`).
 /// Only candidates within edit distance 3 are returned.
 fn suggest_verbs(unknown: &str, max_n: usize) -> Vec<&'static str> {
-    let mut scored: Vec<(usize, &'static str)> = KNOWN_VERBS
+    let mut scored: Vec<(usize, &'static str)> = PUBLIC_VERBS
         .iter()
         .map(|&v| (levenshtein(unknown, v), v))
         .collect();
@@ -590,7 +492,7 @@ fn reject_unknown_verb(unknown: &str) -> ! {
             .join(", ");
         eprintln!("did you mean {list}?");
     }
-    // Full verb list (usage header names every verb).
+    // Canonical surface; hidden legacy aliases are intentionally omitted.
     eprint!("{}", usage());
     std::process::exit(2);
 }
@@ -729,6 +631,23 @@ fn resolve_say_stdin(say: Option<String>) -> Option<String> {
 
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
+    // Canonical namespaces are rewritten to the legacy argv shape before
+    // any command implementation sees them. Help and bad subcommands exit
+    // here, before config/secret initialization has side effects.
+    let args = match crate::cli_surface::normalize(&args) {
+        Invocation::Command(args) => args,
+        Invocation::Help(help) => {
+            print!("{help}");
+            return;
+        }
+        Invocation::Unknown { group, sub } => {
+            eprintln!("pantheon: unknown {group} subcommand '{sub}'");
+            if let Some(help) = crate::cli_surface::group_help(group) {
+                eprint!("{help}");
+            }
+            std::process::exit(2);
+        }
+    };
     // The pantheon folder's own key store: `<data_dir>/.env` fills in any
     // process env var that is not already set (exports always win).
     // Custom endpoints from config are registered before any verb runs.
@@ -756,11 +675,16 @@ pub fn run() {
         crate::entry::run();
         return;
     }
-    // `pantheon --resume [id]` (or `pantheon --resume` with no id) jumps
-    // straight into a session on a specific run.
-    if args.len() >= 2 && args[1] == "--resume" {
+    // `-r` is the short form of `--resume`. Remaining argv words form an
+    // optional continuation message, allowing a quoted string or shell words.
+    if args.len() >= 2 && matches!(args[1].as_str(), "--resume" | "-r") {
         let resume_id: Option<String> = args.get(2).cloned();
-        crate::entry::run_with_resume(resume_id);
+        let prompt = if args.len() > 3 {
+            Some(args[3..].join(" "))
+        } else {
+            None
+        };
+        crate::entry::run_with_resume_and_prompt(resume_id, prompt);
         return;
     }
     // `pantheon --profile <name>` (also `-p`, `--agent <name>`): open the
@@ -958,7 +882,7 @@ pub fn run() {
                                 source: "cli".into(),
                                 origin: "user".into(),
                                 trust: pantheon_api::provenance::TrustTier::User,
-                                recorded_at_ms: 0,
+                                recorded_at_ms: pantheon_api::logging::now_ms(),
                             },
                         },
                         4096,
@@ -970,13 +894,8 @@ pub fn run() {
                     println!("stored {}", record.key);
                 }
                 "vault" => {
-                    let vault_dir = std::env::var("PANTHEON_VAULT_DIR")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|_| {
-                            let home =
-                                std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".into());
-                            PathBuf::from(home).join("vault")
-                        });
+                    let vault_dir =
+                        pantheon_tools::vault_tools::VaultToolOptions::default().vault_dir;
                     let mut reg = pantheon_tools::tools::ToolRegistry::new();
                     pantheon_tools::vault_tools::register_vault_tools(
                         &mut reg,
@@ -1549,10 +1468,7 @@ timeout_ms = 5000
                     match pending {
                         Some(p) => {
                             match pantheon_api::approval::record_approval_for(
-                                &ext_dir,
-                                &p.name,
-                                &p.version,
-                                &p.dir,
+                                &ext_dir, &p.name, &p.version, &p.dir,
                             ) {
                                 Ok(_) => println!("approved {name} (v{})", p.version),
                                 Err(e) => {
@@ -1704,6 +1620,12 @@ timeout_ms = 5000
         }
         "pipeline" => {
             crate::pipeline::cmd_pipeline(&args);
+        }
+        "worktree" => {
+            crate::worktree::cmd_worktree(&args[2..]);
+        }
+        "codebase" => {
+            crate::codebase::cmd_codebase(&args[2..]);
         }
         "providers" => {
             // List the providers a user can choose, plus the custom-provider
