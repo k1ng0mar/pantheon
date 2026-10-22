@@ -37,7 +37,7 @@ pub mod desktop;
 mod env;
 mod experts;
 mod ideas;
-mod link_preview;
+pub mod link_preview;
 mod logins;
 mod logs;
 mod mcp;

@@ -50,7 +50,10 @@ fn fail(status: u16, code: &'static str, msg: impl Into<String>) -> PreviewError
 /// link-local, unspecified, multicast, CGNAT (100.64.0.0/10), and IPv6
 /// unique-local (fc00::/7) - the ranges std's helpers don't cover are
 /// checked by hand.
-fn is_public_ip(ip: &IpAddr) -> bool {
+///
+/// Public so the behavioral suite in `eval/tests/link_preview_guard.rs` can
+/// pin the rejection set; this is the SSRF boundary, not an internal detail.
+pub fn is_public_ip(ip: &IpAddr) -> bool {
     if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
         return false;
     }
@@ -84,7 +87,10 @@ fn is_public_ip(ip: &IpAddr) -> bool {
 
 /// SSRF guard: the URL's host must be http(s) with no credentials, and
 /// every resolved IP must be public. Returns the parsed URL.
-fn guard_url(raw: &str) -> Result<Url, PreviewError> {
+///
+/// Public so the behavioral suite in `eval/tests/link_preview_guard.rs` can
+/// exercise the exact rejection set this boundary enforces.
+pub fn guard_url(raw: &str) -> Result<Url, PreviewError> {
     let url = Url::parse(raw)
         .map_err(|_| fail(422, "LINK_BAD_URL", "url is not a valid absolute URL"))?;
     match url.scheme() {
@@ -107,8 +113,17 @@ fn guard_url(raw: &str) -> Result<Url, PreviewError> {
     let host = url
         .host_str()
         .ok_or_else(|| fail(422, "LINK_BAD_URL", "URL has no host"))?;
-    // Literal IP in the host: check it directly.
-    if let Ok(ip) = host.parse::<IpAddr>() {
+    // Literal IP in the host: check it directly. `host_str()` brackets IPv6
+    // literals (`"[::1]"`), which `IpAddr::parse` rejects, so unwrap the
+    // brackets first - otherwise every IPv6 literal silently skips this
+    // branch and falls through to the DNS path, where it is rejected only
+    // because a bracketed host does not resolve. That made the guard's
+    // literal check a no-op for the entire IPv6 space.
+    let ip_candidate = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = ip_candidate.parse::<IpAddr>() {
         if !is_public_ip(&ip) {
             return Err(fail(422, "LINK_SSRF", "URL resolves to a non-public IP"));
         }
