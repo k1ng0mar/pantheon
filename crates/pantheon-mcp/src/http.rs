@@ -20,9 +20,10 @@
 //! `shutdown` it can linger until the stream agent's idle timeout (one
 //! hour) or process exit. Request pairing is unaffected.
 
+use crate::client::ElicitationHandler;
 use crate::{
-    classify, McpConn, McpError, McpToolDef, Wire, MCP_PROTOCOL_VERSION,
-    SUPPORTED_PROTOCOL_VERSIONS,
+    classify, McpConn, McpError, McpPrompt, McpPromptResult, McpResource, McpResourceContent,
+    McpResourceTemplate, McpToolDef, Wire, MCP_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS,
 };
 use serde_json::Value;
 use std::io::BufRead;
@@ -157,6 +158,37 @@ enum StreamMsg {
     Error(String),
 }
 
+/// Build the JSON-RPC response to one server-initiated request. Only
+/// `elicitation/create` is implemented; everything else is a clean
+/// method-not-found so a misbehaving server cannot wedge a request.
+fn server_request_response(
+    handler: Option<&ElicitationHandler>,
+    server: &str,
+    id: &Value,
+    method: &str,
+    params: &Value,
+) -> Value {
+    if method != "elicitation/create" {
+        return serde_json::json!({
+            "jsonrpc": "2.0", "id": id,
+            "error": {"code": -32601, "message": "method not found"},
+        });
+    }
+    match handler {
+        Some(handler) => match handler(server, params) {
+            Ok(result) => serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}),
+            Err(e) => serde_json::json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": {"code": -32603, "message": e.to_string()},
+            }),
+        },
+        None => serde_json::json!({
+            "jsonrpc": "2.0", "id": id,
+            "error": {"code": -32601, "message": "elicitation is not supported by this host"},
+        }),
+    }
+}
+
 /// An MCP client over SSE or streamable HTTP. Not `Sync`: requests are
 /// issued one at a time from the owning thread. `Send` so the manager can
 /// hold it behind a mutex.
@@ -176,6 +208,7 @@ pub struct HttpMcpClient {
     /// The server's self-reported version, when it sends one.
     pub server_version: Option<String>,
     dead: bool,
+    elicitation: Option<ElicitationHandler>,
 }
 
 impl HttpMcpClient {
@@ -189,6 +222,19 @@ impl HttpMcpClient {
         url: &str,
         timeout: Duration,
         headers: &[(String, String)],
+    ) -> Result<Self, McpError> {
+        Self::connect_with(server, transport, url, timeout, headers, None)
+    }
+
+    /// [`HttpMcpClient::connect`] plus an optional server-initiated
+    /// elicitation handler.
+    pub fn connect_with(
+        server: &str,
+        transport: HttpTransport,
+        url: &str,
+        timeout: Duration,
+        headers: &[(String, String)],
+        elicitation: Option<ElicitationHandler>,
     ) -> Result<Self, McpError> {
         let agent = ureq::AgentBuilder::new().timeout(timeout).build();
         let (post_url, sse_rx) = match transport {
@@ -273,6 +319,7 @@ impl HttpMcpClient {
             negotiated_version: String::new(),
             server_version: None,
             dead: false,
+            elicitation,
         };
         client.initialize()?;
         Ok(client)
@@ -418,6 +465,24 @@ impl HttpMcpClient {
                             }
                             return Ok(result.unwrap_or(Value::Null));
                         }
+                        Wire::Request {
+                            id: rid,
+                            method: smethod,
+                            params,
+                        } => {
+                            let response = server_request_response(
+                                self.elicitation.as_ref(),
+                                &self.server,
+                                &rid,
+                                &smethod,
+                                &params,
+                            );
+                            if let Err(e) = self.post(&response) {
+                                self.dead = true;
+                                return Err(e);
+                            }
+                            continue;
+                        }
                         _ => continue,
                     }
                 }
@@ -476,8 +541,24 @@ impl HttpMcpClient {
                         }
                         return Ok(result.unwrap_or(Value::Null));
                     }
-                    // Server-initiated requests are out of scope (same as
-                    // the stdio client); anything else is not our answer.
+                    Wire::Request {
+                        id: rid,
+                        method: smethod,
+                        params,
+                    } => {
+                        let response = server_request_response(
+                            self.elicitation.as_ref(),
+                            &self.server,
+                            &rid,
+                            &smethod,
+                            &params,
+                        );
+                        if let Err(e) = self.post(&response) {
+                            return Err(e);
+                        }
+                        continue;
+                    }
+                    // Anything else is not our answer.
                     _ => continue,
                 },
             }
@@ -502,6 +583,81 @@ impl HttpMcpClient {
             return Err(McpError::ServerToolError(crate::result_text(&result)));
         }
         Ok(result)
+    }
+
+    /// `resources/list`, following `nextCursor` pages. A repeated cursor or
+    /// 1,000 pages ends the walk defensively.
+    pub fn list_resources(&mut self) -> Result<Vec<McpResource>, McpError> {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..1000 {
+            let params = match &cursor {
+                Some(c) => serde_json::json!({"cursor": c}),
+                None => serde_json::json!({}),
+            };
+            let result = self.request("resources/list", params)?;
+            out.extend(crate::resources_from(&result)?);
+            match crate::next_cursor(&result) {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => return Ok(out),
+            }
+        }
+        Err(McpError::Protocol(
+            "resources/list exceeded 1,000 pages".to_string(),
+        ))
+    }
+
+    pub fn list_resource_templates(&mut self) -> Result<Vec<McpResourceTemplate>, McpError> {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..1000 {
+            let params = match &cursor {
+                Some(c) => serde_json::json!({"cursor": c}),
+                None => serde_json::json!({}),
+            };
+            let result = self.request("resources/templates/list", params)?;
+            out.extend(crate::resource_templates_from(&result)?);
+            match crate::next_cursor(&result) {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => return Ok(out),
+            }
+        }
+        Err(McpError::Protocol(
+            "resources/templates/list exceeded 1,000 pages".to_string(),
+        ))
+    }
+
+    pub fn read_resource(&mut self, uri: &str) -> Result<Vec<McpResourceContent>, McpError> {
+        let result = self.request("resources/read", serde_json::json!({"uri": uri}))?;
+        crate::resource_contents_from(&result)
+    }
+
+    pub fn list_prompts(&mut self) -> Result<Vec<McpPrompt>, McpError> {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..1000 {
+            let params = match &cursor {
+                Some(c) => serde_json::json!({"cursor": c}),
+                None => serde_json::json!({}),
+            };
+            let result = self.request("prompts/list", params)?;
+            out.extend(crate::prompts_from(&result)?);
+            match crate::next_cursor(&result) {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => return Ok(out),
+            }
+        }
+        Err(McpError::Protocol(
+            "prompts/list exceeded 1,000 pages".to_string(),
+        ))
+    }
+
+    pub fn get_prompt(&mut self, name: &str, args: &Value) -> Result<McpPromptResult, McpError> {
+        let result = self.request(
+            "prompts/get",
+            serde_json::json!({"name": name, "arguments": args}),
+        )?;
+        crate::prompt_result_from(&result)
     }
 
     /// Cheap liveness: no traffic. A dead stream is noticed on the next
@@ -531,6 +687,26 @@ impl McpConn for HttpMcpClient {
 
     fn call_tool(&mut self, name: &str, args: &Value) -> Result<Value, McpError> {
         HttpMcpClient::call_tool(self, name, args)
+    }
+
+    fn list_resources(&mut self) -> Result<Vec<McpResource>, McpError> {
+        HttpMcpClient::list_resources(self)
+    }
+
+    fn list_resource_templates(&mut self) -> Result<Vec<McpResourceTemplate>, McpError> {
+        HttpMcpClient::list_resource_templates(self)
+    }
+
+    fn read_resource(&mut self, uri: &str) -> Result<Vec<McpResourceContent>, McpError> {
+        HttpMcpClient::read_resource(self, uri)
+    }
+
+    fn list_prompts(&mut self) -> Result<Vec<McpPrompt>, McpError> {
+        HttpMcpClient::list_prompts(self)
+    }
+
+    fn get_prompt(&mut self, name: &str, args: &Value) -> Result<McpPromptResult, McpError> {
+        HttpMcpClient::get_prompt(self, name, args)
     }
 
     fn alive(&mut self) -> bool {

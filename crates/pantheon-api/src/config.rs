@@ -156,6 +156,10 @@ pub const STT_BACKENDS: &[&str] = &[
     "elevenlabs",
     "xai",
     "assemblyai",
+    "whistle",
+    "parakeet",
+    "photon",
+    "parakeet-redux",
 ];
 
 /// TTS backend ids the runtime can construct (`open_tts` in
@@ -220,6 +224,17 @@ pub struct LiveVoiceSection {
     /// utterance after this many silent milliseconds. Default 1200.
     #[serde(default = "default_live_silence_timeout_ms")]
     pub live_silence_timeout_ms: u64,
+    /// Optional provider-native realtime backend. `"openai"` speaks the
+    /// OpenAI Realtime WebSocket directly (full-duplex audio and provider
+    /// turn detection); absent keeps the local STT → agent → TTS path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realtime_backend: Option<String>,
+    /// Realtime model id. Absent = `gpt-4o-realtime-preview`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realtime_model: Option<String>,
+    /// Provider voice id. Absent = `alloy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realtime_voice: Option<String>,
 }
 
 impl Default for LiveVoiceSection {
@@ -229,6 +244,9 @@ impl Default for LiveVoiceSection {
             live_max_session_secs: default_live_max_session_secs(),
             live_max_utterance_secs: default_live_max_utterance_secs(),
             live_silence_timeout_ms: default_live_silence_timeout_ms(),
+            realtime_backend: None,
+            realtime_model: None,
+            realtime_voice: None,
         }
     }
 }
@@ -1368,6 +1386,32 @@ impl ToolsSection {
     }
 }
 
+/// `[formatters]`: opt-in post-edit formatting. Absent or `enabled =
+/// false` leaves every write untouched (the pre-formatter behavior).
+///
+/// When enabled, a formatter runs after `write_file` / `apply_files`
+/// succeeds. Built-in rules cover the common languages; `commands`
+/// overrides or adds rules by file extension. A command template may
+/// contain `{file}`; when it does not, the path is appended. Commands run
+/// through the operator's shell, so the table is trusted configuration,
+/// never model-authored input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct FormattersSection {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Hard cap for one formatter invocation. Default 10 seconds.
+    #[serde(default = "default_formatter_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Extension -> command template, e.g. `".rs" = "rustfmt {file}"`.
+    /// Keys may be written with or without the leading dot.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub commands: std::collections::HashMap<String, String>,
+}
+
+fn default_formatter_timeout_secs() -> u64 {
+    10
+}
+
 /// Third-party packages the skill library needs (`[skill_deps]` in
 /// config.toml). These are install-time dependencies of Pantheon itself:
 /// the setup wizard's "Skill dependencies" screen detects each one and
@@ -1502,6 +1546,21 @@ pub struct McpServerEntry {
     /// Header names are logged, values never are.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub headers: std::collections::HashMap<String, String>,
+    /// Remote auth mode. `"oauth"` runs the MCP OAuth 2.1 flow (metadata
+    /// discovery, dynamic client registration, PKCE, loopback redirect,
+    /// and encrypted token storage). Absent/`"none"` keeps the header-only
+    /// behavior. OAuth is only valid for `sse`/`http`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
+    /// OAuth scopes to request. Empty means the scopes advertised by the
+    /// protected-resource metadata, falling back to the authorization
+    /// server's `scopes_supported`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    /// Pre-registered OAuth client id. When absent, Pantheon registers a
+    /// public client dynamically if the authorization server supports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 fn default_mcp_transport() -> String {
@@ -1557,6 +1616,19 @@ impl McpServerEntry {
             out.push(format!(
                 "mcp.servers.{name}: timeout_secs is 0: requests would instantly time out"
             ));
+        }
+        match self.auth.as_deref().map(str::trim) {
+            None | Some("") | Some("none") => {}
+            Some("oauth") => {
+                if self.transport == "stdio" {
+                    out.push(format!(
+                        "mcp.servers.{name}: auth = \"oauth\" requires sse or http transport"
+                    ));
+                }
+            }
+            Some(other) => out.push(format!(
+                "mcp.servers.{name}: unknown auth {other:?} (none|oauth)"
+            )),
         }
         out
     }
@@ -2061,6 +2133,9 @@ pub struct Config {
     /// the runtime only registers enabled groups.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsSection>,
+    /// Opt-in post-edit formatting (`[formatters]`). Absent = disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formatters: Option<FormattersSection>,
     /// Third-party skill dependencies (`[skill_deps]`). Absent = the
     /// wizard's skill-deps screen never ran; present with an empty
     /// `skipped` list = everything it checked was found or installed.
@@ -2172,6 +2247,7 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "computer_use",
     "websearch",
     "tools",
+    "formatters",
     "skill_deps",
     "mcp",
     "plugins",
@@ -2491,6 +2567,15 @@ impl Config {
         if let Some(mem) = &self.memory {
             if mem.backend.trim().is_empty() {
                 problems.push("memory.backend is empty".into());
+            }
+        }
+        if let Some(v) = &self.voice {
+            if let Some(backend) = v.realtime_backend.as_deref().map(str::trim) {
+                if !backend.is_empty() && backend != "openai" {
+                    problems.push(format!(
+                        "voice.realtime_backend {backend:?} is not openai; omit it to use the local STT/agent/TTS path"
+                    ));
+                }
             }
         }
         for (section, v) in [("stt", &self.stt), ("tts", &self.tts)] {
@@ -3326,6 +3411,7 @@ mod fix_pass4_leaf1_tests {
             routing: Some(RoutingSection::default()),
             websearch: Some(WebsearchSection::default()),
             tools: Some(ToolsSection::default()),
+            formatters: Some(FormattersSection::default()),
             skill_deps: Some(SkillDepsSection::default()),
             mcp: Some(McpSection::default()),
             plugins: HashMap::from([(

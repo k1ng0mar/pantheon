@@ -43,7 +43,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-fn verr(code: &str, cause: String, retryable: bool, remediation: &'static str) -> PantheonError {
+pub(crate) fn verr(
+    code: &str,
+    cause: String,
+    retryable: bool,
+    remediation: &'static str,
+) -> PantheonError {
     PantheonError::new(code, Layer::Provider, retryable, cause, remediation, "")
 }
 
@@ -165,7 +170,7 @@ pub trait TtsProvider: Send + Sync {
 
 /// Run a command with optional stdin, capturing stdout/stderr with a hard
 /// wall-clock bound. std threads, no async - same posture as the sandbox.
-fn run_bounded(
+pub(crate) fn run_bounded(
     program: &str,
     args: &[String],
     stdin_text: Option<&str>,
@@ -1884,6 +1889,9 @@ impl TtsProvider for DeepgramTts {
 // --- Source: Gemini docs (TTS). Preview model ids churn - ---
 // --- verify the current id if synthesis 404s. ---
 // NOTE: built from Gemini docs, not live-tested.
+/// Built-in Gemini TTS model used when `[tts].options.model` is omitted.
+/// Keep the setup UI and client default tied to this single value.
+pub const DEFAULT_GEMINI_TTS_MODEL: &str = "gemini-2.5-flash-preview-tts";
 //
 // Gemini TTS always returns 16-bit PCM @ 24 kHz, so the backend always
 // produces WAV; non-WAV requests fail explicitly rather than silently
@@ -1900,7 +1908,7 @@ impl GeminiTts {
     ) -> Result<Self, PantheonError> {
         Ok(Self {
             model: options_get(options, "model")
-                .unwrap_or("gemini-2.5-flash-preview-tts")
+                .unwrap_or(DEFAULT_GEMINI_TTS_MODEL)
                 .to_string(),
             api_key,
         })
@@ -2495,6 +2503,9 @@ pub fn stt_backends() -> Vec<VoiceBackendInfo> {
             ],
         },
     ]
+    .into_iter()
+    .chain(crate::voice_local::local_stt_backends())
+    .collect()
 }
 
 /// Registered TTS backends, ranked local first (piper recommended
@@ -2674,7 +2685,7 @@ pub fn tts_backends() -> Vec<VoiceBackendInfo> {
                 },
                 VoiceSetupField {
                     key: "model",
-                    prompt: "Model (empty = gemini-2.5-flash-preview-tts)",
+                    prompt: "Gemini TTS model (blank uses the built-in default)",
                     default: "",
                     required: false,
                 },
@@ -2769,6 +2780,17 @@ pub fn open_stt(
 ) -> Result<Box<dyn SttProvider>, PantheonError> {
     match backend {
         "command" => Ok(Box::new(CommandStt::from_options(options)?)),
+        "whistle" | "parakeet" | "photon" | "parakeet-redux" => {
+            let local = match backend {
+                "whistle" => crate::voice_local::LocalBackend::Whistle,
+                "parakeet" => crate::voice_local::LocalBackend::Parakeet,
+                "photon" => crate::voice_local::LocalBackend::Photon,
+                _ => crate::voice_local::LocalBackend::ParakeetRedux,
+            };
+            Ok(Box::new(crate::voice_local::LocalStt::from_options(
+                local, options,
+            )?))
+        }
         "openai" | "groq" | "mistral" => {
             // A named backend is its own provider id; the legacy "openai"
             // backend keeps reading options["provider"].

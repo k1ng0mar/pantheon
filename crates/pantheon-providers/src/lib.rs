@@ -20,6 +20,7 @@ pub mod verify;
 pub mod video;
 pub mod vision;
 pub mod voice;
+pub mod voice_local;
 
 use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, ModelPolicy};
 

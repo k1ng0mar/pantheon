@@ -20,6 +20,7 @@ use pantheon_agent::TurnOutcome;
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::model::{AuxiliaryModel, DefaultModel};
 use pantheon_secrets::SecretValue;
+use std::sync::Arc;
 
 /// Distill calls carry more text than titles, so they get a longer leash:
 /// a slow aux call must still never hold the nightly pass hostage.
@@ -80,6 +81,7 @@ pub struct DistillClient {
     /// provider's own key env (e.g. `PANTHEON_KEY_OPENAI`) when set.
     pub api_key: Option<SecretValue>,
     pub max_tokens: u32,
+    usage_sink: Option<Arc<dyn crate::model_event::AuxiliaryUsageSink>>,
 }
 
 impl DistillClient {
@@ -89,6 +91,7 @@ impl DistillClient {
             transport: aux_transport(DISTILL_TIMEOUT_SECS),
             api_key,
             max_tokens: DISTILL_MAX_TOKENS,
+            usage_sink: None,
         }
     }
 
@@ -103,6 +106,15 @@ impl DistillClient {
     /// before `with_transport` if you also inject a test transport.
     pub fn with_timeout_secs(mut self, secs: u64) -> Self {
         self.transport = aux_transport(secs.max(1));
+        self
+    }
+
+    /// Record successful distillation/refinement calls in the owning audit.
+    pub fn with_usage_sink(
+        mut self,
+        sink: Arc<dyn crate::model_event::AuxiliaryUsageSink>,
+    ) -> Self {
+        self.usage_sink = Some(sink);
         self
     }
 
@@ -132,6 +144,12 @@ impl DistillClient {
                 "check the [consolidation] endpoint is reachable within the timeout",
             )
         })?;
+        crate::model_event::record_auxiliary_usage(
+            self.usage_sink.as_ref(),
+            &self.target.provider,
+            &self.target.model,
+            turn.usage,
+        )?;
         match turn.outcome {
             TurnOutcome::Text { text, .. } => Ok(text),
             _ => Err(derr(

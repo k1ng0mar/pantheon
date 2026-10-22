@@ -150,6 +150,9 @@ impl BundledMcpServer {
             enabled: false,
             timeout_secs: None,
             headers: Default::default(),
+            auth: None,
+            scopes: Vec::new(),
+            client_id: None,
         }
     }
 }

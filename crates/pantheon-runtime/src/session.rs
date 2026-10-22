@@ -35,7 +35,7 @@ use pantheon_tools::builtins::{
 use pantheon_tools::memory_tools::{
     register_memory_tools, MemoryToolEvent, MemoryToolOptions, MemoryToolSink,
 };
-use pantheon_tools::safewrite_tools::register_safewrite;
+use pantheon_tools::safewrite_tools::{register_safewrite_with, SafewriteOptions};
 use pantheon_tools::session_search_tools::{register_session_search, SessionSearchOptions};
 
 /// Pure predicate for the consecutive-failure warning.
@@ -314,6 +314,37 @@ struct TeeModelSink<'a> {
     callback: Option<&'a dyn Fn(ModelEvent)>,
 }
 
+/// Persist usage from auxiliary model calls (title, vision, compression,
+/// judge, and video) against the owning run.
+struct RunAuxiliaryUsageSink {
+    supervisor: Supervisor,
+    run_id: String,
+}
+
+impl pantheon_providers::model_event::AuxiliaryUsageSink for RunAuxiliaryUsageSink {
+    fn record(
+        &self,
+        provider: &str,
+        model: &str,
+        usage: pantheon_providers::model_event::ModelUsage,
+    ) -> Result<(), PantheonError> {
+        let model_id = if provider.is_empty() {
+            model.to_string()
+        } else {
+            format!("{provider}:{model}")
+        };
+        self.supervisor.emit(Event::UsageRecorded {
+            run_id: self.run_id.clone(),
+            model: model_id,
+            provider: provider.to_string(),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+            cost_usd: usage.cost_usd,
+        })
+    }
+}
+
 impl<'a> ModelEventSink for TeeModelSink<'a> {
     fn emit(&self, event: ModelEvent) {
         self.inner.emit(event.clone());
@@ -399,6 +430,9 @@ impl<'a> ModelEventSink for LedgerModelSink<'a> {
 /// working with no extensions loaded.
 struct RegRunner<'a> {
     registry: &'a ToolRegistry,
+    /// Policy for Code Mode's nested calls. The outer call has already been
+    /// gated by the loop; nested calls re-gate through `execute_gated`.
+    policy: &'a Policy,
     hooks: Option<&'a ExtensionManager>,
     run_id: String,
     /// Exact-value redaction registry: every model-facing tool result is
@@ -407,6 +441,15 @@ struct RegRunner<'a> {
     /// Data dir for the Bot Screen takeover gate: computer-use tools park
     /// while a human holds the desktop (see `desktop_takeover_gate`).
     data_dir: PathBuf,
+}
+impl<'a> RegRunner<'a> {
+    fn run_tool(&self, name: &str, args: &str) -> Result<String, PantheonError> {
+        if name == pantheon_tools::code_mode::CODE_MODE_TOOL {
+            pantheon_tools::code_mode::execute(self.registry, self.policy, args)
+        } else {
+            self.registry.execute(name, args)
+        }
+    }
 }
 impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
     fn run(&self, name: &str, args: &str) -> Result<String, PantheonError> {
@@ -436,7 +479,7 @@ impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
                 // choose another approach.
                 return Ok(format!("[blocked by extension policy] {reason}"));
             }
-            let out = self.registry.execute(name, args)?;
+            let out = self.run_tool(name, args)?;
             // Transform last: the plugin sees the real output and may replace
             // it. Fails OPEN, so redaction degrades to no-op, never to outage.
             let transformed = mgr.fire_transform(
@@ -454,8 +497,7 @@ impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
         } else {
             // No hooks: still scrub. A bare Session (tests, embedded use)
             // must not be the one path where an injected secret echoes back.
-            self.registry
-                .execute(name, args)
+            self.run_tool(name, args)
                 .map(|out| self.redaction.scrub(&out))?
         };
         if computer_use {
@@ -494,6 +536,9 @@ fn desktop_takeover_release_note(data_dir: &Path, out: &mut String) {
 /// itself. The operation runner persists each phase before the next phase.
 struct RegistryToolAdapter<'a> {
     registry: &'a ToolRegistry,
+    /// Policy for Code Mode's nested calls; normal tools were gated before
+    /// the adapter was constructed.
+    policy: &'a Policy,
     name: String,
     /// Extension hooks. The adapter is the only executor the production
     /// path uses, so `pre_tool_call` and `transform_tool_result` are
@@ -518,14 +563,20 @@ impl<'a> RegistryToolAdapter<'a> {
     /// context-aware tools (delegate) can link their durable side
     /// effects to this step.
     fn run_registered(&self, name: &str, args: &str) -> Result<String, PantheonError> {
-        self.registry.execute_with_context(
-            name,
-            args,
-            pantheon_tools::tools::ToolCallContext {
-                run_id: self.run_id.clone(),
-                call_id: self.call_id.clone(),
-            },
-        )
+        let ctx = pantheon_tools::tools::ToolCallContext {
+            run_id: self.run_id.clone(),
+            call_id: self.call_id.clone(),
+        };
+        if name == pantheon_tools::code_mode::CODE_MODE_TOOL {
+            pantheon_tools::code_mode::execute_with_context(
+                self.registry,
+                self.policy,
+                args,
+                Some(ctx),
+            )
+        } else {
+            self.registry.execute_with_context(name, args, ctx)
+        }
     }
 }
 
@@ -731,11 +782,18 @@ fn assemble_child_system_prompt(child: &AgentRuntime) -> String {
 /// and marks `Inconclusive` on the result; only `Holds` counts as done.
 fn verify_delegation(
     model_policy: &ModelPolicy,
+    parent_run_id: &str,
+    supervisor: &Supervisor,
     goal: &str,
     result: &crate::swarm::ChildResult,
 ) -> Option<pantheon_providers::VerifyVerdict> {
     use pantheon_providers::{VerifyClient, VerifyRequest, VerifyVerdict};
-    let client = VerifyClient::from_policy(model_policy, None)?;
+    let client = VerifyClient::from_policy(model_policy, None)?.with_usage_sink(Arc::new(
+        RunAuxiliaryUsageSink {
+            supervisor: supervisor.clone(),
+            run_id: parent_run_id.to_string(),
+        },
+    ));
     let mut evidence = String::new();
     if !result.files_changed.is_empty() {
         evidence.push_str("files_changed:\n");
@@ -1195,6 +1253,7 @@ fn run_delegate_child(
     let outcome = (driver.drive_child)(&child_session, &child_run, &full_task);
     let result = map_child_outcome(
         &driver.model_policy,
+        &driver.run_id,
         agent,
         &full_task,
         &child_run,
@@ -1241,6 +1300,7 @@ fn run_delegate_child(
 /// against the run that requested them.
 fn map_child_outcome(
     model_policy: &ModelPolicy,
+    parent_run_id: &str,
     agent: &str,
     task: &str,
     child_run: &str,
@@ -1261,7 +1321,7 @@ fn map_child_outcome(
             let verdict = if result.status == crate::swarm::ChildStatus::Failed {
                 None
             } else {
-                verify_delegation(model_policy, task, &result)
+                verify_delegation(model_policy, parent_run_id, supervisor, task, &result)
             };
             let mut out = result.to_json();
             if let Some(v) = verdict {
@@ -1562,6 +1622,18 @@ pub struct Session {
     /// call site consults it, so a disabled group never reaches the
     /// model's tool list.
     pub tools_enablement: Mutex<ToolEnablement>,
+    /// Session-scoped workspace root. Tool registration reads this instead
+    /// of the process cwd so a live worktree move can re-root the session
+    /// without changing other threads' relative paths. The handle is
+    /// shared with the tool layer, which reads it at call time.
+    pub workspace_root: Mutex<std::path::PathBuf>,
+    /// The same root in the swappable form handed to the tool layer.
+    /// `workspace_root` stays the durable copy the session reports; this
+    /// is the handle every registered tool reads on each call, so a move
+    /// reaches them without a re-registration.
+    pub workspace: Arc<pantheon_api::workspace::WorkspaceRoot>,
+    /// Persistent PTYs, created once per session and reused across turns.
+    pty_manager: std::sync::OnceLock<Arc<pantheon_tools::pty_tools::PtyManager>>,
     /// MCP server manager: owns child processes / remote connections,
     /// health, reconnect backoff, and the approval gate. Shared across
     /// registry rebuilds so servers stay up between turns.
@@ -1750,6 +1822,11 @@ impl Session {
             mcp_config: Mutex::new(McpToolConfig::default()),
             computer_config: Mutex::new(ComputerToolConfig::default()),
             tools_enablement: Mutex::new(ToolEnablement::default()),
+            workspace_root: Mutex::new(
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            ),
+            workspace: Arc::new(pantheon_api::workspace::WorkspaceRoot::from_cwd()),
+            pty_manager: std::sync::OnceLock::new(),
             mcp_manager: std::sync::Arc::new(pantheon_mcp::manager::McpManager::new(
                 data_dir.clone(),
             )),
@@ -1764,6 +1841,32 @@ impl Session {
         // capability policy gates every stdio connect through
         // `McpClient::connect` from here on.
         session.mcp_manager.set_policy(session.policy.clone());
+        // Remote OAuth tokens use the session's durable secret store.
+        session.mcp_manager.set_secrets(session.secrets.clone());
+        // MCP elicitation: a server request while a tool is executing
+        // surfaces through the same clarify card as `ask_user`. The
+        // supervisor waiter is resolved by `answer_input`, so the TUI,
+        // ACP, and gateway answer paths stay unified.
+        {
+            let supervisor = session.supervisor.clone();
+            let run_id = session.shell_run_id.clone();
+            session
+                .mcp_manager
+                .set_elicitation_handler(std::sync::Arc::new(move |server, params| {
+                    let run = run_id
+                        .lock()
+                        .map(|r| r.clone())
+                        .unwrap_or_default();
+                    if run.is_empty() {
+                        return Err(pantheon_mcp::McpError::Io(
+                            "MCP elicitation requires an active run".to_string(),
+                        ));
+                    }
+                    supervisor
+                        .elicit(&run, server, params)
+                        .map_err(|e| pantheon_mcp::McpError::Io(e.to_string()))
+                }));
+        }
         Ok(session)
     }
 
@@ -1842,6 +1945,16 @@ impl Session {
             .clone()
     }
 
+    fn auxiliary_usage_sink(
+        &self,
+        run_id: &str,
+    ) -> Arc<dyn pantheon_providers::model_event::AuxiliaryUsageSink> {
+        Arc::new(RunAuxiliaryUsageSink {
+            supervisor: self.supervisor.clone(),
+            run_id: run_id.to_string(),
+        })
+    }
+
     /// Vision host pass: decides how this turn's attached images reach
     /// a model. When the `[vision]` auxiliary pins a model *different*
     /// from the run's default, each image is described through that
@@ -1861,6 +1974,7 @@ impl Session {
     /// whole conversation.
     fn vision_aux_pass(
         &self,
+        run_id: &str,
         outgoing: &str,
         user_message: &str,
         images: Vec<ImagePart>,
@@ -1884,7 +1998,9 @@ impl Session {
             .auxiliary(&AuxiliaryKind::Vision)
             .map(|a| a.timeout_secs)
             .unwrap_or(pantheon_providers::VISION_TIMEOUT_SECS);
-        let client = VisionClient::resolve(&policy, api_key)?.with_timeout_secs(timeout_secs);
+        let client = VisionClient::resolve(&policy, api_key)?
+            .with_timeout_secs(timeout_secs)
+            .with_usage_sink(self.auxiliary_usage_sink(run_id));
         let question = if user_message.trim().is_empty() {
             "Describe this image in detail.".to_string()
         } else {
@@ -1917,6 +2033,7 @@ impl Session {
     /// unavailable: ...]` note and the turn continues.
     fn video_aux_pass(
         &self,
+        run_id: &str,
         outgoing: &str,
         user_message: &str,
         videos: Vec<pantheon_api::message::VideoAttachment>,
@@ -1933,7 +2050,8 @@ impl Session {
             .unwrap_or(pantheon_providers::VIDEO_TIMEOUT_SECS);
         let client = VideoClient::resolve(&policy, &self.secrets)
             .with_timeout_secs(timeout_secs)
-            .with_stt_section(self.stt_section_snapshot());
+            .with_stt_section(self.stt_section_snapshot())
+            .with_usage_sink(self.auxiliary_usage_sink(run_id));
         let question = if user_message.trim().is_empty() {
             "Describe this video in detail.".to_string()
         } else {
@@ -2146,7 +2264,7 @@ impl Session {
         let entries = self.supervisor.replay(run_id)?;
         let mut messages = rebuild_messages(entries);
         let before = pantheon_exec::context::estimate_messages(&messages);
-        let changed = self.fit_context(&mut messages, &budget, run_id);
+        let changed = self.fit_context(&mut messages, &budget, run_id)?;
         let after = pantheon_exec::context::estimate_messages(&messages);
         Ok(CompressReport {
             before,
@@ -2361,6 +2479,57 @@ impl Session {
         if let Ok(mut t) = self.tools_enablement.lock() {
             *t = enablement;
         }
+    }
+
+    /// Re-root this session at another workspace, used by `/worktree
+    /// move`. Tool registration reads the new root on the next turn; PTYs
+    /// opened later use it, while already-open terminals keep their cwd.
+    ///
+    /// The process cwd is changed too because the TUI's mention picker and
+    /// diff view still resolve relative paths through it. Pantheon runs one
+    /// interactive session per process, so this is not a cross-session
+    /// global in practice; background workers spawned before the move keep
+    /// their inherited cwd.
+    pub fn set_workspace_root(&self, root: &std::path::Path) -> Result<(), PantheonError> {
+        let canonical = root.canonicalize().map_err(|e| {
+            PantheonError::new(
+                "SESSION_WORKSPACE",
+                Layer::Runtime,
+                false,
+                format!("workspace {}: {e}", root.display()),
+                "check the worktree path and retry",
+                "",
+            )
+        })?;
+        if let Ok(mut current) = self.workspace_root.lock() {
+            *current = canonical.clone();
+        }
+        // Move the handle the tools read. Every registered file tool and
+        // the shell tool resolve against this on their next call, so the
+        // move reaches them without re-registering anything.
+        self.workspace.set(canonical.clone());
+        if let Some(manager) = self.pty_manager.get() {
+            manager.set_root(canonical.clone());
+        }
+        std::env::set_current_dir(&canonical).map_err(|e| {
+            PantheonError::new(
+                "SESSION_CWD",
+                Layer::Runtime,
+                false,
+                format!("change cwd to {}: {e}", canonical.display()),
+                "check permissions on the worktree directory",
+                "",
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Current session workspace root (a clone; never a live guard).
+    pub fn workspace_root(&self) -> std::path::PathBuf {
+        self.workspace_root
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()))
     }
 
     /// Speech-to-text config (`[stt]` in config.toml). Feeds the video
@@ -2716,6 +2885,7 @@ impl Session {
         })?;
         let adapter = RegistryToolAdapter {
             registry,
+            policy: &self.policy,
             name: name.to_string(),
             hooks: Some(&self.hooks),
             run_id: run_id.to_string(),
@@ -2944,7 +3114,7 @@ impl Session {
     /// Resolution mirrors the title generator: the `[judge]` section when
     /// set, otherwise `auto` (the run's default model). The key resolves
     /// through the broker at this boundary and never enters the transcript.
-    fn build_judge(&self) -> Option<pantheon_providers::JudgeClient> {
+    fn build_judge(&self, run_id: &str) -> Option<pantheon_providers::JudgeClient> {
         let policy = self.policy_snapshot();
         let aux = policy.auxiliary(&pantheon_api::model::AuxiliaryKind::Judge)?;
         let target = pantheon_api::model::DefaultModel {
@@ -2957,7 +3127,11 @@ impl Session {
             .ok()
             .flatten()
             .or_else(|| self.secrets.inject("PANTHEON_API_KEY").ok().flatten());
-        Some(pantheon_providers::JudgeClient::new(target, key).with_timeout_secs(aux.timeout_secs))
+        Some(
+            pantheon_providers::JudgeClient::new(target, key)
+                .with_timeout_secs(aux.timeout_secs)
+                .with_usage_sink(self.auxiliary_usage_sink(run_id)),
+        )
     }
 
     /// Ask the judge about one approval-gated call, in `Smart` mode only.
@@ -2980,7 +3154,7 @@ impl Session {
         if self.permission_mode() != PermissionMode::Smart {
             return None;
         }
-        let judge = self.build_judge()?;
+        let judge = self.build_judge(run_id)?;
         let context = format!(
             "tool: {call_name}\ncapability: {}\nargs: {call_args}",
             cap.token()
@@ -2990,7 +3164,6 @@ impl Session {
             "needs_approval".to_string(),
             "deny".to_string(),
         ];
-        let _ = run_id;
         loop_.consult_gate_advisory(&judge, &choices, Some(&context))
     }
 
@@ -3064,6 +3237,32 @@ impl Session {
         // right after spawn (pid == pgid: the runner does setsid()); Exited
         // fires when the wait loop ends and the pid is stale. Best-effort
         // by design - a dead ledger must never break a shell call.
+        let workspace_root = self
+            .workspace_root
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+        let pty_manager = self
+            .pty_manager
+            .get_or_init(|| {
+                Arc::new(pantheon_tools::pty_tools::PtyManager::new(
+                    workspace_root.clone(),
+                ))
+            })
+            .clone();
+        // Opt-in post-edit formatting. Config is read at registry-build
+        // time so `/tools reload` picks up a formatter change without a
+        // restart; an absent or disabled section leaves writes untouched.
+        let formatter = pantheon_api::config::Config::load(self.supervisor.data_dir())
+            .ok()
+            .and_then(|c| c.formatters)
+            .filter(|f| f.enabled)
+            .map(|f| {
+                std::sync::Arc::new(pantheon_tools::format::Formatter::new(
+                    std::time::Duration::from_secs(f.timeout_secs.max(1)),
+                    f.commands,
+                ))
+            });
         let shell_child_hook: ShellChildHook = std::sync::Arc::new({
             let sup = self.supervisor.clone();
             let run_id_src = std::sync::Arc::clone(&self.shell_run_id);
@@ -3087,9 +3286,9 @@ impl Session {
             &mut reg,
             BuiltinOptions {
                 safewrite_state_dir: Some(safewrite_dir.clone()),
-                // No session-level workspace concept exists; the tool layer
-                // captures the process cwd at registration time.
-                workspace_root: None,
+                // Session-scoped root: worktree moves re-root new tool
+                // registrations without relying on the process cwd.
+                workspace: Some(self.workspace.clone()),
                 enable_terminal: tools.terminal,
                 enable_files: tools.files,
                 enable_ask_user: tools.ask_user,
@@ -3110,27 +3309,50 @@ impl Session {
                         Vec::new()
                     }
                 })),
+                formatter: formatter.clone(),
+                pty_manager: Some(pty_manager),
             },
         );
         // SafeWriter is the safe file-writing path: it belongs to Files.
         if tools.files {
-            register_safewrite(&mut reg, safewrite_dir);
+            register_safewrite_with(
+                &mut reg,
+                SafewriteOptions {
+                    state_dir: safewrite_dir,
+                    workspace_root: Some(workspace_root),
+                    formatter,
+                },
+            );
         }
-        // Code-intel group: LSP diagnostics + repo-level git undo. Both are
-        // read-only by default (open/diagnostics/list), with the mutating
-        // paths (restore/delete) gated on GitWrite. Registered under the
-        // same gate as the group; off = none of the tools appear.
+        // Code-intel group: LSP diagnostics, repo-level git undo, managed
+        // worktrees, and the native code graph. Read paths are gated on
+        // FilesystemRead/GitRead; mutating paths (restore/delete,
+        // worktree create/remove, index cache) use GitWrite or
+        // FilesystemWrite. Registered under the same group gate; off =
+        // none of the tools appear.
         // Structured UI: the agent-facing `render_ui` capture tool. Always
         // registered - rendering is not a privileged operation (morally a
         // fancier assistant message). The turn loop intercepts calls
         // before gating; the registry handler only validates.
         register_ui_tool(&mut reg);
+        // Code Mode is host-mediated: the stub is visible to the model, but
+        // the agent loop executes it with the real registry and policy. A
+        // direct registry call returns a structured host-mediated error.
+        pantheon_tools::code_mode::register_code_mode_stub(&mut reg);
 
         let n_builtin = reg.names().len();
         if tools.code_intel {
             let undo_state = self.supervisor.data_dir().join("git_undo");
             pantheon_tools::gitundo_tools::register_gitundo(&mut reg, undo_state);
             pantheon_tools::lsp_tools::register_lsp(&mut reg);
+            pantheon_tools::worktree_tools::register_worktrees(
+                &mut reg,
+                self.supervisor.data_dir().to_path_buf(),
+            );
+            pantheon_tools::codegraph_tools::register_codegraph(
+                &mut reg,
+                self.supervisor.data_dir().to_path_buf(),
+            );
         }
         let n_codeintel = reg.names().len() - n_builtin;
         // Skill tools: SKILL.md capabilities from all cross-format scopes
@@ -3217,6 +3439,7 @@ impl Session {
             let vpolicy = self.policy_snapshot();
             let vsecrets = self.secrets.clone();
             let vdata_dir = self.supervisor.data_dir().to_path_buf();
+            let vsupervisor = self.supervisor.clone();
             reg.register_with(
                 ToolSchema {
                     name: "vision".into(),
@@ -3238,7 +3461,7 @@ impl Session {
                     }),
                 },
                 pantheon_api::capability::Capability::NetworkOutbound,
-                move |args| vision_tool_run(args, &vpolicy, &vsecrets, &vdata_dir),
+                move |args| vision_tool_run(args, &vpolicy, &vsecrets, &vdata_dir, &vsupervisor),
                 None,
             );
         }
@@ -3252,6 +3475,7 @@ impl Session {
             let vdsecrets = self.secrets.clone();
             let vddata_dir = self.supervisor.data_dir().to_path_buf();
             let vdstt = self.stt_section_snapshot();
+            let vdsupervisor = self.supervisor.clone();
             reg.register_with(
                 ToolSchema {
                     name: "video".into(),
@@ -3273,7 +3497,14 @@ impl Session {
                     }),
                 },
                 pantheon_api::capability::Capability::NetworkOutbound,
-                move |args| video_tool_run(args, &vdpolicy, &vdsecrets, &vddata_dir, vdstt.clone()),
+                move |args| video_tool_run(
+                    args,
+                    &vdpolicy,
+                    &vdsecrets,
+                    &vddata_dir,
+                    vdstt.clone(),
+                    &vdsupervisor,
+                ),
                 None,
             );
         }
@@ -3310,12 +3541,17 @@ impl Session {
                 let on_activity =
                     std::sync::Arc::new(move |session: &str, action: &str, detail: &str| {
                         let run_id = run_id_act.lock().map(|g| g.clone()).unwrap_or_default();
-                        let _ = sup_act.emit(Event::BrowserActivity {
+                        if let Err(e) = sup_act.emit(Event::BrowserActivity {
                             run_id,
                             session: session.to_string(),
                             action: action.to_string(),
                             detail: detail.to_string(),
-                        });
+                        }) {
+                            pantheon_api::logging::warn(
+                                "browser",
+                                format!("could not record browser activity: {e}"),
+                            );
+                        }
                     })
                         as std::sync::Arc<dyn Fn(&str, &str, &str) + Send + Sync>;
                 match pantheon_web::browser::tools::register_browser_tools(
@@ -3420,6 +3656,9 @@ impl Session {
             } else {
                 let before = reg.names().len();
                 let report = self.mcp_manager.register_tools(&mut reg);
+                if !mcfg.servers.is_empty() {
+                    self.mcp_manager.register_resource_tools(&mut reg);
+                }
                 for (server, reason) in &report.skipped {
                     log_warn!("mcp: server '{server}' skipped: {reason}");
                 }
@@ -4008,7 +4247,7 @@ impl Session {
             &outgoing,
             &self.supervisor.data_dir().join("uploads"),
         );
-        let (outgoing, images) = self.vision_aux_pass(&outgoing, user_message, images)?;
+        let (outgoing, images) = self.vision_aux_pass(run_id, &outgoing, user_message, images)?;
         // Attached videos: whole to the video model when native input is
         // available, else the keyframe fallback; the summary is injected
         // as data, never the bytes. Parsed from the same uploads dir.
@@ -4016,7 +4255,7 @@ impl Session {
             &outgoing,
             &self.supervisor.data_dir().join("uploads"),
         );
-        let outgoing = self.video_aux_pass(&outgoing, user_message, videos)?;
+        let outgoing = self.video_aux_pass(run_id, &outgoing, user_message, videos)?;
         messages = assemble_turn(
             messages,
             &system_prompt,
@@ -4105,6 +4344,7 @@ impl Session {
         let _ = &self.hook_observer;
         let runner = RegRunner {
             registry: &reg,
+            policy: &self.policy,
             hooks: Some(&self.hooks),
             run_id: run_id.to_string(),
             redaction: self.secrets.redaction_registry(),
@@ -4256,6 +4496,7 @@ impl Session {
                     // reads the child's ledger through this handle when the
                     // child is stopped.
                     let supervisor = self.supervisor.clone();
+                    let parent_run_id = self.run_id.clone();
                     let handle = self
                         .registry
                         .spawn_child("", &agent, depth, &task, move || {
@@ -4265,6 +4506,7 @@ impl Session {
                             // `run_delegate_child` the `delegate` tool uses.
                             map_child_outcome(
                                 &model_policy,
+                                &parent_run_id,
                                 &agent_owned,
                                 &task_owned,
                                 &child_run,
@@ -4594,12 +4836,14 @@ impl Session {
             .flatten()
             .or_else(|| self.secrets.inject("PANTHEON_API_KEY").ok().flatten());
         let sup = self.supervisor.clone();
+        let usage_sink = self.auxiliary_usage_sink(run_id);
         let run_id = run_id.to_string();
         let prompt = prompt.to_string();
         Some(std::thread::spawn(move || {
             let fallback = pantheon_api::model::fallback_title(&prompt);
             let client = pantheon_providers::TitleGenClient::new(target, key)
-                .with_transport(title_transport(timeout_secs));
+                .with_transport(title_transport(timeout_secs))
+                .with_usage_sink(usage_sink);
             let req = pantheon_api::model::TitleRequest {
                 run_id: run_id.clone(),
                 prompt,
@@ -4611,12 +4855,17 @@ impl Session {
                 // an empty display name.
                 Err(_) => return,
             };
-            let _ = sup.emit(Event::SessionTitled {
+            if let Err(e) = sup.emit(Event::SessionTitled {
                 run_id,
                 title,
                 model,
                 source: source.into(),
-            });
+            }) {
+                pantheon_api::logging::warn(
+                    "agent",
+                    format!("could not persist the generated session title: {e}"),
+                );
+            }
         }))
     }
 
@@ -4654,10 +4903,9 @@ impl Session {
     }
 
     /// Fit the transcript to the window: compress, then deterministically
-    /// trim. Never fails the turn - a fit error is logged and the transcript
-    /// is left as it was, because the provider's own error is more
-    /// informative than anything this could say, and a run that dies on a
-    /// *fixable* overflow is worse than one that reaches the provider.
+    /// trim. A fit error is logged and the transcript is left as it was,
+    /// because the provider's own error is more informative. Ledger write
+    /// failures still fail the turn so context changes cannot go unrecorded.
     ///
     /// Returns whether the transcript changed.
     fn fit_context(
@@ -4665,11 +4913,11 @@ impl Session {
         messages: &mut Vec<Message>,
         budget: &pantheon_exec::context::WindowBudget,
         run_id: &str,
-    ) -> bool {
+    ) -> Result<bool, PantheonError> {
         use pantheon_exec::context::{compress_oldest, estimate_messages, fit_to_window};
         let before = estimate_messages(messages);
         if before <= budget.usable() {
-            return false;
+            return Ok(false);
         }
 
         // Step 1: model-assisted compression, when an aux model is
@@ -4700,18 +4948,19 @@ impl Session {
                 },
                 key,
             )
-            .with_timeout_secs(aux.timeout_secs);
+            .with_timeout_secs(aux.timeout_secs)
+            .with_usage_sink(self.auxiliary_usage_sink(run_id));
             match compress_oldest(messages, &client, budget, run_id, aux.target_percent) {
                 Ok(Some((fitted, report))) => {
                     *messages = fitted;
-                    let _ = self.supervisor.emit(Event::ContextCompressed {
+                    self.supervisor.emit(Event::ContextCompressed {
                         run_id: run_id.into(),
                         model: aux.model.clone(),
                         exchanges: report.exchanges,
                         rows: report.rows,
                         chars_before: report.chars_before,
                         chars_after: report.chars_after,
-                    });
+                    })?;
                     pantheon_api::logging::warn(
                         "agent",
                         format!(
@@ -4749,13 +4998,13 @@ impl Session {
             Ok((fitted, report)) => {
                 *messages = fitted;
                 if report.changed() {
-                    let _ = self.supervisor.emit(Event::ContextTrimmed {
+                    self.supervisor.emit(Event::ContextTrimmed {
                         run_id: run_id.into(),
                         estimated: report.estimated,
                         window: report.window,
                         dropped_rows: report.dropped_rows,
                         compacted_rows: report.compacted_rows,
-                    });
+                    })?;
                     pantheon_api::logging::warn(
                         "agent",
                         format!(
@@ -4767,7 +5016,7 @@ impl Session {
                         ),
                     );
                 }
-                estimate_messages(messages) < before
+                Ok(estimate_messages(messages) < before)
             }
             Err(e) => {
                 *messages = original;
@@ -4780,7 +5029,7 @@ impl Session {
                         e.code
                     ),
                 );
-                false
+                Ok(false)
             }
         }
     }
@@ -5237,7 +5486,7 @@ impl Session {
         // deterministic fit first would drop the oldest exchanges outright and
         // leave compression nothing to summarize.
         if let Some(budget) = self.window_budget(chain) {
-            let _ = self.fit_context(messages, &budget, run_id);
+            self.fit_context(messages, &budget, run_id)?;
         }
         // Chain events (Attempt/Usage/Completed/Fallback/...) project into the
         // ledger through one sink - no manual model lifecycle emissions here.
@@ -6334,6 +6583,7 @@ fn vision_tool_run(
     policy: &ModelPolicy,
     secrets: &SecretsBroker,
     data_dir: &std::path::Path,
+    supervisor: &Supervisor,
 ) -> Result<String, PantheonError> {
     use pantheon_api::model::AuxiliaryKind;
     use pantheon_providers::{VisionClient, VisionRequest};
@@ -6403,7 +6653,13 @@ fn vision_tool_run(
         .auxiliary(&AuxiliaryKind::Vision)
         .map(|a| a.timeout_secs)
         .unwrap_or(pantheon_providers::VISION_TIMEOUT_SECS);
-    let client = VisionClient::resolve(policy, api_key)?.with_timeout_secs(timeout_secs);
+    let mut client = VisionClient::resolve(policy, api_key)?.with_timeout_secs(timeout_secs);
+    if let Some(context) = pantheon_tools::tools::current_call_context() {
+        client = client.with_usage_sink(Arc::new(RunAuxiliaryUsageSink {
+            supervisor: supervisor.clone(),
+            run_id: context.run_id,
+        }));
+    }
     let question = v
         .get("question")
         .and_then(|q| q.as_str())
@@ -6431,6 +6687,7 @@ fn video_tool_run(
     secrets: &SecretsBroker,
     data_dir: &std::path::Path,
     stt: Option<pantheon_api::config::VoiceSection>,
+    supervisor: &Supervisor,
 ) -> Result<String, PantheonError> {
     use pantheon_api::model::AuxiliaryKind;
     use pantheon_providers::{VideoClient, VideoRequest};
@@ -6491,9 +6748,15 @@ fn video_tool_run(
         .auxiliary(&AuxiliaryKind::Video)
         .map(|a| a.timeout_secs)
         .unwrap_or(pantheon_providers::VIDEO_TIMEOUT_SECS);
-    let client = VideoClient::resolve(policy, secrets)
+    let mut client = VideoClient::resolve(policy, secrets)
         .with_timeout_secs(timeout_secs)
         .with_stt_section(stt);
+    if let Some(context) = pantheon_tools::tools::current_call_context() {
+        client = client.with_usage_sink(Arc::new(RunAuxiliaryUsageSink {
+            supervisor: supervisor.clone(),
+            run_id: context.run_id,
+        }));
+    }
     let question = v
         .get("question")
         .and_then(|q| q.as_str())
@@ -6680,6 +6943,13 @@ pub fn rebuild_messages(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Mess
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptItem {
     Message(Message),
+    ToolCall {
+        call_id: String,
+        name: String,
+        args: String,
+        output: Vec<String>,
+        ok: Option<bool>,
+    },
     Reasoning(String),
     /// A published UI document at its latest revision. Rebuild applies
     /// UiContent then UiUpdateds in ledger order and emits one item per
@@ -6696,13 +6966,85 @@ pub enum TranscriptItem {
 /// in ledger order.
 pub fn rebuild_transcript(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<TranscriptItem> {
     let mut out = Vec::new();
+    let mut tool_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     // ui_id -> index in `out` of its TranscriptItem::Ui, for revision
     // application.
     let mut ui_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for e in entries {
         match e.event {
-            Event::AssistantMessage { message, .. } | Event::ToolMessage { message, .. } => {
-                out.push(TranscriptItem::Message(message));
+            Event::AssistantMessage { message, .. } => {
+                if message.role == pantheon_api::message::Role::Assistant
+                    && !message.tool_calls.is_empty()
+                {
+                    let mut message = message;
+                    let calls = std::mem::take(&mut message.tool_calls);
+                    if !message.content.trim().is_empty() {
+                        out.push(TranscriptItem::Message(message));
+                    }
+                    for call in calls {
+                        let idx = out.len();
+                        tool_index.insert(call.id.clone(), idx);
+                        out.push(TranscriptItem::ToolCall {
+                            call_id: call.id,
+                            name: call.name,
+                            args: call.arguments,
+                            output: Vec::new(),
+                            ok: None,
+                        });
+                    }
+                } else if message.role != pantheon_api::message::Role::Tool {
+                    out.push(TranscriptItem::Message(message));
+                }
+            }
+            Event::ToolMessage { message, .. } => {
+                if let Some(call_id) = message.tool_call_id.as_deref() {
+                    if let Some(&idx) = tool_index.get(call_id) {
+                        if let Some(TranscriptItem::ToolCall { output, ok, .. }) = out.get_mut(idx)
+                        {
+                            output.extend(message.content.lines().map(str::to_string));
+                            if message.content.starts_with("tool error ") {
+                                *ok = Some(false);
+                            }
+                        }
+                    }
+                }
+            }
+            Event::ToolStarted {
+                call_id,
+                tool,
+                args,
+                ..
+            } => {
+                if let Some(&idx) = tool_index.get(&call_id) {
+                    if let Some(TranscriptItem::ToolCall {
+                        name,
+                        args: saved_args,
+                        ..
+                    }) = out.get_mut(idx)
+                    {
+                        *name = tool;
+                        *saved_args = args;
+                    }
+                } else {
+                    let idx = out.len();
+                    tool_index.insert(call_id.clone(), idx);
+                    out.push(TranscriptItem::ToolCall {
+                        call_id,
+                        name: tool,
+                        args,
+                        output: Vec::new(),
+                        ok: None,
+                    });
+                }
+            }
+            Event::ToolCompleted { call_id, .. } => {
+                if let Some(&idx) = tool_index.get(&call_id) {
+                    if let Some(TranscriptItem::ToolCall { ok, .. }) = out.get_mut(idx) {
+                        if ok.is_none() {
+                            *ok = Some(true);
+                        }
+                    }
+                }
             }
             Event::ImportedReasoning { text, .. } => out.push(TranscriptItem::Reasoning(text)),
             Event::UiContent {
@@ -7574,6 +7916,7 @@ mod delegate_tool_tests {
         register_delegate_tool(&mut reg, driver);
         let adapter = RegistryToolAdapter {
             registry: &reg,
+            policy: &session.policy,
             name: "delegate".to_string(),
             hooks: None,
             run_id: "run-e2e".to_string(),

@@ -28,6 +28,7 @@ use pantheon_api::model::{
     DecisionAnswer, DecisionPoint, DecisionRequest, DefaultModel, GateVerdict, Judge,
 };
 use pantheon_secrets::SecretValue;
+use std::sync::Arc;
 
 /// Judge calls sit inline in the agent loop: short, bounded deadline.
 pub const JUDGE_TIMEOUT_SECS: u64 = 10;
@@ -320,6 +321,7 @@ pub struct JudgeClient {
     /// provider's own key env (e.g. `PANTHEON_KEY_OPENAI`) when set.
     pub api_key: Option<SecretValue>,
     pub max_tokens: u32,
+    usage_sink: Option<Arc<dyn crate::model_event::AuxiliaryUsageSink>>,
 }
 
 impl JudgeClient {
@@ -329,6 +331,7 @@ impl JudgeClient {
             transport: aux_transport(JUDGE_TIMEOUT_SECS),
             api_key,
             max_tokens: JUDGE_MAX_TOKENS,
+            usage_sink: None,
         }
     }
 
@@ -343,6 +346,15 @@ impl JudgeClient {
     /// before `with_transport` if you also inject a test transport.
     pub fn with_timeout_secs(mut self, secs: u64) -> Self {
         self.transport = aux_transport(secs.max(1));
+        self
+    }
+
+    /// Record successful judge model calls in the owning session ledger.
+    pub fn with_usage_sink(
+        mut self,
+        sink: Arc<dyn crate::model_event::AuxiliaryUsageSink>,
+    ) -> Self {
+        self.usage_sink = Some(sink);
         self
     }
 }
@@ -365,6 +377,12 @@ impl Judge for JudgeClient {
                 "check the [judge] endpoint is reachable within the timeout",
             )
         })?;
+        crate::model_event::record_auxiliary_usage(
+            self.usage_sink.as_ref(),
+            &self.target.provider,
+            &self.target.model,
+            turn.usage,
+        )?;
         match turn.outcome {
             TurnOutcome::Text { text, .. } => parse_answer(req, &text),
             _ => Err(derr(
