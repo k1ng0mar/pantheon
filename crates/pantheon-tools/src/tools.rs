@@ -267,6 +267,62 @@ pub fn parse_args(args: &str) -> Result<serde_json::Value, PantheonError> {
     })
 }
 
+/// Extract a required string argument from parsed tool args.
+///
+/// The single implementation of a check that was copy-pasted in five places
+/// (`builtins`, `session_search_tools`, `browser/tools`, `websearch/tools`,
+/// `exec/skills`) with the same `TOOL_BAD_ARGS` shape and the same message.
+/// Public because every tool module needs it and they already depend on this
+/// crate.
+pub fn arg_str(v: &serde_json::Value, key: &str) -> Result<String, PantheonError> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            tool_err(
+                "TOOL_BAD_ARGS",
+                Layer::Execution,
+                false,
+                format!("missing string arg '{key}'"),
+                "check tool arguments",
+            )
+        })
+}
+
+#[cfg(test)]
+mod arg_str_tests {
+    use super::*;
+
+    #[test]
+    fn present_string_is_returned() {
+        let v = serde_json::json!({"path": "/tmp/x", "n": 3});
+        assert_eq!(arg_str(&v, "path").unwrap(), "/tmp/x");
+    }
+
+    #[test]
+    fn missing_key_is_a_structured_bad_args_error() {
+        let v = serde_json::json!({"other": 1});
+        let err = arg_str(&v, "path").unwrap_err();
+        assert_eq!(err.code, "TOOL_BAD_ARGS");
+    }
+
+    #[test]
+    fn non_string_value_is_rejected_not_coerced() {
+        // A number or object must not be silently stringified into a path.
+        let v = serde_json::json!({"path": 42});
+        let err = arg_str(&v, "path").unwrap_err();
+        assert_eq!(err.code, "TOOL_BAD_ARGS");
+    }
+
+    #[test]
+    fn empty_string_is_accepted_here_and_filtered_by_callers_that_need_it() {
+        // `arg_str` reports presence, not usefulness; `exec/skills` filters
+        // empty separately because a skill name must be non-empty.
+        let v = serde_json::json!({"name": ""});
+        assert_eq!(arg_str(&v, "name").unwrap(), "");
+    }
+}
+
 #[cfg(test)]
 mod call_context_tests {
     use super::*;

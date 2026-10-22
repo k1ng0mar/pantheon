@@ -155,21 +155,6 @@ fn mcp_entry_matches_recipe(
         && entry.url == canonical.url
 }
 
-fn arg_str(v: &serde_json::Value, key: &str) -> Result<String, PantheonError> {
-    v.get(key)
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| {
-            crate::tools::tool_err(
-                "TOOL_BAD_ARGS",
-                Layer::Execution,
-                false,
-                format!("missing string arg '{key}'"),
-                "check tool arguments",
-            )
-        })
-}
-
 /// Register the default toolset on a registry.
 pub fn register_builtins(reg: &mut ToolRegistry) {
     register_builtins_with(reg, BuiltinOptions::default());
@@ -217,7 +202,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             // out of the audit trail as executed calls. run_shell parses
             // the args itself; parse here only for the gate.
             let v = parse_args(args)?;
-            let command = arg_str(&v, "command")?;
+            let command = crate::tools::arg_str(&v, "command")?;
             pantheon_exec::danger::gate(&command)?;
             run_shell_with_env(
                 args,
@@ -276,7 +261,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             Capability::FilesystemRead,
             move |args| {
                 let v = parse_args(args)?;
-                let path = arg_str(&v, "path")?;
+                let path = crate::tools::arg_str(&v, "path")?;
                 let cpath = confine(Path::new(&path), &r0.path())?;
                 let raw = std::fs::read_to_string(&cpath).map_err(|e| {
                     crate::tools::tool_err(
@@ -311,10 +296,10 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
         Capability::FilesystemWrite,
         move |args| {
             let v = parse_args(args)?;
-            let path = arg_str(&v, "path")?;
+            let path = crate::tools::arg_str(&v, "path")?;
             // Confine before either write path (safe or unsafe fallback).
             let cpath = confine(Path::new(&path), &r1.path())?;
-            let content = arg_str(&v, "content")?;
+            let content = crate::tools::arg_str(&v, "content")?;
             let expected = v
                 .get("expected_hash")
                 .and_then(|x| x.as_str())
@@ -380,7 +365,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             Capability::FilesystemRead,
             move |args| {
                 let v = parse_args(args)?;
-                let path = arg_str(&v, "path")?;
+                let path = crate::tools::arg_str(&v, "path")?;
                 let cpath = confine(Path::new(&path), &r2.path())?;
                 let mut names: Vec<String> = std::fs::read_dir(&cpath)
                     .map_err(|e| {
@@ -456,7 +441,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
         Capability::PluginEnable,
         move |args| {
             let v = parse_args(args)?;
-            let name = arg_str(&v, "name")?;
+            let name = crate::tools::arg_str(&v, "name")?;
             let data_dir = dd.clone().ok_or_else(|| {
                 crate::tools::tool_err("TOOL_NO_DATA_DIR", Layer::Execution, false, "plugin enablement needs a data dir; registration did not provide one".to_string(), "check tool arguments")
             })?;
@@ -502,7 +487,7 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
         Capability::McpEnable,
         move |args| {
             let v = parse_args(args)?;
-            let name = arg_str(&v, "name")?;
+            let name = crate::tools::arg_str(&v, "name")?;
             let data_dir = dd.clone().ok_or_else(|| {
                 crate::tools::tool_err("TOOL_NO_DATA_DIR", Layer::Execution, false, "MCP enablement needs a data dir; registration did not provide one".to_string(), "check tool arguments")
             })?;
@@ -560,7 +545,7 @@ fn run_shell_with_env(
     workspace: &WorkspaceRoot,
 ) -> Result<String, PantheonError> {
     let v = parse_args(args)?;
-    let command = arg_str(&v, "command")?;
+    let command = crate::tools::arg_str(&v, "command")?;
     // Shell runs at HIGH isolation: bwrap with dropped caps + no-new-privs
     // + rlimits. The capability gate already ran before we get here.
     let profile = SandboxProfile::from(SandboxLevel::High);

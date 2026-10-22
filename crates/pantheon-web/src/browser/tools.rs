@@ -35,7 +35,7 @@ use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::message::ToolSchema;
 use pantheon_exec::compact_output;
 use pantheon_secrets::LoginStore;
-use pantheon_tools::tools::{parse_args, ArgCapabilities, ToolRegistry};
+use pantheon_tools::tools::{arg_str, parse_args, ArgCapabilities, ToolRegistry};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -95,13 +95,6 @@ fn berr(code: &str, cause: String) -> PantheonError {
         "check tool arguments",
         "",
     )
-}
-
-fn arg_str(v: &serde_json::Value, key: &str) -> Result<String, PantheonError> {
-    v.get(key)
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| berr("TOOL_BAD_ARGS", format!("missing string arg '{key}'")))
 }
 
 fn arg_opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
