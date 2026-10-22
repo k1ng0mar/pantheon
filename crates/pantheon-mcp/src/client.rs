@@ -1,8 +1,9 @@
 //! Minimal real MCP client over stdio.
 //!
 //! Protocol subset: `initialize` (with protocol-version negotiation),
-//! `tools/list`, `tools/call`. Everything else - resources, prompts,
-//! sampling, roots, elicitation - is out of scope for this pass.
+//! `tools/list`, `tools/call`, `resources/list`, `resources/read`,
+//! `resources/templates/list`, `prompts/list`, `prompts/get`. Sampling,
+//! roots, and elicitation remain out of scope.
 //!
 //! # Call direction
 //!
@@ -19,7 +20,10 @@
 //! A denial aborts the call; the server never sees it.
 
 use crate::framed::{self, FrameError};
-use crate::{classify, result_text, McpConn, Wire};
+use crate::{
+    classify, result_text, McpConn, McpPrompt, McpPromptResult, McpResource, McpResourceContent,
+    McpResourceTemplate, Wire,
+};
 use pantheon_api::capability::{Capability, Policy};
 use pantheon_api::message::ToolSchema;
 use pantheon_exec::sandbox::{build_sandboxed, enforce, Enforcement};
@@ -122,6 +126,9 @@ pub enum McpError {
     Rpc { code: i64, message: String },
     /// `tools/call` returned `isError: true`. Carries the server's text.
     ServerToolError(String),
+    /// Remote authentication is missing, expired, or failed. Carries the
+    /// remediation (`pantheon mcp login <server>`); never token material.
+    Unauthorized(String),
     /// The capability gate denied the call. The server never saw it.
     GateDenied(String),
     /// The sandbox policy denied the spawn (or held it for approval).
@@ -154,6 +161,7 @@ impl fmt::Display for McpError {
                 write!(f, "mcp: server error {code}: {message}")
             }
             McpError::ServerToolError(t) => write!(f, "mcp: tool reported error: {t}"),
+            McpError::Unauthorized(e) => write!(f, "mcp: authentication required: {e}"),
             McpError::GateDenied(e) => write!(f, "mcp: capability gate denied the call: {e}"),
             McpError::PolicyDenied(e) => {
                 write!(f, "mcp: sandbox policy denied the spawn: {e}")
@@ -208,6 +216,14 @@ impl McpToolDef {
     }
 }
 
+/// Server-initiated elicitation callback. The handler receives the server
+/// name and the raw `elicitation/create` params and returns the JSON-RPC
+/// result (normally `{"action":"accept","content":{...}}`). Returning an
+/// error is reported to the server as an MCP error; the request never
+/// wedges the client's own response pairing.
+pub type ElicitationHandler =
+    std::sync::Arc<dyn Fn(&str, &Value) -> Result<Value, McpError> + Send + Sync>;
+
 /// Events from the stdout reader thread.
 enum ReadEvent {
     Message(Value),
@@ -234,6 +250,7 @@ pub struct McpClient {
     /// content hash.
     pub server_version: Option<String>,
     dead: bool,
+    elicitation: Option<ElicitationHandler>,
 }
 
 impl McpClient {
@@ -248,6 +265,16 @@ impl McpClient {
     /// enforcement's sandbox profile. `None` = no policy configured: the
     /// spawn proceeds un-gated, as before.
     pub fn connect(config: &McpServerConfig, policy: Option<&Policy>) -> Result<Self, McpError> {
+        Self::connect_with(config, policy, None)
+    }
+
+    /// [`McpClient::connect`] plus an optional server-initiated
+    /// elicitation handler.
+    pub fn connect_with(
+        config: &McpServerConfig,
+        policy: Option<&Policy>,
+        elicitation: Option<ElicitationHandler>,
+    ) -> Result<Self, McpError> {
         // Sandbox enforcement: the capability policy owns *whether* the
         // server process may run at all.
         let profile = match policy {
@@ -335,6 +362,7 @@ impl McpClient {
             negotiated_version: String::new(),
             server_version: None,
             dead: false,
+            elicitation,
         };
         client.initialize()?;
         Ok(client)
@@ -457,15 +485,40 @@ impl McpClient {
                         }
                         return Ok(result.unwrap_or(Value::Null));
                     }
-                    Wire::Request { id: rid, .. } => {
-                        // Server-to-client calls (sampling, roots, ...) are
-                        // out of scope: answer "method not found" and carry
-                        // on waiting for our response.
-                        let _ = self.send(&serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": rid,
-                            "error": {"code": -32601, "message": "method not found"},
-                        }));
+                    Wire::Request {
+                        id: rid,
+                        method,
+                        params,
+                    } => {
+                        // MCP elicitation is the one server-to-client call
+                        // this host answers. Sampling/roots stay out of
+                        // scope and get a clean method-not-found.
+                        let response = if method == "elicitation/create" {
+                            match self.elicitation.as_ref() {
+                                Some(handler) => match handler(&self.server, &params) {
+                                    Ok(result) => serde_json::json!({
+                                        "jsonrpc": "2.0", "id": rid, "result": result,
+                                    }),
+                                    Err(e) => serde_json::json!({
+                                        "jsonrpc": "2.0", "id": rid,
+                                        "error": {"code": -32603, "message": e.to_string()},
+                                    }),
+                                },
+                                None => serde_json::json!({
+                                    "jsonrpc": "2.0", "id": rid,
+                                    "error": {
+                                        "code": -32601,
+                                        "message": "elicitation is not supported by this host",
+                                    },
+                                }),
+                            }
+                        } else {
+                            serde_json::json!({
+                                "jsonrpc": "2.0", "id": rid,
+                                "error": {"code": -32601, "message": "method not found"},
+                            })
+                        };
+                        let _ = self.send(&response);
                     }
                     _ => {}
                 },
@@ -522,6 +575,89 @@ impl McpClient {
         Ok(result)
     }
 
+    /// `resources/list`: the server's static resources, following
+    /// `nextCursor` pages. A repeated cursor or 1,000 pages ends the walk
+    /// defensively.
+    pub fn list_resources(&mut self) -> Result<Vec<McpResource>, McpError> {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..1000 {
+            let params = match &cursor {
+                Some(c) => serde_json::json!({"cursor": c}),
+                None => serde_json::json!({}),
+            };
+            let result = self.request("resources/list", params)?;
+            out.extend(crate::resources_from(&result)?);
+            match crate::next_cursor(&result) {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => return Ok(out),
+            }
+        }
+        Err(McpError::Protocol(
+            "resources/list exceeded 1,000 pages".to_string(),
+        ))
+    }
+
+    /// `resources/templates/list`: parameterized resource templates,
+    /// following `nextCursor` pages.
+    pub fn list_resource_templates(&mut self) -> Result<Vec<McpResourceTemplate>, McpError> {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..1000 {
+            let params = match &cursor {
+                Some(c) => serde_json::json!({"cursor": c}),
+                None => serde_json::json!({}),
+            };
+            let result = self.request("resources/templates/list", params)?;
+            out.extend(crate::resource_templates_from(&result)?);
+            match crate::next_cursor(&result) {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => return Ok(out),
+            }
+        }
+        Err(McpError::Protocol(
+            "resources/templates/list exceeded 1,000 pages".to_string(),
+        ))
+    }
+
+    /// `resources/read`: fetch one resource by URI. MCP permits a single
+    /// read to return multiple content blocks, so this returns a vector.
+    pub fn read_resource(&mut self, uri: &str) -> Result<Vec<McpResourceContent>, McpError> {
+        let result = self.request("resources/read", serde_json::json!({"uri": uri}))?;
+        crate::resource_contents_from(&result)
+    }
+
+    /// `prompts/list`: the server's reusable prompt templates, following
+    /// `nextCursor` pages.
+    pub fn list_prompts(&mut self) -> Result<Vec<McpPrompt>, McpError> {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..1000 {
+            let params = match &cursor {
+                Some(c) => serde_json::json!({"cursor": c}),
+                None => serde_json::json!({}),
+            };
+            let result = self.request("prompts/list", params)?;
+            out.extend(crate::prompts_from(&result)?);
+            match crate::next_cursor(&result) {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => return Ok(out),
+            }
+        }
+        Err(McpError::Protocol(
+            "prompts/list exceeded 1,000 pages".to_string(),
+        ))
+    }
+
+    /// `prompts/get`: expand one prompt with the caller's arguments.
+    pub fn get_prompt(&mut self, name: &str, args: &Value) -> Result<McpPromptResult, McpError> {
+        let result = self.request(
+            "prompts/get",
+            serde_json::json!({"name": name, "arguments": args}),
+        )?;
+        crate::prompt_result_from(&result)
+    }
+
     /// Whether the child process is still running.
     pub fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
@@ -552,6 +688,26 @@ impl McpConn for McpClient {
     /// still pass their own gate to [`McpClient::call_tool`].
     fn call_tool(&mut self, name: &str, args: &Value) -> Result<Value, McpError> {
         McpClient::call_tool(self, name, args, &|_: &str, _: &Value| Ok(()))
+    }
+
+    fn list_resources(&mut self) -> Result<Vec<McpResource>, McpError> {
+        McpClient::list_resources(self)
+    }
+
+    fn list_resource_templates(&mut self) -> Result<Vec<McpResourceTemplate>, McpError> {
+        McpClient::list_resource_templates(self)
+    }
+
+    fn read_resource(&mut self, uri: &str) -> Result<Vec<McpResourceContent>, McpError> {
+        McpClient::read_resource(self, uri)
+    }
+
+    fn list_prompts(&mut self) -> Result<Vec<McpPrompt>, McpError> {
+        McpClient::list_prompts(self)
+    }
+
+    fn get_prompt(&mut self, name: &str, args: &Value) -> Result<McpPromptResult, McpError> {
+        McpClient::get_prompt(self, name, args)
     }
 
     fn alive(&mut self) -> bool {
@@ -642,5 +798,90 @@ mod client_policy_tests {
             .expect("allowed policy should let the spawn proceed");
         assert_eq!(client.negotiated_version, "2025-06-18");
         assert_eq!(client.server_version.as_deref(), Some("fake-1"));
+    }
+
+    /// End-to-end resource/prompt request pairing over stdio: the server
+    /// answers each method, and the client parses the wire shapes into
+    /// the manager-facing types.
+    #[test]
+    fn resources_and_prompts_round_trip() {
+        // No policy = direct spawn, like an explicitly un-gated embedder;
+        // this test is about request pairing, not the sandbox.
+        let script = [
+            "import sys, json",
+            "inp = sys.stdin.buffer",
+            "out = sys.stdout.buffer",
+            "def read_msg():",
+            "    line = inp.readline()",
+            "    if not line:",
+            "        return None",
+            "    text = line.decode().strip()",
+            "    if text.lower().startswith('content-length'):",
+            "        n = int(text.split(':')[1])",
+            "        inp.readline()",
+            "        return json.loads(inp.read(n).decode())",
+            "    return json.loads(text)",
+            "def write_msg(obj):",
+            "    out.write(json.dumps(obj).encode() + b'\\n')",
+            "    out.flush()",
+            "while True:",
+            "    msg = read_msg()",
+            "    if msg is None:",
+            "        break",
+            "    if not isinstance(msg, dict):",
+            "        continue",
+            "    method = msg.get('method')",
+            "    result = None",
+            "    if method == 'initialize':",
+            "        result = {'protocolVersion': '2025-06-18', 'serverInfo': {'version': 'res-1'}}",
+            "    elif method == 'resources/list':",
+            "        if msg.get('params', {}).get('cursor') == 'p2':",
+            "            result = {'resources': [{'uri': 'file:///tmp/y', 'name': 'y'}]}",
+            "        else:",
+            "            result = {'resources': [{'uri': 'file:///tmp/x', 'name': 'x', 'mimeType': 'text/plain'}], 'nextCursor': 'p2'}",
+            "    elif method == 'resources/templates/list':",
+            "        result = {'resourceTemplates': [{'uriTemplate': 'file:///{path}', 'name': 'files'}]}",
+            "    elif method == 'resources/read':",
+            "        result = {'contents': [{'uri': msg['params']['uri'], 'mimeType': 'text/plain', 'text': 'hello'}]}",
+            "    elif method == 'prompts/list':",
+            "        result = {'prompts': [{'name': 'review', 'arguments': [{'name': 'diff', 'required': True}]}]}",
+            "    elif method == 'prompts/get':",
+            "        result = {'description': 'review', 'messages': [{'role': 'user', 'content': {'type': 'text', 'text': msg['params']['arguments']['diff']}}]}",
+            "    if result is not None and 'id' in msg:",
+            "        write_msg({'jsonrpc': '2.0', 'id': msg['id'], 'result': result})",
+        ]
+        .join("\n");
+        let cfg = McpServerConfig::new("fake-resources", "python3")
+            .with_args(vec!["-c".to_string(), script]);
+        let mut client = McpClient::connect(&cfg, None).expect("connect fake server");
+
+        let resources = client.list_resources().expect("resources/list");
+        assert_eq!(resources.len(), 2);
+        assert_eq!(resources[0].uri, "file:///tmp/x");
+        assert_eq!(resources[0].mime_type.as_deref(), Some("text/plain"));
+        assert_eq!(resources[1].uri, "file:///tmp/y");
+
+        let templates = client.list_resource_templates().expect("templates/list");
+        assert_eq!(templates[0].uri_template, "file:///{path}");
+
+        let contents = client
+            .read_resource("file:///tmp/x")
+            .expect("resources/read");
+        assert_eq!(contents[0].text.as_deref(), Some("hello"));
+
+        let prompts = client.list_prompts().expect("prompts/list");
+        assert!(prompts[0].arguments[0].required);
+
+        let prompt = client
+            .get_prompt("review", &serde_json::json!({"diff": "a b"}))
+            .expect("prompts/get");
+        assert_eq!(prompt.messages.len(), 1);
+        assert_eq!(
+            prompt.messages[0]
+                .content
+                .get("text")
+                .and_then(|v| v.as_str()),
+            Some("a b")
+        );
     }
 }

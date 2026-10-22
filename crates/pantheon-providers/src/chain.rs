@@ -283,12 +283,19 @@ impl<T: ChatTransport> ProviderChain<T> {
 
             match &mut result {
                 Ok(turn) => {
-                    if let Some(mut usage) = turn.usage {
-                        usage.cost_usd = meta.cost.estimate_with_cache(
-                            usage.input_tokens,
-                            usage.output_tokens,
-                            meta.cache_cost.as_ref(),
-                        );
+                    let mut usage = turn.usage.unwrap_or_default();
+                    if turn.usage.is_some() {
+                        if usage.total_tokens == 0 {
+                            usage.total_tokens =
+                                usage.input_tokens.saturating_add(usage.output_tokens);
+                        }
+                        if usage.input_tokens > 0 || usage.output_tokens > 0 {
+                            usage.cost_usd = meta.cost.estimate_with_cache(
+                                usage.input_tokens,
+                                usage.output_tokens,
+                                meta.cache_cost.as_ref(),
+                            );
+                        }
                         // The adapter baked `cost_cents` at parse time from
                         // `cost_usd: None` (always 0) - it never sees catalog
                         // prices, so the chain owns the fix-up. Cost feeds
@@ -297,8 +304,12 @@ impl<T: ChatTransport> ProviderChain<T> {
                         if let Some(usd) = usage.cost_usd {
                             stamp_outcome_cost(&mut turn.outcome, (usd * 100.0) as u32);
                         }
-                        sink.emit(ModelEvent::Usage { usage });
                     }
+                    // A successful provider response is a model call even
+                    // when its API omits token accounting. Persist a zero
+                    // usage row so call counts stay complete; the TUI keeps
+                    // its streamed estimate when all values are unknown.
+                    sink.emit(ModelEvent::Usage { usage });
                     sink.emit(ModelEvent::Completed {
                         finish_reason: turn.finish_reason.clone(),
                     });

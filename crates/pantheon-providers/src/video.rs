@@ -37,6 +37,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use pantheon_agent::TurnOutcome;
 use pantheon_api::config::VoiceSection;
@@ -588,6 +589,7 @@ pub struct VideoClient {
     /// Configured `[stt]` section for the fallback's audio leg.
     /// `None` = frames only, noted honestly.
     stt_section: Option<VoiceSection>,
+    usage_sink: Option<Arc<dyn crate::model_event::AuxiliaryUsageSink>>,
 }
 
 impl VideoClient {
@@ -610,6 +612,7 @@ impl VideoClient {
                 reasoning_budget: None,
             },
             stt_section: None,
+            usage_sink: None,
         }
     }
 
@@ -624,6 +627,16 @@ impl VideoClient {
     /// frames only, with an honest note.
     pub fn with_stt_section(mut self, section: Option<VoiceSection>) -> Self {
         self.stt_section = section;
+        self
+    }
+
+    /// Record successful video and fallback vision calls in the owning
+    /// session ledger.
+    pub fn with_usage_sink(
+        mut self,
+        sink: Arc<dyn crate::model_event::AuxiliaryUsageSink>,
+    ) -> Self {
+        self.usage_sink = Some(sink);
         self
     }
 
@@ -671,6 +684,12 @@ impl VideoClient {
         if self.native {
             match self.describe_native(req) {
                 Ok(summary) => {
+                    crate::model_event::record_auxiliary_usage(
+                        self.usage_sink.as_ref(),
+                        &self.target.provider,
+                        &self.target.model,
+                        None,
+                    )?;
                     return Ok(VideoSummary {
                         summary,
                         via_keyframes: false,
@@ -918,7 +937,7 @@ impl VideoClient {
             .ok()
             .flatten()
             .or_else(|| self.api_key.clone());
-        let vision = VisionClient::resolve(&self.policy, vkey).map_err(|e| {
+        let mut vision = VisionClient::resolve(&self.policy, vkey).map_err(|e| {
             verr(
                 "VIDEO_UNAVAILABLE",
                 format!(
@@ -929,6 +948,9 @@ impl VideoClient {
                 "point [video] at a video-native model with `pantheon model set video <provider> <model>` (e.g. `pantheon model set video google gemini-2.5-pro`), or configure a vision-capable [vision] model so the frames fallback can run",
             )
         })?;
+        if let Some(sink) = self.usage_sink.as_ref() {
+            vision = vision.with_usage_sink(Arc::clone(sink));
+        }
         let frames = extract_frames(&req.video_path, MAX_FRAMES)?;
         let (transcript, audio_note) = self.audio_leg(&req.video_path);
         let mut described: Vec<(f64, String)> = Vec::new();
@@ -997,6 +1019,12 @@ impl VideoClient {
                 "check the [vision] endpoint is reachable within the timeout",
             )
         })?;
+        crate::model_event::record_auxiliary_usage(
+            self.usage_sink.as_ref(),
+            &vision.target.provider,
+            &vision.target.model,
+            turn.usage,
+        )?;
         match turn.outcome {
             TurnOutcome::Text { text, .. } => {
                 let summary = bound_summary(&text);

@@ -25,6 +25,7 @@ use pantheon_agent::TurnOutcome;
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::model::{AuxiliaryKind, DefaultModel, ModelPolicy};
 use pantheon_secrets::SecretValue;
+use std::sync::Arc;
 
 /// Verify calls sit inline in delegation completion: short, bounded deadline.
 pub const VERIFY_TIMEOUT_SECS: u64 = 30;
@@ -193,6 +194,7 @@ pub struct VerifyClient {
     /// provider's own key env when set.
     pub api_key: Option<SecretValue>,
     pub max_tokens: u32,
+    usage_sink: Option<Arc<dyn crate::model_event::AuxiliaryUsageSink>>,
 }
 
 impl VerifyClient {
@@ -208,12 +210,22 @@ impl VerifyClient {
             transport: aux_transport(aux.timeout_secs.max(1)),
             api_key,
             max_tokens: VERIFY_MAX_TOKENS,
+            usage_sink: None,
         })
     }
 
     /// Test seam: replay a canned response through any transport.
     pub fn with_transport(mut self, transport: Box<dyn ChatTransport>) -> Self {
         self.transport = transport;
+        self
+    }
+
+    /// Record successful verifier model calls in the owning session ledger.
+    pub fn with_usage_sink(
+        mut self,
+        sink: Arc<dyn crate::model_event::AuxiliaryUsageSink>,
+    ) -> Self {
+        self.usage_sink = Some(sink);
         self
     }
 
@@ -233,6 +245,12 @@ impl VerifyClient {
                 "check the [verify] endpoint is reachable within the timeout",
             )
         })?;
+        crate::model_event::record_auxiliary_usage(
+            self.usage_sink.as_ref(),
+            &self.target.provider,
+            &self.target.model,
+            turn.usage,
+        )?;
         match turn.outcome {
             TurnOutcome::Text { text, .. } => Ok(parse_verdict(&text)),
             _ => Err(verr(

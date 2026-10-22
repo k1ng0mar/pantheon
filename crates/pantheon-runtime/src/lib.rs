@@ -58,9 +58,10 @@ use pantheon_storage::{
 pub use pipeline::{run_model_stage, StageEvaluator, StageExecutor};
 pub use pipeline_runner::{PipelineOutcome, PipelineRunner};
 pub use rpc::{Dispatcher, Id, MethodHandler, Request, Response, RpcError};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 pub use tool_config::{
     browser_backend_config, build_browser_backend, resolve_browser_section, BrowserToolConfig,
@@ -187,6 +188,12 @@ struct SupervisorInner {
     /// handle; the list itself lives behind a mutex because registration
     /// happens while runs are already in flight.
     observers: std::sync::Mutex<Vec<EventObserver>>,
+    /// In-flight MCP elicitation requests, keyed by synthetic call id.
+    /// The tool thread blocks on the receiver; the TUI's existing clarify
+    /// answer path sends through the map before falling back to the
+    /// ledger-based ask_user path.
+    elicitations: std::sync::Mutex<HashMap<String, mpsc::Sender<String>>>,
+    next_elicitation: AtomicU64,
 }
 
 /// Holds a run lease until the work scope exits.  Dropping the guard is the
@@ -325,6 +332,8 @@ impl Supervisor {
                 search,
                 embedder: std::sync::Mutex::new(None),
                 observers: std::sync::Mutex::new(Vec::new()),
+                elicitations: std::sync::Mutex::new(HashMap::new()),
+                next_elicitation: AtomicU64::new(1),
             }),
         };
         supervisor.startup_recovery();
@@ -900,12 +909,118 @@ impl Supervisor {
     /// appends it as the `ask_user` tool result (so the resumed turn sees
     /// it in the ledger like any completed tool call), and leaves the run
     /// resumable. Mirrors [`Supervisor::grant`].
+    /// Ask the operator for MCP elicitation input and block the calling
+    /// server request until the TUI/ACP answer path resolves it. The
+    /// synthetic call id is deliberately distinct from `ask_user` ids so
+    /// a resumed turn never mistakes it for a tool result.
+    pub fn elicit(
+        &self,
+        run_id: &str,
+        server: &str,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, PantheonError> {
+        let message = params
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("MCP server requests additional input");
+        let schema = params
+            .get("requestedSchema")
+            .or_else(|| params.get("requested_schema"));
+        let mut options: Vec<String> = Vec::new();
+        let mut first_field: Option<String> = None;
+        if let Some(props) = schema
+            .and_then(|s| s.get("properties"))
+            .and_then(|p| p.as_object())
+        {
+            for (name, prop) in props {
+                if first_field.is_none() {
+                    first_field = Some(name.clone());
+                }
+                if let Some(values) = prop.get("enum").and_then(|e| e.as_array()) {
+                    for value in values {
+                        if let Some(v) = value.as_str() {
+                            if !options.iter().any(|x| x == v) {
+                                options.push(v.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let call_id = format!(
+            "mcp_elicit_{}",
+            self.inner.next_elicitation.fetch_add(1, Ordering::Relaxed)
+        );
+        let question = format!("MCP server '{server}': {message}");
+        let (tx, rx) = mpsc::channel();
+        {
+            let mut waiters = self
+                .inner
+                .elicitations
+                .lock()
+                .map_err(|_| rerr("RT_ELICIT_LOCK", "elicitation waiters poisoned".to_string()))?;
+            waiters.insert(call_id.clone(), tx);
+        }
+        if let Err(e) = self.emit(Event::UserInputRequested {
+            run_id: run_id.to_string(),
+            call_id: call_id.clone(),
+            question,
+            options,
+        }) {
+            if let Ok(mut waiters) = self.inner.elicitations.lock() {
+                waiters.remove(&call_id);
+            }
+            return Err(e);
+        }
+        let answer = match rx.recv_timeout(Duration::from_secs(300)) {
+            Ok(answer) => answer,
+            Err(_) => {
+                if let Ok(mut waiters) = self.inner.elicitations.lock() {
+                    waiters.remove(&call_id);
+                }
+                return Err(rerr(
+                    "RT_ELICIT_TIMEOUT",
+                    "MCP elicitation timed out after 300s".to_string(),
+                ));
+            }
+        };
+        let content = match first_field {
+            Some(field) => serde_json::json!({ field: answer }),
+            None => serde_json::json!({ "value": answer }),
+        };
+        Ok(serde_json::json!({"action": "accept", "content": content}))
+    }
+
     pub fn answer_input(
         &self,
         run_id: &str,
         call_id: &str,
         answer: &str,
     ) -> Result<(), PantheonError> {
+        // MCP elicitation is not a ledger-parked turn: the tool call is
+        // still executing on another thread. Hand the answer to its
+        // waiter and record the operator decision for the transcript.
+        let waiter = self
+            .inner
+            .elicitations
+            .lock()
+            .map_err(|_| rerr("RT_ELICIT_LOCK", "elicitation waiters poisoned".to_string()))?
+            .remove(call_id);
+        if let Some(tx) = waiter {
+            let _ = tx.send(answer.to_string());
+            self.ledger().append(&Event::UserInputProvided {
+                run_id: run_id.into(),
+                call_id: call_id.into(),
+                answer: answer.into(),
+            })?;
+            return Ok(());
+        }
+        if call_id.starts_with("mcp_elicit_") {
+            return Err(rerr(
+                "RT_ELICIT_EXPIRED",
+                format!("MCP elicitation {call_id} is no longer waiting for an answer"),
+            ));
+        }
         let entries = self.ledger().replay(run_id)?;
         let requested = entries.iter().any(
             |e| matches!(&e.event, Event::UserInputRequested { call_id: c, .. } if c == call_id),
@@ -965,6 +1080,10 @@ impl Supervisor {
             }
         }
         out.retain(|(c, _, _)| !answered.contains(&c.as_str()));
+        // A synthetic MCP elicitation only exists while its tool thread is
+        // blocked in this process; after a restart there is nothing to
+        // answer, so do not re-render a stale card.
+        out.retain(|(c, _, _)| !c.starts_with("mcp_elicit_"));
         Ok(out)
     }
 

@@ -8,6 +8,7 @@
 //! without the agent loop knowing anything about providers.
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Token accounting for one completed attempt, plus cost when the catalog
 /// knows the model's prices.
@@ -18,6 +19,44 @@ pub struct ModelUsage {
     pub total_tokens: u64,
     /// Estimated USD cost; `None` when the catalog has no price for the model.
     pub cost_usd: Option<f64>,
+}
+
+/// Records token usage from a successful auxiliary model call against a
+/// host-owned run. Auxiliary clients keep this optional so they remain useful
+/// in standalone jobs and tests that have no session ledger.
+pub trait AuxiliaryUsageSink: Send + Sync {
+    fn record(
+        &self,
+        provider: &str,
+        model: &str,
+        usage: ModelUsage,
+    ) -> Result<(), pantheon_api::error::PantheonError>;
+}
+
+/// Persist usage for one successful auxiliary call. A response without
+/// provider token details still counts as a call, with zero known tokens.
+pub fn record_auxiliary_usage(
+    sink: Option<&Arc<dyn AuxiliaryUsageSink>>,
+    provider: &str,
+    model: &str,
+    usage: Option<ModelUsage>,
+) -> Result<(), pantheon_api::error::PantheonError> {
+    let Some(sink) = sink else {
+        return Ok(());
+    };
+    let mut usage = usage.unwrap_or_default();
+    if usage.total_tokens == 0 {
+        usage.total_tokens = usage.input_tokens.saturating_add(usage.output_tokens);
+    }
+    if usage.cost_usd.is_none() && (usage.input_tokens > 0 || usage.output_tokens > 0) {
+        let meta = crate::catalog::model_meta(provider, model);
+        usage.cost_usd = meta.cost.estimate_with_cache(
+            usage.input_tokens,
+            usage.output_tokens,
+            meta.cache_cost.as_ref(),
+        );
+    }
+    sink.record(provider, model, usage)
 }
 
 /// One normalized provider event.

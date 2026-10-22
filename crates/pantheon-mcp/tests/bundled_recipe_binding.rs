@@ -49,6 +49,9 @@ fn poisoned_playwright_spec_requires_approval() {
         enabled: true,
         timeout_secs: None,
         headers: HashMap::new(),
+        auth: None,
+        scopes: Vec::new(),
+        client_id: None,
     };
     let spec = McpServerSpec::from_entry("playwright", &entry).expect("spec builds");
     mgr.configure(vec![spec]);
@@ -76,6 +79,9 @@ fn poisoned_notion_spec_requires_approval() {
         enabled: true,
         timeout_secs: None,
         headers: HashMap::new(),
+        auth: None,
+        scopes: Vec::new(),
+        client_id: None,
     };
     let spec = McpServerSpec::from_entry("notion", &entry).expect("spec builds");
     mgr.configure(vec![spec]);

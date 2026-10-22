@@ -53,13 +53,15 @@
 use crate::{
     bundled::{find_bundled, is_bundled},
     http::{HttpMcpClient, HttpTransport},
-    McpClient, McpConn, McpError, McpServerConfig, McpToolDef,
+    McpClient, McpConn, McpError, McpPrompt, McpPromptResult, McpResource, McpResourceContent,
+    McpResourceTemplate, McpServerConfig, McpToolDef,
 };
 use pantheon_api::approval::{self, ApprovalRecord, ApprovalStore};
 use pantheon_api::capability::{Capability, Policy};
 use pantheon_api::config::McpServerEntry;
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::message::ToolSchema;
+use pantheon_secrets::SecretsBroker;
 use pantheon_tools::tools::{parse_args, ToolRegistry};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -71,6 +73,27 @@ use std::time::{Duration, Instant};
 /// The runtime installs one over its secrets broker; without it only the
 /// process environment is consulted.
 pub type EnvResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// How a remote server authenticates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum McpAuth {
+    /// Static headers (if any) or no auth.
+    #[default]
+    None,
+    /// MCP OAuth: protected-resource metadata, dynamic client
+    /// registration when needed, and PKCE over a loopback redirect.
+    OAuth,
+}
+
+impl McpAuth {
+    pub fn parse(s: Option<&str>) -> Option<Self> {
+        match s.map(str::trim) {
+            None | Some("") | Some("none") => Some(Self::None),
+            Some("oauth") => Some(Self::OAuth),
+            _ => None,
+        }
+    }
+}
 
 /// Which transport a managed server speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +141,12 @@ pub struct McpServerSpec {
     /// Extra HTTP headers for sse/http transports. Values were already
     /// resolved (`env:` names looked up) by the config loader.
     pub headers: HashMap<String, String>,
+    /// Remote auth mode.
+    pub auth: McpAuth,
+    /// OAuth scopes to request; empty uses discovered defaults.
+    pub scopes: Vec<String>,
+    /// Pre-registered OAuth client id; `None` permits dynamic registration.
+    pub client_id: Option<String>,
 }
 
 impl std::fmt::Debug for McpServerSpec {
@@ -132,6 +161,9 @@ impl std::fmt::Debug for McpServerSpec {
             .field("url", &self.url)
             .field("enabled", &self.enabled)
             .field("timeout", &self.timeout)
+            .field("auth", &self.auth)
+            .field("scopes", &self.scopes)
+            .field("client_id", &self.client_id.as_deref().map(|_| "<set>"))
             .finish()
     }
 }
@@ -151,6 +183,9 @@ impl McpServerSpec {
             enabled: e.enabled,
             timeout: Duration::from_secs(e.timeout_secs.unwrap_or(30).max(1)),
             headers: HashMap::new(),
+            auth: McpAuth::parse(e.auth.as_deref())?,
+            scopes: e.scopes.clone(),
+            client_id: e.client_id.clone(),
         })
     }
 
@@ -285,7 +320,8 @@ impl McpCapabilityOverrides {
 /// Resolve the capability for one projected MCP tool.
 ///
 /// Precedence is deterministic: caller per-tool override, then caller
-/// per-server override, then built-in per-tool classification (REA),
+/// per-server override, then built-in per-tool classification (REA, only
+/// for its audited server version),
 /// then built-in server fallback (REA's restrictive fallback), then the
 /// [`Capability::NetworkOutbound`] default for all other servers.
 ///
@@ -302,9 +338,21 @@ pub fn resolve_tool_capability(
     server: &str,
     tool: &str,
 ) -> Capability {
+    resolve_tool_capability_for_version(overrides, server, tool, None)
+}
+
+/// Resolve one projected tool's capability using the MCP implementation
+/// version reported by `initialize`. REA's permissive entries apply only to
+/// the exact version whose effect inventory is embedded here; an absent or
+/// different version falls back to REA's approval-required server capability.
+pub fn resolve_tool_capability_for_version(
+    overrides: &McpCapabilityOverrides,
+    server: &str,
+    tool: &str,
+    server_version: Option<&str>,
+) -> Capability {
     use std::sync::OnceLock;
     static REA_TOOLS: OnceLock<HashMap<(String, String), Capability>> = OnceLock::new();
-    let rea_tools = REA_TOOLS.get_or_init(crate::rea::rea_tool_capabilities);
 
     // 1. Caller per-tool override (exact handshake pair).
     if let Some(cap) = overrides.tool.get(&(server.to_string(), tool.to_string())) {
@@ -314,15 +362,20 @@ pub fn resolve_tool_capability(
     if let Some(cap) = overrides.server.get(server) {
         return cap.clone();
     }
-    // 3. Built-in per-tool classification (REA static vs tracing).
-    if let Some(cap) = rea_tools.get(&(server.to_string(), tool.to_string())) {
-        return cap.clone();
-    }
-    // 4. Built-in server fallback (REA: restrictive, parks for approval).
+    // 3. The REA effect inventory is valid only for its pinned server
+    // implementation version. Unknown/missing versions fail closed.
     if server == crate::rea::REA_SERVER_NAME {
+        if server_version != Some(crate::rea_audit::REA_PINNED_VERSION) {
+            return crate::rea::rea_server_capability();
+        }
+        let rea_tools = REA_TOOLS.get_or_init(crate::rea::rea_tool_capabilities);
+        if let Some(cap) = rea_tools.get(&(server.to_string(), tool.to_string())) {
+            return cap.clone();
+        }
+        // New tools in the audited version also fail closed.
         return crate::rea::rea_server_capability();
     }
-    // 5. Default for all other servers (backwards compatible).
+    // 4. Default for all other servers (backwards compatible).
     Capability::NetworkOutbound
 }
 
@@ -537,6 +590,11 @@ struct Inner {
     /// [`McpClient::connect`]). `None` = no policy configured: spawns
     /// proceed un-gated, as before.
     policy: Option<Policy>,
+    /// Durable secret store for remote OAuth tokens. `None` disables OAuth
+    /// connects with an actionable error instead of writing plaintext.
+    secrets: Option<SecretsBroker>,
+    /// Host callback for MCP `elicitation/create` requests.
+    elicitation: Option<crate::client::ElicitationHandler>,
 }
 
 impl Inner {
@@ -568,6 +626,8 @@ impl McpManager {
                 states: HashMap::new(),
                 env_resolver: None,
                 policy: None,
+                secrets: None,
+                elicitation: None,
             }),
         }
     }
@@ -587,6 +647,62 @@ impl McpManager {
         if let Ok(mut inner) = self.inner.lock() {
             inner.policy = Some(policy);
         }
+    }
+
+    /// Install the durable secret store used for remote OAuth tokens.
+    /// Without one, an OAuth server fails with an actionable error rather
+    /// than falling back to plaintext storage.
+    pub fn set_secrets(&self, secrets: SecretsBroker) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.secrets = Some(secrets);
+        }
+    }
+
+    /// Install the host callback for MCP `elicitation/create`. Without one,
+    /// servers receive `-32601` and tools that require elicitation fail
+    /// cleanly instead of hanging.
+    pub fn set_elicitation_handler(&self, handler: crate::client::ElicitationHandler) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.elicitation = Some(handler);
+        }
+    }
+
+    fn oauth_parts(&self, name: &str) -> Result<(McpServerSpec, SecretsBroker), McpError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| McpError::Io("mcp manager lock poisoned".into()))?;
+        let spec = inner
+            .specs
+            .iter()
+            .find(|s| s.name == name)
+            .cloned()
+            .ok_or_else(|| McpError::Unauthorized(format!("unknown MCP server '{name}'")))?;
+        let secrets = inner.secrets.clone().ok_or_else(|| {
+            McpError::Unauthorized(
+                "no secret store is installed for this session; run `pantheon mcp login` from the CLI"
+                    .into(),
+            )
+        })?;
+        Ok((spec, secrets))
+    }
+
+    /// Run the interactive OAuth login for one configured server.
+    pub fn login_oauth(&self, name: &str) -> Result<(), McpError> {
+        let (spec, secrets) = self.oauth_parts(name)?;
+        crate::oauth::login(&spec, &secrets)
+    }
+
+    /// Forget stored OAuth credentials for one configured server.
+    pub fn logout_oauth(&self, name: &str) -> Result<(), McpError> {
+        let (spec, secrets) = self.oauth_parts(name)?;
+        crate::oauth::logout(&spec, &secrets)
+    }
+
+    /// `(connected, scopes, expires_at)` for one configured server.
+    pub fn oauth_status(&self, name: &str) -> Result<(bool, Vec<String>, Option<u64>), McpError> {
+        let (spec, secrets) = self.oauth_parts(name)?;
+        crate::oauth::status(&spec, &secrets)
     }
 
     /// Replace the managed spec set. Idempotent: unchanged specs keep
@@ -702,22 +818,34 @@ impl McpManager {
         let resolver = inner.env_resolver.clone();
         let policy = inner.policy.clone();
         let scope = inner.scope_dir();
-        let st = inner.states.get_mut(name).ok_or_else(|| {
-            McpError::Protocol(format!("no mcp server named '{name}' is configured"))
-        })?;
-        if st.hash.is_none() {
-            return Err(McpError::Io(
-                st.hash_error
-                    .clone()
-                    .unwrap_or_else(|| "cannot hash server".to_string()),
-            ));
-        }
+        let spec = {
+            let st = inner.states.get_mut(name).ok_or_else(|| {
+                McpError::Protocol(format!("no mcp server named '{name}' is configured"))
+            })?;
+            if st.hash.is_none() {
+                return Err(McpError::Io(
+                    st.hash_error
+                        .clone()
+                        .unwrap_or_else(|| "cannot hash server".to_string()),
+                ));
+            }
+            st.spec.clone()
+        };
         // Fingerprint: connect, then bind name + version + hash.
-        let conn = Self::connect_new(&st.spec, &resolver, &policy)?;
+        let secrets = inner.secrets.clone();
+        let elicitation = inner.elicitation.clone();
+        let conn = Self::connect_new(
+            &spec,
+            &resolver,
+            &policy,
+            secrets.as_ref(),
+            elicitation.as_ref(),
+        )?;
         let version = conn
             .server_version()
             .map(str::to_string)
             .unwrap_or_else(|| conn.negotiated_version().to_string());
+        let st = inner.states.get_mut(name).expect("checked above");
         let hash = st.hash.clone().unwrap_or_default();
         let rec = ApprovalRecord {
             plugin: name.to_string(),
@@ -793,6 +921,204 @@ impl McpManager {
         self.register_names(reg, &[server.to_string()], overrides)
     }
 
+    /// Project the MCP resource/prompt surface into the registry.
+    ///
+    /// These are manager-level tools (`mcp.resources.list` / `.templates`
+    /// / `.read`, `mcp.prompts.list` / `.get`) rather than per-server
+    /// projections:
+    /// resources and prompts are addressed by URI/name, not by a
+    /// namespaced tool symbol. Every call still goes through
+    /// [`McpManager::with_conn`], so the server's approval gate and
+    /// reconnect behavior apply unchanged.
+    ///
+    /// Capability: `NetworkOutbound`. A resource read can carry arbitrary
+    /// third-party content, and the MCP server itself is third-party code;
+    /// the per-server approval is the trust decision, not a narrower
+    /// filesystem claim.
+    pub fn register_resource_tools(self: &Arc<Self>, reg: &mut ToolRegistry) -> usize {
+        let before = reg.names().len();
+        let schema =
+            |name: &str, description: &str, props: Value, required: Vec<&str>| ToolSchema {
+                name: name.into(),
+                description: description.into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": props,
+                    "required": required,
+                }),
+            };
+
+        let mgr = Arc::clone(self);
+        reg.register(
+            schema(
+                "mcp.resources.list",
+                "List MCP resources. With 'server', list one server; without it, list every configured server. Returns resources plus any per-server errors.",
+                serde_json::json!({
+                    "server": {"type":"string","description":"MCP server name (default: all configured servers)"},
+                }),
+                vec![],
+            ),
+            Capability::NetworkOutbound,
+            move |args| {
+                let v = parse_args(args)?;
+                let names = match v.get("server").and_then(Value::as_str) {
+                    Some(s) => vec![s.to_string()],
+                    None => mgr.spec_names(),
+                };
+                let mut out = serde_json::Map::new();
+                for name in names {
+                    match mgr.list_resources(&name) {
+                        Ok(resources) => {
+                            out.insert(name, serde_json::json!({"resources": resources}));
+                        }
+                        Err(e) => {
+                            out.insert(name, serde_json::json!({"error": e.to_string()}));
+                        }
+                    }
+                }
+                serde_json::to_string_pretty(&Value::Object(out))
+                    .map_err(|e| mcp_err(McpError::Protocol(e.to_string())))
+            },
+        );
+
+        let mgr = Arc::clone(self);
+        reg.register(
+            schema(
+                "mcp.resources.templates",
+                "List MCP resource templates (parameterized URIs). With 'server', list one server; without it, list every configured server.",
+                serde_json::json!({
+                    "server": {"type":"string","description":"MCP server name (default: all configured servers)"},
+                }),
+                vec![],
+            ),
+            Capability::NetworkOutbound,
+            move |args| {
+                let v = parse_args(args)?;
+                let names = match v.get("server").and_then(Value::as_str) {
+                    Some(s) => vec![s.to_string()],
+                    None => mgr.spec_names(),
+                };
+                let mut out = serde_json::Map::new();
+                for name in names {
+                    match mgr.list_resource_templates(&name) {
+                        Ok(templates) => {
+                            out.insert(name, serde_json::json!({"templates": templates}));
+                        }
+                        Err(e) => {
+                            out.insert(name, serde_json::json!({"error": e.to_string()}));
+                        }
+                    }
+                }
+                serde_json::to_string_pretty(&Value::Object(out))
+                    .map_err(|e| mcp_err(McpError::Protocol(e.to_string())))
+            },
+        );
+
+        let mgr = Arc::clone(self);
+        reg.register(
+            schema(
+                "mcp.resources.read",
+                "Read one MCP resource by URI. Returns all content blocks the server sends (text and/or base64 blob).",
+                serde_json::json!({
+                    "server": {"type":"string","description":"MCP server name"},
+                    "uri": {"type":"string","description":"Resource URI"},
+                }),
+                vec!["server", "uri"],
+            ),
+            Capability::NetworkOutbound,
+            move |args| {
+                let v = parse_args(args)?;
+                let server = v
+                    .get("server")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| mcp_err(McpError::Protocol("missing 'server'".into())))?;
+                let uri = v
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| mcp_err(McpError::Protocol("missing 'uri'".into())))?;
+                let contents = mgr.read_resource(server, uri).map_err(mcp_err)?;
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "server": server,
+                    "uri": uri,
+                    "contents": contents,
+                }))
+                .map_err(|e| mcp_err(McpError::Protocol(e.to_string())))
+            },
+        );
+
+        let mgr = Arc::clone(self);
+        reg.register(
+            schema(
+                "mcp.prompts.list",
+                "List MCP prompt templates. With 'server', list one server; without it, list every configured server. Returns prompts plus any per-server errors.",
+                serde_json::json!({
+                    "server": {"type":"string","description":"MCP server name (default: all configured servers)"},
+                }),
+                vec![],
+            ),
+            Capability::NetworkOutbound,
+            move |args| {
+                let v = parse_args(args)?;
+                let names = match v.get("server").and_then(Value::as_str) {
+                    Some(s) => vec![s.to_string()],
+                    None => mgr.spec_names(),
+                };
+                let mut out = serde_json::Map::new();
+                for name in names {
+                    match mgr.list_prompts(&name) {
+                        Ok(prompts) => {
+                            out.insert(name, serde_json::json!({"prompts": prompts}));
+                        }
+                        Err(e) => {
+                            out.insert(name, serde_json::json!({"error": e.to_string()}));
+                        }
+                    }
+                }
+                serde_json::to_string_pretty(&Value::Object(out))
+                    .map_err(|e| mcp_err(McpError::Protocol(e.to_string())))
+            },
+        );
+
+        let mgr = Arc::clone(self);
+        reg.register(
+            schema(
+                "mcp.prompts.get",
+                "Expand one MCP prompt template with arguments. Returns the prompt messages (content stays structured).",
+                serde_json::json!({
+                    "server": {"type":"string","description":"MCP server name"},
+                    "name": {"type":"string","description":"Prompt name"},
+                    "arguments": {"type":"object","description":"Prompt arguments (string values)"},
+                }),
+                vec!["server", "name"],
+            ),
+            Capability::NetworkOutbound,
+            move |args| {
+                let v = parse_args(args)?;
+                let server = v
+                    .get("server")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| mcp_err(McpError::Protocol("missing 'server'".into())))?;
+                let name = v
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| mcp_err(McpError::Protocol("missing 'name'".into())))?;
+                let arguments = v
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let result = mgr.get_prompt(server, name, &arguments).map_err(mcp_err)?;
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "server": server,
+                    "name": name,
+                    "result": result,
+                }))
+                .map_err(|e| mcp_err(McpError::Protocol(e.to_string())))
+            },
+        );
+
+        reg.names().len() - before
+    }
+
     fn register_names(
         self: &Arc<Self>,
         reg: &mut ToolRegistry,
@@ -860,15 +1186,15 @@ impl McpManager {
             // consent record to lapse, and catalog updates are pinned by
             // recipe. A name-colliding spec is a custom server and must
             // be approved.
-            let (version, ok) = {
+            let (version, server_impl_version, ok) = {
                 let st = inner.states.get(&name).expect("state");
                 let c = st.conn.as_ref().expect("connected");
-                let v = c
-                    .server_version()
-                    .map(str::to_string)
+                let server_impl_version = c.server_version().map(str::to_string);
+                let v = server_impl_version
+                    .clone()
                     .unwrap_or_else(|| c.negotiated_version().to_string());
                 let ok = is_canonical_bundled(&st.spec) || store.is_approved(&name, &v, &hash);
-                (v, ok)
+                (v, server_impl_version, ok)
             };
             if !ok {
                 let st = inner.states.get_mut(&name).expect("state");
@@ -929,7 +1255,12 @@ impl McpManager {
                 // the lookup never splits the namespaced `mcp_<s>_<t>`
                 // string, so a tool cannot accidentally match another
                 // server or tool.
-                let cap = resolve_tool_capability(overrides, &name, &def.name);
+                let cap = resolve_tool_capability_for_version(
+                    overrides,
+                    &name,
+                    &def.name,
+                    server_impl_version.as_deref(),
+                );
                 let schema = ToolSchema {
                     name: ns.clone(),
                     description: format!("[{}] {}", name, def.description),
@@ -951,10 +1282,14 @@ impl McpManager {
         report
     }
 
-    /// Call one server tool by (server, raw tool name). Reconnects with
-    /// backoff when the transport died; on a transport failure mid-call
-    /// it reconnects once and retries the call once.
-    pub fn call_tool(&self, server: &str, tool: &str, args: &Value) -> Result<Value, McpError> {
+    /// Run one request against a connected server. Reconnects with backoff
+    /// when the transport died; on a transport failure mid-call it
+    /// reconnects once and retries the request once.
+    fn with_conn<T>(
+        &self,
+        server: &str,
+        f: impl Fn(&mut dyn McpConn) -> Result<T, McpError>,
+    ) -> Result<T, McpError> {
         let mut inner = self
             .inner
             .lock()
@@ -967,7 +1302,7 @@ impl McpManager {
         Self::ensure_connected_inner(&mut inner, server)?;
         let res = {
             let st = inner.states.get_mut(server).expect("state");
-            st.conn.as_mut().expect("connected").call_tool(tool, args)
+            f(st.conn.as_deref_mut().expect("connected"))
         };
         match res {
             Ok(v) => {
@@ -993,14 +1328,30 @@ impl McpManager {
                 // approval blocks the retry instead of silently
                 // re-executing.
                 Self::gate_approval(&mut inner.states, &scope, server, true)?;
-                match Self::connect_new(&spec, &resolver, &policy) {
+                let secrets = inner.secrets.clone();
+                let elicitation = inner.elicitation.clone();
+                match Self::connect_new(
+                    &spec,
+                    &resolver,
+                    &policy,
+                    secrets.as_ref(),
+                    elicitation.as_ref(),
+                ) {
                     Ok(conn) => {
                         let st = inner.states.get_mut(server).expect("state");
                         st.conn = Some(conn);
                         st.connects += 1;
                         st.status = ServerStatus::Ready;
                         st.not_before = None;
-                        st.conn.as_mut().expect("connected").call_tool(tool, args)
+                        let retry = {
+                            let conn = st.conn.as_deref_mut().expect("connected");
+                            f(conn)
+                        };
+                        st.last_error = match &retry {
+                            Ok(_) => None,
+                            Err(e) => Some(e.to_string()),
+                        };
+                        retry
                     }
                     Err(ce) => {
                         let st = inner.states.get_mut(server).expect("state");
@@ -1012,6 +1363,48 @@ impl McpManager {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Call one server tool by (server, raw tool name).
+    pub fn call_tool(&self, server: &str, tool: &str, args: &Value) -> Result<Value, McpError> {
+        self.with_conn(server, |conn| conn.call_tool(tool, args))
+    }
+
+    /// List a server's static resources (`resources/list`).
+    pub fn list_resources(&self, server: &str) -> Result<Vec<McpResource>, McpError> {
+        self.with_conn(server, |conn| conn.list_resources())
+    }
+
+    /// List a server's parameterized resource templates.
+    pub fn list_resource_templates(
+        &self,
+        server: &str,
+    ) -> Result<Vec<McpResourceTemplate>, McpError> {
+        self.with_conn(server, |conn| conn.list_resource_templates())
+    }
+
+    /// Read one resource by URI (`resources/read`).
+    pub fn read_resource(
+        &self,
+        server: &str,
+        uri: &str,
+    ) -> Result<Vec<McpResourceContent>, McpError> {
+        self.with_conn(server, |conn| conn.read_resource(uri))
+    }
+
+    /// List a server's prompt templates (`prompts/list`).
+    pub fn list_prompts(&self, server: &str) -> Result<Vec<McpPrompt>, McpError> {
+        self.with_conn(server, |conn| conn.list_prompts())
+    }
+
+    /// Expand one prompt with arguments (`prompts/get`).
+    pub fn get_prompt(
+        &self,
+        server: &str,
+        name: &str,
+        args: &Value,
+    ) -> Result<McpPromptResult, McpError> {
+        self.with_conn(server, |conn| conn.get_prompt(name, args))
     }
 
     /// The configured spec for a server, if any.
@@ -1130,7 +1523,15 @@ impl McpManager {
             st.spec.clone()
         };
         Self::gate_approval(&mut inner.states, &scope, name, true)?;
-        match Self::connect_new(&spec, &resolver, &policy) {
+        let secrets = inner.secrets.clone();
+        let elicitation = inner.elicitation.clone();
+        match Self::connect_new(
+            &spec,
+            &resolver,
+            &policy,
+            secrets.as_ref(),
+            elicitation.as_ref(),
+        ) {
             Ok(conn) => {
                 let st = inner.states.get_mut(name).expect("state");
                 st.conn = Some(conn);
@@ -1368,9 +1769,22 @@ impl McpManager {
             }
         }
         Self::gate_approval(&mut inner.states, &scope, name, true)?;
+        let spec = {
+            let st = inner.states.get_mut(name).expect("checked above");
+            st.status = ServerStatus::Connecting;
+            st.spec.clone()
+        };
+        let secrets = inner.secrets.clone();
+        let elicitation = inner.elicitation.clone();
+        let result = Self::connect_new(
+            &spec,
+            &resolver,
+            &policy,
+            secrets.as_ref(),
+            elicitation.as_ref(),
+        );
         let st = inner.states.get_mut(name).expect("checked above");
-        st.status = ServerStatus::Connecting;
-        match Self::connect_new(&st.spec, &resolver, &policy) {
+        match result {
             Ok(conn) => {
                 st.conn = Some(conn);
                 st.status = ServerStatus::Ready;
@@ -1401,6 +1815,8 @@ impl McpManager {
         spec: &McpServerSpec,
         resolver: &Option<EnvResolver>,
         policy: &Option<Policy>,
+        secrets: Option<&SecretsBroker>,
+        elicitation: Option<&crate::client::ElicitationHandler>,
     ) -> Result<Box<dyn McpConn>, McpError> {
         match spec.transport {
             McpTransport::Stdio => {
@@ -1436,7 +1852,11 @@ impl McpManager {
                     .with_args(spec.args.clone())
                     .with_env(env)
                     .with_timeout(spec.timeout);
-                Ok(Box::new(McpClient::connect(&cfg, policy.as_ref())?))
+                Ok(Box::new(McpClient::connect_with(
+                    &cfg,
+                    policy.as_ref(),
+                    elicitation.cloned(),
+                )?))
             }
             McpTransport::Sse | McpTransport::Http => {
                 let url = spec
@@ -1454,12 +1874,27 @@ impl McpManager {
                     McpTransport::Sse => HttpTransport::Sse,
                     _ => HttpTransport::Streamable,
                 };
-                Ok(Box::new(HttpMcpClient::connect(
+                let mut headers = resolved_headers(&spec.headers);
+                let has_auth = headers
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
+                if spec.auth == McpAuth::OAuth && !has_auth {
+                    let broker = secrets.ok_or_else(|| {
+                        McpError::Unauthorized(format!(
+                            "mcp server '{}': no secret store is installed for OAuth; run `pantheon mcp login {}` from the CLI",
+                            spec.name, spec.name
+                        ))
+                    })?;
+                    let token = crate::oauth::ensure_token(spec, broker)?;
+                    headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+                }
+                Ok(Box::new(HttpMcpClient::connect_with(
                     &spec.name,
                     t,
                     &url,
                     spec.timeout,
-                    &resolved_headers(&spec.headers),
+                    &headers,
+                    elicitation.cloned(),
                 )?))
             }
         }
@@ -1545,25 +1980,36 @@ mod capability_resolution_tests {
     }
 
     #[test]
-    fn builtin_rea_static_is_filesystem_read() {
+    fn builtin_rea_capability_reflects_external_effects() {
         assert_eq!(
-            resolve_tool_capability(&empty(), "rea", "binary_overview"),
+            resolve_tool_capability_for_version(
+                &empty(),
+                "rea",
+                "goto_address",
+                Some(crate::rea_audit::REA_PINNED_VERSION),
+            ),
             Capability::FilesystemRead
         );
         assert_eq!(
-            resolve_tool_capability(&empty(), "rea", "analyze_function"),
-            Capability::FilesystemRead
+            resolve_tool_capability_for_version(
+                &empty(),
+                "rea",
+                "capture_process_scenario",
+                Some(crate::rea_audit::REA_PINNED_VERSION),
+            ),
+            Capability::BinaryTrace
         );
     }
 
     #[test]
     fn builtin_rea_tracing_is_binary_trace() {
         assert_eq!(
-            resolve_tool_capability(&empty(), "rea", "trace_feature"),
-            Capability::BinaryTrace
-        );
-        assert_eq!(
-            resolve_tool_capability(&empty(), "rea", "capture_process_scenario"),
+            resolve_tool_capability_for_version(
+                &empty(),
+                "rea",
+                "capture_process_scenario",
+                Some(crate::rea_audit::REA_PINNED_VERSION),
+            ),
             Capability::BinaryTrace
         );
     }
@@ -1584,16 +2030,21 @@ mod capability_resolution_tests {
         // built-in catalogue (e.g. to tighten further).
         let mut o = McpCapabilityOverrides::default();
         o.tool.insert(
-            ("rea".to_string(), "binary_overview".to_string()),
+            ("rea".to_string(), "goto_address".to_string()),
             Capability::BinaryTrace,
         );
         assert_eq!(
-            resolve_tool_capability(&o, "rea", "binary_overview"),
+            resolve_tool_capability(&o, "rea", "goto_address"),
             Capability::BinaryTrace
         );
         // Unmentioned REA tools still use the builtin classification.
         assert_eq!(
-            resolve_tool_capability(&o, "rea", "analyze_function"),
+            resolve_tool_capability_for_version(
+                &o,
+                "rea",
+                "list_unknowns",
+                Some(crate::rea_audit::REA_PINNED_VERSION),
+            ),
             Capability::FilesystemRead
         );
     }
@@ -1603,16 +2054,16 @@ mod capability_resolution_tests {
         // Tuple-keyed lookup: no string splitting, so near-miss names
         // cannot accidentally inherit another entry's capability.
         assert_eq!(
-            resolve_tool_capability(&empty(), "rea2", "binary_overview"),
+            resolve_tool_capability(&empty(), "rea2", "goto_address"),
             Capability::NetworkOutbound
         );
         assert_eq!(
-            resolve_tool_capability(&empty(), "myrea", "trace_feature"),
+            resolve_tool_capability(&empty(), "myrea", "trace_call_path"),
             Capability::NetworkOutbound
         );
         // A server literally named "rea::x" is a different server.
         assert_eq!(
-            resolve_tool_capability(&empty(), "rea::x", "binary_overview"),
+            resolve_tool_capability(&empty(), "rea::x", "goto_address"),
             Capability::NetworkOutbound
         );
     }
@@ -1624,7 +2075,7 @@ mod capability_resolution_tests {
             Capability::BinaryTrace
         );
         assert_eq!(
-            resolve_tool_capability(&empty(), "", "binary_overview"),
+            resolve_tool_capability(&empty(), "", "goto_address"),
             Capability::NetworkOutbound
         );
     }

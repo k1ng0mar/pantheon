@@ -20,6 +20,7 @@ use pantheon_api::model::{
     bound_title, DefaultModel, TitleGenerator, TitleRequest, TitleResult, TITLE_MAX_CHARS,
 };
 use pantheon_secrets::SecretValue;
+use std::sync::Arc;
 
 /// Titles run beside the first turn, so they get a short leash: a slow aux
 /// call must never hold the conversation hostage (the host joins it at
@@ -69,6 +70,7 @@ pub struct TitleGenClient {
     /// provider's own key env (e.g. `PANTHEON_KEY_OPENAI`) when set.
     pub api_key: Option<SecretValue>,
     pub max_tokens: u32,
+    usage_sink: Option<Arc<dyn crate::model_event::AuxiliaryUsageSink>>,
 }
 
 impl TitleGenClient {
@@ -78,6 +80,7 @@ impl TitleGenClient {
             transport: aux_transport(TITLEGEN_TIMEOUT_SECS),
             api_key,
             max_tokens: TITLEGEN_MAX_TOKENS,
+            usage_sink: None,
         }
     }
 
@@ -92,6 +95,15 @@ impl TitleGenClient {
     /// before `with_transport` if you also inject a test transport.
     pub fn with_timeout_secs(mut self, secs: u64) -> Self {
         self.transport = aux_transport(secs.max(1));
+        self
+    }
+
+    /// Record successful title model calls in the owning session ledger.
+    pub fn with_usage_sink(
+        mut self,
+        sink: Arc<dyn crate::model_event::AuxiliaryUsageSink>,
+    ) -> Self {
+        self.usage_sink = Some(sink);
         self
     }
 }
@@ -114,6 +126,12 @@ impl TitleGenerator for TitleGenClient {
                 "check the [title_gen] endpoint is reachable within the timeout",
             )
         })?;
+        crate::model_event::record_auxiliary_usage(
+            self.usage_sink.as_ref(),
+            &self.target.provider,
+            &self.target.model,
+            turn.usage,
+        )?;
         match turn.outcome {
             TurnOutcome::Text { text, .. } => {
                 let title = bound_model_title(&text);

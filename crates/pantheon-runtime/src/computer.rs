@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use pantheon_mcp::manager::{McpServerSpec, McpTransport};
+use pantheon_mcp::manager::{McpAuth, McpServerSpec, McpTransport};
 
 /// MCP server name under which the CUA driver registers. Projected tool
 /// names are `mcp_cua-driver_<tool>` (e.g. `mcp_cua-driver_click`).
@@ -72,9 +72,7 @@ pub fn computer_driver_spec(driver: Option<&str>, binary: Option<&str>) -> Optio
             // tapp-mcp speaks MCP over stdio directly, no subcommand.
             ("tapp-mcp", Vec::new(), TAPP_DRIVER_ID)
         } else {
-            log_warn!(
-                "computer-use: unknown driver '{id}' (supported: 'cua-driver', 'tapp')"
-            );
+            log_warn!("computer-use: unknown driver '{id}' (supported: 'cua-driver', 'tapp')");
             return None;
         };
 
@@ -103,6 +101,9 @@ pub fn computer_driver_spec(driver: Option<&str>, binary: Option<&str>) -> Optio
         enabled: true,
         timeout: Duration::from_secs(60),
         headers: HashMap::new(),
+        auth: McpAuth::None,
+        scopes: Vec::new(),
+        client_id: None,
     })
 }
 

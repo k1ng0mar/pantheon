@@ -26,6 +26,7 @@ use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::message::ImagePart;
 use pantheon_api::model::{AuxiliaryKind, DefaultModel, ModelPolicy};
 use pantheon_secrets::SecretValue;
+use std::sync::Arc;
 
 /// Vision calls get a longer leash than titles: describing a detailed
 /// image takes a real model a while, but a hung call must never hold the
@@ -124,6 +125,7 @@ pub struct VisionClient {
     /// provider's own key env (e.g. `PANTHEON_KEY_OPENAI`) when set.
     pub api_key: Option<SecretValue>,
     pub max_tokens: u32,
+    usage_sink: Option<Arc<dyn crate::model_event::AuxiliaryUsageSink>>,
 }
 
 impl VisionClient {
@@ -133,6 +135,7 @@ impl VisionClient {
             transport: aux_transport(VISION_TIMEOUT_SECS),
             api_key,
             max_tokens: VISION_MAX_TOKENS,
+            usage_sink: None,
         }
     }
 
@@ -147,6 +150,15 @@ impl VisionClient {
     /// before `with_transport` if you also inject a test transport.
     pub fn with_timeout_secs(mut self, secs: u64) -> Self {
         self.transport = aux_transport(secs.max(1));
+        self
+    }
+
+    /// Record successful vision model calls in the owning session ledger.
+    pub fn with_usage_sink(
+        mut self,
+        sink: Arc<dyn crate::model_event::AuxiliaryUsageSink>,
+    ) -> Self {
+        self.usage_sink = Some(sink);
         self
     }
 
@@ -191,6 +203,12 @@ impl VisionClient {
                 "check the [vision] endpoint is reachable within the timeout",
             )
         })?;
+        crate::model_event::record_auxiliary_usage(
+            self.usage_sink.as_ref(),
+            &self.target.provider,
+            &self.target.model,
+            turn.usage,
+        )?;
         match turn.outcome {
             TurnOutcome::Text { text, .. } => {
                 let description = bound_description(&text);
