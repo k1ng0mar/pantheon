@@ -109,12 +109,30 @@ impl LoginStore {
             std::fs::create_dir_all(parent).map_err(SecretsError::Io)?;
         }
         // Atomic-ish: temp file + rename, owner-only like the vault files.
+        // Create with the private mode rather than writing at the umask
+        // default and chmod'ing after: a `fs::write` file is briefly
+        // world-readable, and ignoring a failed `set_permissions` would leave
+        // credentials readable to everyone on the box. Match `filevault`'s
+        // pattern: fail the write if the mode cannot be set.
         let tmp = self.meta_path.with_extension("json.tmp");
-        std::fs::write(&tmp, text).map_err(SecretsError::Io)?;
+        {
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)
+                .map_err(SecretsError::Io)?;
+            f.write_all(text.as_bytes()).map_err(SecretsError::Io)?;
+            f.sync_all().map_err(SecretsError::Io)?;
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+                .map_err(SecretsError::Io)?;
         }
         std::fs::rename(&tmp, &self.meta_path).map_err(SecretsError::Io)?;
         Ok(())
