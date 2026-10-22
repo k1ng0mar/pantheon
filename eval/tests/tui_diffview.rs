@@ -137,8 +137,10 @@ fn render_diff_lines_keeps_signs_and_order() {
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
         .collect();
-    assert!(text.iter().any(|l| l.contains("-b")));
-    assert!(text.iter().any(|l| l.contains("+B")));
+    // The card gutter prefixes each body line: "│ - " for deletions and
+    // "│ + " for additions, so the sign is followed by a space.
+    assert!(text.iter().any(|l| l.contains("│ - b")), "{text:?}");
+    assert!(text.iter().any(|l| l.contains("│ + B")), "{text:?}");
     assert!(text.iter().any(|l| l.contains("@@")));
     // FileHeader renders first when present.
     let with_header = {

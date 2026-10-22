@@ -349,10 +349,14 @@ fn recommended_mode_shows_fixed_provider_screens() {
 fn computer_use_provider_is_the_cua_driver_with_detect_and_install() {
     use pantheon_tui::setup_providers::ProviderKind;
     let rows = sp::computer_providers();
-    assert_eq!(rows.len(), 1, "exactly one driver today: cua-driver");
-    let row = &rows[0];
+    // Two drivers: cua-driver (recommended) and the tapp MCP server.
+    assert_eq!(rows.len(), 2, "cua-driver and tapp");
+    let row = rows
+        .iter()
+        .find(|r| r.id == "cua-driver")
+        .expect("cua-driver is a listed driver");
     assert_eq!(row.id, "cua-driver");
-    assert!(row.recommended, "the only driver is the recommended pick");
+    assert!(row.recommended, "cua-driver is the recommended pick");
     match &row.kind {
         ProviderKind::Local { local } => {
             assert!(
@@ -377,6 +381,13 @@ fn computer_use_provider_is_the_cua_driver_with_detect_and_install() {
     assert!(
         row.blurb.contains("X11") || row.blurb.contains("graphical"),
         "blurb must state the graphical-session requirement"
+    );
+    // Exactly one driver is the recommended pick, so the wizard never
+    // preselects two.
+    assert_eq!(
+        rows.iter().filter(|r| r.recommended).count(),
+        1,
+        "one recommended driver"
     );
 }
 

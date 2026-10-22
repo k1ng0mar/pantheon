@@ -187,12 +187,187 @@ pub fn load_plugin(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugin>
                 None
             }
         },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // npm-style package: package.json with a `pantheon` block.
+            // This is deliberately a layout adapter, not a JS runtime:
+            // the package still speaks the same JSON subprocess protocol,
+            // and the wrapper makes `node <entry>` executable on PATH.
+            load_package_json(path, loc)
+        }
         Err(e) => {
             eprintln!("plugin {}: cannot read manifest: {e}", path.display());
             None
         }
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct NpmPackage {
+    name: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    main: Option<String>,
+    #[serde(default)]
+    bin: Option<serde_json::Value>,
+    #[serde(default)]
+    pantheon: Option<NpmPantheon>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+struct NpmPantheon {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    runner: Option<String>,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    tools: Vec<NpmTool>,
+    #[serde(default)]
+    env_vars: Vec<NpmEnv>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct NpmTool {
+    name: String,
+    #[serde(default)]
+    capability: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default = "default_parameters")]
+    parameters: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct NpmEnv {
+    name: String,
+    #[serde(default)]
+    required: bool,
+    #[serde(default)]
+    description: String,
+}
+
+fn default_parameters() -> serde_json::Value {
+    serde_json::json!({"type": "object", "properties": {}})
+}
+
+/// Read an npm package directory as a Pantheon tool plugin. Only packages
+/// that opt in with a `pantheon` block (or the `pantheon-plugin-` prefix)
+/// are considered, so a stray node_modules copy is not executed.
+fn load_package_json(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugin> {
+    let package_path = path.join("package.json");
+    let text = std::fs::read_to_string(&package_path).ok()?;
+    let pkg: NpmPackage = match serde_json::from_str(&text) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("plugin {}: package.json parse error: {e}", path.display());
+            return None;
+        }
+    };
+    let opt_in = pkg.pantheon.is_some() || pkg.name.starts_with("pantheon-plugin-");
+    if !opt_in {
+        return None;
+    }
+    let extra = pkg.pantheon.unwrap_or_default();
+    let name = extra
+        .name
+        .clone()
+        .unwrap_or_else(|| pkg.name.replace('/', "-"))
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let runner = extra
+        .runner
+        .clone()
+        .or_else(|| package_bin(&pkg.bin))
+        .or(pkg.main.clone())
+        .unwrap_or_else(|| "index.js".to_string());
+    let runner = match make_runner(path, &runner) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("plugin {}: {e}", path.display());
+            return None;
+        }
+    };
+    let capabilities = extra
+        .tools
+        .into_iter()
+        .map(|t| ToolCapability {
+            name: t.name,
+            capability: Capability::from_token(&t.capability),
+            description: t.description,
+            parameters: t.parameters,
+        })
+        .collect();
+    Some(DiscoveredPlugin {
+        manifest: PluginManifest {
+            name,
+            description: pkg.description,
+            version: pkg.version,
+            sha: None,
+            maintainer: String::new(),
+            capabilities,
+            env_vars: extra
+                .env_vars
+                .into_iter()
+                .map(|e| EnvVarDecl {
+                    name: e.name,
+                    required: e.required,
+                    description: e.description,
+                })
+                .collect(),
+            runner,
+            enabled: extra.enabled,
+        },
+        location: loc,
+        root: path.to_path_buf(),
+    })
+}
+
+fn package_bin(bin: &Option<serde_json::Value>) -> Option<String> {
+    match bin.as_ref()? {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Object(m) => m.values().find_map(|v| v.as_str().map(str::to_string)),
+        _ => None,
+    }
+}
+
+/// Make a JavaScript entry executable through a generated POSIX wrapper.
+/// Scripts already carrying a shebang stay untouched.
+fn make_runner(dir: &Path, runner: &str) -> Result<String, String> {
+    let rel = Path::new(runner);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!("runner {runner:?} must be relative and stay inside the package"));
+    }
+    let target = dir.join(rel);
+    if !target.is_file() {
+        return Err(format!("runner {runner:?} not found"));
+    }
+    let ext = target
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(ext.as_str(), "js" | "mjs" | "cjs") {
+        return Ok(runner.to_string());
+    }
+    let wrapper = "pantheon-runner.sh";
+    let escaped = runner.replace('\\', "\\\\").replace('"', "\\\"");
+    let body = format!(
+        "#!/bin/sh\n# generated by Pantheon for npm package plugins\nexec node \"$(dirname \"$0\")/{escaped}\" \"$@\"\n"
+    );
+    std::fs::write(dir.join(wrapper), body)
+        .map_err(|e| format!("write {wrapper}: {e}"))?;
+    Ok(wrapper.to_string())
 }
 
 /// Enable or disable a plugin by rewriting its manifest in place. The YAML
@@ -1029,3 +1204,65 @@ fn write_plugin_enabled(
 #[cfg(test)]
 #[path = "plugins_bundled_tests.rs"]
 mod bundled_plugin_tests;
+
+#[cfg(test)]
+mod npm_package_tests {
+    use super::*;
+
+    #[test]
+    fn package_json_opt_in_becomes_a_tool_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.js"), "#!/usr/bin/env node\n").unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{
+              "name": "@acme/pantheon-plugin-echo",
+              "version": "1.2.3",
+              "description": "echo tool",
+              "main": "index.js",
+              "pantheon": {
+                "tools": [{
+                  "name": "echo",
+                  "capability": "shell.execute",
+                  "description": "echo back",
+                  "parameters": {"type":"object","properties":{}}
+                }]
+              }
+            }"#,
+        )
+        .unwrap();
+        let p = load_plugin(dir.path(), PluginLocation::User).expect("npm plugin loads");
+        assert_eq!(p.manifest.name, "@acme-pantheon-plugin-echo");
+        assert_eq!(p.manifest.version, "1.2.3");
+        assert_eq!(p.manifest.runner, "pantheon-runner.sh");
+        assert_eq!(p.manifest.capabilities.len(), 1);
+        assert_eq!(p.manifest.capabilities[0].capability, Capability::ShellExecute);
+        let wrapper = std::fs::read_to_string(dir.path().join("pantheon-runner.sh")).unwrap();
+        assert!(wrapper.contains("exec node"));
+        assert!(wrapper.contains("index.js"));
+    }
+
+    #[test]
+    fn package_without_opt_in_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.js"), "console.log('x')\n").unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"left-pad","version":"1.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
+        assert!(load_plugin(dir.path(), PluginLocation::User).is_none());
+    }
+
+    #[test]
+    fn package_runner_cannot_escape_the_package() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.js"), "").unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"pantheon-plugin-x","version":"1","pantheon":{"runner":"../index.js"}}"#,
+        )
+        .unwrap();
+        assert!(load_plugin(dir.path(), PluginLocation::User).is_none());
+    }
+}

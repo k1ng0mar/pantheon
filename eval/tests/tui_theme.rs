@@ -27,9 +27,9 @@ fn themes_are_visually_distinct() {
     assert_ne!(primaries[0], primaries[1]);
     assert_ne!(primaries[0], primaries[2]);
     // The default theme preserves today's look (post-redesign palette:
-    // muted blue titles per the unified-layout spec).
+    // violet primary with the muted grey dim).
     let p = Theme::pantheon();
-    assert_eq!(format!("{:?}", p.primary), "Rgb(122, 162, 247)");
+    assert_eq!(format!("{:?}", p.primary), "Rgb(147, 95, 255)");
     assert_eq!(format!("{:?}", p.dim), "Rgb(107, 114, 128)");
 }
 

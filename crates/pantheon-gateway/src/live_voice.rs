@@ -65,8 +65,11 @@ pub struct LiveVoiceConfig {
     /// Limits from `[voice]` (`Config::live_voice()`).
     pub limits: LiveVoiceSection,
     /// STT/TTS backends behind the `[tools] voice` + `[stt]`/`[tts]`
-    /// double gate.
+    /// double gate. Unused when `realtime` is active.
     pub pipes: VoicePipes,
+    /// Optional provider-native realtime adapter. `None` keeps the local
+    /// STT → agent → TTS pipeline.
+    pub realtime: Option<crate::realtime_voice::RealtimeConfig>,
 }
 
 impl std::fmt::Debug for LiveVoiceConfig {
@@ -75,6 +78,7 @@ impl std::fmt::Debug for LiveVoiceConfig {
         f.debug_struct("LiveVoiceConfig")
             .field("limits", &self.limits)
             .field("pipes", &self.pipes.describe())
+            .field("realtime", &self.realtime)
             .finish()
     }
 }
@@ -89,9 +93,17 @@ impl LiveVoiceConfig {
         limits: LiveVoiceSection,
         secrets: &SecretsBroker,
     ) -> Self {
+        let realtime = crate::realtime_voice::resolve_openai_key(Some(&limits), secrets).map(|key| {
+            crate::realtime_voice::RealtimeConfig::openai(
+                limits.realtime_model.as_deref(),
+                limits.realtime_voice.as_deref(),
+                key,
+            )
+        });
         Self {
             limits,
             pipes: VoicePipes::from_config(tools, stt, tts, secrets, false),
+            realtime,
         }
     }
 
@@ -100,6 +112,7 @@ impl LiveVoiceConfig {
         Self {
             limits: LiveVoiceSection::default(),
             pipes: VoicePipes::disabled(),
+            realtime: None,
         }
     }
 
@@ -109,6 +122,9 @@ impl LiveVoiceConfig {
     pub fn gate(&self) -> Result<(), &'static str> {
         if !self.limits.live_enabled {
             return Err("live_disabled");
+        }
+        if self.realtime.is_some() {
+            return Ok(());
         }
         fn ready<T: ?Sized>(slot: &VoiceSlot<Box<T>>) -> Result<(), &'static str> {
             match slot {
@@ -358,14 +374,14 @@ fn nanos() -> u128 {
 /// Replays the already-consumed HTTP request head, then delegates to the
 /// socket, so `tungstenite::accept` can parse the WS handshake itself even
 /// though the HTTP layer already read the request line and headers.
-struct HeadReplay {
+pub(crate) struct HeadReplay {
     head: Vec<u8>,
     pos: usize,
     stream: TcpStream,
 }
 
 impl HeadReplay {
-    fn stream_mut(&mut self) -> &mut TcpStream {
+    pub(crate) fn stream_mut(&mut self) -> &mut TcpStream {
         &mut self.stream
     }
 }
@@ -423,6 +439,13 @@ pub fn serve_live_session(
         let _ = ws.close(None);
         return;
     }
+    if let Some(realtime) = cfg.realtime.clone() {
+        // Provider-native duplex path: the provider owns turn detection
+        // and speech generation. The local pipeline remains the fallback
+        // when no realtime key/backend is configured.
+        crate::realtime_voice::run_session(&mut ws, realtime, cfg.limits.clone());
+        return;
+    }
     send_msg(&mut ws, Message::text(r#"{"type":"ready"}"#));
     // The session loop polls; the socket goes nonblocking and short
     // WouldBlock stalls are retried inside `send_msg`.
@@ -442,13 +465,13 @@ pub fn serve_live_session(
     .run();
 }
 
-fn json_text(v: &serde_json::Value) -> Message {
+pub(crate) fn json_text(v: &serde_json::Value) -> Message {
     Message::text(v.to_string())
 }
 
 /// Send with a short WouldBlock retry: the socket is nonblocking and a
 /// full send buffer must not silently drop a reply audio chunk.
-fn send_msg(ws: &mut WebSocket<HeadReplay>, msg: Message) {
+pub(crate) fn send_msg(ws: &mut WebSocket<HeadReplay>, msg: Message) {
     for _ in 0..50 {
         match ws.send(msg.clone()) {
             Ok(()) => return,

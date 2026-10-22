@@ -19,6 +19,7 @@ pub mod genui;
 pub mod http;
 pub mod live_voice;
 pub mod mcp_boot;
+pub mod realtime_voice;
 pub mod notify;
 pub mod rendezvous;
 pub mod schedule_delivery;
