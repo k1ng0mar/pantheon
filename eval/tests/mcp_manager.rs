@@ -10,7 +10,7 @@
 //! never touch the real data dir.
 
 use pantheon_api::approval::{ApprovalRecord, ApprovalStore};
-use pantheon_mcp::manager::{McpManager, McpServerSpec, McpTransport, ServerStatus};
+use pantheon_mcp::manager::{McpAuth, McpManager, McpServerSpec, McpTransport, ServerStatus};
 use pantheon_tools::tools::ToolRegistry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,6 +38,9 @@ fn spec(name: &str, log: Option<&Path>) -> McpServerSpec {
         enabled: true,
         timeout: Duration::from_secs(10),
         headers: Default::default(),
+        auth: McpAuth::None,
+        scopes: Vec::new(),
+        client_id: None,
     }
 }
 
@@ -279,6 +282,9 @@ fn launcher_pin_bump_lapses_approval() {
             enabled: true,
             timeout: Duration::from_secs(10),
             headers: Default::default(),
+            auth: McpAuth::None,
+            scopes: Vec::new(),
+            client_id: None,
         }
     }
     let tmp = scope();

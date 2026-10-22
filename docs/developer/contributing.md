@@ -33,7 +33,7 @@ Rules that keep the architecture honest:
 
 ### Adding a terminal command
 
-1. Add dispatch in `pantheon-tui/src/terminal.rs` + register in `KNOWN_VERBS` and `usage()`
+1. Register the public route or legacy alias in `pantheon-tui/src/cli_surface.rs`, then add dispatch in `pantheon-tui/src/terminal.rs`
 2. Implement the logic in the owning crate
 3. Add tests (`*_tests.rs`)
 4. Document it in `docs/reference/terminal.md`

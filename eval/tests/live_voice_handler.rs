@@ -304,6 +304,7 @@ fn handler_full_turn_round_trip() {
     let cfg = LiveVoiceConfig {
         limits: enabled_limits(),
         pipes,
+        realtime: None,
     };
     let mut h = spawn_session(
         cfg,
@@ -360,6 +361,7 @@ fn handler_gate_refusals() {
     let cfg = LiveVoiceConfig {
         limits: LiveVoiceSection::default(), // live_enabled = false
         pipes,
+        realtime: None,
     };
     let mut h = spawn_session(
         cfg,
@@ -381,6 +383,7 @@ fn handler_gate_refusals() {
     let cfg = LiveVoiceConfig {
         limits: enabled_limits(),
         pipes: VoicePipes::disabled(),
+        realtime: None,
     };
     let mut h = spawn_session(
         cfg,
@@ -438,6 +441,7 @@ fn handler_gate_unit_conditions() {
             tts: pipes.tts,
             voice_replies: false,
         },
+        realtime: None,
     };
     assert_eq!(cfg.gate(), Err("voice_not_configured"));
 
@@ -450,6 +454,7 @@ fn handler_gate_unit_conditions() {
             tts: VoiceSlot::Disabled,
             voice_replies: false,
         },
+        realtime: None,
     };
     assert_eq!(cfg.gate(), Err("voice_not_configured"));
 
@@ -468,6 +473,7 @@ fn handler_gate_unit_conditions() {
     let cfg = LiveVoiceConfig {
         limits: enabled_limits(),
         pipes,
+        realtime: None,
     };
     assert_eq!(cfg.gate(), Ok(()));
 }
@@ -480,6 +486,7 @@ fn handler_busy_and_silent_drop_during_inflight_turn() {
     let cfg = LiveVoiceConfig {
         limits: enabled_limits(),
         pipes,
+        realtime: None,
     };
     let (gate_tx, gate_rx) = mpsc::channel();
     let mut h = spawn_session(
@@ -535,6 +542,7 @@ fn handler_approval_needed_parks_turn() {
     let cfg = LiveVoiceConfig {
         limits: enabled_limits(),
         pipes,
+        realtime: None,
     };
     let mut h = spawn_session(
         cfg,
@@ -574,6 +582,7 @@ fn handler_silence_autoclose() {
             ..enabled_limits()
         },
         pipes,
+        realtime: None,
     };
     let mut h = spawn_session(
         cfg,
@@ -612,6 +621,7 @@ fn handler_disconnect_cleans_temp_files() {
     let cfg = LiveVoiceConfig {
         limits: enabled_limits(),
         pipes,
+        realtime: None,
     };
     let mut h = spawn_session(
         cfg,
@@ -652,6 +662,7 @@ fn handler_bad_frame_is_a_coded_error() {
     let cfg = LiveVoiceConfig {
         limits: enabled_limits(),
         pipes,
+        realtime: None,
     };
     let mut h = spawn_session(
         cfg,

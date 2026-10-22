@@ -254,6 +254,8 @@ fn code_intel_toggle_on_registers_lsp_and_gitundo_tools() {
     s.set_tool_enablement(ToolEnablement::default());
     let (reg, counts) = s.build_tool_registry();
     let n = names(&reg);
+    // The CodeIntel group covers three tool families: LSP (3), git-undo
+    // (4), managed worktrees (4), and the native code graph (5).
     for tool in [
         "lsp.open",
         "lsp.diagnostics",
@@ -262,13 +264,22 @@ fn code_intel_toggle_on_registers_lsp_and_gitundo_tools() {
         "gitundo.list",
         "gitundo.restore",
         "gitundo.delete",
+        "worktree.create",
+        "worktree.list",
+        "worktree.path",
+        "worktree.remove",
+        "codebase.index",
+        "codebase.overview",
+        "codebase.search",
+        "codebase.callers",
+        "codebase.callees",
     ] {
         assert!(
             n.iter().any(|t| t == tool),
             "'{tool}' not registered with the CodeIntel group on"
         );
     }
-    assert_eq!(counts.code_intel, 7, "expected 7 code-intel tools");
+    assert_eq!(counts.code_intel, 16, "expected 16 code-intel tools");
     assert!(
         counts.code_intel <= counts.total(),
         "code_intel must feed total()"
@@ -287,8 +298,10 @@ fn code_intel_toggle_off_registers_no_codeintel_tools() {
     assert_eq!(counts.code_intel, 0);
     let n = names(&reg);
     assert!(
-        !n.iter()
-            .any(|t| t.starts_with("lsp.") || t.starts_with("gitundo.")),
+        !n.iter().any(|t| t.starts_with("lsp.")
+            || t.starts_with("gitundo.")
+            || t.starts_with("worktree.")
+            || t.starts_with("codebase.")),
         "code-intel tools registered while the CodeIntel group is off"
     );
 }

@@ -255,6 +255,35 @@ timeout_secs = "120"
   key env (e.g. `OPENAI_API_KEY`), otherwise `PANTHEON_KEY_<PROVIDER>`.
   No key anywhere is fine for keyless local endpoints.
 
+### On-device STT
+
+Four local engines run speech-to-text with no key and no network egress
+after the model is fetched. They need no API key and are picked like any
+other backend:
+
+| backend | engine | model | needs |
+|---|---|---|---|
+| `whistle` | Cactus/Needle | Whistle, 16.9 MB | CPU only, 7 languages |
+| `parakeet` | Cactus | `nvidia/parakeet-tdt-0.6b-v3` | CPU or Apple Silicon |
+| `photon` | Moondream Photon | `Qwen/Qwen3-ASR-0.6B` | NVIDIA GPU or Apple Silicon |
+| `parakeet-redux` | Moondream Photon | `moondream/parakeet-redux` | CPU, 178 MB, 25 languages |
+
+```toml
+[stt]
+backend = "whistle"
+
+[stt.options]
+weights       = ""    # local .cact file; empty = the published weights
+language      = ""    # empty = detected
+timeout_secs  = "300"
+```
+
+Each engine is a separate Python package (`cactus-needle`,
+`cactus-compute`, `moondream`); `pantheon setup` detects the package and
+offers the install. Model weights download on first run. Audio is
+converted to 16 kHz mono WAV with ffmpeg before it reaches the engine,
+so the gateway's ogg/opus/mp4 voice notes work unchanged.
+
 Check status with `/voice` in the TUI. There is no microphone capture or
 speaker playback in the TUI - these backends move bytes for callers that
 already have audio (files, other surfaces), they don't record or play it.

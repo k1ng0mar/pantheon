@@ -35,9 +35,13 @@ fn write_file_routes_through_safewrite_when_state_dir_given() {
             enable_plugins: true,
             data_dir: None,
             safewrite_state_dir: Some(state.clone()),
-            workspace_root: Some(work.clone()),
+            workspace: Some(std::sync::Arc::new(
+                pantheon_api::workspace::WorkspaceRoot::new(work.clone()),
+            )),
             shell_child_hook: None,
             shell_env_hook: None,
+            formatter: None,
+            pty_manager: None,
         },
     );
     let out = reg
@@ -72,9 +76,13 @@ fn write_file_stale_check_rejects_mismatch() {
             enable_plugins: true,
             data_dir: None,
             safewrite_state_dir: Some(state.clone()),
-            workspace_root: Some(work.clone()),
+            workspace: Some(std::sync::Arc::new(
+                pantheon_api::workspace::WorkspaceRoot::new(work.clone()),
+            )),
             shell_child_hook: None,
             shell_env_hook: None,
+            formatter: None,
+            pty_manager: None,
         },
     );
     // Pretend the file is still at "v0"; the safe path must reject.
@@ -112,9 +120,13 @@ fn write_file_unsafe_fallback_when_no_state_dir() {
             enable_plugins: true,
             data_dir: None,
             safewrite_state_dir: None,
-            workspace_root: Some(work.clone()),
+            workspace: Some(std::sync::Arc::new(
+                pantheon_api::workspace::WorkspaceRoot::new(work.clone()),
+            )),
             shell_child_hook: None,
             shell_env_hook: None,
+            formatter: None,
+            pty_manager: None,
         },
     );
     let out = reg
@@ -206,9 +218,13 @@ fn reg_in(work: &std::path::Path) -> ToolRegistry {
             enable_plugins: true,
             data_dir: None,
             safewrite_state_dir: None,
-            workspace_root: Some(work.to_path_buf()),
+            workspace: Some(std::sync::Arc::new(
+                pantheon_api::workspace::WorkspaceRoot::new(work.to_path_buf()),
+            )),
             shell_child_hook: None,
             shell_env_hook: None,
+            formatter: None,
+            pty_manager: None,
         },
     );
     reg
@@ -265,9 +281,13 @@ fn write_file_rejects_deny_globs_and_escapes() {
             enable_plugins: true,
             data_dir: None,
             safewrite_state_dir: Some(state),
-            workspace_root: Some(work.clone()),
+            workspace: Some(std::sync::Arc::new(
+                pantheon_api::workspace::WorkspaceRoot::new(work.clone()),
+            )),
             shell_child_hook: None,
             shell_env_hook: None,
+            formatter: None,
+            pty_manager: None,
         },
     );
     // /etc/** is denied by glob even though the capability is granted.

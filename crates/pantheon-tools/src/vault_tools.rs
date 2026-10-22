@@ -34,11 +34,26 @@ pub struct VaultToolOptions {
 
 impl Default for VaultToolOptions {
     fn default() -> Self {
-        let vault_dir = std::env::var("PANTHEON_VAULT_DIR")
+        let vault_dir = std::env::var_os("PANTHEON_VAULT_DIR")
+            .filter(|dir| !dir.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".into());
-                PathBuf::from(home).join("vault")
+            .unwrap_or_else(|| {
+                if let Some(home) =
+                    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+                {
+                    return PathBuf::from(home).join("vault");
+                }
+                if let Some(xdg) = std::env::var_os("XDG_DATA_HOME").filter(|dir| !dir.is_empty()) {
+                    return PathBuf::from(xdg).join("pantheon").join("vault");
+                }
+                let user = std::env::var_os("USER")
+                    .or_else(|| std::env::var_os("USERNAME"))
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| "default".into());
+                std::env::temp_dir()
+                    .join("pantheon")
+                    .join(user)
+                    .join("vault")
             });
         Self { vault_dir }
     }
