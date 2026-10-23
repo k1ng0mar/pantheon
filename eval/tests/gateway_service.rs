@@ -123,13 +123,19 @@ fn cron_install_merges_idempotently() {
     let lag = root.join("launchd");
     std::fs::create_dir_all(&bins).unwrap();
     // Fake crontab with a state file: `-l` prints it (exit 1 when empty),
-    // `-` replaces it from stdin.
+    // `-` replaces it from stdin. `/bin/cat` is used rather than a bare
+    // `cat`: the stub is a shell script, so a bare name is resolved via
+    // PATH, and `PATH` is process-global — another test in this binary
+    // temporarily sets it to an empty dir (see
+    // `desktop_notify_without_notifier_is_err_not_panic`), which made this
+    // stub intermittently fail to find `cat` and silently read an empty
+    // crontab.
     let state = root.join("crontab-state");
     write_stub(
         &bins,
         "crontab",
         &format!(
-            "#!/bin/sh\nSTATE={}\nif [ \"$1\" = \"-l\" ]; then\n  cat \"$STATE\" 2>/dev/null || exit 1\nelif [ \"$1\" = \"-\" ]; then\n  cat > \"$STATE\"\nfi\n",
+            "#!/bin/sh\nSTATE={}\nif [ \"$1\" = \"-l\" ]; then\n  /bin/cat \"$STATE\" 2>/dev/null || exit 1\nelif [ \"$1\" = \"-\" ]; then\n  /bin/cat > \"$STATE\"\nfi\n",
             state.display()
         ),
     );
@@ -168,6 +174,60 @@ fn cron_install_merges_idempotently() {
             .count(),
         1,
         "exactly one owned cron line after two installs"
+    );
+}
+
+#[test]
+fn cron_install_fails_closed_when_crontab_cannot_run() {
+    // The install must distinguish "no crontab yet" from "crontab is
+    // broken/absent". The dangerous case is the latter: the pre-fix code
+    // `unwrap_or_default()`-ed *every* read failure, so a `crontab` that
+    // couldn't run was read as an empty table, and our lone line silently
+    // dropped every entry the user already had.
+    //
+    // Case 1 (regression guard): the user has a real crontab (the seeded
+    // state file). `crontab` is present but not executable, so the spawn
+    // fails. The old code would have written `[our line]` and wiped the
+    // user's entry; it must fail closed instead.
+    let root = tempdir("crongone");
+    let bins = root.join("bins");
+    std::fs::create_dir_all(&bins).unwrap();
+    let stub = bins.join("crontab");
+    std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    // A real crontab that must not be clobbered. It is unreachable through
+    // the stub, but that is exactly the point: the install can't read it,
+    // so it must not write a table of its own over it.
+    let state = root.join("crontab-state");
+    std::fs::write(&state, "0 5 * * * /usr/bin/backup\n").unwrap();
+    let env = env_with_bins(&bins, &root.join("systemd"), &root.join("launchd"));
+    let exe = PathBuf::from("/usr/local/bin/pantheon");
+    let outcome = install_with(&env, &root.join("data"), &exe);
+    assert!(
+        matches!(outcome, InstallOutcome::Failed { .. }),
+        "an unspawnable crontab with an existing table must fail closed, \
+         not overwrite: {outcome:?}"
+    );
+
+    // Case 2: no crontab at all. The read comes back empty (crontab -l
+    // exits 1 when the table is empty), and -l is the only command the
+    // install runs in this scenario, so the empty-read path still works:
+    // the outcome is a Failed install *for a different reason*, not a
+    // silent overwrite. What this pins is that an empty read is not
+    // conflated with an unavailable binary.
+    let root2 = tempdir("cronempty");
+    let bins2 = root2.join("bins");
+    std::fs::create_dir_all(&bins2).unwrap();
+    write_stub(&bins2, "crontab", "#!/bin/sh\nexit 1\n");
+    let env2 = env_with_bins(&bins2, &root2.join("systemd"), &root2.join("launchd"));
+    let outcome2 = install_with(&env2, &root2.join("data"), &exe);
+    assert!(
+        matches!(outcome2, InstallOutcome::Failed { .. }),
+        "a hard-failing crontab fails the install (no silent empty-table write)"
     );
 }
 
