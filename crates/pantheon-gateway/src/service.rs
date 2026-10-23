@@ -318,18 +318,43 @@ fn run_cmd(env: &InstallEnv, bin: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
-fn run_capture(env: &InstallEnv, bin: &str, args: &[&str]) -> Result<String, String> {
+/// Why a captured command did not produce output. Callers that treat a
+/// failed read as "empty result" (`crontab -l` on a machine with no
+/// crontab yet) must NOT also swallow `Unavailable`: a missing binary, a
+/// spawn failure or an I/O error is not an empty table, and acting on it
+/// as if it were would overwrite real state.
+enum CaptureFailure {
+    /// The binary ran and exited non-zero (e.g. `crontab -l` with no
+    /// crontab: exit 1 means "empty", not "broken").
+    Exited(String),
+    /// The binary could not be executed at all.
+    Unavailable(String),
+}
+
+impl From<CaptureFailure> for String {
+    fn from(f: CaptureFailure) -> Self {
+        match f {
+            CaptureFailure::Exited(m) | CaptureFailure::Unavailable(m) => m,
+        }
+    }
+}
+
+fn run_capture(env: &InstallEnv, bin: &str, args: &[&str]) -> Result<String, CaptureFailure> {
     let abs = env
         .which(bin)
-        .ok_or_else(|| format!("{bin} not found on PATH"))?;
+        .ok_or_else(|| CaptureFailure::Unavailable(format!("{bin} not found on PATH")))?;
     let out = Command::new(&abs)
         .args(args)
         .output()
-        .map_err(|e| format!("run {bin}: {e}"))?;
+        .map_err(|e| CaptureFailure::Unavailable(format!("run {bin}: {e}")))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
-        Err(format!("{bin} {} failed: {}", args.join(" "), out.status))
+        Err(CaptureFailure::Exited(format!(
+            "{bin} {} failed: {}",
+            args.join(" "),
+            out.status
+        )))
     }
 }
 
@@ -391,9 +416,16 @@ fn install_launchd(env: &InstallEnv, data_dir: &Path, exe: &Path) -> Result<bool
 
 fn install_cron(env: &InstallEnv, exe: &Path) -> Result<bool, String> {
     let line = cron_line(exe);
-    // `crontab -l` exits non-zero when the user has no crontab yet; that
-    // just means "empty table", not an error.
-    let current = run_capture(env, "crontab", &["-l"]).unwrap_or_default();
+    // Read the current crontab. `crontab -l` exits non-zero when the user
+    // has no crontab yet, which means an *empty table* (nothing to merge
+    // with) - but a binary that cannot be executed at all must NOT be read
+    // as empty: writing our line alone would silently drop every entry the
+    // user already had.
+    let current = match run_capture(env, "crontab", &["-l"]) {
+        Ok(out) => out,
+        Err(CaptureFailure::Exited(_)) => String::new(),
+        Err(CaptureFailure::Unavailable(e)) => return Err(e),
+    };
     let merged = merge_crontab(&current, &line);
     if merged.trim_end() == current.trim_end() {
         return Ok(false);
@@ -406,13 +438,13 @@ fn install_cron(env: &InstallEnv, exe: &Path) -> Result<bool, String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("run crontab: {e}"))?;
-    child
+    let status = child
         .stdin
         .as_mut()
         .ok_or("crontab stdin unavailable")?
         .write_all(merged.as_bytes())
-        .map_err(|e| format!("write crontab: {e}"))?;
-    let status = child.wait().map_err(|e| format!("wait crontab: {e}"))?;
+        .map_err(|e| format!("write crontab: {e}"))
+        .and_then(|()| child.wait().map_err(|e| format!("wait crontab: {e}")))?;
     if status.success() {
         Ok(true)
     } else {
