@@ -120,7 +120,11 @@ pub fn provider_event(v: &Value) -> Option<ProviderEvent> {
                 .get("error")
                 .and_then(|e| e.get("code"))
                 .and_then(|c| c.as_str())
-                .or_else(|| v.get("error").and_then(|e| e.get("type")).and_then(|c| c.as_str()))
+                .or_else(|| {
+                    v.get("error")
+                        .and_then(|e| e.get("type"))
+                        .and_then(|c| c.as_str())
+                })
                 .unwrap_or("provider_error");
             Some(ProviderEvent::Error(code.to_string()))
         }
@@ -190,14 +194,10 @@ pub fn resolve_openai_key(
     if backend != "openai" {
         return None;
     }
-    pantheon_providers::voice::voice_api_key(
-        secrets,
-        "openai",
-        &std::collections::HashMap::new(),
-    )
-    .ok()
-    .flatten()
-    .filter(|k| !k.expose().trim().is_empty())
+    pantheon_providers::voice::voice_api_key(secrets, "openai", &std::collections::HashMap::new())
+        .ok()
+        .flatten()
+        .filter(|k| !k.expose().trim().is_empty())
 }
 
 /// Run one realtime session until the client stops or disconnects.
@@ -273,7 +273,10 @@ pub(crate) fn run_session(
                         send_msg(ws, Message::text(r#"{"type":"end"}"#));
                         break;
                     }
-                    _ => send_msg(ws, json_text(&json!({"type":"error","code":"unknown_frame"}))),
+                    _ => send_msg(
+                        ws,
+                        json_text(&json!({"type":"error","code":"unknown_frame"})),
+                    ),
                 }
             }
             Ok(Message::Binary(b)) => {
@@ -378,32 +381,30 @@ fn open_provider(
     set_read_timeout(&mut ws);
     let (cmd_tx, cmd_rx) = mpsc::channel::<Message>();
     let (ev_tx, ev_rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        loop {
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                let closing = matches!(cmd, Message::Close(_));
-                if ws.send(cmd).is_err() || closing {
-                    return;
-                }
+    std::thread::spawn(move || loop {
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            let closing = matches!(cmd, Message::Close(_));
+            if ws.send(cmd).is_err() || closing {
+                return;
             }
-            match ws.read() {
-                Ok(Message::Text(t)) => {
-                    if let Ok(v) = serde_json::from_str::<Value>(t.as_str()) {
-                        if let Some(ev) = provider_event(&v) {
-                            if ev_tx.send(ev).is_err() {
-                                return;
-                            }
+        }
+        match ws.read() {
+            Ok(Message::Text(t)) => {
+                if let Ok(v) = serde_json::from_str::<Value>(t.as_str()) {
+                    if let Some(ev) = provider_event(&v) {
+                        if ev_tx.send(ev).is_err() {
+                            return;
                         }
                     }
                 }
-                Ok(Message::Close(_)) => return,
-                Ok(_) => {}
-                Err(tungstenite::Error::Io(e))
-                    if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
-                Err(_) => return,
             }
-            std::thread::sleep(Duration::from_millis(5));
+            Ok(Message::Close(_)) => return,
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e))
+                if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
+            Err(_) => return,
         }
+        std::thread::sleep(Duration::from_millis(5));
     });
     Ok((cmd_tx, ev_rx))
 }
@@ -423,7 +424,10 @@ fn set_read_timeout(ws: &mut WebSocket<tungstenite::stream::MaybeTlsStream<TcpSt
 
 /// Convenience used by tests and callers that only need the URL.
 pub fn endpoint_for(model: &str) -> String {
-    format!("wss://api.openai.com/v1/realtime?model={}", url_encode(model))
+    format!(
+        "wss://api.openai.com/v1/realtime?model={}",
+        url_encode(model)
+    )
 }
 
 fn url_encode(s: &str) -> String {

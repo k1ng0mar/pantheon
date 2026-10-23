@@ -27,8 +27,7 @@ fn json_out_with_format<T: serde::Serialize>(
     formatter: Option<&crate::format::Formatter>,
     paths: &[PathBuf],
 ) -> Result<String, PantheonError> {
-    let mut v = serde_json::to_value(value)
-        .map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?;
+    let mut v = serde_json::to_value(value).map_err(|e| serr("SAFE_WRITE_JSON", e.to_string()))?;
     if let Some(formatter) = formatter {
         let report = formatter.format_paths(paths.iter().map(PathBuf::as_path));
         if !report.is_empty() {

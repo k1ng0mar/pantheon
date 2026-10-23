@@ -144,18 +144,15 @@ pub fn execute_with_context(
             "pass {\"code\": \"...\"}",
         )
     })?;
-    let code = v
-        .get("code")
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| {
-            tool_err(
-                "CODE_BAD_ARGS",
-                Layer::Execution,
-                false,
-                "missing 'code'".into(),
-                "pass {\"code\": \"...\"}",
-            )
-        })?;
+    let code = v.get("code").and_then(|x| x.as_str()).ok_or_else(|| {
+        tool_err(
+            "CODE_BAD_ARGS",
+            Layer::Execution,
+            false,
+            "missing 'code'".into(),
+            "pass {\"code\": \"...\"}",
+        )
+    })?;
     if code.trim().is_empty() {
         return Err(tool_err(
             "CODE_EMPTY",

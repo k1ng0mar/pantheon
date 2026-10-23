@@ -83,7 +83,10 @@ fn every_local_backend_is_registered_with_its_engine_and_model() {
             .unwrap_or_else(|| panic!("{} row", b.id()));
         // Local, keyless, and detected before install.
         assert!(!row.recommended, "{} must not displace the default", b.id());
-        assert_eq!(row.kind, pantheon_providers::voice::VoiceBackendKind::Subprocess);
+        assert_eq!(
+            row.kind,
+            pantheon_providers::voice::VoiceBackendKind::Subprocess
+        );
         assert_eq!(row.auth, pantheon_providers::voice::AuthRequirement::None);
         let local = row.local.as_ref().expect("local install metadata");
         assert!(!local.detect_cmd.is_empty());
