@@ -553,9 +553,7 @@ impl HttpMcpClient {
                             &smethod,
                             &params,
                         );
-                        if let Err(e) = self.post(&response) {
-                            return Err(e);
-                        }
+                        self.post(&response)?;
                         continue;
                     }
                     // Anything else is not our answer.
