@@ -62,6 +62,17 @@ authors = ["Pantheon"]
 lto = true
 codegen-units = 1
 
+# Dev builds: full debug info is the bulk of the target dir and of every
+# incremental write. Line tables keep backtraces readable (file + line)
+# without the type and variable metadata, which is what actually costs
+# the disk and the time. Debugging with a real debugger wants full info;
+# override with `CARGO_PROFILE_DEV_DEBUG=2` when that is the task.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # `PantheonError` is a structured value that carries code, layer,
 # retryability, cause, remediation, evidence, and a recovery class to the
 # CLI, the ledger, and the API. It is 128 bytes, so every `Result` in the

@@ -1,0 +1,10 @@
+# Repo build config. Only settings that are safe everywhere, including CI.
+#
+# Machine-specific tuning (mold linker, sccache) lives in ~/.cargo/config.toml
+# on the dev box instead. GitHub's ubuntu-24.04 runner has gcc but no mold or
+# clang, so a linker override here would break every CI job.
+#
+# sccache: activate per shell with `export RUSTC_WRAPPER=sccache`, or add it
+# to a shell profile. It caches compiled crate artifacts keyed on flags and
+# inputs, so rebuilding unchanged code skips the compile. `sccache
+# --show-stats` reports the hit rate.
