@@ -363,7 +363,10 @@ pub fn extract_zip_upload(app: &App, info: &UploadInfo) -> Result<Vec<ExtractedE
         use std::io::Read as _;
         for i in 0..zip.len() {
             let mut f = zip.by_index(i).map_err(|e| format!("entry {i}: {e}"))?;
-            let name = f.name().to_string();
+            let name = f
+                .name()
+                .map_err(|e| format!("entry {i} name: {e}"))?
+                .into_owned();
             if f.is_dir() || f.is_symlink() {
                 continue;
             }

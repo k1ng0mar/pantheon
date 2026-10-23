@@ -1357,11 +1357,14 @@ fn fetch_bytes(url: &str) -> Result<Vec<u8>, PantheonError> {
 /// - more than `limits.max_entries` entries,
 /// - total inflated bytes past `limits.max_total_bytes` (zip-bomb guard;
 ///   the bound is enforced on actual bytes read, not the header's claim).
-fn unzip_skill(bytes: &[u8]) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+///
+/// Public so the behavioral suite in `eval/` can pin the traversal and
+/// zip-bomb guards against a real, maliciously-named bundle.
+pub fn unzip_skill(bytes: &[u8]) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
     unzip_skill_with_limits(bytes, &DEFAULT_ZIP_LIMITS)
 }
 
-fn unzip_skill_with_limits(
+pub fn unzip_skill_with_limits(
     bytes: &[u8],
     limits: &ZipLimits,
 ) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
@@ -1378,7 +1381,8 @@ fn unzip_skill_with_limits(
     let mut out = Vec::new();
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(|e| format!("entry {i}: {e}"))?;
-        let name = f.name().to_string();
+        let name = f.name().map_err(|e| format!("entry {i} name: {e}"))?;
+        let name = name.into_owned();
         if f.is_dir() || name.ends_with("_meta.json") {
             continue;
         }

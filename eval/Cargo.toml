@@ -43,4 +43,4 @@ chrono = "0.4"
 chrono-tz = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 # Building fixture zips for the dashboard attachment-extraction tests.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
