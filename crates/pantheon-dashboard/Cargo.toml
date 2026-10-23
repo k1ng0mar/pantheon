@@ -59,7 +59,7 @@ flate2 = "1"
 # Zip extraction for chat attachments: an attached zip is inflated
 # server-side at message-send time so the agent can read the contents
 # with its file tools (same fail-closed limits as pantheon-exec skills).
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # Plugin import pipeline: parse/emit manifest.yaml and plugin.yaml.
 serde_yaml = "0.9"
 
