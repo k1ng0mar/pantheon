@@ -73,7 +73,10 @@ impl WorkspaceRoot {
     /// The caller decides whether the new path is acceptable (that it
     /// exists, that it is a directory); this only performs the swap.
     pub fn set(&self, path: impl Into<PathBuf>) -> PathBuf {
-        let mut guard = self.path.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard = self
+            .path
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::mem::replace(&mut *guard, path.into())
     }
 

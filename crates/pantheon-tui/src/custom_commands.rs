@@ -91,9 +91,7 @@ pub fn discover_in(roots: &[PathBuf]) -> Vec<CustomCommand> {
 }
 
 pub fn find<'a>(commands: &'a [CustomCommand], name: &str) -> Option<&'a CustomCommand> {
-    commands
-        .iter()
-        .find(|c| c.name.eq_ignore_ascii_case(name))
+    commands.iter().find(|c| c.name.eq_ignore_ascii_case(name))
 }
 
 /// Expand placeholders without invoking a shell. Arguments are data, never
@@ -184,8 +182,7 @@ fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, &str) {
 fn unquote(s: &str) -> String {
     let s = s.trim();
     if s.len() >= 2
-        && ((s.starts_with('"') && s.ends_with('"'))
-            || (s.starts_with('\'') && s.ends_with('\'')))
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
     {
         s[1..s.len() - 1].to_string()
     } else {
@@ -219,7 +216,8 @@ fn parse_json(path: &Path, text: &str) -> Vec<CustomCommand> {
         }
         serde_json::Value::Object(map) => {
             if map.contains_key("template") || map.contains_key("prompt") {
-                if let Some(command) = json_command(path, stem, None, &serde_json::Value::Object(map))
+                if let Some(command) =
+                    json_command(path, stem, None, &serde_json::Value::Object(map))
                 {
                     out.push(command);
                 }
@@ -278,8 +276,12 @@ fn json_command(
                 template,
                 description,
                 name,
-                map.get("agent").and_then(|v| v.as_str()).map(str::to_string),
-                map.get("model").and_then(|v| v.as_str()).map(str::to_string),
+                map.get("agent")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                map.get("model")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
             )
         }
         _ => return None,

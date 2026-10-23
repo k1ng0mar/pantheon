@@ -93,13 +93,14 @@ impl LiveVoiceConfig {
         limits: LiveVoiceSection,
         secrets: &SecretsBroker,
     ) -> Self {
-        let realtime = crate::realtime_voice::resolve_openai_key(Some(&limits), secrets).map(|key| {
-            crate::realtime_voice::RealtimeConfig::openai(
-                limits.realtime_model.as_deref(),
-                limits.realtime_voice.as_deref(),
-                key,
-            )
-        });
+        let realtime =
+            crate::realtime_voice::resolve_openai_key(Some(&limits), secrets).map(|key| {
+                crate::realtime_voice::RealtimeConfig::openai(
+                    limits.realtime_model.as_deref(),
+                    limits.realtime_voice.as_deref(),
+                    key,
+                )
+            });
         Self {
             limits,
             pipes: VoicePipes::from_config(tools, stt, tts, secrets, false),

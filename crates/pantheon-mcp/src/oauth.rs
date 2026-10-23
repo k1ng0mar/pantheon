@@ -121,7 +121,9 @@ impl<'a> TokenStore<'a> {
             .map_err(|e| McpError::Protocol(format!("oauth token delete: {e}")))
     }
 
-    fn load(&self) -> Result<Option<(String, Option<String>, StoredMeta, Option<String>)>, McpError> {
+    fn load(
+        &self,
+    ) -> Result<Option<(String, Option<String>, StoredMeta, Option<String>)>, McpError> {
         let Some(access) = self
             .broker
             .resolve(&self.key("access_token"))
@@ -183,17 +185,13 @@ pub fn ensure_token(spec: &McpServerSpec, broker: &SecretsBroker) -> Result<Stri
             spec.name, spec.name
         )));
     };
-    let (new_access, new_refresh) = refresh_token(
-        &meta,
-        &refresh,
-        client_secret.as_deref(),
-    )
-    .map_err(|e| {
-        McpError::Unauthorized(format!(
-            "mcp server '{}' OAuth refresh failed: {e}; run `pantheon mcp login {}`",
-            spec.name, spec.name
-        ))
-    })?;
+    let (new_access, new_refresh) = refresh_token(&meta, &refresh, client_secret.as_deref())
+        .map_err(|e| {
+            McpError::Unauthorized(format!(
+                "mcp server '{}' OAuth refresh failed: {e}; run `pantheon mcp login {}`",
+                spec.name, spec.name
+            ))
+        })?;
     let mut next_meta = meta;
     next_meta.expires_at = expires_at_from_response(&new_access);
     store.save(
@@ -301,12 +299,7 @@ pub fn login(spec: &McpServerSpec, broker: &SecretsBroker) -> Result<(), McpErro
 /// Remove every token/registration record for a server.
 pub fn logout(spec: &McpServerSpec, broker: &SecretsBroker) -> Result<(), McpError> {
     let store = TokenStore::new(broker, &spec.name);
-    for field in [
-        "access_token",
-        "refresh_token",
-        "meta",
-        "client_secret",
-    ] {
+    for field in ["access_token", "refresh_token", "meta", "client_secret"] {
         store.delete_secret(&store.key(field))?;
     }
     Ok(())
@@ -337,9 +330,7 @@ fn discover_resource(resource_url: &str) -> Result<ResourceMetadata, McpError> {
     let base = origin(resource_url)
         .ok_or_else(|| McpError::Unauthorized(format!("invalid MCP url {resource_url:?}")))?;
     let path = path_of(resource_url);
-    let mut candidates = vec![format!(
-        "{base}/.well-known/oauth-protected-resource"
-    )];
+    let mut candidates = vec![format!("{base}/.well-known/oauth-protected-resource")];
     if !path.is_empty() && path != "/" {
         candidates.push(format!(
             "{base}/.well-known/oauth-protected-resource{}",
@@ -357,9 +348,7 @@ fn discover_resource(resource_url: &str) -> Result<ResourceMetadata, McpError> {
     let agent = http_agent();
     let challenge = match agent.get(resource_url).call() {
         Ok(resp) => resp.header("WWW-Authenticate").map(str::to_string),
-        Err(ureq::Error::Status(401, resp)) => {
-            resp.header("WWW-Authenticate").map(str::to_string)
-        }
+        Err(ureq::Error::Status(401, resp)) => resp.header("WWW-Authenticate").map(str::to_string),
         Err(_) => None,
     };
     if let Some(challenge) = challenge {
@@ -373,12 +362,11 @@ fn discover_resource(resource_url: &str) -> Result<ResourceMetadata, McpError> {
 }
 
 fn discover_auth_server(issuer: &str) -> Result<AuthServerMetadata, McpError> {
-    let base = origin(issuer)
-        .ok_or_else(|| McpError::Unauthorized(format!("invalid authorization server {issuer:?}")))?;
+    let base = origin(issuer).ok_or_else(|| {
+        McpError::Unauthorized(format!("invalid authorization server {issuer:?}"))
+    })?;
     let path = path_of(issuer);
-    let mut candidates = vec![format!(
-        "{base}/.well-known/oauth-authorization-server"
-    )];
+    let mut candidates = vec![format!("{base}/.well-known/oauth-authorization-server")];
     if !path.is_empty() && path != "/" {
         candidates.push(format!(
             "{base}/.well-known/oauth-authorization-server{}",
@@ -445,9 +433,8 @@ fn register_client(
     let v: Value = resp
         .into_json()
         .map_err(|e| McpError::Protocol(format!("registration response: {e}")))?;
-    let client_id = str_field(&v, "client_id").ok_or_else(|| {
-        McpError::Protocol("registration response has no client_id".into())
-    })?;
+    let client_id = str_field(&v, "client_id")
+        .ok_or_else(|| McpError::Protocol("registration response has no client_id".into()))?;
     Ok((client_id, str_field(&v, "client_secret")))
 }
 
@@ -498,10 +485,7 @@ fn refresh_token(
     Ok((token, rotated))
 }
 
-fn token_request(
-    endpoint: &str,
-    params: &[(&str, &str)],
-) -> Result<TokenSet, McpError> {
+fn token_request(endpoint: &str, params: &[(&str, &str)]) -> Result<TokenSet, McpError> {
     let resp = http_agent()
         .post(endpoint)
         .set("Accept", "application/json")

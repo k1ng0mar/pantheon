@@ -1853,10 +1853,7 @@ impl Session {
             session
                 .mcp_manager
                 .set_elicitation_handler(std::sync::Arc::new(move |server, params| {
-                    let run = run_id
-                        .lock()
-                        .map(|r| r.clone())
-                        .unwrap_or_default();
+                    let run = run_id.lock().map(|r| r.clone()).unwrap_or_default();
                     if run.is_empty() {
                         return Err(pantheon_mcp::McpError::Io(
                             "MCP elicitation requires an active run".to_string(),

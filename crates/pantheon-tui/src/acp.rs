@@ -92,14 +92,7 @@ impl Shared {
         );
     }
 
-    fn tool_call(
-        &self,
-        session_id: &str,
-        call_id: &str,
-        tool: &str,
-        args: &str,
-        status: &str,
-    ) {
+    fn tool_call(&self, session_id: &str, call_id: &str, tool: &str, args: &str, status: &str) {
         self.update(
             session_id,
             json!({
@@ -222,7 +215,8 @@ pub fn run_stdio() {
             }
         };
         // Responses to requests we sent (permission prompts).
-        if message.get("method").is_none() && (message.get("result").is_some() || message.get("error").is_some())
+        if message.get("method").is_none()
+            && (message.get("result").is_some() || message.get("error").is_some())
         {
             shared.resolve_response(&message);
             continue;
@@ -327,12 +321,7 @@ pub fn run_stdio() {
                     .ok()
                     .and_then(|s| s.get(session_id).cloned())
                     .unwrap_or_else(|| session_id.to_string());
-                if shared
-                    .active
-                    .lock()
-                    .map(|a| a.is_some())
-                    .unwrap_or(false)
-                {
+                if shared.active.lock().map(|a| a.is_some()).unwrap_or(false) {
                     shared.error(id, -32000, "another prompt is already running");
                     continue;
                 }
@@ -459,55 +448,41 @@ fn run_prompt(
             let run_id = run_id.to_string();
             session
                 .supervisor
-                .register_observer(Arc::new(move |event: &Event| {
-                    match event {
-                        Event::ModelDelta {
-                            run_id: r,
-                            delta,
-                        } if r == &run_id => {
-                            saw_delta.store(true, Ordering::Relaxed);
-                            shared.text_chunk(&session_id, delta);
-                        }
-                        Event::AssistantMessage {
-                            run_id: r,
-                            message,
-                        } if r == &run_id => {
-                            if !saw_delta.load(Ordering::Relaxed) && !message.content.is_empty() {
-                                shared.text_chunk(&session_id, &message.content);
-                            }
-                        }
-                        Event::ToolStarted {
-                            run_id: r,
-                            call_id,
-                            tool,
-                            args,
-                            ..
-                        } if r == &run_id => {
-                            shared.tool_call(&session_id, call_id, tool, args, "in_progress")
-                        }
-                        Event::ToolMessage {
-                            run_id: r,
-                            message,
-                        } if r == &run_id => {
-                            if let Some(call_id) = &message.tool_call_id {
-                                shared.tool_update(
-                                    &session_id,
-                                    call_id,
-                                    "completed",
-                                    Some(&message.content),
-                                );
-                            }
-                        }
-                        Event::ApprovalRequested {
-                            run_id: r,
-                            scope,
-                        } if r == &run_id => {
-                            if let Ok(mut a) = approvals.lock() {
-                                a.push(scope.clone());
-                            }
-                        }
-                        _ => {}
+                .register_observer(Arc::new(move |event: &Event| match event {
+                    Event::ModelDelta { run_id: r, delta } if r == &run_id => {
+                        saw_delta.store(true, Ordering::Relaxed);
+                        shared.text_chunk(&session_id, delta);
                     }
+                    Event::AssistantMessage { run_id: r, message } if r == &run_id => {
+                        if !saw_delta.load(Ordering::Relaxed) && !message.content.is_empty() {
+                            shared.text_chunk(&session_id, &message.content);
+                        }
+                    }
+                    Event::ToolStarted {
+                        run_id: r,
+                        call_id,
+                        tool,
+                        args,
+                        ..
+                    } if r == &run_id => {
+                        shared.tool_call(&session_id, call_id, tool, args, "in_progress")
+                    }
+                    Event::ToolMessage { run_id: r, message } if r == &run_id => {
+                        if let Some(call_id) = &message.tool_call_id {
+                            shared.tool_update(
+                                &session_id,
+                                call_id,
+                                "completed",
+                                Some(&message.content),
+                            );
+                        }
+                    }
+                    Event::ApprovalRequested { run_id: r, scope } if r == &run_id => {
+                        if let Ok(mut a) = approvals.lock() {
+                            a.push(scope.clone());
+                        }
+                    }
+                    _ => {}
                 }))
         };
 
@@ -688,7 +663,9 @@ fn split_scope(scope: &str) -> (String, String, String) {
 
 fn tool_kind(tool: &str) -> &'static str {
     match tool {
-        "read_file" | "list_dir" | "grep" | "glob" | "codegraph_search" | "session_search" => "read",
+        "read_file" | "list_dir" | "grep" | "glob" | "codegraph_search" | "session_search" => {
+            "read"
+        }
         "write_file" | "apply_files" | "apply_staged" | "edit" | "patch" => "edit",
         "delete_file" | "remove_file" => "delete",
         "move_file" | "rename_file" => "move",

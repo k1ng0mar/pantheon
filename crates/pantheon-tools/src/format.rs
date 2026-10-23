@@ -202,8 +202,8 @@ fn builtin_command(ext: &str) -> Option<&'static str> {
         "rs" => Some("rustfmt --edition 2021 {file}"),
         "go" => Some("gofmt -w {file}"),
         "py" => Some("ruff format {file}"),
-        "js" | "jsx" | "ts" | "tsx" | "json" | "jsonc" | "css" | "scss" | "less" | "md"
-        | "mdx" | "yml" | "yaml" | "html" => Some("prettier --write {file}"),
+        "js" | "jsx" | "ts" | "tsx" | "json" | "jsonc" | "css" | "scss" | "less" | "md" | "mdx"
+        | "yml" | "yaml" | "html" => Some("prettier --write {file}"),
         "sh" | "bash" | "zsh" => Some("shfmt -w {file}"),
         "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" => Some("clang-format -i {file}"),
         "toml" => Some("taplo fmt {file}"),

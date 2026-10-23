@@ -954,11 +954,10 @@ impl Supervisor {
         let question = format!("MCP server '{server}': {message}");
         let (tx, rx) = mpsc::channel();
         {
-            let mut waiters = self
-                .inner
-                .elicitations
-                .lock()
-                .map_err(|_| rerr("RT_ELICIT_LOCK", "elicitation waiters poisoned".to_string()))?;
+            let mut waiters =
+                self.inner.elicitations.lock().map_err(|_| {
+                    rerr("RT_ELICIT_LOCK", "elicitation waiters poisoned".to_string())
+                })?;
             waiters.insert(call_id.clone(), tx);
         }
         if let Err(e) = self.emit(Event::UserInputRequested {

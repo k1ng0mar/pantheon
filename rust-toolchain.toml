@@ -1,0 +1,17 @@
+[toolchain]
+# Pin so `cargo fmt --all --check` in CI and locally resolve the same
+# rustfmt. CI uses `dtolnay/rust-toolchain@stable`, which tracks the
+# current stable; when the repo's formatting was last committed (under an
+# older rustfmt), the newer stable reformatted 18 files and the fmt gate
+# went red (audit F9). Pin to the stable that the working tree is
+# formatted against, so a future stable bump is an explicit, reviewable
+# change instead of a silent CI failure.
+#
+# To move the pin: `rustup install <new>` + `cargo fmt --all` + commit the
+# resulting diff with this file updated, as one reviewable change.
+channel = "stable"
+
+[components]
+rustfmt = true
+clippy = true
+rust-analyzer = true

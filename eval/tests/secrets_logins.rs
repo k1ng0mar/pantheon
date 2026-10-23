@@ -23,7 +23,9 @@ fn mode_of(path: &std::path::Path) -> u32 {
 fn created_login_metadata_is_owner_only() {
     let dir = tempfile::tempdir().unwrap();
     let store = LoginStore::open(dir.path().to_path_buf());
-    store.create("github.com", "user@example.com", "hunter2-secret").unwrap();
+    store
+        .create("github.com", "user@example.com", "hunter2-secret")
+        .unwrap();
 
     let meta = dir.path().join(LOGINS_META_FILE);
     let m = mode_of(&meta);
@@ -33,19 +35,16 @@ fn created_login_metadata_is_owner_only() {
         "logins metadata must not be group/world readable (mode {:#o})",
         m
     );
-    assert_eq!(
-        m & 0o700,
-        0o600,
-        "expected exactly 0600, got {:#o}",
-        m
-    );
+    assert_eq!(m & 0o700, 0o600, "expected exactly 0600, got {:#o}", m);
 }
 
 #[test]
 fn password_never_lands_in_the_metadata_file() {
     let dir = tempfile::tempdir().unwrap();
     let store = LoginStore::open(dir.path().to_path_buf());
-    store.create("github.com", "user@example.com", "SUPER-SECRET-PASSWORD").unwrap();
+    store
+        .create("github.com", "user@example.com", "SUPER-SECRET-PASSWORD")
+        .unwrap();
 
     let raw = std::fs::read_to_string(dir.path().join(LOGINS_META_FILE)).unwrap();
     assert!(
@@ -68,7 +67,9 @@ fn update_rewrite_keeps_the_private_mode() {
     // metadata across the rewrite.
     let dir = tempfile::tempdir().unwrap();
     let store = LoginStore::open(dir.path().to_path_buf());
-    let cred = store.create("github.com", "u@example.com", "first-password").unwrap();
+    let cred = store
+        .create("github.com", "u@example.com", "first-password")
+        .unwrap();
     store
         .update(&cred.id, None, None, Some("second-password"))
         .unwrap();

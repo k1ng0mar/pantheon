@@ -154,12 +154,7 @@ impl PtyManager {
         })
     }
 
-    fn read(
-        &self,
-        id: &str,
-        timeout: Duration,
-        max_bytes: usize,
-    ) -> Result<String, PantheonError> {
+    fn read(&self, id: &str, timeout: Duration, max_bytes: usize) -> Result<String, PantheonError> {
         let deadline = Instant::now() + timeout;
         loop {
             let drained = self.with_session(id, |session| {
@@ -487,8 +482,7 @@ pub fn register_pty_tools(reg: &mut ToolRegistry, manager: Arc<PtyManager>) {
         },
         Capability::ShellExecute,
         move |_args| {
-            serde_json::to_string_pretty(&m.list()?)
-                .map_err(|e| perr("PTY_JSON", e.to_string()))
+            serde_json::to_string_pretty(&m.list()?).map_err(|e| perr("PTY_JSON", e.to_string()))
         },
     );
 }
@@ -523,7 +517,11 @@ mod tests {
         let mut text = String::new();
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            text.push_str(&manager.read(&id, Duration::from_millis(100), 64 * 1024).unwrap());
+            text.push_str(
+                &manager
+                    .read(&id, Duration::from_millis(100), 64 * 1024)
+                    .unwrap(),
+            );
             if text.contains("pty-ok") {
                 break;
             }

@@ -9959,21 +9959,23 @@ fn handle_slash_inner(
             None => (rest, ""),
         };
         let cwd = session.workspace_root();
-        let manager = match pantheon_exec::worktree::WorktreeManager::new(
-            &cwd,
-            &crate::terminal::data_dir(),
-        ) {
-            Ok(m) => m,
-            Err(e) => {
-                state.add_status(format!("/worktree: {e}"));
-                return;
-            }
-        };
+        let manager =
+            match pantheon_exec::worktree::WorktreeManager::new(&cwd, &crate::terminal::data_dir())
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    state.add_status(format!("/worktree: {e}"));
+                    return;
+                }
+            };
         match sub {
             "" | "list" => {
                 match manager.list() {
                     Ok(items) if items.is_empty() => {
-                        state.add_status("no worktrees; create one with `pantheon worktree create <name>`".into());
+                        state.add_status(
+                            "no worktrees; create one with `pantheon worktree create <name>`"
+                                .into(),
+                        );
                     }
                     Ok(items) => {
                         for w in items {
@@ -10035,9 +10037,7 @@ fn handle_slash_inner(
                 return;
             }
             _ => {
-                state.add_status(
-                    "usage: /worktree [list|path <name>|move <name>]".into(),
-                );
+                state.add_status("usage: /worktree [list|path <name>|move <name>]".into());
                 return;
             }
         }
