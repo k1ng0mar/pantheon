@@ -143,3 +143,30 @@ fn stats_human_render_mentions_key_figures() {
     let missing = stats::render_session_summary(&report, "run_unknown");
     assert!(missing.contains("no usage today"));
 }
+
+#[test]
+fn stats_render_does_not_panic_on_multibyte_run_ids() {
+    // 22 ASCII bytes plus a 3-byte char: 25 bytes long, so the old
+    // `&id[..23]` byte slice in the session renderer landed inside the
+    // char and panicked the whole stats command. The ledger happily
+    // stores such an id (`pantheon run --id` is free-form), which is how
+    // it reaches this path.
+    let ledger = Ledger::open_in_memory().expect("in-memory ledger");
+    let run_id = "a".repeat(22) + "€";
+    ledger
+        .append(&Event::RunStarted {
+            run_id: run_id.clone(),
+        })
+        .unwrap();
+    ledger
+        .append(&usage(&run_id, "anthropic:claude-opus", 10, 5, Some(0.01)))
+        .unwrap();
+    let now = stats::now_ms();
+    let report = stats::collect(&ledger, now - DAY_MS, now + DAY_MS).expect("collect");
+    let text = stats::render_human(&report);
+    assert!(
+        text.contains(&run_id) || text.contains("..."),
+        "the session row renders, panic or not: {text}"
+    );
+    assert!(stats::render_json(&report).contains(&run_id));
+}
