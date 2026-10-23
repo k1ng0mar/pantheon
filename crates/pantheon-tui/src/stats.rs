@@ -249,11 +249,16 @@ pub fn render_human(r: &StatsReport) -> String {
 }
 
 fn short_id(id: &str) -> String {
-    if id.len() > 24 {
-        format!("{}...", &id[..23])
-    } else {
-        id.to_string()
+    // Truncate to 23 chars plus dots, cutting only on a char boundary:
+    // run ids are free-form (`pantheon run --id`), so a >24 byte id with
+    // a multibyte char would panic the whole stats command at a byte
+    // slice. The trigger stays byte-based like the original; the cut
+    // moves to a char boundary.
+    if id.len() <= 24 {
+        return id.to_string();
     }
+    let head: String = id.chars().take(23).collect();
+    format!("{head}...")
 }
 
 /// Compact summary for the TUI `/stats` command: today's totals plus this
@@ -504,4 +509,28 @@ fn print_stats_help() {
     println!("  --from DATE   window start (inclusive)");
     println!("  --to DATE     window end (inclusive)");
     println!("  --json        machine-readable output");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_id_cuts_on_char_boundaries() {
+        // 22 ASCII bytes plus a 3-byte char: 25 bytes, so the old
+        // `&id[..23]` byte slice landed inside the euro sign and panicked
+        // (byte 23 is the start of the char, and the slice end must be a
+        // boundary). 24+ ASCII avoids the panic only by accident of where
+        // the boundary falls, so the test uses the genuinely-panicking 22.
+        let id = "a".repeat(22) + "€";
+        assert!(short_id(&id).ends_with("..."), "long ids get the dots");
+        // 22 ASCII bytes plus a 4-byte char: 26 bytes, also crosses the
+        // `>24` trigger with the char straddling byte 23.
+        let id4 = "b".repeat(22) + "🦀";
+        assert!(short_id(&id4).ends_with("..."));
+        // ASCII behavior is unchanged: 25 bytes cut to 23 plus the dots;
+        // 24 bytes sits exactly at the `>24` threshold and stays whole.
+        assert_eq!(short_id(&"a".repeat(25)), "a".repeat(23) + "...");
+        assert_eq!(short_id(&"a".repeat(24)), "a".repeat(24));
+    }
 }
