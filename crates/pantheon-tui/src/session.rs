@@ -9960,8 +9960,7 @@ fn handle_slash_inner(
         };
         let cwd = session.workspace_root();
         let manager =
-            match pantheon_exec::worktree::WorktreeManager::new(&cwd, &crate::terminal::data_dir())
-            {
+            match pantheon_exec::worktree::WorktreeManager::new(cwd, crate::terminal::data_dir()) {
                 Ok(m) => m,
                 Err(e) => {
                     state.add_status(format!("/worktree: {e}"));

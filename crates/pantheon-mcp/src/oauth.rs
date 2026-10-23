@@ -57,6 +57,15 @@ struct StoredMeta {
     token_type: String,
 }
 
+/// A stored OAuth token: access token, refresh token (optional), metadata,
+/// and client secret (optional). Returned by [`TokenStore::load`].
+struct StoredToken {
+    access: String,
+    refresh: Option<String>,
+    meta: StoredMeta,
+    secret: Option<String>,
+}
+
 struct TokenStore<'a> {
     broker: &'a SecretsBroker,
     prefix: String,
@@ -121,9 +130,7 @@ impl<'a> TokenStore<'a> {
             .map_err(|e| McpError::Protocol(format!("oauth token delete: {e}")))
     }
 
-    fn load(
-        &self,
-    ) -> Result<Option<(String, Option<String>, StoredMeta, Option<String>)>, McpError> {
+    fn load(&self) -> Result<Option<StoredToken>, McpError> {
         let Some(access) = self
             .broker
             .resolve(&self.key("access_token"))
@@ -150,7 +157,12 @@ impl<'a> TokenStore<'a> {
             .resolve(&self.key("client_secret"))
             .map_err(|e| McpError::Protocol(format!("oauth secret read: {e}")))?
             .map(|v| v.expose().to_string());
-        Ok(Some((access.expose().to_string(), refresh, meta, secret)))
+        Ok(Some(StoredToken {
+            access: access.expose().to_string(),
+            refresh,
+            meta,
+            secret,
+        }))
     }
 }
 
@@ -164,12 +176,16 @@ pub fn ensure_token(spec: &McpServerSpec, broker: &SecretsBroker) -> Result<Stri
         )));
     }
     let store = TokenStore::new(broker, &spec.name);
-    let Some((access, refresh, meta, client_secret)) = store.load()? else {
+    let Some(tok) = store.load()? else {
         return Err(McpError::Unauthorized(format!(
             "mcp server '{}' is not authenticated; run `pantheon mcp login {}`",
             spec.name, spec.name
         )));
     };
+    let access = tok.access;
+    let refresh = tok.refresh;
+    let meta = tok.meta;
+    let client_secret = tok.secret;
     if meta.server != spec.name {
         return Err(McpError::Unauthorized(format!(
             "mcp server '{}': stored OAuth token belongs to '{}'; run `pantheon mcp login {}`",
@@ -315,8 +331,8 @@ pub fn status(
     }
     let store = TokenStore::new(broker, &spec.name);
     match store.load()? {
-        Some((_, _, meta, _)) if meta.server == spec.name => {
-            Ok((true, meta.scopes, meta.expires_at))
+        Some(tok) if tok.meta.server == spec.name => {
+            Ok((true, tok.meta.scopes, tok.meta.expires_at))
         }
         _ => Ok((false, Vec::new(), None)),
     }

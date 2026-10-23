@@ -92,7 +92,7 @@ impl BgTask {
             status: BgStatus::Queued,
             run_id,
             parent_run_id,
-            started_ms: now_ms() as u64,
+            started_ms: now_ms(),
             finished_ms: None,
             output: None,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -108,13 +108,13 @@ impl BgTask {
 
     pub fn finish(&mut self, output: String) {
         self.status = BgStatus::Done;
-        self.finished_ms = Some(now_ms() as u64);
+        self.finished_ms = Some(now_ms());
         self.output = Some(output);
     }
 
     pub fn fail(&mut self, err: String) {
         self.status = BgStatus::Failed;
-        self.finished_ms = Some(now_ms() as u64);
+        self.finished_ms = Some(now_ms());
         self.output = Some(err);
     }
 
@@ -161,7 +161,7 @@ pub fn status_segment(tasks: &[BgTask]) -> Option<String> {
     if n == 0 {
         None
     } else {
-        Some(format!("bg {n} {}", spinner_frame(now_ms() as u64)))
+        Some(format!("bg {n} {}", spinner_frame(now_ms())))
     }
 }
 

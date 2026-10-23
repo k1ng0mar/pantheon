@@ -22,7 +22,7 @@ fn mode_of(path: &std::path::Path) -> u32 {
 #[test]
 fn created_login_metadata_is_owner_only() {
     let dir = tempfile::tempdir().unwrap();
-    let store = LoginStore::open(dir.path().to_path_buf());
+    let store = LoginStore::open(dir.path());
     store
         .create("github.com", "user@example.com", "hunter2-secret")
         .unwrap();
@@ -41,7 +41,7 @@ fn created_login_metadata_is_owner_only() {
 #[test]
 fn password_never_lands_in_the_metadata_file() {
     let dir = tempfile::tempdir().unwrap();
-    let store = LoginStore::open(dir.path().to_path_buf());
+    let store = LoginStore::open(dir.path());
     store
         .create("github.com", "user@example.com", "SUPER-SECRET-PASSWORD")
         .unwrap();
@@ -66,7 +66,7 @@ fn update_rewrite_keeps_the_private_mode() {
     // rewrite keeps the private mode, and that no credentials survive in the
     // metadata across the rewrite.
     let dir = tempfile::tempdir().unwrap();
-    let store = LoginStore::open(dir.path().to_path_buf());
+    let store = LoginStore::open(dir.path());
     let cred = store
         .create("github.com", "u@example.com", "first-password")
         .unwrap();
@@ -90,7 +90,7 @@ fn no_temp_file_is_left_behind_after_a_write() {
     // The atomic-ish rename must clean up its temp, or a stale temp holding
     // credentials lingers in the data dir.
     let dir = tempfile::tempdir().unwrap();
-    let store = LoginStore::open(dir.path().to_path_buf());
+    let store = LoginStore::open(dir.path());
     store.create("github.com", "u@example.com", "pw").unwrap();
     store.create("x.com", "u@example.com", "pw2").unwrap();
 
