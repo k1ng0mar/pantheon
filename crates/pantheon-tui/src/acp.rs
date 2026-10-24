@@ -10,6 +10,11 @@
 //! * `session/prompt` streams `session/update` notifications while the model
 //!   and tools work, then returns an ACP `stopReason`;
 //! * approval-gated tool calls become `session/request_permission` requests;
+//! * UI approval cards (`render_ui` parks) become the same
+//!   `session/request_permission` requests, resolved through the runtime's
+//!   revision-pinned `submit_ui_action`; document content degrades to
+//!   markdown for every client, and the raw `UiDocument` rides the
+//!   `_pantheon/uiDocument` extension notification for clients that opt in;
 //!   `ask_user` questions become an assistant message and are answered by the
 //!   next `session/prompt` (the run is parked, so the text is routed through
 //!   `Supervisor::answer_input`, not treated as a fresh user turn).
@@ -90,6 +95,29 @@ impl Shared {
             "session/update",
             json!({"sessionId": session_id, "update": update}),
         );
+    }
+
+    /// Rich-UI documents: markdown fallback for every ACP client (the
+    /// protocol's own degradation rule), plus an extension notification with
+    /// the raw `UiDocument` for clients that opt into native rendering.
+    /// Extension delivery is additive: standard clients ignore the method.
+    fn ui_document(
+        &self,
+        session_id: &str,
+        ui_id: &str,
+        revision: u64,
+        document: &pantheon_api::ui::UiDocument,
+    ) {
+        let markdown = ui_document_markdown(document);
+        if !markdown.is_empty() {
+            self.text_chunk(session_id, &markdown);
+        }
+        if let Ok(doc) = serde_json::to_value(document) {
+            self.notify(
+                "_pantheon/uiDocument",
+                json!({"sessionId": session_id, "uiId": ui_id, "revision": revision, "document": doc}),
+            );
+        }
     }
 
     fn tool_call(&self, session_id: &str, call_id: &str, tool: &str, args: &str, status: &str) {
@@ -482,6 +510,12 @@ fn run_prompt(
                             a.push(scope.clone());
                         }
                     }
+                    Event::UiContent { run_id: r, ui_id, document, .. } if r == &run_id => {
+                        shared.ui_document(&session_id, ui_id, 0, document);
+                    }
+                    Event::UiUpdated { run_id: r, ui_id, revision, document, .. } if r == &run_id => {
+                        shared.ui_document(&session_id, ui_id, *revision, document);
+                    }
                     _ => {}
                 }))
         };
@@ -535,11 +569,13 @@ fn run_prompt(
                 return Ok("end_turn");
             }
             pantheon_agent::LoopOutcome::AwaitingUiAction { .. } => {
-                shared.text_chunk(
-                    session_id,
-                    "This turn is waiting for a structured UI decision. Respond in the client UI, then continue the session.",
-                );
-                return Ok("end_turn");
+                // A UI approval card parked the turn. Surface it as the same
+                // client permission request a gated tool call gets; the
+                // decision resumes the run through the runtime's own
+                // revision-pinned submission path, and the loop drains the
+                // resumed turn below.
+                resolve_ui_action(shared, session, session_id, run_id)?;
+                next_text.clear();
             }
             pantheon_agent::LoopOutcome::AwaitingApproval { scope, .. } => {
                 let scopes = {
@@ -563,6 +599,246 @@ fn run_prompt(
         }
     }
     Err("turn parked too many times without resolving".into())
+}
+
+/// Collect every node of a serialized `UiDocument` as `(id, node)` pairs.
+/// Works on JSON so the walker survives component-enum additions without
+/// changes here; the runtime validates documents before they reach events.
+fn ui_nodes(value: &serde_json::Value, out: &mut Vec<(String, serde_json::Value)>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                ui_nodes(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let (Some(id), Some(tag)) = (map.get("id").and_then(|v| v.as_str()), map.get("type").and_then(|v| v.as_str())) {
+                out.push((id.to_string(), value.clone()));
+                let _ = tag;
+            }
+            for nested in map.values() {
+                ui_nodes(nested, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The protocol's own degradation rule: unknown renderers must still leave
+/// the content readable. Markdown and tables render directly; every other
+/// component becomes a tagged placeholder; approval cards state their
+/// decision explicitly.
+fn ui_document_markdown(document: &pantheon_api::ui::UiDocument) -> String {
+    let Ok(value) = serde_json::to_value(document) else {
+        return String::new();
+    };
+    let mut nodes = Vec::new();
+    ui_nodes(&value, &mut nodes);
+    let mut parts: Vec<String> = Vec::new();
+    for (_id, node) in nodes {
+        match node["type"].as_str().unwrap_or_default() {
+            "markdown" => {
+                if let Some(title) = node["title"].as_str() {
+                    parts.push(format!("### {title}"));
+                }
+                if let Some(text) = node["text"].as_str() {
+                    parts.push(text.to_string());
+                }
+            }
+            "table" => {
+                let headers: Vec<&str> = node["headers"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|h| h.as_str()).collect())
+                    .unwrap_or_default();
+                if headers.is_empty() {
+                    continue;
+                }
+                parts.push(format!("| {} |", headers.join(" | ")));
+                parts.push(format!("|{}|", "| --- ".repeat(headers.len())));
+                for row in node["rows"].as_array().into_iter().flatten() {
+                    let cells: Vec<String> = row
+                        .as_array()
+                        .map(|c| c.iter().map(|x| x.as_str().unwrap_or_default().to_string()).collect())
+                        .unwrap_or_default();
+                    parts.push(format!("| {} |", cells.join(" | ")));
+                }
+            }
+            "approval" => {
+                let title = node["title"].as_str().unwrap_or("Approval");
+                let detail = node["detail"].as_str().unwrap_or_default();
+                let approve = node["approve"]["label"].as_str().unwrap_or("approve");
+                let deny = node["deny"]["label"].as_str().unwrap_or("deny");
+                parts.push(format!(
+                    "**{title}** - {detail}\n\nThe client decides: **{approve}** or {deny}."
+                ));
+            }
+            other if !other.is_empty() => parts.push(format!("\u{ab}{other}\u{bb}")),
+            _ => {}
+        }
+    }
+    parts.join("\n\n")
+}
+
+fn fresh_ui_nonce() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "acp-{}-{}",
+        nanos,
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    )
+}
+
+/// Resolve a parked UI approval card through the client's standard
+/// permission request. The decision is submitted as a real
+/// `UiActionSubmission` against the displayed revision, so park resolution,
+/// audit, and replay follow the runtime's own rules instead of an ACP
+/// side channel.
+fn resolve_ui_action(
+    shared: &Shared,
+    session: &Session,
+    session_id: &str,
+    run_id: &str,
+) -> Result<(), String> {
+    let Some((ui_id, call_id)) = session
+        .pending_ui_action(run_id)
+        .map_err(|e| format!("pending ui action: {e}"))?
+    else {
+        return Ok(());
+    };
+    // Latest document for this ui_id: replays carry the full replacement.
+    let entries = session
+        .supervisor
+        .replay(run_id)
+        .map_err(|e| format!("replay: {e}"))?;
+    let mut latest: Option<(u64, &pantheon_api::ui::UiDocument)> = None;
+    for entry in &entries {
+        match &entry.event {
+            Event::UiContent { ui_id: u, document, .. } if u == &ui_id => {
+                if latest.as_ref().map_or(true, |(rev, _)| *rev < 1) {
+                    latest = Some((0, document));
+                }
+            }
+            Event::UiUpdated { ui_id: u, revision, document, .. } if u == &ui_id => {
+                if latest.as_ref().map_or(true, |(rev, _)| *revision > *rev) {
+                    latest = Some((*revision, document));
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some((revision, document)) = latest else {
+        return Ok(());
+    };
+    let Ok(doc_value) = serde_json::to_value(document) else {
+        return Ok(());
+    };
+    let mut nodes = Vec::new();
+    ui_nodes(&doc_value, &mut nodes);
+    // The card's approve ref carries decision "grant", deny carries "deny"
+    // (`ActionKind::Approval` is internally tagged, so `decision` is a
+    // sibling of the `kind` string in JSON).
+    let mut approve: Option<(&str, &str, &str)> = None; // (node_id, action_id, label)
+    let mut deny: Option<(&str, &str, &str)> = None;
+    let mut title = "Approve?";
+    let mut detail = String::new();
+    for (node_id, node) in &nodes {
+        if node["type"].as_str() != Some("approval") {
+            continue;
+        }
+        if let Some(t) = node["title"].as_str() {
+            title = t;
+        }
+        if let Some(d) = node["detail"].as_str() {
+            detail = d.to_string();
+        }
+        for (key, decision) in [("approve", "grant"), ("deny", "deny")] {
+            if node[key]["decision"].as_str() != Some(decision) {
+                continue;
+            }
+            let found = (
+                node_id.as_str(),
+                node[key]["action_id"].as_str().unwrap_or_default(),
+                node[key]["label"].as_str().unwrap_or(decision),
+            );
+            if key == "approve" {
+                approve = Some(found);
+            } else {
+                deny = Some(found);
+            }
+        }
+    }
+    let (Some((approve_node, approve_action, approve_label)), Some((deny_node, deny_action, deny_label))) =
+        (approve, deny)
+    else {
+        // Card without a resolvable approve/deny pair: degrade to the text
+        // path so the park stays operator-resolvable in a full client.
+        shared.text_chunk(
+            session_id,
+            "This turn is waiting for a structured UI decision. Respond in the client UI, then continue the session.",
+        );
+        return Ok(());
+    };
+    let request = json!({
+        "sessionId": session_id,
+        "toolCall": {
+            "toolCallId": call_id,
+            "title": "render_ui",
+            "kind": "read",
+            "status": "pending",
+            "content": [{"type": "content", "content": {"type": "text", "text": format!("{title}\n{detail}")}}],
+        },
+        "options": [
+            {"optionId": "allow_once", "name": approve_label, "kind": "allow_once"},
+            {"optionId": "reject_once", "name": deny_label, "kind": "reject_once"}
+        ]
+    });
+    let Some(response) = shared.request_client("session/request_permission", request) else {
+        // No client answer: record the deny decision so the park resolves
+        // instead of hanging the session.
+        let chosen = (deny_node, deny_action);
+        return submit_ui_decision(session, run_id, &ui_id, revision, chosen);
+    };
+    let approved = response
+        .get("outcome")
+        .and_then(|o| o.get("outcome"))
+        .and_then(|o| o.as_str())
+        == Some("selected")
+        && response
+            .get("outcome")
+            .and_then(|o| o.get("optionId"))
+            .and_then(|o| o.as_str())
+            == Some("allow_once");
+    let chosen = if approved {
+        (approve_node, approve_action)
+    } else {
+        (deny_node, deny_action)
+    };
+    submit_ui_decision(session, run_id, &ui_id, revision, chosen)
+}
+
+fn submit_ui_decision(
+    session: &Session,
+    run_id: &str,
+    ui_id: &str,
+    revision: u64,
+    (node_id, action_id): (&str, &str),
+) -> Result<(), String> {
+    let submission = pantheon_api::ui::UiActionSubmission {
+        ui_id: ui_id.to_string(),
+        revision,
+        node_id: node_id.to_string(),
+        action_id: action_id.to_string(),
+        params: Default::default(),
+        nonce: fresh_ui_nonce(),
+    };
+    session
+        .submit_ui_action(run_id, &submission)
+        .map(|_| ())
+        .map_err(|e| format!("ui action submit: {e}"))
 }
 
 fn resolve_approval(

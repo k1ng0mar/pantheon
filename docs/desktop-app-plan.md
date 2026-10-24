@@ -1,0 +1,328 @@
+# Pantheon Desktop — plan
+
+Status: proposal + scaffold (2026-10-24). The desktop shell lives in a sibling
+project (`~/projects/pantheon-desktop`, Tauri 2) so the Pantheon workspace keeps
+its std-only dependency discipline; see "Placement" below.
+
+## 1. What this is based on
+
+Four shipped agent desktops were reverse-engineered in October 2026 (full
+findings in the ZCode-workspace report `REVERSE-ENGINEERING-REPORT.md`;
+pandacode is public source). What matters for Pantheon Desktop:
+
+| Product | Stack | Core lesson for us |
+|---|---|---|
+| **ZCode** (Z.ai) 3.16.3 | Electron + custom React, in-process agent CLI | The desktop is a **shell over an agent host** that owns a versioned NDJSON wire protocol (V4): conversation subscribe/resync, rowsRange, attachments chunking, workflow-run events, off-peak control. Renderer never talks to the world directly. |
+| **AutoClaw** (ZhipuAI) 1.18.1 | Electron + patched OpenClaw gateway | Credentials never reach agent processes: a loopback **Model Broker** rewrites `body.model` and injects auth; subprocesses get a `envPassthrough` allowlist. Also: forced-yolo trust boundaries are product risk, not a feature; request signing with an embedded MD5 secret is weak. |
+| **MiMo Code** (Xiaomi) | Electron + OpenCode-derived engine, SQLite event store | Event-sourced storage (`session/message/part/event/permission`) is enough to run a whole product; feature gates split domestic/overseas builds; a local token-authed HTTP API is how first-party tooling attaches. |
+| **PandaCode** 0.3.37 | **Tauri 2 + Rust + vanilla TS**, OS webview | A lean desktop can drive *many* harness CLIs with bounded output, deadlines, process-group cleanup, warm-agent pooling, steering, named connections with a secrets store, and an E2E-encrypted relay (Cloudflare DO + x25519/chacha20poly1305) for phone control. No bundled Chromium, no React, no resident Node. |
+
+Common failure modes observed across the closed-source three that Pantheon
+already designs against: policy-in-prompt instead of policy-in-runtime (all
+three ship "yolo" with at most a UI toggle), prompt-parsed approvals, telemetry
+SDKs with opaque beacons (ARMS, DataRangers/APMPlus), and update channels
+pointing at first-party proxies that rewrite model traffic.
+
+## 2. Decision
+
+**Tauri 2 shell around `pantheon-dashboard`, not a new Electron app and not a
+pandacode fork.**
+
+- Pantheon's authority model (capability gate, SQLite ledger, UiDocument v1
+  approval parking) lives in the runtime. A desktop app must *display and
+  submit* to that authority, never re-implement it. The dashboard SPA already
+  renders runs, approvals, scheduler, memory and stats against the ledger with
+  per-instance token auth; the shell's job is to make that a first-class app.
+- Electron (zcode/AutoClaw/MiMo) costs ~200 MB of bundled Chromium per app and
+  a resident Node; pandacode demonstrates the Tauri path works for exactly this
+  product shape. Tauri also keeps the Rust toolchain we already target.
+- Forking pandacode directly would import its architecture: task/session state
+  owned by the Tauri backend in its own SQLite. Pantheon requires the opposite
+  split — the runtime owns state, the desktop is a client. Reuse patterns and
+  (with attribution, per its license) the relay protocol instead.
+
+## 3. Architecture
+
+```
+┌──────────────────────────── pantheon-desktop (Tauri 2) ─────────────┐
+│  main.rs                                                            │
+│   ├─ supervisor: spawn `pantheon serve dashboard [--port N]`,       │
+│   │   capture stdout line "pantheon dashboard on http://…/?token=…" │
+│   │   process-group kill on exit; restart on crash (bounded)        │
+│   ├─ webview window → External(http://127.0.0.1:<port>)             │
+│   ├─ tray: show/hide, runs status (later: /api/stats), quit         │
+│   ├─ global shortcut: quick overlay window (pandacode pattern)      │
+│   ├─ single-instance + deep links (pantheon://run/<id>)             │
+│   └─ updater (tauri-plugin-updater, later)                          │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │ HTTP + WS, X-Pantheon-Token
+                    ┌──────────▼───────────┐
+                    │ pantheon-dashboard   │  (unchanged, std-only)
+                    │  SPA + /api/*        │
+                    └──────────┬───────────┘
+                               │ in-process
+                    ┌──────────▼───────────┐
+                    │ pantheon runtime     │  ledger, capability gate,
+                    │                      │  providers, scheduler, memory
+                    └──────────────────────┘
+```
+
+Phase 1 keeps HTTP as the only seam. Phase 2 can move hot paths (event stream,
+approvals) to Tauri IPC without touching the runtime — the dashboard's
+`App`/mount structure (`DashboardMount`) is already library-shaped.
+
+## 4. Phases
+
+- **P0 (scaffolded now):** shell supervises `pantheon serve dashboard`,
+  parses the tokened URL, opens the webview, tray with Show/Quit, single
+  instance, clean child teardown. Windows/macOS/Linux profiles.
+- **P1 native chrome:** global-shortcut overlay window (new task / running
+  tasks), notification bridge (ledger events → OS notifications), dock/tray
+  badge, auto-start, updater channel (`cdn` pattern: static file feed, signed).
+- **P2 deeper integration:** token handed to webview via IPC instead of URL
+  query; ledger event stream as Tauri events; native approvals surface
+  (UiDocument approval cards → OS notification with Approve/Deny, still
+  validated server-side — the revision-pinned submission is the guard).
+- **P3 remote + mobile:** adopt/reimplement pandacode's relay design
+  (GitHub-OAuth device pairing, per-account Durable Object, E2E-encrypted
+  frames — no task content at rest) so `pantheon-mobile` (Flutter/NYX) and the
+  desktop pair against the same endpoint. pandacode's relay is MIT-with-
+  attribution; lifting the protocol is allowed with the attribution line.
+- **P4 differentiation:** things none of the four have — provenance-aware
+  memory browsing, nightly self-improvement diffs as first-class UI,
+  capability-gate replay from the ledger (rewind = new branch, never rewrite).
+
+## 5. pandacode → Pantheon reuse map
+
+| pandacode | Where it lands |
+|---|---|
+| `providers.rs` harness adapters (spawn, bounded output 1 MiB/256 KiB, deadlines 8–15 s, process-group cleanup, warm pool `epoch/take/prewarm`) | `pantheon-providers` already owns provider/streaming; the bounded-spawn helpers and warm-pool pattern are worth porting into `pantheon-exec` |
+| `connections.rs` named connections + secrets store (secret names only cross the bridge) | matches `pantheon-secrets` broker; adopt the "file and webview only see names" rule in dashboard settings UI |
+| approval bar (one line per request, grouped approve-all) | dashboard SPA; approvals stay server-validated via UiDocument revision pins |
+| task board + message queueing/steering | `pantheon-runtime` queue/steer already exists; board is dashboard UI work |
+| `relay/` E2E device pairing | P3 (above) |
+| `windows_job.rs` (Windows job objects for child cleanup) | needed when Pantheon ships Windows builds; port to `pantheon-exec` |
+
+## 6. Placement
+
+Sibling project, not `crates/pantheon-desktop-tauri`: Tauri pulls tokio and a
+winit/wry stack into the build graph, which the workspace's std-only rule
+exists to avoid. The shell never links Pantheon crates — it talks HTTP. If a
+later phase wants in-repo, add `exclude = ["desktop"]` to the root workspace.
+
+## 7. Non-goals / risks
+
+- No bundled model proxy in the shell: model traffic stays inside the runtime
+  under the capability gate (AutoClaw's broker exists because its gateway
+  cannot be trusted with tokens; Pantheon's threat model already fixes that).
+- No telemetry in the shell beyond opt-in crash reports; updater feed is
+  static-file based (zcode's localhost-updater dev stub is what shipping on a
+  real feed looks like — decide the feed domain before P1).
+- Webview parity: WebView2/WKGTK/WebKit differences are the Tauri tax; the
+  dashboard SPA already ships a service worker and must be tested on all three
+  engines (pandacode's plain-TS approach shows the ceiling is fine).
+
+## 8. Further prior art (2026-10-24): DeepSeek Harness, Claude Cowork, ChatGPT Work
+
+### DeepSeek Harness (`dsh`, deepseek-ai/deepseek-harness, v0.2.1-rc.3, MIT)
+
+TypeScript pnpm monorepo (Node ≥ 24.9), 53 capability packages + Electron
+desktop (`apps/desktop` shell + `apps/desktop-host`) + `apps/web` SPA + `dsh`
+CLI. Two ideas worth stealing outright:
+
+- **Cordis, "everything is a plugin"** (vendored): explicit DI, scoped
+  services, lifecycle-managed cleanup, config-driven loading. Pantheon's
+  `pantheon-extensions` is the same seam with less machinery; dsh proves you
+  can run an entire product (model adapter, tool registry, agent loop, GUI
+  host) as plugins over one kernel. Guard-failure mode it fixes: lifecycle
+  cleanup as a framework guarantee, not per-module discipline.
+- **Capability package families with READMEs as contracts** (`guard/`,
+  `spill/`, `ptc-runtime/`, `goal/`): each family documents what it provides
+  and who owns each part. Directly adoptable:
+  - `guard/` — loop-hygiene: repeat-tool-call reminder + per-tool-call timeout
+    policy. Cheap, high-value Pantheon extension plugins.
+  - `spill/` — oversized tool results spill to storage, context gets a
+    locator with retrieval guidance (`maxInlineTokens`); failure keeps the
+    original inline. Pantheon's ledger is already the storage; this is a
+    context-policy layer on top.
+  - `ptc-runtime/` — programmatic tool calling: model writes programs against
+    host-provided async functions, fresh process under sandbox policy,
+    opt-in persistent confined REPL per state owner. Pairs with
+    `pantheon-exec::sandbox` levels.
+  - `goal/` — one durable completion objective per session, survives
+    restart/resume/fork, `/goal` human command, opt-in continuation rounds.
+    Complements the scheduler (records completion state, does not schedule).
+- **Validation for our stack split:** dsh also ships an HTTP host + SPA web
+  GUI (`host/`: SPA dist server, workspace-picker seams, plugin inventory)
+  — the same shape we chose (shell → HTTP → dashboard). Their desktop is
+  Electron; ours being Tauri is the one place we deliberately diverge.
+
+### Claude Desktop / Cowork (Anthropic; vendor architecture doc)
+
+Cowork = Claude Agent SDK with no terminal; desktop hosts three apps (Chat /
+Cowork / Claude Code). Launched Jan 2026 (macOS), Feb 2026 (Windows), GA Apr.
+
+- **Two-environment local split:** agent loop runs natively; **code execution
+  runs in a hypervisor-isolated Linux VM** (Virtualization.framework /
+  Hyper-V). Pantheon's sandbox ladder (`pantheon-exec`) should grow a VM level
+  for exactly this "agent trusted with files, code not trusted with the host"
+  split.
+- **Egress as a first-class gate:** cloud sandboxes get a mandatory,
+  non-bypassable proxy with allow-listed destinations; private/link-local/
+  cloud-metadata addresses denied by default; session-scoped credentials that
+  expire within hours; connector tokens never enter the sandbox. This is the
+  runtime-level version of what Pantheon's capability gate does for tools —
+  apply the same model to network egress (`pantheon-gateway`).
+- **Grants can be non-persistent:** admin toggle disables "always allow" so
+  every permission-gated call needs fresh approval. Make "no persistent
+  grants" a first-class Pantheon profile.
+- **Desktop app as the local bridge for cloud sessions:** cloud work reaches
+  local files only through the desktop app's brokered, permission-checked
+  connection. Same shape as our P3 relay plan — the shell is the on-device
+  authority proxy, and offline shell = unreachable files.
+- **Observability + blind spots:** Compliance API / OpenTelemetry for admins;
+  EDR can't see inside the local VM. If Pantheon grows a VM sandbox level,
+  ship an equivalent audit stream so the VM isn't a visibility hole.
+
+### ChatGPT Work / merged ChatGPT desktop (OpenAI, July 9 2026)
+
+Cloud-first agent ("ships files, not just chat") + merged macOS/Windows
+desktop. One actionable lesson: **migration as onboarding** — it imports
+settings/skills/projects from Claude Code, Claude Cowork, and Cursor.
+Pantheon already has `pantheon-migration` (Hermes/OpenClaw/OMP); add Cowork
+and ChatGPT Work export formats to its target list when their formats are
+documented/observable.
+
+### Amended decisions
+
+- P1 adds: loop-hygiene guards + tool-result spilling as Pantheon extension
+  plugins (cheap wins from dsh).
+- P2 sandbox ladder gains a VM-backed level (Cowork's local split is the
+  reference implementation shape).
+- `pantheon-gateway` egress policy should adopt allow-list + session-scoped
+  credentials, not just tool-level gating.
+
+## 9. Decision change (2026-10-24): PandaCode is the base, not a reference
+
+The Tauri-shell-wrapping-the-dashboard approach (P0, preserved at
+`~/projects/pantheon-desktop-shell-p0`) was a browser-in-a-box. The product
+goal is PandaCode's workspace — sidebar of agents/projects, task board,
+worktrees, per-turn diffs, display switcher (workspace/browser/terminal),
+steering, approvals bar — with **Pantheon as the harness it runs**.
+
+What exists now in `~/projects/pantheon-desktop` (fork of pandacode v0.3.37,
+full history, PandaCode attribution license honored):
+
+- `pantheon` registered as a first-class ACP harness: `pantheon serve acp`
+  (verified: initialize handshake answers protocolVersion 1, loadSession,
+  embeddedContext). One ACP session = one Pantheon run; approvals arrive as
+  `session/request_permission`; modes map to Pantheon's Build/Plan.
+- Pantheon is the default provider for new tasks, first in the picker list,
+  and in the executable-override allowlist. Discovery: PATH, then
+  `~/projects/pantheon/target/release/pantheon`, then `~/.local/bin/pantheon`.
+- Upstream harnesses stay dormant (discovery-gated) — stripping them is a
+  deliberate later pass, not silent breakage.
+- Identity retargeted (`app.pantheon.desktop`), `cargo check` + `tsc` clean.
+
+Next steps in priority order:
+1. First-run experience: Pantheon-first composer defaults, provider settings
+   page for the pantheon harness (binary path override already works).
+2. Wire Pantheon-specific surfaces where PandaCode ones don't fit: the
+   capability gate's approval semantics already map to `request_permission`;
+   UiDocument v1 render_ui events will need an ACP session/update mapping
+   (new upstream capability or a Pantheon ACP extension) — design before P2.
+3. Then re-apply the plan's P1+ phases on top of this codebase (notifications,
+   updater, relay for pantheon-mobile), replacing this document's §3
+   architecture diagram's shell internals with the fork's structure.
+
+## 10. The steal-list (what we take from each product)
+
+Per-source, each item names where it lands in Pantheon. Ordering = priority
+within the source; items already done are omitted.
+
+### Codex (openai/codex; app-server protocol via the fork)
+1. **Turn-scoped lifecycle + clean interrupt** — `turn/interrupt`, explicit
+   turn states, model catalog with preserved display names. Lands in the ACP
+   layer / providers of the fork, and as semantics for `pantheon run`.
+2. **Sandbox ladder as per-task policy** — read-only / workspace-write /
+   danger-full-access chosen per task with per-call approval overrides, not
+   one global mode. Lands in `pantheon-exec` policy profiles + fork composer.
+3. **Goals as durable objectives** (same idea as dsh `goal/`) — one
+   completion objective per session surviving restart/fork, with explicit
+   continuation rounds. Lands in `pantheon-runtime` alongside the scheduler.
+
+### Claude Desktop / Cowork
+1. **VM-backed code-execution sandbox** — agent loop native, code execution
+   in a hypervisor-isolated VM (Virtualization.framework / Hyper-V). Next rung
+   of the `pantheon-exec` sandbox ladder above OS sandboxes.
+2. **Egress as a runtime gate** — mandatory non-bypassable proxy,
+   allow-listed destinations, private/link-local/metadata denied by default,
+   session-scoped short-lived credentials, connector tokens never enter the
+   sandbox. Lands in `pantheon-gateway` + `pantheon-secrets` broker.
+3. **Non-persistent grants profile** — a config where "always allow" is
+   disabled and every gated call re-prompts. Lands in `pantheon-agent`
+   permission profiles.
+4. **Desktop app as the on-device bridge** for remote/cloud/mobile sessions —
+   the shell brokers file access for P3 relay sessions; offline shell means
+   unreachable files. Shapes the fork's P3 role.
+5. **Admin observability** — audit event stream + OpenTelemetry export for
+   org deployments; avoid Cowork's EDR-blind-VM mistake by shipping the
+   audit stream from inside any VM sandbox we add.
+
+### ZCode
+1. **Resync-after-gap robustness** — sequence-checked event frames plus an
+   authoritative snapshot resync (`v4/conversation/resync`, `rowsRange`) when
+   a client detects a gap. Lands in the dashboard WS/event-stream protocol
+   and the fork's task views.
+2. **Workflow runs as events** — `workflowRun{Events,Runs,Workspace,NodeResult}`
+   surfaces multi-step runs as first-class subscribable state. Lands in
+   `pantheon-runtime::swarm` projections + dashboard board.
+3. **Off-peak compute control** — a client-usable lifecycle (`offPeakControl`,
+   `offPeak/lifecycle`) for deferrable work. Lands in `pantheon-scheduler` +
+   dashboard.
+4. **Remote agents over SSH/WSL** — deploy agent bundles to a remote host
+   with hardened tar extraction, run under a managed runtime root. Lands in
+   `pantheon-exec` remote targets.
+5. **TTFT/local telemetry facts as events** — client-measured latency facts
+   ride the event bus instead of a hidden beacon. Lands in the event ledger.
+
+### MiMo
+1. **Local query classifier** — small ONNX model routes each request (which
+   harness/model/tool path) before spending tokens. Lands in
+   `pantheon-providers` as an optional pre-router; onnxruntime optional.
+2. **Migration as onboarding** — `claude_import` imports rival tools' session
+   history (they import Claude Code/Cowork/Cursor). Extend
+   `pantheon-migration` targets: Claude Code, Cowork, ChatGPT Work.
+3. **Feature-gate profiles** — domestic/overseas build surfaces as config
+   profiles (compliance-driven gating). Lands in the dashboard/fork settings.
+4. **Vendored office stack** — hash-pinned LibreOffice + document pipeline
+   for deliverables. Lands in `pantheon-tools`/document plugin.
+5. **Transcript evidence store for self-improvement** — evolve-transcript DB
+   backing their evolve-seed. Lands in `pantheon-nightly` as its evidence
+   input (ledger already has the events).
+
+### AutoClaw
+1. **Model Broker credential isolation** — harness/subprocesses never hold
+   tokens: a loopback broker rewrites model + auth per request, children get
+   an explicit `envPassthrough` allowlist. Lands in `pantheon-secrets` broker
+   as the enforcement path for provider credentials.
+2. **Evolution governance (Hermes)** — proposal → human approval →
+   HMAC-verified journal, fail-closed write guards, recursion exclusions.
+   The governance shape for `pantheon-nightly` self-improvement.
+3. **IM channel breadth** — WeChat/WeCom/QQ/DingTalk/Lark channels. Roadmap
+   items for `pantheon-gateway`.
+4. **Skill hot-update + usage ledger** — skills update without restart and
+   their usage is auditable. Lands in `pantheon-extensions`.
+5. **Anti-patterns (deliberately NOT taken)** — runtime-patching a vendored
+   engine instead of shipping a clean fork; forced-yolo with a documented
+   `workspaceOnly` bypass; MD5 static-key request signing with an embedded
+   app secret.
+
+### Done today (from this list)
+- **UiDocument over ACP** (ZCode-adjacent robustness + Cowork-style
+  permission mapping): `pantheon-tui/src/acp.rs` now renders `UiContent`/
+  `UiUpdated` as markdown fallback + `_pantheon/uiDocument` extension
+  notification, and parked UI approval cards surface as standard
+  `session/request_permission`, resolved through the runtime's
+  revision-pinned `submit_ui_action`. Standard ACP clients (Zed, the fork)
+  work with zero client changes.
