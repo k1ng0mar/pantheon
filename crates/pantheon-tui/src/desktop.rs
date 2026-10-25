@@ -129,7 +129,9 @@ fn ensure_built(dir: &Path, rebuild: bool) -> Result<(), String> {
     let binary = dir.join("src-tauri/target/release/pantheon-desktop");
     if rebuild || !binary.exists() || stale(&binary, &dir.join("dist")) || stale(&binary, &dir.join("src-tauri/src")) {
         let mut command = Command::new("cargo");
-        command.arg("build").arg("--release").current_dir(dir.join("src-tauri"));
+        // custom-protocol embeds the built frontend; without it the shell
+        // bakes the devUrl and the window shows WebKit's connect-refused page.
+        command.args(["build", "--release", "--features", "custom-protocol"]).current_dir(dir.join("src-tauri"));
         run("building desktop shell (cargo build --release)", command)?;
     }
     Ok(())

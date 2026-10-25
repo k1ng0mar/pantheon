@@ -12,6 +12,11 @@ name = "pantheon_desktop_lib"
 # Desktop only links the rlib; add "staticlib", "cdylib" back for mobile targets.
 crate-type = ["rlib"]
 
+# Tauri embeds the built frontend (frontendDist) only with this feature;
+# `tauri build` enables it, a plain `cargo build` must pass it explicitly.
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
