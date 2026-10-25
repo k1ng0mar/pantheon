@@ -25,10 +25,10 @@ pub mod computer;
 pub mod delegate_budget;
 pub mod desktop_takeover;
 
+pub mod judge;
 /// Loop-hygiene gate: refuses the third consecutive identical tool call
 /// with a model-visible change-approach reason (dsh steal, plan doc §10).
 pub mod loop_guard;
-pub mod judge;
 pub mod nightly_tools;
 pub mod operation;
 pub mod partial_handoff;

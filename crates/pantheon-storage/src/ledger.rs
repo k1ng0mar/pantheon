@@ -179,6 +179,7 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::ImportedReasoning { run_id, .. }
         | Event::UsageRecorded { run_id, .. }
         | Event::SteeringProvided { run_id, .. }
+        | Event::AgentMessageDelivered { run_id, .. }
         | Event::UserInputRequested { run_id, .. }
         | Event::UserInputProvided { run_id, .. }
         | Event::BrowserActivity { run_id, .. }
@@ -1940,6 +1941,15 @@ fn describe(ev: &Event) -> String {
         }
         Event::SteeringProvided { text, .. } => {
             format!("steered: {}", text.chars().take(120).collect::<String>())
+        }
+        Event::AgentMessageDelivered {
+            sender,
+            kind,
+            correlation_id,
+            ..
+        } => {
+            let corr = correlation_id.as_deref().unwrap_or("none");
+            format!("agent message delivered from {sender} ({kind}, correlation: {corr})")
         }
         Event::ImportedReasoning { turn_id, text, .. } => {
             format!(

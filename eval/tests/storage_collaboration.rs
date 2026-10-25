@@ -361,6 +361,7 @@ fn a_message_carries_full_provenance() {
             "m1",
             Some("c1"),
             Some("t1"),
+            None,
             "nyx",
             "zeus",
             MessageKind::Delegation,
@@ -380,7 +381,16 @@ fn a_message_carries_full_provenance() {
 fn an_agent_cannot_message_itself() {
     let (s, p) = store("selfmsg");
     let err = s
-        .record_message("m1", None, None, "nyx", "nyx", MessageKind::Note, "hi")
+        .record_message(
+            "m1",
+            None,
+            None,
+            None,
+            "nyx",
+            "nyx",
+            MessageKind::Note,
+            "hi",
+        )
         .unwrap_err();
     assert_eq!(err.code, "COLLABORATION_INVALID");
     assert!(err.cause.contains("cannot message itself"));
@@ -395,14 +405,24 @@ fn the_inbox_is_unread_only_and_settling_is_idempotent() {
         "m1",
         None,
         None,
+        None,
         "nyx",
         "zeus",
         MessageKind::Query,
         "status?",
     )
     .unwrap();
-    s.record_message("m2", None, None, "athena", "zeus", MessageKind::Note, "fyi")
-        .unwrap();
+    s.record_message(
+        "m2",
+        None,
+        None,
+        None,
+        "athena",
+        "zeus",
+        MessageKind::Note,
+        "fyi",
+    )
+    .unwrap();
     assert_eq!(s.inbox("zeus").unwrap().len(), 2);
     assert!(s.settle_message("m1").unwrap(), "first settle does work");
     // A replayed delivery must not double-count or error.
@@ -425,6 +445,7 @@ fn messages_on_a_task_form_an_ordered_trail() {
         "m1",
         Some("c1"),
         Some("t1"),
+        None,
         "nyx",
         "zeus",
         MessageKind::Delegation,
@@ -435,6 +456,7 @@ fn messages_on_a_task_form_an_ordered_trail() {
         "m2",
         Some("c1"),
         Some("t1"),
+        None,
         "zeus",
         "nyx",
         MessageKind::Query,
@@ -445,6 +467,7 @@ fn messages_on_a_task_form_an_ordered_trail() {
         "m3",
         Some("c1"),
         Some("t1"),
+        None,
         "nyx",
         "zeus",
         MessageKind::Answer,
@@ -603,6 +626,7 @@ fn an_unsettled_message_survives_a_restart() {
             "m1",
             None,
             None,
+            None,
             "nyx",
             "zeus",
             MessageKind::Query,
@@ -611,6 +635,7 @@ fn an_unsettled_message_survives_a_restart() {
         .unwrap();
         s.record_message(
             "m2",
+            None,
             None,
             None,
             "nyx",
@@ -645,6 +670,7 @@ fn collaboration_state_survives_a_restart_intact() {
             "m1",
             Some("c1"),
             Some("t1"),
+            None,
             "nyx",
             "zeus",
             MessageKind::Delegation,

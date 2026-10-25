@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   message_id       TEXT PRIMARY KEY,
   collaboration_id TEXT,
   task_id          TEXT,
+  correlation_id   TEXT,
   sender           TEXT NOT NULL,
   recipient        TEXT NOT NULL,
   kind             TEXT NOT NULL,
@@ -368,6 +369,9 @@ pub struct AgentMessage {
     pub collaboration_id: Option<String>,
     /// The task this message belongs to. `None` for coordination chatter.
     pub task_id: Option<String>,
+    /// Pairs a reply with the request that prompted it (the originating
+    /// message id or caller-chosen token). `None` for uncorrelated chatter.
+    pub correlation_id: Option<String>,
     pub sender: String,
     pub recipient: String,
     pub kind: MessageKind,
@@ -503,6 +507,13 @@ impl CollaborationStore {
         crate::configure_durability(&conn, "COLLABORATION")?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| cerr("COLLABORATION_SCHEMA", e.to_string()))?;
+        // Databases created before correlation_id existed need the column
+        // added; fresh ones already have it from SCHEMA (idempotent).
+        crate::add_column_once(
+            &conn,
+            "ALTER TABLE agent_messages ADD COLUMN correlation_id TEXT",
+        )
+        .map_err(|e| cerr("COLLABORATION_SCHEMA", e.to_string()))?;
         Ok(Self {
             conn: std::sync::Arc::new(Mutex::new(conn)),
         })
@@ -646,7 +657,7 @@ impl CollaborationStore {
                     error,
                     now,
                     settled,
-                    current.version
+                    current.version as i64
                 ],
             )
             .map_err(|e| TaskMutationError::Storage(e.to_string()))?;
@@ -737,7 +748,7 @@ impl CollaborationStore {
                     agent,
                     next.as_str(),
                     now,
-                    current.version
+                    current.version as i64
                 ],
             )
             .map_err(|e| TaskMutationError::Storage(e.to_string()))?;
@@ -979,6 +990,7 @@ impl CollaborationStore {
         message_id: &str,
         collaboration_id: Option<&str>,
         task_id: Option<&str>,
+        correlation_id: Option<&str>,
         sender: &str,
         recipient: &str,
         kind: MessageKind,
@@ -1011,12 +1023,13 @@ impl CollaborationStore {
         let conn = self.lock()?;
         conn.execute(
             "INSERT INTO agent_messages
-             (message_id, collaboration_id, task_id, sender, recipient, kind, content, created_ms)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+             (message_id, collaboration_id, task_id, correlation_id, sender, recipient, kind, content, created_ms)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             params![
                 message_id,
                 collaboration_id,
                 task_id,
+                correlation_id,
                 sender,
                 recipient,
                 kind.as_str(),
@@ -1035,7 +1048,7 @@ impl CollaborationStore {
         let mut stmt = conn
             .prepare(
                 "SELECT message_id, collaboration_id, task_id, sender, recipient, kind, content,
-                        created_ms, settled_ms
+                        created_ms, settled_ms, correlation_id
                  FROM agent_messages WHERE message_id=?1",
             )
             .map_err(|e| cerr("MESSAGE_QUERY", e.to_string()))?;
@@ -1070,7 +1083,7 @@ impl CollaborationStore {
         let mut stmt = conn
             .prepare(
                 "SELECT message_id, collaboration_id, task_id, sender, recipient, kind, content,
-                        created_ms, settled_ms
+                        created_ms, settled_ms, correlation_id
                  FROM agent_messages WHERE recipient=?1 AND settled_ms IS NULL
                  ORDER BY created_ms, message_id",
             )
@@ -1089,7 +1102,7 @@ impl CollaborationStore {
         let mut stmt = conn
             .prepare(
                 "SELECT message_id, collaboration_id, task_id, sender, recipient, kind, content,
-                        created_ms, settled_ms
+                        created_ms, settled_ms, correlation_id
                  FROM agent_messages WHERE task_id=?1 ORDER BY created_ms, message_id",
             )
             .map_err(|e| cerr("MESSAGE_QUERY", e.to_string()))?;
@@ -1155,7 +1168,7 @@ fn task_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentTask> {
         objective: r.get(5)?,
         status: TaskStatus::parse(&status)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-        version: r.get(7)?,
+        version: r.get::<_, i64>(7)? as u64,
         result: r.get(8)?,
         error: r.get(9)?,
         created_ms: r.get(10)?,
@@ -1177,6 +1190,7 @@ fn message_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentMessage> {
         content: r.get(6)?,
         created_ms: r.get(7)?,
         settled_ms: r.get(8)?,
+        correlation_id: r.get(9)?,
     })
 }
 
