@@ -28,3 +28,8 @@ __pycache__/
 
 # Runtime-materialized bundled plugins (from vendor/ at compile time)
 .pantheon-extensions/
+# Desktop app (Tauri) build artifacts
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/dist/
+desktop/src-tauri/gen/

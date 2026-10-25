@@ -1,0 +1,15 @@
+{
+  // PandaCode Connect relay: sign-in, device list and encrypted frame forwarding. See README.md.
+  "name": "pandacode-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-02",
+  // The bambooed.ai zone must be on the same Cloudflare account. Forks: use your own domain or remove this.
+  "routes": [{ "pattern": "relay.bambooed.ai", "custom_domain": true }],
+  "durable_objects": { "bindings": [{ "name": "ACCOUNT", "class_name": "Account" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Account"] }],
+  "ratelimits": [
+    { "name": "AUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+    { "name": "ACCOUNT_LIMITER", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } }
+  ],
+  "observability": { "enabled": true }
+}

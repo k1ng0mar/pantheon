@@ -1,0 +1,227 @@
+name: Release
+# Pushing a tag vX.Y.Z builds macOS (Apple silicon and Intel), Windows x64 and arm64, Linux x64 and Linux arm64
+# installers and publishes them on a GitHub Release whose notes come from
+# releases/X.Y.Z.md. A manual run builds the installers as workflow artifacts
+# and publishes only when `publish` is checked. See docs/releasing.md.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Create the GitHub Release (tags vX.Y.Z at this commit if needed)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Read and check the version
+        id: version
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the app version $version. Run npm run release:version first."
+            exit 1
+          fi
+          if [ ! -s "releases/$version.md" ]; then
+            echo "::error::releases/$version.md is missing or empty."
+            exit 1
+          fi
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: darwin-aarch64, triple: aarch64-apple-darwin }
+          # Native Intel runner: build.mjs only builds on the target's own host architecture.
+          - { os: macos-15-intel, target: darwin-x86_64, triple: x86_64-apple-darwin }
+          - { os: windows-2022, target: windows-x86_64, triple: x86_64-pc-windows-msvc }
+          - { os: windows-11-arm, target: windows-aarch64, triple: aarch64-pc-windows-msvc }
+          - { os: ubuntu-22.04, target: linux-x86_64, triple: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: linux-aarch64, triple: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      RELEASE_TARGET: ${{ matrix.target }}
+      # Optional macOS signing. When APPLE_CERTIFICATE is not set, the app gets
+      # an ad-hoc signature instead (see docs/releasing.md).
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: '22', cache: npm }
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          targets: ${{ matrix.triple }}
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf squashfs-tools xvfb dbus-x11 xdg-utils
+      - run: npm ci
+      - run: npm run test:release
+      - name: Configure Apple signing keychain
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        run: node scripts/release/ci-apple.mjs
+        env:
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+      - name: Build installer
+        run: node scripts/release/build.mjs
+        env:
+          # Signs the in-app update file. Without these secrets the installers still
+          # build, but the release offers no automatic update.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Remote access (docs/remote-access.md). Public values, kept as repository variables;
+          # without them the build shows remote access as not configured.
+          PANTHEON_RELAY_URL: ${{ vars.PANTHEON_RELAY_URL }}
+          PANTHEON_GITHUB_CLIENT_ID: ${{ vars.PANTHEON_GITHUB_CLIENT_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      - name: Check packaged app startup (not GUI behavior)
+        if: runner.os != 'macOS'
+        timeout-minutes: 4
+        run: node scripts/release/ci-startup-smoke.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pandacode-${{ needs.prepare.outputs.version }}-${{ matrix.target }}
+          path: release/${{ needs.prepare.outputs.version }}/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove Apple signing keychain
+        if: always() && runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        run: node scripts/release/ci-apple.mjs cleanup
+
+  # Release assurance (docs/releasing.md): SBOMs and scan coverage. Findings and tool
+  # failures are reported in SBOM-COVERAGE.md and never block the release.
+  sbom:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      SYFT_VERSION: '1.55.0'
+      SYFT_SHA256: bb65249542db5fedeeb4d3f9b018b75e7264dbfbbb10486f044581a92f90490d
+      GRYPE_VERSION: '0.121.0'
+      GRYPE_SHA256: 64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: assets
+          pattern: pandacode-${{ needs.prepare.outputs.version }}-*
+          merge-multiple: true
+      - name: Install syft and grype (pinned, checksum verified)
+        run: |
+          mkdir -p "$RUNNER_TEMP/tools" "$HOME/.local/bin"
+          cd "$RUNNER_TEMP/tools"
+          for tool in syft grype; do
+            ver_var=${tool^^}_VERSION; sum_var=${tool^^}_SHA256
+            file="${tool}_${!ver_var}_linux_amd64.tar.gz"
+            curl -fsSL -o "$file" "https://github.com/anchore/$tool/releases/download/v${!ver_var}/$file"
+            echo "${!sum_var}  $file" | sha256sum -c -
+            tar -xzf "$file" -C "$HOME/.local/bin" "$tool"
+          done
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Generate SBOMs and scan coverage
+        run: node scripts/release/sbom.mjs assets sbom "$VERSION" "$GITHUB_SHA"
+      - name: Show coverage
+        if: always()
+        run: cat sbom/SBOM-COVERAGE.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: pandacode-sbom-${{ needs.prepare.outputs.version }}
+          path: sbom/
+          if-no-files-found: warn
+          retention-days: 14
+
+  publish:
+    needs: [prepare, build, sbom]
+    if: github.ref_type == 'tag' || inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: assets
+          pattern: pandacode-${{ needs.prepare.outputs.version }}-*
+          merge-multiple: true
+      - name: Download SBOMs and scan coverage
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: assets
+          name: pandacode-sbom-${{ needs.prepare.outputs.version }}
+      - name: Write release notes
+        env:
+          # A Developer ID signed build is notarized; an ad-hoc one is not, and
+          # macOS then needs a step the notes have to name.
+          SIGNED: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        run: |
+          {
+            cat "releases/$VERSION.md"
+            printf '\n\n'
+            if [ "$SIGNED" = "true" ]; then node scripts/release/install-notes.mjs --signed; else node scripts/release/install-notes.mjs; fi
+          } > "$RUNNER_TEMP/notes.md"
+      - name: Write the updater manifest
+        run: |
+          if ls assets/*.sig >/dev/null 2>&1; then
+            node scripts/release/updater-manifest.mjs assets "$VERSION" "releases/$VERSION.md"
+          else
+            echo "::warning::No signed update files; this release will not update installed apps."
+          fi
+      - name: Create GitHub Release
+        run: |
+          ls -l assets
+          gh release create "v$VERSION" assets/* \
+            --title "PandaCode $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --target "$GITHUB_SHA"
+
+  npm:
+    needs: [prepare, publish]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: '22', registry-url: 'https://registry.npmjs.org' }
+      - name: Publish npx pandacode
+        working-directory: packages/npx
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN is not set; skipping the npm publish of pandacode."
+            exit 0
+          fi
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm publish --provenance --access public
