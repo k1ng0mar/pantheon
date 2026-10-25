@@ -326,3 +326,187 @@ within the source; items already done are omitted.
   `session/request_permission`, resolved through the runtime's
   revision-pinned `submit_ui_action`. Standard ACP clients (Zed, the fork)
   work with zero client changes.
+
+## 11. MonoCode (hardbeat920/monocode, v0.16.0) — the UI reference
+
+Tauri 2 + React 19 + CodeMirror 6 + Tailwind 4; sessions as tabs, split
+panes via title-bar drag (`TitleBarPaneDrop`), a `quick-composer` global
+launcher, checkpoints in the backend, Jira/Linear/GitLab/Azure DevOps
+integrations, and harness support incl. Hermes Agent and Devin. Two steal
+groups:
+
+### UI system (the part that makes it look wonderful)
+1. **One-hue theme token system.** The entire palette derives from a single
+   `--theme-hue/--theme-saturation` pair plus lightness scales
+   (`hsl(var(--theme-hue) ...)`), with every surface, stroke, and selection
+   computed via `color-mix(in srgb, var(--color-content) N%, transparent)`.
+   Coherence is structural, not per-component taste. Port the token sheet
+   into the fork's CSS (PandaCode's vanilla-TS UI can consume the same
+   custom properties unchanged) and expose hue/saturation in settings the
+   way `features/settings/model/appearance.ts` does.
+2. **WebKit-known-quirks discipline.** They document and work around
+   Tailwind's `:is(:where(.group))` focus-invalidation bug in WebKit —
+   exactly the OS-webview tax from §7. Keep a quirks ledger in the fork.
+3. **Tabs-as-sessions + split panes with drop targets**, `GlassBackdrop`
+   for window chrome, compact `--leading-label` typography discipline
+   (descenders in 10px tab labels).
+4. **Streamdown** for streamed markdown/code/mermaid — candidate to replace
+   ad-hoc markdown rendering in the fork's conversation view.
+
+### Product ideas
+5. **`/operator`** — one slash command that lets the running agent open
+   sessions and manage worktrees/notes through a narrow, audited surface.
+   Maps cleanly onto Pantheon's capability gate: it IS a tool projection.
+6. **Checkpoints** (backend `checkpoint.rs`) per session — pairs with the
+   ledger: checkpoint = worktree/Git state anchor, ledger = decision state.
+7. **Monos** — cross-project agents with memory + schedules. Independent
+   confirmation of Pantheon's scheduler+memory direction; steal the framing
+   (first-class entity in the sidebar rail) for Pantheon runs.
+
+### Done (steal-list execution, 2026-10-24)
+- **MonoCode one-hue tokens** (`pantheon-desktop/src/pantheon-theme.ts`):
+  hue/saturation dial computes every existing palette variable — including
+  the `rgb(var(--accent-rgb)/α)` triplet, which pure CSS cannot derive —
+  with WCAG auto-contrast for `--on-accent`, light/dark lightness levels
+  mirrored from the original sheet, persisted in localStorage, applied
+  before first paint. Default: Pantheon purple (hue 262). The CSS itself is
+  untouched; reskinning is data, not a rewrite. Settings dial UI is the
+  follow-up; a sweep of the few hardcoded brand hexes (e.g. `.brand-name`)
+  is the second.
+- **Codex-style per-task mode mapping for Pantheon**: the fork's composer
+  approval modes now map explicitly — Standard/Accept edits/Full access →
+  `session/set_mode: build`, Plan mode → `session/set_mode: plan` — with
+  Pantheon's runtime capability gate remaining the actual policy (its
+  `request_permission` calls surface in the fork's approval bar unchanged).
+
+### Done (steal-list execution II, 2026-10-24, fork commit 0c2d346)
+- **Layered ownership settled:** `pantheon-theme.ts` owns the eight neutral
+  variables (the hue-tinted surface family); `palette.ts` owns accents and
+  gained a `pantheon` mode fed by the dial (`pantheonAccentSource()`), and
+  is now the default accent (previously wallpaper→classic-yellow fallback).
+  `palette.write()` no longer removes neutral names, so accent switches
+  can't erase the tint. Settings → Accent gains the Pantheon choice plus a
+  live Hue / Surface-tint dial (slider pair, in-place swatch updates so
+  drags don't drop). `theme.ts` applies tokens before first paint.
+- **Hex sweep:** sidebar glow, workspace-header washes (4), and brand-name
+  colors now derive from `--accent-rgb`/`--muted` instead of hardcoded
+  yellow. Remaining known hardcode: quick-overlay's `#ffdb40` (separate
+  surface, later pass).
+
+### Queued designs (next focused passes)
+1. **MonoCode-style session tabs** (the "tab session thing"): the fork
+   currently shows one task at a time in the conversation column with
+   sidebar-driven switching. Add a tab strip over that column: one tab per
+   open task (title, provider mark, running indicator, pending-approval
+   badge), click = existing `selectSession`, ✕/middle-click = archive,
+   overflow scroll, and (phase 2) drag-to-split reusing the pane system.
+   State: an explicit open-task list (UI store, LRU-capped) distinct from
+   the session history. Size: ~300–400 lines TS+CSS, no backend changes.
+2. **dsh loop-hygiene guards as bundled Pantheon extensions**: a
+   `PreToolCall` gate extension that hashes (tool, args) per run and, on
+   the third consecutive identical call, denies with a change-approach
+   message (dsh's advisory reminder, expressed through Pantheon's existing
+   deny-with-reason semantics); companion per-tool timeout policy. Hooks
+   and gate classes already exist in `pantheon-extensions`; this is
+   manifest + runner + tests in a dedicated pass.
+
+### Done (steal-list execution III, 2026-10-25)
+- **MonoCode session tabs** (fork commit `c137e77`): `src/session-tabs.ts`
+  renders one tab per open task above the conversation column — provider
+  mark, title, pulsing running dot (`status === "running"`), pending-approval
+  badge fed by the live stream's approval map, ✕/middle-click/Delete closes
+  the tab (never the task), Enter/Space activates. Open list is persisted,
+  LRU-capped at 12, pruned when tasks vanish. Draft tasks get a tab only
+  after their first prompt; closing the active tab falls back to the next
+  open tab or the no-selection view.
+- **dsh loop-hygiene guard, native** (runtime commit: `loop_guard.rs` +
+  gate wiring in `RegRunner`): refuses the third consecutive identical
+  (tool, args) call with a model-visible change-approach reason, shaped
+  exactly like an extension deny ("[blocked by runtime policy] …"). Exact
+  string comparison (no hash collisions), per-turn budget (a new user
+  message resets it), counter resets after any differing call or denial.
+  Unit tests included; the crate-wide test run is blocked only by the
+  in-flight `correlation_id` storage refactor already staged in the tree.
+
+## 12. Hermes Desktop (Nous Research, hermes-agent/apps/desktop) — the engineering discipline reference
+
+Electron + React over the Python hermes-agent gateway; open source, and the
+best *written* codebase of everything studied — `DESIGN.md` (611 lines) is a
+real design constitution and `AGENTS.md` an engineering one. Steals, grouped:
+
+### Architecture discipline (AGENTS.md)
+1. **Three-party authority split**: Electron owns the machine; the renderer
+   owns the experience; the backend owns the work. "Native power arrives
+   through a deliberate capability, not a general escape hatch." For the
+   fork: Tauri = machine, renderer = experience, **Pantheon runtime = work**
+   — and it names the deviation we inherited from PandaCode (task truth in
+   the shell's SQLite) as the seam to migrate in P2.
+2. **"Decide state by authority"** — first question is *who is allowed to be
+   right about it*; persisted state declares its scope in its own key
+   (global/connection/profile/session/project/window). Adopt as a rule for
+   every new localStorage/DB key in the fork and every ledger surface.
+3. **"Server truth is cached, not owned"** — merge don't clobber; be
+   optimistic then honest (visible rollback); generation counters against
+   stale responses; isolate the foreground (background work updates caches
+   quietly); coalesce noise, flush signal (turn-terminal transitions always
+   arrive immediately); preserve reference identity on no-ops.
+4. **The observable ladder** — every cross-boundary fallback (versions,
+   discovery, capability detection, remote vs cloud) is an ordered ladder of
+   validated candidates with written precedence, one resolver per policy,
+   bounded retries ending in a real recovery affordance. Pantheon already
+   needs this for provider/runtime discovery; adopt as the house pattern.
+5. **"Guest content never opens anything by itself"** — external content
+   (links, files, tool output previews) can never trigger navigation or
+   actions without a user gesture. Cheap, important renderer rule.
+6. **"Keep the waist narrow, grow at the edges"** — no universal plugin ABI
+   until a second real consumer exists; agent-callable renderer capabilities
+   belong to the session's client, not the host. Aligns with §2's decision
+   and guards against over-building the fork's plugin story.
+
+### Design system (DESIGN.md)
+7. **Principles**: flat-not-boxed (no card-in-card; group with whitespace +
+   one hairline); borderless elevation (one `--shadow` + currentColor
+   hairline token for ALL floating surfaces); one primitive per concern;
+   tokens-not-literals (raw hex in a component is a bug); style lives in the
+   primitive (call sites pass variant/size, not className overrides);
+   intent-before-automation (a tool result must not move focus or navigate);
+   immediate-feedback (paint first, reconcile after, roll back visibly).
+8. **IA taxonomy**: pages (durable destinations: chat, skills, messaging,
+   artifacts) vs route overlays (short tasks: settings, command center —
+   cards that return to the previous route) vs panes (working context whose
+   state survives hiding). Map the fork's views onto this taxonomy.
+9. **Chat is the home surface** — transcript and composer stay primary;
+   tools/previews/files/review/terminal complement the conversation.
+10. **Mechanics**: context-sensitive dialogs; panel titlebars as a shared
+   primitive; a checklist section ("Before you add something") enforced in
+   review; the doc itself is maintained with the code ("a stale name in this
+   file is a bug").
+
+### Harness opportunity
+11. `acp_adapter/` — Hermes Agent speaks ACP. It can register in the fork's
+    harness list the same way Pantheon did (`hermes-agent acp`), and
+    MonoCode already treats it as first-class. Do this when the user wants
+    Hermes sessions beside Pantheon runs.
+
+### Done (steal-list execution IV — Hermes, 2026-10-25, fork commit 49f1169)
+- **Compatibility verified first**: `hermes acp` (Nous Research hermes-agent
+  v0.21.5) answered the fork's exact initialize frame — protocolVersion 1,
+  loadSession, image prompts, session fork/list/resume, nous-credential auth.
+  Boot ~15–20 s (Python), inside the fork's 65 s ACP discovery budget.
+- **Hermes Agent registered as a harness** (the second through the proven
+  checklist): `hermes acp` launch args, `~/.hermes/hermes-agent/.hermes/bin/
+  hermes` discovery fallback, all backend match arms, full TS side. It now
+  sits beside Pantheon in the picker; both run over the same ACP seam.
+- **Guest-content rule enforced**: `src/external-links.ts` now makes
+  relative/`file:`/unknown-scheme links from agent output inert (before:
+  relative links could navigate the webview away from the SPA). User-clicked
+  http(s) still opens in the OS browser.
+- **Scope-in-key applied**: all persisted keys renamed `pandacode.*` →
+  `pantheon.*` (25 source files + tests), with the migration chain extended
+  (`kingcode. → pandacode. → pantheon.`, copy-if-absent, marker per chain).
+  Scope rule documented; session-tabs was already `pantheon.open-tabs`.
+- **House rules codified**: `AGENTS.md` gains the fork section — three
+  authorities, state-by-authority, server-truth-cached-not-owned, guest
+  content, observable ladder, harness checklist, token discipline.
+- Suites: `tsc` clean, `npm test` 136/0 (README-link test adapted to the
+  fork's attribution contract), `cargo check` clean.
