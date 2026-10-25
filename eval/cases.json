@@ -171,8 +171,8 @@
     },
     {
       "id": "timegap-ages-and-injects",
-      "title": "Time-gap injects after the configured gap and dedups after",
-      "origin": "Hermes port: time-gap plugin",
+      "title": "Hook verb stays silent with no plugins loaded (time-gap went native)",
+      "origin": "Hermes port: time-gap plugin, since removed; native [temporal] covers the behavior",
       "skip": "needs binary",
       "commands": [
         [
@@ -253,11 +253,11 @@
     {
       "id": "doctor-accepts-valid-plugin",
       "title": "Doctor accepts a well-formed Python plugin",
-      "origin": "vendor/time-gap-pantheon",
+      "origin": "eval/fixtures/time-gap-plugin (sample Python plugin; the bundled time-gap plugin was removed once [temporal] made it native)",
       "commands": [
         [
           "doctor",
-          "<VENDOR>/time-gap-pantheon"
+          "eval/fixtures/time-gap-plugin"
         ]
       ],
       "expect": {

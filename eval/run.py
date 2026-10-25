@@ -27,7 +27,7 @@ Case JSON shape (eval/cases.json):
     and any assertion prefixed "not:" inverts the match.
   expect_fail : indices of commands expected to exit non-zero.
   skip     : reason string ("needs binary", "python3", ...) to skip the case.
-Placeholders in args/paths: <TMP> = case sandbox dir, <VENDOR> = vendor/.
+Placeholders in args/paths: <TMP> = case sandbox dir.
 """
 
 import argparse
@@ -145,7 +145,7 @@ def materialize_setup(case, sandbox: Path):
 
 
 def resolve(arg: str, sandbox: Path) -> str:
-    return arg.replace("<TMP>", str(sandbox)).replace("<VENDOR>", str(ROOT / "vendor"))
+    return arg.replace("<TMP>", str(sandbox))
 
 
 def assertion_ok(assertion: str, stdout: str) -> bool:

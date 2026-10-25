@@ -200,16 +200,16 @@ pantheon plugins approve my-plugin
 <p class="my-3 leading-relaxed">You will see a warning describing exactly what approval means. <strong>Approving is informed consent to the plugin running with your full privileges</strong> - only approve plugins from sources you trust. The approval is recorded (name, version, content hash, timestamp); if the plugin&#x27;s code changes afterwards, the approval lapses and you are asked again.</p>
 <p class="my-3 leading-relaxed">Plugins shipped with Pantheon (under <code>bundled/</code>) are first-party and don&#x27;t need approval. Everything else is third-party.</p>
 <h2 id="bundled-plugins-one-enablement-state" class="text-xl font-bold tracking-tight mt-10 mb-3">Bundled plugins: one enablement state</h2>
-<p class="my-3 leading-relaxed">Pantheon ships a small catalog of first-party plugins (today: <code>time-gap</code>, a hook plugin that injects an implicit time-gap sense into the prompt). Like bundled MCP servers, they follow one lifecycle: <strong>all disabled by default</strong>, toggleable in the config file, the dashboard, and the mobile app, which all share a single enablement state.</p>
+<p class="my-3 leading-relaxed">Pantheon ships a set of first-party plugins through the embedded registry (cf-ops, noisegate, hookify, doc-pack, and friends - tool and hook kinds). Like bundled MCP servers, they follow one lifecycle: <strong>disabled by default unless the plugin ships on</strong>, toggleable in the config file, the dashboard, and the mobile app, which all share a single enablement state. (The separate vendored-extension catalog that once carried the <code>time-gap</code> hook is empty - time-gap went native via <code>[temporal]</code>, which is on by default with nothing to enable.)</p>
 <pre><code>
-[plugins.time-gap]
+[plugins.&lt;name&gt;]
 enabled = true
 </code></pre>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li>The config file is the source of truth. The dashboard&#x27;s plugin list and the mobile app read and write the same <code>[plugins.&lt;name&gt;]</code> entries, so the three surfaces can never disagree.</li>
-<li>The plugin&#x27;s files are materialized automatically: on startup the runtime copies the shipped source into <code>&lt;data_dir&gt;/extensions/bundled/&lt;name&gt;/</code> (without touching anything already there). Seeding never enables - files sit inert until you flip the flag.</li>
+<li>A catalog plugin&#x27;s files are materialized automatically: on startup the runtime copies the shipped source into <code>&lt;data_dir&gt;/extensions/bundled/&lt;name&gt;/</code> (without touching anything already there). Seeding never enables - files sit inert until you flip the flag.</li>
 <li>For a bundled plugin, the config entry wins over the plugin manifest&#x27;s own <code>enabled</code> flag. For a third-party plugin, the approval store (above) remains the gate - unapproved third-party code never loads no matter what any flag says.</li>
-<li>The agent can propose enabling a bundled plugin, but never silently: the proposal goes through the normal approval flow (the run parks, the request is audit-logged, and the plugin switches on only if you grant). Only catalog plugins can be proposed - there is no agent path to install arbitrary plugins.</li>
+<li>The agent can propose enabling a bundled plugin (embedded registry or vendored catalog), but never silently: the proposal goes through the normal approval flow (the run parks, the request is audit-logged, and the plugin switches on only if you grant). Only bundled names can be proposed - there is no agent path to install arbitrary plugins.</li>
 </ul>
 <h2 id="plugins-vs-mcps-the-trust-distinction" class="text-xl font-bold tracking-tight mt-10 mb-3">Plugins vs MCPs: the trust distinction</h2>
 <p class="my-3 leading-relaxed">Both extend what the agent can do, and they are trusted completely differently - the approval UI surfaces this on purpose:</p>

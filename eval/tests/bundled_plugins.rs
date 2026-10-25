@@ -13,54 +13,27 @@ use pantheon_tools::tools::ToolRegistry;
 use tempfile::tempdir;
 
 #[test]
-fn catalog_matches_the_vendored_manifest() {
+fn catalog_is_empty_since_time_gap_went_native() {
+    // The bundled catalog's one entry (the Python time-gap hook) was
+    // removed: native temporal awareness (`[temporal]`, on by default)
+    // covers it in-process. The catalog machinery stays for the next
+    // bundled plugin, so this pin flips the moment one ships.
     let plugins = bundled::bundled_plugins();
-    assert_eq!(plugins.len(), 1, "add a row only with a vendored manifest");
-    let p = &plugins[0];
-    assert_eq!(p.name, "time-gap");
-    assert_eq!(p.kind, bundled::PluginKind::Hook);
-    // Parsed from vendor/time-gap-pantheon/plugin.yaml at compile time.
-    let manifest: pantheon_extensions::PluginManifest =
-        serde_yaml::from_str(include_str!("../../vendor/time-gap-pantheon/plugin.yaml")).unwrap();
-    assert_eq!(p.version, manifest.version);
-    assert_eq!(p.description, manifest.description);
+    assert!(
+        plugins.is_empty(),
+        "catalog expected empty; update this test alongside the new entry: {plugins:?}"
+    );
 }
 
 #[test]
-fn set_enabled_writes_the_config_entry() {
+fn set_enabled_writes_nothing_without_catalog_entries() {
+    // With an empty catalog every name is unknown, so no config is
+    // written. The write path itself is exercised the moment a catalog
+    // row returns; until then this is the observable contract.
     let d = tempdir().unwrap();
-    bundled::set_enabled(d.path(), "time-gap", true).unwrap();
-    let text = std::fs::read_to_string(d.path().join("config.toml")).unwrap();
-    let doc: toml::Value = text.parse().unwrap();
-    let entry = &doc["plugins"]["time-gap"];
-    assert_eq!(entry["enabled"].as_bool(), Some(true));
-    assert_eq!(entry["kind"].as_str(), Some("hook"));
-    assert_eq!(entry["version"].as_str(), Some("2.1.0"));
-    // The config struct reads it back as enabled.
-    let config = Config::load(d.path()).unwrap();
-    assert!(config.plugin_enabled("time-gap"));
-    assert!(bundled::is_enabled(&config, "time-gap"));
-}
-
-#[test]
-fn set_enabled_preserves_unrelated_config() {
-    let d = tempdir().unwrap();
-    std::fs::write(
-        d.path().join("config.toml"),
-        "[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\n\n[tools]\nterminal = true\n",
-    )
-    .unwrap();
-    bundled::set_enabled(d.path(), "time-gap", true).unwrap();
-    let config = Config::load(d.path()).unwrap();
-    assert_eq!(config.model.as_ref().unwrap().provider, "openai");
-    assert!(config.plugin_enabled("time-gap"));
-    // Disabling keeps the entry (self-describing) and flips the flag.
-    bundled::set_enabled(d.path(), "time-gap", false).unwrap();
-    let config = Config::load(d.path()).unwrap();
-    assert!(!config.plugin_enabled("time-gap"));
-    let text = std::fs::read_to_string(d.path().join("config.toml")).unwrap();
-    let doc: toml::Value = text.parse().unwrap();
-    assert_eq!(doc["plugins"]["time-gap"]["kind"].as_str(), Some("hook"));
+    let err = bundled::set_enabled(d.path(), "time-gap", true).unwrap_err();
+    assert_eq!(err.code, "PLUGIN_UNKNOWN_PLUGIN");
+    assert!(!d.path().join("config.toml").exists());
 }
 
 #[test]
@@ -138,7 +111,7 @@ fn enable_plugin_tool_is_approval_gated() {
 }
 
 #[test]
-fn enable_plugin_tool_enables_only_catalog_plugins() {
+fn enable_plugin_tool_enables_only_bundled_names() {
     let d = tempdir().unwrap();
     let reg = registry_with_data_dir(d.path());
     // Arbitrary names are refused: no agent path to install plugins.
@@ -147,13 +120,21 @@ fn enable_plugin_tool_enables_only_catalog_plugins() {
         .unwrap_err();
     assert_eq!(err.code, "TOOL_UNKNOWN_PLUGIN");
     assert!(!d.path().join("config.toml").exists());
-    // A catalog plugin flips the single enablement state.
-    let out = reg
+    // The vendored extensions catalog is empty (time-gap went native via
+    // [temporal]), so a former catalog name is refused exactly like any
+    // other unknown name.
+    let err = reg
         .execute("enable_plugin", r#"{"name":"time-gap"}"#)
+        .unwrap_err();
+    assert_eq!(err.code, "TOOL_UNKNOWN_PLUGIN");
+    // An embedded-registry plugin (compiled into the binary) enables
+    // through the same single [plugins.<name>] state.
+    let out = reg
+        .execute("enable_plugin", r#"{"name":"noisegate"}"#)
         .unwrap();
-    assert!(out.contains("time-gap"), "unexpected output: {out}");
+    assert!(out.contains("noisegate"), "unexpected output: {out}");
     let config = Config::load(d.path()).unwrap();
-    assert!(config.plugin_enabled("time-gap"));
+    assert!(config.plugin_enabled("noisegate"));
 }
 
 #[test]
@@ -167,55 +148,13 @@ fn enable_plugin_tool_not_registered_without_data_dir() {
 }
 
 #[test]
-fn seed_materializes_vendored_files_inert() {
+fn seed_materializes_nothing_for_an_empty_catalog() {
     let d = tempdir().unwrap();
     let ext_dir = d.path().join("extensions");
     let seeded = bundled::seed(&ext_dir).unwrap();
-    assert_eq!(seeded, vec!["time-gap".to_string()]);
-    let target = ext_dir.join("bundled").join("time-gap");
-    assert!(target.join("plugin.yaml").exists());
-    let init = std::fs::read_to_string(target.join("__init__.py")).unwrap();
+    assert!(seeded.is_empty());
     assert!(
-        init.contains("register"),
-        "vendored hook source must land intact"
-    );
-    // Seeding never overwrites an existing install.
-    std::fs::write(target.join("operator-note.txt"), "mine").unwrap();
-    let seeded_again = bundled::seed(&ext_dir).unwrap();
-    assert!(seeded_again.is_empty(), "second seed must be a no-op");
-    assert!(target.join("operator-note.txt").exists());
-}
-
-#[test]
-fn seeded_plugin_loads_only_when_config_enabled() {
-    use pantheon_extensions::{ExtensionManager, RunnerConfig};
-
-    // Disabled (no config entry): seeded files sit inert, nothing loads.
-    let d = tempdir().unwrap();
-    let ext_dir = d.path().join("extensions");
-    bundled::seed(&ext_dir).unwrap();
-    let mut mgr = ExtensionManager::new(RunnerConfig::default());
-    mgr.load_dir(&ext_dir).unwrap();
-    assert!(
-        !mgr.names().contains(&"time-gap".to_string()),
-        "bundled plugins ship disabled; seeding must not enable"
-    );
-
-    // Enabled via the shared config state: the same manager loads it.
-    // The manager derives the data dir as the extensions dir's parent,
-    // so config.toml sits next to extensions/, the real layout.
-    let d2 = tempdir().unwrap();
-    std::fs::write(
-        d2.path().join("config.toml"),
-        "[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\n\n[plugins.time-gap]\nenabled = true\n",
-    )
-    .unwrap();
-    let ext_dir2 = d2.path().join("extensions");
-    bundled::seed(&ext_dir2).unwrap();
-    let mut mgr2 = ExtensionManager::new(RunnerConfig::default());
-    mgr2.load_dir(&ext_dir2).unwrap();
-    assert!(
-        mgr2.names().contains(&"time-gap".to_string()),
-        "an enabled catalog entry must load from the seeded copy"
+        !ext_dir.join("bundled").exists(),
+        "an empty catalog must not create dirs"
     );
 }

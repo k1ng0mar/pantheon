@@ -31,10 +31,10 @@ or a pre-merge hook as the feature gate.
 | run-failure-records-code | wave1 structured errors (§20) |
 | rerun-of-completed-run-keeps-history | wave1 append-only ledger |
 | hook-fires-and-dedups-per-session | Hermes: once-per-session plugins |
-| timegap-ages-and-injects | Hermes time-gap port |
+| timegap-ages-and-injects | hook verb silent with no plugins (time-gap went native) |
 | doctor-rejects-missing-manifest | Hermes/OpenClaw preflight complaints |
 | doctor-flags-ts-entry-with-warning | doctor TS_ENTRY (OpenClaw-compat pending) |
-| doctor-accepts-valid-plugin | vendor/time-gap-pantheon as fixture |
+| doctor-accepts-valid-plugin | eval/fixtures/time-gap-plugin as fixture |
 | compaction-keeps-head-and-tail | wave1 noisegate-style pantheon-exec compaction |
 
 The compaction case mirrors `pantheon-exec::compact_output` (default

@@ -93,7 +93,8 @@ pub(crate) fn collect_rows(data_dir: &Path) -> Vec<PluginRow> {
             toggle: Toggle::BundledRegistry,
         });
     }
-    // 2. Extensions bundled catalog (e.g. time-gap).
+    // 2. Extensions bundled catalog (currently empty; machinery kept for
+    // the next bundled plugin).
     for p in pantheon_extensions::bundled_plugins() {
         if seen(&rows, &p.name) {
             continue;
@@ -365,21 +366,25 @@ mod tests {
     }
 
     #[test]
-    fn collect_rows_lists_bundled_and_third_party() {
+    fn collect_rows_lists_bundled_registry_and_third_party() {
         let dd = scratch_data_dir("rows");
         // A third-party tool plugin on disk.
         write_tool_plugin(&dd, "acme-tool", true);
 
         let rows = collect_rows(&dd);
-        // The extensions catalog's time-gap entry is always present.
-        let time_gap = rows
-            .iter()
-            .find(|r| r.name == "time-gap")
-            .expect("time-gap missing from plugin list");
-        assert_eq!(time_gap.kind, "hook");
-        assert!(time_gap.bundled);
-        assert_eq!(time_gap.toggle, Toggle::ExtensionsCatalog);
-        assert!(!time_gap.enabled, "bundled plugins ship disabled");
+        // The embedded bundled registry (cf-ops, noisegate, ...) ships as
+        // bundled rows; the extensions catalog is empty since time-gap
+        // went native, so no Toggle::ExtensionsCatalog rows appear.
+        let registry = rows.iter().filter(|r| r.bundled).collect::<Vec<_>>();
+        assert!(
+            registry.len() >= 2,
+            "embedded registry plugins missing: {rows:?}"
+        );
+        assert!(registry.iter().all(|r| r.toggle == Toggle::BundledRegistry));
+        assert!(
+            !rows.iter().any(|r| r.toggle == Toggle::ExtensionsCatalog),
+            "extensions catalog is empty: {rows:?}"
+        );
         // The third-party tool plugin shows with its manifest state.
         let acme = rows
             .iter()
@@ -396,38 +401,11 @@ mod tests {
         assert_eq!(names, sorted);
     }
 
-    #[test]
-    fn collect_rows_dedups_bundled_sources() {
-        // time-gap exists in the extensions catalog; the merged view
-        // must contain it exactly once even though two bundled sources
-        // are merged.
-        let dd = scratch_data_dir("dedup");
-        let rows = collect_rows(&dd);
-        assert_eq!(rows.iter().filter(|r| r.name == "time-gap").count(), 1);
-    }
-
-    #[test]
-    fn enable_disable_round_trips_through_config() {
-        let dd = scratch_data_dir("toggle");
-        // time-gap is an extensions-catalog hook plugin: toggling goes
-        // through the [plugins] config table.
-        let rows = collect_rows(&dd);
-        let row = rows.iter().find(|r| r.name == "time-gap").unwrap();
-
-        apply_toggle(&dd, row, true).unwrap();
-        let text = std::fs::read_to_string(dd.join("config.toml")).unwrap();
-        let doc: toml::Value = text.parse().unwrap();
-        assert_eq!(doc["plugins"]["time-gap"]["enabled"].as_bool(), Some(true));
-
-        let rows = collect_rows(&dd);
-        let row = rows.iter().find(|r| r.name == "time-gap").unwrap();
-        assert!(row.enabled, "list must reflect the config write");
-
-        apply_toggle(&dd, row, false).unwrap();
-        let text = std::fs::read_to_string(dd.join("config.toml")).unwrap();
-        let doc: toml::Value = text.parse().unwrap();
-        assert_eq!(doc["plugins"]["time-gap"]["enabled"].as_bool(), Some(false));
-    }
+    // The bundled-catalog row tests (dedup across bundled sources, the
+    // `[plugins]` config toggle round-trip) were removed with the catalog
+    // itself: time-gap went native (`[temporal]`), and until the next
+    // bundled plugin ships there is no catalog row to drive them. The
+    // config-enablement logic stays pinned in pantheon-extensions' tests.
 
     #[test]
     fn toggle_manifest_flag_for_third_party_tool() {

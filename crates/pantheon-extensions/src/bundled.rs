@@ -30,13 +30,26 @@
 //!
 //! ## Materialization
 //!
-//! The catalog ships as source in `vendor/` and is compiled into the
+//! Catalog entries ship as source in the repo and are compiled into the
 //! binary. [`seed`] materializes each entry into
 //! `<ext_dir>/bundled/<name>/` on load - inert files, never enabled.
 //! The `<dir>/bundled/` layout is what
 //! [`pantheon_api::approval::is_bundled`] recognizes, and
 //! [`crate::manager::ExtensionManager::load_dir`] scans it. An existing
 //! dir is never overwritten.
+//!
+//! This catalog (the vendored-extension path) is currently **empty** -
+//! distinct from the embedded bundled-plugin registry in pantheon-exec
+//! (cf-ops, noisegate, hookify, ...), which ships tool/hook plugins of
+//! its own through the same `[plugins]` enablement. This catalog's
+//! one-time entry, the time-gap hook plugin (a Python port from Hermes),
+//! was removed once the native temporal-awareness feature
+//! (`pantheon_api::temporal`, `[temporal]` in config.toml) covered the
+//! same ground in-process: ledger-based and restart-safe by
+//! construction, no child process per call, on by default. The catalog,
+//! seed, and single-enablement machinery remain for the next vendored
+//! extension; a Python-plugin fixture for `doctor` lives in
+//! `eval/fixtures/time-gap-plugin/`.
 //!
 //! ## One enablement state
 //!
@@ -65,8 +78,9 @@
 //! policies mark Approval). The run parks, an `ApprovalRequested` event
 //! is appended to the ledger (audit-logged like every approval), and the
 //! plugin is switched on only if the operator grants. It is never silent,
-//! and only catalog names are accepted - there is no agent path to
-//! install or enable arbitrary plugins.
+//! and only bundled names are accepted - this catalog plus the embedded
+//! registry in pantheon-exec - there is no agent path to install or
+//! enable arbitrary plugins.
 //!
 //! ## Stable interface
 //!
@@ -168,24 +182,13 @@ struct CatalogRow {
     privilege_notes: &'static str,
 }
 
-/// The catalog table. Add a row here (and vendor the plugin source) to
-/// ship a new bundled plugin. Never list a plugin that is not in the repo.
+/// The catalog table. Add a row here (and add the plugin source to the
+/// repo) to ship a new bundled plugin. Never list a plugin that is not
+/// in the repo.
 fn catalog_rows() -> Vec<CatalogRow> {
-    vec![CatalogRow {
-        kind: PluginKind::Hook,
-        manifest_yaml: include_str!("../../../vendor/time-gap-pantheon/plugin.yaml"),
-        files: &[(
-            "__init__.py",
-            include_str!("../../../vendor/time-gap-pantheon/__init__.py"),
-        )],
-        privilege_notes: "Hook plugin (Python): injects an implicit time-gap \
-            sense into the prompt on `pre_llm_call`, only when a gap or date \
-            rollover crosses. Context-class hook - it may add text, never deny \
-            an action, and a crash or timeout is fail-open (the injection is \
-            skipped, the turn continues). Runs as a child process Pantheon \
-            spawns with a scrubbed environment (PATH only), under your user \
-            privileges; not sandboxed. First-party code shipped with Pantheon.",
-    }]
+    // Empty since time-gap went native (`pantheon_api::temporal`); see
+    // the module docs under "Materialization".
+    Vec::new()
 }
 
 /// Every plugin Pantheon ships, sorted by name. Deterministic order so
@@ -294,7 +297,7 @@ pub fn set_enabled(data_dir: &Path, name: &str, enabled: bool) -> Result<(), Pan
     })?;
     let path = Config::path(data_dir);
     let mut doc: toml::Value = match std::fs::read_to_string(&path) {
-        Ok(text) => text.parse().map_err(|e| {
+        Ok(text) => toml::from_str::<toml::Value>(&text).map_err(|e| {
             merr(
                 "PLUGIN_CONFIG_PARSE",
                 format!("parse {}: {e}", path.display()),

@@ -43,17 +43,17 @@ Plugins shipped with Pantheon (under `bundled/`) are first-party and don't need 
 
 ## Bundled plugins: one enablement state
 
-Pantheon ships a small catalog of first-party plugins (today: `time-gap`, a hook plugin that injects an implicit time-gap sense into the prompt). Like bundled MCP servers, they follow one lifecycle: **all disabled by default**, toggleable in the config file, the dashboard, and the mobile app, which all share a single enablement state.
+Pantheon ships a set of first-party plugins through the embedded registry (cf-ops, noisegate, hookify, doc-pack, and friends - tool and hook kinds). Like bundled MCP servers, they follow one lifecycle: **disabled by default unless the plugin ships on**, toggleable in the config file, the dashboard, and the mobile app, which all share a single enablement state. (The separate vendored-extension catalog that once carried the `time-gap` hook is empty - time-gap went native via `[temporal]`, which is on by default with nothing to enable.)
 
 ```toml
-[plugins.time-gap]
+[plugins.<name>]
 enabled = true
 ```
 
 - The config file is the source of truth. The dashboard's plugin list and the mobile app read and write the same `[plugins.<name>]` entries, so the three surfaces can never disagree.
-- The plugin's files are materialized automatically: on startup the runtime copies the shipped source into `<data_dir>/extensions/bundled/<name>/` (without touching anything already there). Seeding never enables - files sit inert until you flip the flag.
+- A catalog plugin's files are materialized automatically: on startup the runtime copies the shipped source into `<data_dir>/extensions/bundled/<name>/` (without touching anything already there). Seeding never enables - files sit inert until you flip the flag.
 - For a bundled plugin, the config entry wins over the plugin manifest's own `enabled` flag. For a third-party plugin, the approval store (above) remains the gate - unapproved third-party code never loads no matter what any flag says.
-- The agent can propose enabling a bundled plugin, but never silently: the proposal goes through the normal approval flow (the run parks, the request is audit-logged, and the plugin switches on only if you grant). Only catalog plugins can be proposed - there is no agent path to install arbitrary plugins.
+- The agent can propose enabling a bundled plugin (embedded registry or vendored catalog), but never silently: the proposal goes through the normal approval flow (the run parks, the request is audit-logged, and the plugin switches on only if you grant). Only bundled names can be proposed - there is no agent path to install arbitrary plugins.
 
 ## Plugins vs MCPs: the trust distinction
 

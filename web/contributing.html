@@ -197,7 +197,7 @@
 </ul>
 <h2 id="common-changes" class="text-xl font-bold tracking-tight mt-10 mb-3">Common changes</h2>
 <h3 id="adding-a-terminal-command" class="font-bold mt-6 mb-2">Adding a terminal command</h3>
-<p>1. Add dispatch in <code>pantheon-tui/src/terminal.rs</code> + register in <code>KNOWN_VERBS</code> and <code>usage()</code></p>
+<p>1. Register the public route or legacy alias in <code>pantheon-tui/src/cli_surface.rs</code>, then add dispatch in <code>pantheon-tui/src/terminal.rs</code></p>
 <p>2. Implement the logic in the owning crate</p>
 <p>3. Add tests (<code>*_tests.rs</code>)</p>
 <p>4. Document it in <code>docs/reference/terminal.md</code></p>
