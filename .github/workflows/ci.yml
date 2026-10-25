@@ -22,7 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # No toolchain input: the action reads the pinned channel from
+      # rust-toolchain.toml, so CI and local fmt/clippy resolution can
+      # never drift apart (the audit-F9 failure mode).
+      - uses: dtolnay/rust-toolchain@v1
         with:
           # rust-analyzer: the LSP tests drive the real server, and a
           # rustup shim with no installed component is on PATH but exits
