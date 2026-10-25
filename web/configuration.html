@@ -374,6 +374,30 @@ timeout_secs = &quot;120&quot;
 <p class="my-3 leading-relaxed">  <code>api_key_env</code> names the env var explicitly, otherwise the catalog row&#x27;s</p>
 <p class="my-3 leading-relaxed">  key env (e.g. <code>OPENAI_API_KEY</code>), otherwise <code>PANTHEON_KEY_&lt;PROVIDER&gt;</code>.</p>
 <p class="my-3 leading-relaxed">  No key anywhere is fine for keyless local endpoints.</p>
+<h3 id="on-device-stt" class="font-bold mt-6 mb-2">On-device STT</h3>
+<p class="my-3 leading-relaxed">Four local engines run speech-to-text with no key and no network egress</p>
+<p class="my-3 leading-relaxed">after the model is fetched. They need no API key and are picked like any</p>
+<p class="my-3 leading-relaxed">other backend:</p>
+<table class="my-6"><thead><tr><th>backend</th><th>engine</th><th>model</th><th>needs</th></tr></thead><tbody>
+<tr><td><code>whistle</code></td><td>Cactus/Needle</td><td>Whistle, 16.9 MB</td><td>CPU only, 7 languages</td></tr>
+<tr><td><code>parakeet</code></td><td>Cactus</td><td><code>nvidia/parakeet-tdt-0.6b-v3</code></td><td>CPU or Apple Silicon</td></tr>
+<tr><td><code>photon</code></td><td>Moondream Photon</td><td><code>Qwen/Qwen3-ASR-0.6B</code></td><td>NVIDIA GPU or Apple Silicon</td></tr>
+<tr><td><code>parakeet-redux</code></td><td>Moondream Photon</td><td><code>moondream/parakeet-redux</code></td><td>CPU, 178 MB, 25 languages</td></tr>
+</tbody></table>
+<pre><code>
+[stt]
+backend = &quot;whistle&quot;
+
+[stt.options]
+weights       = &quot;&quot;    # local .cact file; empty = the published weights
+language      = &quot;&quot;    # empty = detected
+timeout_secs  = &quot;300&quot;
+</code></pre>
+<p class="my-3 leading-relaxed">Each engine is a separate Python package (<code>cactus-needle</code>,</p>
+<p class="my-3 leading-relaxed"><code>cactus-compute</code>, <code>moondream</code>); <code>pantheon setup</code> detects the package and</p>
+<p class="my-3 leading-relaxed">offers the install. Model weights download on first run. Audio is</p>
+<p class="my-3 leading-relaxed">converted to 16 kHz mono WAV with ffmpeg before it reaches the engine,</p>
+<p class="my-3 leading-relaxed">so the gateway&#x27;s ogg/opus/mp4 voice notes work unchanged.</p>
 <p class="my-3 leading-relaxed">Check status with <code>/voice</code> in the TUI. There is no microphone capture or</p>
 <p class="my-3 leading-relaxed">speaker playback in the TUI - these backends move bytes for callers that</p>
 <p class="my-3 leading-relaxed">already have audio (files, other surfaces), they don&#x27;t record or play it.</p>
@@ -439,12 +463,12 @@ timeout_secs = 60                        # decompilation can be slow; default 30
 <p class="my-3 leading-relaxed">Transports: <code>stdio</code> spawns <code>command</code> with <code>args</code> (the child inherits only <code>PATH</code> plus the declared env); <code>sse</code> opens a Server-Sent Events stream and posts messages to the discovered endpoint; <code>http</code> speaks streamable HTTP (POST, with SSE fallback). Remote transports reconnect with backoff; a server that keeps failing is left alone until its backoff expires.</p>
 <p class="my-3 leading-relaxed"><strong>Approvals.</strong> A server never runs without your explicit approval: <code>pantheon mcp approve &lt;name&gt;</code> prints exactly what would launch (or where it would connect), shows the warning, and asks you to confirm by typing the server name. The approval binds the server&#x27;s name, its reported version, and a content hash of the binary/script (or the endpoint URL) - any upgrade or change invalidates it and you are asked again. <code>pantheon mcp list</code> shows what&#x27;s declared and whether it&#x27;s approved; <code>pantheon mcp status</code> and <code>pantheon mcp health &lt;name&gt;</code> report live state from the launcher&#x27;s <code>&lt;data_dir&gt;/mcp/live.json</code> snapshot; the dashboard&#x27;s MCP page shows the same merged view. <code>PANTHEON_MCP_ENABLED=0</code> forces the launcher off.</p>
 <h2 id="bundled-plugins" class="text-xl font-bold tracking-tight mt-10 mb-3">Bundled plugins</h2>
-<p class="my-3 leading-relaxed">Pantheon&#x27;s first-party plugins (today: <code>time-gap</code>, a hook plugin) share one enablement state with the dashboard and the mobile app: the config file. All bundled plugins are disabled by default.</p>
+<p class="my-3 leading-relaxed">Pantheon&#x27;s first-party plugins (the embedded registry: cf-ops, noisegate, hookify, and other tool/hook plugins) share one enablement state with the dashboard and the mobile app: the config file. Plugins are disabled by default unless they ship on.</p>
 <pre><code>
-[plugins.time-gap]
+[plugins.&lt;name&gt;]
 enabled = true   # kind and version are stamped automatically when enabled
 </code></pre>
-<p class="my-3 leading-relaxed">For a bundled plugin this entry wins over the plugin manifest&#x27;s own <code>enabled</code> flag. Third-party plugins are unaffected: their gate is the approval store (<code>pantheon extensions approve</code>), not this table, and entries for names outside the bundled catalog are inert. The agent can propose enabling a bundled plugin through its <code>enable_plugin</code> tool, which parks for your approval like any other privileged action - never silent, and only catalog plugins are eligible.</p>
+<p class="my-3 leading-relaxed">For a bundled plugin this entry wins over the plugin manifest&#x27;s own <code>enabled</code> flag. Third-party plugins are unaffected: their gate is the approval store (<code>pantheon extensions approve</code>), not this table, and entries for names outside the bundled set are inert. (The once-vendored <code>time-gap</code> hook plugin is gone - temporal awareness is native via <code>[temporal]</code>.) The agent can propose enabling a bundled plugin through its <code>enable_plugin</code> tool (embedded registry or vendored catalog), which parks for your approval like any other privileged action - never silent, and only bundled names are eligible.</p>
 <h2 id="data-directory" class="text-xl font-bold tracking-tight mt-10 mb-3">Data directory</h2>
 <p class="my-3 leading-relaxed"><code>$PANTHEON_DATA_DIR</code> or <code>~/.pantheon/</code>. Everything lives here, so backing up this folder backs up everything:</p>
 <table class="my-6"><thead><tr><th>Path</th><th>What it is</th></tr></thead><tbody>

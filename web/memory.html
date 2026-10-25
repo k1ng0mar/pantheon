@@ -206,6 +206,37 @@ pantheon memory backend list|select NAME
 <pre><code>
 pantheon skills list|import|doctor
 </code></pre>
+<h2 id="using-your-own-memory-system" class="text-xl font-bold tracking-tight mt-10 mb-3">Using your own memory system</h2>
+<p class="my-3 leading-relaxed">The native store is the zero-config default; other memories plug in</p>
+<p class="my-3 leading-relaxed">without ceremony:</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><strong>Any service speaking the bridge protocol</strong> (or a thin bridge you run</li>
+</ul>
+<p class="my-3 leading-relaxed">  in front of one that doesn&#x27;t): scaffold a plugin manifest and select</p>
+<p class="my-3 leading-relaxed">  it.</p>
+<p class="my-3 leading-relaxed">  ```sh</p>
+<p class="my-3 leading-relaxed">  pantheon memory backend scaffold NAME [http|stdio]</p>
+<p class="my-3 leading-relaxed">  # edit memory-plugins/NAME.toml (url/key, or command+args for stdio),</p>
+<p class="my-3 leading-relaxed">  # then:</p>
+<p class="my-3 leading-relaxed">  pantheon memory backend select NAME</p>
+<p class="my-3 leading-relaxed">  ```</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li>A manifest is a manifest: stdio commands run as a child process, so</li>
+</ul>
+<p class="my-3 leading-relaxed">  they carry <code>allow_exec = true</code> as explicit consent.</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li>Setup shows every manifest you&#x27;ve installed alongside the built-in</li>
+</ul>
+<p class="my-3 leading-relaxed">  backends, and asks nothing for them.</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><strong>Switching backends is not migration</strong>: each backend keeps its own</li>
+</ul>
+<p class="my-3 leading-relaxed">  store. Selecting a different one starts empty and does not move your</p>
+<p class="my-3 leading-relaxed">  memories; select your old backend again to read them.</p>
+<p class="my-3 leading-relaxed">Failure is loud, not silent: if a backend cannot open, Pantheon says so</p>
+<p class="my-3 leading-relaxed">at startup and runs <strong>without</strong> memory rather than quietly pretending.</p>
+<p class="my-3 leading-relaxed">Contract details — trust boundaries, timeouts, response caps, error</p>
+<p class="my-3 leading-relaxed">codes — live in <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/memory-backends.md">memory-backends.md</a>.</p>
 <h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="agents.html">Agents</a>: whose memory is whose</li>

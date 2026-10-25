@@ -364,14 +364,14 @@ Transports: `stdio` spawns `command` with `args` (the child inherits only `PATH`
 
 ## Bundled plugins
 
-Pantheon's first-party plugins (today: `time-gap`, a hook plugin) share one enablement state with the dashboard and the mobile app: the config file. All bundled plugins are disabled by default.
+Pantheon's first-party plugins (the embedded registry: cf-ops, noisegate, hookify, and other tool/hook plugins) share one enablement state with the dashboard and the mobile app: the config file. Plugins are disabled by default unless they ship on.
 
 ```toml
-[plugins.time-gap]
+[plugins.<name>]
 enabled = true   # kind and version are stamped automatically when enabled
 ```
 
-For a bundled plugin this entry wins over the plugin manifest's own `enabled` flag. Third-party plugins are unaffected: their gate is the approval store (`pantheon extensions approve`), not this table, and entries for names outside the bundled catalog are inert. The agent can propose enabling a bundled plugin through its `enable_plugin` tool, which parks for your approval like any other privileged action - never silent, and only catalog plugins are eligible.
+For a bundled plugin this entry wins over the plugin manifest's own `enabled` flag. Third-party plugins are unaffected: their gate is the approval store (`pantheon extensions approve`), not this table, and entries for names outside the bundled set are inert. (The once-vendored `time-gap` hook plugin is gone - temporal awareness is native via `[temporal]`.) The agent can propose enabling a bundled plugin through its `enable_plugin` tool (embedded registry or vendored catalog), which parks for your approval like any other privileged action - never silent, and only bundled names are eligible.
 
 ## Data directory
 

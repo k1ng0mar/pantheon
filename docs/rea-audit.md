@@ -3,7 +3,7 @@
 This document is the operator-facing justification for the REA capability map in
 `crates/pantheon-mcp/src/rea.rs`. It stands on its own: an operator reads it before
 approving any REA tool. The authoritative inventory is
-`vendor/rea_audit_split.json`, derived from REA's own `TOOL_EFFECTS` audit at
+`crates/pantheon-mcp/assets/rea_audit_split.json`, derived from REA's own `TOOL_EFFECTS` audit at
 `src/contracts/toolEffects.ts` inside the REA source tree.
 
 ## Provenance

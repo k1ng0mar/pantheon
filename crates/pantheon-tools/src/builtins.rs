@@ -416,24 +416,25 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
     // The capability gate runs before this closure: default policies mark
     // `plugin.enable` Approval, so the run parks, an `ApprovalRequested`
     // event is audit-logged, and the write below happens only after the
-    // operator grants. Never silent. Only bundled-catalog names are
-    // accepted - there is no agent path to install or enable arbitrary
-    // plugins. The config file is the single enablement state, so the
-    // toggle lands in `[plugins.<name>]` where the dashboard, the mobile
-    // app, and the TUI all read it. Without a data dir the tool cannot
-    // function, so it is not registered at all rather than advertised
-    // broken.
+    // operator grants. Never silent. Only bundled names are accepted -
+    // the embedded registry (tool/hook plugins compiled into the binary)
+    // or the vendored extensions catalog - so there is no agent path to
+    // install or enable arbitrary plugins. The config file is the single
+    // enablement state, so the toggle lands in `[plugins.<name>]` where
+    // the dashboard, the mobile app, and the TUI all read it. Without a
+    // data dir the tool cannot function, so it is not registered at all
+    // rather than advertised broken.
     if opts.enable_plugins && opts.data_dir.is_some() {
         let dd = opts.data_dir.clone();
         reg.register(
         ToolSchema {
             name: "enable_plugin".into(),
-            description: "Propose enabling one of Pantheon's bundled plugins (first-party code shipped with Pantheon, all disabled by default). `name` must be a bundled-catalog name - anything else is refused. Calling this parks the run for operator approval: the proposal is audit-logged and the plugin switches on only if the operator grants. Use when a bundled plugin would genuinely help the task; say why in your message first."
+            description: "Propose enabling one of Pantheon's bundled plugins (first-party code shipped with Pantheon, disabled by default unless it ships on). `name` must be a bundled plugin name (the embedded registry - cf-ops, noisegate, hookify, ... - or the vendored catalog); anything else is refused. Calling this parks the run for operator approval: the proposal is audit-logged and the plugin switches on only if the operator grants. Use when a bundled plugin would genuinely help the task; say why in your message first."
                 .into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Bundled plugin name from the catalog (e.g. \"time-gap\")" }
+                    "name": { "type": "string", "description": "Bundled plugin name (embedded registry or vendored catalog)" }
                 },
                 "required": ["name"]
             }),
@@ -445,16 +446,26 @@ pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
             let data_dir = dd.clone().ok_or_else(|| {
                 crate::tools::tool_err("TOOL_NO_DATA_DIR", Layer::Execution, false, "plugin enablement needs a data dir; registration did not provide one".to_string(), "check tool arguments")
             })?;
-            let plugin = pantheon_extensions::bundled::find(&name).ok_or_else(|| {
-                crate::tools::tool_err("TOOL_UNKNOWN_PLUGIN", Layer::Execution, false, format!("'{name}' is not a bundled plugin; only catalog plugins can be enabled"), "check tool arguments")
-            })?;
-            pantheon_extensions::bundled::set_enabled(&data_dir, &plugin.name, true).map_err(|e| {
-                crate::tools::tool_err("TOOL_PLUGIN_ENABLE", Layer::Execution, false, e.to_string(), "check tool arguments")
-            })?;
-            Ok(format!(
-                "bundled plugin '{}' ({}) enabled: [plugins.{}] enabled = true",
-                plugin.name, plugin.kind, plugin.name
-            ))
+            if pantheon_extensions::bundled::find(&name).is_some() {
+                pantheon_extensions::bundled::set_enabled(&data_dir, &name, true).map_err(|e| {
+                    crate::tools::tool_err("TOOL_PLUGIN_ENABLE", Layer::Execution, false, e.to_string(), "check tool arguments")
+                })?;
+                return Ok(format!(
+                    "bundled plugin '{name}' (hook) enabled: [plugins.{name}] enabled = true"
+                ));
+            }
+            if pantheon_exec::plugins::bundled_plugin_infos()
+                .iter()
+                .any(|i| i.name == name)
+            {
+                pantheon_exec::plugins::set_bundled_enabled(&data_dir, &name, true).map_err(|e| {
+                    crate::tools::tool_err("TOOL_PLUGIN_ENABLE", Layer::Execution, false, e.to_string(), "check tool arguments")
+                })?;
+                return Ok(format!(
+                    "bundled plugin '{name}' (registry) enabled: [plugins.{name}] enabled = true"
+                ));
+            }
+            Err(crate::tools::tool_err("TOOL_UNKNOWN_PLUGIN", Layer::Execution, false, format!("'{name}' is not a bundled plugin; only embedded-registry or vendored-catalog names can be enabled"), "run `pantheon plugins` to list bundled plugins"))
         },
     );
     }
