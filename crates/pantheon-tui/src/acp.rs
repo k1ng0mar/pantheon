@@ -510,10 +510,21 @@ fn run_prompt(
                             a.push(scope.clone());
                         }
                     }
-                    Event::UiContent { run_id: r, ui_id, document, .. } if r == &run_id => {
+                    Event::UiContent {
+                        run_id: r,
+                        ui_id,
+                        document,
+                        ..
+                    } if r == &run_id => {
                         shared.ui_document(&session_id, ui_id, 0, document);
                     }
-                    Event::UiUpdated { run_id: r, ui_id, revision, document, .. } if r == &run_id => {
+                    Event::UiUpdated {
+                        run_id: r,
+                        ui_id,
+                        revision,
+                        document,
+                        ..
+                    } if r == &run_id => {
                         shared.ui_document(&session_id, ui_id, *revision, document);
                     }
                     _ => {}
@@ -612,7 +623,10 @@ fn ui_nodes(value: &serde_json::Value, out: &mut Vec<(String, serde_json::Value)
             }
         }
         serde_json::Value::Object(map) => {
-            if let (Some(id), Some(tag)) = (map.get("id").and_then(|v| v.as_str()), map.get("type").and_then(|v| v.as_str())) {
+            if let (Some(id), Some(tag)) = (
+                map.get("id").and_then(|v| v.as_str()),
+                map.get("type").and_then(|v| v.as_str()),
+            ) {
                 out.push((id.to_string(), value.clone()));
                 let _ = tag;
             }
@@ -658,7 +672,11 @@ fn ui_document_markdown(document: &pantheon_api::ui::UiDocument) -> String {
                 for row in node["rows"].as_array().into_iter().flatten() {
                     let cells: Vec<String> = row
                         .as_array()
-                        .map(|c| c.iter().map(|x| x.as_str().unwrap_or_default().to_string()).collect())
+                        .map(|c| {
+                            c.iter()
+                                .map(|x| x.as_str().unwrap_or_default().to_string())
+                                .collect()
+                        })
                         .unwrap_or_default();
                     parts.push(format!("| {} |", cells.join(" | ")));
                 }
@@ -717,15 +735,20 @@ fn resolve_ui_action(
     let mut latest: Option<(u64, &pantheon_api::ui::UiDocument)> = None;
     for entry in &entries {
         match &entry.event {
-            Event::UiContent { ui_id: u, document, .. } if u == &ui_id => {
-                if latest.as_ref().map_or(true, |(rev, _)| *rev < 1) {
+            Event::UiContent {
+                ui_id: u, document, ..
+            } if u == &ui_id => {
+                if latest.as_ref().is_none_or(|(rev, _)| *rev < 1) {
                     latest = Some((0, document));
                 }
             }
-            Event::UiUpdated { ui_id: u, revision, document, .. } if u == &ui_id => {
-                if latest.as_ref().map_or(true, |(rev, _)| *revision > *rev) {
-                    latest = Some((*revision, document));
-                }
+            Event::UiUpdated {
+                ui_id: u,
+                revision,
+                document,
+                ..
+            } if u == &ui_id && latest.as_ref().is_none_or(|(rev, _)| *revision > *rev) => {
+                latest = Some((*revision, document));
             }
             _ => {}
         }
@@ -771,8 +794,10 @@ fn resolve_ui_action(
             }
         }
     }
-    let (Some((approve_node, approve_action, approve_label)), Some((deny_node, deny_action, deny_label))) =
-        (approve, deny)
+    let (
+        Some((approve_node, approve_action, approve_label)),
+        Some((deny_node, deny_action, deny_label)),
+    ) = (approve, deny)
     else {
         // Card without a resolvable approve/deny pair: degrade to the text
         // path so the park stays operator-resolvable in a full client.
