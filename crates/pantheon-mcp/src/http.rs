@@ -17,7 +17,7 @@
 //! they cannot wedge the pairing because responses are matched by id.
 //!
 //! Shutdown note: the SSE reader thread blocks on the socket, so after
-//! `shutdown` it can linger until the stream agent's idle timeout (one
+//! `shutdown` it can linger until the stream agent's overall timeout (one
 //! hour) or process exit. Request pairing is unaffected.
 
 use crate::client::ElicitationHandler;
@@ -39,8 +39,9 @@ pub enum HttpTransport {
     Streamable,
 }
 
-/// Idle ceiling for the long-lived SSE GET stream. When it elapses with
-/// no server traffic the reader thread reports EOF and the manager
+/// Overall ceiling for the long-lived SSE GET stream: one budget covering
+/// connect through every stream read (ureq's global-timeout scope). When
+/// it elapses the reader thread reports a stream error and the manager
 /// reconnects transparently.
 const SSE_STREAM_TIMEOUT: Duration = Duration::from_secs(3600);
 
@@ -106,42 +107,61 @@ fn resolve_endpoint(base: &str, endpoint: &str) -> String {
     }
 }
 
+/// ureq agent with one overall timeout (connect through body read, the
+/// scope of ureq's `timeout_global`, matching the ureq 2 `.timeout()`
+/// budget). HTTP statuses surface as responses, not errors, so call sites
+/// read headers/bodies and map statuses themselves.
+fn http_agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .max_redirects(5)
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent()
+}
+
 fn ureq_err(e: ureq::Error, method: &str) -> McpError {
+    if is_timeout_error(&e) {
+        McpError::Timeout {
+            method: method.to_string(),
+        }
+    } else {
+        McpError::Io(format!("http: {e}"))
+    }
+}
+
+/// ureq 3 reports timeouts as `Error::Timeout`. Errors funneled through
+/// an `io::Error` keep the `TimedOut` kind, so cover both.
+fn is_timeout_error(e: &ureq::Error) -> bool {
     match e {
-        ureq::Error::Status(code, resp) => McpError::Rpc {
-            code: i64::from(code),
-            message: format!("http {code}: {}", resp.status_text()),
-        },
-        ureq::Error::Transport(t) => {
-            if is_timeout_transport(&t) {
-                McpError::Timeout {
-                    method: method.to_string(),
-                }
-            } else {
-                McpError::Io(format!("http: {t}"))
-            }
-        }
+        ureq::Error::Timeout(_) => true,
+        ureq::Error::Io(ioe) => ioe.kind() == std::io::ErrorKind::TimedOut,
+        _ => false,
     }
 }
 
-/// This ureq version reports timeouts as `ErrorKind::Io` with an
-/// underlying `io::Error` of kind `TimedOut`: walk the source chain.
-fn is_timeout_transport(t: &ureq::Transport) -> bool {
-    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(t);
-    while let Some(e) = cur {
-        if let Some(ioe) = e.downcast_ref::<std::io::Error>() {
-            if ioe.kind() == std::io::ErrorKind::TimedOut {
-                return true;
-            }
-        }
-        cur = std::error::Error::source(e);
+/// Map an HTTP status >= 400 to the RPC error the ureq 2 status-error
+/// path produced. The reason phrase stands in for ureq 2's status-line
+/// text; unknown codes render an empty reason.
+fn status_err(resp: &ureq::http::Response<ureq::Body>) -> McpError {
+    let code = resp.status().as_u16();
+    McpError::Rpc {
+        code: i64::from(code),
+        message: format!(
+            "http {code}: {}",
+            resp.status().canonical_reason().unwrap_or("")
+        ),
     }
-    false
 }
 
-/// `Response::into_json` fails with `std::io::Error`, not `ureq::Error`.
-fn json_err(e: std::io::Error, method: &str) -> McpError {
-    if e.kind() == std::io::ErrorKind::TimedOut {
+/// `Body::read_json` fails with `ureq::Error`.
+fn json_err(e: ureq::Error, method: &str) -> McpError {
+    if is_timeout_error(&e) {
         McpError::Timeout {
             method: method.to_string(),
         }
@@ -236,21 +256,22 @@ impl HttpMcpClient {
         headers: &[(String, String)],
         elicitation: Option<ElicitationHandler>,
     ) -> Result<Self, McpError> {
-        let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+        let agent = http_agent(timeout);
         let (post_url, sse_rx) = match transport {
             HttpTransport::Streamable => (url.to_string(), None),
             HttpTransport::Sse => {
-                let stream_agent = ureq::AgentBuilder::new()
-                    .timeout(SSE_STREAM_TIMEOUT)
-                    .build();
+                let stream_agent = http_agent(SSE_STREAM_TIMEOUT);
                 let resp = stream_agent
                     .get(url)
-                    .set("Accept", "text/event-stream")
+                    .header("Accept", "text/event-stream")
                     .call()
                     .map_err(|e| ureq_err(e, "sse connect"))?;
+                if resp.status().as_u16() >= 400 {
+                    return Err(status_err(&resp));
+                }
                 let (tx, rx) = mpsc::channel();
                 std::thread::spawn(move || {
-                    let mut reader = std::io::BufReader::new(resp.into_reader());
+                    let mut reader = std::io::BufReader::new(resp.into_body().into_reader());
                     loop {
                         match next_sse_event(&mut reader) {
                             Ok(None) => {
@@ -327,21 +348,27 @@ impl HttpMcpClient {
 
     /// POST one JSON-RPC message. Returns the raw response for callers
     /// that parse it themselves (streamable responses).
-    fn post(&self, body: &Value) -> Result<ureq::Response, McpError> {
+    fn post(&self, body: &Value) -> Result<ureq::http::Response<ureq::Body>, McpError> {
         let body_str =
             serde_json::to_string(body).map_err(|e| McpError::Framing(format!("encode: {e}")))?;
         let mut req = self
             .agent
             .post(&self.post_url)
-            .set("Content-Type", "application/json")
-            .set("Accept", "application/json, text/event-stream");
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
         for (k, v) in &self.headers {
-            req = req.set(k, v);
+            req = req.header(k.as_str(), v.as_str());
         }
         if let Some(sid) = &self.session_id {
-            req = req.set("Mcp-Session-Id", sid);
+            req = req.header("Mcp-Session-Id", sid);
         }
-        req.send_string(&body_str).map_err(|e| ureq_err(e, "post"))
+        let resp = req
+            .send(body_str.as_str())
+            .map_err(|e| ureq_err(e, "post"))?;
+        if resp.status().as_u16() >= 400 {
+            return Err(status_err(&resp));
+        }
+        Ok(resp)
     }
 
     /// Fire-and-forget notification (no id, no response expected).
@@ -354,7 +381,7 @@ impl HttpMcpClient {
         // Drain the body so the connection can be reused.
         match self.post(&body) {
             Ok(resp) => {
-                let _ = resp.into_string();
+                let _ = resp.into_body().read_to_string();
                 Ok(())
             }
             Err(e) => {
@@ -425,15 +452,21 @@ impl HttpMcpClient {
     ) -> Result<Value, McpError> {
         let resp = self.post(body).inspect_err(|_| self.dead = true)?;
         if self.session_id.is_none() {
-            if let Some(sid) = resp.header("Mcp-Session-Id") {
+            if let Some(sid) = resp
+                .headers()
+                .get("Mcp-Session-Id")
+                .and_then(|v| v.to_str().ok())
+            {
                 self.session_id = Some(sid.to_string());
             }
         }
         let is_sse = resp
-            .header("Content-Type")
+            .headers()
+            .get("Content-Type")
+            .and_then(|v| v.to_str().ok())
             .is_some_and(|ct| ct.contains("text/event-stream"));
         if !is_sse {
-            let v: Value = resp.into_json().map_err(|e| {
+            let v: Value = resp.into_body().read_json().map_err(|e| {
                 self.dead = true;
                 json_err(e, method)
             })?;
@@ -441,7 +474,7 @@ impl HttpMcpClient {
         }
         // SSE-batched response: scan events for our id. The agent timeout
         // bounds the whole read; a timeout surfaces as a read error.
-        let mut reader = std::io::BufReader::new(resp.into_reader());
+        let mut reader = std::io::BufReader::new(resp.into_body().into_reader());
         loop {
             match next_sse_event(&mut reader) {
                 Ok(None) => {
@@ -499,7 +532,7 @@ impl HttpMcpClient {
         // answer arrives on the GET stream.
         match self.post(body) {
             Ok(resp) => {
-                let _ = resp.into_string();
+                let _ = resp.into_body().read_to_string();
             }
             Err(e) => {
                 self.dead = true;
@@ -770,9 +803,11 @@ fn tools_from(result: &Value, server: &str) -> Result<Vec<McpToolDef>, McpError>
 }
 
 /// Map a stream read failure to timeout vs framing. ureq surfaces its own
-/// timeout as an `io::Error` with kind TimedOut on the response reader.
+/// timeouts on the response reader as an `io::Error` wrapping
+/// `Error::Timeout`, which displays as `timeout: <phase>`; a raw socket
+/// timeout keeps the `timed out` message.
 fn match_stream_err(e: &str, method: &str) -> McpError {
-    if e.contains("timed out") || e.contains("TimedOut") {
+    if e.contains("timed out") || e.contains("TimedOut") || e.contains("timeout: ") {
         McpError::Timeout {
             method: method.to_string(),
         }

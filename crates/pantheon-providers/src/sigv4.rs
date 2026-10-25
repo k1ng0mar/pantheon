@@ -6,7 +6,7 @@
 //! `AWS_SESSION_TOKEN`), signs the request, and returns the
 //! `Authorization` header value.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 type HmacSha256 = Hmac<Sha256>;

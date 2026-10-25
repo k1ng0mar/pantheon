@@ -15,28 +15,34 @@ use std::sync::{Arc, Mutex};
 
 pub const TELEGRAM_MESSAGE_LIMIT: usize = 4_096;
 
-/// Map a send failure. Telegram puts the 429 wait in the JSON body
-/// (`parameters.retry_after`, seconds) rather than a `Retry-After` header,
-/// so the generic header parse in `from_ureq` would miss it; read the body
-/// first (falling back to the header), and cap like the shared parser.
-fn send_err(e: ureq::Error) -> ChannelError {
-    match e {
-        ureq::Error::Status(429, resp) => {
-            let header = crate::channel::parse_retry_after(resp.header("retry-after"));
-            let body_secs = resp
-                .into_string()
-                .ok()
-                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                .and_then(|v| {
-                    v.pointer("/parameters/retry_after")
-                        .and_then(|n| n.as_u64())
-                })
-                .map(|n| n.min(600));
-            // A zero-second body hint means "no hint", not "send now".
-            let body_secs = body_secs.filter(|n| *n > 0);
-            ChannelError::rate_limited("TELEGRAM_HTTP", "sendMessage", body_secs.or(header))
-        }
-        other => ChannelError::from_ureq("TELEGRAM_HTTP", other),
+/// Map a send failure response (4xx/5xx arrive as responses; transport
+/// failures are mapped at the call site). Telegram puts the 429 wait in
+/// the JSON body (`parameters.retry_after`, seconds) rather than a
+/// `Retry-After` header, so the generic header parse in `from_ureq`
+/// would miss it; read the body first (falling back to the header), and
+/// cap like the shared parser.
+fn send_err(resp: &mut ureq::http::Response<ureq::Body>) -> ChannelError {
+    if resp.status().as_u16() == 429 {
+        let header = crate::channel::parse_retry_after(
+            resp.headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok()),
+        );
+        let body_secs = resp
+            .body_mut()
+            .read_to_string()
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| {
+                v.pointer("/parameters/retry_after")
+                    .and_then(|n| n.as_u64())
+            })
+            .map(|n| n.min(600));
+        // A zero-second body hint means "no hint", not "send now".
+        let body_secs = body_secs.filter(|n| *n > 0);
+        ChannelError::rate_limited("TELEGRAM_HTTP", "sendMessage", body_secs.or(header))
+    } else {
+        ChannelError::from_ureq("TELEGRAM_HTTP", resp)
     }
 }
 
@@ -90,7 +96,7 @@ pub struct TelegramRestTransport {
 impl TelegramRestTransport {
     pub fn new(bot_token: impl Into<String>) -> Self {
         Self {
-            agent: ureq::Agent::new(),
+            agent: crate::channel::channel_agent(),
             api_base: "https://api.telegram.org".into(),
             bot_token: bot_token.into(),
         }
@@ -108,22 +114,41 @@ impl TelegramTransport for TelegramRestTransport {
         if let Some(object) = body.as_object_mut() {
             object.insert("chat_id".into(), json!(chat_id));
         }
-        self.agent.post(&url).send_json(body).map_err(send_err)?;
+        let mut resp = self
+            .agent
+            .post(&url)
+            .send_json(body)
+            .map_err(|e| ChannelError::new("TELEGRAM_HTTP", e.to_string()))?;
+        if resp.status().as_u16() >= 400 {
+            return Err(send_err(&mut resp));
+        }
         Ok(())
     }
     fn get_updates(&self, offset: i64, timeout_secs: u64) -> Result<Vec<Value>, ChannelError> {
         let url = format!("{}/bot{}/getUpdates", self.api_base, self.bot_token);
-        let body: Value = self
+        let resp = self
             .agent
             .post(&url)
-            .timeout(std::time::Duration::from_secs(timeout_secs + 5))
+            // Per-request budget: the long-poll window plus slack for the
+            // round trip. per_call is cleared because the shared agent's
+            // 30s connect bound would cut a long poll that legitimately
+            // waits past it; ordinary sends never inherit the poll budget.
+            .config()
+            .timeout_per_call(None)
+            .timeout_global(Some(std::time::Duration::from_secs(timeout_secs + 5)))
+            .build()
             .send_json(json!({
                 "offset": offset,
                 "timeout": timeout_secs,
                 "allowed_updates": ["message", "callback_query"],
             }))
-            .map_err(|e| ChannelError::from_ureq("TELEGRAM_HTTP", e))?
-            .into_json()
+            .map_err(|e| ChannelError::new("TELEGRAM_HTTP", e.to_string()))?;
+        if resp.status().as_u16() >= 400 {
+            return Err(ChannelError::from_ureq("TELEGRAM_HTTP", &resp));
+        }
+        let body: Value = resp
+            .into_body()
+            .read_json()
             .map_err(|e| ChannelError::new("TELEGRAM_HTTP", e.to_string()))?;
         if body.get("ok").and_then(Value::as_bool) != Some(true) {
             return Err(ChannelError::new(
@@ -142,15 +167,20 @@ impl TelegramTransport for TelegramRestTransport {
         // URL embeds the bot token, so every failure here maps to a
         // static, token-free message (see channel_voice::ureq_kind).
         let url = format!("{}/bot{}/getFile", self.api_base, self.bot_token);
-        let body: Value = self
+        let resp = self
             .agent
             .post(&url)
             .send_json(json!({ "file_id": file_id }))
-            .map_err(|_| ChannelError::new("TELEGRAM_HTTP", "getFile failed"))
-            .and_then(|resp| {
-                resp.into_json()
-                    .map_err(|_| ChannelError::new("TELEGRAM_HTTP", "getFile: bad response body"))
-            })?;
+            .map_err(|_| ChannelError::new("TELEGRAM_HTTP", "getFile failed"))?;
+        // Status failures map to the same static, token-free message as
+        // transport ones: the getFile URL embeds the bot token.
+        if resp.status().as_u16() >= 400 {
+            return Err(ChannelError::new("TELEGRAM_HTTP", "getFile failed"));
+        }
+        let body: Value = resp
+            .into_body()
+            .read_json()
+            .map_err(|_| ChannelError::new("TELEGRAM_HTTP", "getFile: bad response body"))?;
         let path = body
             .pointer("/result/file_path")
             .and_then(Value::as_str)
@@ -182,18 +212,26 @@ impl TelegramTransport for TelegramRestTransport {
             crate::voice::content_type_for(format),
             audio,
         );
-        // The URL carries the bot token: the raw ureq error (which echoes
-        // the URL) must never reach a log line.
-        self.agent
+        // The URL carries the bot token: the raw ureq error (whose text
+        // is not ours to audit) must never reach a log line.
+        let resp = self
+            .agent
             .post(&url)
-            .set("Content-Type", &content_type)
-            .send_bytes(&body)
+            .header("Content-Type", content_type.as_str())
+            .send(&body)
             .map_err(|e| {
                 ChannelError::new(
                     "TELEGRAM_HTTP",
                     format!("{method} failed: {}", ureq_kind(&e)),
                 )
             })?;
+        let code = resp.status().as_u16();
+        if code >= 400 {
+            return Err(ChannelError::new(
+                "TELEGRAM_HTTP",
+                format!("{method} failed: http {code}"),
+            ));
+        }
         Ok(())
     }
 }
@@ -414,11 +452,11 @@ impl TelegramChannel {
         offset: i64,
         timeout_secs: u64,
     ) -> Result<(Vec<VoiceOutcome>, i64), String> {
-        // Token-safe: the getUpdates URL embeds the bot token and the
-        // transport's error message may echo it (ureq's Display prints
-        // the URL), so only the error code and (for HTTP failures) the
-        // numeric status are surfaced - the daemon's health tracker needs
-        // the 401 to spot a revoked token.
+        // Token-safe: the getUpdates URL embeds the bot token, so only
+        // the error code and (for HTTP failures) the numeric status are
+        // surfaced - never the error message, whose text is not ours to
+        // audit. The daemon's health tracker needs the 401 to spot a
+        // revoked token.
         let updates =
             transport
                 .get_updates(offset, timeout_secs)

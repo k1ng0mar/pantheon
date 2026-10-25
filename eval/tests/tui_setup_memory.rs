@@ -74,7 +74,7 @@ fn native_memory_needs_no_followups_and_leaves_working_state() {
     );
     let config_text = std::fs::read_to_string(dir.path().join("config.toml"))
         .expect("run_setup must write config.toml");
-    let value: toml::Value = config_text.parse().expect("config.toml must parse");
+    let value: toml::Value = toml::from_str(&config_text).expect("config.toml must parse");
     assert!(
         value.get("memory").is_none(),
         "native memory must not write a [memory] section"
@@ -84,9 +84,8 @@ fn native_memory_needs_no_followups_and_leaves_working_state() {
     // from: it must record the native pick.
     let selection_text = std::fs::read_to_string(dir.path().join("memory-backend.toml"))
         .expect("run_setup must write memory-backend.toml");
-    let selection: toml::Value = selection_text
-        .parse()
-        .expect("memory-backend.toml must parse");
+    let selection: toml::Value =
+        toml::from_str(&selection_text).expect("memory-backend.toml must parse");
     assert_eq!(
         selection.get("name").and_then(|n| n.as_str()),
         Some(native_id.as_str()),

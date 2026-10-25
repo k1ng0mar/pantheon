@@ -135,12 +135,21 @@ pub fn http_timeout() -> Duration {
 
 /// Shared request agent honoring [`http_timeout`]. Every provider-plane
 /// HTTP call (chat, aux, voice, embeddings) goes through this so none
-/// runs without a deadline.
+/// runs without a deadline. Statuses are responses, not errors: the
+/// error mapping below reads bodies and Retry-After headers.
 pub fn http_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(http_timeout())
-        .redirects(0)
+    ureq::Agent::config_builder()
+        .timeout_global(Some(http_timeout()))
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
         .build()
+        .new_agent()
 }
 
 /// Egress policy for outbound provider requests.
@@ -382,7 +391,10 @@ pub fn attribution_headers() -> Vec<(String, String)> {
     ]
 }
 
-fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, PantheonError> {
+fn send(
+    agent: &ureq::Agent,
+    req: &WireRequest,
+) -> Result<ureq::http::Response<ureq::Body>, PantheonError> {
     validate_url(&req.url)?;
     let mut r = agent.post(&req.url);
     if req.use_sigv4 {
@@ -398,41 +410,46 @@ fn send(agent: &ureq::Agent, req: &WireRequest) -> Result<ureq::Response, Panthe
                 "bedrock",
                 &creds,
             );
-            r = r.set("Authorization", &auth);
+            r = r.header("Authorization", auth.as_str());
         }
     }
     for (k, v) in &req.headers {
-        r = r.set(k, v);
+        r = r.header(k.as_str(), v.as_str());
     }
     for (k, v) in attribution_headers() {
-        r = r.set(&k, &v);
+        r = r.header(k.as_str(), v.as_str());
     }
-    r.send_string(&req.body).map_err(|e| match e {
-        ureq::Error::Status(code, resp) => {
-            // A 429 carries the provider's asked-for wait: parse
-            // `Retry-After` (delta-seconds or HTTP-date, capped) and stamp
-            // it on the cause so the chain can sleep before rotating keys
-            // or falling back instead of hammering a rate-limited endpoint.
-            let retry_after = if code == 429 {
-                resp.header("retry-after").and_then(parse_retry_after)
-            } else {
-                None
-            };
-            let body = resp.into_string().unwrap_or_default();
-            let snippet: String = body.chars().take(300).collect();
-            // 5xx / 408-class server trouble and transport errors are
-            // retryable (fallback-eligible); 4xx is a client/config problem
-            // - except 429, which is transient: another key or provider may
-            // still have quota, and the stamped Retry-After paces the retry.
-            let retryable = !(400..500).contains(&code) || code == 429;
-            let mut cause = format!("{}: HTTP {code} {snippet}", req.url);
-            if let Some(secs) = retry_after {
-                cause.push_str(&format!(" (retry-after: {secs}s)"));
-            }
-            perr("PROVIDER_HTTP", cause, retryable)
+    let mut resp = r
+        .send(req.body.as_str())
+        .map_err(|e| perr("PROVIDER_HTTP", format!("{}: {e}", req.url), true))?;
+    let code = resp.status().as_u16();
+    if code >= 400 {
+        // A 429 carries the provider's asked-for wait: parse
+        // `Retry-After` (delta-seconds or HTTP-date, capped) and stamp
+        // it on the cause so the chain can sleep before rotating keys
+        // or falling back instead of hammering a rate-limited endpoint.
+        let retry_after = if code == 429 {
+            resp.headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_retry_after)
+        } else {
+            None
+        };
+        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        let snippet: String = body.chars().take(300).collect();
+        // 5xx / 408-class server trouble and transport errors are
+        // retryable (fallback-eligible); 4xx is a client/config problem
+        // - except 429, which is transient: another key or provider may
+        // still have quota, and the stamped Retry-After paces the retry.
+        let retryable = !(400..500).contains(&code) || code == 429;
+        let mut cause = format!("{}: HTTP {code} {snippet}", req.url);
+        if let Some(secs) = retry_after {
+            cause.push_str(&format!(" (retry-after: {secs}s)"));
         }
-        e => perr("PROVIDER_HTTP", format!("{}: {e}", req.url), true),
-    })
+        return Err(perr("PROVIDER_HTTP", cause, retryable));
+    }
+    Ok(resp)
 }
 
 /// Resolve a provider's effective base URL, interpolating `{var}`
@@ -570,9 +587,21 @@ impl ChatTransport for Box<dyn ChatTransport> {
 
 impl ChatTransport for HttpTransport {
     fn post(&self, req: &WireRequest) -> Result<String, PantheonError> {
-        let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(self.timeout))
+            .max_redirects(0)
+            .max_redirects_will_error(false)
+            .http_status_as_error(false)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build()
+            .new_agent();
         let resp = send(&agent, req)?;
-        resp.into_string()
+        resp.into_body()
+            .read_to_string()
             .map_err(|e| perr("PROVIDER_READ", e.to_string(), true))
     }
 
@@ -581,14 +610,24 @@ impl ChatTransport for HttpTransport {
         req: &WireRequest,
         on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
     ) -> Result<StreamEnd, PantheonError> {
-        // No overall timeout: a stream may run long. Connect stays bounded;
-        // the read timeout is a per-chunk idle deadline.
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(self.timeout.min(Duration::from_secs(15)))
-            .timeout_read(self.timeout)
-            .build();
+        // No overall timeout: a stream may run long. The per-call bound
+        // covers connect through response headers; the read timeout is a
+        // per-chunk idle deadline.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_per_call(Some(self.timeout.min(Duration::from_secs(15))))
+            .timeout_per_read(Some(self.timeout))
+            .max_redirects(0)
+            .max_redirects_will_error(false)
+            .http_status_as_error(false)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build()
+            .new_agent();
         let resp = send(&agent, req)?;
-        let reader = BufReader::new(resp.into_reader());
+        let reader = BufReader::new(resp.into_body().into_reader());
         for line in reader.lines() {
             let line = line.map_err(|e| perr("PROVIDER_READ", e.to_string(), true))?;
             let line = line.trim_end_matches('\r');

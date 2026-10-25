@@ -65,7 +65,7 @@ pub struct DiscordRestTransport {
 impl DiscordRestTransport {
     pub fn new(token: impl Into<String>) -> Self {
         Self {
-            agent: ureq::Agent::new(),
+            agent: crate::channel::channel_agent(),
             api_base: "https://discord.com/api/v10".into(),
             token: token.into(),
         }
@@ -89,11 +89,15 @@ impl DiscordRestTransport {
 impl DiscordTransport for DiscordRestTransport {
     fn send_message(&self, channel_id: &str, payload: &Value) -> Result<(), ChannelError> {
         let (url, auth, body) = self.build_send_request(channel_id, payload);
-        self.agent
+        let resp = self
+            .agent
             .post(&url)
-            .set("Authorization", &auth)
+            .header("Authorization", auth.as_str())
             .send_json(body)
-            .map_err(|e| ChannelError::from_ureq("DISCORD_HTTP", e))?;
+            .map_err(|e| ChannelError::new("DISCORD_HTTP", e.to_string()))?;
+        if resp.status().as_u16() >= 400 {
+            return Err(ChannelError::from_ureq("DISCORD_HTTP", &resp));
+        }
         Ok(())
     }
     fn download(&self, url: &str) -> Result<Vec<u8>, ChannelError> {
@@ -117,17 +121,25 @@ impl DiscordTransport for DiscordRestTransport {
             crate::voice::content_type_for(format),
             audio,
         );
-        self.agent
+        let resp = self
+            .agent
             .post(&url)
-            .set("Authorization", &auth)
-            .set("Content-Type", &content_type)
-            .send_bytes(&body)
+            .header("Authorization", auth.as_str())
+            .header("Content-Type", content_type.as_str())
+            .send(&body)
             .map_err(|e| {
                 ChannelError::new(
                     "DISCORD_HTTP",
                     format!("send audio failed: {}", ureq_kind(&e)),
                 )
             })?;
+        let code = resp.status().as_u16();
+        if code >= 400 {
+            return Err(ChannelError::new(
+                "DISCORD_HTTP",
+                format!("send audio failed: http {code}"),
+            ));
+        }
         Ok(())
     }
 }

@@ -118,9 +118,7 @@ fn safe_name(name: &str) -> bool {
 fn read_config_doc(data_dir: &Path) -> Result<toml::Value, String> {
     let path = config_path(data_dir);
     match std::fs::read_to_string(&path) {
-        Ok(text) => text
-            .parse()
-            .map_err(|e| format!("parse {}: {e}", path.display())),
+        Ok(text) => toml::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             Ok(toml::Value::Table(toml::map::Map::new()))
         }
@@ -1117,7 +1115,7 @@ mod tests {
 
     fn read_server_table(data_dir: &Path, name: &str) -> toml::Value {
         let text = std::fs::read_to_string(config_path(data_dir)).expect("config written");
-        let doc: toml::Value = text.parse().expect("config parses");
+        let doc: toml::Value = toml::from_str(&text).expect("config parses");
         doc.get("mcp")
             .and_then(|m| m.get("servers"))
             .and_then(|s| s.get(name))

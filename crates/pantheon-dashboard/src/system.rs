@@ -132,7 +132,7 @@ pub fn nightly_set_enabled(app: &App, req: &Request) -> Response {
                 return err_json(500, "CONFIG", &format!("read {}: {e}", path.display()));
             }
         };
-        match raw.parse() {
+        match toml::from_str::<toml::Value>(&raw) {
             Ok(d) => d,
             Err(e) => {
                 return err_json(500, "CONFIG", &format!("parse {}: {e}", path.display()));
@@ -372,7 +372,7 @@ mod tests {
         ));
         assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
         let raw = std::fs::read_to_string(dir.join("config.toml")).expect("read back config");
-        let doc: toml::Value = raw.parse().expect("config still parses");
+        let doc: toml::Value = toml::from_str(&raw).expect("config still parses");
         assert_eq!(
             doc.get("nightly").and_then(|t| t.get("enabled")),
             Some(&toml::Value::Boolean(false))
@@ -396,7 +396,7 @@ mod tests {
         ));
         assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
         let raw = std::fs::read_to_string(dir.join("config.toml")).expect("read back config");
-        let doc: toml::Value = raw.parse().expect("config parses");
+        let doc: toml::Value = toml::from_str(&raw).expect("config parses");
         assert_eq!(
             doc.get("nightly").and_then(|t| t.get("enabled")),
             Some(&toml::Value::Boolean(true))

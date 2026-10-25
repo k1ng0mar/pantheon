@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Cargo: weekly semver-compatible bumps against the workspace
+  # dependency table (Cargo.toml [workspace.dependencies] holds the one
+  # version per external dep; crate manifests inherit). Grouped so a
+  # routine week is one reviewable PR, not twenty.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      rust-deps:
+        patterns: ["*"]
+    open-pull-requests-limit: 10
+  # Actions: keep dtolnay/rust-toolchain, actions/checkout, and
+  # Swatinem/rust-cache current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

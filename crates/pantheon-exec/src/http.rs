@@ -73,15 +73,27 @@ fn get_ureq(
     max_bytes: u64,
     user_agent: &str,
 ) -> Result<Fetched, GetError> {
-    let resp = ureq::get(url)
-        .timeout(timeout)
-        .set("User-Agent", user_agent)
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
+    let resp = agent
+        .get(url)
+        .header("User-Agent", user_agent)
         .call()
-        .map_err(|e| match e {
-            ureq::Error::Status(code, _) => GetError::Status(code),
-            ureq::Error::Transport(t) => GetError::Transport(t.to_string()),
-        })?;
-    let status = resp.status();
+        .map_err(|e| GetError::Transport(e.to_string()))?;
+    let status = resp.status().as_u16();
+    // Statuses are errors here (not transport failures) so the curl
+    // fallback below never runs for a server that answered.
+    if (400..600).contains(&status) {
+        return Err(GetError::Status(status));
+    }
     let body = read_body_capped(resp, max_bytes).map_err(|e| GetError::Transport(e.to_string()))?;
     if body.len() as u64 > max_bytes {
         return Err(GetError::TooLarge);
@@ -248,12 +260,19 @@ fn teardown_is_benign(framing: Framing, received: u64) -> bool {
 /// fully-received declared length). Anything else - zero bytes, a short
 /// length-framed body, a chunked body - still errors: that is genuine
 /// truncation, not server sloppiness.
-pub fn read_body_capped(resp: ureq::Response, max_bytes: u64) -> io::Result<Vec<u8>> {
+pub fn read_body_capped(
+    mut resp: ureq::http::Response<ureq::Body>,
+    max_bytes: u64,
+) -> io::Result<Vec<u8>> {
     let framing = framing(
-        resp.header("content-length"),
-        resp.header("transfer-encoding"),
+        resp.headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok()),
+        resp.headers()
+            .get("transfer-encoding")
+            .and_then(|v| v.to_str().ok()),
     );
-    read_capped_tolerant(resp.into_reader(), max_bytes, framing)
+    read_capped_tolerant(resp.body_mut().as_reader(), max_bytes, framing)
 }
 
 fn read_capped_tolerant<R: Read>(

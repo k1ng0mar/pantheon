@@ -18,7 +18,7 @@
 //! | 8   | changesUiState     |
 //! | 9   | idempotent         |
 //!
-//! Source: vendor/rea_audit_split.json, extracted from REA's own
+//! Source: assets/rea_audit_split.json, extracted from REA's own
 //! toolEffects.ts (the contract that derives readOnlyHint/destructiveHint).
 //! The buckets reconcile exactly: 43 Read, 42 Write, 25 Exec, 110 tools.
 

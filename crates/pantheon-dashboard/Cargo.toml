@@ -38,30 +38,30 @@ pantheon-providers = { path = "../pantheon-providers" }
 # Structured diagnostics engine: `GET /api/health` runs the same checks
 # as `pantheon doctor`, no duplicated logic.
 pantheon-doctor = { path = "../pantheon-doctor" }
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+toml.workspace = true
 # toml 0.8 re-exports Datetime only privately; parse datetimes directly.
-toml_datetime = "0.6"
+toml_datetime = "1"
 # Sync tungstenite (no TLS features - the dashboard is plain HTTP on
 # localhost); the browser take-control stream reuses the WS takeover
 # pattern live voice established in pantheon-gateway.
-tungstenite = { version = "0.30.0" }
+tungstenite.workspace = true
 # setsid for turn-child spawning (killable process groups).
-libc = "0.2"
+libc.workspace = true
 # Outbound HTTPS for the link-preview endpoint (sync, rustls). No
 # proxy-from-env: a proxy would tunnel past the endpoint's SSRF guard.
-ureq = { version = "2", default-features = false, features = ["tls", "native-certs"] }
-url = "2"
+ureq.workspace = true
+url.workspace = true
 # Plugin import pipeline: gzip/deflate decoding for GitHub tarballs
 # (tar entries are parsed by hand - no new native deps beyond flate2).
-flate2 = "1"
+flate2.workspace = true
 # Zip extraction for chat attachments: an attached zip is inflated
 # server-side at message-send time so the agent can read the contents
 # with its file tools (same fail-closed limits as pantheon-exec skills).
-zip = { version = "9", default-features = false, features = ["deflate"] }
+zip.workspace = true
 # Plugin import pipeline: parse/emit manifest.yaml and plugin.yaml.
-serde_yaml = "0.9"
+serde_yaml.workspace = true
 
 # Windows process-liveness probe (pid_alive in swarm.rs): OpenProcess +
 # GetExitCodeProcess. Already in the lock as a transitive dep, so the

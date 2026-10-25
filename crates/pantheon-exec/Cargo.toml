@@ -6,23 +6,23 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 pantheon-api = { path = "../pantheon-api" }
 pantheon-storage = { path = "../pantheon-storage" }
 pantheon-secrets = { path = "../pantheon-secrets" }
-serde_yaml = "0.9"
+serde_yaml.workspace = true
 # Rust symbol/call graph for the code-intel group. `span-locations` gives
 # nodes real source lines (syn does not carry them by default).
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
-toml = "0.8"
-sha2 = "0.11"
-ureq = { version = "2", features = ["json", "proxy-from-env", "native-certs"] }
-libc = "0.2"
+toml.workspace = true
+sha2.workspace = true
+ureq = { workspace = true, features = ["json"] }
+libc.workspace = true
 # Skill import/export reads zip archives on every platform, so this stays
 # out of the Linux-only section below.
-zip = { version = "9", default-features = false, features = ["deflate"] }
+zip.workspace = true
 # Kernel-level confinement layers, applied in the child between fork and
 # exec. Linux-only: both are Linux kernel features.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -33,7 +33,7 @@ landlock = "0.4"
 tempfile = "3"
 
 [build-dependencies]
-sha2 = "0.11"
+sha2.workspace = true
 
 [lints]
 workspace = true

@@ -164,9 +164,7 @@ fn infer_value(raw: &str) -> Result<Value, String> {
 /// mismatches (e.g. a string where the schema wants an integer) fail the
 /// deserialization itself, so they fail loudly too.
 fn validate_key_against_schema(doc: &DocumentMut, key: &str, parts: &[&str]) -> Result<(), String> {
-    let input: toml::Value = doc
-        .to_string()
-        .parse()
+    let input: toml::Value = toml::from_str(&doc.to_string())
         .map_err(|e| format!("config: cannot parse edited config as TOML: {e}"))?;
     let cfg: pantheon_api::config::Config = input
         .clone()
@@ -672,7 +670,7 @@ mod tests {
         set_config_value(&path, "goal.max_iterations", "42").unwrap();
         // The written file parses as clean TOML with the value in place.
         let text = std::fs::read_to_string(&path).unwrap();
-        let parsed: toml::Value = text.parse().expect("torn config file");
+        let parsed: toml::Value = toml::from_str(&text).expect("torn config file");
         assert_eq!(parsed["goal"]["max_iterations"].as_integer(), Some(42));
         // No temp leftovers in the directory.
         let leftovers: Vec<_> = std::fs::read_dir(parent)

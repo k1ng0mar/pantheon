@@ -271,7 +271,7 @@ fn http_get(url: &str, api_key: Option<&str>) -> Result<HttpResponse, PantheonEr
     let agent = http_agent(url);
     let mut req = agent.get(url);
     if let Some(k) = api_key {
-        req = req.set("Authorization", &format!("Bearer {k}"));
+        req = req.header("Authorization", format!("Bearer {k}").as_str());
     }
     let resp = req.call().map_err(|e| http_conn_err("GET", url, e))?;
     read_response("GET", url, resp)
@@ -285,11 +285,11 @@ fn http_post(
     let agent = http_agent(url);
     let mut req = agent.post(url);
     if let Some(k) = api_key {
-        req = req.set("Authorization", &format!("Bearer {k}"));
+        req = req.header("Authorization", format!("Bearer {k}").as_str());
     }
     let resp = req
-        .set("Content-Type", "application/json")
-        .send_bytes(payload)
+        .header("Content-Type", "application/json")
+        .send(payload)
         .map_err(|e| http_conn_err("POST", url, e))?;
     read_response("POST", url, resp)
 }
@@ -297,16 +297,26 @@ fn http_post(
 /// One shared agent shape for the memory bridge: bounded overall timeout,
 /// rustls, no async runtime - the same posture as the provider plane.
 ///
-/// ureq 2.x ignores `NO_PROXY` entirely, so with `proxy-from-env` enabled a
-/// loopback URL would be sent to the environment proxy and die there.
-/// Loopback and `NO_PROXY` hosts are therefore detected here and get an
-/// agent with the env proxy disabled.
+/// Statuses are delivered as responses (`http_status_as_error(false)`) so
+/// that error bodies flow through the same capped read as successes.
+///
+/// ureq 3 picks up the environment proxy by default. Loopback and
+/// `NO_PROXY` hosts are still detected here and get an agent with the env
+/// proxy disabled outright - belt and braces against a proxy that would
+/// eat a loopback URL.
 fn http_agent(url: &str) -> ureq::Agent {
-    let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30));
+    let mut builder = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        );
     if bypasses_proxy(url) {
-        builder = builder.try_proxy_from_env(false);
+        builder = builder.proxy(None);
     }
-    builder.build()
+    builder.build().new_agent()
 }
 
 /// Whether requests to `url` must skip the environment proxy.
@@ -357,24 +367,21 @@ fn url_host(url: &str) -> Option<String> {
 }
 
 fn http_conn_err(method: &str, url: &str, e: ureq::Error) -> PantheonError {
-    match e {
-        ureq::Error::Status(code, resp) => {
-            let body = capped_body(&format!("{method} {url}"), resp).unwrap_or_default();
-            let parsed: ErrorResponse = serde_json::from_slice(&body).unwrap_or_default();
-            remote_error(&parsed, code, &format!("{method} {url}"))
-        }
-        e => merr("MEM_HTTP_CONN", format!("{method} {url}: {e}")),
-    }
+    merr("MEM_HTTP_CONN", format!("{method} {url}: {e}"))
 }
 
 /// Read a response body capped at [`crate::MAX_RESPONSE_BYTES`]. A buggy
 /// or hostile bridge streaming an unlimited body is a bounded
 /// `MEM_HTTP_OVERSIZE` error, not an unbounded buffer.
-fn capped_body(endpoint: &str, resp: ureq::Response) -> Result<Vec<u8>, PantheonError> {
+fn capped_body(
+    endpoint: &str,
+    mut resp: ureq::http::Response<ureq::Body>,
+) -> Result<Vec<u8>, PantheonError> {
     use std::io::Read;
     let status = resp.status();
     let mut reader = resp
-        .into_reader()
+        .body_mut()
+        .as_reader()
         .take(crate::MAX_RESPONSE_BYTES as u64 + 1);
     let mut body = Vec::new();
     reader
@@ -395,10 +402,10 @@ fn capped_body(endpoint: &str, resp: ureq::Response) -> Result<Vec<u8>, Pantheon
 fn read_response(
     method: &str,
     url: &str,
-    resp: ureq::Response,
+    resp: ureq::http::Response<ureq::Body>,
 ) -> Result<HttpResponse, PantheonError> {
     let endpoint = format!("{method} {url}");
-    let status = resp.status();
+    let status = resp.status().as_u16();
     let body = capped_body(&endpoint, resp)?;
     if status >= 400 {
         let parsed: ErrorResponse = serde_json::from_slice(&body).unwrap_or_default();

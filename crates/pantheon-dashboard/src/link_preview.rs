@@ -290,24 +290,32 @@ pub fn parse_preview_html(html: &str, base: &Url) -> Card {
 
 fn fetch_html(url: &Url) -> Result<(Url, String), PreviewError> {
     // Manual redirect loop so the SSRF guard runs on every hop.
-    let agent: ureq::Agent = ureq::AgentBuilder::new()
-        .timeout(FETCH_TIMEOUT)
-        .redirects(0)
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(FETCH_TIMEOUT))
+        .max_redirects(0)
+        .max_redirects_will_error(false)
         .user_agent(USER_AGENT)
-        .build();
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
     let mut current = url.clone();
     for _ in 0..=MAX_REDIRECTS {
         guard_url(current.as_str())?;
-        let resp = agent.get(current.as_str()).call().map_err(|e| match e {
-            ureq::Error::Status(code, _) => {
-                fail(502, "LINK_FETCH", format!("target returned HTTP {code}"))
-            }
-            ureq::Error::Transport(t) => fail(502, "LINK_FETCH", format!("fetch failed: {t}")),
-        })?;
-        let status = resp.status();
+        let resp = agent
+            .get(current.as_str())
+            .call()
+            .map_err(|e| fail(502, "LINK_FETCH", format!("fetch failed: {e}")))?;
+        let status = resp.status().as_u16();
         if (300..400).contains(&status) {
             let loc = resp
-                .header("Location")
+                .headers()
+                .get("Location")
+                .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| fail(502, "LINK_FETCH", "redirect without Location"))?;
             current = current
                 .join(loc)
@@ -322,7 +330,8 @@ fn fetch_html(url: &Url) -> Result<(Url, String), PreviewError> {
             ));
         }
         let mut body = String::new();
-        resp.into_reader()
+        resp.into_body()
+            .into_reader()
             .take(MAX_BODY_BYTES + 1)
             .read_to_string(&mut body)
             .map_err(|e| fail(502, "LINK_FETCH", format!("read failed: {e}")))?;

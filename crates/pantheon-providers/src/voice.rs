@@ -642,34 +642,35 @@ impl SttProvider for HttpStt {
         // instead of wedging the session thread forever.
         let mut request = crate::http::http_agent()
             .post(&url)
-            .set("content-type", &content_type);
+            .header("content-type", content_type.as_str());
         if !key.is_empty() {
             let (name, value) = crate::http::auth_header_pair(&key_header, &key);
-            request = request.set(&name, &value);
+            request = request.header(name.as_str(), value.as_str());
         }
-        let resp = request.send_bytes(&body).map_err(|e| match e {
-            ureq::Error::Status(code, resp) => {
-                let detail = error_snippet(resp);
-                let cause = if detail.is_empty() {
-                    format!("transcription endpoint: HTTP {code}")
-                } else {
-                    format!("transcription endpoint: HTTP {code}: {detail}")
-                };
-                verr(
-                    "STT_HTTP",
-                    cause,
-                    !(400..500).contains(&code),
-                    "check the [stt] provider, model name, and API key",
-                )
-            }
-            e => verr(
+        let resp = request.send(&body).map_err(|e| {
+            verr(
                 "STT_HTTP",
                 format!("transcription endpoint: {e}"),
                 true,
                 "check network reachability of the [stt] endpoint",
-            ),
+            )
         })?;
-        let text_body = resp.into_string().map_err(|e| {
+        let code = resp.status().as_u16();
+        if code >= 400 {
+            let detail = error_snippet(resp);
+            let cause = if detail.is_empty() {
+                format!("transcription endpoint: HTTP {code}")
+            } else {
+                format!("transcription endpoint: HTTP {code}: {detail}")
+            };
+            return Err(verr(
+                "STT_HTTP",
+                cause,
+                !(400..500).contains(&code),
+                "check the [stt] provider, model name, and API key",
+            ));
+        }
+        let text_body = resp.into_body().read_to_string().map_err(|e| {
             verr(
                 "STT_HTTP",
                 format!("transcription response read: {e}"),
@@ -758,37 +759,39 @@ impl TtsProvider for HttpTts {
         // Same bound as STT: no provider-plane call runs without a deadline.
         let mut request = crate::http::http_agent()
             .post(&url)
-            .set("content-type", "application/json");
+            .header("content-type", "application/json");
         if !key.is_empty() {
             let (name, value) = crate::http::auth_header_pair(&key_header, &key);
-            request = request.set(&name, &value);
+            request = request.header(name.as_str(), value.as_str());
         }
         let resp = request
             .send_json(speech_payload(&req, &self.model))
-            .map_err(|e| match e {
-                ureq::Error::Status(code, resp) => {
-                    let detail = error_snippet(resp);
-                    let cause = if detail.is_empty() {
-                        format!("speech endpoint: HTTP {code}")
-                    } else {
-                        format!("speech endpoint: HTTP {code}: {detail}")
-                    };
-                    verr(
-                        "TTS_HTTP",
-                        cause,
-                        !(400..500).contains(&code),
-                        "check the [tts] provider, model name, and API key",
-                    )
-                }
-                e => verr(
+            .map_err(|e| {
+                verr(
                     "TTS_HTTP",
                     format!("speech endpoint: {e}"),
                     true,
                     "check network reachability of the [tts] endpoint",
-                ),
+                )
             })?;
+        let code = resp.status().as_u16();
+        if code >= 400 {
+            let detail = error_snippet(resp);
+            let cause = if detail.is_empty() {
+                format!("speech endpoint: HTTP {code}")
+            } else {
+                format!("speech endpoint: HTTP {code}: {detail}")
+            };
+            return Err(verr(
+                "TTS_HTTP",
+                cause,
+                !(400..500).contains(&code),
+                "check the [tts] provider, model name, and API key",
+            ));
+        }
         let mut bytes = Vec::new();
-        resp.into_reader()
+        resp.into_body()
+            .into_reader()
             .read_to_end(&mut bytes)
             .map_err(|e| verr("TTS_HTTP", format!("speech body read: {e}"), true, "retry"))?;
         if bytes.is_empty() {
@@ -1322,8 +1325,9 @@ fn require_key(
 /// First ~300 chars of a vendor error body, whitespace-collapsed.
 /// Non-2xx responses carry the actionable detail (bad key, unknown
 /// model, quota exhausted); the status code alone never does.
-fn error_snippet(resp: ureq::Response) -> String {
-    resp.into_string()
+fn error_snippet(mut resp: ureq::http::Response<ureq::Body>) -> String {
+    resp.body_mut()
+        .read_to_string()
         .unwrap_or_default()
         .chars()
         .take(300)
@@ -1344,42 +1348,46 @@ fn post_bytes(
 ) -> Result<Vec<u8>, PantheonError> {
     let mut request = crate::http::http_agent()
         .post(url)
-        .set("content-type", content_type);
+        .header("content-type", content_type);
     for (k, v) in headers {
-        request = request.set(k, v);
+        request = request.header(*k, *v);
     }
     let code = format!("{area}_HTTP");
-    let resp = request.send_bytes(body).map_err(|e| match e {
-        ureq::Error::Status(status, resp) => {
-            let detail = error_snippet(resp);
-            let cause = if detail.is_empty() {
-                format!("endpoint: HTTP {status}")
-            } else {
-                format!("endpoint: HTTP {status}: {detail}")
-            };
-            verr(
-                &code,
-                cause,
-                !(400..500).contains(&status),
-                "check the provider, model name, and API key",
-            )
-        }
-        e => verr(
+    let resp = request.send(body).map_err(|e| {
+        verr(
             &code,
             format!("endpoint: {e}"),
             true,
             "check network reachability of the endpoint",
-        ),
-    })?;
-    let mut bytes = Vec::new();
-    resp.into_reader().read_to_end(&mut bytes).map_err(|e| {
-        verr(
-            "VOICE_HTTP_READ",
-            format!("response read: {e}"),
-            true,
-            "retry",
         )
     })?;
+    let status = resp.status().as_u16();
+    if status >= 400 {
+        let detail = error_snippet(resp);
+        let cause = if detail.is_empty() {
+            format!("endpoint: HTTP {status}")
+        } else {
+            format!("endpoint: HTTP {status}: {detail}")
+        };
+        return Err(verr(
+            &code,
+            cause,
+            !(400..500).contains(&status),
+            "check the provider, model name, and API key",
+        ));
+    }
+    let mut bytes = Vec::new();
+    resp.into_body()
+        .into_reader()
+        .read_to_end(&mut bytes)
+        .map_err(|e| {
+            verr(
+                "VOICE_HTTP_READ",
+                format!("response read: {e}"),
+                true,
+                "retry",
+            )
+        })?;
     Ok(bytes)
 }
 
@@ -1688,32 +1696,34 @@ impl SttProvider for AssemblyAiStt {
             std::thread::sleep(std::time::Duration::from_secs(2));
             let mut request = crate::http::http_agent().get(&poll_url);
             for (k, v) in &auth {
-                request = request.set(k, v);
+                request = request.header(*k, *v);
             }
-            let resp = request.call().map_err(|e| match e {
-                ureq::Error::Status(status, resp) => {
-                    let detail = error_snippet(resp);
-                    let cause = if detail.is_empty() {
-                        format!("assemblyai poll: HTTP {status}")
-                    } else {
-                        format!("assemblyai poll: HTTP {status}: {detail}")
-                    };
-                    verr(
-                        "STT_HTTP",
-                        cause,
-                        !(400..500).contains(&status),
-                        "check the API key",
-                    )
-                }
-                e => verr(
+            let resp = request.call().map_err(|e| {
+                verr(
                     "STT_HTTP",
                     format!("assemblyai poll: {e}"),
                     true,
                     "check network reachability",
-                ),
+                )
             })?;
+            let status = resp.status().as_u16();
+            if status >= 400 {
+                let detail = error_snippet(resp);
+                let cause = if detail.is_empty() {
+                    format!("assemblyai poll: HTTP {status}")
+                } else {
+                    format!("assemblyai poll: HTTP {status}: {detail}")
+                };
+                return Err(verr(
+                    "STT_HTTP",
+                    cause,
+                    !(400..500).contains(&status),
+                    "check the API key",
+                ));
+            }
             let mut bytes = Vec::new();
-            resp.into_reader()
+            resp.into_body()
+                .into_reader()
                 .read_to_end(&mut bytes)
                 .map_err(|e| verr("VOICE_HTTP_READ", format!("poll read: {e}"), true, "retry"))?;
             let body_str = String::from_utf8_lossy(&bytes);

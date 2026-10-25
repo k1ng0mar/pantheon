@@ -9,18 +9,18 @@ authors.workspace = true
 pantheon-api = { path = "../pantheon-api" }
 pantheon-agent = { path = "../pantheon-agent" }
 pantheon-secrets = { path = "../pantheon-secrets" }
-serde_json = "1"
-serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+serde = { workspace = true, features = ["derive"] }
 # The provider catalog is YAML-backed.
-serde_yaml = "0.9"
-ureq = { version = "2", default-features = false, features = ["tls", "json", "proxy-from-env", "native-certs"] }
-url = "2"
-hmac = "0.12"
-sha2 = "0.10"
+serde_yaml.workspace = true
+ureq = { workspace = true, features = ["json"] }
+url.workspace = true
+hmac = "0.13"
+sha2.workspace = true
 hex = "0.4"
 
 [dev-dependencies]
-toml = "0.8"
+toml.workspace = true
 
 
 [lints]

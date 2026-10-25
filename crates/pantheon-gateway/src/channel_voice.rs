@@ -16,9 +16,9 @@
 //!
 //! Hygiene: secrets never reach logs or the ledger. Every error surfaced
 //! from this module carries a code or a static message - never a URL
-//! (Telegram file URLs embed the bot token; ureq errors echo URLs) and
-//! never key material. Downloaded audio is staged to the temp dir and
-//! deleted on every path via [`TempAudio`]'s `Drop`.
+//! (Telegram file URLs embed the bot token, and transport error text is
+//! not ours to audit) and never key material. Downloaded audio is staged
+//! to the temp dir and deleted on every path via [`TempAudio`]'s `Drop`.
 
 use crate::channel::{ChannelError, ChannelEvent};
 use pantheon_api::config::{ToolGroup, ToolsSection, VoiceSection};
@@ -314,12 +314,15 @@ pub fn ext_for_filename(name: &str) -> String {
 }
 
 /// Classify a ureq failure without echoing the URL: Telegram file URLs
-/// embed the bot token and ureq's `Display` prints the URL, so the raw
-/// error must never reach a `ChannelError` message or log line.
+/// embed the bot token, and transport error text is outside our control,
+/// so the raw error must never reach a `ChannelError` message or log
+/// line. The channel agents run with statuses-as-responses, so in
+/// practice only transport failures land here; the status arm stays as a
+/// guard in case a future agent flips that setting.
 pub(crate) fn ureq_kind(e: &ureq::Error) -> String {
     match e {
-        ureq::Error::Status(code, _) => format!("http {code}"),
-        ureq::Error::Transport(_) => "transport error".to_string(),
+        ureq::Error::StatusCode(code) => format!("http {code}"),
+        _ => "transport error".to_string(),
     }
 }
 
@@ -335,8 +338,14 @@ pub(crate) fn download_capped(
         .get(url)
         .call()
         .map_err(|_| ChannelError::new(code_prefix, "download failed"))?;
+    // HTTP failures map to the same static message as transport ones:
+    // the URL (pre-signed or token-bearing) must stay out of the text.
+    if resp.status().as_u16() >= 400 {
+        return Err(ChannelError::new(code_prefix, "download failed"));
+    }
     let mut body = Vec::new();
-    resp.into_reader()
+    resp.into_body()
+        .into_reader()
         .take(cap as u64 + 1)
         .read_to_end(&mut body)
         .map_err(|_| ChannelError::new(code_prefix, "download: body read failed"))?;
@@ -349,8 +358,9 @@ pub(crate) fn download_capped(
     Ok(body)
 }
 
-/// Minimal multipart/form-data encoder (ureq 2 has no multipart
-/// support). Returns `(content_type_header_value, body)`.
+/// Minimal multipart/form-data encoder: hand-rolled so the body is plain
+/// bytes we control exactly (no streaming wrappers, one allocation).
+/// Returns `(content_type_header_value, body)`.
 pub(crate) fn multipart(
     fields: &[(&str, &str)],
     file_field: &str,

@@ -322,13 +322,34 @@ fn client_id_for(prov: OAuthProvider) -> Result<String, SecretsError> {
 }
 
 /// ureq agent for token and API calls. Honors proxy-from-env (the
-/// workspace standard) so sandboxed egress keeps working; tests build
-/// their own agent without a proxy and pass it to the `_with` variants.
+/// workspace standard, on by default in ureq 3) so sandboxed egress keeps
+/// working; tests build their own agent without a proxy and pass it to the
+/// `_with` variants. HTTP statuses are returned as responses, not errors,
+/// because every call site reads the error body.
 fn http_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().try_proxy_from_env(true).build()
+    http_agent_with(std::time::Duration::from_secs(30))
+}
+
+/// [`http_agent`] with an explicit overall budget. ureq 2 gave every
+/// agent an implicit 30s connect timeout; ureq 3 has none by default, so
+/// the deadline is pinned here: a wedged token endpoint must fail the
+/// exchange, not hang the session thread. Tests drive a short budget to
+/// pin exactly that contract.
+fn http_agent_with(timeout: std::time::Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent()
 }
 
 /// Parsed token endpoint response. Field names follow RFC 6749.
+#[derive(Debug)]
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
@@ -363,7 +384,7 @@ fn post_token(
     params: &[(&str, &str)],
 ) -> Result<TokenResponse, SecretsError> {
     validate_name(prov_id)?;
-    let mut req = agent.post(token_url).set("Accept", "application/json");
+    let mut req = agent.post(token_url).header("Accept", "application/json");
     if token_auth == TokenAuth::BasicOptional {
         // Notion confidential integrations authenticate the token exchange
         // with HTTP Basic. Public integrations leave the env var unset and
@@ -375,19 +396,22 @@ fn post_token(
                 // never logged. It is NOT registered for redaction: it is a
                 // static credential the model must never be able to trigger
                 // the use of, let alone see.
-                req = req.set("Authorization", &format!("Basic {creds}"));
+                req = req.header("Authorization", format!("Basic {creds}").as_str());
             }
         }
     }
-    let resp = req.send_form(params).map_err(|e| match e {
-        ureq::Error::Status(code, r) => {
-            let detail = r.into_string().unwrap_or_default();
-            let detail: String = detail.chars().take(300).collect();
-            SecretsError::Backend(format!("{prov_id} token endpoint error {code}: {detail}"))
-        }
-        other => SecretsError::Backend(format!("{prov_id} token request failed: {other}")),
-    })?;
-    let body: serde_json::Value = resp.into_json().map_err(|e| {
+    let mut resp = req
+        .send_form(params.iter().copied())
+        .map_err(|e| SecretsError::Backend(format!("{prov_id} token request failed: {e}")))?;
+    if resp.status().as_u16() >= 400 {
+        let code = resp.status().as_u16();
+        let detail = resp.body_mut().read_to_string().unwrap_or_default();
+        let detail: String = detail.chars().take(300).collect();
+        return Err(SecretsError::Backend(format!(
+            "{prov_id} token endpoint error {code}: {detail}"
+        )));
+    }
+    let body: serde_json::Value = resp.body_mut().read_json().map_err(|e| {
         SecretsError::Backend(format!("{prov_id} token endpoint returned non-JSON: {e}"))
     })?;
     if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
@@ -527,11 +551,11 @@ fn base64url_nopad(data: &[u8]) -> String {
 /// Generate a PKCE verifier/challenge pair (S256). The verifier is 64
 /// characters from the RFC 7636 unreserved set.
 pub fn pkce_pair() -> (String, String) {
-    use rand::Rng;
+    use rand::RngExt;
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let verifier: String = (0..64)
-        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
+        .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
         .collect();
     let challenge = pkce_challenge(&verifier);
     (verifier, challenge)
@@ -545,11 +569,11 @@ fn pkce_challenge(verifier: &str) -> String {
 /// Unpredictable `state` for the authorization request (CSRF protection,
 /// RFC 6749 §10.12).
 fn random_state() -> String {
-    use rand::Rng;
+    use rand::RngExt;
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..32)
-        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
+        .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
         .collect()
 }
 
@@ -775,29 +799,42 @@ impl SecretsBroker {
         }
         let token = OAuthStore::new(self).ensure_valid_token(app)?;
         let agent = http_agent();
-        let mut req = agent
-            .request(&method, url)
-            .set("Authorization", &format!("Bearer {}", token.expose()))
-            .set("Accept", "application/json");
-        for (k, v) in prov.extra_headers {
-            req = req.set(k, v);
+        // force_send_body unifies the builder typestate so the validated
+        // method set can be built in one match; bodies without a body send
+        // empty, which no API distinguishes from v2's `.call()`.
+        let mut req = match method.as_str() {
+            "GET" => agent.get(url).force_send_body(),
+            "DELETE" => agent.delete(url).force_send_body(),
+            "POST" => agent.post(url),
+            "PUT" => agent.put(url),
+            _ => agent.patch(url),
         }
-        let result = match body {
-            Some(b) => req.set("Content-Type", "application/json").send_string(b),
-            None => req.call(),
-        };
-        let resp = result.map_err(|e| match e {
-            ureq::Error::Status(code, r) => {
-                let detail = r.into_string().unwrap_or_default();
-                let detail: String = detail.chars().take(300).collect();
-                SecretsError::Backend(format!("{app} api error {code}: {detail}"))
-            }
-            other => SecretsError::Backend(format!("{app} request failed: {other}")),
-        })?;
+        .header(
+            "Authorization",
+            format!("Bearer {}", token.expose()).as_str(),
+        )
+        .header("Accept", "application/json");
+        for (k, v) in prov.extra_headers {
+            req = req.header(*k, *v);
+        }
+        let mut resp = match body {
+            Some(b) => req.header("Content-Type", "application/json").send(b),
+            None => req.send_empty(),
+        }
+        .map_err(|e| SecretsError::Backend(format!("{app} request failed: {e}")))?;
+        if resp.status().as_u16() >= 400 {
+            let code = resp.status().as_u16();
+            let detail = resp.body_mut().read_to_string().unwrap_or_default();
+            let detail: String = detail.chars().take(300).collect();
+            return Err(SecretsError::Backend(format!(
+                "{app} api error {code}: {detail}"
+            )));
+        }
         // The response body travels back through the tool-result path,
         // which the session scrubs against the redaction registry: even a
         // misbehaving API that echoed the token could not reach the model.
-        resp.into_string()
+        resp.body_mut()
+            .read_to_string()
             .map_err(|e| SecretsError::Backend(format!("{app} read response: {e}")))
     }
 }
@@ -988,9 +1025,13 @@ mod tests {
             token_url: leaked,
             ..GITHUB
         };
-        // No proxy: the fake endpoint is loopback, and ureq has no
-        // no_proxy support (its env proxy would refuse the address).
-        let agent = ureq::AgentBuilder::new().try_proxy_from_env(false).build();
+        // No proxy: the fake endpoint is loopback, and the environment
+        // proxy (on by default in ureq 3) would refuse the address.
+        let agent = ureq::Agent::config_builder()
+            .proxy(None)
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
         let token =
             refresh_access_token_with(&agent, prov, "test-client-id", "old-refresh").unwrap();
         assert_eq!(token.access_token.expose(), "fresh-access-1");
@@ -1014,7 +1055,11 @@ mod tests {
             token_url: leaked,
             ..GOOGLE
         };
-        let agent = ureq::AgentBuilder::new().try_proxy_from_env(false).build();
+        let agent = ureq::Agent::config_builder()
+            .proxy(None)
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
         let token = refresh_access_token_with(&agent, prov, "cid", "kept-refresh").unwrap();
         assert_eq!(token.refresh_token.unwrap().expose(), "kept-refresh");
     }
@@ -1029,7 +1074,11 @@ mod tests {
             token_url: leaked,
             ..SPOTIFY
         };
-        let agent = ureq::AgentBuilder::new().try_proxy_from_env(false).build();
+        let agent = ureq::Agent::config_builder()
+            .proxy(None)
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
         let err = refresh_access_token_with(&agent, prov, "cid", "bad").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("invalid_grant"), "{msg}");
@@ -1073,5 +1122,51 @@ mod tests {
             assert!(p.client_id_env.starts_with("PANTHEON_OAUTH_"));
             assert!(!p.api_base.is_empty());
         }
+    }
+
+    #[test]
+    fn token_exchange_is_bounded_by_the_agent_timeout() {
+        // The timeout contract this pins: every agent built by
+        // `http_agent_with` carries a deadline, so an endpoint that
+        // accepts and never answers fails the exchange instead of
+        // hanging the caller forever (ureq 3 ships no default timeout;
+        // ureq 2's implicit 30s connect bound is what this restores).
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            // Accept and HOLD the streams: dropping an accepted socket
+            // closes it, which reads as an instant "peer disconnected"
+            // instead of the wedged-server shape under test.
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                match listener.accept() {
+                    Ok((stream, _)) => held.push(stream),
+                    Err(_) => break,
+                }
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/token");
+        let agent = http_agent_with(Duration::from_millis(300));
+        let start = std::time::Instant::now();
+        let err = post_token(
+            &agent,
+            "github",
+            &url,
+            TokenAuth::Pkce,
+            "cid",
+            &[("grant_type", "refresh_token")],
+        )
+        .unwrap_err();
+        assert!(
+            start.elapsed() >= Duration::from_millis(250),
+            "error arrived before the budget expired; something other than \
+             the deadline failed (took {:?}, err: {err})",
+            start.elapsed()
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "wedged endpoint must fail within the budget, took {:?} (err: {err})",
+            start.elapsed()
+        );
     }
 }
