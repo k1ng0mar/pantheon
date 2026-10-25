@@ -28,8 +28,7 @@ fn read_doc(data_dir: &Path) -> Result<(Value, String), Response> {
     let path = config_path(data_dir);
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| err_json(404, "CONFIG", &format!("read {}: {e}", path.display())))?;
-    let doc: Value = raw
-        .parse()
+    let doc: Value = toml::from_str(&raw)
         .map_err(|e| err_json(400, "CONFIG", &format!("config.toml does not parse: {e}")))?;
     Ok((doc, raw))
 }
@@ -479,7 +478,7 @@ pub fn import(app: &App, req: &Request) -> Response {
         Some(t) => t,
         None => return bad_json("body must be {toml: \"...\", confirm?}"),
     };
-    let new_doc: Value = match text.parse() {
+    let new_doc: Value = match toml::from_str(text) {
         Ok(d) => d,
         Err(e) => return bad_json(&format!("TOML does not parse: {e}")),
     };

@@ -13,32 +13,35 @@ use std::time::Duration;
 /// Tavily included, go through [`post_json`] / [`get_json`]).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// ureq 2.12 has no dedicated timeout error kind: a timeout surfaces as a
-/// transport error whose source chain bottoms out at an `io::Error` with
-/// `ErrorKind::TimedOut`. Walk the chain so WEBSEARCH_TIMEOUT is accurate.
+/// ureq 3 reports timeouts as a dedicated `Error::Timeout` variant; any
+/// error funneled through an `io::Error` keeps the `TimedOut` kind. Cover
+/// both so WEBSEARCH_TIMEOUT is accurate.
 pub fn is_timeout(e: &ureq::Error) -> bool {
-    let ureq::Error::Transport(t) = e else {
-        return false;
-    };
-    let mut cur: Option<&dyn std::error::Error> = Some(t);
-    while let Some(err) = cur {
-        if let Some(ioe) = err.downcast_ref::<std::io::Error>() {
-            if ioe.kind() == IoKind::TimedOut {
-                return true;
-            }
-        }
-        cur = err.source();
+    match e {
+        ureq::Error::Timeout(_) => true,
+        ureq::Error::Io(ioe) => ioe.kind() == IoKind::TimedOut,
+        _ => false,
     }
-    false
 }
 
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(REQUEST_TIMEOUT).build()
+    ureq::Agent::config_builder()
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        .max_redirects(5)
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent()
 }
 
-fn status_error(provider: &str, code: u16, r: ureq::Response) -> SearchError {
+fn status_error(provider: &str, code: u16, r: ureq::http::Response<ureq::Body>) -> SearchError {
     let detail: String = r
-        .into_string()
+        .into_body()
+        .read_to_string()
         .unwrap_or_default()
         .chars()
         .take(300)
@@ -55,21 +58,24 @@ pub fn post_json(
 ) -> Result<String, SearchError> {
     let mut req = agent().post(url);
     for (k, v) in headers {
-        req = req.set(k, v);
+        req = req.header(*k, *v);
     }
     let response = match req.send_json(body) {
         Ok(r) => r,
         Err(e) if is_timeout(&e) => return Err(SearchError::Timeout),
-        Err(ureq::Error::Status(code, r)) => return Err(status_error(provider, code, r)),
-        Err(ureq::Error::Transport(t)) => {
-            let msg = t.message().unwrap_or("connection failed");
+        Err(e) => {
             return Err(SearchError::RequestFailed(format!(
-                "{provider} transport error: {msg}"
+                "{provider} transport error: {e}"
             )));
         }
     };
+    let code = response.status().as_u16();
+    if code >= 400 {
+        return Err(status_error(provider, code, response));
+    }
     response
-        .into_string()
+        .into_body()
+        .read_to_string()
         .map_err(|e| SearchError::BadResponse(format!("could not read response body: {e}")))
 }
 
@@ -81,21 +87,24 @@ pub fn get_json(
 ) -> Result<String, SearchError> {
     let mut req = agent().get(url);
     for (k, v) in headers {
-        req = req.set(k, v);
+        req = req.header(*k, *v);
     }
     let response = match req.call() {
         Ok(r) => r,
         Err(e) if is_timeout(&e) => return Err(SearchError::Timeout),
-        Err(ureq::Error::Status(code, r)) => return Err(status_error(provider, code, r)),
-        Err(ureq::Error::Transport(t)) => {
-            let msg = t.message().unwrap_or("connection failed");
+        Err(e) => {
             return Err(SearchError::RequestFailed(format!(
-                "{provider} transport error: {msg}"
+                "{provider} transport error: {e}"
             )));
         }
     };
+    let code = response.status().as_u16();
+    if code >= 400 {
+        return Err(status_error(provider, code, response));
+    }
     response
-        .into_string()
+        .into_body()
+        .read_to_string()
         .map_err(|e| SearchError::BadResponse(format!("could not read response body: {e}")))
 }
 

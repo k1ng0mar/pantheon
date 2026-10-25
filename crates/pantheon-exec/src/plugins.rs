@@ -600,18 +600,28 @@ pub struct CatalogEntry {
 /// error so the CLI can show a helpful message.
 pub fn fetch_catalog() -> Result<CatalogResponse, PantheonError> {
     let url = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json";
-    let resp = ureq::get(url)
-        .timeout(std::time::Duration::from_secs(10))
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
+    let resp = agent
+        .get(url)
         .call()
         .map_err(|e| merr("PLUGIN_CATALOG_FETCH", format!("{e}")))?;
-    if !(200..300).contains(&resp.status()) {
+    if !(200..300).contains(&resp.status().as_u16()) {
         return Err(merr(
             "PLUGIN_CATALOG_HTTP",
             format!("catalog returned HTTP {}", resp.status()),
         ));
     }
     let body = resp
-        .into_string()
+        .into_body()
+        .read_to_string()
         .map_err(|e| merr("PLUGIN_CATALOG_BODY", format!("{e}")))?;
     serde_json::from_str::<CatalogResponse>(&body)
         .map_err(|e| merr("PLUGIN_CATALOG_DECODE", format!("{e}")))
@@ -1125,7 +1135,7 @@ fn write_plugin_enabled(
     }
     let path = data_dir.join("config.toml");
     let mut doc: toml::Value = match std::fs::read_to_string(&path) {
-        Ok(text) => text.parse().map_err(|e| {
+        Ok(text) => toml::from_str::<toml::Value>(&text).map_err(|e| {
             merr(
                 "PLUGIN_CONFIG_PARSE",
                 format!("parse {}: {e}", path.display()),

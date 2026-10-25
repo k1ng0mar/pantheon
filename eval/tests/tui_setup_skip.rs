@@ -122,7 +122,7 @@ fn recommended_answers() -> SetupAnswers {
 fn read_config(data_dir: &Path) -> toml::Value {
     let text = std::fs::read_to_string(data_dir.join("config.toml"))
         .expect("run_setup must write config.toml");
-    text.parse::<toml::Value>().expect("config.toml must parse")
+    toml::from_str::<toml::Value>(&text).expect("config.toml must parse")
 }
 
 #[test]

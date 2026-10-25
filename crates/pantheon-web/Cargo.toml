@@ -16,9 +16,9 @@ pantheon-api = { path = "../pantheon-api" }
 pantheon-exec = { path = "../pantheon-exec" }
 pantheon-secrets = { path = "../pantheon-secrets" }
 pantheon-tools = { path = "../pantheon-tools" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-ureq = { version = "2", default-features = false, features = ["tls", "json", "proxy-from-env", "native-certs"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+ureq = { workspace = true, features = ["json"] }
 # Native CDP backend (chromiumoxide) + the shared CDP driver used by the
 # Steel/Browserbase backends. Pinned exact: CDP schema drift
 # broke 0.6 against Chrome 142, so the version is a deliberate pin, not a

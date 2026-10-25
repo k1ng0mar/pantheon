@@ -48,9 +48,9 @@ pub use pantheon_api::logging::now_ms;
 /// the takeover holder; never logged. (The dashboard token is the real
 /// authentication boundary; the lease id distinguishes holders.)
 pub fn new_lease_id() -> String {
-    use rand::RngCore;
+    use rand::Rng;
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     let mut s = String::with_capacity(32);
     for b in bytes {
         s.push_str(&format!("{b:02x}"));

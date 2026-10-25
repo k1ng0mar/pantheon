@@ -61,15 +61,22 @@ impl FetchError {
 /// HTTPS GET with a ~10s timeout.
 pub fn fetch_live_models(base_url: &str) -> Result<Vec<LiveModel>, FetchError> {
     let url = models_url(base_url);
-    let resp = ureq::get(&url)
-        .timeout(Duration::from_secs(10))
-        .call()
-        .map_err(|e| match e {
-            ureq::Error::Status(code, _) => classify_status(code),
-            _ => FetchError::Unreachable(e.to_string()),
-        })?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
+    let resp = agent.get(&url).call().map_err(|e| match e {
+        ureq::Error::StatusCode(code) => classify_status(code),
+        e => FetchError::Unreachable(e.to_string()),
+    })?;
     let body = resp
-        .into_string()
+        .into_body()
+        .read_to_string()
         .map_err(|e| FetchError::Unreachable(e.to_string()))?;
     parse_models_body(&body)
 }
@@ -95,29 +102,36 @@ pub fn fetch_live_models_keyed(
     mode: ApiMode,
 ) -> Result<Vec<LiveModel>, FetchError> {
     let url = models_url(base_url);
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(15))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(15)))
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
     let mut req = agent.get(&url);
     let key = key.trim();
     if !key.is_empty() {
         match mode {
             ApiMode::Anthropic => {
                 req = req
-                    .set("x-api-key", key)
-                    .set("anthropic-version", ANTHROPIC_VERSION);
+                    .header("x-api-key", key)
+                    .header("anthropic-version", ANTHROPIC_VERSION);
             }
             ApiMode::OpenAi => {
-                req = req.set("Authorization", &format!("Bearer {key}"));
+                req = req.header("Authorization", format!("Bearer {key}").as_str());
             }
         }
     }
     let resp = req.call().map_err(|e| match e {
-        ureq::Error::Status(code, _) => classify_status(code),
-        _ => FetchError::Unreachable(e.to_string()),
+        ureq::Error::StatusCode(code) => classify_status(code),
+        e => FetchError::Unreachable(e.to_string()),
     })?;
     let body = resp
-        .into_string()
+        .into_body()
+        .read_to_string()
         .map_err(|e| FetchError::Unreachable(e.to_string()))?;
     parse_models_body(&body)
 }

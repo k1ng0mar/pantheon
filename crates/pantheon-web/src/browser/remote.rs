@@ -141,25 +141,38 @@ pub(crate) fn post_json_raw(
     body: &serde_json::Value,
     timeout_secs: u64,
 ) -> Result<serde_json::Value, HttpError> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(timeout_secs.max(1)))
-        .build();
+    // One overall budget (connect through body read); statuses surface as
+    // responses, not errors, so the status arm below can read the body.
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(timeout_secs.max(1))))
+        .max_redirects(5)
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
     let mut req = agent.post(url);
     for (k, v) in headers {
-        req = req.set(k, v);
+        req = req.header(*k, *v);
     }
-    let resp = req.send_json(body.clone()).map_err(|e| match e {
-        ureq::Error::Status(code, resp) => {
-            let body_snip = resp
-                .into_string()
-                .unwrap_or_default()
-                .chars()
-                .take(500)
-                .collect::<String>();
-            HttpError::Status(code, body_snip)
-        }
-        ureq::Error::Transport(t) => HttpError::Transport(t.to_string()),
-    })?;
-    resp.into_json::<serde_json::Value>()
+    let resp = req
+        .send_json(body.clone())
+        .map_err(|e| HttpError::Transport(e.to_string()))?;
+    let code = resp.status().as_u16();
+    if code >= 400 {
+        let body_snip = resp
+            .into_body()
+            .read_to_string()
+            .unwrap_or_default()
+            .chars()
+            .take(500)
+            .collect::<String>();
+        return Err(HttpError::Status(code, body_snip));
+    }
+    resp.into_body()
+        .read_json::<serde_json::Value>()
         .map_err(|e| HttpError::Decode(e.to_string()))
 }

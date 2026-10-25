@@ -50,7 +50,7 @@ fn read_config_doc(data_dir: &Path) -> Result<toml::Value, Response> {
     let path = data_dir.join("config.toml");
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| err_json(404, "PROFILES", &format!("read {}: {e}", path.display())))?;
-    raw.parse::<toml::Value>()
+    toml::from_str::<toml::Value>(&raw)
         .map_err(|e| err_json(400, "PROFILES", &format!("config.toml does not parse: {e}")))
 }
 
@@ -241,4 +241,48 @@ pub fn delete_profile(app: &App, name: &str) -> Response {
         }
     }
     json_ok(serde_json::json!({"ok": true, "deleted": name}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// read_config_doc is the production TOML-document parse this file
+    /// does; the toml 1.x migration showed such sites can silently change
+    /// meaning (`str.parse::<toml::Value>()` became a single-value
+    /// parse), so the round-trip is pinned here.
+    #[test]
+    fn read_config_doc_parses_documents_and_rejects_garbage() {
+        let d = std::env::temp_dir().join(format!(
+            "pantheon-dash-profiles-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("config.toml"),
+            "[model]\nprovider = \"openai\"\n\n[agents.coder]\npersona = \"coder.md\"\n",
+        )
+        .unwrap();
+        let doc = match read_config_doc(&d) {
+            Ok(v) => v,
+            Err(_) => panic!("document config must parse"),
+        };
+        let table = match profile_table(&doc, "coder") {
+            Ok(t) => t,
+            Err(_) => panic!("profile present"),
+        };
+        assert_eq!(
+            declared_path(table, "persona"),
+            Some("coder.md".to_string())
+        );
+        assert!(profile_table(&doc, "missing").is_err());
+
+        std::fs::write(d.join("config.toml"), "not [ toml").unwrap();
+        assert!(
+            read_config_doc(&d).is_err(),
+            "garbage must be a 400, not a panic or silent Ok"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

@@ -7,6 +7,7 @@
 //! The helper survives the swap because it has its own copy of the binary in
 //! memory. This lets even old pantheon binaries self-update to new versions.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -263,12 +264,17 @@ fn release_asset(repo: &str, tag: &str, name: &str) -> (String, String) {
 }
 
 fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let resp = ureq::get(url)
-        .timeout(REQUEST_TIMEOUT)
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        .build()
+        .into();
+    let mut resp = agent
+        .get(url)
         .call()
         .map_err(|e| format!("download failed: {e}"))?;
     let mut buf = Vec::new();
-    resp.into_reader()
+    resp.body_mut()
+        .as_reader()
         .read_to_end(&mut buf)
         .map_err(|e| format!("download failed: {e}"))?;
     Ok(buf)
@@ -276,12 +282,17 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
 
 fn verify_checksum(url: &str, bytes: &[u8]) -> Result<(), String> {
     let sha_url = format!("{url}.sha256");
-    let resp = ureq::get(&sha_url)
-        .timeout(REQUEST_TIMEOUT)
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        .build()
+        .into();
+    let mut resp = agent
+        .get(&sha_url)
         .call()
         .map_err(|e| format!("verify failed: {e}"))?;
     let text = resp
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|_| "verify failed: cannot read checksum".to_string())?;
     let expected = text
         .split_whitespace()

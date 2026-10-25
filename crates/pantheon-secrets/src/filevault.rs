@@ -12,8 +12,7 @@ use crate::value::SecretValue;
 use crate::vault::SecretVault;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -123,7 +122,7 @@ fn load_or_create_key(path: &Path) -> Result<Zeroizing<[u8; 32]>, SecretsError> 
         Ok(Zeroizing::new(key))
     } else {
         let mut key = Zeroizing::new([0u8; 32]);
-        OsRng.fill_bytes(key.as_mut());
+        rand::rng().fill_bytes(key.as_mut());
         write_key_file(path, &key)?;
         Ok(key)
     }
@@ -184,7 +183,10 @@ pub(crate) fn decrypt_file(
         return Err(SecretsError::Crypto("bad nonce length".into()));
     }
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(&nonce), ct.as_ref())
+        .decrypt(
+            &Nonce::try_from(nonce.as_slice()).expect("nonce length checked above"),
+            ct.as_ref(),
+        )
         .map_err(|_| SecretsError::Crypto("decryption failed (tampered or wrong key)".into()))?;
     let payload: Payload = serde_json::from_slice(&plaintext)
         .map_err(|e| SecretsError::Crypto(format!("bad payload: {e}")))?;
@@ -199,9 +201,12 @@ fn encrypt_and_write(path: &Path, key: &[u8; 32], plaintext: &[u8]) -> Result<()
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| SecretsError::Crypto(format!("cipher init: {e}")))?;
     let mut nonce_bytes = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let ct = cipher
-        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext)
+        .encrypt(
+            &Nonce::try_from(nonce_bytes.as_slice()).expect("nonce is 12 bytes"),
+            plaintext,
+        )
         .map_err(|_| SecretsError::Crypto("encryption failed".into()))?;
     let envelope = Envelope {
         v: ENVELOPE_VERSION,

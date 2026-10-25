@@ -216,7 +216,7 @@ fn write_plugin_enabled_round_trips_through_config() {
     // Enable stamps enabled + kind + version.
     write_plugin_enabled(&dd, "demo-tool", "tool", "1.2.0", true).unwrap();
     let text = std::fs::read_to_string(dd.join("config.toml")).unwrap();
-    let doc: toml::Value = text.parse().unwrap();
+    let doc: toml::Value = toml::from_str(&text).unwrap();
     assert_eq!(doc["plugins"]["demo-tool"]["enabled"].as_bool(), Some(true));
     assert_eq!(doc["plugins"]["demo-tool"]["kind"].as_str(), Some("tool"));
     assert_eq!(
@@ -226,7 +226,7 @@ fn write_plugin_enabled_round_trips_through_config() {
     // Disable flips the flag and keeps the stamps.
     write_plugin_enabled(&dd, "demo-tool", "tool", "1.2.0", false).unwrap();
     let text = std::fs::read_to_string(dd.join("config.toml")).unwrap();
-    let doc: toml::Value = text.parse().unwrap();
+    let doc: toml::Value = toml::from_str(&text).unwrap();
     assert_eq!(
         doc["plugins"]["demo-tool"]["enabled"].as_bool(),
         Some(false)
@@ -240,7 +240,7 @@ fn write_plugin_enabled_round_trips_through_config() {
     .unwrap();
     write_plugin_enabled(&dd, "other", "hook", "2.0", true).unwrap();
     let text = std::fs::read_to_string(dd.join("config.toml")).unwrap();
-    let doc: toml::Value = text.parse().unwrap();
+    let doc: toml::Value = toml::from_str(&text).unwrap();
     assert_eq!(doc["goal"]["max_iterations"].as_integer(), Some(25));
     assert_eq!(doc["plugins"]["other"]["enabled"].as_bool(), Some(true));
 }

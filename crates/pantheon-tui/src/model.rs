@@ -673,23 +673,30 @@ pub fn fetch_models(
         }
     }
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(15))
-        .build();
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(15)))
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
     let mut req = agent.get(&url);
     if !first.is_empty() {
         match mode {
             pantheon_providers::catalog::ApiMode::Anthropic => {
                 req = req
-                    .set("x-api-key", first)
-                    .set("anthropic-version", ANTHROPIC_VERSION);
+                    .header("x-api-key", first)
+                    .header("anthropic-version", ANTHROPIC_VERSION);
             }
             pantheon_providers::catalog::ApiMode::OpenAi => {
                 let header = pantheon_providers::catalog::key_header_for(provider_id);
                 if header == "Authorization" {
-                    req = req.set("Authorization", &format!("Bearer {first}"));
+                    req = req.header("Authorization", format!("Bearer {first}").as_str());
                 } else {
-                    req = req.set(&header, first);
+                    req = req.header(header.as_str(), first);
                 }
             }
         }
@@ -698,18 +705,17 @@ pub fn fetch_models(
     if let Ok(cache) = DISCOVERY.lock() {
         if let Some(ref c) = *cache {
             if let Some(ref etag) = c.etag {
-                req = req.set("If-None-Match", etag);
+                req = req.header("If-None-Match", etag.as_str());
             }
         }
     }
-    let resp = req.call().map_err(|e| match e {
-        ureq::Error::Status(code, r) => {
-            let body = r.into_string().unwrap_or_default();
-            let snippet: String = body.chars().take(160).collect();
-            format!("HTTP {code} from {url}: {snippet}")
-        }
-        e => format!("{url}: {e}"),
-    })?;
+    let mut resp = req.call().map_err(|e| format!("{url}: {e}"))?;
+    let status = resp.status().as_u16();
+    if status >= 400 {
+        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        let snippet: String = body.chars().take(160).collect();
+        return Err(format!("HTTP {status} from {url}: {snippet}"));
+    }
     // 304 Not Modified: keep cached list.
     if resp.status() == 304 {
         if let Ok(mut cache) = DISCOVERY.lock() {
@@ -723,8 +729,15 @@ pub fn fetch_models(
             }
         }
     }
-    let etag = resp.header("etag").map(|s| s.to_string());
-    let body = resp.into_string().map_err(|e| format!("read {url}: {e}"))?;
+    let etag = resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let body = resp
+        .into_body()
+        .read_to_string()
+        .map_err(|e| format!("read {url}: {e}"))?;
     let v: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("parse {url}: {e}"))?;
     let arr = v.get("data").or_else(|| v.get("models")).unwrap_or(&v);

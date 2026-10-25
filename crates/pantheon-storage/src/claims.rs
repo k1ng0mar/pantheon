@@ -169,8 +169,11 @@ impl ClaimStore {
             .conn
             .lock()
             .map_err(|e| err("CLAIM_LOCK", e.to_string()))?;
-        conn.query_row("SELECT COUNT(*) FROM claims", [], |r| r.get(0))
-            .map_err(|e| err("CLAIM_QUERY", e.to_string()))
+        conn.query_row("SELECT COUNT(*) FROM claims", [], |r| {
+            let n: i64 = r.get(0)?;
+            Ok(n as usize)
+        })
+        .map_err(|e| err("CLAIM_QUERY", e.to_string()))
     }
 
     pub fn is_empty(&self) -> Result<bool, PantheonError> {

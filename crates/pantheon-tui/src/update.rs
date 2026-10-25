@@ -9,6 +9,7 @@
 //! a timeout names the probe that timed out - never a generic "update
 //! failed".
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -70,24 +71,37 @@ fn is_newer(current: &str, latest: &str) -> bool {
     parse(&l) > parse(&c)
 }
 
+/// Agent for update traffic: bounded, platform roots, default redirect
+/// following (release downloads redirect to a CDN).
+fn update_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent()
+}
+
 /// Resolve the latest release tag via the GitHub API.
 fn resolve_latest_tag(repo: &str) -> Result<String, String> {
     let url = format!("https://api.github.com/repos/{repo}/releases/latest");
-    let resp = ureq::get(&url)
-        .set("User-Agent", "pantheon-update")
-        .set("Accept", "application/vnd.github+json")
-        .timeout(REQUEST_TIMEOUT)
+    let resp = update_agent()
+        .get(&url)
+        .header("User-Agent", "pantheon-update")
+        .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| match e {
-            ureq::Error::Transport(t) => {
-                format!("resolve failed: could not reach api.github.com ({t})")
-            }
-            ureq::Error::Status(code, _) => {
+            ureq::Error::StatusCode(code) => {
                 format!("resolve failed: GitHub API returned HTTP {code} for {repo}")
             }
+            e => format!("resolve failed: could not reach api.github.com ({e})"),
         })?;
     let text = resp
-        .into_string()
+        .into_body()
+        .read_to_string()
         .map_err(|e| format!("resolve failed: could not read GitHub response ({e})"))?;
     // Minimal parse: find "tag_name": "vX.Y.Z" without serde_json::Value
     // plumbing (serde_json is available, but a full struct is overkill).
@@ -100,20 +114,19 @@ fn resolve_latest_tag(repo: &str) -> Result<String, String> {
 }
 
 fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let resp = ureq::get(url)
-        .set("User-Agent", "pantheon-update")
-        .timeout(REQUEST_TIMEOUT)
+    let resp = update_agent()
+        .get(url)
+        .header("User-Agent", "pantheon-update")
         .call()
         .map_err(|e| match e {
-            ureq::Error::Transport(t) => {
-                format!("download failed: could not fetch {url} ({t})")
-            }
-            ureq::Error::Status(code, _) => {
+            ureq::Error::StatusCode(code) => {
                 format!("download failed: HTTP {code} for {url}")
             }
+            e => format!("download failed: could not fetch {url} ({e})"),
         })?;
     let mut buf = Vec::new();
-    resp.into_reader()
+    resp.into_body()
+        .into_reader()
         .read_to_end(&mut buf)
         .map_err(|e| format!("download failed: could not read {url} ({e})"))?;
     Ok(buf)
@@ -199,18 +212,19 @@ fn checksum_line_matches(text: &str, actual_hex: &str) -> Result<bool, String> {
 /// checksum file exists but carries no usable digest.
 fn verify_checksum(asset_url: &str, asset_bytes: &[u8]) -> Result<bool, String> {
     let sha_url = format!("{asset_url}.sha256");
-    let resp = ureq::get(&sha_url)
-        .set("User-Agent", "pantheon-update")
-        .timeout(REQUEST_TIMEOUT)
+    let resp = update_agent()
+        .get(&sha_url)
+        .header("User-Agent", "pantheon-update")
         .call()
         .map_err(|e| match e {
-            ureq::Error::Status(code, _) => {
+            ureq::Error::StatusCode(code) => {
                 format!("verify failed: checksum file returned HTTP {code} ({sha_url})")
             }
             _ => format!("verify failed: could not fetch the checksum file ({e})"),
         })?;
     let text = resp
-        .into_string()
+        .into_body()
+        .read_to_string()
         .map_err(|_| "verify failed: could not read the checksum file".to_string())?;
     // Hash via the system: sha256sum, shasum, or certutil on Windows.
     let actual = hash_via_system(asset_bytes)?;

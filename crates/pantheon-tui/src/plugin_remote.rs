@@ -95,39 +95,43 @@ fn request(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, ApiErr> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(30))
-        .build();
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
     let url = format!("{base}{path}");
     let mut req = match method {
         "POST" => agent.post(&url),
-        _ => agent.get(&url),
+        _ => agent.get(&url).force_send_body(),
     };
     if let Ok(tok) = std::env::var("PANTHEON_SERVE_TOKEN") {
         if !tok.is_empty() {
-            req = req.set(TOKEN_HEADER, &tok);
+            req = req.header(TOKEN_HEADER, tok.as_str());
         }
     }
+    // Statuses arrive as responses; >=400 becomes the short-body error
+    // exactly like the old Error::Status arm.
     let resp = match body {
         Some(b) => req
-            .set("Content-Type", "application/json")
-            .send_string(&b.to_string()),
-        None => req.call(),
-    };
-    match resp {
-        Ok(r) => {
-            let status = r.status();
-            let text = r.into_string().unwrap_or_default();
-            serde_json::from_str::<serde_json::Value>(&text)
-                .map_err(|e| ApiErr::Status(status, format!("bad JSON: {e}")))
-        }
-        Err(ureq::Error::Status(code, r)) => {
-            let body = r.into_string().unwrap_or_default();
-            let short: String = body.chars().take(200).collect();
-            Err(ApiErr::Status(code, short))
-        }
-        Err(ureq::Error::Transport(t)) => Err(ApiErr::Unreachable(t.to_string())),
+            .header("Content-Type", "application/json")
+            .send(b.to_string().as_str()),
+        None => req.send_empty(),
     }
+    .map_err(|e| ApiErr::Unreachable(e.to_string()))?;
+    let status = resp.status().as_u16();
+    let text = resp.into_body().read_to_string().unwrap_or_default();
+    if status >= 400 {
+        let short: String = text.chars().take(200).collect();
+        return Err(ApiErr::Status(status, short));
+    }
+    serde_json::from_str::<serde_json::Value>(&text)
+        .map_err(|e| ApiErr::Status(status, format!("bad JSON: {e}")))
 }
 
 /// Resolve the dashboard base URL or print why the command cannot run.

@@ -548,8 +548,7 @@ pub fn set_enabled(data_dir: &Path, name: &str, enabled: bool) -> Result<(), Pan
     })?;
     let path = Config::path(data_dir);
     let mut doc: toml::Value = match std::fs::read_to_string(&path) {
-        Ok(text) => text
-            .parse()
+        Ok(text) => toml::from_str(&text)
             .map_err(|e| merr("MCP_CONFIG_PARSE", format!("parse {}: {e}", path.display())))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             toml::Value::Table(toml::map::Map::new())

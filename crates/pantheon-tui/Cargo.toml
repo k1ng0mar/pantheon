@@ -39,18 +39,18 @@ pantheon-nightly = { path = "../pantheon-nightly" }
 pantheon-dashboard = { path = "../pantheon-dashboard" }
 # Structured diagnostics engine (`pantheon doctor`, `GET /api/health`).
 pantheon-doctor = { path = "../pantheon-doctor" }
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 ratatui = "0.30"
 crossterm = "0.29"
-toml = "0.8"
-toml_edit = "0.22"
-ureq = { version = "2", default-features = false, features = ["tls", "proxy-from-env", "native-certs"] }
+toml.workspace = true
+toml_edit = "0.25"
+ureq.workspace = true
 ctrlc = "3.4"
 # Minimal PNG inflate for the Sixel preview path (already in the lock).
-flate2 = "1"
+flate2.workspace = true
 # RFC3339 parsing for `schedule --at` (already in the lock).
-chrono = "0.4"
+chrono.workspace = true
 
 [lints]
 workspace = true

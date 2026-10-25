@@ -89,7 +89,10 @@ pub const MAX_ZIP_ENTRIES: usize = 1000;
 /// (see [`crate::http::read_body_capped`]). Transport failures get a
 /// clean message via [`crate::http::fetch_error_message`] - no raw
 /// rustls internals leak into API error bodies.
-fn read_http_body(resp: ureq::Response, what: &str) -> Result<Vec<u8>, PantheonError> {
+fn read_http_body(
+    resp: ureq::http::Response<ureq::Body>,
+    what: &str,
+) -> Result<Vec<u8>, PantheonError> {
     let bytes = crate::http::read_body_capped(resp, MAX_HTTP_BYTES).map_err(|e| {
         serr(
             "SKILL_FETCH_BODY",
@@ -1197,28 +1200,34 @@ struct ClawhubAmbiguousMatch {
 /// Unlike `fetch_skill_md`, this preserves the status code so callers
 /// can branch on non-2xx shapes (e.g. ClawHub's 409 ambiguous-slug).
 fn fetch_clawhub_json_with_status(url: &str) -> Result<(String, u16), PantheonError> {
-    // ureq returns Err(Error::Status(code, resp)) for HTTP error statuses;
-    // the response is included, so pull body+status out of either branch.
-    match ureq::get(url)
-        .timeout(std::time::Duration::from_secs(15))
-        .set("User-Agent", "pantheon-skill-import")
-        .set("Accept", "application/json")
+    // Statuses arrive as responses (http_status_as_error(false)) so the
+    // body stays readable on non-2xx shapes (e.g. ClawHub's 409
+    // ambiguous-slug); error-status bodies are best-effort, as before.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent();
+    let resp = agent
+        .get(url)
+        .header("User-Agent", "pantheon-skill-import")
+        .header("Accept", "application/json")
         .call()
-    {
-        Ok(resp) => {
-            let status = resp.status();
-            let bytes = read_http_body(resp, url)?;
-            let body = String::from_utf8(bytes)
-                .map_err(|e| serr("SKILL_FETCH_BODY", format!("{url}: {e}")))?;
-            Ok((body, status))
-        }
-        Err(ureq::Error::Status(code, resp)) => {
-            let bytes = read_http_body(resp, url).unwrap_or_default();
-            let body = String::from_utf8(bytes).unwrap_or_default();
-            Ok((body, code))
-        }
-        Err(e) => Err(fetch_call_error(url, &e)),
-    }
+        .map_err(|e| fetch_call_error(url, &e))?;
+    let status = resp.status().as_u16();
+    let bytes = if status >= 400 {
+        read_http_body(resp, url).unwrap_or_default()
+    } else {
+        read_http_body(resp, url)?
+    };
+    let body =
+        String::from_utf8(bytes).map_err(|e| serr("SKILL_FETCH_BODY", format!("{url}: {e}")))?;
+    Ok((body, status))
 }
 
 /// Import a skill from the OpenClaw ClawHub registry.

@@ -121,26 +121,36 @@ impl ChannelError {
     pub fn is_rate_limited(&self) -> bool {
         self.code == "RATE_LIMITED" || self.code.ends_with("_RATE_LIMITED")
     }
-    /// Wrap a ureq error, mapping HTTP 429 to `RATE_LIMITED` so
-    /// `is_rate_limited()` works. `prefix` is the transport code
-    /// (e.g. `TELEGRAM_HTTP`); the rate-limit code becomes
-    /// `{prefix}_RATE_LIMITED`.
-    pub fn from_ureq(prefix: &str, err: ureq::Error) -> Self {
-        match &err {
-            // The status arm owns the response, so the `Retry-After` header
-            // is still readable here - once converted to a string it is gone.
-            ureq::Error::Status(429, resp) => Self::rate_limited(
+    /// Map an HTTP error response (the channel agents run with
+    /// statuses-as-responses, so 4xx/5xx arrive here instead of as
+    /// errors), mapping HTTP 429 to `RATE_LIMITED` so `is_rate_limited()`
+    /// works. `prefix` is the transport code (e.g. `TELEGRAM_HTTP`); the
+    /// rate-limit code becomes `{prefix}_RATE_LIMITED`. Transport-level
+    /// failures are mapped separately at the call site
+    /// (`ChannelError::new(prefix, err.to_string())`). The message carries
+    /// only the numeric status - never the URL (which may embed a bot
+    /// token); the response is borrowed, so the `Retry-After` header is
+    /// still readable here.
+    pub fn from_ureq(prefix: &str, resp: &ureq::http::Response<ureq::Body>) -> Self {
+        let status = resp.status().as_u16();
+        if status == 429 {
+            Self::rate_limited(
                 prefix,
-                err.to_string(),
-                parse_retry_after(resp.header("retry-after")),
-            ),
-            _ => Self::new(prefix, err.to_string()),
+                format!("status code {status}"),
+                parse_retry_after(
+                    resp.headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok()),
+                ),
+            )
+        } else {
+            Self::new(prefix, format!("status code {status}"))
         }
     }
-    /// Best-effort extraction of the HTTP status from a ureq-mapped
-    /// message (`"{url}: status code {n}"`). `None` for non-HTTP errors.
-    /// Lets health classification see a 401 without re-exposing the URL
-    /// (which may embed a bot token).
+    /// Best-effort extraction of the HTTP status from a status-mapped
+    /// message (`"status code {n}"`, optionally behind a URL prefix).
+    /// `None` for non-HTTP errors. Lets health classification see a 401
+    /// without re-exposing the URL (which may embed a bot token).
     pub fn http_status(&self) -> Option<u16> {
         if !self.message.contains("status code ") {
             return None;
@@ -166,6 +176,37 @@ pub fn parse_retry_after(value: Option<&str>) -> Option<u64> {
         return None;
     }
     Some(secs.min(600))
+}
+
+/// Shared HTTP agent for the channel REST transports (Telegram, Discord):
+/// platform TLS roots and statuses-as-responses, so 4xx/5xx come back as
+/// responses and call sites can read rate-limit headers and error bodies
+/// off them (see [`ChannelError::from_ureq`]). No global timeout: the
+/// long-poll calls attach their own per-request budget (clearing the
+/// per-call bound below), and ordinary sends/downloads must not inherit
+/// one. The per-call bound reproduces ureq 2's implicit 30s connect
+/// timeout, which ureq 3 dropped: a wedged API host must fail the send,
+/// not the channel thread.
+pub(crate) fn channel_agent() -> ureq::Agent {
+    channel_agent_with(std::time::Duration::from_secs(30))
+}
+
+/// [`channel_agent`] with an explicit per-call budget, so tests can pin
+/// the timeout contract with a short one: an API host that accepts and
+/// never answers must fail the send, not wedge the channel thread
+/// (ureq 3 ships no default timeout; ureq 2's implicit 30s connect
+/// bound is what this restores).
+pub(crate) fn channel_agent_with(per_call: std::time::Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_per_call(Some(per_call))
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent()
 }
 
 impl std::fmt::Display for ChannelError {
@@ -332,12 +373,17 @@ mod error_tests {
     use super::*;
 
     #[test]
-    fn http_status_parses_ureq_message() {
+    fn http_status_parses_status_message() {
+        // URL-prefixed form (legacy ureq 2 display); the parser must
+        // tolerate any prefix before the marker.
         let e = ChannelError::new(
             "TELEGRAM_HTTP",
             "https://api.telegram.org/bottoken/getUpdates: status code 401",
         );
         assert_eq!(e.http_status(), Some(401));
+        // URL-free form produced by `from_ureq`.
+        let e4 = ChannelError::new("TELEGRAM_HTTP", "status code 401");
+        assert_eq!(e4.http_status(), Some(401));
         let e2 = ChannelError::new("TELEGRAM_HTTP", "Dns Failed");
         assert_eq!(e2.http_status(), None);
         let e3 = ChannelError::new("X", "no marker here");
@@ -349,5 +395,42 @@ mod error_tests {
         let e = ChannelError::rate_limited("TELEGRAM_HTTP", "slow", Some(5));
         assert!(e.is_rate_limited());
         assert!(!ChannelError::new("TELEGRAM_HTTP", "x").is_rate_limited());
+    }
+
+    #[test]
+    fn channel_send_is_bounded_by_the_agent_timeout() {
+        // A host that accepts the connection but never answers: the
+        // per-call budget must fail the request instead of hanging.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            // Accept and HOLD the streams: dropping an accepted socket
+            // closes it, which reads as an instant "peer disconnected"
+            // instead of the wedged-server shape under test.
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                match listener.accept() {
+                    Ok((stream, _)) => held.push(stream),
+                    Err(_) => break,
+                }
+            }
+        });
+        let agent = channel_agent_with(std::time::Duration::from_millis(300));
+        let start = std::time::Instant::now();
+        let err = agent
+            .post(format!("http://127.0.0.1:{port}/send"))
+            .send_empty()
+            .unwrap_err();
+        assert!(
+            start.elapsed() >= std::time::Duration::from_millis(250),
+            "error arrived before the budget expired; something other than \
+             the deadline failed (took {:?}, err: {err})",
+            start.elapsed()
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "wedged host must fail within the budget, took {:?} (err: {err})",
+            start.elapsed()
+        );
     }
 }

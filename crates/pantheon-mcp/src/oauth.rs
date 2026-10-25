@@ -361,10 +361,15 @@ fn discover_resource(resource_url: &str) -> Result<ResourceMetadata, McpError> {
     // RFC 9728 also allows the resource to point at its metadata in a
     // WWW-Authenticate challenge. Probe the MCP endpoint once; a 401 is
     // expected and carries the pointer when the server implements it.
+    // Statuses surface as responses (ureq 3), so one Ok arm covers the
+    // 401 too; only a transport failure loses the challenge.
     let agent = http_agent();
     let challenge = match agent.get(resource_url).call() {
-        Ok(resp) => resp.header("WWW-Authenticate").map(str::to_string),
-        Err(ureq::Error::Status(401, resp)) => resp.header("WWW-Authenticate").map(str::to_string),
+        Ok(resp) => resp
+            .headers()
+            .get("WWW-Authenticate")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
         Err(_) => None,
     };
     if let Some(challenge) = challenge {
@@ -442,12 +447,20 @@ fn register_client(
     });
     let resp = http_agent()
         .post(endpoint)
-        .set("Content-Type", "application/json")
-        .set("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
         .send_json(body)
         .map_err(|e| McpError::Unauthorized(format!("dynamic client registration failed: {e}")))?;
+    if resp.status().as_u16() >= 400 {
+        // Same message the ureq 2 status error displayed.
+        let code = resp.status().as_u16();
+        return Err(McpError::Unauthorized(format!(
+            "dynamic client registration failed: {endpoint}: status code {code}"
+        )));
+    }
     let v: Value = resp
-        .into_json()
+        .into_body()
+        .read_json()
         .map_err(|e| McpError::Protocol(format!("registration response: {e}")))?;
     let client_id = str_field(&v, "client_id")
         .ok_or_else(|| McpError::Protocol("registration response has no client_id".into()))?;
@@ -504,20 +517,20 @@ fn refresh_token(
 fn token_request(endpoint: &str, params: &[(&str, &str)]) -> Result<TokenSet, McpError> {
     let resp = http_agent()
         .post(endpoint)
-        .set("Accept", "application/json")
-        .send_form(params)
-        .map_err(|e| match e {
-            ureq::Error::Status(code, resp) => {
-                let detail = resp.into_string().unwrap_or_default();
-                McpError::Unauthorized(format!(
-                    "token endpoint returned {code}: {}",
-                    detail.chars().take(300).collect::<String>()
-                ))
-            }
-            other => McpError::Unauthorized(format!("token request failed: {other}")),
-        })?;
+        .header("Accept", "application/json")
+        .send_form(params.iter().copied())
+        .map_err(|e| McpError::Unauthorized(format!("token request failed: {e}")))?;
+    if resp.status().as_u16() >= 400 {
+        let code = resp.status().as_u16();
+        let detail = resp.into_body().read_to_string().unwrap_or_default();
+        return Err(McpError::Unauthorized(format!(
+            "token endpoint returned {code}: {}",
+            detail.chars().take(300).collect::<String>()
+        )));
+    }
     let v: Value = resp
-        .into_json()
+        .into_body()
+        .read_json()
         .map_err(|e| McpError::Protocol(format!("token response is not JSON: {e}")))?;
     if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
         let desc = v
@@ -662,28 +675,35 @@ fn respond(stream: &TcpStream, status: u16, message: &str) -> Result<(), McpErro
 }
 
 fn http_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(HTTP_TIMEOUT)
-        .try_proxy_from_env(true)
+    ureq::Agent::config_builder()
+        .timeout_global(Some(HTTP_TIMEOUT))
+        .max_redirects(5)
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
         .build()
+        .new_agent()
 }
 
 fn get_json_opt(url: &str) -> Result<Option<Value>, McpError> {
-    match http_agent()
+    // Statuses never surface as errors on this agent (ureq 3): a 4xx is
+    // a miss on the discovery probe, not a failure.
+    let resp = http_agent()
         .get(url)
-        .set("Accept", "application/json")
+        .header("Accept", "application/json")
         .call()
-    {
-        Ok(resp) => {
-            let v: Value = resp
-                .into_json()
-                .map_err(|e| McpError::Protocol(format!("{url}: bad JSON: {e}")))?;
-            Ok(Some(v))
-        }
-        Err(ureq::Error::Status(404, _)) | Err(ureq::Error::Status(401, _)) => Ok(None),
-        Err(ureq::Error::Status(_, _)) => Ok(None),
-        Err(ureq::Error::Transport(t)) => Err(McpError::Io(format!("{url}: {t}"))),
+        .map_err(|e| McpError::Io(format!("{url}: {e}")))?;
+    if resp.status().as_u16() >= 400 {
+        return Ok(None);
     }
+    let v: Value = resp
+        .into_body()
+        .read_json()
+        .map_err(|e| McpError::Protocol(format!("{url}: bad JSON: {e}")))?;
+    Ok(Some(v))
 }
 
 fn origin(url: &str) -> Option<String> {
@@ -751,11 +771,11 @@ fn header_param(header: &str, name: &str) -> Option<String> {
 }
 
 fn random_state() -> String {
-    use rand::Rng;
+    use rand::RngExt;
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..32)
-        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
+        .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
         .collect()
 }
 
