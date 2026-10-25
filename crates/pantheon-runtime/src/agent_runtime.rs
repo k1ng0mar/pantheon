@@ -338,11 +338,13 @@ impl AgentRuntime {
         kind: MessageKind,
         body: &str,
         task_id: Option<&str>,
+        correlation_id: Option<&str>,
     ) -> Result<AgentMessage, PantheonError> {
         self.inner.collaboration.record_message(
             message_id,
             None,
             task_id,
+            correlation_id,
             &self.inner.effective.name,
             to,
             kind,

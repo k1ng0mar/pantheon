@@ -50,8 +50,10 @@ impl LoopGuard {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let repeat =
-            state.last.as_ref().is_some_and(|(last_tool, last_args)| last_tool == tool && last_args == args);
+        let repeat = state
+            .last
+            .as_ref()
+            .is_some_and(|(last_tool, last_args)| last_tool == tool && last_args == args);
         if repeat {
             state.count += 1;
         } else {
@@ -84,7 +86,11 @@ mod tests {
         assert!(guard.admit("read_file", r#"{"path":"b"}"#).is_ok());
         assert!(guard.admit("read_file", r#"{"path":"a"}"#).is_ok());
         assert!(guard.admit("read_file", r#"{"path":"a"}"#).is_ok());
-        assert!(guard.admit("read_file", r#"{"path":"a"}"#).is_ok());
+        // The third consecutive identical `a` denies (the contract
+        // `denies_on_third_consecutive_identical_call` pins); the test
+        // formerly asserted a fifth Ok, which that contract forbids.
+        let err = guard.admit("read_file", r#"{"path":"a"}"#).unwrap_err();
+        assert!(err.contains("3 times"));
     }
 
     #[test]

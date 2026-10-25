@@ -146,6 +146,21 @@ pub enum Event {
         run_id: String,
         text: String,
     },
+    /// A message from another agent was drained out of the collaboration
+    /// mailbox into the running turn. It also lands in the transcript as a
+    /// marked, Untrusted-tier user message (see `rebuild_messages`), so resume
+    /// stays faithful; this row is the durable delivery record and the replay
+    /// source. `kind` is a string because the `MessageKind` enum lives in
+    /// storage, which this crate cannot depend on.
+    AgentMessageDelivered {
+        run_id: String,
+        message_id: String,
+        sender: String,
+        kind: String,
+        task_id: Option<String>,
+        correlation_id: Option<String>,
+        content: String,
+    },
     ModelRequested {
         run_id: String,
         model: String,
@@ -552,6 +567,23 @@ impl Event {
             Event::SteeringProvided { run_id: _, text } => Event::SteeringProvided {
                 run_id: run_id.to_string(),
                 text,
+            },
+            Event::AgentMessageDelivered {
+                run_id: _,
+                message_id,
+                sender,
+                kind,
+                task_id,
+                correlation_id,
+                content,
+            } => Event::AgentMessageDelivered {
+                run_id: run_id.to_string(),
+                message_id,
+                sender,
+                kind,
+                task_id,
+                correlation_id,
+                content,
             },
             Event::ModelRequested { run_id: _, model } => Event::ModelRequested {
                 run_id: run_id.to_string(),

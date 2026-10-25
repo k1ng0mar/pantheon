@@ -1685,7 +1685,8 @@ fn event_run_id(ev: &RuntimeErrorEvent) -> Option<&str> {
         | E::BrowserActivity { run_id, .. }
         | E::ScheduledTaskFailed { run_id, .. }
         | E::ScheduledTaskRecovered { run_id, .. }
-        | E::UsageRecorded { run_id, .. } => Some(run_id),
+        | E::UsageRecorded { run_id, .. }
+        | E::AgentMessageDelivered { run_id, .. } => Some(run_id),
     }
 }
 
