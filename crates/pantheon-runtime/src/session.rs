@@ -441,6 +441,9 @@ struct RegRunner<'a> {
     /// Data dir for the Bot Screen takeover gate: computer-use tools park
     /// while a human holds the desktop (see `desktop_takeover_gate`).
     data_dir: PathBuf,
+    /// Loop-hygiene gate for this turn: refuses the third consecutive
+    /// identical (tool, args) call (see `loop_guard`).
+    loop_guard: &'a crate::loop_guard::LoopGuard,
 }
 impl<'a> RegRunner<'a> {
     fn run_tool(&self, name: &str, args: &str) -> Result<String, PantheonError> {
@@ -458,6 +461,11 @@ impl<'a> pantheon_agent::ToolRunner for RegRunner<'a> {
             if let Some(refusal) = desktop_takeover_gate(&self.data_dir, name) {
                 return Ok(refusal);
             }
+        }
+        // Runtime-owned loop hygiene ahead of plugin gates: a stuck model
+        // gets the same tool-shaped refusal an extension deny produces.
+        if let Err(reason) = self.loop_guard.admit(name, args) {
+            return Ok(format!("[blocked by runtime policy] {reason}"));
         }
         let mut out = if let Some(mgr) = self.hooks {
             // Gate first. `pre_tool_call` fails CLOSED, so a wedged policy
@@ -4339,6 +4347,7 @@ impl Session {
         // are not missed. The gate and transform fire inline below, because
         // their return values change control flow.
         let _ = &self.hook_observer;
+        let loop_guard = crate::loop_guard::LoopGuard::new();
         let runner = RegRunner {
             registry: &reg,
             policy: &self.policy,
@@ -4346,6 +4355,7 @@ impl Session {
             run_id: run_id.to_string(),
             redaction: self.secrets.redaction_registry(),
             data_dir: self.supervisor.data_dir().to_path_buf(),
+            loop_guard: &loop_guard,
         };
         let _ = &sink;
         // Title generation runs in parallel with the first turn (not before
