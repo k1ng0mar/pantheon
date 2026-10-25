@@ -462,6 +462,10 @@ fn run_prompt(
             .supervisor
             .answer_input(run_id, &call_id, text)
             .map_err(|e| format!("answer question: {e}"))?;
+        shared.notify(
+            "_pantheon/input_resolved",
+            json!({"sessionId": session_id, "requestId": call_id}),
+        );
         next_text.clear();
     }
 
@@ -574,6 +578,28 @@ fn run_prompt(
                 options,
             } => {
                 shared.text_chunk(session_id, &question);
+                // First-class ask-user: the notification carries the question
+                // and its options so a client can render its question form;
+                // the answer arrives as the next prompt (see run_prompt).
+                shared.notify(
+                    "_pantheon/input_request",
+                    json!({
+                        "sessionId": session_id,
+                        "requestId": call_id,
+                        "request": {
+                            "kind": "questions",
+                            "questions": [{
+                                "id": "answer",
+                                "question": question,
+                                "isOther": true,
+                                "options": options
+                                    .iter()
+                                    .map(|option| json!({"label": option}))
+                                    .collect::<Vec<_>>(),
+                            }],
+                        },
+                    }),
+                );
                 if let Ok(mut pending) = shared.pending_input.lock() {
                     pending.insert(session_id.to_string(), (call_id, options));
                 }
