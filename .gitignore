@@ -19,13 +19,12 @@ web/docs/
 Thumbs.db
 ENGINE.md
 SOUL.md
-vendor/**/debug.log
-# Third-party source checkouts cloned for audits (REA). The derived
-# inventories next to them are tracked; the upstream trees are not.
-vendor/rea/
 *.tmp
 __pycache__/
 *.pyc
 
 # nyx scratch: split tooling and diffs from the 2026-10-22 worktree repair
 .nyx-work/
+
+# Runtime-materialized bundled plugins (from vendor/ at compile time)
+.pantheon-extensions/
