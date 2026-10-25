@@ -51,7 +51,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # No toolchain input: reads the pinned channel from
+      # rust-toolchain.toml, same as the ci workflow.
+      - uses: dtolnay/rust-toolchain@v1
         with:
           targets: ${{ matrix.target }}
 
