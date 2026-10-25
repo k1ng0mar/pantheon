@@ -1,0 +1,121 @@
+//! Projectless chats: each chat runs in its own Pantheon-managed folder under
+//! `~/Pantheon Chats/`, registered as an ordinary project that the window hides
+//! from the project list. A project is a chat when its folder sits directly in
+//! that root, so no schema change is needed.
+
+use crate::storage::{Session, Store};
+use crate::AppState;
+use rusqlite::params;
+use std::path::{Path, PathBuf};
+use tauri::{Emitter, State};
+
+type Result<T> = std::result::Result<T, String>;
+
+/// Files Pantheon itself may leave in a chat folder; anything else is the user's.
+const OWN_FILES: [&str; 2] = [".pantheon", ".DS_Store"];
+
+pub(crate) fn root() -> PathBuf {
+    crate::agent_usage_providers::home().unwrap_or_else(std::env::temp_dir).join("Pantheon Chats")
+}
+
+fn in_root(folder: &Path, root: &Path) -> bool {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    folder.parent() == Some(root.as_path())
+}
+
+/// Whether a task folder is a projectless chat's.
+pub(crate) fn is_chat_folder(folder: &Path) -> bool {
+    in_root(folder, &root())
+}
+
+/// Makes the chat's folder, registers it as a project and starts its task.
+pub(crate) fn create(store: &Store, root: &Path, provider: &str, model: &str, mode: Option<&str>) -> Result<Session> {
+    let id = crate::storage::id();
+    let folder = root.join(format!("chat-{}", &id[..8]));
+    std::fs::create_dir_all(&folder).map_err(|e| format!("Could not create the chat's folder: {e}"))?;
+    let project = store.add_project(&folder)?;
+    store.db.execute("UPDATE projects SET name='Chat' WHERE id=?1", params![project.id]).map_err(|e| e.to_string())?;
+    crate::architect::profiles::create_user_task(store, &project.id, provider, model, mode, None)
+}
+
+/// Forgets a chat project once no task uses it, and removes its folder when
+/// only Pantheon's own files are left. Other projects are never touched.
+pub(crate) fn cleanup(store: &Store, root: &Path, project_id: &str) -> Result<bool> {
+    let Ok(project) = store.project(project_id) else { return Ok(false) };
+    let folder = PathBuf::from(&project.path);
+    if !in_root(&folder, root) {
+        return Ok(false);
+    }
+    let used: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=?1)", [project_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if used {
+        return Ok(false);
+    }
+    store.remove_project(project_id)?;
+    let only_ours = std::fs::read_dir(&folder)
+        .map(|entries| entries.flatten().all(|entry| OWN_FILES.iter().any(|name| entry.file_name() == *name)))
+        .unwrap_or(false);
+    if only_ours {
+        std::fs::remove_dir_all(&folder).map_err(|e| format!("Could not remove the chat's folder: {e}"))?;
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn chat_create(app: tauri::AppHandle, state: State<'_, AppState>, provider: String, model: String, mode: Option<String>) -> Result<Session> {
+    let task = create(&*state.store.lock().map_err(|e| e.to_string())?, &root(), &provider, &model, mode.as_deref())?;
+    let _ = app.emit("sessions-changed", ());
+    Ok(task)
+}
+
+/// Called after a chat's task is deleted or moved to a real project.
+#[tauri::command]
+pub async fn chat_cleanup(state: State<'_, AppState>, project_id: String) -> Result<bool> {
+    cleanup(&*state.store.lock().map_err(|e| e.to_string())?, &root(), &project_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup() -> (PathBuf, PathBuf, Store) {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("test.sqlite")).unwrap();
+        (dir.clone(), dir.join("Pantheon Chats"), store)
+    }
+
+    #[test]
+    fn a_chat_gets_its_own_hidden_folder_and_is_cleaned_up_with_its_last_task() {
+        let (dir, root, store) = setup();
+        let task = create(&store, &root, "claude", "default", None).unwrap();
+        let project = store.project(&task.project_id).unwrap();
+        assert_eq!(project.name, "Chat");
+        assert!(in_root(Path::new(&project.path), &root));
+        // A task still uses the chat: nothing is removed.
+        assert!(!cleanup(&store, &root, &project.id).unwrap());
+        store.db.execute("DELETE FROM sessions WHERE id=?1", [&task.id]).unwrap();
+        std::fs::create_dir(Path::new(&project.path).join(".pantheon")).unwrap();
+        assert!(cleanup(&store, &root, &project.id).unwrap());
+        assert!(store.project(&project.id).is_err());
+        assert!(!Path::new(&project.path).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn user_files_keep_the_folder_and_other_projects_are_never_cleaned() {
+        let (dir, root, store) = setup();
+        let task = create(&store, &root, "claude", "default", None).unwrap();
+        let folder = PathBuf::from(store.project(&task.project_id).unwrap().path);
+        std::fs::write(folder.join("notes.md"), "keep").unwrap();
+        store.db.execute("DELETE FROM sessions WHERE id=?1", [&task.id]).unwrap();
+        assert!(cleanup(&store, &root, &task.project_id).unwrap());
+        assert!(folder.join("notes.md").exists());
+
+        let other = dir.join("work");
+        std::fs::create_dir(&other).unwrap();
+        let project = store.add_project(&other).unwrap();
+        assert!(!cleanup(&store, &root, &project.id).unwrap());
+        assert!(store.project(&project.id).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

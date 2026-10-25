@@ -1,0 +1,15 @@
+/* The inspector's views as a VS Code-style icon bar on the panel's left edge. */
+.inspector{display:grid;grid-template-columns:44px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);padding-left:0}
+.inspector>:not(.inspector-tabs,.inspector-resize-handle){grid-column:2}
+.inspector>:is(.inspector-content,.browser-panel,.simulator-panel,.vm-panel){grid-row:2;min-height:0}
+html[data-theme] .inspector>.inspector-tabs{grid-column:1;grid-row:1/3;flex-direction:column;flex-wrap:nowrap;align-items:stretch;justify-content:flex-start;gap:2px;min-height:0;padding:8px 0 8px 6px;border-radius:0;background:transparent;border-right:1px solid var(--border);overflow-y:auto;overflow-x:hidden}
+html[data-theme] .inspector>.inspector-tabs>button{position:relative;width:38px;height:40px;min-height:40px;padding:0;justify-content:center;border-radius:3px;color:var(--muted);background:transparent;box-shadow:none;font-weight:inherit}
+.inspector>.inspector-tabs>button .icon{width:20px;height:20px}
+.inspector>.inspector-tabs>button:hover{color:var(--text)}
+html[data-theme] .inspector>.inspector-tabs>button.selected{color:var(--text);background:transparent;box-shadow:none}
+.inspector>.inspector-tabs>button.selected::before{content:"";position:absolute;left:-6px;top:8px;bottom:8px;width:2px;border-radius:1px;background:var(--accent)}
+.inspector>.inspector-tabs>button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.inspector>.inspector-tabs>.segment-thumb{display:none}
+.inspector>.inspector-tabs>button>span{position:absolute;right:3px;bottom:6px;min-width:15px;padding:0 3px;border-radius:7px;line-height:14px;text-align:center;font-size:.6rem;font-weight:650;background:var(--accent);color:var(--on-accent)}
+.inspector-title{margin:0;font-size:.7rem;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+html .inspector-heading{padding-left:14px}

@@ -1,0 +1,12 @@
+{
+  "name": "pandacode-relay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "node --test test/*.test.ts"
+  },
+  "devDependencies": { "@cloudflare/workers-types": "^5.20261008.1", "@types/node": "^22.0.0", "typescript": "^6.0.3" }
+}

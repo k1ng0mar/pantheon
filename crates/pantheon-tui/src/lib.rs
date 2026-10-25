@@ -130,3 +130,4 @@ pub mod todo_card;
 // Native ratatui renderers for the UI protocol (`pantheon_api::ui`):
 // each component lowers to transcript lines in the current theme.
 pub mod ui_render;
+pub mod desktop;

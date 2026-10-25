@@ -1,0 +1,12 @@
+{
+  "name": "pandacode",
+  "version": "0.3.16",
+  "description": "Install PandaCode, the open-source desktop app for coding agents, with npx pandacode.",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "bin": { "pandacode": "bin/pandacode.mjs" },
+  "files": ["bin", "installer.mjs", "icon.png", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "repository": { "type": "git", "url": "git+https://github.com/aicodeking/pandacode.git", "directory": "packages/npx" },
+  "homepage": "https://github.com/aicodeking/pandacode"
+}

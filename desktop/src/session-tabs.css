@@ -1,0 +1,20 @@
+/* Session tabs (MonoCode steal, plan doc §11): one tab per open task over
+ * the conversation column. Sits above the file-tabs strip. */
+
+.session-tabs{display:flex;align-items:stretch;gap:2px;height:36px;padding:4px 8px 0;border-bottom:1px solid var(--border);background:var(--panel);overflow-x:auto;scrollbar-width:none;flex-shrink:0}
+.session-tabs::-webkit-scrollbar{display:none}
+.session-tabs[hidden]{display:none}
+.session-tab{position:relative;display:inline-flex;align-items:center;gap:6px;max-width:220px;min-width:96px;padding:0 6px 0 9px;border-radius:5px 5px 0 0;color:var(--muted);font-size:.8rem;line-height:1.2;cursor:pointer;user-select:none;white-space:nowrap}
+.session-tab:hover{background:var(--raised);color:var(--text)}
+.session-tab.active{background:var(--raised);color:var(--text)}
+.session-tab.active::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;border-radius:1px 1px 0 0;background:var(--accent)}
+.session-tab-logo{width:14px;height:14px;flex-shrink:0}
+.session-tab .session-tab-logo svg,.session-tab .session-tab-logo img{width:14px;height:14px}
+.session-tab-title{overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.session-tab-run{width:7px;height:7px;border-radius:50%;background:var(--accent);flex-shrink:0;animation:session-tab-pulse 1.6s ease-in-out infinite}
+@keyframes session-tab-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media(prefers-reduced-motion:reduce){.session-tab-run{animation:none}}
+.session-tab-badge{min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--accent-dim);color:var(--accent-ink);font-size:.66rem;font-weight:620;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.session-tab-close{width:18px;height:18px;border-radius:3px;color:var(--faint);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.session-tab-close .icon{width:11px;height:11px}
+.session-tab-close:hover{background:var(--border);color:var(--text)}

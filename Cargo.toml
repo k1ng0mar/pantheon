@@ -51,6 +51,7 @@ members = [
   # `cargo test -p pantheon-eval`.
   "eval",
 ]
+exclude = ["desktop"]
 
 [workspace.package]
 version = "1.1.2"

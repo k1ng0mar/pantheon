@@ -1581,6 +1581,9 @@ timeout_ms = 5000
         "serve" => {
             crate::agui::cmd_serve(&args);
         }
+        "desktop" => {
+            crate::desktop::cmd_desktop(&args);
+        }
         "dashboard" => {
             cmd_dashboard(&args);
         }
