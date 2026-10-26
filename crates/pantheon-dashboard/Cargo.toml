@@ -67,7 +67,7 @@ serde_yaml.workspace = true
 # GetExitCodeProcess. Already in the lock as a transitive dep, so the
 # windows release build pays nothing new.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [lints]
 workspace = true
