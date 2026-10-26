@@ -34,7 +34,10 @@ pub const PUBLIC_COMMANDS: &[(&str, &str)] = &[
     ("workspace", "worktree, codebase"),
     ("tasks", "schedule, pipeline, swarm, nightly"),
     ("serve", "api, gateway, dashboard, install"),
-        ("desktop", "build + launch the desktop app, register it in app menus"),
+    (
+        "desktop",
+        "build + launch the desktop app, register it in app menus",
+    ),
     ("config", "set, get, edit, path"),
     ("setup", "first-run wizard, migrate"),
     ("doctor", "preflight check, repair"),

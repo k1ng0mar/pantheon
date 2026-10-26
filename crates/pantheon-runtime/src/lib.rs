@@ -1579,6 +1579,11 @@ pub fn new_turn_id() -> String {
     new_scoped_id("turn")
 }
 
+/// Message IDs are process-local and unique per `agent_message` tool call.
+pub fn new_message_id() -> String {
+    new_scoped_id("msg")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

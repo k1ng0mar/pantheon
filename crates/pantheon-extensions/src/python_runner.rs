@@ -5,7 +5,7 @@ use crate::hooks::Hook;
 use crate::manifest::PluginManifest;
 use pantheon_api::capability::{Capability, Policy};
 use pantheon_api::error::{Layer, PantheonError};
-use pantheon_exec::sandbox::{build_sandboxed, enforce, Enforcement};
+use pantheon_exec::sandbox::{build_sandboxed_checked, enforce, Enforcement};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -361,17 +361,22 @@ pub fn fire_hook_full(
     let cwd = arg_dir.clone();
     let (mut cmd, group_leader) = match &profile {
         // Policy allowed it: the enforcement's sandbox profile decides
-        // how isolated the child runs (namespace wrapper + rlimits where
-        // the host supports them; a direct spawn where it does not - the
-        // policy gate above is what restores enforcement, the wrapper is
-        // best-effort isolation, see build_sandboxed).
-        //
-        // build_sandboxed confines the child via pre_exec setsid(), so
-        // the child is a process-group leader and run_drained may
-        // killpg the group on a stuck drain. A direct spawn is not a
-        // group leader - signalling its pid as a group could hit
-        // unrelated processes.
-        Some(profile) => (build_sandboxed(profile, &cfg.python, &args, &cwd), true),
+        // how isolated the child runs. `build_sandboxed_checked` applies
+        // the same fail-closed gate as `run_sandboxed`: a boundary that
+        // needs a wrapper which cannot initialize refuses the spawn
+        // (`EXT_SANDBOX`) unless the direct fallback is opted in - the
+        // policy gate above decides *whether*, this guarantees *how
+        // isolated*.
+        Some(profile) => {
+            let (cmd, _sandboxed) = build_sandboxed_checked(profile, &cfg.python, &args, &cwd)
+                .map_err(|e| xerr("EXT_SANDBOX", e.cause, false))?;
+            // The checked build confines the child via pre_exec setsid(),
+            // so it is a process-group leader and run_drained may killpg
+            // the group on a stuck drain. A direct spawn is not a group
+            // leader - signalling its pid as a group could hit unrelated
+            // processes.
+            (cmd, true)
+        }
         None => {
             let mut cmd = Command::new(&cfg.python);
             cmd.args(args);

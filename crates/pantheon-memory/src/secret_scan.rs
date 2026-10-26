@@ -22,11 +22,20 @@
 const LABELED: &[(&str, &str)] = &[
     ("password", "labeled password"),
     ("passwd", "labeled password"),
+    ("passphrase", "labeled password"),
     ("api_key", "labeled api key"),
     ("apikey", "labeled api key"),
     ("api-key", "labeled api key"),
     ("client_secret", "labeled client secret"),
     ("secret", "labeled secret"),
+    // Compound credential labels: the boundary check above treats `_` as a
+    // word character, so `secret` alone does not match inside
+    // `aws_secret_access_key` (nor does `secret_access_key`, whose left
+    // neighbour is `_`). These are common enough to list explicitly.
+    ("secret_key", "labeled secret"),
+    ("secret_access_key", "labeled secret"),
+    ("aws_secret_access_key", "labeled secret"),
+    ("db_password", "labeled password"),
     ("access_token", "labeled access token"),
     ("auth_token", "labeled auth token"),
     ("token", "labeled token"),

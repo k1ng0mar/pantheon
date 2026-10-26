@@ -63,12 +63,13 @@ pub fn cmd_desktop(argv: &[String]) -> ! {
     }
 
     println!("launching Pantheon desktop…");
-    let status = Command::new(&binary)
-        .status()
-        .unwrap_or_else(|error| {
-            eprintln!("pantheon desktop: failed to launch {}: {error}", binary.display());
-            std::process::exit(1);
-        });
+    let status = Command::new(&binary).status().unwrap_or_else(|error| {
+        eprintln!(
+            "pantheon desktop: failed to launch {}: {error}",
+            binary.display()
+        );
+        std::process::exit(1);
+    });
     std::process::exit(status.code().unwrap_or(1));
 }
 
@@ -105,7 +106,9 @@ fn home() -> Option<PathBuf> {
 fn ensure_built(dir: &Path, rebuild: bool) -> Result<(), String> {
     let run = |description: &str, mut command: Command| -> Result<(), String> {
         println!("pantheon desktop: {description}…");
-        let status = command.status().map_err(|e| format!("{description}: {e}"))?;
+        let status = command
+            .status()
+            .map_err(|e| format!("{description}: {e}"))?;
         if status.success() {
             Ok(())
         } else {
@@ -120,18 +123,28 @@ fn ensure_built(dir: &Path, rebuild: bool) -> Result<(), String> {
     }
 
     let dist = dir.join("dist/index.html");
-    if rebuild || !dist.exists() || stale(&dist, &dir.join("src")) || stale(&dist, &dir.join("index.html")) {
+    if rebuild
+        || !dist.exists()
+        || stale(&dist, &dir.join("src"))
+        || stale(&dist, &dir.join("index.html"))
+    {
         let mut command = Command::new("npm");
         command.arg("run").arg("build").current_dir(dir);
         run("building desktop frontend (vite)", command)?;
     }
 
     let binary = dir.join("src-tauri/target/release/pantheon-desktop");
-    if rebuild || !binary.exists() || stale(&binary, &dir.join("dist")) || stale(&binary, &dir.join("src-tauri/src")) {
+    if rebuild
+        || !binary.exists()
+        || stale(&binary, &dir.join("dist"))
+        || stale(&binary, &dir.join("src-tauri/src"))
+    {
         let mut command = Command::new("cargo");
         // custom-protocol embeds the built frontend; without it the shell
         // bakes the devUrl and the window shows WebKit's connect-refused page.
-        command.args(["build", "--release", "--features", "custom-protocol"]).current_dir(dir.join("src-tauri"));
+        command
+            .args(["build", "--release", "--features", "custom-protocol"])
+            .current_dir(dir.join("src-tauri"));
         run("building desktop shell (cargo build --release)", command)?;
     }
     Ok(())
@@ -182,6 +195,8 @@ fn register_desktop_entry(dir: &Path, binary: &Path) -> Result<PathBuf, String> 
     std::fs::write(&path, entry).map_err(|e| format!("write entry: {e}"))?;
     // Menu caches pick up user entries without this on most desktops; run it
     // when present and ignore failure (best effort, never blocks launch).
-    let _ = Command::new("update-desktop-database").arg(&applications).status();
+    let _ = Command::new("update-desktop-database")
+        .arg(&applications)
+        .status();
     Ok(path)
 }

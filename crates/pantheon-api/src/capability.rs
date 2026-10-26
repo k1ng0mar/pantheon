@@ -54,6 +54,14 @@ pub enum Capability {
     MemoryConfirm,
     SecretsUse,
     AgentSpawn,
+    /// Leaving a message for another agent profile through the collaboration
+    /// mailbox (`agent_message` / `agent_inbox` tools). Split from
+    /// [`Capability::AgentSpawn`] because leaving a note for a peer is not
+    /// spawning a child: a profile that may coordinate with peers must not
+    /// necessarily be able to run a sub-agent in-process. Registered under
+    /// the same Delegation tool group as `delegate`, so one toggle governs
+    /// agent-to-agent coordination.
+    AgentMessage,
     /// Enabling a bundled plugin (`enable_plugin` tool). Split out so the
     /// agent can propose it but never self-authorize: default policies mark
     /// this Approval, so the run parks for a human before any plugin's
@@ -111,6 +119,7 @@ impl Capability {
             Capability::MemoryConfirm => "memory.confirm".to_string(),
             Capability::SecretsUse => "secrets.use".to_string(),
             Capability::AgentSpawn => "agent.spawn".to_string(),
+            Capability::AgentMessage => "agent.message".to_string(),
             Capability::PluginEnable => "plugin.enable".to_string(),
             Capability::McpEnable => "mcp.enable".to_string(),
             Capability::Other(name) => format!("other.{}", name.trim().replace(' ', ".")),
@@ -139,6 +148,7 @@ impl Capability {
             "memory.confirm" => Capability::MemoryConfirm,
             "secrets.use" => Capability::SecretsUse,
             "agent.spawn" => Capability::AgentSpawn,
+            "agent.message" => Capability::AgentMessage,
             "plugin.enable" => Capability::PluginEnable,
             "mcp.enable" => Capability::McpEnable,
             other => Capability::Other(other.to_string()),
@@ -205,6 +215,7 @@ impl Policy {
             .approval(Capability::Other("cloudflare.destroy".into()))
             .allow(Capability::MemoryRead)
             .allow(Capability::AgentSpawn)
+            .allow(Capability::AgentMessage)
             .allow(Capability::Other(crate::todo::TODO_TOOL_NAME.into()))
             .allow(Capability::Other(VERDICT_TOOL_NAME.into()))
     }
@@ -295,6 +306,36 @@ mod binary_trace_tests {
         assert_eq!(
             Policy::coder().check(&Capability::FilesystemRead),
             Decision::Allow
+        );
+    }
+
+    #[test]
+    fn agent_message_token_round_trip() {
+        assert_eq!(Capability::AgentMessage.token(), "agent.message");
+        assert_eq!(
+            Capability::from_token("agent.message"),
+            Capability::AgentMessage
+        );
+    }
+
+    #[test]
+    fn coder_policy_allows_agent_message() {
+        // Messaging a peer is a coordination capability, and the coder
+        // preset grants it (as it already grants AgentSpawn for
+        // delegation). The runtime still requires an attached profile and
+        // the Delegation tool group before registering the tools.
+        assert_eq!(
+            Policy::coder().check(&Capability::AgentMessage),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn default_policy_denies_unlisted_agent_message() {
+        // Fail-closed: a policy that never mentions AgentMessage denies it.
+        assert_eq!(
+            Policy::default().check(&Capability::AgentMessage),
+            Decision::Deny
         );
     }
 }

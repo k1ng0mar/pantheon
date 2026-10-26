@@ -238,6 +238,7 @@ fn run_delivered_task(
     say: &Option<String>,
     target: &str,
     verdict_tool: bool,
+    agent_profile: Option<&str>,
 ) {
     let text = match say {
         Some(s) => s.clone(),
@@ -291,6 +292,56 @@ fn run_delivered_task(
                 std::process::exit(1);
             }
         };
+    // Attach the declared profile so this run executes under its identity.
+    // This is what registers the delegation and agent-to-agent messaging
+    // tools (`agent_message`/`agent_inbox`) for a swarm child: without an
+    // attached AgentRuntime, `Session::agent()` is None and the whole
+    // collaboration tool surface stays unregistered. A profile that cannot
+    // resolve is a hard error - silently running anonymous would hide the
+    // very mailbox the caller asked for.
+    if let Some(name) = agent_profile {
+        match file_cfg.as_ref() {
+            None => {
+                eprintln!("--agent {name:?} needs a config to resolve the profile");
+                std::process::exit(1);
+            }
+            Some(cfg) => {
+                let reg = match cfg.profile_registry() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("profile registry: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                // Resolve against the config-level default preset, exactly
+                // as the CLI swarm path does, so a `--agent` child inherits
+                // the same policy shape as a `pantheon swarm` role.
+                let effective = match reg.resolve(name, &cfg.policy.value) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("resolve --agent {name:?}: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                let agent = match pantheon_runtime::AgentRuntime::new(
+                    session.supervisor.clone(),
+                    reg,
+                    effective,
+                    data_dir(),
+                ) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!("build agent runtime for {name:?}: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                if let Err(e) = session.with_agent(agent) {
+                    eprintln!("attach agent {name:?}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
     if verdict_tool {
         session.set_verdict_tool(true);
     }
@@ -1141,6 +1192,13 @@ timeout_ms = 5000
             // an ordinary in-process turn; the channel names hand the turn to
             // the gateway so the reply lands where the user is.
             let mut deliver: Option<String> = None;
+            // Which agent profile this run belongs to. The dashboard's swarm
+            // worker threads `--agent <profile>` so a swarm child executes
+            // under its declared identity - and therefore attaches an
+            // AgentRuntime, which is what registers the delegation and
+            // agent-to-agent messaging tools. Without it the child is an
+            // anonymous session with no mailbox.
+            let mut agent_profile: Option<String> = None;
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
@@ -1200,6 +1258,12 @@ timeout_ms = 5000
                             platform = args[i].clone();
                         }
                     }
+                    "--agent" => {
+                        i += 1;
+                        if i < args.len() {
+                            agent_profile = Some(args[i].clone());
+                        }
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -1256,7 +1320,7 @@ timeout_ms = 5000
                 // turn printed to this terminal - not the synthetic ledger
                 // writer below. Gating it on `target != "session"` meant the
                 // default path produced an event trace with no model call.
-                return run_delivered_task(&id, &say, &target, verdict_tool);
+                return run_delivered_task(&id, &say, &target, verdict_tool, agent_profile.as_deref());
             }
             // `run` writes ledger events directly. It does not call a model
             // and does not execute the named tool, so it is a synthetic-run

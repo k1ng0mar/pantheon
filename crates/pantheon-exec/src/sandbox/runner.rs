@@ -333,6 +333,56 @@ pub fn build_sandboxed(
     cmd
 }
 
+/// Build a sandboxed command and enforce the fail-closed contract.
+///
+/// [`build_sandboxed`] is best-effort by construction: when the boundary's
+/// wrapper is missing it returns a plain command. This helper is the
+/// fail-closed gate that [`run_sandboxed`] applies, exposed so the callers
+/// that build and spawn themselves (the MCP client, the Python plugin
+/// runner) cannot silently run un-isolated. When the boundary needs a
+/// wrapper that cannot initialize and the direct fallback is not opted in,
+/// it returns `SANDBOX_UNAVAILABLE` instead of a command.
+///
+/// Returns the command to spawn and whether it is actually isolated
+/// (`false` only when the direct fallback was explicitly opted in, or the
+/// boundary is `InProcess` - the caller-gated exception).
+pub fn build_sandboxed_checked(
+    profile: &SandboxProfile,
+    program: &str,
+    args: &[&str],
+    cwd: &str,
+) -> Result<(Command, bool), PantheonError> {
+    let builder = build_sandboxed(profile, program, args, cwd);
+    let sandboxed = builder.get_program().to_string_lossy() != program;
+    let needs_wrapper = !matches!(profile.boundary, super::ExecutionBoundary::InProcess);
+    if needs_wrapper && (!sandboxed || !wrapper_initializes(profile, cwd)) {
+        if !direct_fallback_allowed(profile) {
+            return Err(berr(
+                "SANDBOX_UNAVAILABLE",
+                format!(
+                    "sandbox wrapper for {:?} boundary unavailable and direct fallback \
+                     not opted in (set PANTHEON_SANDBOX_FALLBACK=allow or \
+                     allow_direct_fallback); refusing to run unsandboxed",
+                    profile.boundary
+                ),
+                false,
+            ));
+        }
+        // Fallback: run directly. The wrapper is either missing or present
+        // but unusable on this host (e.g. bwrap refuses the uid map), so
+        // `build_sandboxed` may have handed back a wrapped command - rebuild
+        // as a plain one. The fallback loses the namespace boundary, never
+        // the env boundary: the child still does not inherit host secrets,
+        // and the profile's rlimits still apply.
+        let mut cmd = direct_command(program, args, cwd);
+        scrub_child_env(&mut cmd);
+        #[cfg(unix)]
+        confine_child(&mut cmd, profile);
+        return Ok((cmd, false));
+    }
+    Ok((builder, sandboxed))
+}
+
 /// Child-side setup, issued in the forked child just before exec (via
 /// `pre_exec`):
 ///
@@ -725,34 +775,7 @@ pub fn run_sandboxed_with_spawn_hook_and_env(
     let timeout_ms = profile.wall_clock_ms;
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
 
-    let mut builder = build_sandboxed(profile, program, args, cwd);
-    let mut sandboxed = builder.get_program().to_string_lossy() != program;
-    // Fail closed: a boundary that needs a wrapper but didn't get one
-    // (wrapper binary missing, or the probe showed it cannot initialize in
-    // this environment) refuses to run rather than silently dropping the
-    // isolation. The direct-spawn fallback needs explicit opt-in.
-    let needs_wrapper = !matches!(profile.boundary, super::ExecutionBoundary::InProcess);
-    if needs_wrapper && (!sandboxed || !wrapper_initializes(profile, cwd)) {
-        if !direct_fallback_allowed(profile) {
-            return Err(berr(
-                "SANDBOX_UNAVAILABLE",
-                format!(
-                    "sandbox wrapper for {:?} boundary unavailable and direct fallback \
-                     not opted in (set PANTHEON_SANDBOX_FALLBACK=allow or \
-                     allow_direct_fallback); refusing to run unsandboxed",
-                    profile.boundary
-                ),
-                false,
-            ));
-        }
-        builder = direct_command(program, args, cwd);
-        // The fallback loses the namespace boundary, never the env
-        // boundary: the child still does not inherit host secrets.
-        scrub_child_env(&mut builder);
-        #[cfg(unix)]
-        confine_child(&mut builder, profile);
-        sandboxed = false;
-    }
+    let (mut builder, sandboxed) = build_sandboxed_checked(profile, program, args, cwd)?;
     // Named extras go in after every scrub path, so both the wrapped and
     // the direct-fallback command get exactly the same variables.
     for (k, v) in extra_env {

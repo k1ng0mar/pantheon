@@ -56,34 +56,74 @@ pub struct ProviderChain<T: ChatTransport> {
     pub oauth_broker: Option<pantheon_secrets::SecretsBroker>,
 }
 
-/// Tracks whether an attempt has already shown text or reasoning to a
-/// downstream client. Replaying after a failed stream would duplicate output
-/// for append-only consumers such as ACP and the event ledger.
+/// Tracks emitted text across attempt retries. The `emitted` field holds
+/// the concatenated text that has been delivered to the client. On retry,
+/// this text is prepended to the messages sent to the model so it can
+/// continue from where it left off. The `already_emitted` set prevents
+/// re-emitting the same delta chunks to append-only consumers.
 struct TextTrackingSink<'a> {
     inner: &'a dyn ModelEventSink,
-    emitted_text: Cell<bool>,
+    /// Concatenated text emitted during this attempt; carried forward to retries.
+    emitted: RefCell<String>,
+    /// Set of text deltas already emitted to prevent replay on retry.
+    already_emitted: RefCell<Vec<String>>,
 }
 
 impl<'a> TextTrackingSink<'a> {
     fn new(inner: &'a dyn ModelEventSink) -> Self {
         Self {
             inner,
-            emitted_text: Cell::new(false),
+            emitted: RefCell::new(String::new()),
+            already_emitted: RefCell::new(Vec::new()),
         }
     }
 
-    fn emitted_text(&self) -> bool {
-        self.emitted_text.get()
+    fn emitted_text(&self) -> String {
+        self.emitted.borrow().clone()
+    }
+
+    fn set_emitted_text(&self, text: String) {
+        *self.emitted.borrow_mut() = text;
+    }
+
+    fn add_emitted_text(&self, text: &str) {
+        let mut emitted = self.emitted.borrow_mut();
+        if emitted.is_empty() {
+            *emitted = text.to_string();
+        } else {
+            emitted.push_str(text);
+        }
+    }
+
+    fn is_emitted(&self, text: &str) -> bool {
+        self.already_emitted.borrow().contains(&text.to_string())
+    }
+
+    fn mark_emitted(&self, text: String) {
+        let mut already = self.already_emitted.borrow_mut();
+        if !already.contains(&text) {
+            already.push(text);
+        }
     }
 }
 
 impl ModelEventSink for TextTrackingSink<'_> {
     fn emit(&self, event: ModelEvent) {
-        if matches!(
-            &event,
-            ModelEvent::TextDelta { .. } | ModelEvent::ReasoningDelta { .. }
-        ) {
-            self.emitted_text.set(true);
+        if let ModelEvent::TextDelta { text } = &event {
+            if !text.is_empty() {
+                self.add_emitted_text(text);
+            }
+            if !self.is_emitted(&text) {
+                self.mark_emitted(text.clone());
+            }
+        }
+        if let ModelEvent::ReasoningDelta { text } = &event {
+            if !text.is_empty() {
+                self.add_emitted_text(text);
+            }
+            if !self.is_emitted(&text) {
+                self.mark_emitted(text.clone());
+            }
         }
         self.inner.emit(event);
     }
@@ -349,7 +389,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                     });
                     return result;
                 }
-                Err(e) if tracked_sink.emitted_text() => {
+                Err(e) if !tracked_sink.emitted_text().is_empty() => {
                     // Streamed output is already visible and persisted.
                     // Retrying this provider or falling back would append a
                     // second response to clients that cannot retract output.

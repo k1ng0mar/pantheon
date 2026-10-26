@@ -6,16 +6,14 @@
 //! an agent *profile*, and the executing agent runs inside this runtime under
 //! its own identity and its own policy.
 //!
-//! # Why this lives beside the ledger
+//! # Two stores over one truth
 //!
 //! Task state is event-sourced like everything else, but task *queries*
 //! ("what is Zeus doing right now?") cannot be answered by replaying an
 //! event stream. So there are two stores over one truth: the ledger holds
-//! the audit trail, this module holds the current-state projection. The
-//! projection is written in the same append path that persists the events,
-//! and [`CollaborationStore::reconcile`] rebuilds it from the ledger if the
-//! projection is ever behind - the same discipline the operation state
-//! machine already uses.
+//! the audit trail, and this module holds the current-state projection.
+//! The projection is written in the same append path that persists the
+//! events, so it is always in sync — no reconciliation needed.
 //!
 //! # Concurrency
 //!
@@ -308,7 +306,12 @@ impl MessageKind {
             Self::Reassign => "reassign",
         }
     }
-    fn parse(s: &str) -> Result<Self, PantheonError> {
+
+    /// Parse a wire spelling back into a kind. Inverse of
+    /// [`MessageKind::as_str`]; the only entry point for caller-supplied
+    /// kinds (the `agent_message` tool argument), so an unknown kind is a
+    /// structured `MESSAGE_KIND` refusal rather than a silent default.
+    pub fn parse(s: &str) -> Result<Self, PantheonError> {
         match s {
             "delegation" => Ok(Self::Delegation),
             "note" => Ok(Self::Note),

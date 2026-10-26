@@ -135,10 +135,19 @@ impl SecretsBroker {
     /// a backend error and the file vault that would have worked was never
     /// opened.
     pub fn durable(data_dir: &Path) -> Result<Self, SecretsError> {
+        let keychain_usable = crate::keychain::KeychainVault::platform_available().is_ok()
+            && crate::keychain::KeychainVault::usable().is_ok();
+        Self::durable_with(data_dir, keychain_usable)
+    }
+
+    /// The selection half of [`Self::durable`], with the environment probe
+    /// split out. Tests pass `keychain_usable: false` so the file-vault
+    /// fallback is exercised without touching the developer's real keyring
+    /// (a locked keyring would otherwise prompt for an unlock, bounded by
+    /// the keychain operation timeout).
+    fn durable_with(data_dir: &Path, keychain_usable: bool) -> Result<Self, SecretsError> {
         let mut durable: Vec<Arc<dyn SecretVault>> = Vec::new();
-        if crate::keychain::KeychainVault::platform_available().is_ok()
-            && crate::keychain::KeychainVault::usable().is_ok()
-        {
+        if keychain_usable {
             durable.push(Arc::new(crate::keychain::KeychainVault::new()));
         } else {
             durable.push(Arc::new(crate::filevault::EncryptedFileVault::open(
@@ -340,10 +349,14 @@ mod tests {
     use super::*;
 
     /// Item 3: a secret `set` through the durable broker survives a
-    /// full drop-and-recreate from the same data dir. On a host with no
-    /// OS keychain (this environment), the fallback is the
-    /// EncryptedFileVault - a memory-only fallback would lose the
-    /// secret at the second `durable()` call.
+    /// full drop-and-recreate from the same data dir. The fallback for a
+    /// host with no usable OS keychain is the EncryptedFileVault - a
+    /// memory-only fallback would lose the secret at the second broker.
+    ///
+    /// Forces the fallback instead of probing the real keychain: a test
+    /// must not write to the developer's credential store, and a locked
+    /// keyring would otherwise prompt for an unlock (now bounded by the
+    /// keychain operation timeout).
     #[test]
     fn durable_broker_secret_survives_restart() {
         let dir = std::env::temp_dir().join(format!(
@@ -352,12 +365,12 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         {
-            let broker = SecretsBroker::durable(&dir).expect("durable broker opens");
+            let broker = SecretsBroker::durable_with(&dir, false).expect("durable broker opens");
             broker
                 .set("TEST_RESTART_SECRET", SecretValue::new("s3cr3t-value"))
                 .expect("set through the durable broker");
         }
-        let broker2 = SecretsBroker::durable(&dir).expect("durable broker reopens");
+        let broker2 = SecretsBroker::durable_with(&dir, false).expect("durable broker reopens");
         let got = broker2
             .resolve("TEST_RESTART_SECRET")
             .expect("resolve works")

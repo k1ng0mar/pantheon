@@ -29,6 +29,18 @@ pub fn serr(code: &str, cause: String) -> PantheonError {
         "",
     )
 }
+/// Startup recovery could not undo a torn apply. The begin stays open and
+/// the next start retries, so the guidance is about the underlying IO fault.
+fn recover_err(cause: String) -> PantheonError {
+    PantheonError::new(
+        "SAFE_RECOVER",
+        Layer::Execution,
+        false,
+        cause,
+        "free disk space or fix permissions on the checkpoint and target, then restart pantheon",
+        "",
+    )
+}
 pub fn fnv1a_hex(data: &[u8]) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in data {
@@ -696,40 +708,51 @@ impl SafeWriter {
             expect_prev = e.hash.clone();
         }
         let mut begins: Vec<&JournalEntry> = vec![];
-        let mut commits: Vec<(&str, &Option<String>)> = vec![];
+        // Terminal entries close a begin. `commit` is keyed by the begin's
+        // own id (stage id, or "direct"); `rollback` and `recover` carry the
+        // checkpoint id instead, so both fields are matched below.
+        let mut terminals: Vec<(&str, &Option<String>)> = vec![];
         for e in &entries {
             if e.kind == "begin" {
                 begins.push(e);
             }
-            if e.kind == "commit" || e.kind == "rollback" {
-                commits.push((e.id.as_str(), &e.checkpoint));
+            if e.kind == "commit" || e.kind == "rollback" || e.kind == "recover" {
+                terminals.push((e.id.as_str(), &e.checkpoint));
             }
         }
         let mut recovered = vec![];
         for b in begins {
-            let done = commits.iter().any(|(cid, _)| *cid == b.id.as_str());
+            let done = terminals.iter().any(|(cid, ccp)| {
+                *cid == b.id.as_str()
+                    || (b.checkpoint.is_some() && ccp.as_deref() == b.checkpoint.as_deref())
+            });
             if done {
                 continue;
             }
-            if let Some(cp) = &b.checkpoint {
-                if self.checkpoint_path(cp).exists() {
-                    let dir = self.checkpoints_dir.join(cp);
-                    if let Ok(raw) = std::fs::read_to_string(dir.join("manifest.json")) {
-                        if let Ok(cpdata) = serde_json::from_str::<Checkpoint>(&raw) {
-                            for f in &cpdata.files {
-                                if let Ok(blob) = std::fs::read(dir.join("blobs").join(&f.blob)) {
-                                    if f.existed {
-                                        let _ = atomic_write(&f.path, &blob);
-                                    } else if f.path.exists() {
-                                        let _ = std::fs::remove_file(&f.path);
-                                    }
-                                }
-                            }
-                            recovered.push(cp.clone());
-                        }
-                    }
+            let Some(cp) = &b.checkpoint else {
+                continue;
+            };
+            let dir = self.checkpoints_dir.join(cp);
+            let raw = std::fs::read_to_string(dir.join("manifest.json")).map_err(|e| {
+                recover_err(format!("checkpoint {cp} for torn apply {}: {e}", b.id))
+            })?;
+            let cpdata: Checkpoint = serde_json::from_str(&raw).map_err(|e| {
+                recover_err(format!("checkpoint {cp} for torn apply {}: {e}", b.id))
+            })?;
+            // A partial restore must not be journaled as recovered: the
+            // begin stays open and the next start retries it.
+            for f in &cpdata.files {
+                let blob = std::fs::read(dir.join("blobs").join(&f.blob))
+                    .map_err(|e| recover_err(format!("checkpoint {cp} blob {}: {e}", f.blob)))?;
+                if f.existed {
+                    atomic_write(&f.path, &blob)
+                        .map_err(|e| recover_err(format!("restore {}: {e}", f.path.display())))?;
+                } else if f.path.exists() {
+                    std::fs::remove_file(&f.path)
+                        .map_err(|e| recover_err(format!("remove {}: {e}", f.path.display())))?;
                 }
             }
+            recovered.push(cp.clone());
         }
         for id in &recovered {
             self.journal_append("recover", id, Some(id.clone()), -1, vec![])?;

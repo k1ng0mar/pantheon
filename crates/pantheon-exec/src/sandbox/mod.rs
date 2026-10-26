@@ -21,8 +21,8 @@ pub use kernel::kernel_layer_available;
 pub use kernel::{ALLOWED_SYSCALLS, DENIED_SYSCALLS};
 pub use level::{profile_for, ExecutionBoundary, SandboxProfile};
 pub use runner::{
-    build_sandboxed, run_sandboxed, run_sandboxed_with_env, run_sandboxed_with_spawn_hook_and_env,
-    SandboxResult,
+    build_sandboxed, build_sandboxed_checked, run_sandboxed, run_sandboxed_with_env,
+    run_sandboxed_with_spawn_hook_and_env, SandboxResult,
 };
 
 use pantheon_api::capability::Capability;
@@ -119,6 +119,7 @@ impl SandboxLevel {
             | Capability::BinaryTrace
             | Capability::SecretsUse
             | Capability::AgentSpawn
+            | Capability::AgentMessage
             | Capability::MemoryConfirm
             | Capability::PluginEnable
             | Capability::McpEnable
