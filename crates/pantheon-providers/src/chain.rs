@@ -23,7 +23,7 @@ use pantheon_api::error::PantheonError;
 use pantheon_api::message::{Message, ToolSchema};
 use pantheon_api::model::{DefaultModel, ModelPolicy};
 use pantheon_secrets::SecretValue;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,6 +54,39 @@ pub struct ProviderChain<T: ChatTransport> {
     /// Optional broker for OAuth token resolution. When set and a provider
     /// declares `oauth_apps`, the chain tries those apps before API keys.
     pub oauth_broker: Option<pantheon_secrets::SecretsBroker>,
+}
+
+/// Tracks whether an attempt has already shown text or reasoning to a
+/// downstream client. Replaying after a failed stream would duplicate output
+/// for append-only consumers such as ACP and the event ledger.
+struct TextTrackingSink<'a> {
+    inner: &'a dyn ModelEventSink,
+    emitted_text: Cell<bool>,
+}
+
+impl<'a> TextTrackingSink<'a> {
+    fn new(inner: &'a dyn ModelEventSink) -> Self {
+        Self {
+            inner,
+            emitted_text: Cell::new(false),
+        }
+    }
+
+    fn emitted_text(&self) -> bool {
+        self.emitted_text.get()
+    }
+}
+
+impl ModelEventSink for TextTrackingSink<'_> {
+    fn emit(&self, event: ModelEvent) {
+        if matches!(
+            &event,
+            ModelEvent::TextDelta { .. } | ModelEvent::ReasoningDelta { .. }
+        ) {
+            self.emitted_text.set(true);
+        }
+        self.inner.emit(event);
+    }
 }
 
 /// Retry budget + backoff shape for one chain entry (Umar's spec:
@@ -234,6 +267,7 @@ impl<T: ChatTransport> ProviderChain<T> {
             chain_index: idx,
             streaming: stream,
         });
+        let tracked_sink = TextTrackingSink::new(sink);
 
         let mut key_failures = 0usize;
         for (ki, one_key) in keys.iter().enumerate() {
@@ -255,7 +289,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                         opts,
                     );
                     if stream {
-                        openai::stream(&self.transport, req, sink)
+                        openai::stream(&self.transport, req, &tracked_sink)
                     } else {
                         openai::complete(&self.transport, req, sink)
                     }
@@ -274,7 +308,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                         opts,
                     );
                     if stream {
-                        anthropic::stream(&self.transport, req, sink)
+                        anthropic::stream(&self.transport, req, &tracked_sink)
                     } else {
                         anthropic::complete(&self.transport, req, sink)
                     }
@@ -314,6 +348,31 @@ impl<T: ChatTransport> ProviderChain<T> {
                         finish_reason: turn.finish_reason.clone(),
                     });
                     return result;
+                }
+                Err(e) if tracked_sink.emitted_text() => {
+                    // Streamed output is already visible and persisted.
+                    // Retrying this provider or falling back would append a
+                    // second response to clients that cannot retract output.
+                    let code = "PROVIDER_STREAM_INTERRUPTED";
+                    sink.emit(ModelEvent::AttemptFailed {
+                        provider: model.provider.clone(),
+                        model: model.model.clone(),
+                        chain_index: idx,
+                        code: code.into(),
+                        retryable: false,
+                        cause: format!(
+                            "partial output was already delivered; {}",
+                            failure_snippet(e)
+                        ),
+                    });
+                    return Err(PantheonError::new(
+                        code,
+                        Layer::Provider,
+                        false,
+                        format!("provider stream failed after partial output: {}", e.code),
+                        "review the partial output and retry the prompt if needed",
+                        "",
+                    ));
                 }
                 Err(e) if !last_key && is_key_failure(e) => {
                     // This key is dead/over quota; the next stacked key gets
@@ -364,7 +423,8 @@ impl<T: ChatTransport> ProviderChain<T> {
     /// Emits `RetryAttempt` before each wait so the UI shows
     /// "retrying n/3" instead of a frozen screen. Non-retryable failures
     /// skip retries entirely - the caller walks straight to the next
-    /// fallback.
+    /// fallback. A stream that already emitted text or reasoning is
+    /// terminal on error, since clients cannot retract its partial output.
     fn attempt_with_retries(
         &self,
         idx: usize,
@@ -557,6 +617,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                     });
                     return Ok(turn.outcome);
                 }
+                Err(e) if e.code == "PROVIDER_STREAM_INTERRUPTED" => return Err(e),
                 Err(e) => {
                     // Retryable or not, the walk continues to the next
                     // chain entry: retryable failures already burned their

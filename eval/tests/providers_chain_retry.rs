@@ -7,7 +7,7 @@ use pantheon_api::message::Message;
 use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy};
 use pantheon_providers::catalog;
 use pantheon_providers::chain::{ProviderChain, RetryConfig, Sleeper};
-use pantheon_providers::http::{ChatTransport, WireRequest};
+use pantheon_providers::http::{ChatTransport, StreamEnd, WireRequest};
 use pantheon_providers::model_event::{ModelEvent, ModelEventSink};
 use pantheon_secrets::SecretValue;
 use std::cell::RefCell;
@@ -48,6 +48,43 @@ struct ScriptStub {
     calls: AtomicUsize,
     outcomes: Mutex<VecDeque<Outcome>>,
 }
+
+/// The streaming path returns provider payloads one at a time, like the
+/// production SSE transport. Keeping the request body lets the test verify
+/// that the chain actually asks the provider to stream.
+struct StreamStub {
+    request_bodies: Mutex<Vec<String>>,
+    payloads: Vec<&'static str>,
+    fail_after_payloads: bool,
+}
+impl ChatTransport for StreamStub {
+    fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
+        panic!("streaming turns must use post_stream")
+    }
+
+    fn post_stream(
+        &self,
+        req: &WireRequest,
+        on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+    ) -> Result<StreamEnd, PantheonError> {
+        self.request_bodies.lock().unwrap().push(req.body.clone());
+        for payload in &self.payloads {
+            on_payload(payload)?;
+        }
+        if self.fail_after_payloads {
+            Err(PantheonError::new(
+                "PROVIDER_READ",
+                pantheon_api::error::Layer::Provider,
+                true,
+                "connection reset after partial text",
+                "retry the request",
+                "",
+            ))
+        } else {
+            Ok(StreamEnd::Done)
+        }
+    }
+}
 impl ChatTransport for ScriptStub {
     fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
@@ -78,11 +115,15 @@ impl ChatTransport for ScriptStub {
 }
 
 fn rate_provider(id: &str) {
+    provider_with_mode(id, catalog::ApiMode::OpenAi);
+}
+
+fn provider_with_mode(id: &str, api_mode: catalog::ApiMode) {
     catalog::register_custom_provider(catalog::ProviderMeta {
         id: id.to_string(),
         label: id.to_string(),
         base_url: "http://127.0.0.1:9/v1".to_string(),
-        api_mode: catalog::ApiMode::OpenAi,
+        api_mode,
         base_env: String::new(),
         key_env: format!("PANTHEON_KEY_{}", id.to_ascii_uppercase()),
         key_header: "Authorization".to_string(),
@@ -160,6 +201,176 @@ fn retry_events(events: &Collect) -> Vec<(u32, u32)> {
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn streaming_turn_sends_stream_request_and_emits_incremental_text() {
+    rate_provider("retry-stream");
+    let clock = Arc::new(FakeClock::default());
+    let transport = StreamStub {
+        request_bodies: Mutex::new(Vec::new()),
+        fail_after_payloads: false,
+        payloads: vec![
+            r#"{"choices":[{"delta":{"content":"hello "},"finish_reason":null}]}"#,
+            r#"{"choices":[{"delta":{"content":"world"},"finish_reason":null}]}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+        ],
+    };
+    let chain = ProviderChain {
+        policy: policy("retry-stream", &[]),
+        transport,
+        tools: vec![],
+        api_key: Some(SecretValue::new("k1")),
+        retry: RetryConfig::default(),
+        sleeper: clock,
+        last_resolved: RefCell::new(None),
+        session_max_tokens: None,
+        budget_max_tokens: None,
+        oauth_broker: None,
+    };
+    let events = Collect(RefCell::new(Vec::new()));
+
+    let outcome = chain
+        .turn_stream(&[Message::user("go")], &events)
+        .expect("streamed turn");
+
+    assert!(matches!(
+        outcome,
+        pantheon_agent::TurnOutcome::Text { ref text, .. } if text == "hello world"
+    ));
+    let bodies = chain.transport.request_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&bodies[0]).unwrap()["stream"],
+        true
+    );
+    let emitted: Vec<_> = events
+        .0
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            ModelEvent::TextDelta { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(emitted, ["hello ", "world"]);
+    assert!(events.0.borrow().iter().any(|event| matches!(
+        event,
+        ModelEvent::Attempt {
+            streaming: true,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn anthropic_streaming_turn_emits_incremental_text() {
+    provider_with_mode("retry-stream-anthropic", catalog::ApiMode::Anthropic);
+    let clock = Arc::new(FakeClock::default());
+    let transport = StreamStub {
+        request_bodies: Mutex::new(Vec::new()),
+        fail_after_payloads: false,
+        payloads: vec![
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":1}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello "}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}"#,
+            r#"{"type":"message_stop"}"#,
+        ],
+    };
+    let chain = ProviderChain {
+        policy: policy("retry-stream-anthropic", &[]),
+        transport,
+        tools: vec![],
+        api_key: Some(SecretValue::new("k1")),
+        retry: RetryConfig::default(),
+        sleeper: clock,
+        last_resolved: RefCell::new(None),
+        session_max_tokens: None,
+        budget_max_tokens: None,
+        oauth_broker: None,
+    };
+    let events = Collect(RefCell::new(Vec::new()));
+
+    let outcome = chain
+        .turn_stream(&[Message::user("go")], &events)
+        .expect("streamed turn");
+
+    assert!(matches!(
+        outcome,
+        pantheon_agent::TurnOutcome::Text { ref text, .. } if text == "hello world"
+    ));
+    let bodies = chain.transport.request_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&bodies[0]).unwrap()["stream"],
+        true
+    );
+    let emitted: Vec<_> = events
+        .0
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            ModelEvent::TextDelta { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(emitted, ["hello ", "world"]);
+    assert!(events.0.borrow().iter().any(|event| matches!(
+        event,
+        ModelEvent::Attempt {
+            streaming: true,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn failed_stream_after_visible_text_is_not_replayed_or_fallen_back() {
+    rate_provider("retry-stream-partial");
+    rate_provider("retry-stream-fallback");
+    let clock = Arc::new(FakeClock::default());
+    let transport = StreamStub {
+        request_bodies: Mutex::new(Vec::new()),
+        fail_after_payloads: true,
+        payloads: vec![r#"{"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}"#],
+    };
+    let chain = ProviderChain {
+        policy: policy("retry-stream-partial", &["retry-stream-fallback"]),
+        transport,
+        tools: vec![],
+        api_key: Some(SecretValue::new("k1")),
+        retry: RetryConfig::default(),
+        sleeper: clock.clone(),
+        last_resolved: RefCell::new(None),
+        session_max_tokens: None,
+        budget_max_tokens: None,
+        oauth_broker: None,
+    };
+    let events = Collect(RefCell::new(Vec::new()));
+
+    let err = chain
+        .turn_stream(&[Message::user("go")], &events)
+        .expect_err("a failed stream cannot produce a successful answer");
+
+    assert_eq!(err.code, "PROVIDER_STREAM_INTERRUPTED");
+    assert_eq!(chain.transport.request_bodies.lock().unwrap().len(), 1);
+    assert!(clock.waits.lock().unwrap().is_empty());
+    let events = events.0.borrow();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ModelEvent::TextDelta { text } if text == "partial"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ModelEvent::AttemptFailed { code, retryable: false, .. }
+            if code == "PROVIDER_STREAM_INTERRUPTED"
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        ModelEvent::RetryAttempt { .. } | ModelEvent::Fallback { .. }
+    )));
 }
 
 #[test]
