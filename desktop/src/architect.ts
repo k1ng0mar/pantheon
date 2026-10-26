@@ -138,7 +138,7 @@ export function openArchitectSetup(anchor: HTMLElement, load: () => Promise<Setu
 /** Setup stays local until applied. Model and effort changes retain the form and pickers. */
 export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): SetupController {
   const { task, team, library, providers } = options;
-  const workerProvider = providers.find(p => p.id === 'kimi' && p.installed) ?? providers.find(p => p.installed) ?? providers[0];
+  const workerProvider = providers.find(p => p.id === 'pantheon' && p.installed) ?? providers.find(p => p.installed) ?? providers[0];
   // Automatic and named agent teams have no fixed profiles to edit here; start from a fresh setup.
   const source = team?.pendingSetup?.config ?? team?.config ?? library.lastSetup?.config;
   const config: TeamConfig = structuredClone(source && !source.auto ? source : { workers: [{ id: 'worker-1', name: 'Worker 1', provider: workerProvider?.id ?? task.provider, model: '', reasoningEffort: null }], maxParallel: 0, maxRounds: 8, maxAssignments: 24, workspace: 'shared', summaryLimit: 3072 });

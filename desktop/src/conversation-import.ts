@@ -4,7 +4,7 @@ import { trackSegment } from './motion';
 import { providerLogo } from './provider-logos';
 import type { ProviderId, Session } from './types';
 
-export type ImportSource = 'claude' | 'codex';
+export type ImportSource = any;
 export interface Importable {
   id: string;
   title: string;
@@ -20,16 +20,14 @@ export interface ImportResult { imported: Session[]; existing: string[]; failed:
 export interface ImportOptions {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   /** Harnesses installed here; a source that is not installed stays listed but explains why. */
-  installed: ProviderId[];
-  defaultModel(provider: ImportSource): string;
+  installed: any[];
+  defaultModel(provider: any): string;
   onImported(result: ImportResult): void;
   openTask(id: string): void;
 }
-
-const SOURCES: { id: ImportSource; label: string }[] = [{ id: 'claude', label: 'Claude Code' }, { id: 'codex', label: 'Codex' }];
 const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' });
+const SOURCES: any[] = [{ id: 'claude', label: 'Claude Code' }, { id: 'codex', label: 'Codex' }];
 const MAX_SELECTION = 50;
-
 function age(at: number, now = Date.now()): string {
   if (!at) return '';
   const minutes = Math.round((at - now) / 60000);
@@ -42,7 +40,7 @@ function folderName(path: string): string { return path.split(/[\\/]/).filter(Bo
 
 /** The Import conversations window: pick a source, search, check conversations, import. */
 export function mountConversationImport(host: HTMLElement, options: ImportOptions): () => void {
-  let source: ImportSource = options.installed.includes('claude') || !options.installed.includes('codex') ? 'claude' : 'codex';
+  let source: any = ((options.installed as any).includes('claude') || !(options.installed as any).includes('codex')) ? 'claude' : 'codex';
   let items: Importable[] = [], cursor: string | null = null, note: string | null = null;
   let loading = false, importing = false, disposed = false, request = 0, searchTimer = 0;
   const selected = new Set<string>();
@@ -82,10 +80,10 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
       <span class="import-copy"><strong>${escape(item.title)}</strong><small>${meta}${item.unavailable ? ` · ${escape(item.unavailable)}` : ''}</small></span>${state}</label>`;
   }
   function render(): void {
-    const installed = options.installed.includes(source);
+    const installed = (options.installed as any).includes(source);
     list.innerHTML = loading && !items.length ? '<p class="import-empty">Reading conversations…</p>'
       : items.length ? items.map(row).join('') + (cursor ? '<button type="button" class="secondary-button import-more">Load more</button>' : '')
-        : `<p class="import-empty">${escape(note ?? (installed ? 'No conversations match.' : `${SOURCES.find(item => item.id === source)!.label} is not installed on this computer.`))}</p>`;
+        : `<p class="import-empty">${escape(note ?? (installed ? 'No conversations match.' : `${(SOURCES.find((item: any) => item.id === source))?.label ?? String(source)} is not installed on this computer.`))}</p>`;
     sync();
   }
   async function load(more = false): Promise<void> {
@@ -107,7 +105,7 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
     }
   }
   async function importSelected(): Promise<void> {
-    if (!selected.size || importing) return;
+      const result = await options.call<ImportResult>('import_conversations', { provider: source, ids: [...selected], model: options.defaultModel(source) });
     importing = true; error.hidden = true; render();
     try {
       const result = await options.call<ImportResult>('import_conversations', { provider: source, ids: [...selected], model: options.defaultModel(source) });
@@ -144,8 +142,8 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
     const target = event.target instanceof Element ? event.target : null;
     const sourceButton = target?.closest<HTMLButtonElement>('[data-source]');
     if (sourceButton && sourceButton.dataset.source !== source && !importing) {
-      source = sourceButton.dataset.source as ImportSource; selected.clear();
-      sources.querySelectorAll('[data-source]').forEach(button => button.setAttribute('aria-pressed', String(button === sourceButton)));
+      source = sourceButton.dataset.source as any; selected.clear();
+      (sources.querySelectorAll('[data-source]') as any).forEach((button: any) => button.setAttribute('aria-pressed', String(button === sourceButton)));
       trackSegment(sources, sourceButton); void load(); return;
     }
     const open = target?.closest<HTMLButtonElement>('[data-open]');

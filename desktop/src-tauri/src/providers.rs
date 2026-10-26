@@ -69,41 +69,24 @@ const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
-pub(crate) const PROVIDERS: [(&str, &str); 18] = [
+pub(crate) const PROVIDERS: [(&str, &str); 1] = [
     ("pantheon", "Pantheon"),
-    ("hermes", "Hermes Agent"),
-    ("claude", "Claude Code"),
-    ("codex", "Codex"),
-    ("kimi", "Kimi Code"),
-    ("opencode", "OpenCode"),
-    ("glm", "GLM Coding Plan"),
-    ("antigravity", "Antigravity"),
-    ("grok", "Grok Build"),
-    ("mimo", "MiMo Token Plan"),
-    ("pi", "Pi"),
-    ("deepseek", "DeepSeek"),
-    ("commandcode", "Command Code"),
-    ("cline", "Cline"),
-    ("kilo", "Kilo Code"),
-    ("omp", "Oh My Pi"),
-    ("github-copilot", "GitHub Copilot CLI"),
-    ("muse", "Muse Code"),
 ];
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
 pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,CronCreate";
 
 /// Never runs an agent-reviewed task under some other policy.
-fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
-    if mode == "review" && !matches!(provider, "claude" | "glm" | "mimo") {
-        return Err("Approve for me needs Claude Code's auto mode; this harness has no agent-reviewed approvals. Choose another access mode.".into());
+fn review_supported(_provider: &str, mode: &str) -> Result<(), String> {
+    if mode == "review" {
+        return Err("Approve for me is not available in Pantheon-only mode.".into());
     }
     Ok(())
 }
 
 /// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
-pub fn takes_system_instructions(provider: &str) -> bool {
-    matches!(provider, "claude" | "glm" | "mimo" | "pi" | "omp")
+pub fn takes_system_instructions(_provider: &str) -> bool {
+    true
 }
 
 #[derive(Clone, Debug)]
@@ -469,7 +452,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
         (
             "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
             | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse"
-            | "pantheon" | "hermes",
+            | "pantheon",
             None,
         ) => true,
         ("claude" | "glm" | "mimo", Some(value)) => {
@@ -529,20 +512,6 @@ pub(crate) fn executable(name: &str) -> Option<PathBuf> {
     let found = launch::find(executable_name(name));
     if found.is_some() {
         return found;
-    }
-    // Hermes Agent installs under ~/.hermes (this machine's assistant).
-    if name == "hermes" {
-        if let Ok(home) = std::env::var("HOME") {
-            for candidate in [
-                format!("{home}/.hermes/hermes-agent/.hermes/bin/hermes"),
-                format!("{home}/.local/bin/hermes"),
-            ] {
-                let path = PathBuf::from(&candidate);
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
     }
     // Pantheon dev checkouts and per-user installs that launch::find misses.
     if name == "pantheon" {
@@ -661,24 +630,9 @@ pub fn discover() -> Vec<ProviderInfo> {
             id: id.into(),
             name: name.into(),
             installed: path.is_some(),
-            version: if id == "antigravity" {
-                "ACP".into()
-            } else {
-                path.as_deref().and_then(version).unwrap_or_default()
-            },
+            version: path.as_deref().and_then(version).unwrap_or_default(),
             path: path.map(|p| p.to_string_lossy().into_owned()),
-            models: if id == "glm" {
-                glm::models()
-            } else if id == "mimo" {
-                mimo::models()
-            } else if id == "opencode" {
-                selected_opencode_models(
-                    Vec::new(),
-                    &crate::provider_settings::opencode_model_ids().unwrap_or_default(),
-                )
-            } else {
-                vec![ModelInfo::default_choice()]
-            },
+            models: vec![ModelInfo::default_choice()],
         }
     })
     .collect()
@@ -750,7 +704,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
             .try_acquire()
             .map_err(|_| "Model discovery is already running".to_owned())?
     };
-    let path = executable(provider).ok_or("Provider CLI is not installed or is not on PATH")?;
+    let path = executable(provider).ok_or("Pantheon CLI is not installed or is not on PATH")?;
     match provider {
         "claude" => claude_models(&path).await,
         "codex" => codex_models(&path).await,
@@ -1692,7 +1646,7 @@ impl Protocol {
                     json!({"experimentalApi":true,"requestAttestation":false});
                 request
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "pantheon" | "hermes" => {
+            "pantheon" => {
                 json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pantheon","version":"0.1.0"}}})
             }
             _ => {
@@ -1731,19 +1685,11 @@ impl Protocol {
                 };
                 json!({"id":request["id"],"result":result})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "pantheon" | "hermes" => {
+            "pantheon" => {
                 let options = request["params"]["options"].as_array();
-                let kinds = if approved {
-                    ["allow_once", "allow_always"]
-                } else {
-                    ["reject_once", "reject_always"]
-                };
-                let selected = kinds.iter().find_map(|kind| {
-                    options.and_then(|o| o.iter().find(|o| o["kind"].as_str() == Some(kind)))
-                });
-                let outcome = selected
-                    .map(|o| json!({"outcome":"selected","optionId":o["optionId"]}))
-                    .unwrap_or_else(|| json!({"outcome":"cancelled"}));
+                let kinds = if approved { ["allow_once", "allow_always"] } else { ["reject_once", "reject_always"] };
+                let selected = kinds.iter().find_map(|kind| options.and_then(|o| o.iter().find(|o| o["kind"].as_str() == Some(kind))));
+                let outcome = selected.map(|o| json!({"outcome":"selected","optionId":o["optionId"]})).unwrap_or_else(|| json!({"outcome":"cancelled"}));
                 json!({"jsonrpc":"2.0","id":request["id"],"result":{"outcome":outcome}})
             }
             _ => {
@@ -1758,7 +1704,7 @@ impl Protocol {
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "pantheon" | "hermes" => {
+            "pantheon" => {
                 json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":self.remote_id}})
             }
             _ => {
@@ -1805,7 +1751,7 @@ impl Protocol {
             "kimi" => self.kimi_steered(value),
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
             "muse" => self.muse(value),
-            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "pantheon" | "hermes" => self.acp(value),
+            "pantheon" => self.acp(value),
             _ => self.claude(value),
         }
     }
@@ -2747,12 +2693,6 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
             // Pantheon speaks standard ACP on `serve acp` (stdio JSON-RPC).
             command.args(["serve", "acp"]);
         }
-        "hermes" => {
-            // Hermes Agent speaks standard ACP on its top-level `acp`
-            // subcommand (Nous Research hermes-agent; verified initialize
-            // handshake 2026-10-25, v0.21.5, protocolVersion 1).
-            command.arg("acp");
-        }
         "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" => acp::configure(command, config),
         "github-copilot" => acp::configure(command, config),
         "kimi" => {
@@ -3006,7 +2946,7 @@ async fn run_process_with_tools(
         (
             "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
             | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse"
-            | "pantheon" | "hermes",
+            | "pantheon",
             Some(host),
         ) => (
             None,
@@ -4251,7 +4191,7 @@ mod tests {
             assert_eq!(model_discovery_index(id), Some(index));
             assert!(index < model_discovery_semaphores().len());
         }
-        assert!(PROVIDERS.iter().any(|(id, _)| *id == "github-copilot"));
+        assert!(PROVIDERS.iter().any(|(id, _)| *id == "pantheon"));
         assert_eq!(model_discovery_index("not-a-provider"), None);
     }
 

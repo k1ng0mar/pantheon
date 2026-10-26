@@ -50,7 +50,7 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     controls.className = 'terminal-harness-controls';
     controls.style.cssText = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex:none';
     const hint = document.createElement('span');
-    hint.textContent = context.harness.provider === 'kimi'
+    hint.textContent = context.harness.provider === 'pantheon'
       ? 'Uses Kimi’s saved permissions. Review them in the console before pressing Enter.'
       : command ? 'When the console is ready, insert the command and press Enter.' : 'Native harness console. Type a command to continue.';
     hint.style.cssText = 'color:var(--muted);font-size:.78rem;flex:1';

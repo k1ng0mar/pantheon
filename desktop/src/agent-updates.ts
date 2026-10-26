@@ -53,7 +53,7 @@ export function initializeAgentUpdates(host: AgentUpdatesHost): AgentUpdatesCont
     }
   } catch { /* Dismissal still lasts for this window if local storage is unavailable. */ }
 
-  const installed = (entry: AgentUpdate) => host.providers().some(provider => provider.installed && (provider.id === entry.provider || entry.providers.includes(provider.id)));
+  const installed = (entry: AgentUpdate) => host.providers().some(provider => provider.installed && (provider.id === entry.provider || entry.providers.includes(provider.id))) && entry.provider === 'pantheon';
   const visibleEntries = () => updates.filter(installed);
   const candidates = () => visibleEntries().filter(entry => entry.status === 'available' && entry.latestVersion && dismissed[entry.provider] !== entry.latestVersion);
   const dialogLive = () => dialogBody?.isConnected && Boolean(dialogBody.closest('dialog[open]'));

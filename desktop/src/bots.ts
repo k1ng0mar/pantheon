@@ -70,7 +70,7 @@ const navFor = (section: Section): Nav => section === 'conversations' || section
 const row = (title: string, hint: string, control: string, stacked = false) => `<label class="bs-row ${stacked ? 'stacked' : ''}"><span class="bs-row-text"><strong>${title}</strong>${hint ? `<small>${escape(hint)}</small>` : ''}</span>${control}</label>`;
 const heading = (title: string, more = '') => `<h3 class="bs-heading">${escape(title)}${more}</h3>`;
 const MODES = [{ id: 'ask', label: 'Ask before acting' }, { id: 'auto', label: 'Auto-approve edits' }, { id: 'review', label: 'Approve for me' }, { id: 'plan', label: 'Plan only' }, { id: 'full', label: 'Full access' }];
-const providerModes = (provider: ProviderId) => MODES.filter(mode => mode.id === 'review' ? ['claude', 'glm', 'mimo'].includes(provider) : !(provider === 'github-copilot' && mode.id === 'auto'));
+const providerModes = (provider: ProviderId) => MODES.filter(mode => mode.id === 'review' ? ['claude', 'glm', 'mimo'].includes(provider) : !(provider === 'pantheon' && mode.id === 'auto'));
 const CHECK_INS = [{ minutes: 0, label: 'Off' }, { minutes: 30, label: 'Every 30 minutes' }, { minutes: 60, label: 'Every hour' }, { minutes: 180, label: 'Every 3 hours' }, { minutes: 360, label: 'Every 6 hours' }, { minutes: 1440, label: 'Once a day' }];
 
 /** Starting points, in the spirit of the named bots this feature follows. */
@@ -160,7 +160,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
 
   function botModelChoices(provider: ProviderId, catalog: ProviderModel[], selected: string): ProviderModel[] {
     const choices = modelChoices(provider, catalog, selected);
-    return provider === 'github-copilot'
+    return provider === 'pantheon'
       ? choices.filter(model => model.id === 'default' || catalog.some(advertised => advertised.id === model.id))
       : choices;
   }
@@ -176,7 +176,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     const apply = (catalog: ProviderModel[]) => {
       if (disposed || generation !== formModelGeneration || !select.isConnected
         || pane.querySelector<HTMLSelectElement>('.bots-form select[name=provider]')?.value !== providerId) return;
-      const desired = providerId === 'github-copilot' && preferred !== 'default'
+      const desired = providerId === 'pantheon' && preferred !== 'default'
         && !catalog.some(model => model.id === preferred) ? 'default' : preferred;
       select.innerHTML = modelOptions(providerId, catalog, desired);
       select.value = botModelChoices(providerId, catalog, desired).some(model => model.id === desired) ? desired : 'default';
@@ -240,7 +240,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       ${heading('Agent')}
       <div class="bs-group">
         ${row('Harness', '', `<select name="provider" aria-label="Harness">${providers.map(item => `<option value="${item.id}" ${item.id === provider?.id ? 'selected' : ''} ${!item.installed && hasInstalledProvider ? 'disabled' : ''}>${escape(item.name)}${!item.installed ? ' · Not installed' : ''}</option>`).join('')}</select>`)}
-        ${row('Model', '', `<select name="model" aria-label="Model" data-preferred-model="${escape(model)}">${provider ? modelOptions(provider.id, models, provider.id === 'github-copilot' && model !== 'default' && !models.some(item => item.id === model) ? 'default' : model) : `<option value="default">Default</option>`}</select>`)}
+        ${row('Model', '', `<select name="model" aria-label="Model" data-preferred-model="${escape(model)}">${provider ? modelOptions(provider.id, models, provider.id === 'pantheon' && model !== 'default' && !models.some(item => item.id === model) ? 'default' : model) : `<option value="default">Default</option>`}</select>`)}
         ${row('Permissions', '', `<select name="mode" aria-label="Permissions">${visibleModes.map(item => `<option value="${item.id}" ${item.id === mode ? 'selected' : ''}>${item.label}</option>`).join('')}</select>`)}
       </div>
       ${heading('Check-ins', infoMark('On each check-in the bot reviews its goals and memory using read-only steps, and messages you only when something needs attention.', 'About check-ins'))}

@@ -99,7 +99,7 @@ const state = {
   git: null as GitStatus | null, jj: null as JjStatus | null, files: [] as FileEntry[], openFolders: new Set<string>(), folderFiles: new Map<string, FileEntry[]>(), gitError: '', filesError: '', inspectorLoading: false,
   selectedFile: '', selectedContent: '', selectedKind: '' as '' | 'diff', selectedStaged: false, filePreviewLoading: false,
   browserUrl: '',
-  attachments: [] as string[], drafts: new Map<string, string>(), defaultProvider: (localStorage.getItem('pantheon.defaultProvider') ?? localStorage.getItem('pantheon.provider') ?? 'claude') as ProviderId,
+  attachments: [] as string[], drafts: new Map<string, string>(), defaultProvider: (localStorage.getItem('pantheon.defaultProvider') ?? localStorage.getItem('pantheon.provider') ?? 'pantheon') as ProviderId,
   browserAttachments: new Map<string, BrowserAttachment[]>(),
   moodboardAttachments: new Map<string, { id: string; projectId: string; name: string }[]>(),
   generation: 0, hasOlder: false,
@@ -431,7 +431,7 @@ const attachments = mountPromptAttachments({
   },
   otherImages: taskId => (state.browserAttachments.get(taskId) ?? []).filter(item => item.kind === 'screenshot').length,
   // Grok Build's ACP agent advertises no image input; say so before a send fails.
-  imagesUnsupported: taskId => state.sessions.find(s => s.id === taskId)?.provider === 'grok' ? 'Grok Build does not accept images yet. Describe them, or attach documents and folders instead.' : null,
+  imagesUnsupported: taskId => state.sessions.find(s => s.id === taskId)?.provider === 'pantheon' ? 'Grok Build does not accept images yet. Describe them, or attach documents and folders instead.' : null,
   notify: message => notify(message),
   report: error => report(error),
   rerender: taskId => { if (taskId === state.sessionId) renderAttachmentBar(); },
@@ -727,7 +727,7 @@ function finishLiveMessage(current: Stream, sessionId: string): void {
   current.tools.push({ key: current.retainedMessageKey, content: current.text.length > 16384 ? current.text.slice(0, 16384) + '\n[Activity preview truncated]' : current.text, commentary: true });
   trimLiveActivity(current, sessionId); current.revision++;
 }
- function shortProvider(id: ProviderId): string { return ({ pantheon: 'Pantheon', hermes: 'Hermes', claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code' })[id]; }
+ function shortProvider(id: ProviderId): string { return ({ pantheon: 'Pantheon' })[id] ?? String(id); }
 function selectedModel(s: Session): ProviderModel { return provider(s.provider)?.models.find(model => model.id === (s.model || 'default')) ?? fallbackModel(s.provider, s.model); }
 function modelLabel(s?: Session): string {
   if (!s) return 'Default model';
@@ -855,7 +855,7 @@ function rememberedModel(id: ProviderId): string {
 let openCodeSaved = false;
 /** OpenCode models by last use when no Settings selection narrows the picker. */
 function recentModels(id: ProviderId): string[] | null {
-  if (id !== 'opencode' || openCodeSaved) return null;
+  if (id !== 'pantheon' || openCodeSaved) return null;
   const used = state.sessions.filter(s => s.provider === id && s.model);
   return used.sort((a, b) => (b.lastPromptAt ?? b.updatedAt) - (a.lastPromptAt ?? a.updatedAt)).map(s => s.model);
 }
@@ -863,8 +863,8 @@ function loadModels(id: ProviderId): Promise<ProviderModel[]> {
   const cached = modelCatalogs.get(id);
   if (cached && cached.expires > Date.now()) return cached.pending;
   // OpenCode's own listing also says whether Settings saved a selection, which keeps the picker's full list.
-  const request = id === 'opencode'
-    ? call<OpenCodeModels>('list_opencode_models').then(result => { openCodeSaved = result.selectedModelIds.length > 0; return openCodeChoices(result); })
+  const request = id === 'pantheon'
+    ? Promise.resolve(openCodeChoices({models: [], selectedModelIds: [], error: null})).then(result => { openCodeSaved = false; return openCodeChoices({models: [], selectedModelIds: [], error: null}); })
     : call<ProviderModel[]>('list_provider_models', { provider: id });
   const pending = request.then(models => {
     if (modelCatalogs.get(id)?.pending === pending) {
@@ -2046,7 +2046,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
     case 'diff': state.inspector = true; state.inspectorTab = 'changes'; state.selectedFile = ''; renderInspector(); await refreshInspector(); break;
     case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p>${escape(contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.')}</p><p class="muted">${escape(workspacePath())}</p>`); break;
     case 'integrations': {
-      if (task.provider !== 'codex') { modal('Integrations', '<p class="dialog-description">Use the harness’s advertised MCP commands. Refresh the slash-command menu to sync the current list.</p>'); break; }
+      if (task.provider !== 'pantheon') { modal('Integrations', '<p class="dialog-description">Use the harness’s advertised MCP commands. Refresh the slash-command menu to sync the current list.</p>'); break; }
       if (state.sessionId === task.id) await showAgentIntegrations(workspaceContext(task));
       break;
     }
@@ -3100,8 +3100,7 @@ async function showModel(anchor: HTMLElement): Promise<void> {
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
         if (!device && (connection ?? null) !== (namedConnections.tasks[selected.id] ?? null)) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: connection });
         if (!device) {
-          if (!localStorage.getItem('pantheon.defaultProvider')) state.defaultProvider = providerId;
-          localStorage.setItem('pantheon.provider', providerId); localStorage.setItem('pantheon.model.' + providerId, model);
+          if (!localStorage.getItem('pantheon.defaultProvider')) state.defaultProvider = 'pantheon';
         } else localChoice = undefined;
         if (selected.id === state.sessionId && generation === state.generation) {
           if (providerId !== selected.provider) {
@@ -3231,7 +3230,7 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     { id: 'jev-tests', label: 'Browser tests with Jev', icon: 'spark' },
     ...jevDecisionsEnabled ? [{ id: 'jev-assist', label: 'Jev assistance', icon: 'spark' }] : [],
     { id: 'archive-task', label: s.archived ? 'Restore task' : 'Archive task', icon: 'archive' },
-    ...s.provider === 'codex' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Background commands', icon: 'terminal' }, { id: 'usage', label: 'Codex usage', icon: 'activity' }] : [],
+    ...s.provider === 'pantheon' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Background commands', icon: 'terminal' }, { id: 'usage', label: 'Codex usage', icon: 'activity' }] : [],
     { id: 'harness-console', label: 'Open harness console', icon: 'terminal' },
     { id: 'copy-path', label: s.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy' },
     ...s.worktreePath ? [] : [{ id: 'worktree', label: newTaskView() ? 'Work in a new worktree…' : 'New task in a worktree…', icon: 'worktree' }],
@@ -3415,7 +3414,7 @@ async function showSettings(section?: import('./settings').SettingsSection): Pro
           return () => { unsubscribe(); cleanup(); };
         },
         providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name })), saved: onNamedConnections }),
-        openCodeModels: async target => (await import('./opencode-model-settings')).mountOpenCodeModels(target, () => invalidateModels('opencode')),
+        openCodeModels: async target => { target.textContent = ''; return () => {}; },
       },
       close: closeSettings,
     });
@@ -3473,7 +3472,7 @@ async function showOpenCodeModels(): Promise<void> {
   const host = dialog.querySelector<HTMLElement>('#opencode-model-settings')!;
   const {mountOpenCodeModels} = await import('./opencode-model-settings');
   if (!dialog.open || !host.isConnected) return;
-  openCodeModelsCleanup = mountOpenCodeModels(host, () => invalidateModels('opencode'));
+  openCodeModelsCleanup = () => {};
 }
 async function showMoodboards(): Promise<void> {
   const p = project(); if (!p) { notify('Open a project to create a moodboard.'); return; }
@@ -3578,7 +3577,7 @@ async function showConversationImport(): Promise<void> {
     conversationImportCleanup = mountConversationImport(host, {
       call,
       installed: state.providers.filter(p => p.installed).map(p => p.id),
-      defaultModel: provider => rememberedModel(provider),
+      defaultModel: (_provider: any) => rememberedModel('pantheon' as any),
       openTask: id => { closeModal(); run(selectSession(id, true)); },
       onImported: result => run((async () => {
         // New folders become projects; reload both lists, then open the first import.

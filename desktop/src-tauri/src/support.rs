@@ -3,7 +3,7 @@
 use crate::Result;
 use serde::Serialize;
 
-const SUPPORT_URL: &str = "https://github.com/aicodeking/pandacode/issues";
+const SUPPORT_URL: &str = "https://github.com/k1ng0mar/pantheon/issues";
 
 #[tauri::command]
 pub async fn open_support() -> Result<()> {
@@ -39,7 +39,7 @@ mod tests {
         assert_eq!(details["platform"], std::env::consts::OS);
         assert_eq!(details["architecture"], std::env::consts::ARCH);
         let url = tauri::Url::parse(SUPPORT_URL).unwrap();
-        assert_eq!(url.as_str(), "https://github.com/aicodeking/pandacode/issues");
+        assert_eq!(url.as_str(), "https://github.com/k1ng0mar/pantheon/issues");
         assert!(url.query().is_none());
         assert!(url.fragment().is_none());
     }

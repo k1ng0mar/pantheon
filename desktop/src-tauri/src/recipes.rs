@@ -14,9 +14,9 @@ const KINDS: [&str; 4] = ["prompt", "slash", "check", "approval"];
 /// Harnesses whose running turn takes a message. Claude-family harnesses steer on
 /// stream input, Codex uses `turn/steer`, Pi and omp use their own steer, Muse takes
 /// one on the wire, and OpenCode folds a second `session/prompt` into its running loop.
-const STEERING: [&str; 8] = ["claude", "glm", "mimo", "codex", "pi", "omp", "muse", "opencode"];
-const HARNESSES: [&str; 16] = [
-    "claude", "codex", "kimi", "glm", "opencode", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse",
+const STEERING: [&str; 1] = ["pantheon"];
+const HARNESSES: [&str; 1] = [
+    "pantheon",
 ];
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -350,13 +350,12 @@ mod tests {
         ]);
         let slash = vec!["/review".to_string()];
         let status = |provider: &str| dry_run(&r, provider, &slash).unwrap().iter().map(|s| s.status).collect::<Vec<_>>();
-        assert_eq!(status("claude"), ["supported", "supported", "fallback", "blocked", "supported", "manual", "blocked"]);
-        assert_eq!(status("kimi")[4], "fallback");
-        let reports = dry_run(&r, "claude", &slash).unwrap();
+        assert_eq!(status("pantheon"), ["supported", "supported", "fallback", "blocked", "supported", "manual", "blocked"]);
+        let reports = dry_run(&r, "pantheon", &slash).unwrap();
         assert!(reports[3].reason.contains("/missing"));
         assert!(dry_run(&r, "nope", &slash).is_err());
         assert!(messages(&r, &reports).unwrap_err().contains("Step 4"));
-        assert!(plan(&r, "claude", &slash).unwrap().messages.is_empty());
+        assert!(plan(&r, "pantheon", &slash).unwrap().messages.is_empty());
     }
 
     #[test]
@@ -367,7 +366,7 @@ mod tests {
             step("check", Some("npm test"), None, &[]),
             step("approval", Some("Merge?"), None, &[]),
         ]);
-        let reports = dry_run(&r, "codex", &["/review".into()]).unwrap();
+        let reports = dry_run(&r, "pantheon", &["/review".into()]).unwrap();
         let out = messages(&r, &reports).unwrap();
         assert_eq!(out[0], "Review the diff");
         assert_eq!(out[1], "/review");
@@ -387,7 +386,7 @@ mod tests {
     #[test]
     fn a_steer_step_is_supported_only_where_the_turn_takes_a_message() {
         let r = recipe(vec![step("check", Some("npm test"), None, &["steer"])]);
-        for provider in ["claude", "glm", "mimo", "codex", "pi", "omp", "muse", "opencode"] {
+        for provider in ["pantheon"] {
             let reports = dry_run(&r, provider, &[]).unwrap();
             assert_eq!(reports[0].status, "supported", "{provider} takes a message mid-turn");
         }

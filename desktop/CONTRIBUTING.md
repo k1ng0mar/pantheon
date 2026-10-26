@@ -1,113 +1,79 @@
-# Contributing to PandaCode
+# Contributing to Pantheon Desktop
 
-Thanks for helping. PandaCode is an open-source desktop app (MIT-based
-[PandaCode License](LICENSE)) built with Tauri 2
-(Rust in `src-tauri/`), plain TypeScript (`src/`) and an Astro website
-(`website/`). This guide covers setup, checks and pull requests. Code
-conventions for humans and coding agents are in [AGENTS.md](AGENTS.md).
+Thanks for helping. Pantheon Desktop is an open-source desktop app (see
+[LICENSE](LICENSE)) built with Tauri 2
+and a vanilla TypeScript + CSS frontend — no framework, no JSX.
 
-By participating you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
-Report security issues privately as described in [SECURITY.md](SECURITY.md),
-not in public issues.
+## Getting started
 
-## Prerequisites
+### Prerequisites
 
-- **Node.js 22** and npm.
-- **Rust stable** via [rustup](https://rustup.rs/).
-- **Git**, and at least one coding CLI (Claude Code, Codex, Kimi Code, OpenCode, …)
-  if you want to run real agent turns.
-- The [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS:
-  - **macOS:** Xcode Command Line Tools (`xcode-select --install`).
-  - **Windows:** Microsoft C++ Build Tools ("Desktop development with C++") and
-    the WebView2 runtime (preinstalled on Windows 11).
-  - **Linux (Debian/Ubuntu):**
+| Tool | Version |
+|------|---------|
+| [Node.js](https://nodejs.org/) | 22 LTS or later |
+| [Rust](https://rustup.rs/) | stable (via `rustup`) |
+| [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) | platform-specific |
 
-    ```sh
-    sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-      libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev
-    ```
-
-## Set up and run
+### Clone and run
 
 ```sh
-git clone https://github.com/aicodeking/pandacode.git
-cd pandacode
-npm ci
-npm run tauri dev      # or: npm run desktop
+git clone https://github.com/k1ng0mar/pantheon.git
+cd pantheon/desktop
+npm install
+npm run desktop          # opens the dev window (Vite + Tauri)
 ```
 
-`npm run dev` starts only the Vite frontend on http://127.0.0.1:1420. In a
-normal browser it runs a labeled sample workspace with mocked native commands
-(`src/preview.ts`), which is what the Playwright suite uses. Add a preview mock
-for every new IPC command.
+`npm run dev` starts the Vite dev server alone (no Tauri shell), handy for
+tweaking styles or previewing the UI in a browser.
 
-Never point a development build at your real data with risky changes: pass a
-different identifier, for example
-`npx tauri dev --config '{"identifier":"ai.pandacode.dev"}'`.
+### Run from a different build
 
-To build an installer for your OS: `npm run tauri build`, or
-`npm run release:build` for the same packaging the release workflow uses (see
-[docs/releasing.md](docs/releasing.md)).
-
-## Checks
-
-Run these before opening a pull request:
+To point the Tauri dev window at a debug build of the Pantheon binary:
 
 ```sh
-npx tsc --noEmit                                     # typecheck
-npm run build                                        # typecheck + bundle; tests read dist/
-npm test                                             # Node unit tests (tests/*.test.mjs)
-npm run test:release                                 # release script tests
-cargo test --manifest-path src-tauri/Cargo.toml      # Rust tests
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+PANTHEON_BIN=/path/to/debug/pantheon npm run desktop
 ```
 
-For UI changes, also run the relevant Playwright tests in Chrome and WebKit
-(the app runs in WKWebView on macOS):
+### Release build
+
+`npm run package` builds the production bundle (Tauri `tauri build`). To speed
+up development iterations use `npm run package:fast` which uses a
+`fast-release` Cargo profile.
+
+## Architecture at a glance
+
+| Layer | Path | Notes |
+|-------|------|-------|
+| Frontend | `src/` | Vanilla TS + CSS; one HTML entry; imports bundled by Vite |
+| Tauri shell | `src-tauri/` | Rust IPC bridge; calls the Pantheon runtime crate |
+| Preview mode | `npm run dev` | Frontend only, with mock data from `src/preview.ts` |
+| Relay | `relay/` | Cloudflare Worker for Pantheon Connect |
+
+The frontend is intentionally framework-free. Each feature lives in its own
+`.ts` + `.css` pair. `main.ts` wires them together.
+
+## Coding style
+
+- **No framework imports.** DOM helpers live in `dom.ts`.
+- **Keep files focused.** One feature = one `.ts` + one `.css`.
+- TypeScript strict mode, no `any` without a comment.
+- CSS custom properties for tokens; no Tailwind.
+
+## Tests
 
 ```sh
-npx playwright install chromium webkit               # once
-npx playwright test tests/your-area.spec.ts
-npx playwright test -c playwright.webkit.config.ts tests/your-area.spec.ts
+npm test                     # frontend unit tests (node --test)
+npm run test:rust            # Tauri Rust tests
+npx playwright test          # E2E (requires a running dev server)
 ```
 
-The full browser suite takes several minutes; pass file paths or `-g "title"`
-for a subset. Ordinary tests never call paid models. Live provider tests are
-`#[ignore]`d and opt-in.
+## Commits and PRs
 
-When a change alters how the app looks, refresh the README screenshots with
-`npm run screenshots` (needs `cwebp`, e.g. `brew install webp`). It captures the
-browser preview with the sample data in `scripts/screenshots/showcase.js` and
-writes framed WebP images to `docs/screenshots/`.
+- Conventional-ish subjects: `fix:`, `feat:`, `refactor:`, `docs:`, `chore:`.
+- One logical change per commit. Squash before merge.
+- PRs against `main`. CI runs tests and `tsc --noEmit`.
 
-CI (`.github/workflows/ci.yml`) runs the typecheck, unit tests, website build,
-and `cargo test --lib`/Clippy on Linux for every pull request.
+## License
 
-## Pull requests
-
-1. Open an issue first for large changes so we can agree on the approach.
-2. Branch from `main`, keep the change focused, and add or update tests
-   (we aim for tests first: write a failing test, then make it pass).
-3. Update docs in `docs/` when behavior changes.
-4. Make sure the checks above pass, then open a PR using the template. Describe
-   what changed, why, and how you tested it, with screenshots for UI changes.
-5. A maintainer reviews it; please respond to feedback with new commits rather
-   than force-pushing over review history.
-
-### Commit messages
-
-Use `<type>: <description>` in the imperative mood, for example
-`fix: keep the caret when the composer re-renders`.
-
-Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
-
-### Ground rules
-
-- No telemetry, analytics or calls home. Network requests must go only to
-  services the user chose, or be public, anonymous checks documented in the
-  README's privacy section.
-- Never commit secrets, API keys or personal paths. Provider keys belong in the
-  OS keychain (`secret_store.rs`).
-- Keep files small and focused, and handle errors explicitly.
-- By contributing, you agree your contributions are licensed under the
-  [PandaCode License](LICENSE).
+By contributing you agree that your changes are released under the project's
+  [LICENSE](LICENSE).

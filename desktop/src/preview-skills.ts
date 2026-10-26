@@ -134,7 +134,7 @@ export function createPreviewSkills() {
   function cell(entry: Entry, harness: string, scope: SkillScope): SkillCell {
     const activation = entry.item.activations.find(a => a.harness === harness && a.scope === scope);
     const base = scope === 'user' ? '~' : PROJECT_ROOT;
-    const surface = PROMPT.has(harness) ? 'prompt' : entry.item.kind === 'skill' ? `${base}/.${harness}/skills/${entry.item.id}` : harness === 'claude' ? `${base}/${scope === 'user' ? '.claude/' : ''}CLAUDE.md` : `${base}/${scope === 'user' ? '.codex/' : ''}AGENTS.md`;
+    const surface = PROMPT.has(harness) ? 'prompt' : entry.item.kind === 'skill' ? `${base}/.${harness}/skills/${entry.item.id}` : harness === 'pantheon' ? `${base}/${scope === 'user' ? '.claude/' : ''}CLAUDE.md` : `${base}/${scope === 'user' ? '.codex/' : ''}AGENTS.md`;
     if (!activation) return { id: entry.item.id, scope, status: 'off', surface };
     if (activation.surface === 'prompt') return { id: entry.item.id, scope, status: 'prompt', surface };
     const onDisk = disk.get(key(entry.item.id, harness, scope));
@@ -203,7 +203,7 @@ export function createPreviewSkills() {
       const harnesses = [...FILES, ...[...PROMPT].filter(h => used.has(h))].map(harness => ({
         harness, installed: FILES.includes(harness), prompt: PROMPT.has(harness),
         cells: scopes.flatMap(scope => all.map(entry => cell(entry, harness, scope))),
-        unmanaged: harness === 'claude' ? [{ scope: 'user' as const, kind: 'skill' as const, path: '~/.claude/skills/pdf-tools', detail: 'Not in the library.' }] : [],
+        unmanaged: harness === 'pantheon' ? [{ scope: 'user' as const, kind: 'skill' as const, path: '~/.claude/skills/pdf-tools', detail: 'Not in the library.' }] : [],
       }));
       return { project: projectId ? PROJECT_ROOT : null, harnesses };
     },
