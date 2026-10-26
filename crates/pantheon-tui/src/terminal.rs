@@ -316,7 +316,7 @@ fn run_delivered_task(
                 // Resolve against the config-level default preset, exactly
                 // as the CLI swarm path does, so a `--agent` child inherits
                 // the same policy shape as a `pantheon swarm` role.
-                let effective = match reg.resolve(name, &cfg.policy.value) {
+                let effective = match reg.resolve(name, cfg.policy.map(|p| p.as_str()).unwrap_or("coder")) {
                     Ok(e) => e,
                     Err(e) => {
                         eprintln!("resolve --agent {name:?}: {e}");

@@ -33,11 +33,11 @@ pub const PUBLIC_COMMANDS: &[(&str, &str)] = &[
     ("tools", "mcp, oauth, skills, plugins, extensions, hook"),
     ("workspace", "worktree, codebase"),
     ("tasks", "schedule, pipeline, swarm, nightly"),
-    ("serve", "api, gateway, dashboard, install"),
     (
         "desktop",
         "build + launch the desktop app, register it in app menus",
     ),
+    ("serve", "api, gateway, dashboard, install"),
     ("config", "set, get, edit, path"),
     ("setup", "first-run wizard, migrate"),
     ("doctor", "preflight check, repair"),
@@ -91,6 +91,7 @@ pub const ALL_VERBS: &[&str] = &[
     "config",
     "consolidate",
     "dashboard",
+    "desktop",
     "doctor",
     "extensions",
     "fallback",
@@ -452,7 +453,7 @@ mod tests {
 
     #[test]
     fn public_surface_is_small_and_consistent() {
-        assert_eq!(PUBLIC_VERBS.len(), 12);
+        assert_eq!(PUBLIC_VERBS.len(), 13);
         let from_help: Vec<&str> = PUBLIC_COMMANDS.iter().map(|(name, _)| *name).collect();
         assert_eq!(from_help.as_slice(), PUBLIC_VERBS);
         assert_eq!(PUBLIC_VERBS.len() + LEGACY_VERBS.len(), ALL_VERBS.len());
