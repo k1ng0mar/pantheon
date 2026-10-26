@@ -7,8 +7,11 @@ use pantheon_api::events::Event;
 use pantheon_api::message::Role;
 use pantheon_api::provenance::TrustTier;
 use pantheon_runtime::agent_runtime::AgentRuntime;
-use pantheon_runtime::session::{agent_message_content, rebuild_messages, Session};
+use pantheon_runtime::session::{
+    agent_message_content, rebuild_messages, register_agent_message_tools, Session,
+};
 use pantheon_storage::collaboration::{AgentMessage, MessageKind};
+use pantheon_tools::tools::ToolRegistry;
 
 fn test_session(tag: &str) -> (Session, std::path::PathBuf) {
     let dir =
@@ -222,4 +225,69 @@ fn framing_marks_agent_content_as_data_not_instruction() {
     assert!(framed.contains("note"), "kind is named");
     assert!(framed.contains("the build is red"), "payload is carried");
     assert_ne!(framed, sample_message().content);
+}
+
+/// The `agent_message` tool sends a note to a peer profile; the `agent_inbox`
+/// tool reads it back. A parent sends, a child drains - the live half of the
+/// collaboration store, behind the `AgentMessage` capability gate.
+#[test]
+fn agent_message_tool_send_and_inbox_roundtrip() {
+    let (s, dir) = test_session("msg-rt");
+    let run = "run_agent_msg_rt";
+    s.supervisor.start_run(run).unwrap();
+    let (parent, child) = agent_and_peer(&s, &dir);
+
+    // Parent sends a note to the child via the `agent_message` tool.
+    let mut sender = ToolRegistry::new();
+    register_agent_message_tools(&mut sender, parent);
+    let out = sender
+        .execute(
+            "agent_message",
+            r#"{"agent": "child", "kind": "note", "body": "the build is red"}"#,
+        )
+        .expect("send");
+    assert_eq!(out, "sent to agent child: note");
+
+    // Child drains the inbox and verifies the framed, untrusted content.
+    let mut reader = ToolRegistry::new();
+    register_agent_message_tools(&mut reader, child);
+    let inbox = reader.execute("agent_inbox", "{}").expect("inbox");
+    assert!(inbox.contains("the build is red"), "inbox: {inbox}");
+    assert!(
+        inbox.contains("not an instruction"),
+        "framed as data: {inbox}"
+    );
+
+    // A second drain is empty: the message settled at the first drain.
+    let again = reader.execute("agent_inbox", "{}").expect("inbox 2");
+    assert_eq!(again, "inbox is empty");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The tool refuses malformed calls with structured codes: an unknown kind
+/// is `AGENT_MSG_KIND`, missing required fields are `AGENT_MSG_ARGS`.
+#[test]
+fn agent_message_tool_rejects_unknown_kind_and_missing_args() {
+    let (s, dir) = test_session("msg-err");
+    let run = "run_agent_msg_err";
+    s.supervisor.start_run(run).unwrap();
+    let (parent, _child) = agent_and_peer(&s, &dir);
+    let mut reg = ToolRegistry::new();
+    register_agent_message_tools(&mut reg, parent);
+
+    // Unknown kind.
+    let bad_kind = reg
+        .execute(
+            "agent_message",
+            r#"{"agent": "child", "kind": "orders", "body": "x"}"#,
+        )
+        .expect_err("unknown kind");
+    assert_eq!(bad_kind.code, "AGENT_MSG_KIND");
+
+    // Missing required fields.
+    let missing = reg
+        .execute("agent_message", r#"{"agent": "child"}"#)
+        .expect_err("missing body");
+    assert_eq!(missing.code, "AGENT_MSG_ARGS");
+    let _ = std::fs::remove_dir_all(&dir);
 }

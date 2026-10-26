@@ -1,7 +1,7 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
 use pantheon_exec::sandbox::level::ExecutionBoundary;
-use pantheon_exec::sandbox::runner::run_sandboxed;
+use pantheon_exec::sandbox::runner::{build_sandboxed_checked, run_sandboxed};
 use pantheon_exec::sandbox::{SandboxLevel, SandboxProfile};
 
 #[test]
@@ -255,6 +255,36 @@ fn direct_fallback_allowed_via_profile_opt_in() {
         r.output
     );
     assert!(!r.sandboxed, "fallback run must be flagged unsandboxed");
+}
+
+/// The fail-closed gate is shared by every caller: the MCP client and the
+/// Python plugin runner build and spawn themselves (they cannot use
+/// `run_sandboxed`), so they go through `build_sandboxed_checked`. When the
+/// boundary needs a wrapper that cannot initialize and no fallback is opted
+/// in, that helper must refuse rather than hand back an un-isolated command
+/// - the silent degrade the README's fail-closed promise forbids.
+#[test]
+fn build_sandboxed_checked_fails_closed_without_opt_in() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _env = EnvGuard::break_wrapper_lookup();
+    let profile = SandboxLevel::VeryHigh.profile();
+    assert!(!profile.allow_direct_fallback);
+    let e = build_sandboxed_checked(&profile, "/bin/sh", &["-c", "echo unreachable"], "/tmp")
+        .expect_err("must fail closed when the wrapper cannot initialize");
+    assert_eq!(e.code, "SANDBOX_UNAVAILABLE", "unexpected error: {e:?}");
+}
+
+/// Same helper, with the fallback explicitly opted in: it must build a
+/// command and honestly report that it is not isolated.
+#[test]
+fn build_sandboxed_checked_honors_opt_in_fallback() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _env = EnvGuard::break_wrapper_lookup();
+    std::env::set_var("PANTHEON_SANDBOX_FALLBACK", "allow");
+    let profile = SandboxLevel::VeryHigh.profile();
+    let (_cmd, sandboxed) = build_sandboxed_checked(&profile, "/bin/sh", &["-c", "true"], "/tmp")
+        .expect("opted-in fallback must build");
+    assert!(!sandboxed, "fallback build must be flagged unsandboxed");
 }
 
 #[test]

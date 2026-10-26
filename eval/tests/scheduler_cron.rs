@@ -220,6 +220,98 @@ fn weekday_range_fires_weekdays_only() {
     assert!(!weekdays.matches(saturday_9am));
 }
 
+/// 2024-02-29T00:00:00Z - the leap day the scan-bound tests pivot on.
+const LEAP_DAY_2024: i64 = 1_709_164_800_000;
+
+/// A February 29th occurrence sits up to 367 days before the next March
+/// 1st. The old scan bound (365 days) missed it, so catch-up returned
+/// nothing and the leap-day fire was silently dropped.
+#[test]
+fn leap_day_catch_up_reaches_the_previous_feb_29() {
+    let sched = CronSchedule::parse("0 0 29 2 *").unwrap();
+    // 2025-03-01 = 2024-02-29 + 367 days, past the old 365-day bound.
+    let mar_1_2025 = LEAP_DAY_2024 + 367 * 86_400_000;
+    assert_eq!(sched.prev_fire_ms(mar_1_2025), Some(LEAP_DAY_2024));
+
+    let job = Job::new(
+        "leap",
+        ScheduleKind::Cron {
+            expr: "0 0 29 2 *".into(),
+        },
+        "nyx",
+    );
+    // last fire was 2024-02-28, so the missed 2024-02-29 is catch-up-able.
+    assert!(job.due(mar_1_2025, Some(LEAP_DAY_2024 - 86_400_000)));
+}
+
+/// The next February 29th can be years away; a 365-day forward bound
+/// reported no next fire, so status surfaces showed nothing.
+#[test]
+fn leap_day_next_fire_is_found_years_out() {
+    let sched = CronSchedule::parse("0 0 29 2 *").unwrap();
+    let mar_1_2025 = LEAP_DAY_2024 + 367 * 86_400_000;
+    // 2028-02-29 = 2024-02-29 + 1461 days.
+    let feb_29_2028 = LEAP_DAY_2024 + 1461 * 86_400_000;
+    assert_eq!(sched.next_fire_ms(mar_1_2025), Some(feb_29_2028));
+
+    let job = Job::new(
+        "leap",
+        ScheduleKind::Cron {
+            expr: "0 0 29 2 *".into(),
+        },
+        "nyx",
+    );
+    assert_eq!(job.next_fire_ms(mar_1_2025, None), Some(feb_29_2028));
+}
+
+/// The largest gap between two February 29ths is 8 years (2096 -> 2104,
+/// because 2100 is not a leap year). Both scan directions must cross it.
+#[test]
+fn century_gap_finds_feb_29_in_both_directions() {
+    let sched = CronSchedule::parse("0 0 29 2 *").unwrap();
+    // 2096-02-29T00:00:00Z.
+    let feb_29_2096 = 3_981_312_000_000i64;
+    // 2103-06-01 is 2647 days after 2096-02-29 and 274 days before
+    // 2104-02-29, so the previous leap day is ~7.25 years back.
+    let mid = feb_29_2096 + 2647 * 86_400_000;
+    assert_eq!(sched.prev_fire_ms(mid), Some(feb_29_2096));
+    assert_eq!(
+        sched.next_fire_ms(mid),
+        Some(feb_29_2096 + 2921 * 86_400_000)
+    );
+}
+
+#[test]
+fn prev_and_next_fire_agree_with_matches_for_every_minute() {
+    // The day-level scans must not diverge from the minute-level `matches`
+    // contract they replaced. Sweep a window across a leap day and assert
+    // that `next_fire_ms` returns the first later matching minute and
+    // `prev_fire_ms` the last earlier-or-equal one.
+    let sched = CronSchedule::parse("0 0 29 2 *").unwrap();
+    let base = LEAP_DAY_2024 - 90 * 86_400_000;
+    for day in 0..200i64 {
+        for minute in (0..1440).step_by(97) {
+            let t = base + day * 86_400_000 + minute * 60_000;
+            if let Some(next) = sched.next_fire_ms(t) {
+                assert!(next > t, "next must be strictly after now: {next} vs {t}");
+                assert!(sched.matches_ms(next), "next must match: {next}");
+                assert!(
+                    !sched.matches_ms(next - 60_000),
+                    "next must be the first match: {next}"
+                );
+            }
+            if let Some(prev) = sched.prev_fire_ms(t) {
+                assert!(prev <= t, "prev must be at or before now: {prev} vs {t}");
+                assert!(sched.matches_ms(prev), "prev must match: {prev}");
+                assert!(
+                    !sched.matches_ms(prev + 60_000),
+                    "prev must be the last match: {prev}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn validate_accepts_good_and_rejects_bad_with_field_names() {
     assert!(CronSchedule::validate("0 0 1 * *").is_ok());
