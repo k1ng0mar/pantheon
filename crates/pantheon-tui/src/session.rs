@@ -5814,6 +5814,7 @@ pub fn run_tui_session_with(
     // Shared helper with the /agui, gateway, and scheduled-run paths so
     // the tiers cannot drift apart.
     config::apply_budget_tiers(&session, file_cfg.as_ref());
+    config::apply_delegation_section(&session, file_cfg.as_ref());
 
     // Tacit temporal awareness (`[temporal]` in config.toml). Absent
     // section = the runtime defaults (enabled, 2h gap, system timezone).

@@ -84,6 +84,7 @@ fn resume_parked_run(data_dir: &Path, run_id: &str) -> Result<String, String> {
     .map_err(|e| e.to_string())?;
     config::apply_tool_enablement(&session, file_cfg.as_ref());
     config::apply_budget_tiers(&session, file_cfg.as_ref());
+    config::apply_delegation_section(&session, file_cfg.as_ref());
     // An empty turn rebuilds the transcript from the ledger and settles
     // the granted call; never resend the user message (duplicate turn).
     session
@@ -241,6 +242,7 @@ fn open_session(
         .inspect(|s| {
             crate::config::apply_tool_enablement(s, cfg.as_ref());
             crate::config::apply_budget_tiers(s, cfg.as_ref());
+            crate::config::apply_delegation_section(s, cfg.as_ref());
         })
 }
 

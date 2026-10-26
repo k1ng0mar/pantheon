@@ -92,6 +92,20 @@ pub fn apply_budget_tiers(session: &pantheon_runtime::session::Session, cfg: Opt
     session.set_budget_section(cfg.and_then(|c| c.budget.clone()).unwrap_or_default());
 }
 
+/// Thread the `[delegation]` section into a freshly built session,
+/// so the `delegate` tool resolves its optional `route` argument.
+/// Absent section = no routes: routed calls are refused, direct
+/// calls work as before. Call alongside `apply_budget_tiers` on
+/// every `Session::new` that serves turns, for the same drift reason.
+pub fn apply_delegation_section(
+    session: &pantheon_runtime::session::Session,
+    cfg: Option<&Config>,
+) {
+    if let Some(section) = cfg.and_then(|c| c.delegation.clone()) {
+        session.set_delegation_section(section);
+    }
+}
+
 /// Resolve `[budget]` to the runtime [`pantheon_agent::Budget`].
 /// Absent section = the runtime defaults.
 pub fn resolve_budget_section(s: &BudgetSection) -> pantheon_agent::Budget {
