@@ -26,7 +26,7 @@ use crate::{
 };
 use pantheon_api::capability::{Capability, Policy};
 use pantheon_api::message::ToolSchema;
-use pantheon_exec::sandbox::{build_sandboxed, enforce, Enforcement};
+use pantheon_exec::sandbox::{build_sandboxed_checked, enforce, Enforcement};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
@@ -299,10 +299,15 @@ impl McpClient {
             .unwrap_or_else(|_| ".".to_string());
         let mut cmd = match &profile {
             // Policy allowed it: the enforcement's sandbox profile decides
-            // how isolated the child runs (namespace wrapper + rlimits
-            // where the host supports them; a direct spawn where it does
-            // not - the policy gate above is what restores enforcement).
-            Some(profile) => build_sandboxed(profile, &config.command, &args, &cwd),
+            // how isolated the child runs. `build_sandboxed_checked` applies
+            // the same fail-closed gate as `run_sandboxed`: a boundary that
+            // needs a wrapper which cannot initialize refuses to spawn
+            // (`SANDBOX_UNAVAILABLE`) unless the direct fallback is opted
+            // in - the policy gate above is what decides *whether*, this
+            // is what guarantees *how isolated*.
+            Some(profile) => build_sandboxed_checked(profile, &config.command, &args, &cwd)
+                .map(|(cmd, _sandboxed)| cmd)
+                .map_err(|e| McpError::Spawn(e.cause))?,
             None => {
                 let mut cmd = Command::new(&config.command);
                 cmd.args(&args);

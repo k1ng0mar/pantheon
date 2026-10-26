@@ -12,6 +12,22 @@
 
 use std::fmt;
 
+/// Maximum number of minutes between two consecutive occurrences of any
+/// valid five-field cron expression.
+///
+/// The largest gap is February 29th across a non-leap century (e.g. 2096 ->
+/// 2104, since 2100 is not a leap year): 2922 days = 4,207,680 minutes.
+/// A scan bound smaller than this misses a leap-day occurrence when the
+/// clock has moved past it (catch-up returns nothing; status reports no
+/// next fire), so both the forward and backward scans use this bound.
+pub const MAX_CRON_GAP_MINUTES: i64 = 4_207_680;
+
+/// Same bound expressed in days (2922 = 8 years), plus a small margin so a
+/// scan starting mid-gap still reaches the far occurrence. Day-level
+/// scanning is what keeps this bound cheap: at most ~2932 iterations
+/// instead of 4.2M minute-by-minute steps.
+const MAX_CRON_GAP_DAYS: i64 = 2932;
+
 /// A parsed five-field expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CronSchedule {
@@ -20,6 +36,12 @@ pub struct CronSchedule {
     day_of_month: Field,
     month: Field,
     day_of_week: Field,
+    /// Sorted allowed minute-of-day values (hour * 60 + minute). The hour
+    /// and minute fields are independent, so every value here is a match
+    /// on the time part; the calendar fields are checked per day. Built at
+    /// parse time so the fire scans step a day at a time and then binary/
+    /// linear-search at most 1440 values instead of scanning every minute.
+    minute_of_day: Vec<u32>,
 }
 
 /// Why an expression was rejected.
@@ -59,12 +81,26 @@ impl CronSchedule {
                 cause: format!("expected 5 fields, found {}", parts.len()),
             });
         }
+        let minute = Field::parse(parts[0], "minute", 0, 59)?;
+        let hour = Field::parse(parts[1], "hour", 0, 23)?;
+        let day_of_month = Field::parse(parts[2], "day-of-month", 1, 31)?;
+        let month = Field::parse(parts[3], "month", 1, 12)?;
+        let day_of_week = Field::parse(parts[4], "day-of-week", 0, 7)?.sunday_normalized();
+        // The hour and minute fields are independent, so the allowed
+        // minute-of-day set is their product; iterating hour outer and
+        // minute inner keeps it sorted.
+        let minute_of_day: Vec<u32> = hour
+            .allowed
+            .iter()
+            .flat_map(|&h| minute.allowed.iter().map(move |&m| h * 60 + m))
+            .collect();
         Ok(Self {
-            minute: Field::parse(parts[0], "minute", 0, 59)?,
-            hour: Field::parse(parts[1], "hour", 0, 23)?,
-            day_of_month: Field::parse(parts[2], "day-of-month", 1, 31)?,
-            month: Field::parse(parts[3], "month", 1, 12)?,
-            day_of_week: Field::parse(parts[4], "day-of-week", 0, 7)?.sunday_normalized(),
+            minute,
+            hour,
+            day_of_month,
+            month,
+            day_of_week,
+            minute_of_day,
         })
     }
 
@@ -79,14 +115,19 @@ impl CronSchedule {
 
     /// Does this expression select the given minute?
     pub fn matches(&self, at: CivilTime) -> bool {
-        if !self.minute.matches(at.minute)
-            || !self.hour.matches(at.hour)
-            || !self.month.matches(at.month)
-        {
+        self.minute.matches(at.minute)
+            && self.hour.matches(at.hour)
+            && self.day_matches(at.month, at.day, at.weekday)
+    }
+
+    /// Calendar half of [`matches`]: month plus the Vixie day-of-month /
+    /// day-of-week rule. No hour or minute involved.
+    fn day_matches(&self, month: u32, day: u32, weekday: u32) -> bool {
+        if !self.month.matches(month) {
             return false;
         }
-        let dom = self.day_of_month.matches(at.day);
-        let dow = self.day_of_week.matches(at.weekday);
+        let dom = self.day_of_month.matches(day);
+        let dow = self.day_of_week.matches(weekday);
         match (
             self.day_of_month.is_wildcard(),
             self.day_of_week.is_wildcard(),
@@ -104,17 +145,62 @@ impl CronSchedule {
         self.matches(civil_from_ms(now_ms))
     }
 
-    /// Latest minute boundary ≤ now_ms whose wall-clock fields match, scanning
-    /// back at most one year. Used for missed-occurrence catch-up.
+    /// Latest minute boundary ≤ now_ms whose wall-clock fields match.
+    ///
+    /// Scans one day at a time (calendar fields) and then picks the largest
+    /// allowed minute-of-day within the day, so the worst case is
+    /// [`MAX_CRON_GAP_DAYS`] day steps instead of 4.2M minute steps. Used
+    /// for missed-occurrence catch-up.
     pub fn prev_fire_ms(&self, now_ms: i64) -> Option<i64> {
-        let mut t = now_ms.div_euclid(60_000) * 60_000;
-        for _ in 0..525_600 {
-            if self.matches_ms(t) {
-                return Some(t);
-            }
-            t -= 60_000;
-        }
-        None
+        let now_min = now_ms.div_euclid(60_000);
+        let first_day = now_min.div_euclid(1440);
+        let first_minute_of_day = now_min.rem_euclid(1440) as u32;
+        ((first_day - MAX_CRON_GAP_DAYS)..=first_day)
+            .rev()
+            .enumerate()
+            .find_map(|(step, day)| {
+                let (_, m, d) = civil_from_days(day);
+                let wd = (day + 4).rem_euclid(7) as u32;
+                if !self.day_matches(m, d, wd) {
+                    return None;
+                }
+                // On the first day only minutes at or before `now` count;
+                // every later day allows the whole day.
+                let limit = if step == 0 { first_minute_of_day } else { 1439 };
+                self.minute_of_day
+                    .iter()
+                    .rev()
+                    .find(|&&v| v <= limit)
+                    .map(|&mom| (day * 1440 + mom as i64) * 60_000)
+            })
+    }
+
+    /// Earliest minute boundary > now_ms whose wall-clock fields match.
+    /// Same day-level scan as [`prev_fire_ms`], walking forward. Used for
+    /// status displays.
+    pub fn next_fire_ms(&self, now_ms: i64) -> Option<i64> {
+        let now_min = now_ms.div_euclid(60_000);
+        let first_day = now_min.div_euclid(1440);
+        let first_minute_of_day = now_min.rem_euclid(1440) as u32;
+        (first_day..=first_day + MAX_CRON_GAP_DAYS)
+            .enumerate()
+            .find_map(|(step, day)| {
+                let (_, m, d) = civil_from_days(day);
+                let wd = (day + 4).rem_euclid(7) as u32;
+                if !self.day_matches(m, d, wd) {
+                    return None;
+                }
+                // Strictly after `now`: skip the current minute on day one.
+                let start = if step == 0 {
+                    first_minute_of_day + 1
+                } else {
+                    0
+                };
+                self.minute_of_day
+                    .iter()
+                    .find(|&&v| v >= start)
+                    .map(|&mom| (day * 1440 + mom as i64) * 60_000)
+            })
     }
 }
 

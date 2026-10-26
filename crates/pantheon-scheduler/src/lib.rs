@@ -304,10 +304,12 @@ impl Job {
     /// Pure function of the job and the clock, for status displays and
     /// tests.
     ///
-    /// Cron times are UTC (see [`cron`]). The forward scan is bounded to one
-    /// year of minutes; an expression that never matches in that window
-    /// (e.g. February 30th) reports no next fire rather than scanning
-    /// forever.
+    /// Cron times are UTC (see [`cron`]). The forward scan is bounded to
+    /// [`cron::MAX_CRON_GAP_MINUTES`] minutes - the largest gap between two
+    /// matching instants (February 29th across a non-leap century) - so a
+    /// leap-day job still reports its next fire years out, while an
+    /// expression that never matches (e.g. February 30th) reports none
+    /// rather than scanning forever.
     pub fn next_fire_ms(&self, now_ms: i64, last_fire_ms: Option<i64>) -> Option<i64> {
         if self.paused {
             return None;
@@ -331,16 +333,9 @@ impl Job {
             }
             ScheduleKind::Cron { expr } => {
                 let schedule = cron::CronSchedule::parse(expr).ok()?;
-                // Start at the next minute boundary: the current minute's
-                // fire (if any) is "now", handled by `due`.
-                let mut t = (now_ms.div_euclid(60_000) + 1) * 60_000;
-                for _ in 0..525_600 {
-                    if schedule.matches_ms(t) {
-                        return Some(t);
-                    }
-                    t += 60_000;
-                }
-                None
+                // `next_fire_ms` starts strictly after now; the current
+                // minute's fire (if any) is "now", handled by `due`.
+                schedule.next_fire_ms(now_ms)
             }
         }
     }

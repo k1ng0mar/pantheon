@@ -232,7 +232,84 @@ const PATTERNS: &[Pattern] = &[
                 let seg = strip_wrappers(seg);
                 let mut w = seg.split_whitespace();
                 matches!(w.next().map(cmd_name), Some("bash" | "sh" | "dash" | "zsh"))
-                    && matches!(w.next(), Some("-c" | "--command"))
+                    && match w.next() {
+                        Some("-c") | Some("--command") => true,
+                        // A short-flag cluster that includes `c` still takes
+                        // code: `bash -lc`, `sh -ce`, `bash -ic`. Matching only
+                        // the exact `-c` word let every clustered spelling
+                        // (`bash -lc 'rm -rf /'`) through as Low.
+                        Some(flag) => {
+                            flag.starts_with('-')
+                                && !flag.starts_with("--")
+                                && flag.contains('c')
+                        }
+                        None => false,
+                    }
+            })
+        },
+    ),
+    (
+        "env_split_string",
+        "env -S/--split-string re-parses its argument as a command line (hides the real command from scanning)",
+        |c: &str| {
+            segments(c).any(|seg| {
+                // Peel wrapper prefixes ONE layer at a time (`sudo env -S
+                // ...`, `timeout 5 env -S ...`) and check at each layer
+                // whether the command word is `env` followed by the
+                // split-string flag. We must check before peeling because
+                // `strip_wrappers` treats `env` as a flag-only wrapper and
+                // consumes it, losing the context.
+                let mut seg = seg.trim();
+                loop {
+                    let words: Vec<&str> = seg.split_whitespace().collect();
+                    if words.is_empty() {
+                        return false;
+                    }
+                    if cmd_name(words[0]) == "env" {
+                        for word in &words[1..] {
+                            // `-S`/`--split-string` consumes the rest as a
+                            // single string that env splits into argv and
+                            // execs. Both the bare flag and the attached form
+                            // (`-Srm -rf /`) count; a long option is spelled
+                            // out.
+                            if *word == "--split-string"
+                                || (word.starts_with("-s") && !word.starts_with("--"))
+                            {
+                                return true;
+                            }
+                            // The payload is the first non-flag word; stop
+                            // looking for the flag once we reach it.
+                            if !word.starts_with('-') {
+                                break;
+                            }
+                        }
+                    }
+                    // Peel exactly one wrapper layer (mirrors
+                    // `strip_wrappers`, but single-step so `env` is seen).
+                    let first = words[0];
+                    let flag_only = matches!(
+                        first,
+                        "sudo" | "env" | "nice" | "nohup" | "command" | "setsid" | "time"
+                            | "builtin"
+                    );
+                    let takes_arg = first == "timeout";
+                    if !(flag_only || takes_arg || first.contains('=')) {
+                        return false;
+                    }
+                    seg = match seg.split_once(char::is_whitespace) {
+                        Some((_, rest)) => rest.trim(),
+                        None => return false,
+                    };
+                    if takes_arg {
+                        seg = match seg.split_once(char::is_whitespace) {
+                            Some((_, rest)) => rest.trim(),
+                            None => return false,
+                        };
+                    }
+                    if seg.is_empty() {
+                        return false;
+                    }
+                }
             })
         },
     ),
@@ -2900,6 +2977,65 @@ mod tests {
             "git push --help",
         ] {
             assert!(!is_git_push(cmd), "false positive: {cmd}");
+        }
+    }
+
+    /// Short-flag clusters containing `c` (e.g. `-lc`, `-ce`, `-ic`) are
+    /// equivalent to `-c` and must be blocked by the shell_dash_c rule.
+    /// Previously only the exact word `-c` or `--command` matched, so
+    /// `bash -lc 'rm -rf /'` classified as Low.
+    #[test]
+    fn shell_dash_c_blocks_flag_clusters_containing_c() {
+        for cmd in [
+            "bash -lc 'rm -rf /'",
+            "bash -ce 'echo hi'",
+            "sh -ic 'id'",
+            "zsh -lc 'ls'",
+            "dash -ce 'pwd'",
+            "sudo bash -lc 'id'",
+        ] {
+            let a = assess(cmd);
+            assert_eq!(a.level, RiskLevel::Critical, "{cmd}");
+            assert!(
+                a.matches.iter().any(|m| m.rule == "shell_dash_c"),
+                "{cmd}: expected shell_dash_c, got {:?}",
+                a.matches.iter().map(|m| m.rule).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// `env -S` / `--split-string` re-parses its argument as a command line,
+    /// hiding the real command from scanning — exactly like `sh -c`.
+    /// Previously no rule caught it, so `env -S 'rm -rf /'` was Low.
+    #[test]
+    fn env_split_string_is_blocked() {
+        for cmd in [
+            "env -S 'rm -rf /'",
+            "env --split-string 'rm -rf /'",
+            "env -S'id'",
+            "sudo env -S 'rm -rf /'",
+            "timeout 5 env -S 'echo hi'",
+        ] {
+            let a = assess(cmd);
+            assert_eq!(a.level, RiskLevel::Critical, "{cmd}");
+            assert!(
+                a.matches.iter().any(|m| m.rule == "env_split_string"),
+                "{cmd}: expected env_split_string, got {:?}",
+                a.matches.iter().map(|m| m.rule).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// Plain `env` without `-S` must still pass through.
+    #[test]
+    fn env_without_split_string_passes() {
+        for cmd in [
+            "env FOO=1 cargo build",
+            "env -i git status",
+            "env -u PATH ls",
+        ] {
+            let a = assess(cmd);
+            assert_eq!(a.level, RiskLevel::Low, "{cmd} must pass: {a:?}");
         }
     }
 }
