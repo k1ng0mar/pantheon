@@ -5717,13 +5717,6 @@ enum TuiEvent {
     TurnComplete {
         run_id: String,
     },
-    /// The assistant's final text for a turn, rendered into the transcript.
-    /// Tagged with the owning run so a background tab's answer never lands
-    /// in the visible transcript.
-    Answered {
-        run_id: String,
-        text: String,
-    },
     /// A turn failed. Tagged with the owning run so a background failure
     /// badges its tab instead of clobbering the visible session.
     Error {
@@ -7064,18 +7057,11 @@ fn resume_parked_turn(
     std::thread::spawn(move || {
         set_stream_run(&run3);
         match sess3.chat_turn(&run3, "", "") {
-            Ok(outcome) => {
-                // Carry the answer through the same event the normal
-                // worker path uses, so a resumed turn renders its result
-                // instead of going silent once the decision clears.
-                let text = match outcome {
-                    pantheon_agent::LoopOutcome::Answered { text, .. } => text,
-                    _ => String::new(),
-                };
-                let _ = tx3.send(TuiEvent::Answered {
-                    run_id: run3.clone(),
-                    text,
-                });
+            Ok(_) => {
+                // The model-event callback already rendered the response
+                // incrementally (or as one completed delta for a
+                // non-streaming model). Sending the final text separately
+                // would append the same answer a second time.
                 let _ = tx3.send(TuiEvent::TurnComplete {
                     run_id: run3.clone(),
                 });
@@ -7671,20 +7657,6 @@ fn tui_loop(
                     }
                 }
                 TuiEvent::Runtime(re) => state.handle_runtime_event(&re),
-                TuiEvent::Answered { run_id, text } => {
-                    if run_id != state.session_id {
-                        // A background tab's final answer: badge, don't
-                        // render. The turn lands in that tab's transcript
-                        // when the user switches to it.
-                        state.on_background_turn_complete(&run_id);
-                        continue;
-                    }
-                    if !text.trim().is_empty() {
-                        state.blocks.push(TranscriptBlock {
-                            kind: BlockKind::AssistantMessage(text),
-                        });
-                    }
-                }
                 TuiEvent::TurnComplete { run_id } => {
                     // Steering that arrived after the turn's last boundary
                     // was never delivered: fold it into the queued
@@ -10816,15 +10788,9 @@ fn handle_slash_inner(
                 std::thread::spawn(move || {
                     set_stream_run(&run4);
                     match sess4.chat_turn(&run4, "", "") {
-                        Ok(outcome) => {
-                            let text = match outcome {
-                                pantheon_agent::LoopOutcome::Answered { text, .. } => text,
-                                _ => String::new(),
-                            };
-                            let _ = tx4.send(TuiEvent::Answered {
-                                run_id: run4.clone(),
-                                text,
-                            });
+                        Ok(_) => {
+                            // The model-event callback already rendered
+                            // this answer; only report turn completion here.
                             let _ = tx4.send(TuiEvent::TurnComplete {
                                 run_id: run4.clone(),
                             });
@@ -11758,5 +11724,31 @@ mod transcript_redaction_tests {
     fn block_at_line_empty_map_resolves_nothing() {
         assert_eq!(super::block_at_line(&[], 0), None);
         assert_eq!(super::block_at_line(&[], 7), None);
+    }
+}
+
+#[cfg(test)]
+mod streaming_response_tests {
+    use super::*;
+
+    #[test]
+    fn streamed_text_deltas_build_one_assistant_message() {
+        let mut state = TuiState::new("run-stream".into(), "test-model".into(), 0);
+        state.handle_model_event(ModelEvent::TextDelta {
+            text: "Hello ".into(),
+        });
+        state.handle_model_event(ModelEvent::TextDelta {
+            text: "there.".into(),
+        });
+
+        let assistant: Vec<_> = state
+            .blocks
+            .iter()
+            .filter_map(|block| match &block.kind {
+                BlockKind::AssistantMessage(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(assistant, ["Hello there."]);
     }
 }

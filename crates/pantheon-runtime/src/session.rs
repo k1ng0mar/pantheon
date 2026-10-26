@@ -5558,7 +5558,7 @@ impl Session {
                 inner: msink,
                 callback: Some(&**cb as &dyn Fn(ModelEvent)),
             };
-            chain.turn_with_sink(messages, &sink)?
+            chain.turn_stream(messages, &sink)?
         } else {
             let msink = LedgerModelSink {
                 sup: &self.supervisor,
@@ -5566,7 +5566,7 @@ impl Session {
                 poison: ledger_poison,
                 model: RefCell::new(None),
             };
-            chain.turn_with_sink(messages, &msink)?
+            chain.turn_stream(messages, &msink)?
         };
 
         match outcome {
