@@ -1,11 +1,10 @@
-[workspace]
 
 [package]
 name = "pantheon-desktop"
 version = "0.3.37"
-description = "Pantheon Desktop - native workspace for the Pantheon agent runtime (forked from PandaCode)"
-authors = ["PandaCode contributors"]
 edition = "2021"
+license = "MIT"
+authors = ["Pantheon contributors"]
 
 [lib]
 name = "pantheon_desktop_lib"

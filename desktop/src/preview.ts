@@ -24,12 +24,12 @@ const sampleTestOutput = 'PASS src/components/search.test.ts\n  ✓ filters resu
 function encodeTool(tool: ToolActivity): string { return JSON.stringify({ type: 'tool_activity', version: 1, ...tool }); }
 let projects: Project[] = [{ id: 'project-1', name: 'orbit', path: '/Users/you/Projects/orbit' }, { id: 'project-2', name: 'pantheon', path: '/Users/you/Projects/pantheon' }];
 let sessions: Session[] = [
-  { id: 'session-1', projectId: 'project-1', title: 'Make search feel instant', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 420000, updatedAt: now, archived: false, worktreePath: null, resumeId: 'preview-session', lastResponseAt: now - 300000 },
-  { id: 'session-2', projectId: 'project-1', title: 'Refine the navigation', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 8200000, updatedAt: now - 8000000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
-  { id: 'session-3', projectId: 'project-1', title: 'Add keyboard shortcuts', provider: 'kimi', model: '', mode: 'ask', status: 'idle', createdAt: now - 86400000, updatedAt: now - 86400000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
-  { id: 'session-4', projectId: 'project-2', title: 'Explore the project', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 345600000, updatedAt: now - 172800000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 259200000 },
+  { id: 'session-1', projectId: 'project-1', title: 'Make search feel instant', provider: 'pantheon', model: 'default', mode: 'ask', status: 'idle', createdAt: now - 420000, updatedAt: now, archived: false, worktreePath: null, resumeId: 'preview-session', lastResponseAt: now - 300000 },
+  { id: 'session-2', projectId: 'project-1', title: 'Refine the navigation', provider: 'pantheon', model: '', mode: 'ask', status: 'idle', createdAt: now - 8200000, updatedAt: now - 8000000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
+  { id: 'session-3', projectId: 'project-1', title: 'Add keyboard shortcuts', provider: 'pantheon', model: '', mode: 'ask', status: 'idle', createdAt: now - 86400000, updatedAt: now - 86400000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
+  { id: 'session-4', projectId: 'project-2', title: 'Explore the project', provider: 'pantheon', model: '', mode: 'ask', status: 'idle', createdAt: now - 345600000, updatedAt: now - 172800000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 259200000 },
 ];
-if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions, { id: 'session-5', projectId: 'project-1', title: 'Polish the trace view', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 60000, updatedAt: now + 1000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now }];
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions, { id: 'session-5', projectId: 'project-1', title: 'Polish the trace view', provider: 'pantheon', model: 'default', mode: 'ask', status: 'idle', createdAt: now - 60000, updatedAt: now + 1000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now }];
 // The preview persists sidebar preferences only, never sample conversation data.
 const THREAD_ORDER_KEY = 'pantheon.preview.threadOrder';
 type ThreadOrder = { id: string; pinned: boolean; sidebarOrder: number | null };
@@ -107,22 +107,7 @@ const messages: Record<string, Message[]> = { ...(showTrace ? { 'session-5': tra
   { id: 8, sessionId: 'session-1', role: 'tool', content: 'Tool finished', createdAt: now - 270000 },
 ], 'session-4': [{ id: 6, sessionId: 'session-4', role: 'assistant', content: 'The project is a small native workspace for coding agents.', createdAt: now - 259200000 }] };
 const providers: Provider[] = [
-  { id: 'claude', name: 'Claude Code', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: ['sonnet', 'opus', 'haiku'].map(id => fallbackModel('claude', id)) },
-  { id: 'codex', name: 'Codex', installed: true, path: '/sample/bin/codex', version: 'Sample provider', models: [] },
-  { id: 'kimi', name: 'Kimi Code', installed: true, path: '/sample/bin/kimi', version: 'Sample provider', models: [] },
-  { id: 'opencode', name: 'OpenCode', installed: true, path: '/sample/bin/opencode', version: 'Sample provider', models: [] },
-  { id: 'glm', name: 'GLM Coding Plan', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: [] },
-  { id: 'antigravity', name: 'Antigravity', installed: false, path: null, version: '', models: [] },
-  { id: 'grok', name: 'Grok Build', installed: true, path: '/sample/bin/grok', version: 'grok 1.0.40 (sample)', models: [] },
-  { id: 'mimo', name: 'MiMo Token Plan', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: [] },
-  { id: 'pi', name: 'Pi', installed: true, path: '/sample/bin/pi', version: 'Sample provider', models: [] },
-  { id: 'deepseek', name: 'DeepSeek', installed: true, path: '/sample/bin/dsh', version: 'Sample provider', models: [] },
-  { id: 'commandcode', name: 'Command Code', installed: true, path: '/sample/bin/command-code', version: '1.87.1 (sample)', models: [] },
-  { id: 'cline', name: 'Cline', installed: true, path: '/sample/bin/cline', version: '3.0.73 (sample)', models: [] },
-  { id: 'kilo', name: 'Kilo Code', installed: true, path: '/sample/bin/kilo', version: '7.3.41 (sample)', models: [] },
-  { id: 'omp', name: 'Oh My Pi', installed: false, path: null, version: '', models: [] },
-  { id: 'github-copilot', name: 'GitHub Copilot CLI', installed: true, path: '/sample/bin/copilot', version: 'GitHub Copilot CLI 1.0.82 (sample)', models: [] },
-  { id: 'muse', name: 'Muse Code', installed: true, path: '/sample/bin/muse', version: 'Muse Code 1.4.7 (sample)', models: [] },
+  { id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/pantheon', version: 'Sample provider', models: ['default'].map(id => fallbackModel('pantheon', id)) },
 ];
 // Mirrors providers::mimo::ENDPOINTS; the native side is the authority.
 const previewMimoEndpoints = [
@@ -148,66 +133,13 @@ function previewSaveConnection(input: { id?: string | null; provider: ProviderId
 }
 // Representative catalog fixtures only; the native app queries installed harnesses.
 /** Another computer's smaller catalog (Pantheon Connect). */
-const remoteProviders = (): Provider[] => ['claude', 'codex'].map(id => providers.find(p => p.id === id)!).map(p => ({ ...p, models: remoteCatalog(p.id) }));
+const remoteProviders = (): Provider[] => providers.map(p => ({ ...p, models: remoteCatalog(p.id) }));
 function remoteCatalog(id: ProviderId): ProviderModel[] {
-  if (id === 'claude') return ['sonnet', 'opus'].map(model => fallbackModel('claude', model));
-  return id === 'codex' ? ['gpt-5-codex', 'gpt-5'].map(model => fallbackModel('codex', model)) : [];
+  if (id === 'pantheon') return catalogs.pantheon.map(m => ({ ...m }));
+  return [];
 }
 const catalogs: Record<ProviderId, ProviderModel[]> = {
-  pantheon: [],
-  hermes: [],
-  // Recorded from `kilo acp` 7.3.41; efforts belong to its current model only.
-  kilo: [
-    { id: 'kilo/stealth/claude-sonnet-4.6', name: 'Kilo Gateway/Stealth: Claude Sonnet 4.6 (20% off)', description: '', reasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'].map(id => ({ id, name: id, description: '' })), defaultReasoningEffort: 'none' },
-    { id: 'kilo/anthropic/claude-sonnet-4.6', name: 'Kilo Gateway/Anthropic: Claude Sonnet 4.6', description: '' },
-  ],
-  pi: [{ id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: 'Sample Pi model.', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }], contextWindow: 200000 }],
-  omp: [{ id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: 'Sample omp model.', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }], contextWindow: 200000 }],
-  deepseek: [
-    { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', description: 'Fast, low-cost default.', reasoningEfforts: [{ id: 'off', name: 'Off', description: 'No extended reasoning.' }, { id: 'low', name: 'Low', description: 'Light reasoning.' }, { id: 'high', name: 'High', description: 'Thorough reasoning. Recommended.' }, { id: 'max', name: 'Max', description: 'Maximum reasoning for the hardest tasks.' }], defaultReasoningEffort: 'high', contextWindow: 1000000 },
-    { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', description: 'Strongest DeepSeek model.', reasoningEfforts: [{ id: 'off', name: 'Off', description: 'No extended reasoning.' }, { id: 'low', name: 'Low', description: 'Light reasoning.' }, { id: 'high', name: 'High', description: 'Thorough reasoning. Recommended.' }, { id: 'max', name: 'Max', description: 'Maximum reasoning for the hardest tasks.' }], defaultReasoningEffort: 'high', contextWindow: 1000000 },
-    { id: 'deepseek-v41-flash', name: 'DeepSeek V41 Flash', description: 'Updated Flash model.', reasoningEfforts: [{ id: 'off', name: 'Off', description: 'No extended reasoning.' }, { id: 'low', name: 'Low', description: 'Light reasoning.' }, { id: 'high', name: 'High', description: 'Thorough reasoning. Recommended.' }, { id: 'max', name: 'Max', description: 'Maximum reasoning for the hardest tasks.' }], defaultReasoningEffort: 'high', contextWindow: 1000000 },
-    { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision Exp', description: 'Experimental image input.', reasoningEfforts: [{ id: 'off', name: 'Off', description: 'No extended reasoning.' }, { id: 'low', name: 'Low', description: 'Light reasoning.' }, { id: 'high', name: 'High', description: 'Thorough reasoning. Recommended.' }, { id: 'max', name: 'Max', description: 'Maximum reasoning for the hardest tasks.' }], defaultReasoningEffort: 'high', contextWindow: 1000000 },
-  ],
-  commandcode: [
-    { id: 'deepseek/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', description: 'fast hybrid-attention reasoning', reasoningEfforts: [{ id: 'off', name: 'Off', description: '' }, { id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }, { id: 'max', name: 'Max', description: '' }], defaultReasoningEffort: 'max' },
-    { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', description: 'best combo of speed & intelligence (recommended)' },
-    { id: 'gpt-6-luna', name: 'GPT-6 Luna', description: 'most efficient OpenAI model for focused, high-volume tasks' },
-    { id: 'moonshotai/Kimi-K3', name: 'Kimi K3', description: 'long-horizon coding & knowledge work with 1M context' },
-  ],
-  // Recorded from `cline --acp` 3.0.73; efforts are its --thinking levels.
-  cline: ['anthropic/claude-sonnet-5.5', 'anthropic/claude-opus-5.5', 'openai/gpt-6-sol'].map((id, index) => ({ id, name: ['Claude Sonnet 5.5', 'Claude Opus 5.5', 'GPT-6 Sol'][index], description: '', reasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh'].map(effort => ({ id: effort, name: effort === 'xhigh' ? 'Extra high' : effort[0].toUpperCase() + effort.slice(1), description: '' })) })),
-  'github-copilot': [{ id: 'default', name: 'Default', description: 'Use the model configured in GitHub Copilot CLI.' }],
-  muse: ['muse-wonder-1.0', 'muse-spark-1.3'].map(id => ({ id, name: id, description: '', reasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(effort => ({ id: effort, name: effort === 'xhigh' ? 'Extra high' : effort[0].toUpperCase() + effort.slice(1), description: '' })), defaultReasoningEffort: 'high', contextWindow: 1007997 })),
-  opencode: openCodePreviewModels,
-  glm: [
-    { id: 'glm-5.3', name: 'GLM-5.3', description: 'Current flagship. Availability depends on your plan.' },
-    { id: 'glm-5.3-flash', name: 'GLM-5.3-Flash', description: 'Fast, low-cost tier. Availability depends on your plan.' },
-    { id: 'glm-5.3[1m]', name: 'GLM-5.3 · 1M context', description: 'Flagship with the extended 1M-token context window. Availability depends on your plan.' },
-    { id: 'glm-5.3-flash[1m]', name: 'GLM-5.3-Flash · 1M context', description: 'Fast tier with the extended 1M-token context window. Availability depends on your plan.' },
-    { id: 'glm-5-turbo', name: 'GLM-5-Turbo', description: 'Fast general-purpose model. Availability depends on your plan.' },
-  ],
-  mimo: [
-    { id: 'mimo-v2.6-pro', name: 'MiMo-V2.6-Pro', description: 'Flagship. Token Plan and pay-as-you-go. Availability depends on your plan.' },
-    { id: 'mimo-v2.6-pro[1m]', name: 'MiMo-V2.6-Pro · 1M context', description: 'Flagship with the extended 1M-token context window. Availability depends on your plan.' },
-    { id: 'mimo-v2.6-flash', name: 'MiMo-V2.6-Flash', description: 'Fast and a third of Pro\'s credit cost. Availability depends on your plan.' },
-  ],
-  antigravity: [{ id: 'default', name: 'Server default', description: 'Connect the Antigravity ACP server to load models.' }],
-  claude: [
-    { id: 'sonnet', name: 'Claude Sonnet 5', description: 'Sample Claude Code model metadata.', reasoningEfforts: ['low', 'medium', 'high'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 200000 },
-    { id: 'opus', name: 'Claude Opus 5', description: 'Sample Claude Code model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'max'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), contextWindow: 1000000 },
-    { id: 'haiku', name: 'Claude Haiku 4.5', description: 'Sample Claude Code model metadata.', contextWindow: 200000 },
-  ],
-  codex: [
-    { id: 'gpt-6-astra', name: 'GPT-6-Astra', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'xhigh'].map(id => ({ id, name: id === 'xhigh' ? 'Extra high' : id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 400000 },
-    { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })) },
-  ],
-  kimi: [{ id: 'kimi-code/k3', name: 'K3', description: 'Sample configured Kimi model.', reasoningEfforts: [{ id: 'on', name: 'On', description: 'Enable thinking.' }, { id: 'off', name: 'Off', description: 'Disable thinking.' }], contextWindow: 256000 }],
-  // Mirrors the initialize modelState that `grok agent stdio` advertises.
-  grok: [
-    { id: 'grok-4.7', name: 'Grok 4.7', description: 'Frontier model for agentic coding.', reasoningEfforts: [{ id: 'low', name: 'Low', description: 'Fastest responses. Best for simple tasks.' }, { id: 'medium', name: 'Medium', description: 'Strong quality with a faster turnaround.' }, { id: 'high', name: 'High', description: 'Thorough reasoning and quality. Recommended.' }, { id: 'xhigh', name: 'Extra High', description: 'Maximum reasoning for the hardest tasks.' }], defaultReasoningEffort: 'high', contextWindow: 500000 },
-    { id: 'grok-4.7-build-fast', name: 'Grok 4.7 Fast', description: 'Fast variant. 2x the price.', reasoningEfforts: [{ id: 'low', name: 'Low', description: 'Fastest responses.' }, { id: 'high', name: 'High', description: 'Thorough reasoning and quality.' }], defaultReasoningEffort: 'high', contextWindow: 500000 },
-  ],
+  pantheon: [{ id: 'default', name: 'Default', description: 'Use the model configured in the CLI' }],
 };
 let git: GitStatus = { branch: 'feat/instant-search', isRepo: true, files: [{ path: 'src/components/search.ts', index: ' ', working: 'M' }, { path: 'src/lib/search-index.ts', index: '?', working: '?' }, { path: 'src/components/search.test.ts', index: ' ', working: 'M' }] };
 const worktreeGit = new Map<string, GitStatus>();
@@ -460,7 +392,7 @@ const codexPreferences: Record<string, string | boolean> = { personality: 'none'
 const previewImports = [{ id: 'preview-instructions', title: 'Project instructions', description: 'Sample project instructions from Claude Code.', source: 'Claude Code' }, { id: 'preview-skills', title: 'Project skills', description: 'Sample coding skills.', source: 'Kimi Code' }];
 const importedPreviewItems = new Set<string>();
 function codexTask(value: unknown): Session {
-  const task = session(value); if (task.provider !== 'codex') throw new Error('Use the Codex harness for this command.'); return task;
+  const task = session(value); if (task.provider !== 'pantheon') throw new Error('Use the Codex harness for this command.'); return task;
 }
 function emitGoal(task: Session): void { agent({ sessionId: task.id, kind: 'goal', text: '', data: structuredClone(task.goalState ?? null) }); }
 function runPreviewGoal(task: Session): void {
@@ -539,15 +471,8 @@ function previewQueue(): PreviewQueued[] {
 }
 function savePreviewQueue(queue: PreviewQueued[]): void { try { localStorage.setItem('pantheon.preview.queue', JSON.stringify(queue)); } catch { /* preview only */ } }
 /** Sample conversations from the Claude Code and Codex CLIs for the Import conversations window. */
-const previewImportables: Record<'claude' | 'codex', { id: string; title: string; folder: string; updatedAt: number; messages: number | null; model: string | null }[]> = {
-  claude: [
-    { id: '7d3f2c1a-0b4e-4c6d-9a8b-1f2e3d4c5b6a', title: 'Fix login redirect loop', folder: '/Users/you/Projects/orbit', updatedAt: now - 3 * 3600000, messages: 24, model: 'claude-opus-5-5' },
-    { id: '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', title: 'Draft the pricing page copy', folder: '/Users/you/Projects/marketing-site', updatedAt: now - 2 * 86400000, messages: 12, model: 'claude-sonnet-5' },
-    { id: '9f8e7d6c-5b4a-4938-8271-6a5b4c3d2e1f', title: 'Old scratch experiment', folder: '/missing/scratch', updatedAt: now - 40 * 86400000, messages: 3, model: null },
-  ],
-  codex: [
-    { id: '4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f', title: 'Speed up the search index', folder: '/Users/you/Projects/pantheon', updatedAt: now - 5 * 3600000, messages: null, model: 'gpt-6-astra' },
-  ],
+const previewImportables: Record<string, Array<{ id: string; title: string; folder: string; updatedAt: number; messages: number | null; model: string | null }>> = {
+  pantheon: [],
 };
 /** Mirrors native storage: a New task draft is published by its first saved prompt. */
 function settleDraft(task: Session): Session {
@@ -572,7 +497,7 @@ function commandPanel(task: Session, request: Record<string, any>): CommandPanel
       request.ids.forEach((id: string) => importedPreviewItems.add(id));
       return { kind: 'result', title: 'Sample import complete', description: `${request.ids.length} selected item${request.ids.length === 1 ? '' : 's'} marked imported in this preview.`, notes };
     }
-    case 'conversations': return { kind: 'conversations', mode: 'resume', items: [...sessions.filter(s => s.provider === 'codex' && s.projectId === task.projectId && s.resumeId && s.id !== task.id).map(s => ({ id: s.resumeId!, title: s.title, source: 'Codex', updatedAt: s.updatedAt })), { id: 'preview-remote-conversation', title: 'Review project architecture', description: 'Sample Codex conversation in this project.', source: 'Codex' }], cursor: null, notes };
+    case 'conversations': return { kind: 'conversations', mode: 'resume', items: [...sessions.filter(s => s.provider === 'pantheon' && s.projectId === task.projectId && s.resumeId && s.id !== task.id).map(s => ({ id: s.resumeId!, title: s.title, source: 'Codex', updatedAt: s.updatedAt })), { id: 'preview-remote-conversation', title: 'Review project architecture', description: 'Sample Codex conversation in this project.', source: 'Codex' }], cursor: null, notes };
     default: throw new Error('Unknown Codex command operation.');
   }
 }
@@ -589,7 +514,7 @@ function slashCatalog(provider: ProviderId) {
     ['status', 'Show task and context status', 'status'],
     ['context', 'Show context usage', 'status'],
     ['mcp', 'Show configured integrations', 'integrations'],
-    ['resume', 'Choose a conversation to continue', provider === 'codex' ? 'conversations' : 'resume'],
+    ['resume', 'Choose a conversation to continue', provider === 'pantheon' ? 'conversations' : 'resume'],
     ['rename', 'Rename this task', 'rename'],
     ['copy', 'Copy the latest agent response', 'copy'],
     ['pwd', 'Show the working directory', 'pwd'],
@@ -611,9 +536,9 @@ function slashCatalog(provider: ProviderId) {
     ['stop', 'Choose jobs to stop', 'jobs'], ['clean', 'Choose jobs to stop', 'jobs'],
   ];
   const accepts = new Set(['rename', 'goal', 'usage', 'conversations', 'fork', 'export', 'worktree', 'plan', 'fast', 'mention', 'cd', 'init', 'recap', 'console']);
-  const commands = [...local, ...(provider === 'codex' ? codex : [])].map(([name, description, action]) => ({ id: `pantheon:${name}`, name: `/${name}`, description, kind: 'action', source: 'Pantheon', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
-  const native = provider === 'codex' ? ['review', 'compact', 'project-guide'] : provider === 'claude' ? ['compact', 'review', 'project-guide'] : ['compact', 'usage', 'tasks', 'skill:project-guide'];
-  const terminal = provider === 'codex' ? ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'] : provider === 'claude' ? ['exit', 'quit', 'login', 'logout', 'doctor'] : ["yolo", "yes", "auto", "permission", "config", "plan", "swarm", "effort", "thinking", "provider", "providers", "btw", "h", "?", "clear", "sessions", "task", "plugins", "add-dir", "experiments", "experimental", "reload", "reload-tui", "goal", "init", "fork", "title", "feedback", "undo", "editor", "logout", "disconnect", "login", "export-md", "export", "export-debug-zip", "web", "exit", "quit", "q", "version"];
+  const commands = [...local, ...(provider === 'pantheon' ? codex : [])].map(([name, description, action]) => ({ id: `pantheon:${name}`, name: `/${name}`, description, kind: 'action', source: 'Pantheon', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
+  const native = provider === 'pantheon' ? ['review', 'compact', 'project-guide'] : provider === 'pantheon' ? ['compact', 'review', 'project-guide'] : ['compact', 'usage', 'tasks', 'skill:project-guide'];
+  const terminal = provider === 'pantheon' ? ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'] : provider === 'pantheon' ? ['exit', 'quit', 'login', 'logout', 'doctor'] : ["yolo", "yes", "auto", "permission", "config", "plan", "swarm", "effort", "thinking", "provider", "providers", "btw", "h", "?", "clear", "sessions", "task", "plugins", "add-dir", "experiments", "experimental", "reload", "reload-tui", "goal", "init", "fork", "title", "feedback", "undo", "editor", "logout", "disconnect", "login", "export-md", "export", "export-debug-zip", "web", "exit", "quit", "q", "version"];
   return { commands: [...commands, ...native.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Sample ${provider} command`, kind: 'prompt', source: provider, action: undefined, argumentHint: '[arguments]' })), ...terminal.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Open /${name} in the harness console`, kind: 'action', source: `${provider} console`, action: `console:${name}`, argumentHint: '[arguments]' }))], warnings: [] };
 }
 function resolveSlash(provider: ProviderId, text: string): { action: string | null; arguments: string } {
@@ -726,7 +651,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   switch (command) {
     case 'check_agent_updates': result = providers.filter(provider => provider.installed && !['glm', 'mimo'].includes(provider.id)).map(provider => {
       const version = provider.version?.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
-      return { provider: provider.id, name: provider.name, providers: provider.id === 'claude' ? ['claude', 'glm', 'mimo'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
+      return { provider: provider.id, name: provider.name, providers: provider.id === 'pantheon' ? ['claude', 'glm', 'mimo'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
     }); break;
     case 'update_agent': throw new Error('Agent updates are available in the desktop app.');
     case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
@@ -763,10 +688,10 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const provider = String(args.provider);
       const supported = ['claude', 'codex', 'kimi', 'glm', 'opencode'].includes(provider);
       result = { provider, status: supported ? 'ready' : 'unsupported', checkedAt: Date.now(), stale: false,
-        plan: provider === 'codex' ? 'Pro' : provider === 'opencode' ? 'Go' : null,
+        plan: provider === 'pantheon' ? 'Pro' : provider === 'pantheon' ? 'Go' : null,
         windows: supported ? [
-          { label: provider === 'opencode' ? 'Go rolling window' : '5-hour window', usedPercent: provider === 'codex' ? 38 : 22, resetsAt: new Date(Date.now() + 7200000).toISOString() },
-          { label: provider === 'opencode' ? 'Go weekly' : 'Weekly', usedPercent: 64, resetsAt: new Date(Date.now() + 3 * 86400000).toISOString() },
+          { label: provider === 'pantheon' ? 'Go rolling window' : '5-hour window', usedPercent: provider === 'pantheon' ? 38 : 22, resetsAt: new Date(Date.now() + 7200000).toISOString() },
+          { label: provider === 'pantheon' ? 'Go weekly' : 'Weekly', usedPercent: 64, resetsAt: new Date(Date.now() + 3 * 86400000).toISOString() },
         ] : [], source: 'Sample limits for the browser preview. No provider request was made.',
         message: supported ? null : 'This harness does not expose account limits. Check its account dashboard.' };
       break;
@@ -863,7 +788,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'fork_codex_task': {
       const source = codexTask(args.sessionId); assertIdle(source);
       if (args.remoteId) {
-        const previous = sessions.find(s => s.provider === 'codex' && s.projectId === source.projectId && s.resumeId === args.remoteId);
+        const previous = sessions.find(s => s.provider === 'pantheon' && s.projectId === source.projectId && s.resumeId === args.remoteId);
         if (previous) { result = previous; break; }
         if (args.remoteId !== 'preview-remote-conversation') throw new Error('That conversation is not available in this project.');
       } else if (!source.resumeId) throw new Error('Start the conversation before forking it.');
@@ -945,14 +870,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'list_importable_conversations': {
       const query = String(args.search ?? '').toLowerCase();
-      const source = args.provider === 'codex' ? 'codex' : 'claude';
+      const source = 'pantheon' as const;
       const imported = (id: string) => sessions.find(task => task.provider === source && task.resumeId === id)?.id ?? null;
-      const items = previewImportables[source].filter(item => !query || `${item.title} ${item.folder}`.toLowerCase().includes(query))
-        .map(item => ({ ...item, importedTaskId: imported(item.id), unavailable: item.folder.startsWith('/missing') ? 'Its folder no longer exists on this computer.' : null }));
-      result = { items, cursor: null, note: items.length ? null : `No ${source === 'codex' ? 'Codex' : 'Claude Code'} conversations were found on this computer.` }; break;
+      const items = ((previewImportables as any)[source] || []).filter((item: any) => !query || `${item.title} ${item.folder}`.toLowerCase().includes(query))
+        .map((item: any) => ({ ...item, importedTaskId: imported(item.id), unavailable: item.folder.startsWith('/missing') ? 'Its folder no longer exists on this computer.' : null }));
+      result = { items, cursor: null, note: items.length ? null : `No Pantheon conversations were found on this computer.` }; break;
     }
     case 'import_conversations': {
-      const source = args.provider === 'codex' ? 'codex' : 'claude';
+      const source = 'pantheon' as const;
       const imported: Session[] = [], existing: string[] = [], failed: { id: string; message: string }[] = [];
       for (const conversationId of args.ids as string[]) {
         const found = previewImportables[source].find(item => item.id === conversationId);
@@ -1012,7 +937,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'local_sign_app': break;
     case 'support_details': result = { version: 'Preview', platform: 'Browser preview', architecture: 'Not reported' }; break;
     case 'browser_inspect': result = args.action === 'read' ? { url: browserState.url, title: browserState.title, text: 'Browser preview sample page', elements: [] } : { dispatched: true }; break;
-    case 'list_provider_models': result = args.deviceId ? remoteCatalog(args.provider as ProviderId) : args.provider === 'opencode' ? previewOpenCodeChoices() : catalogs[args.provider as ProviderId] ?? []; break;
+    case 'list_provider_models': result = args.deviceId ? remoteCatalog(args.provider as ProviderId) : args.provider === 'pantheon' ? previewOpenCodeChoices() : catalogs[args.provider as ProviderId] ?? []; break;
     case 'list_opencode_models': result = {models: openCodePreviewModels, selectedModelIds: previewOpenCodeSelection(), error: null}; break;
     case 'save_opencode_models': {
       if (!Array.isArray(args.modelIds) || args.modelIds.length > 100 || args.modelIds.some((id: unknown) => typeof id !== 'string' || !id.includes('/') || id.length > 200)) throw new Error('Choose valid OpenCode models.');

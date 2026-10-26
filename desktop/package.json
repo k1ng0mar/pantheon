@@ -2,15 +2,15 @@
   "name": "pantheon-desktop",
   "private": true,
   "version": "0.3.37",
-  "description": "Pantheon Desktop - a native workspace for the Pantheon agent runtime (forked from PandaCode).",
+  "description": "Pantheon Desktop - a native workspace for the Pantheon agent runtime.",
   "license": "SEE LICENSE IN LICENSE",
-  "homepage": "https://github.com/aicodeking/pandacode#readme",
+  "homepage": "https://github.com/k1ng0mar/pantheon#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aicodeking/pandacode.git"
+    "url": "git+https://github.com/k1ng0mar/pantheon.git"
   },
   "bugs": {
-    "url": "https://github.com/aicodeking/pandacode/issues"
+    "url": "https://github.com/k1ng0mar/pantheon/issues"
   },
   "type": "module",
   "scripts": {

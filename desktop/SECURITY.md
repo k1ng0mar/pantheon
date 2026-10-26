@@ -1,33 +1,27 @@
-# Security policy
+# Security Policy
 
 ## Supported versions
 
-Only the [latest release](https://github.com/aicodeking/pandacode/releases/latest)
-receives security fixes. Please update before reporting.
+Only the [latest release](https://github.com/k1ng0mar/pantheon/releases/latest)
+is supported. We recommend staying up to date.
 
 ## Reporting a vulnerability
 
-Please do **not** open a public issue for security problems.
-
-Report it privately through GitHub Security Advisories: open the repository's
-[Security tab](https://github.com/aicodeking/pandacode/security) and click
+Please use GitHub's private reporting. Open the
+[Security tab](https://github.com/k1ng0mar/pantheon/security) and click
 **Report a vulnerability**. Include:
 
-- the PandaCode version, OS and architecture (Settings → About can copy these),
-- what an attacker can do and the steps to reproduce,
-- any proof of concept, logs or screenshots (remove secrets and personal data).
+- the Pantheon version, OS and architecture (Settings → About can copy these),
+- steps to reproduce,
+- expected vs. actual behaviour,
+- any known mitigations.
 
-We aim to acknowledge reports within a few days, keep you updated while we
-investigate, and credit you in the advisory unless you prefer otherwise. Please
-give us a reasonable time to release a fix before disclosing publicly.
+You will receive a confirmation within 48 hours and a fix or workaround as soon
+as possible.
 
 ## Scope
 
-In scope: the desktop app in this repository (Rust core, webview frontend,
-IPC boundary, local servers such as the bots web chat, credential storage) and
-the release workflow.
-
-Out of scope: vulnerabilities in third-party coding CLIs or provider services
-that PandaCode launches or connects to — report those to their vendors. Actions
-an agent takes after you grant it Full access, or approve them, are expected
-behavior.
+This policy covers the Pantheon Desktop application and its relay. Security
+issues in the coding agents that Pantheon launches or connects to — report those
+to their vendors. Actions performed by an agent run with your system privileges;
+Pantheon's approval modes and sandbox are documented in the README.

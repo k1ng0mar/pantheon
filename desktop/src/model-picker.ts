@@ -152,7 +152,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     // Keep the native thumb attached to the pointer while other catalogs finish loading.
     if (draggingEffort) return;
     const provider = providers.find(provider => provider.id === current.provider);
-    const model = modelChoices(current.provider, provider?.models ?? [], current.model).find(model => model.id === current.model)!;
+    const choices = modelChoices(current.provider, provider?.models ?? [], current.model);
+    const model = choices.find(model => model.id === current.model) ?? choices[0] ?? fallbackModel(current.provider, current.model || 'default');
     const efforts = model.reasoningEfforts ?? [];
     const canSetEffort = Boolean(onEffortSelect && (efforts.length || current.reasoningEffort));
     settings.hidden = !canSetEffort;
@@ -161,11 +162,11 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const markup = `${canSetEffort ? `<div class="effort-control">${efforts.length ? `<div class="effort-track"><span class="effort-track-background" aria-hidden="true"><span class="effort-fill"><span class="effort-particles">${particles}</span></span></span><input type="range" class="effort-range" aria-label="Reasoning effort" min="0" max="${efforts.length - 1}" step="1"></div>` : ''}<span class="effort-label"></span></div>` : ''}`;
     const key = JSON.stringify([markup, efforts]);
     if (key !== settingsKey) {
-      const focused = settings.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
-      settings.innerHTML = markup;
-      settingsKey = key;
-      displayedEfforts = efforts;
-      if (focused) (settings.querySelector<HTMLElement>('.effort-range') ?? search).focus({ preventScroll: true });
+    const focused = settings.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
+    settings.innerHTML = markup;
+    settingsKey = key;
+    displayedEfforts = efforts;
+    if (focused) (settings.querySelector<HTMLElement>('.effort-range') ?? search).focus({ preventScroll: true });
     }
     const chosen = pendingEffort !== undefined ? pendingEffort : current.reasoningEffort;
     const index = Math.max(0, efforts.findIndex(effort => effort.id === (chosen ?? model.defaultReasoningEffort)));
@@ -268,7 +269,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       const visible = query ? models.filter(model => providerMatches || [model.id, model.name, model.description].some(value => value.toLowerCase().includes(normalized))) : shortList(provider.id, models);
       const locked = !canSwitchProvider && provider.id !== current.provider;
       const unavailable = !provider.installed;
-      const custom = provider.id !== 'github-copilot' && Boolean(query && !namedHarness && !models.some(model => [model.id, model.name].some(value => value.toLowerCase() === normalized)) && !locked);
+      const custom = provider.id !== 'pantheon' && Boolean(query && !namedHarness && !models.some(model => [model.id, model.name].some(value => value.toLowerCase() === normalized)) && !locked);
       if (!visible.length && !custom) return '';
       const disabled = locked || unavailable;
       const row = (model: ProviderModel, isCustom: boolean): string => {

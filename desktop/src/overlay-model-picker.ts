@@ -9,9 +9,9 @@ const catalogs = new Map<ProviderId, {time: number; promise: Promise<ProviderMod
 let watching: Promise<unknown> | undefined;
 function watchModelPreferences(): Promise<unknown> {
   return watching ??= (async () => {
-    const invalidate = () => { catalogs.delete('opencode'); discovery = undefined; };
+    const invalidate = () => { catalogs.delete('pantheon' as any); discovery = undefined; };
     if (nativeOverlay) {
-      await (await import('@tauri-apps/api/event')).listen<{provider:string}>('provider-models-changed', event => { if (event.payload.provider === 'opencode') invalidate(); });
+      await (await import('@tauri-apps/api/event')).listen<{provider:string}>('provider-models-changed', event => { if ((event.payload.provider as any) === 'pantheon') invalidate(); });
     } else {
       window.addEventListener('storage', event => { if (event.key === 'pantheon.preview.opencode-models') invalidate(); });
       window.addEventListener('pantheon-preview-models-changed', invalidate);
@@ -41,9 +41,9 @@ export async function openOverlayModelPicker(options: {
   available.forEach(provider => options.catalog(provider.id,provider.models));
   if (!available.length) throw new Error('No harnesses found. Check your agent connections in Pantheon.');
   // Native discovery lists a saved OpenCode selection as its models; with none, shorten the full catalog.
-  const openCodeSaved = (available.find(provider => provider.id === 'opencode')?.models.length ?? 0) > 1;
+  const openCodeSaved = (available.find(provider => provider.id === 'pantheon')?.models.length ?? 0) > 1;
   return openModelPicker({
-    recent: provider => provider === 'opencode' && !openCodeSaved ? [] : null,
+    recent: provider => provider === 'pantheon' && !openCodeSaved ? [] : null,
     anchor:options.anchor, providers:available, current:{...options.current,provider:options.current.provider as ProviderId},
     canSwitchProvider:true, placement:'below', onSelect:options.select, onClose:options.close,
     loadModels: async provider => {

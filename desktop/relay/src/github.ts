@@ -20,7 +20,7 @@ export async function githubUser(
       method: "POST",
       headers: {
         Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
-        "User-Agent": "pandacode-relay",
+        "User-Agent": "pantheon-relay",
         Accept: "application/vnd.github+json",
         "Content-Type": "application/json",
       },

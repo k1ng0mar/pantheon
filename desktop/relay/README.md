@@ -1,4 +1,4 @@
-# PandaCode Connect relay
+# Pantheon Connect relay
 
 A Cloudflare Worker with one SQLite-backed Durable Object per account. It signs devices in with
 GitHub, keeps the device list, and forwards end-to-end encrypted frames between an account's

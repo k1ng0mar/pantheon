@@ -9,7 +9,7 @@ export type CloudStage = NonNullable<Session['cloud']>['stage'];
 
 const PREFIX = 'cloud:';
 export const SETUP_CHOICE = 'cloud-setup';
-export const CLOUD_HARNESSES: readonly ProviderId[] = ['claude', 'glm', 'mimo', 'codex', 'opencode'];
+export const CLOUD_HARNESSES: readonly any[] = ['pantheon'];
 const BUSY = new Set<CloudStage>(['creating', 'installing', 'credentials', 'uploading', 'running', 'reconnecting', 'syncing']);
 const CLOUD_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.6 9.1 4.5 4.5 0 0 0 7 18Z"/></svg>';
 
@@ -29,11 +29,11 @@ export function cloudItems(targets: CloudTarget[], chosen: string) {
 
 /** Why a harness can't run in the cloud, or '' when it can. */
 export function harnessRefusal(harness: ProviderId, name: string): string {
-  return CLOUD_HARNESSES.includes(harness) ? '' : `${name} can’t run on a cloud machine yet. Choose Claude Code, GLM, MiMo, Codex or OpenCode.`;
+  return CLOUD_HARNESSES.includes(harness as any) ? '' : `${name} can’t run on a cloud machine yet.`;
 }
 
 function installing(harness: ProviderId): string {
-  return harness === 'codex' ? 'Codex' : harness === 'opencode' ? 'OpenCode' : 'Claude Code';
+  return 'Pantheon';
 }
 export function stageText(stage: CloudStage, detail: string | null | undefined, harness: ProviderId): string {
   switch (stage) {
