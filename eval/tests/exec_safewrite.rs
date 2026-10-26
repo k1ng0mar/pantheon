@@ -218,3 +218,46 @@ fn stage_and_checkpoint_ids_reject_traversal() {
     let err = w.restore_checkpoint("has space").unwrap_err();
     assert_eq!(err.code, "SAFE_BAD_ID", "{err}");
 }
+
+/// Startup recovery must be terminal: once a torn apply's checkpoint is
+/// restored and journaled, a later start must not restore it again over an
+/// edit made after the recovery.
+#[test]
+fn torn_apply_recovery_does_not_rerun_on_next_start() {
+    let dir = fresh_state("recover-terminal");
+    let file = dir.join("a.txt");
+    write(&file, "v1");
+    {
+        let w = SafeWriter::new(dir.clone())
+            .unwrap()
+            .with_workspace_root(dir.clone());
+        w.apply_edits(
+            vec![FileEdit {
+                path: file.clone(),
+                new_content: b"v2".to_vec(),
+                expected_hash: None,
+            }],
+            1,
+        )
+        .unwrap();
+    }
+    // Simulate a crash after the files were published but before commit:
+    // drop the trailing commit entry (last line, so the hash chain holds).
+    let journal = dir.join("safewrite.jsonl");
+    let raw = read(&journal);
+    let mut lines: Vec<&str> = raw.lines().collect();
+    assert!(lines.last().unwrap().contains("\"commit\""), "{raw}");
+    lines.pop();
+    std::fs::write(&journal, format!("{}\n", lines.join("\n"))).unwrap();
+
+    SafeWriter::new(dir.clone()).unwrap();
+    assert_eq!(read(&file), "v1", "first start restores the pre-image");
+
+    write(&file, "v3");
+    SafeWriter::new(dir.clone()).unwrap();
+    assert_eq!(
+        read(&file),
+        "v3",
+        "a completed recovery must not restore again"
+    );
+}

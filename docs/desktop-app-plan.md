@@ -510,3 +510,80 @@ real design constitution and `AGENTS.md` an engineering one. Steals, grouped:
   content, observable ladder, harness checklist, token discipline.
 - Suites: `tsc` clean, `npm test` 136/0 (README-link test adapted to the
   fork's attribution contract), `cargo check` clean.
+
+### State→UI coverage audit (2026-10-25, user prompt: "imagine if agent asks for clarify and theres no ui")
+
+Every task state must have visible UI. Audit of the fork (renderer + ACP):
+
+| State | Source | UI | Verdict |
+|---|---|---|---|
+| Turn streaming / tool steps | stream events | transcript + live status | ✓ |
+| Tool approval (capability gate) | ACP `session/request_permission` | approval bar, grouped | ✓ |
+| UI approval card (`render_ui` park) | mapped to `request_permission` | approval bar | ✓ (89c6de0) |
+| **Clarify / ask_user** | `LoopOutcome::AwaitingInput` | was: plain text, app looks idle | **FIXED (8362812/b29f87f)** — `_pantheon/input_request` renders the existing question form (options + Other free text); answer rides the next prompt per Pantheon's contract; `_pantheon/input_resolved` retires the form |
+| Budget exhausted (`max_tokens`, `max_turn_requests`), refusal | ACP `stopReason` | was: **silent turn end** | **FIXED** — `acp_stop_notice` emits status for every non-end_turn stop (all ACP harnesses benefit) |
+| Usage limit hit | `limitedAt/limitedUntil` | limit UI + resume-at-reset | ✓ (upstream) |
+| Run error / provider failure | error events | live errors + notification | ✓ (auth-fix flow is manual provider settings) |
+| Stopped / cancelled | stop events | status | ✓ |
+| Completed / archived | taskStage | board + archive | ✓ |
+| Queued / steered | queue_add + steer events | queue + steering UI | ✓ |
+| Remote device offline | remoteDevice | remote UI | ✓ (upstream) |
+| Cloud agent stages | cloud.stage | cloud UI | ✓ (upstream) |
+| Draft (new task) | draft flag | new-task page | ✓ |
+| Goal input (`goal_input`) | goal events | goal command center | ✓ (upstream, Pantheon goal states still to map) |
+
+Remaining known-thin spots, queued: provider-auth-failure could deep-link to
+the provider settings row; Pantheon goal/plan state surfaces (UiDocument
+forms) ride the §8 mapping when built; a renderer-side state machine test
+("every AgentEvent kind must mutate visible UI or be explicitly inert") is
+the durable guard — add when the Playwright suite next runs.
+
+### Audit gaps filled (2026-10-25, follow-up)
+- **Auth failure** (was "manual provider settings"): auth-shaped errors
+  (401/unauthorized/invalid key) now flip the task to "Sign-in required" —
+  banner above the composer with **Open provider settings** (one click to
+  `showSettings('providers')`), queue holds like a failure, flag clears when
+  the next turn starts.
+- **Durable guard**: `tests/agent-event-coverage.test.mjs` — parses the
+  `AgentEvent` kind union and fails if any kind has no renderer handling
+  unless listed in a documented INERT allowlist (stale allowlist entries for
+  handled kinds also fail). The state-machine class of gap can no longer
+  reopen silently.
+
+### Placement decision change (2026-10-25): the desktop app lives in the runtime repo
+
+The §6 sibling-project rule is superseded by user decision: the app now lives
+at **`<repo>/desktop`** (own Tauri workspace; the std-only root workspace
+`exclude`s it, and `desktop/src-tauri/Cargo.toml` carries an empty
+`[workspace]` so cargo never merges them).
+
+- **`pantheon desktop`** (runtime CLI verb): locates `desktop/` (env
+  `PANTHEON_DESKTOP_DIR` → checkout layout → `~/.local/share/pantheon/desktop`),
+  builds what is missing or stale (`npm install` → `vite build` →
+  `cargo build --release`; staleness by mtime ladder), then launches the
+  shell — which supervises `pantheon dashboard` itself. Flags: `--rebuild`,
+  `--skip-build`, `--register`, `--no-register`.
+- **App registration**: after a build, the verb writes
+  `~/.local/share/applications/pantheon-desktop.desktop` + the hicolor icon,
+  so Pantheon appears in app pickers. Packaging later = `tauri build`
+  (`.deb`/AppImage) which registers system-wide; the verb registration is
+  the no-root path.
+- The historical fork checkout (`~/projects/pantheon-desktop`, with its
+  upstream remote) stays as the upstream-sync source; `desktop/` in the
+  runtime repo is canonical.
+
+### Visual verification caught a real launch bug (2026-10-25)
+
+The first "verified" launch was verified by *process*, not pixels. A
+screenshot showed WebKit's "Could not connect to 127.0.0.1: Connection
+refused" and the upstream panda icon. Root cause: `tauri build` enables the
+`custom-protocol` feature (embeds `frontendDist`); a plain
+`cargo build --release` does not — the release binary baked the devUrl and
+the webview had nothing to load. Fixes (commit `44d1a97`): explicit
+`[features] custom-protocol` in `desktop/src-tauri/Cargo.toml`, the build
+verb passes `--features custom-protocol`, Pantheon favicon
+(`public/icon.svg` was a base64 panda PNG), bundle icon list → `icon.png`.
+Post-fix screenshot confirms: purple P mark, Pantheon titlebar/brand, full
+sidebar, "Choose a project" start view. Rule: **UI work on this app ends
+with a screenshot, never a process check.** Still upstream DNA by choice:
+wallpaper art, panda bot avatars, `kingcode.sqlite3` data-dir filename.

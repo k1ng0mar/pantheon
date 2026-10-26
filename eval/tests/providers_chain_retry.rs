@@ -550,3 +550,226 @@ fn chain_exhaustion_fails_loudly_with_last_code() {
         "exhaustion must not be reported as success"
     );
 }
+
+/// A provider that answers successfully with no text and no tool calls,
+/// optionally recovering on a later call. Reproduces the output-budget
+/// shape (`finish_reason=length`, empty content) and the blank-completion
+/// shape.
+struct EmptyStub {
+    calls: AtomicUsize,
+    finish_reason: &'static str,
+    recover_on: usize,
+}
+impl ChatTransport for EmptyStub {
+    fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.recover_on > 0 && n >= self.recover_on {
+            return Ok(
+                r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#
+                    .into(),
+            );
+        }
+        Ok(format!(
+            r#"{{"choices":[{{"message":{{"content":""}},"finish_reason":"{}"}}],"usage":{{"prompt_tokens":1,"completion_tokens":1}}}}"#,
+            self.finish_reason
+        ))
+    }
+    fn post_stream(
+        &self,
+        _req: &WireRequest,
+        _on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+    ) -> Result<StreamEnd, PantheonError> {
+        unimplemented!("single-shot tests")
+    }
+}
+
+fn empty_chain(
+    provider: &str,
+    finish_reason: &'static str,
+    recover_on: usize,
+) -> (ProviderChain<EmptyStub>, Arc<FakeClock>) {
+    rate_provider(provider);
+    let clock = Arc::new(FakeClock::default());
+    let chain = ProviderChain {
+        policy: policy(provider, &[]),
+        transport: EmptyStub {
+            calls: AtomicUsize::new(0),
+            finish_reason,
+            recover_on,
+        },
+        tools: vec![],
+        api_key: Some(SecretValue::new("k1")),
+        retry: RetryConfig::default(),
+        sleeper: clock.clone(),
+        last_resolved: RefCell::new(None),
+        session_max_tokens: None,
+        budget_max_tokens: None,
+        oauth_broker: None,
+    };
+    (chain, clock)
+}
+
+#[test]
+fn empty_completion_on_output_limit_retries_and_recovers() {
+    // The real failure behind "the reasoning consumed the entire budget":
+    // a successful provider turn with no visible text. It must retry, not
+    // complete the run with a blank answer.
+    let (chain, _) = empty_chain("retry-empty-limit", "length", 2);
+    let events = Collect(RefCell::new(vec![]));
+    let outcome = chain
+        .turn_with_sink(&[Message::user("go")], &events)
+        .expect("the retry recovers");
+    assert!(matches!(
+        outcome,
+        pantheon_agent::TurnOutcome::Text { ref text, .. } if text == "ok"
+    ));
+    assert_eq!(chain.transport.calls.load(Ordering::SeqCst), 2);
+    let borrowed = events.0.borrow();
+    assert!(
+        borrowed.iter().any(|e| matches!(
+            e,
+            ModelEvent::AttemptFailed {
+                code,
+                retryable: true,
+                ..
+            } if code == "PROVIDER_OUTPUT_LIMIT"
+        )),
+        "the empty attempt is reported as a retryable output-limit failure"
+    );
+    assert_eq!(
+        borrowed
+            .iter()
+            .filter(|e| matches!(e, ModelEvent::Completed { .. }))
+            .count(),
+        1,
+        "only the recovered attempt completes"
+    );
+}
+
+#[test]
+fn empty_completion_exhaustion_names_the_output_limit_fix() {
+    let (chain, _) = empty_chain("retry-empty-limit-dead", "length", 0);
+    let err = chain
+        .turn_messages(&[Message::user("go")])
+        .expect_err("all attempts were empty");
+    assert_eq!(err.code, "PROVIDER_EXHAUSTED");
+    assert_eq!(
+        chain.transport.calls.load(Ordering::SeqCst),
+        4,
+        "initial attempt plus three retries"
+    );
+    assert!(
+        err.cause.contains("PROVIDER_OUTPUT_LIMIT"),
+        "exhaustion names the last failure: {}",
+        err.cause
+    );
+    assert!(
+        err.remediation.contains("max_tokens"),
+        "the remedy must be actionable, not a reachability guess: {}",
+        err.remediation
+    );
+}
+
+#[test]
+fn empty_completion_without_length_is_a_retryable_empty_answer() {
+    let (chain, _) = empty_chain("retry-empty-stop", "stop", 2);
+    let events = Collect(RefCell::new(vec![]));
+    let outcome = chain
+        .turn_with_sink(&[Message::user("go")], &events)
+        .expect("the retry recovers");
+    assert!(matches!(
+        outcome,
+        pantheon_agent::TurnOutcome::Text { ref text, .. } if text == "ok"
+    ));
+    assert!(events.0.borrow().iter().any(|e| matches!(
+        e,
+        ModelEvent::AttemptFailed {
+            code,
+            retryable: true,
+            ..
+        } if code == "PROVIDER_EMPTY_ANSWER"
+    )));
+}
+
+/// Fails the first stream after emitting only reasoning, then succeeds.
+/// Mirrors the common "stream ended without finish_reason" shape where the
+/// model had already shown its thoughts but no answer.
+struct ReasoningThenFailStub {
+    calls: AtomicUsize,
+}
+impl ChatTransport for ReasoningThenFailStub {
+    fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
+        panic!("streaming turns must use post_stream")
+    }
+    fn post_stream(
+        &self,
+        _req: &WireRequest,
+        on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+    ) -> Result<StreamEnd, PantheonError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == 1 {
+            on_payload(
+                r#"{"choices":[{"delta":{"reasoning_content":"thinking"},"finish_reason":null}]}"#,
+            )?;
+            return Err(PantheonError::new(
+                "PROVIDER_READ",
+                pantheon_api::error::Layer::Provider,
+                true,
+                "connection reset after reasoning",
+                "retry the request",
+                "",
+            ));
+        }
+        on_payload(r#"{"choices":[{"delta":{"content":"done"},"finish_reason":null}]}"#)?;
+        on_payload(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#)?;
+        Ok(StreamEnd::Done)
+    }
+}
+
+#[test]
+fn failed_stream_after_reasoning_only_is_retried() {
+    // Reasoning is not a deliverable answer and the ledger does not persist
+    // it, so a failed stream that only streamed thoughts must retry rather
+    // than surfacing a dead turn.
+    rate_provider("retry-stream-thoughts");
+    let clock = Arc::new(FakeClock::default());
+    let chain = ProviderChain {
+        policy: policy("retry-stream-thoughts", &[]),
+        transport: ReasoningThenFailStub {
+            calls: AtomicUsize::new(0),
+        },
+        tools: vec![],
+        api_key: Some(SecretValue::new("k1")),
+        retry: RetryConfig::default(),
+        sleeper: clock.clone(),
+        last_resolved: RefCell::new(None),
+        session_max_tokens: None,
+        budget_max_tokens: None,
+        oauth_broker: None,
+    };
+    let events = Collect(RefCell::new(Vec::new()));
+
+    let outcome = chain
+        .turn_stream(&[Message::user("go")], &events)
+        .expect("the retry recovers");
+    assert!(matches!(
+        outcome,
+        pantheon_agent::TurnOutcome::Text { ref text, .. } if text == "done"
+    ));
+    assert_eq!(chain.transport.calls.load(Ordering::SeqCst), 2);
+    let borrowed = events.0.borrow();
+    assert!(
+        borrowed
+            .iter()
+            .any(|e| matches!(e, ModelEvent::RetryAttempt { .. })),
+        "a thoughts-only failed stream retries"
+    );
+    let visible: Vec<&str> = borrowed
+        .iter()
+        .filter_map(|e| match e {
+            ModelEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(visible, ["done"], "no visible text is duplicated");
+}
