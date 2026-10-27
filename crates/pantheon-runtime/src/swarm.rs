@@ -366,6 +366,20 @@ impl<'de> serde::Deserialize<'de> for ChildStatus {
     }
 }
 
+/// What a routed delegation actually ran as, stamped onto the
+/// child's result by the parent - never by the child, so a child
+/// cannot claim a route it did not take. `model` is the routed
+/// profile's model pin when the profile sets one; absent means the
+/// session default, which is not invented into a model name here.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RouteReport {
+    pub route: String,
+    pub profile: String,
+    pub policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
 /// Fixed machine-parseable return contract for a spawned sub-agent.
 ///
 /// The spawn prompt tells the child to wrap its final answer in a
@@ -387,6 +401,10 @@ pub struct ChildResult {
     pub open_questions: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub followups: Vec<String>,
+    /// Set by the parent only for routed delegations; child-produced
+    /// envelopes never carry it, and absent stays absent in the JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<RouteReport>,
 }
 
 impl ChildResult {
@@ -401,6 +419,7 @@ impl ChildResult {
             decisions: Vec::new(),
             open_questions: Vec::new(),
             followups: Vec::new(),
+            route: None,
         }
     }
 

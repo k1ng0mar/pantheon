@@ -866,6 +866,10 @@ struct DelegatePolicy {
     max_delegate_depth: u32,
     allow_child_spawn: bool,
     budget_section: Option<pantheon_api::config::BudgetSection>,
+    /// The `[delegation]` section, threaded exactly like
+    /// `budget_section` so a child's own `for_turn` resolves routes
+    /// from the same config as its parent's.
+    delegation_section: Option<pantheon_api::config::DelegationSection>,
 }
 
 /// Everything a spawned child inherits from its parent. Bundled so
@@ -955,6 +959,9 @@ fn build_delegate_session(
     if let Some(section) = policy.budget_section {
         child_session.set_budget_section(section);
     }
+    if let Some(section) = policy.delegation_section {
+        child_session.set_delegation_section(section);
+    }
     child_session.set_current_run(&child_run_id);
     Ok(child_session)
 }
@@ -1003,6 +1010,11 @@ struct DelegateDriver {
     /// Travels into the child session via [`DelegatePolicy`]; see
     /// [`build_delegate_session`].
     budget_section: Option<pantheon_api::config::BudgetSection>,
+    /// The parent's `[delegation]` section, so the `delegate` tool can
+    /// resolve an optional `route` argument. Not threaded into the
+    /// child: a routed child resolves its own delegations from its
+    /// own session's section at its own turn start.
+    delegation_section: Option<pantheon_api::config::DelegationSection>,
     supervisor: Supervisor,
     /// The parent run this turn belongs to: the cap key, and the run id
     /// the spawn/completion events are recorded under.
@@ -1052,6 +1064,11 @@ impl DelegateDriver {
             allow_child_spawn: budget.allow_child_spawn,
             child_max_tokens: section.as_ref().and_then(|s| s.delegate_child_budget()),
             budget_section: section,
+            delegation_section: session
+                .delegation_section
+                .lock()
+                .map(|s| s.clone())
+                .unwrap_or_default(),
             supervisor: session.supervisor.clone(),
             run_id: run_id.to_string(),
             drive_child: Arc::new(|s: &Session, run: &str, task: &str| s.chat(run, task)),
@@ -1059,30 +1076,110 @@ impl DelegateDriver {
     }
 }
 
-/// Blocking `delegate` tool: `delegate(agent, task, budget?, context?)`.
+/// Resolve a `delegate` call's target profile from its `agent` and
+/// `route` arguments, against the session's `[delegation]` section.
+/// Pure, so the tool closure and tests share one decision:
+///
+/// - `route` given: resolve it before any child spawns. Unknown,
+///   duplicated, or unconfigured routes are structured errors naming
+///   the valid routes, never a silent fallback to another profile.
+/// - `agent` and `route` both given: they must agree (the route's
+///   profile), otherwise the call is refused instead of silently
+///   ignoring one of them.
+/// - Neither given: the section's default route, if configured.
+/// - No route and no default: the caller must name an agent, exactly
+///   as before - direct `delegate(agent = ...)` calls are unaffected
+///   by the route list.
+fn resolve_delegate_target(
+    section: Option<&pantheon_api::config::DelegationSection>,
+    agent: Option<String>,
+    route: Option<String>,
+) -> Result<(String, Option<String>), PantheonError> {
+    let route_err = |cause: String| {
+        PantheonError::new(
+            "DELEGATE_ROUTE",
+            Layer::Agent,
+            false,
+            cause,
+            "pass route with one of the configured [delegation] routes, or delegate(agent = ...) directly",
+            "",
+        )
+    };
+    if let Some(name) = route {
+        let section = section
+            .ok_or_else(|| route_err("no delegation routes are configured".to_string()))?;
+        let resolved = section.resolve(&name).map_err(route_err)?;
+        if let Some(agent) = &agent {
+            if agent != &resolved.profile {
+                return Err(route_err(format!(
+                    "delegation route {name:?} targets profile {:?}, but agent {agent:?} was also given; pass one of them",
+                    resolved.profile
+                )));
+            }
+        }
+        return Ok((resolved.profile.clone(), Some(resolved.name.clone())));
+    }
+    if let Some(agent) = agent {
+        return Ok((agent, None));
+    }
+    match section.and_then(|s| s.default_route().transpose()) {
+        Some(Ok(resolved)) => Ok((resolved.profile.clone(), Some(resolved.name.clone()))),
+        Some(Err(cause)) => Err(route_err(cause)),
+        None => Err(PantheonError::new(
+            "DELEGATE_ARGS",
+            Layer::Agent,
+            false,
+            "missing required parameter \"agent\"".to_string(),
+            "pass {\"agent\": ..., \"task\": ...} or a configured route",
+            "",
+        )),
+    }
+}
+
+/// Blocking `delegate` tool: `delegate(agent?, task, budget?, context?, route?)`.
 ///
 /// One real primitive: the call does not return until the child is
 /// terminal. Finished → the child's result text; failed / canceled /
 /// parked → a structured tool error (see [`tool_result_text`]).
 /// The child's token usage lands under the child's own run id, never
 /// the parent's budget.
+///
+/// A routed call runs the child as the route's profile and reports
+/// the route in its result (see [`crate::swarm::RouteReport`]); a
+/// direct call names the profile itself and is unchanged.
 fn register_delegate_tool(reg: &mut ToolRegistry, driver: Arc<DelegateDriver>) {
+    // Only route names and descriptions reach the model, never a
+    // credential, endpoint, or model id - the section holds none of
+    // those, and the description is built from names + descriptions.
+    let mut description = "Delegate a unit of work to another agent profile and wait for the result. \
+                          BLOCKING: this call does not return until the child finishes, fails, or parks. \
+                          The child runs under its own profile policy with its own token budget."
+        .to_string();
+    if let Some(section) = driver.delegation_section.as_ref() {
+        if !section.routes.is_empty() {
+            let routes = section
+                .routes
+                .iter()
+                .map(|r| format!("{}: {}", r.name, r.description))
+                .collect::<Vec<_>>()
+                .join("; ");
+            description.push_str(&format!(" Curated routes: {routes}."));
+        }
+    }
     reg.register(
         ToolSchema {
             name: "delegate".into(),
-            description: "Delegate a unit of work to another agent profile and wait for the result. \
-                          BLOCKING: this call does not return until the child finishes, fails, or parks. \
-                          The child runs under its own profile policy with its own token budget."
-                .into(),
+            description: description.into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "agent": {"type": "string", "description": "Profile name of the agent to delegate to."},
+                    "agent": {"type": "string", "description": "Profile name of the agent to delegate to. Optional when route (or a default route) picks the profile."},
                     "task": {"type": "string", "description": "The objective for the child agent."},
                     "budget": {"type": "integer", "description": "Optional max tokens for this child's generation. Overrides [budget].delegate_child_max_tokens."},
-                    "context": {"type": "string", "description": "Optional extra context for the child, appended to the task."}
+                    "context": {"type": "string", "description": "Optional extra context for the child, appended to the task."},
+                    "route": {"type": "string", "description": "Optional curated delegation route from [delegation]. When given, the child runs as that route's profile; unknown routes are refused before any child spawns."}
                 },
-                "required": ["agent", "task"]
+                "required": ["task"]
             }),
         },
         pantheon_api::capability::Capability::AgentSpawn,
@@ -1114,8 +1211,22 @@ fn register_delegate_tool(reg: &mut ToolRegistry, driver: Arc<DelegateDriver>) {
                         )
                     })
             };
-            let agent = required("agent")?;
             let task = required("task")?;
+            // `agent` is optional exactly when a route (or the section
+            // default) picks the profile; `resolve_delegate_target`
+            // refuses the call before any child spawns otherwise.
+            let optional = |k: &str| {
+                v.get(k)
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            let (agent, route) = resolve_delegate_target(
+                driver.delegation_section.as_ref(),
+                optional("agent"),
+                optional("route"),
+            )?;
             // Out-of-range budgets degrade to the configured default
             // rather than failing the call or wrapping.
             let budget = v
@@ -1127,13 +1238,14 @@ fn register_delegate_tool(reg: &mut ToolRegistry, driver: Arc<DelegateDriver>) {
             // exactly this execution; absent on non-tool paths, where
             // the lifecycle events simply carry no link.
             let call_ctx = pantheon_tools::tools::current_call_context();
-            run_delegate_child(
+            run_delegate_child_routed(
                 &driver,
                 &agent,
                 &task,
                 budget,
                 context,
                 call_ctx.as_ref().map(|c| c.call_id.as_str()),
+                route.as_deref(),
             )
         },
     );
@@ -1306,6 +1418,10 @@ struct SessionSpawner {
     max_delegate_depth: u32,
     allow_child_spawn: bool,
     budget_section: Option<pantheon_api::config::BudgetSection>,
+    /// The `[delegation]` section, threaded like `budget_section` so
+    /// a threaded child's own delegations resolve routes from the
+    /// same config.
+    delegation_section: Option<pantheon_api::config::DelegationSection>,
     /// The parent run this spawner belongs to: the cap key the root-owned
     /// delegation budget resolves from.
     run_id: String,
@@ -1342,6 +1458,11 @@ impl SessionSpawner {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_default();
+        let delegation_section: Option<pantheon_api::config::DelegationSection> = session
+            .delegation_section
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default();
         // Decision B (2026-10-01): the delegation budget is owned by the
         // root run; ensure it exists before any threaded delegate call.
         // Re-ensuring never resets an existing budget.
@@ -1374,6 +1495,7 @@ impl SessionSpawner {
             max_delegate_depth: budget.max_delegate_depth,
             allow_child_spawn: budget.allow_child_spawn,
             budget_section,
+            delegation_section,
             run_id: run_id.to_string(),
             registry: pantheon_agent::SubagentRegistry::new(caps),
             supervisor: session.supervisor.clone(),
@@ -1420,6 +1542,7 @@ impl pantheon_agent::SubagentSpawner for SessionSpawner {
                 max_delegate_depth: self.max_delegate_depth,
                 allow_child_spawn: self.allow_child_spawn,
                 budget_section: self.budget_section.clone(),
+                delegation_section: self.delegation_section.clone(),
             },
         )?;
         let child_run = child_session.current_run_id();
@@ -1463,6 +1586,7 @@ impl pantheon_agent::SubagentSpawner for SessionSpawner {
                     &child_run,
                     outcome,
                     &supervisor,
+                    None,
                 )
             })?;
         // The child is registered and running: the delegation counts.
@@ -1698,6 +1822,9 @@ pub fn register_subagent_tools(
 /// approval parks against the CHILD's run: the error names the child's
 /// run id, capability, and scope, and the parent run cannot grant it
 /// grants are matched against the run that requested them.
+/// The pre-route entry point, kept so existing callers (the
+/// `TurnOutcome::Delegate` arm and tests) keep the direct behaviour:
+/// no route, no report, target is the named profile.
 fn run_delegate_child(
     driver: &DelegateDriver,
     agent: &str,
@@ -1705,6 +1832,23 @@ fn run_delegate_child(
     budget: Option<u32>,
     context: Option<&str>,
     call_id: Option<&str>,
+) -> Result<String, PantheonError> {
+    run_delegate_child_routed(driver, agent, task, budget, context, call_id, None)
+}
+
+/// The routed entry point: `route` is the already-resolved route
+/// name from [`resolve_delegate_target`], or `None` for a direct
+/// call. The report is built from the child session itself after
+/// spawn (its resolved profile, policy preset, and model pin), so a
+/// child cannot claim a route it did not take.
+fn run_delegate_child_routed(
+    driver: &DelegateDriver,
+    agent: &str,
+    task: &str,
+    budget: Option<u32>,
+    context: Option<&str>,
+    call_id: Option<&str>,
+    route: Option<&str>,
 ) -> Result<String, PantheonError> {
     // Depth caps first: a refusal here consumes no delegation slot.
     // Mirrors `SubagentRegistry::spawn_child` for the threaded path.
@@ -1765,11 +1909,24 @@ fn run_delegate_child(
             max_delegate_depth: driver.max_delegate_depth,
             allow_child_spawn: driver.allow_child_spawn,
             budget_section: driver.budget_section.clone(),
+            delegation_section: driver.delegation_section.clone(),
         },
     )?;
     if let Some(tokens) = child_tokens {
         child_session.set_budget_max_tokens(Some(tokens));
     }
+    // The report reads the child that was actually built, not the
+    // route table: policy is the child's resolved preset, and the
+    // model is the profile's pin when it sets one (absent = the
+    // session default, never invented into a name).
+    let route_report = route.and_then(|name| {
+        child_session.agent().map(|child_agent| crate::swarm::RouteReport {
+            route: name.to_string(),
+            profile: child_agent.profile().name.clone(),
+            policy: child_agent.policy_preset().to_string(),
+            model: child_agent.profile().model.value.clone(),
+        })
+    });
     let child_run = child_session.current_run_id();
     // Decision B (2026-10-01): the delegation budget is owned by the ROOT
     // run and shared across the whole descendant tree. A delegation counts
@@ -1802,7 +1959,7 @@ fn run_delegate_child(
     // The child is now observable: the delegation counts.
     budget_guard.commit();
     let outcome = (driver.drive_child)(&child_session, &child_run, &full_task);
-    let result = map_child_outcome(
+    let mut result = map_child_outcome(
         &driver.model_policy,
         &driver.run_id,
         agent,
@@ -1810,7 +1967,17 @@ fn run_delegate_child(
         &child_run,
         outcome,
         &driver.supervisor,
+        route_report.clone(),
     );
+    // A routed failure is still a routed delegation: the success
+    // result carries the route in its JSON (see `map_child_outcome`),
+    // so the error carries the same line instead of only the profile.
+    if let (Some(e), Some(report)) = (result.as_mut().err(), &route_report) {
+        e.cause.push_str(&format!(
+            "\n[delegation route: {} -> {} (policy: {})]",
+            report.route, report.profile, report.policy
+        ));
+    }
     let failed_detail = result
         .as_ref()
         .err()
@@ -1857,6 +2024,7 @@ fn map_child_outcome(
     child_run: &str,
     outcome: Result<LoopOutcome, PantheonError>,
     supervisor: &Supervisor,
+    route_report: Option<crate::swarm::RouteReport>,
 ) -> Result<String, PantheonError> {
     let outcome = outcome?;
     match outcome {
@@ -1865,7 +2033,11 @@ fn map_child_outcome(
             // by LLM. Non-conforming text degrades to
             // `status: unknown` - never an error, never a
             // silent pass.
-            let result = crate::swarm::parse_child_result(&text);
+            let mut result = crate::swarm::parse_child_result(&text);
+            // A routed delegation reports its route in the result
+            // itself, stamped by the parent - the child envelope
+            // never carries it, so it cannot claim another route.
+            result.route = route_report;
             // Adversarial verification, when the `[verify]`
             // slot is configured (OFF by default). A child
             // that reports failure has nothing to verify.
@@ -2227,6 +2399,12 @@ pub struct Session {
     /// Absent (never set) = compiled defaults: model-default child
     /// budget, [`pantheon_api::config::DEFAULT_MAX_DELEGATIONS`].
     budget_section: Mutex<Option<pantheon_api::config::BudgetSection>>,
+    /// Live `[delegation]` section, set from config at startup via
+    /// [`Session::set_delegation_section`]. The `delegate` tool
+    /// resolves its optional `route` argument from it. Absent (never
+    /// set) = no routes: routed calls are refused, direct
+    /// `delegate(agent = ...)` calls work as before.
+    delegation_section: Mutex<Option<pantheon_api::config::DelegationSection>>,
     /// Serializes UI action submissions. The replay-check -> audit-emit
     /// -> dispatch sequence in `submit_ui_action` must be atomic:
     /// without this, two concurrent submissions with the same nonce
@@ -2396,6 +2574,7 @@ impl Session {
             skills_cache: Mutex::new(Vec::new()),
             stt_section: Mutex::new(None),
             budget_section: Mutex::new(None),
+            delegation_section: Mutex::new(None),
             ui_action_lock: Mutex::new(()),
         };
         // Sandbox enforcement for MCP server spawns: the session's
@@ -3114,6 +3293,19 @@ impl Session {
     /// calls; `[budget]` edits reach the running session through it.
     pub fn set_budget_section(&self, section: pantheon_api::config::BudgetSection) {
         if let Ok(mut s) = self.budget_section.lock() {
+            *s = Some(section);
+        }
+    }
+
+    /// Set the live `[delegation]` config section (see the
+    /// `delegation_section` field). Called once at startup from the
+    /// loaded config, alongside `set_budget_section`; the blocking
+    /// `delegate` tool resolves its `route` argument from it per turn.
+    pub fn set_delegation_section(
+        &self,
+        section: pantheon_api::config::DelegationSection,
+    ) {
+        if let Ok(mut s) = self.delegation_section.lock() {
             *s = Some(section);
         }
     }
@@ -8087,6 +8279,158 @@ mod delegate_tool_tests {
             !result.contains("[verification: holds]"),
             "nothing verified here: {result}"
         );
+    }
+
+
+    fn routes_section() -> pantheon_api::config::DelegationSection {
+        pantheon_api::config::DelegationSection {
+            routes: vec![
+                pantheon_api::config::DelegationRoute {
+                    name: "fast".into(),
+                    description: "Cheap and quick.".into(),
+                    profile: "child".into(),
+                },
+                pantheon_api::config::DelegationRoute {
+                    name: "deep".into(),
+                    description: "Slow and careful.".into(),
+                    profile: "parent".into(),
+                },
+            ],
+            default: Some("fast".into()),
+        }
+    }
+
+    /// A `delegate` tool registry wired to a stubbed child, with the
+    /// routes section installed on the session before the driver is
+    /// built - the same order `for_turn` reads it in production.
+    fn routed_tool(
+        session: &Session,
+        run_id: &str,
+        stub: impl Fn(&Session, &str, &str) -> Result<LoopOutcome, PantheonError>
+            + Send
+            + Sync
+            + 'static,
+    ) -> ToolRegistry {
+        session.set_delegation_section(routes_section());
+        let driver = stubbed_driver(session, run_id, stub);
+        let mut reg = ToolRegistry::new();
+        register_delegate_tool(&mut reg, driver);
+        reg
+    }
+
+    #[test]
+    fn delegate_route_resolves_to_its_profile_and_reports_route() {
+        let (session, dir) = test_session();
+        attach_parent_agent(&session, &dir);
+        let reg = routed_tool(&session, "run-route", |child, _run, _task| {
+            let profile = child
+                .agent()
+                .map(|a| a.profile().name.clone())
+                .unwrap_or_default();
+            assert_eq!(profile, "parent", "deep routes to the parent profile");
+            success_stub(child, _run, _task)
+        });
+        let result = reg
+            .execute(
+                "delegate",
+                "{\"route\": \"deep\", \"task\": \"do the hard thing\"}",
+            )
+            .expect("routed delegate");
+        assert!(result.contains("\"route\":\"deep\""), "result reports route: {result}");
+        assert!(result.contains("\"profile\":\"parent\""), "result reports profile: {result}");
+        assert!(result.contains("\"policy\":\"coder\""), "result reports policy: {result}");
+    }
+
+    #[test]
+    fn delegate_unknown_route_is_refused_before_spawn() {
+        let (session, dir) = test_session();
+        attach_parent_agent(&session, &dir);
+        let spawned = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&spawned);
+        let reg = routed_tool(&session, "run-unknown-route", move |child, run, task| {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            success_stub(child, run, task)
+        });
+        let err = reg
+            .execute(
+                "delegate",
+                "{\"route\": \"local\", \"task\": \"do the thing\"}",
+            )
+            .expect_err("unknown route");
+        assert_eq!(err.code, "DELEGATE_ROUTE");
+        assert!(err.cause.contains("unknown delegation route"));
+        assert!(err.cause.contains("fast") && err.cause.contains("deep"));
+        assert!(
+            !spawned.load(std::sync::atomic::Ordering::SeqCst),
+            "no child spawns for an unknown route"
+        );
+    }
+
+    #[test]
+    fn delegate_route_and_agent_conflict_is_refused() {
+        let (session, dir) = test_session();
+        attach_parent_agent(&session, &dir);
+        let reg = routed_tool(&session, "run-conflict", success_stub);
+        let err = reg
+            .execute(
+                "delegate",
+                "{\"route\": \"fast\", \"agent\": \"parent\", \"task\": \"do the thing\"}",
+            )
+            .expect_err("route/agent conflict");
+        assert_eq!(err.code, "DELEGATE_ROUTE");
+        assert!(err.cause.contains("targets profile"));
+    }
+
+    #[test]
+    fn delegate_default_route_used_when_neither_agent_nor_route_given() {
+        let (session, dir) = test_session();
+        attach_parent_agent(&session, &dir);
+        let reg = routed_tool(&session, "run-default", |child, _run, _task| {
+            let profile = child
+                .agent()
+                .map(|a| a.profile().name.clone())
+                .unwrap_or_default();
+            assert_eq!(profile, "child", "default fast routes to child");
+            success_stub(child, _run, _task)
+        });
+        let result = reg
+            .execute("delegate", "{\"task\": \"do the thing\"}")
+            .expect("default route delegate");
+        assert!(result.contains("\"route\":\"fast\""), "result reports default route: {result}");
+    }
+
+    #[test]
+    fn delegate_direct_agent_is_unchanged_when_routes_configured() {
+        let (session, dir) = test_session();
+        attach_parent_agent(&session, &dir);
+        let reg = routed_tool(&session, "run-direct", success_stub);
+        let result = reg
+            .execute(
+                "delegate",
+                "{\"agent\": \"child\", \"task\": \"do the thing\"}",
+            )
+            .expect("direct delegate");
+        assert!(
+            !result.contains("\"route\""),
+            "direct calls carry no route report: {result}"
+        );
+    }
+
+    #[test]
+    fn delegate_route_refused_when_no_routes_configured() {
+        let (session, dir) = test_session();
+        attach_parent_agent(&session, &dir);
+        let driver = stubbed_driver(&session, "run-no-routes", success_stub);
+        let mut reg = ToolRegistry::new();
+        register_delegate_tool(&mut reg, driver);
+        let err = reg
+            .execute(
+                "delegate",
+                "{\"route\": \"fast\", \"task\": \"do the thing\"}",
+            )
+            .expect_err("route with no section");
+        assert_eq!(err.code, "DELEGATE_ROUTE");
+        assert!(err.cause.contains("no delegation routes are configured"));
     }
 
     /// Every non-Answered child outcome - and a child that errors - is a

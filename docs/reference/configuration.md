@@ -205,6 +205,25 @@ soul_file    = "agents/zeus/SOUL.md"
 > is unconditional). They were removed; old files still load, the keys are
 > simply ignored. There is no replacement to configure.
 
+## Delegation routes
+
+```toml
+[delegation]
+default = "fast"   # used when a delegate call names neither an agent nor a route; optional
+
+[[delegation.routes]]
+name        = "fast"   # what the model picks; must be unique
+description = "Cheap and quick: lookups, summaries, simple edits."  # one line the model reads
+profile     = "coder"  # the [agents.<name>] profile the routed child runs as
+
+[[delegation.routes]]
+name        = "deep"
+description = "Slow and careful: hard debugging and design work."
+profile     = "researcher"
+```
+
+Routes are an allowlist for the `delegate` tool: `delegate(route = "fast", task = "...")` runs the child as that route's profile, and the result reports the route, profile, and policy actually used. An unknown or duplicated route name is refused before any child spawns, never silently replaced with another profile. A call that names both a route and an agent is refused unless they agree. With no `[delegation]` section, `delegate` works exactly as before and a `route` argument is refused.
+
 ## Custom providers
 
 ```toml

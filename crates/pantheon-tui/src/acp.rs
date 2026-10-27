@@ -436,6 +436,7 @@ fn open_session(data_dir: &Path) -> Result<Session, String> {
         .map_err(|e| format!("open session: {e}"))?;
     config::apply_tool_enablement(&session, cfg.as_ref());
     config::apply_budget_tiers(&session, cfg.as_ref());
+    config::apply_delegation_section(&session, cfg.as_ref());
     Ok(session)
 }
 

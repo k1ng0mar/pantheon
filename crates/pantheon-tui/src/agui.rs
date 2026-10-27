@@ -97,6 +97,7 @@ pub(crate) fn build_agui_serve_parts(
             |s| {
                 config::apply_tool_enablement(s, cfg.as_ref());
                 config::apply_budget_tiers(s, cfg.as_ref());
+                config::apply_delegation_section(s, cfg.as_ref());
             },
         )
     }));
@@ -272,6 +273,7 @@ pub fn resume_after_grant(run_id: &str) {
         };
     config::apply_tool_enablement(&session, file_cfg.as_ref());
     config::apply_budget_tiers(&session, file_cfg.as_ref());
+    config::apply_delegation_section(&session, file_cfg.as_ref());
     match session.chat_turn(run_id, "", "") {
         Ok(_) => {
             println!("run {run_id} continued");
