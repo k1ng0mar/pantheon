@@ -5611,8 +5611,20 @@ fn render_block(
             lines.extend(card.lines(th));
         }
         BlockKind::Swarm { agents, task } => {
+            // Layer 7, count-only (deliberate): per-agent rows fed by
+            // SubAgentRecord are NOT clean here — every AgentSpawned
+            // pushes its own Swarm block (agents: 1, task: agent name),
+            // so rendering all records under every block would repeat
+            // each agent once per spawn. Per-agent rows need the Swarm
+            // block to carry its own agent list (a block-shape change),
+            // not a render tweak; the live count already lives in the
+            // footer (layer 2) and names in /team. Grammar fixed.
             lines.push(Line::from(Span::styled(
-                format!("{} Swarm · {agents} agents", icon::AGENT),
+                format!(
+                    "{} Swarm · {agents} agent{}",
+                    icon::AGENT,
+                    if *agents == 1 { "" } else { "s" }
+                ),
                 Style::default().fg(th.primary),
             )));
             lines.push(Line::from(format!("  {task}")));
@@ -12121,6 +12133,38 @@ mod picker_render_tests {
         let text = lines.join("\n");
         assert!(text.contains("1 agent"), "only Running counts: {text}");
         assert!(!text.contains("2 agent"), "Done must not count: {text}");
+    }
+
+    #[test]
+    fn swarm_block_renders_count_and_task() {
+        let th = theme::Theme::pantheon();
+        let mut img = crate::richtext::ImagePaintState::new();
+        let mut ctx = BlockRenderCtx {
+            th: &th,
+            img: &mut img,
+            term_width: 84,
+            live_tokens: 0,
+        };
+        let block = TranscriptBlock {
+            kind: BlockKind::Swarm {
+                agents: 1,
+                task: "researcher".to_string(),
+            },
+        };
+        let mut lines: Vec<Line> = Vec::new();
+        render_block(&mut lines, &block, false, false, &mut ctx);
+        let text = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Swarm · 1 agent"), "got: {text}");
+        assert!(text.contains("researcher"), "got: {text}");
     }
 
     #[test]
