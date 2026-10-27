@@ -250,6 +250,19 @@ pub enum BlockKind {
     /// `started`/`duration` give the timing, `error` carries the
     /// failure detail, and `tokens` freezes the session token count at
     /// completion (the header shows the live count while running).
+    /// Deliberately NO stall label here: elapsed time alone is not
+    /// proof of a stuck tool. The runtime's activity watchdog
+    /// (`pantheon-runtime/src/watchdog.rs`, budget from
+    /// `PANTHEON_STALL_BUDGET_MS`, default 30s) only advances at
+    /// turn-entry boundaries, probes with a ledger read, and kills
+    /// only on a failed probe (`WATCHDOG_KILL`, already surfaced as a
+    /// turn failure); it emits no state the TUI could render, and
+    /// the TUI feed drops `ToolOutput` events and only receives
+    /// shell output at completion, so no per-tool last-output
+    /// timestamp exists to derive one from. A proactive stall UI
+    /// needs a runtime addition (e.g. a watchdog/progress event the
+    /// TUI can timestamp), not a TUI-side elapsed threshold — see
+    /// the 2026-10-27 next-pass report.
     /// `expanded` toggles the detail on click; `output` holds captured
     /// stdout for `shell` calls, rendered as a collapsible `$ cmd` card
     /// via [`crate::transcript::ShellView`].
