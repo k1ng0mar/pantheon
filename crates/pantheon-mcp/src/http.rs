@@ -596,10 +596,26 @@ impl HttpMcpClient {
         }
     }
 
-    /// `tools/list`.
+    /// `tools/list`, following `nextCursor` pages. A repeated cursor or
+    /// 1,000 pages ends the walk defensively.
     pub fn list_tools(&mut self) -> Result<Vec<McpToolDef>, McpError> {
-        let result = self.request("tools/list", serde_json::json!({}))?;
-        tools_from(&result, &self.server)
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..1000 {
+            let params = match &cursor {
+                Some(c) => serde_json::json!({"cursor": c}),
+                None => serde_json::json!({}),
+            };
+            let result = self.request("tools/list", params)?;
+            out.extend(tools_from(&result, &self.server)?);
+            match crate::next_cursor(&result) {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => return Ok(out),
+            }
+        }
+        Err(McpError::Protocol(
+            "tools/list exceeded 1,000 pages".to_string(),
+        ))
     }
 
     /// `tools/call`. No capability gate on this type: the manager holds
@@ -813,5 +829,79 @@ fn match_stream_err(e: &str, method: &str) -> McpError {
         }
     } else {
         McpError::Framing(format!("sse stream: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn tools_list_follows_next_cursor_over_streamable_http() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming().take(4) {
+                let Ok(mut s) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut byte = [0u8; 1];
+                while !buf.ends_with(b"\r\n\r\n") {
+                    match s.read(&mut byte) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => buf.push(byte[0]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                let len = text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Content-Length:").or_else(|| l.strip_prefix("content-length:")))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0u8; len];
+                if len > 0 {
+                    let _ = s.read_exact(&mut body);
+                }
+                let req: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                let (status, payload): (u16, String) = match method.as_str() {
+                    "initialize" => (
+                        200,
+                        serde_json::json!({"jsonrpc": "2.0", "id": req.get("id"), "result": {"protocolVersion": crate::MCP_PROTOCOL_VERSION, "serverInfo": {"version": "http-1"}}}).to_string(),
+                    ),
+                    "tools/list" => {
+                        let cursor = req.get("params").and_then(|p| p.get("cursor")).and_then(|c| c.as_str());
+                        let result = if cursor == Some("p2") {
+                            serde_json::json!({"tools": [{"name": "second", "inputSchema": {"type": "object"}}]})
+                        } else {
+                            serde_json::json!({"tools": [{"name": "first", "inputSchema": {"type": "object"}}], "nextCursor": "p2"})
+                        };
+                        (200, serde_json::json!({"jsonrpc": "2.0", "id": req.get("id"), "result": result}).to_string())
+                    }
+                    _ => (202, String::new()),
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = s.write_all(resp.as_bytes());
+            }
+        });
+        let mut client = HttpMcpClient::connect(
+            "fake-http",
+            HttpTransport::Streamable,
+            &format!("http://{addr}/mcp"),
+            Duration::from_secs(10),
+            &[],
+        )
+        .expect("connect fake http server");
+        let tools = client.list_tools().expect("tools/list");
+        assert_eq!(
+            tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        drop(client);
+        let _ = handle.join();
     }
 }
