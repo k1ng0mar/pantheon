@@ -3080,6 +3080,26 @@ mod config_budget_delegation_tests {
         );
     }
 
+    /// `[model] timeout_ms` parses when present, is absent when the
+    /// key is missing, and a non-numeric value fails parsing (it is
+    /// never silently read as a different timeout).
+    #[test]
+    fn model_timeout_ms_parses() {
+        let cfg: Config = toml::from_str(
+            "[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\ntimeout_ms = 45000\n",
+        )
+        .expect("config parses");
+        assert_eq!(cfg.model.as_ref().unwrap().timeout_ms, Some(45_000));
+        let cfg: Config =
+            toml::from_str("[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\n")
+                .expect("config parses");
+        assert_eq!(cfg.model.as_ref().unwrap().timeout_ms, None);
+        assert!(toml::from_str::<Config>(
+            "[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\ntimeout_ms = \"fast\"\n"
+        )
+        .is_err());
+    }
+
     /// `0` is treated as unset: child falls back to the model default,
     /// delegations fall back to 8.
     #[test]
