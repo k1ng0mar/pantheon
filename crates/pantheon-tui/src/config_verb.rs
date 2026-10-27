@@ -276,12 +276,42 @@ fn display_value(item: &Item) -> String {
 
 /// Set one key in the config file at `path`. Pure core of `config set`:
 /// no process exits, so tests can drive it against a temp dir.
+/// Does a [`Config::validate`] problem name exactly the key being set?
+/// Problems are sentences starting with the dotted path (`model.reasoning
+/// ... is not ...`, `model.api_key_env: ...`), so a prefix match on the
+/// key plus a separator is precise. Only the set key gates the write:
+/// a full-document rejection would block e.g. `config set
+/// goal.max_iterations` on every config that lacks a `[model]` section.
+fn problem_names_key(problem: &str, key: &str) -> bool {
+    problem == key
+        || problem.starts_with(&format!("{key} "))
+        || problem.starts_with(&format!("{key}:"))
+        || problem.starts_with(&format!("{key}."))
+}
+
 fn set_config_value(path: &Path, key: &str, raw: &str) -> Result<String, String> {
     let value = infer_value(raw)?;
     let mut doc = read_doc_at(path)?;
     let parts = split_key(key)?;
     set_dotted(&mut doc, key, value.clone())?;
     validate_key_against_schema(&doc, key, &parts)?;
+    // `config set` used to run no `Config::validate()` at all, so a value
+    // the schema accepts but the document rejects (bad reasoning level,
+    // empty provider, zero aux timeout) was written and only surfaced
+    // later in doctor. Reject when validation implicates the key itself.
+    let cfg: pantheon_api::config::Config = toml::from_str(&doc.to_string())
+        .map_err(|e| format!("config: cannot parse edited config as TOML: {e}"))?;
+    let problems: Vec<String> = cfg
+        .validate()
+        .into_iter()
+        .filter(|p| problem_names_key(p, key))
+        .collect();
+    if !problems.is_empty() {
+        return Err(format!(
+            "config: cannot set {key:?}: {}",
+            problems.join("; ")
+        ));
+    }
     write_doc_atomic_at(path, &doc)?;
     let shown = match &value {
         Value::String(s) => format!("{:?}", s.value()),
@@ -301,8 +331,16 @@ fn get_config_value(path: &Path, key: &str) -> Result<String, String> {
 }
 
 fn cmd_set(rest: &[String]) {
+    // Extra arguments used to be silently ignored (`[k, v, ..]`), so a
+    // typo'd extra word vanished instead of failing the set.
     let (key, raw) = match rest {
-        [k, v, ..] => (k.as_str(), v.as_str()),
+        [k, v] => (k.as_str(), v.as_str()),
+        [k, v, extra, ..] => {
+            eprintln!(
+                "config set takes exactly one key and one value; unexpected extra argument {extra:?} after {k:?} {v:?}"
+            );
+            std::process::exit(2);
+        }
         [kv] => match split_key_eq(kv) {
             Some((k, v)) => (k, v),
             None => {
@@ -644,6 +682,35 @@ mod tests {
             get_config_value(&path, "agents.coder.model").unwrap(),
             "openai/gpt-4o"
         );
+    }
+
+    #[test]
+    fn set_model_provider_on_fresh_config_works() {
+        // Used to fail with "missing field 'model'": the `[model]`
+        // table was created but its sibling field was absent, so the
+        // schema round-trip died on a field the user never touched.
+        let path = scratch_config("model-fresh");
+        set_config_value(&path, "model.provider", "openai").unwrap();
+        assert_eq!(
+            get_config_value(&path, "model.provider").unwrap(),
+            "openai"
+        );
+        // The sibling stays unset (empty), not invented.
+        let cfg: pantheon_api::config::Config =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(cfg.model.as_ref().unwrap().model, "");
+    }
+
+    #[test]
+    fn set_rejects_value_that_fails_document_validation() {
+        let path = scratch_config("model-reasoning");
+        set_config_value(&path, "model.provider", "openai").unwrap();
+        set_config_value(&path, "model.model", "gpt-4o").unwrap();
+        let err = set_config_value(&path, "model.reasoning", "bogus-level").unwrap_err();
+        assert!(err.contains("model.reasoning"), "unexpected: {err}");
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("bogus-level"));
     }
 
     #[test]

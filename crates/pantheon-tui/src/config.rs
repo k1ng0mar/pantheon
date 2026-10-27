@@ -619,7 +619,7 @@ pub fn upsert_custom_row(
     key_env: &str,
 ) -> Result<bool, String> {
     use pantheon_providers::catalog::ApiMode as Mode;
-    let mut cfg = Config::load(data_dir).unwrap_or_default();
+    let mut cfg = Config::load_for_save(data_dir).map_err(|e| e.to_string())?;
     let shadow = pantheon_providers::catalog::providers()
         .iter()
         .any(|p| p.id == name);
@@ -664,7 +664,7 @@ pub fn remember_custom_model(
     if model.is_empty() {
         return Ok(false);
     }
-    let mut cfg = Config::load(data_dir).unwrap_or_default();
+    let mut cfg = Config::load_for_save(data_dir).map_err(|e| e.to_string())?;
     let Some(sec) = cfg.custom_providers.get_mut(provider) else {
         return Err(format!(
             "no custom provider {provider:?}; add it with `pantheon provider add --name {provider}`"
@@ -842,19 +842,14 @@ pub fn build_model_policy(
     provider: Option<String>,
     model: Option<String>,
 ) -> pantheon_api::model::ModelPolicy {
-    let cfg_model = cfg
-        .and_then(|c| c.model.clone())
-        .map(|m| (m.provider, m.model));
-    let default = pantheon_api::model::DefaultModel {
-        provider: provider
-            .or_else(|| cfg_model.as_ref().map(|(p, _)| p.clone()))
-            .or_else(|| std::env::var("PANTHEON_PROVIDER").ok())
-            .unwrap_or_else(|| "local".into()),
-        model: model
-            .or_else(|| cfg_model.as_ref().map(|(_, m)| m.clone()))
-            .or_else(|| std::env::var("PANTHEON_MODEL").ok())
-            .unwrap_or_else(|| "llama3.2".into()),
-    };
+    // Canonical precedence, delegated to the single resolver in
+    // pantheon-api (`config_resolve`): explicit argument > environment
+    // variable > `[model]` section > hardcoded local default, with
+    // empty/whitespace values ignored at every level. This used to do
+    // explicit > config > env with raw `.or()` chains, so an empty
+    // config value (e.g. a `[model]` table created by `fallback add`
+    // with no default) shadowed the environment and the local default.
+    let default = pantheon_api::config_resolve::resolve_default_model(cfg, provider, model);
     let mut chain = pantheon_api::model::FallbackChain::default();
     if let Some(fallbacks) = cfg
         .and_then(|c| c.model.as_ref())

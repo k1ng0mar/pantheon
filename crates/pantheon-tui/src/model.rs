@@ -876,41 +876,82 @@ pub(crate) fn ensure_template_vars(
 /// `nightly` writes the `[nightly.model]` sub-table; a fresh `[nightly]`
 /// comes from its `Default` impl (off unless the pin is present).
 fn pin_aux_slot(cfg: &mut Config, kind: &str, choice: &ModelChoice) -> Result<(), String> {
-    let pin = || AuxSection {
+    // A re-pin replaces provider/model/key, never the timeout the
+    // operator set: the old `timeout: None` literal reset every aux
+    // timeout on every model pick.
+    let pin = |prev_timeout: Option<u64>| AuxSection {
         provider: choice.provider.clone(),
         model: choice.model.clone(),
         api_key_env: Some(choice.key_env.clone()),
-        timeout: None,
+        timeout: prev_timeout,
     };
     match kind {
-        "judge" => cfg.judge = Some(pin()),
+        "judge" => {
+            let prev = cfg.judge.as_ref().and_then(|s| s.timeout);
+            cfg.judge = Some(pin(prev));
+        }
         "compression" => {
             // Pinning replaces the model pin; a previously configured
             // target_percent survives the re-pin.
             let target_percent = cfg.compression.as_ref().and_then(|s| s.target_percent);
+            let prev = cfg.compression.as_ref().and_then(|s| s.aux.timeout);
             cfg.compression = Some(config::CompressionSection {
-                aux: pin(),
+                aux: pin(prev),
                 target_percent,
             })
         }
-        "title_gen" => cfg.title_gen = Some(pin()),
-        "embeddings" => cfg.embeddings = Some(pin()),
-        "search_synthesis" => cfg.search_synthesis = Some(pin()),
-        "vision" => cfg.vision = Some(pin()),
-        "video" => cfg.video = Some(pin()),
-        "scheduled" => cfg.scheduled = Some(pin()),
-        "mcp_synthesis" => cfg.mcp_synthesis = Some(pin()),
-        "extraction" => cfg.extraction = Some(pin()),
-        "rerank" => cfg.rerank = Some(pin()),
-        "planner" => cfg.planner = Some(pin()),
+        "title_gen" => {
+            let prev = cfg.title_gen.as_ref().and_then(|s| s.timeout);
+            cfg.title_gen = Some(pin(prev));
+        }
+        "embeddings" => {
+            let prev = cfg.embeddings.as_ref().and_then(|s| s.timeout);
+            cfg.embeddings = Some(pin(prev));
+        }
+        "search_synthesis" => {
+            let prev = cfg.search_synthesis.as_ref().and_then(|s| s.timeout);
+            cfg.search_synthesis = Some(pin(prev));
+        }
+        "vision" => {
+            let prev = cfg.vision.as_ref().and_then(|s| s.timeout);
+            cfg.vision = Some(pin(prev));
+        }
+        "video" => {
+            let prev = cfg.video.as_ref().and_then(|s| s.timeout);
+            cfg.video = Some(pin(prev));
+        }
+        "scheduled" => {
+            let prev = cfg.scheduled.as_ref().and_then(|s| s.timeout);
+            cfg.scheduled = Some(pin(prev));
+        }
+        "mcp_synthesis" => {
+            let prev = cfg.mcp_synthesis.as_ref().and_then(|s| s.timeout);
+            cfg.mcp_synthesis = Some(pin(prev));
+        }
+        "extraction" => {
+            let prev = cfg.extraction.as_ref().and_then(|s| s.timeout);
+            cfg.extraction = Some(pin(prev));
+        }
+        "rerank" => {
+            let prev = cfg.rerank.as_ref().and_then(|s| s.timeout);
+            cfg.rerank = Some(pin(prev));
+        }
+        "planner" => {
+            let prev = cfg.planner.as_ref().and_then(|s| s.timeout);
+            cfg.planner = Some(pin(prev));
+        }
         "repair" => {
             // Pinning replaces the model pin; a previously configured
             // max_repairs_per_task_per_day survives the re-pin.
             let mut r = cfg.repair.clone().unwrap_or_default();
-            r.aux = pin();
+            let prev = r.aux.timeout;
+            r.aux = pin(prev);
             cfg.repair = Some(r);
         }
-        "verify" => cfg.verify = Some(pin()),
+        "verify" => {
+            let prev = cfg.verify.as_ref().and_then(|s| s.timeout);
+            cfg.verify = Some(pin(prev));
+        }
         "reflect" => {
             let mut r = cfg.reflect.clone().unwrap_or(ReflectSection {
                 // Documented serde defaults (config.rs); doctor.rs uses
@@ -927,7 +968,7 @@ fn pin_aux_slot(cfg: &mut Config, kind: &str, choice: &ModelChoice) -> Result<()
             r.provider = Some(choice.provider.clone());
             r.model = Some(choice.model.clone());
             r.api_key_env = Some(choice.key_env.clone());
-            r.timeout = None;
+            // Timeout survives the re-pin (see `pin_aux_slot`).
             cfg.reflect = Some(r);
         }
         "consolidation" => {
@@ -945,13 +986,18 @@ fn pin_aux_slot(cfg: &mut Config, kind: &str, choice: &ModelChoice) -> Result<()
             c.provider = Some(choice.provider.clone());
             c.model = Some(choice.model.clone());
             c.api_key_env = Some(choice.key_env.clone());
-            c.timeout = None;
+            // Timeout survives the re-pin (see `pin_aux_slot`).
             cfg.consolidation = Some(c);
         }
         "nightly" => {
+            let prev = cfg
+                .nightly
+                .as_ref()
+                .and_then(|n| n.model.as_ref())
+                .and_then(|m| m.timeout);
             cfg.nightly
                 .get_or_insert_with(NightlySection::default)
-                .model = Some(pin());
+                .model = Some(pin(prev));
         }
         other => {
             return Err(format!(
@@ -980,24 +1026,28 @@ pub fn save_choice(data_dir: &std::path::Path, choice: &ModelChoice) -> Result<(
         )?;
     }
     // Reload: the row writer above persisted + registered already.
-    let mut cfg = Config::load(data_dir).unwrap_or_default();
+    // Fail closed on a corrupt config: `unwrap_or_default` here used to
+    // overwrite a malformed config.toml with defaults plus one model.
+    let mut cfg = Config::load_for_save(data_dir).map_err(|e| e.to_string())?;
     match &choice.target {
         Target::Default => {
-            let fallbacks = cfg
-                .model
-                .as_ref()
-                .map(|m| m.fallbacks.clone())
-                .unwrap_or_default();
+            let prev = cfg.model.clone();
+            let fallbacks = prev.as_ref().map(|m| m.fallbacks.clone()).unwrap_or_default();
             cfg.model = Some(config::ModelSection {
-                reasoning_budget: None,
+                // A model pick does not touch reasoning or the timeout:
+                // changing providers must not silently reset an effort
+                // level or a timeout the user chose. (The old literal
+                // wrote `reasoning_budget: None` / `timeout_ms: None`,
+                // resetting both on every pick.)
+                reasoning_budget: prev
+                    .as_ref()
+                    .and_then(|m| m.reasoning_budget),
                 provider: choice.provider.clone(),
                 model: choice.model.clone(),
                 api_key_env: Some(choice.key_env.clone()),
                 fallbacks,
-                // A model pick does not touch reasoning: changing providers
-                // must not silently reset an effort level the user chose.
-                reasoning: cfg.model.as_ref().and_then(|m| m.reasoning.clone()),
-                timeout_ms: None,
+                reasoning: prev.as_ref().and_then(|m| m.reasoning.clone()),
+                timeout_ms: prev.as_ref().and_then(|m| m.timeout_ms),
             });
         }
         Target::Auxiliary(kind) => pin_aux_slot(&mut cfg, kind.as_str(), choice)?,

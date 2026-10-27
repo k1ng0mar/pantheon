@@ -39,26 +39,13 @@ fn env_nonempty(name: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// Resolve the default chat model: `[model]` section wins, then
-/// `PANTHEON_PROVIDER`/`PANTHEON_MODEL`, then the local default
-/// the TUI's `build_model_policy` order.
+/// Resolve the default chat model under the canonical precedence
+/// (explicit > environment > `[model]` section > local default, empty
+/// values ignored): the shared resolver in pantheon-api, so the
+/// dashboard, the TUI, and the scheduler can no longer disagree. This
+/// used to prefer the config file over the environment.
 fn default_model(cfg: Option<&Config>) -> DefaultModel {
-    let section = cfg.and_then(|c| c.model.as_ref());
-    let cfg_str = |f: fn(&pantheon_api::config::ModelSection) -> &str| {
-        section
-            .map(f)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    DefaultModel {
-        provider: cfg_str(|m| &m.provider)
-            .or_else(|| env_nonempty("PANTHEON_PROVIDER"))
-            .unwrap_or_else(|| "local".into()),
-        model: cfg_str(|m| &m.model)
-            .or_else(|| env_nonempty("PANTHEON_MODEL"))
-            .unwrap_or_else(|| "llama3.2".into()),
-    }
+    pantheon_api::config_resolve::resolve_default_model(cfg, None, None)
 }
 
 /// Resolve the compression auxiliary: `PANTHEON_COMPRESSION_PROVIDER` /
