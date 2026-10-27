@@ -708,9 +708,9 @@ pub struct TuiState {
     /// for titles only, never for membership. Closing a tab parks the
     /// run - it stays reopenable via /sessions or the session picker.
     pub open_tabs: Vec<String>,
-    /// Sidebar visibility (`^b`): at ≥100 cols it toggles the 75/25
-    /// (80/20) split sidebar; below 100 cols the sidebar is hidden by
-    /// default and `^b` opens it as a floating overlay instead. One
+    /// Sidebar visibility (`^b`): at ≥160 cols it toggles the split
+    /// sidebar (wide inspector); below 160 cols the sidebar is hidden
+    /// by default and `^b` opens it as a floating overlay instead. One
     /// unified session view either way.
     pub show_sidebar: bool,
     /// Last observed terminal width in columns, refreshed every frame
@@ -1790,12 +1790,15 @@ impl TuiState {
         self.sidebar_overlay = self.show_sidebar;
     }
 
-    /// Whether the sidebar is actually drawn this frame: ≥100 cols and
-    /// not toggled off. Mirrors the split decision in `render_body`
-    /// every layout branch that depends on it must use this, never a
-    /// partial area width.
+    /// Whether the sidebar is actually drawn this frame: ≥160 cols
+    /// and not toggled off (base design layer 9: the wide-terminal
+    /// inspector threshold). Below 160 the layout is the single-column
+    /// base; a toggled-on sidebar below 160 renders only as the
+    /// floating overlay in `render_body`. Mirrors the split decision
+    /// in `render_body` — every layout branch that depends on it must
+    /// use this, never a partial area width.
     pub fn sidebar_visible(&self) -> bool {
-        self.term_width >= 100 && self.show_sidebar
+        self.term_width >= 160 && self.show_sidebar
     }
 
     /// Flip the sidebar's bottom card: activity timeline | todo list.
@@ -3349,7 +3352,8 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
         render_splash(f, splash_area, state);
         render_splash_bottom(f, bottom_area, state);
     } else {
-        // ONE unified session view: tabs → 75/25 split → footer, with a
+        // ONE unified session view: tabs → single-column body (split
+        // only at ≥160 cols) → footer, with a
         // health alert strip above the footer only when something is
         // actually wrong (failing MCP, gateway trouble, overdue jobs).
         refresh_health(state);
@@ -3492,16 +3496,18 @@ fn render_palette(f: &mut Frame, area: Rect, state: &TuiState) {
 /// the box-drawing ban still stands.
 const DIVIDER_BG: Color = Color::Rgb(38, 38, 38);
 
-/// Session body: the unified 75/25 split - transcript + input block on
-/// the left, the session sidebar on the right. 100-119 cols narrows the
-/// split to 80/20; below 100 cols the body is a single column and the
-/// sidebar (while toggled on) floats as a right-side overlay. Column
-/// separation is the 1-cell divider's bg tint - zero borders, zero
-/// box-drawing.
+/// Session body: single-column base — transcript + input block. At
+/// ≥160 cols with the sidebar toggled on, a 25% sidebar appears on
+/// the right (wide inspector); below 160 cols the body is a single
+/// column and the sidebar (while toggled on) floats as a right-side
+/// overlay. Column separation is the 1-cell divider's bg tint.
 fn render_body(state: &mut TuiState, f: &mut Frame, area: Rect) {
     let w = area.width;
     if state.sidebar_visible() {
-        let pct = if w >= 120 { 25u32 } else { 20u32 };
+        // Split only at >=160 cols (sidebar_visible); the split is
+        // 25% there, so no 100/120-col branch remains.
+        let _ = w;
+        let pct = 25u32;
         let side_w = (area.width as u32 * pct / 100) as u16;
         let left_w = area.width.saturating_sub(side_w).saturating_sub(1);
         let left = Rect::new(area.x, area.y, left_w, area.height);
@@ -8778,9 +8784,9 @@ fn tui_loop(
                         }
                         KeyCode::Char('o') | KeyCode::Char('O') => state.toggle_timeline(),
                         KeyCode::Char('b') | KeyCode::Char('B') => {
-                            // Toggle the session sidebar: the 75/25
-                            // (80/20) split at ≥100 cols, a floating
-                            // overlay below that (never open by default).
+                            // Toggle the session sidebar: the split
+                            // at ≥160 cols, a floating overlay below
+                            // that (never open by default).
                             // One unified view - the session underneath
                             // never changes.
                             state.toggle_sidebar();
@@ -11758,10 +11764,10 @@ mod inline_todo_card_tests {
     #[test]
     fn sidebar_visible_matches_render_body_split() {
         let mut s = test_state();
-        s.term_width = 100;
+        s.term_width = 160;
         s.show_sidebar = true;
         assert!(s.sidebar_visible());
-        s.term_width = 99;
+        s.term_width = 159;
         assert!(!s.sidebar_visible());
         s.term_width = 140;
         s.show_sidebar = false;
@@ -11799,10 +11805,11 @@ mod inline_todo_card_tests {
     #[test]
     fn no_inline_card_in_wide_mode() {
         let mut s = test_state();
-        s.term_width = 140;
-        // Sidebar explicitly on: with the base opt-in default this must
-        // be set, otherwise the sidebar is off and the inline card is
-        // (correctly) the todo surface.
+        // 160 cols: the wide-inspector threshold, where the sidebar
+        // is visible. Sidebar explicitly on: with the base opt-in
+        // default this must be set, otherwise the sidebar is off and
+        // the inline card is (correctly) the todo surface.
+        s.term_width = 160;
         s.show_sidebar = true;
         s.todo_items = sample_items();
         sync_inline_todo_card(&mut s);
@@ -11844,7 +11851,7 @@ mod inline_todo_card_tests {
         s.todo_items = sample_items();
         sync_inline_todo_card(&mut s);
         assert_eq!(todo_blocks(&s).len(), 1);
-        s.term_width = 140;
+        s.term_width = 160;
         s.show_sidebar = true;
         sync_inline_todo_card(&mut s);
         assert!(todo_blocks(&s).is_empty());
