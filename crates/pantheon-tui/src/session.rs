@@ -4673,6 +4673,22 @@ fn render_footer(f: &mut Frame, area: Rect, state: &TuiState) {
             Style::default().fg(th.primary),
         ));
     }
+    // Layer 8: footer `ctx` element, amber, only at >=78% of the
+    // context window. No pre-existing 78% constant was found in code
+    // (SPEC's NEARLY FULL threshold is a doc value), so the threshold
+    // is named here, not hardcoded inline. Below 78% the footer is
+    // byte-identical to the base; full telemetry lives in `/status`.
+    const CTX_NEARLY_FULL_PCT: f64 = 78.0;
+    if state.tokens_max > 0 {
+        let live = state.tokens_used + state.turn_estimate;
+        let pct = 100.0 * live as f64 / state.tokens_max as f64;
+        if pct >= CTX_NEARLY_FULL_PCT {
+            left_spans.push(Span::styled(
+                format!(" • ctx {pct:.0}%"),
+                Style::default().fg(th.warning),
+            ));
+        }
+    }
     let left_w = Line::from(left_spans.clone()).width();
     let max = area.width as usize;
     let right = "? Commands";
@@ -12209,6 +12225,18 @@ mod picker_render_tests {
         assert!(s.timeline.is_some(), "timeline must open");
         s.toggle_timeline();
         assert!(s.timeline.is_none(), "dismiss must return to base layout");
+    }
+
+    #[test]
+    fn footer_ctx_appears_only_at_nearly_full() {
+        let mut s = test_state();
+        s.tokens_max = 1000;
+        s.tokens_used = 500;
+        let text = render_to_string(render_footer, &s).join("\n");
+        assert!(!text.contains("ctx"), "ctx must hide below 78%: {text}");
+        s.tokens_used = 800;
+        let text = render_to_string(render_footer, &s).join("\n");
+        assert!(text.contains("ctx 80%"), "ctx must appear at >=78%: {text}");
     }
 
     #[test]
