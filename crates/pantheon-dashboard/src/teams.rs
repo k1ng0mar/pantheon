@@ -674,7 +674,7 @@ pub fn use_team(app: &App, id: &str, req: &Request) -> Response {
         lead_profile,
         max_review_iterations: 3,
     };
-    match app.swarm.create_staged(base_task, plan, judge) {
+    match app.swarm.create_staged(&base_task, plan, judge) {
         Ok(created) => {
             // The lead's coordination run is the user-facing run.
             let run_id = created.status.lead_run_id.clone().unwrap_or_default();
