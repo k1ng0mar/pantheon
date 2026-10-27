@@ -26,9 +26,6 @@ use ratatui::{
 
 use super::{bg, BlockKind, TuiState};
 
-/// Bright purplish peak of the traveling highlight sweep.
-pub const SWEEP_PEAK: Color = Color::Rgb(190, 160, 255);
-
 /// Presentable tool names for the UI: `shell`/`exec` → "Execute",
 /// `read_file` → "Read file". Unknown registry ids fall back to a
 /// title-cased snake_case form so plugin tools still read fine. Pure,
@@ -87,8 +84,8 @@ pub fn tool_display_name(name: &str) -> String {
 /// - plan / todo tools → `Planning...`
 /// - anything else, or a call with no readable target → `Working...`
 ///
-/// The footer shows exactly one of these strings; the traveling
-/// highlight sweeps across its characters.
+/// These strings describe the current step for the last-activity
+/// state; they are not rendered as a status line anywhere.
 pub fn status_for_tool(tool: &str, args: &str) -> String {
     let t = tool.to_ascii_lowercase();
     let has = |subs: &[&str]| subs.iter().any(|s| t.contains(s));
@@ -136,131 +133,6 @@ fn tool_target(args: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// Sweep center in char coordinates for `tick` over a `len`-char text.
-/// Starts parked off the left edge and wraps seamlessly.
-fn sweep_pos(tick: u64, len: usize) -> f64 {
-    let margin = 6.0;
-    let span = len as f64 + 2.0 * margin;
-    -margin + (tick as f64 * 2.0) % span
-}
-
-/// Per-character spans for the traveling highlight: near the sweep
-/// position → `peak`, far → `base`, smooth Gaussian falloff between.
-/// One span per char; the layout never changes.
-pub fn sweep_spans(text: &str, tick: u64, base: Color, peak: Color) -> Vec<Span<'static>> {
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
-    let pos = sweep_pos(tick, len);
-    let sigma = 4.0;
-    chars
-        .into_iter()
-        .enumerate()
-        .map(|(x, ch)| {
-            let d = x as f64 - pos;
-            let w = (-(d * d) / (2.0 * sigma * sigma)).exp();
-            Span::styled(
-                ch.to_string(),
-                Style::default().fg(lerp_color(base, peak, w)),
-            )
-        })
-        .collect()
-}
-
-/// Reusable traveling-highlight sweep over ANY status string: a soft
-/// purplish light sweeping left→right through the string's characters,
-/// looping while the operation is active. Pure function of `text` +
-/// `tick` - no spinners, no cursor characters, no full-line flashing,
-/// no layout change. Any status message can use it.
-pub fn render_sweep(text: &str, tick: u64, base: Color, peak: Color) -> Line<'static> {
-    Line::from(sweep_spans(text, tick, base, peak))
-}
-
-/// A soft purplish light that sweeps left→right through the characters
-/// of a single status string, looping while the operation is active.
-///
-/// Reusable: construct with the string, call [`tick`] once per frame
-/// while the operation is active, [`render`] the spans each frame - or
-/// use the free function [`render_sweep`] for any one-off status
-/// message. The sweep never blinks the line, never moves a cursor
-/// character, never changes the layout. Swap strings mid-flight with
-/// [`set_word`]. When the operation completes, stop ticking and use
-/// [`render_plain`]: static dim text, no motion.
-pub struct TravelHighlight {
-    word: String,
-    tick: u64,
-}
-
-impl TravelHighlight {
-    pub fn new(word: impl Into<String>) -> Self {
-        TravelHighlight {
-            word: word.into(),
-            tick: 0,
-        }
-    }
-
-    /// Swap the string mid-flight (e.g. the status changed). Resets the
-    /// sweep to the left edge so the new string lights up from the
-    /// start. No-op when the string is unchanged - the sweep keeps
-    /// traveling.
-    pub fn set_word(&mut self, word: &str) {
-        if self.word != word {
-            self.word = word.to_string();
-            self.reset();
-        }
-    }
-
-    /// The plain string, for width calculations. Render output is always
-    /// exactly this long - the sweep never changes the layout.
-    pub fn text(&self) -> &str {
-        &self.word
-    }
-
-    /// Advance the sweep one frame. Call only while the operation is
-    /// active; the highlight loops seamlessly.
-    pub fn tick(&mut self) {
-        self.tick = self.tick.wrapping_add(1);
-    }
-
-    /// Park the sweep off the left edge (turn start).
-    pub fn reset(&mut self) {
-        self.tick = 0;
-    }
-
-    /// Current sweep center, in char coordinates. Exposed for tests.
-    pub fn position(&self) -> f64 {
-        sweep_pos(self.tick, self.word.chars().count())
-    }
-
-    /// Per-character spans: near the sweep → `peak`, far → `base`,
-    /// smooth falloff between. One span per char, same total width as
-    /// [`text`].
-    pub fn render(&self, base: Color, peak: Color) -> Vec<Span<'static>> {
-        sweep_spans(&self.word, self.tick, base, peak)
-    }
-
-    /// Static dim text for idle/complete: same layout, no motion.
-    pub fn render_plain(&self, base: Color) -> Vec<Span<'static>> {
-        vec![Span::styled(self.word.clone(), Style::default().fg(base))]
-    }
-}
-
-fn lerp_color(a: Color, b: Color, t: f64) -> Color {
-    let t = t.clamp(0.0, 1.0);
-    match (a, b) {
-        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
-            let l = |x: u8, y: u8| (x as f64 + (y as f64 - x as f64) * t).round() as u8;
-            Color::Rgb(l(ar, br), l(ag, bg), l(ab, bb))
-        }
-        _ => {
-            if t >= 0.5 {
-                b
-            } else {
-                a
-            }
-        }
-    }
 }
 
 /// `42.7s` / `850ms` - compact duration for captured background steps.

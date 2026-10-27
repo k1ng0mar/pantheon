@@ -830,15 +830,12 @@ pub struct TuiState {
     /// Which card the sidebar's bottom half shows. Manual toggle
     /// (`^g`): the operator picks whichever serves the moment.
     pub sidebar_view: SidebarView,
-    /// The dynamic footer status string, driving the footer's traveling
-    /// highlight. Built from real activity: "Thinking...",
-    /// "Reading <path>", "Executing <cmd>", ... The sweep travels
-    /// through this string's characters.
+    /// The last activity string ("Thinking...", "Reading <path>",
+    /// "Executing <cmd>", ...). Retained as state; it is NOT rendered
+    /// as a status line anywhere — live state belongs in the
+    /// transcript (thought block, tool card header), never in a second
+    /// status line below the composer.
     pub activity_status: String,
-    /// The traveling highlight sweep for the footer status line.
-    /// Advanced in [`tick`] while a turn is live, parked otherwise.
-    /// Always renders [`activity_status`] - see [`set_activity_status`].
-    pub sweep: activity::TravelHighlight,
     /// Plan mode (Tab toggle). The sidebar mode tag flips between
     /// "Build" and "Plan"; while a turn is live the footer status is
     /// "Planning...". Mirrored into the runtime session via
@@ -937,11 +934,6 @@ pub struct TuiState {
     /// Newer release tag found by the background update check; the
     /// splash shows `pantheon update to install {tag}` when set.
     pub update_hint: Option<String>,
-    /// Cached health alerts for the bottom strip (failing MCP servers,
-    /// gateway trouble, overdue scheduled jobs). Refreshed at most
-    /// every 30s so the probes never run per frame.
-    pub health_alerts: Vec<String>,
-    pub health_checked_at: Option<std::time::Instant>,
     /// Swarm ids spawned through the remote swarm backend this session
     /// (`/swarm new`). The API contract has no list-all endpoint yet, so
     /// the TUI remembers what it created to answer bare `/swarm`.
@@ -1027,7 +1019,6 @@ impl Default for TuiState {
             sidebar_overlay: false,
             sidebar_view: SidebarView::Agent,
             activity_status: String::new(),
-            sweep: activity::TravelHighlight::new("Thinking..."),
             plan_mode: false,
             permission_mode: PermissionMode::default(),
             approvals: std::collections::HashMap::new(),
@@ -1058,8 +1049,6 @@ impl Default for TuiState {
             mcp_servers: Vec::new(),
             plugin_count: 0,
             update_hint: None,
-            health_alerts: Vec::new(),
-            health_checked_at: None,
             remote_swarms: Vec::new(),
         }
     }
@@ -1209,7 +1198,6 @@ impl TuiState {
             sidebar_overlay: false,
             sidebar_view: SidebarView::Agent,
             activity_status: String::new(),
-            sweep: activity::TravelHighlight::new("Thinking..."),
             plan_mode: false,
             permission_mode: PermissionMode::default(),
             approvals: std::collections::HashMap::new(),
@@ -1240,8 +1228,6 @@ impl TuiState {
             mcp_servers: Vec::new(),
             plugin_count: 0,
             update_hint: None,
-            health_alerts: Vec::new(),
-            health_checked_at: None,
             remote_swarms: Vec::new(),
         }
     }
@@ -1983,14 +1969,12 @@ impl TuiState {
         self.status_line = format!("permissions: {}", self.permission_mode.as_str());
     }
 
-    /// Set the dynamic footer status string and keep the sweep on the
-    /// same string. The sweep restarts from the left edge only when the
-    /// string actually changed - repeated tool starts must not stutter
-    /// the animation.
+    /// Set the last activity string. It is state, not chrome: nothing
+    /// renders it as a status line — live state lives in the
+    /// transcript (thought block, tool card header).
     pub fn set_activity_status(&mut self, status: String) {
         if status != self.activity_status {
-            self.activity_status = status.clone();
-            self.sweep.set_word(&status);
+            self.activity_status = status;
         }
     }
 
@@ -2621,14 +2605,13 @@ impl TuiState {
         self.interrupt_armed_at = None;
         self.interrupted = false;
         // Fresh working status: Thinking..., or Planning... when plan
-        // mode is on. The sweep restarts from the left edge of the new
-        // string.
+        // mode is on. It is state only — the live indicator is the
+        // transcript's thought block / tool card, not a status line.
         self.set_activity_status(if self.plan_mode {
             "Planning...".to_string()
         } else {
             "Thinking...".to_string()
         });
-        self.sweep.reset();
         // Fresh per-turn telemetry: the last turn's in/out must not leak
         // into this turn's status bar.
         self.turn_in = None;
@@ -3029,11 +3012,6 @@ impl TuiState {
     pub fn tick(&mut self) {
         self.elapsed = self.start_time.elapsed();
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
-        // The traveling highlight only sweeps while a turn is live;
-        // parked otherwise it would animate over a settled screen.
-        if !self.ready {
-            self.sweep.tick();
-        }
         // Coarse git refresh: `git status` never runs per frame.
         if self.git_checked_at.elapsed() >= GIT_REFRESH {
             self.refresh_git();
@@ -3060,8 +3038,8 @@ impl TuiState {
     }
 }
 
-/// Icons for transcript cards and the footer. Every entry is used
-/// by `render_block` or `render_footer` below - no speculative glyphs.
+/// Icons for transcript cards. Every entry is used
+/// by `render_block` below - no speculative glyphs.
 mod icon {
     pub const RUNNING: &str = "●";
     pub const SUCCESS: &str = "✓";
@@ -3071,7 +3049,7 @@ mod icon {
     pub const WARN: &str = "⚠";
 }
 
-/// Render the full TUI frame: header, transcript, input, status bar.
+/// Render the full TUI frame: tabs, transcript, composer box.
 ///
 /// Takes `&mut` because a timeline jump pins the viewport to a turn's
 /// first block during this render (consuming `jump_to_block`); nothing
@@ -3479,38 +3457,22 @@ fn render_main(state: &mut TuiState, f: &mut Frame) {
         render_splash(f, splash_area, state);
         render_splash_bottom(f, bottom_area, state);
     } else {
-        // ONE unified session view: tabs → single-column body (split
-        // only at ≥160 cols) → footer, with a
-        // health alert strip above the footer only when something is
-        // actually wrong (failing MCP, gateway trouble, overdue jobs).
-        refresh_health(state);
-        if !state.health_alerts.is_empty() {
-            let outer = Layout::vertical([
-                Constraint::Length(1), // session tabs
-                Constraint::Min(1),    // body: transcript+input | sidebar
-                Constraint::Length(1), // health alerts
-                Constraint::Length(1), // footer
-            ]);
-            let [tab_area, body_area, alerts_area, footer_area] = outer.areas(f.area());
-            let tab_hits = crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
-            state.tab_bar_area = Some(tab_area);
-            state.tab_hits = tab_hits;
-            render_body(state, f, body_area);
-            render_alerts(f, alerts_area, state);
-            render_footer(f, footer_area, state);
-        } else {
-            let outer = Layout::vertical([
-                Constraint::Length(1), // session tabs
-                Constraint::Min(1),    // body: transcript+input | sidebar
-                Constraint::Length(1), // footer
-            ]);
-            let [tab_area, body_area, footer_area] = outer.areas(f.area());
-            let tab_hits = crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
-            state.tab_bar_area = Some(tab_area);
-            state.tab_hits = tab_hits;
-            render_body(state, f, body_area);
-            render_footer(f, footer_area, state);
-        }
+        // ONE unified session view, baseline shape: tabs → body, and
+        // nothing else. The body owns the transcript and the unified
+        // composer box (which carries the provider row inside it).
+        // There is no separate footer row, no travelling sweep, and no
+        // health-alert strip: live state lives in the transcript, and
+        // health/diagnostic information lives in `/status`, never in
+        // the main view unprompted.
+        let outer = Layout::vertical([
+            Constraint::Length(1), // session tabs
+            Constraint::Min(1),    // body: transcript+composer | sidebar
+        ]);
+        let [tab_area, body_area] = outer.areas(f.area());
+        let tab_hits = crate::tabs::render_tab_bar(f, tab_area, &state.tabs, &state.theme);
+        state.tab_bar_area = Some(tab_area);
+        state.tab_hits = tab_hits;
+        render_body(state, f, body_area);
     }
     if state.timeline.is_some() {
         render_timeline(f, f.area(), state);
@@ -3667,8 +3629,27 @@ fn render_body(state: &mut TuiState, f: &mut Frame, area: Rect) {
 
 /// Left column: transcript above, the unified 4-row composer box
 /// below (top border, prompt row, provider row, bottom border). The
-/// reflect card owns the input row while it is open.
+/// reflect card owns the input row while it is open. A pending rewind
+/// confirmation takes one row of its own directly above the composer
+/// — it used to take over the footer, and there is no footer anymore
+/// — so the question stays impossible to miss without adding chrome.
 fn render_left(state: &mut TuiState, f: &mut Frame, area: Rect) {
+    if state.rewind_offer.is_some() {
+        let [transcript_area, rewind_area, input_area] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(4),
+        ])
+        .areas(area);
+        render_transcript(f, transcript_area, state);
+        render_rewind_line(f, rewind_area, state);
+        if state.pending_reflect.is_some() {
+            render_reflect_card(f, input_area, state);
+        } else {
+            render_input_block(f, input_area, state);
+        }
+        return;
+    }
     let [transcript_area, input_area] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(4)]).areas(area);
     render_transcript(f, transcript_area, state);
@@ -3677,6 +3658,30 @@ fn render_left(state: &mut TuiState, f: &mut Frame, area: Rect) {
     } else {
         render_input_block(f, input_area, state);
     }
+}
+
+/// The pending rewind confirmation, one row above the composer:
+/// `↩ rewind turn N (preview...)?  [y] yes   [n] no`.
+fn render_rewind_line(f: &mut Frame, area: Rect, state: &TuiState) {
+    let Some(offer) = &state.rewind_offer else {
+        return;
+    };
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let th = &state.theme;
+    let text = format!(
+        "↩ rewind turn {} ({}...)?  [y] yes   [n] no",
+        offer.turn_no,
+        offer.preview.chars().take(40).collect::<String>(),
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            text,
+            Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
+        ))),
+        area,
+    );
 }
 
 /// `@` file-mention picker popup: type to filter, Up/Down to move,
@@ -4737,191 +4742,6 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
     );
 }
 
-/// Health alert strip: one amber line directly above the footer, shown
-/// only when something is actually wrong (failing MCP server, dead
-/// gateway, stuck outbox, overdue scheduled job). Empty alerts render
-/// nothing - the strip never takes space when Pantheon is healthy.
-fn render_alerts(f: &mut Frame, area: Rect, state: &TuiState) {
-    if area.height == 0 || area.width == 0 || state.health_alerts.is_empty() {
-        return;
-    }
-    let th = &state.theme;
-    let text = format!("{} {}", icon::WARN, state.health_alerts.join(" · "));
-    let w = area.width as usize;
-    let clipped: String = text.chars().take(w.saturating_sub(1)).collect();
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            clipped,
-            Style::default().fg(th.warning),
-        )))
-        .style(Style::default().bg(th.bg)),
-        area,
-    );
-}
-
-/// One-line footer under the body: left is the compact live state word
-/// (`✓ ready`, the braille working spinner, `awaiting approval` /
-/// `awaiting input`, vim mode prefix); right is
-/// `{tokens} ({pct}%) | / commands`. A pending rewind
-/// confirmation takes over the whole bar so the question is impossible
-/// to miss.
-fn render_footer(f: &mut Frame, area: Rect, state: &TuiState) {
-    let th = &state.theme;
-    if let Some(offer) = &state.rewind_offer {
-        let text = format!(
-            "↩ rewind turn {} ({}...)?  [y] yes   [n] no",
-            offer.turn_no,
-            offer.preview.chars().take(40).collect::<String>(),
-        );
-        let bar = Paragraph::new(Line::from(Span::styled(
-            text,
-            Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
-        )));
-        f.render_widget(bar, area);
-        return;
-    }
-    let mut sweeping = false;
-    let (icon, color, word): (String, Color, String) = if state.pending_approval.is_some() {
-        ("●".to_string(), th.warning, "awaiting approval".to_string())
-    } else if state.pending_ui_approval.is_some() {
-        (
-            "⬢".to_string(),
-            th.warning,
-            "awaiting UI decision".to_string(),
-        )
-    } else if state.form_fill.is_some() {
-        (
-            "▣".to_string(),
-            th.primary,
-            "filling form (esc cancel)".to_string(),
-        )
-    } else if state.pending_clarify.is_some() {
-        ("?".to_string(), th.primary, "awaiting input".to_string())
-    } else if state.interrupted {
-        ("✕".to_string(), th.dim, "interrupted".to_string())
-    } else if !state.ready && state.interrupt_armed_at.is_some() {
-        ("!".to_string(), th.primary, "esc to interrupt".to_string())
-    } else if state.ready
-        && state.interrupt_armed_at.is_some()
-        && state.rewind_candidate().is_some()
-    {
-        (
-            "↩".to_string(),
-            th.primary,
-            "esc again: rewind?".to_string(),
-        )
-    } else if state.ready {
-        ("✓".to_string(), th.success, "ready".to_string())
-    } else {
-        // Traveling highlight through the dynamic status string while the
-        // turn is live: a soft purplish light sweeping left→right across
-        // its characters, looping until the turn completes. No spinner,
-        // no blinking, no layout change.
-        sweeping = true;
-        (String::new(), th.dim, String::new())
-    };
-    // Vim mode rides along in the status word; absent when vim is off.
-    let vim_prefix: Option<String> = state.vim.status_label().map(|m| format!("{m} · "));
-    let left_text = if sweeping {
-        match &vim_prefix {
-            Some(p) => format!("{p}{}", state.sweep.text()),
-            None => state.sweep.text().to_string(),
-        }
-    } else {
-        let word = match &vim_prefix {
-            Some(p) => format!("{p}{word}"),
-            None => word,
-        };
-        format!("{icon} {word}")
-    };
-    // Left-side spans: the sweep renders one span per character with a
-    // smooth falloff around the sweep position; every other state is a
-    // single bold span.
-    let left_spans: Vec<Span> = if sweeping {
-        let mut v: Vec<Span> = Vec::new();
-        if let Some(p) = &vim_prefix {
-            v.push(Span::styled(p.clone(), Style::default().fg(th.dim)));
-        }
-        v.extend(state.sweep.render(th.dim, activity::SWEEP_PEAK));
-        v
-    } else {
-        vec![Span::styled(
-            left_text.clone(),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )]
-    };
-    // Base design footer: left is the provider line (moved here from
-    // the composer's variant row), right is `? Commands`. The token
-    // count and key-hint cluster move to `/status` — they are not in
-    // the default footer. While a turn is live, the travelling sweep
-    // replaces the provider line as the running indicator. A non-ready
-    // status word (approval, interrupt arm, …) is prepended so no
-    // status signal is lost in the move.
-    let left_spans: Vec<Span> = if sweeping {
-        left_spans
-    } else {
-        let mut spans: Vec<Span> = Vec::new();
-        if !state.ready {
-            spans.push(Span::styled(
-                format!("{left_text} · "),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ));
-        }
-        spans.extend(composer_provider_spans(state, th, area.width as usize));
-        spans
-    };
-    // Layer 2: active subagent count, only when >0. It lives in the
-    // footer after the provider/mode line (or after the sweep while a
-    // turn is live) and vanishes entirely at 0 — no placeholder.
-    let mut left_spans = left_spans;
-    let agents = activity::active_subagent_count(&state.subagents);
-    if agents > 0 {
-        left_spans.push(Span::styled(
-            format!(" • {} agent{}", agents, if agents == 1 { "" } else { "s" }),
-            Style::default().fg(th.primary),
-        ));
-    }
-    // Layer 8: footer `ctx` element, amber, only at >=78% of the
-    // context window. No pre-existing 78% constant was found in code
-    // (SPEC's NEARLY FULL threshold is a doc value), so the threshold
-    // is named here, not hardcoded inline. Below 78% the footer is
-    // byte-identical to the base; full telemetry lives in `/status`.
-    const CTX_NEARLY_FULL_PCT: f64 = 78.0;
-    if state.tokens_max > 0 {
-        let live = state.tokens_used + state.turn_estimate;
-        let pct = 100.0 * live as f64 / state.tokens_max as f64;
-        if pct >= CTX_NEARLY_FULL_PCT {
-            left_spans.push(Span::styled(
-                format!(" • ctx {pct:.0}%"),
-                Style::default().fg(th.warning),
-            ));
-        }
-    }
-    let left_w = Line::from(left_spans.clone()).width();
-    let max = area.width as usize;
-    let right = "? Commands";
-    // Shed the right side first on narrow terminals; the state always fits.
-    let shed = max > 0 && left_w + 3 + right.chars().count() > max;
-    let line = if shed {
-        let mut text: String = left_spans.iter().map(|s| s.content.as_ref()).collect();
-        if text.chars().count() > max {
-            text = text.chars().take(max.saturating_sub(1)).collect();
-        }
-        Line::from(vec![Span::styled(
-            text,
-            Style::default().fg(th.dim),
-        )])
-    } else {
-        // Right-align the right side: pad between left and right.
-        let gap = max.saturating_sub(left_w + right.chars().count());
-        let mut spans = left_spans;
-        spans.push(Span::raw(" ".repeat(gap)));
-        spans.push(Span::styled(right, Style::default().fg(th.dim)));
-        Line::from(spans)
-    };
-    f.render_widget(Paragraph::new(line), area);
-}
-
 /// Right sidebar (inspector, >=160 cols only): the switchable card
 /// (agent view | todo view, `^g`) filling the whole rect. The whole
 /// rect is painted with the panel wash first; column separation is
@@ -5105,6 +4925,9 @@ fn refresh_mcp_segment(state: &mut TuiState, session: &Session) {
 /// Pure health-alert builder: failing MCP servers, a dead gateway
 /// service, a stuck gateway outbox, and overdue/missed scheduled jobs.
 /// Kept pure so tests pin the alert rules without touching the system.
+/// Its only reader is `/status`: health information never appears in
+/// the main view unprompted, so this is computed on demand there,
+/// never cached on the frame.
 fn health_alerts(
     mcp_servers: &[(String, String)],
     gw_installed: bool,
@@ -5151,34 +4974,6 @@ fn health_alerts(
         }
     }
     alerts
-}
-
-/// Refresh the cached health alerts (at most every 30s). Called from
-/// the render path so the bottom strip stays current without
-/// per-frame probes.
-fn refresh_health(state: &mut TuiState) {
-    let due = state
-        .health_checked_at
-        .map(|t| t.elapsed().as_secs() >= 30)
-        .unwrap_or(true);
-    if !due {
-        return;
-    }
-    state.health_checked_at = Some(std::time::Instant::now());
-    let gw = crate::gateway::gateway_status();
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let jobs = crate::schedule::load_jobs_public(&crate::terminal::data_dir());
-    state.health_alerts = health_alerts(
-        &state.mcp_servers,
-        gw.installed,
-        gw.active,
-        gw.outbox_pending,
-        &jobs,
-        now_ms,
-    );
 }
 
 /// The splash's bottom line: `● N MCP /mcp · M plugins /plugins` left,
@@ -10887,6 +10682,40 @@ fn handle_slash_inner(
             Some(title) => state.add_status(format!("run {id} ({status}) - {title}")),
             None => state.add_status(format!("run {id} ({status})")),
         }
+        // Diagnostics live here and only here: health alerts (failing
+        // MCP, dead gateway, overdue jobs) and tool-registration
+        // diagnostics (unknown providers, registration failures) are
+        // computed fresh on demand. They used to occupy a strip above
+        // a footer in the main view; the main view now carries neither.
+        // A missing optional capability (web-search key, driver binary)
+        // is silent by policy and appears here as nothing at all.
+        refresh_mcp_segment(state, session);
+        let gw = crate::gateway::gateway_status();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let jobs = crate::schedule::load_jobs_public(&crate::terminal::data_dir());
+        let alerts = health_alerts(
+            &state.mcp_servers,
+            gw.installed,
+            gw.active,
+            gw.outbox_pending,
+            &jobs,
+            now_ms,
+        );
+        let diags = session.tool_diagnostics();
+        if alerts.is_empty() && diags.is_empty() {
+            state.add_status("diagnostics: ok".into());
+        } else {
+            state.add_status("diagnostics:".into());
+            for a in alerts {
+                state.add_status(format!("  {a}"));
+            }
+            for d in diags {
+                state.add_status(format!("  {d}"));
+            }
+        }
         return;
     }
     if cmd == "/models" || cmd.starts_with("/models ") {
@@ -12357,15 +12186,13 @@ mod picker_render_tests {
     }
 
     /// Full-frame TestBackend snapshot at one width: the redesigned
-    /// layout (tabs, transcript, tool card, composer, footer, and the
+    /// layout (tabs, transcript, tool card, unified composer, and the
     /// inspector sidebar when wide enough). This is the strongest
     /// visual check available without a live terminal: it renders
     /// through the real `render()` path, not a hand-built line list.
     /// When `PANTHEON_SNAPSHOT_DIR` is set, the buffer text is also
     /// written there as `frame-{width}.txt` for human inspection.
     fn snapshot_frame(width: u16, height: u16) -> Vec<String> {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         let mut s = test_state();
         // The transcript's second speaker is the active agent
         // profile's name, not a hardcoded "Agent".
@@ -12404,16 +12231,7 @@ mod picker_render_tests {
         });
         swarm_spawn(&mut s.blocks, Some("call-9".to_string()), "researcher");
         s.input = "Yes, go ahead".to_string();
-        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
-        term.draw(|f| render(&mut s, f)).unwrap();
-        let buf = term.backend().buffer().clone();
-        let lines: Vec<String> = (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect();
+        let lines = draw_frame(&mut s, width, height);
         if let Ok(dir) = std::env::var("PANTHEON_SNAPSHOT_DIR") {
             let _ = std::fs::write(
                 format!("{dir}/frame-{width}.txt"),
@@ -12421,6 +12239,23 @@ mod picker_render_tests {
             );
         }
         lines
+    }
+
+    /// Render the real `render()` path into text lines at one size,
+    /// for tests that build their own state.
+    fn draw_frame(s: &mut TuiState, width: u16, height: u16) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|f| render(s, f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
     }
 
     #[test]
@@ -12434,7 +12269,7 @@ mod picker_render_tests {
                 text.contains("coder"),
                 "{name} missing profile-name label:\n{text}"
             );
-            assert!(text.contains("Provider:"), "{name} missing footer:\n{text}");
+            assert!(text.contains("Provider:"), "{name} missing composer provider row:\n{text}");
             assert!(text.contains("Yes, go ahead"), "{name} missing composer:\n{text}");
         }
         // Inspector sidebar only at >=160 cols, even when toggled on.
@@ -12442,6 +12277,134 @@ mod picker_render_tests {
         assert!(!normal.contains("Turns:"), "sidebar leaked at 120:\n{normal}");
         assert!(wide.contains("Turns:"), "sidebar missing at 180:\n{wide}");
         assert!(wide.contains("Swarm"), "wide frame missing swarm block:\n{wide}");
+    }
+
+    #[test]
+    fn frame_ends_with_the_composer_box_no_footer_below_it() {
+        // Baseline shape: the last non-blank frame line is the
+        // composer's bottom border. A separate footer row, a status
+        // line, or an alert strip below the box fails this.
+        for (w, h) in [(80u16, 24u16), (120, 30), (180, 40)] {
+            let lines = snapshot_frame(w, h);
+            let last = lines
+                .iter()
+                .rposition(|l| !l.trim().is_empty())
+                .expect("frame must not be blank");
+            assert!(
+                lines[last].contains('╰'),
+                "{w}x{h}: last non-blank line must be the composer bottom border, got {:?}:\n{}",
+                lines[last],
+                lines.join("\n")
+            );
+            assert!(
+                lines.iter().filter(|l| l.contains("Provider:")).count() == 1,
+                "{w}x{h}: provider row must appear exactly once (inside the box):\n{}",
+                lines.join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn live_turn_shows_no_sweep_or_status_line() {
+        // While a turn is live, the only live indicator is the
+        // transcript's tool card header — no travelling sweep text, no
+        // ready/awaiting status line anywhere in the frame.
+        let mut s = test_state();
+        s.variant = "coder".to_string();
+        s.tabs.refresh_from_explicit(
+            &[("r1".to_string(), Some("Session 1".to_string()))],
+            |_| false,
+            "r1",
+        );
+        s.term_width = 120;
+        s.ready = false;
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::UserMessage("find files".to_string()),
+        });
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::ToolCall {
+                name: "find_files".to_string(),
+                args: "{}".to_string(),
+                ok: None,
+                call_id: "c1".to_string(),
+                started: Some(std::time::Instant::now()),
+                duration: None,
+                error: None,
+                tokens: None,
+                expanded: false,
+                output: vec![],
+            },
+        });
+        let lines = draw_frame(&mut s, 120, 30);
+        let text = lines.join("\n");
+        assert!(text.contains("Running:"), "tool card header missing:\n{text}");
+        assert!(!text.contains("Thinking..."), "sweep status leaked:\n{text}");
+        assert!(!text.contains("✓ ready"), "footer status leaked:\n{text}");
+        let last = lines
+            .iter()
+            .rposition(|l| !l.trim().is_empty())
+            .expect("frame must not be blank");
+        assert!(
+            lines[last].contains('╰'),
+            "frame must still end with the composer box:\n{text}"
+        );
+    }
+
+    #[test]
+    fn failing_mcp_shows_no_alert_strip_in_main_view() {
+        // Health that used to occupy a strip above the footer must not
+        // appear anywhere in the main frame; it lives in `/status`.
+        let mut s = test_state();
+        s.tabs.refresh_from_explicit(
+            &[("r1".to_string(), Some("Session 1".to_string()))],
+            |_| false,
+            "r1",
+        );
+        s.term_width = 120;
+        s.mcp_servers = vec![("broken-server".to_string(), "failed".to_string())];
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::UserMessage("hello".to_string()),
+        });
+        let lines = draw_frame(&mut s, 120, 30);
+        let text = lines.join("\n");
+        assert!(
+            !text.contains("broken-server"),
+            "failing MCP must not surface in the main view:\n{text}"
+        );
+        assert!(!text.contains('⚠'), "alert strip leaked:\n{text}");
+    }
+
+    #[test]
+    fn rewind_offer_renders_directly_above_composer() {
+        // The rewind confirmation lost its footer; it now takes one
+        // row directly above the composer box.
+        let mut s = test_state();
+        s.tabs.refresh_from_explicit(
+            &[("r1".to_string(), Some("Session 1".to_string()))],
+            |_| false,
+            "r1",
+        );
+        s.term_width = 120;
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::UserMessage("hello".to_string()),
+        });
+        s.rewind_offer = Some(RewindOffer {
+            turn_no: 2,
+            block_index: 0,
+            preview: "hello".to_string(),
+        });
+        let lines = draw_frame(&mut s, 120, 30);
+        let text = lines.join("\n");
+        let rewind = lines
+            .iter()
+            .position(|l| l.contains("rewind turn 2"))
+            .expect("rewind line missing");
+        let top = lines.iter().position(|l| l.contains('╭')).expect("composer top");
+        assert_eq!(
+            top,
+            rewind + 1,
+            "rewind line must sit directly above the composer box:\n{text}"
+        );
     }
 
     #[test]
