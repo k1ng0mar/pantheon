@@ -166,9 +166,15 @@ impl<'a> TokenStore<'a> {
     }
 }
 
-/// Resolve a usable bearer token for a remote server, refreshing it when
-/// needed. `None`/expired-without-refresh is an actionable auth error.
-pub fn ensure_token(spec: &McpServerSpec, broker: &SecretsBroker) -> Result<String, McpError> {
+/// Resolve a usable access token for a remote server, refreshing it
+/// when needed, plus the stored token type (default `Bearer`).
+/// `None`/expired-without-refresh is an actionable auth error.
+/// Callers must honour the token type: sending `Bearer` for a token
+/// the server issued as another scheme is an auth failure.
+pub fn ensure_token(
+    spec: &McpServerSpec,
+    broker: &SecretsBroker,
+) -> Result<(String, String), McpError> {
     if spec.auth != McpAuth::OAuth {
         return Err(McpError::Unauthorized(format!(
             "mcp server '{}': OAuth mode is not enabled",
@@ -193,7 +199,7 @@ pub fn ensure_token(spec: &McpServerSpec, broker: &SecretsBroker) -> Result<Stri
         )));
     }
     if !expired(meta.expires_at) {
-        return Ok(access);
+        return Ok((access, meta.token_type));
     }
     let Some(refresh) = refresh else {
         return Err(McpError::Unauthorized(format!(
@@ -210,13 +216,16 @@ pub fn ensure_token(spec: &McpServerSpec, broker: &SecretsBroker) -> Result<Stri
         })?;
     let mut next_meta = meta;
     next_meta.expires_at = expires_at_from_response(&new_access);
+    // A refresh can re-issue the token under a different scheme;
+    // keep the stored type in step with the live token.
+    next_meta.token_type = new_access.token_type.clone();
     store.save(
         &new_access.access_token,
         new_refresh.as_deref().or(Some(&refresh)),
         &next_meta,
         client_secret.as_deref(),
     )?;
-    Ok(new_access.access_token)
+    Ok((new_access.access_token, new_access.token_type))
 }
 
 /// Interactive login for `pantheon mcp login <server>`.
