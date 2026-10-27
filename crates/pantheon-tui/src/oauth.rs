@@ -36,6 +36,60 @@ fn broker() -> SecretsBroker {
     })
 }
 
+/// Non-exiting variants for the TUI: the CLI helpers above print and
+/// `process::exit` on error, which would kill (or corrupt the screen
+/// of) a running TUI. The TUI dispatch arm uses these and reports
+/// through transcript status lines instead.
+fn broker_result() -> Result<SecretsBroker, String> {
+    SecretsBroker::durable(&crate::terminal::data_dir())
+        .map_err(|e| format!("cannot open secret store: {e}"))
+}
+
+fn resolve_app_result(app: Option<&str>) -> Result<oauth::OAuthProvider, String> {
+    let id = app.unwrap_or("").to_lowercase();
+    oauth::provider(&id).ok_or_else(|| {
+        format!("unknown oauth app '{id}'; choose github, google, notion, or spotify")
+    })
+}
+
+/// One status line per provider, or an error string. Shared by the
+/// CLI `status` (which prints) and the TUI `/oauth status` arm.
+pub fn status_lines() -> Result<Vec<String>, String> {
+    let broker = broker_result()?;
+    let store = oauth::OAuthStore::new(&broker);
+    let mut out = Vec::new();
+    for prov in oauth::PROVIDERS {
+        match store.status(prov.id) {
+            Ok(s) if s.connected => {
+                let scopes = if s.scopes.is_empty() {
+                    "(none required)".to_string()
+                } else {
+                    s.scopes.join(" ")
+                };
+                out.push(format!(
+                    "{}: connected (scopes: {scopes}; expires {})",
+                    prov.id,
+                    describe_expiry(s.expires_at)
+                ));
+            }
+            Ok(_) => out.push(format!("{}: not connected", prov.id)),
+            Err(e) => return Err(format!("{}: status error: {e}", prov.id)),
+        }
+    }
+    Ok(out)
+}
+
+/// Disconnect one app, returning the report line or an error string.
+pub fn logout_line(app: Option<&str>) -> Result<String, String> {
+    let prov = resolve_app_result(app)?;
+    let broker = broker_result()?;
+    let store = oauth::OAuthStore::new(&broker);
+    store
+        .delete(prov.id)
+        .map(|_| format!("{}: disconnected", prov.id))
+        .map_err(|e| format!("oauth: logout failed: {e}"))
+}
+
 fn resolve_app(app: Option<&str>) -> oauth::OAuthProvider {
     let id = app.unwrap_or("").to_lowercase();
     oauth::provider(&id).unwrap_or_else(|| {
@@ -121,39 +175,24 @@ fn human_duration(d: Duration) -> String {
 }
 
 fn cmd_status() {
-    let broker = broker();
-    let store = oauth::OAuthStore::new(&broker);
-    for prov in oauth::PROVIDERS {
-        match store.status(prov.id) {
-            Ok(s) if s.connected => {
-                let scopes = if s.scopes.is_empty() {
-                    "(none required)".to_string()
-                } else {
-                    s.scopes.join(" ")
-                };
-                println!(
-                    "{}: connected (scopes: {scopes}; expires {})",
-                    prov.id,
-                    describe_expiry(s.expires_at)
-                );
+    match status_lines() {
+        Ok(lines) => {
+            for line in lines {
+                println!("{line}");
             }
-            Ok(_) => println!("{}: not connected", prov.id),
-            Err(e) => {
-                eprintln!("{}: status error: {e}", prov.id);
-                std::process::exit(1);
-            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
         }
     }
 }
 
 fn cmd_logout(app: Option<&str>) {
-    let prov = resolve_app(app);
-    let broker = broker();
-    let store = oauth::OAuthStore::new(&broker);
-    match store.delete(prov.id) {
-        Ok(()) => println!("{}: disconnected", prov.id),
+    match logout_line(app) {
+        Ok(line) => println!("{line}"),
         Err(e) => {
-            eprintln!("oauth: logout failed: {e}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }
