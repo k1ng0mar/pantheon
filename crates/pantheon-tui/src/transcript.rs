@@ -97,6 +97,9 @@ impl ThoughtView {
 /// Tool-call lifecycle for the row marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
+    /// Queued, not yet started: `◐` in dim. A card with no start
+    /// time is queued, not running — the two must not read the same.
+    Queued,
     /// Still running: `›` in the success color, the "live" signal.
     Running,
     Succeeded,
@@ -128,6 +131,7 @@ impl ToolView {
     /// Marker glyph and its color per status.
     fn marker(&self, th: &Theme) -> (String, Style) {
         match self.status {
+            ToolStatus::Queued => ("◐".to_string(), Style::default().fg(th.dim)),
             ToolStatus::Running => (
                 "›".to_string(),
                 Style::default().fg(th.success).add_modifier(Modifier::BOLD),
@@ -201,6 +205,7 @@ impl ShellView {
 
     pub fn lines(&self, th: &Theme) -> Vec<Line<'static>> {
         let (glyph, glyph_style) = match self.status {
+            ToolStatus::Queued => ("◐", Style::default().fg(th.dim)),
             ToolStatus::Running => (
                 "›",
                 Style::default().fg(th.success).add_modifier(Modifier::BOLD),
@@ -267,6 +272,7 @@ pub struct ToolCard {
 impl ToolCard {
     fn header(&self, th: &Theme) -> Line<'static> {
         let (glyph, color) = match self.status {
+            ToolStatus::Queued => ("◐", th.dim),
             ToolStatus::Running => ("●", th.success),
             ToolStatus::Succeeded => ("✓", th.success),
             ToolStatus::Failed => ("×", th.failure),
@@ -277,6 +283,7 @@ impl ToolCard {
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         )];
         let state_word = match self.status {
+            ToolStatus::Queued => "Queued: ",
             ToolStatus::Running => "Running: ",
             ToolStatus::Succeeded => "",
             ToolStatus::Failed => "",
@@ -423,6 +430,23 @@ mod tests {
         assert!(t.contains("● Running: find_files"), "got: {t}");
         assert!(t.contains("$ find ~/Downloads -type f"), "got: {t}");
         assert!(t.contains("1.4G"), "got: {t}");
+    }
+
+    #[test]
+    fn tool_card_queued_reads_differently_from_running() {
+        let v = ToolCard {
+            display_name: "read".to_string(),
+            status: ToolStatus::Queued,
+            duration: None,
+            tokens: None,
+            expanded: false,
+            command: None,
+            args: vec![],
+            output: vec![],
+            error: vec![],
+        };
+        let t = text(&v.lines(&theme()));
+        assert!(t.contains("◐ Queued: read"), "got: {t}");
     }
 
     #[test]

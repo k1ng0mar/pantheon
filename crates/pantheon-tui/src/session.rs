@@ -2106,6 +2106,7 @@ impl TuiState {
                         started,
                         duration,
                         tokens,
+                        expanded,
                         ..
                     } = &mut block.kind
                     {
@@ -2113,6 +2114,9 @@ impl TuiState {
                         if let Some(s) = started.take() {
                             *duration = Some(s.elapsed());
                         }
+                        // Done cards auto-collapse to their summary;
+                        // failed cards expand (see the failure arm).
+                        *expanded = false;
                         // Freeze the live token count on the card.
                         *tokens = Some(self.tokens_used + self.turn_estimate);
                     }
@@ -5564,12 +5568,19 @@ fn render_block(
             // `$ command` + output; other cards show args + error.
             // The token count ticks live while the call runs and freezes
             // at completion; cards completed before tracking omit it.
+            // Queued (no start time yet) reads differently from
+            // running; a running card shows live elapsed time, not
+            // "..." — duration is frozen at completion, elapsed is
+            // measured from `started` while it runs.
             let status = match ok {
                 None if interrupted => crate::transcript::ToolStatus::Interrupted,
+                None if started.is_none() => crate::transcript::ToolStatus::Queued,
                 None => crate::transcript::ToolStatus::Running,
                 Some(true) => crate::transcript::ToolStatus::Succeeded,
                 Some(false) => crate::transcript::ToolStatus::Failed,
             };
+            let effective_duration = (*duration)
+                .or_else(|| started.map(|s| s.elapsed()));
             let count = match (tokens, ok) {
                 (Some(t), _) => Some(statusbar::fmt_count(*t as u64)),
                 (None, None) => Some(statusbar::fmt_count(live_tokens as u64)),
@@ -5583,11 +5594,10 @@ fn render_block(
             } else {
                 (None, args.lines().map(str::to_string).collect())
             };
-            let _ = started;
             let card = crate::transcript::ToolCard {
                 display_name: activity::tool_display_name(name),
                 status,
-                duration: *duration,
+                duration: effective_duration,
                 tokens: count,
                 expanded: *expanded,
                 command,
@@ -8188,11 +8198,18 @@ fn tui_loop(
                         .find(|b| matches!(&b.kind, BlockKind::ToolCall { ok: None, .. }))
                     {
                         if let BlockKind::ToolCall {
-                            ok, error, tokens, ..
+                            ok,
+                            error,
+                            tokens,
+                            expanded,
+                            ..
                         } = &mut block.kind
                         {
                             *ok = Some(false);
                             *error = Some(msg.clone());
+                            // Failed cards expand by default so the
+                            // failure detail is visible without a click.
+                            *expanded = true;
                             *tokens = Some(state.tokens_used + state.turn_estimate);
                         }
                     }
