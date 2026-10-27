@@ -44,7 +44,11 @@ pub fn read_message<R: BufRead>(
             break t;
         }
     };
-    if let Some(rest) = first.strip_prefix("Content-Length:") {
+    // Header names are case-insensitive (a server sending
+    // `content-length:` is speaking the same framing).
+    let lower = first.to_ascii_lowercase();
+    if lower.starts_with("content-length:") {
+        let rest = &first["Content-Length:".len()..];
         let len: usize = rest
             .trim()
             .parse()
@@ -52,9 +56,17 @@ pub fn read_message<R: BufRead>(
         if len > max_bytes {
             return Err(FrameError::Oversized(len));
         }
-        // Consume the blank line separating headers from the body.
+        // Consume the blank line separating headers from the body,
+        // and verify it actually is blank: a non-blank line here is
+        // a second header (or garbage), not the separator, and
+        // reading the body from the wrong offset corrupts the stream.
         let mut blank = String::new();
         read_line_into(reader, &mut blank, MAX_HEADER_BYTES)?;
+        if !blank.trim().is_empty() {
+            return Err(FrameError::BadHeader(format!(
+                "expected blank line after Content-Length header, got {blank:?}"
+            )));
+        }
         let mut buf = vec![0u8; len];
         reader
             .read_exact(&mut buf)
@@ -264,6 +276,27 @@ mod tests {
         assert!(matches!(
             read_message(&mut r, 64),
             Err(FrameError::Oversized(_))
+        ));
+    }
+
+    #[test]
+    fn lowercase_content_length_header_is_accepted() {
+        let msg = json!({"jsonrpc": "2.0", "id": 4, "result": "pong"});
+        let body = serde_json::to_vec(&msg).unwrap();
+        let mut wire = format!("content-length: {}\r\n\r\n", body.len()).into_bytes();
+        wire.extend(body);
+        let mut r = BufReader::new(Cursor::new(wire));
+        assert_eq!(read_message(&mut r, 4096).unwrap(), Some(msg));
+    }
+
+    #[test]
+    fn non_blank_separator_line_is_bad_header() {
+        let mut wire = b"Content-Length: 7\nContent-Type: application/json\n\n".to_vec();
+        wire.extend(b"{\"id\":1}");
+        let mut r = BufReader::new(Cursor::new(wire));
+        assert!(matches!(
+            read_message(&mut r, 4096),
+            Err(FrameError::BadHeader(_))
         ));
     }
 

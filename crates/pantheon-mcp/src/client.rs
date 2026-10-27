@@ -30,9 +30,10 @@ use pantheon_exec::sandbox::{build_sandboxed_checked, enforce, Enforcement};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{BufReader, Write};
+use std::io::{BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Latest protocol version this client speaks; sent in `initialize`.
@@ -251,6 +252,11 @@ pub struct McpClient {
     pub server_version: Option<String>,
     dead: bool,
     elicitation: Option<ElicitationHandler>,
+    /// Bounded tail of the child's stderr (last 4 KiB), collected on
+    /// a reader thread. A crash-on-start server used to surface only
+    /// as "transport closed" because stderr went to null; the tail
+    /// is attached to transport-closed errors instead.
+    stderr_tail: Arc<Mutex<String>>,
 }
 
 impl McpClient {
@@ -324,7 +330,7 @@ impl McpClient {
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| McpError::Spawn(format!("{}: {e}", config.command)))?;
         let stdin = child.stdin.take().ok_or(McpError::Io("no stdin".into()))?;
@@ -332,6 +338,33 @@ impl McpClient {
             .stdout
             .take()
             .ok_or(McpError::Io("no stdout".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or(McpError::Io("no stderr".into()))?;
+        let stderr_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        {
+            let tail = Arc::clone(&stderr_tail);
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stderr);
+                let mut buf = [0u8; 1024];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
+                            if let Ok(mut t) = tail.lock() {
+                                t.push_str(&chunk);
+                                if t.len() > 4096 {
+                                    let cut = t.len() - 4096;
+                                    t.drain(..cut);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         let (tx, rx) = mpsc::channel();
         let max_bytes = config.max_message_bytes;
@@ -368,9 +401,46 @@ impl McpClient {
             server_version: None,
             dead: false,
             elicitation,
+            stderr_tail,
         };
         client.initialize()?;
         Ok(client)
+    }
+
+    /// Current stderr tail, trimmed. Empty when the server said
+    /// nothing (or has not flushed yet).
+    fn stderr_text(&self) -> String {
+        self.stderr_tail
+            .lock()
+            .map(|t| t.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    /// A transport-closed error carrying the server's stderr tail
+    /// when there is one, so a crash-on-start failure names its
+    /// cause instead of only "transport closed". Still a transport
+    /// error (`Io`), so the manager's reconnect/retry path treats
+    /// it like `Closed`.
+    fn closed_err(&self) -> McpError {
+        // Error path only: give the stderr thread a moment to
+        // drain the pipe the child closed on exit.
+        std::thread::sleep(Duration::from_millis(100));
+        let tail = self.stderr_text();
+        if tail.is_empty() {
+            McpError::Closed
+        } else {
+            McpError::Io(format!("transport closed; server stderr: {tail}"))
+        }
+    }
+
+    /// Attach the stderr tail to an existing error, when there is one.
+    fn with_stderr(&self, e: McpError) -> McpError {
+        let tail = self.stderr_text();
+        if tail.is_empty() {
+            e
+        } else {
+            McpError::Io(format!("{e}; server stderr: {tail}"))
+        }
     }
 
     fn send(&mut self, body: &Value) -> Result<(), McpError> {
@@ -448,7 +518,7 @@ impl McpClient {
         });
         if let Err(e) = self.send(&body) {
             self.kill();
-            return Err(e);
+            return Err(self.with_stderr(e));
         }
         let deadline = Instant::now() + self.timeout;
         loop {
@@ -462,11 +532,11 @@ impl McpClient {
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     self.dead = true;
-                    return Err(McpError::Closed);
+                    return Err(self.closed_err());
                 }
                 Ok(ReadEvent::Eof) => {
                     self.dead = true;
-                    return Err(McpError::Closed);
+                    return Err(self.closed_err());
                 }
                 Ok(ReadEvent::Error(e)) => {
                     self.kill();
@@ -901,6 +971,23 @@ mod client_policy_tests {
                 .get("text")
                 .and_then(|v| v.as_str()),
             Some("a b")
+        );
+    }
+
+    /// A crash-on-start server surfaces its stderr, not just
+    /// "transport closed".
+    #[test]
+    fn crash_on_start_surfaces_stderr() {
+        let script = "import sys; sys.stderr.write('boom: missing lib\n'); sys.stderr.flush(); sys.exit(1)";
+        let cfg = McpServerConfig::new("fake-crash", "python3")
+            .with_args(vec!["-c".to_string(), script.to_string()]);
+        let err = match McpClient::connect(&cfg, None) {
+            Ok(_) => panic!("crashing server must fail connect"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("boom: missing lib"),
+            "stderr tail missing in error: {err}"
         );
     }
 
