@@ -489,6 +489,27 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
         ]));
     }
 
+    // System metadata, moved here from the splash bottom line: it is
+    // available when the sidebar comes out, never in the main view.
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("System", dim)));
+    lines.push(Line::from(Span::styled(
+        format!("  {} MCP /mcp", state.mcp_servers.len()),
+        dim,
+    )));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  {} plugin{} /plugins",
+            state.plugin_count,
+            if state.plugin_count == 1 { "" } else { "s" },
+        ),
+        dim,
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  v{}", env!("CARGO_PKG_VERSION")),
+        dim,
+    )));
+
     lines
 }
 
@@ -627,5 +648,20 @@ mod tests {
         assert!(text.contains("first task here"), "got: {text}");
         assert!(text.contains("Checkpoints: before-refactor"), "got: {text}");
         assert_eq!(Duration::from_secs(0), Duration::ZERO, "sanity");
+    }
+
+    #[test]
+    fn agent_view_shows_system_metadata_moved_from_splash() {
+        let mut s = state();
+        s.mcp_servers = vec![("srv".to_string(), "ok".to_string())];
+        s.plugin_count = 75;
+        let text = view_text(&s);
+        assert!(text.contains("System"), "got: {text}");
+        assert!(text.contains("1 MCP /mcp"), "got: {text}");
+        assert!(text.contains("75 plugins /plugins"), "got: {text}");
+        assert!(
+            text.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
+            "got: {text}"
+        );
     }
 }

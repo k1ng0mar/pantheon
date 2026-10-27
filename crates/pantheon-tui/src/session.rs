@@ -4976,37 +4976,30 @@ fn health_alerts(
     alerts
 }
 
-/// The splash's bottom line: `● N MCP /mcp · M plugins /plugins` left,
-/// version right.
+/// The splash's bottom line: the active model's context limit only.
+/// MCP, plugin, and version metadata used to live here; they now live
+/// in the sidebar (see `activity::build_agent_view_lines`), never in
+/// the main view. When no context limit is known yet (`tokens_max` is
+/// 0), the line renders nothing rather than an invented number.
 fn render_splash_bottom(f: &mut Frame, area: Rect, state: &TuiState) {
-    if area.height == 0 || area.width == 0 {
+    if area.height == 0 || area.width == 0 || state.tokens_max == 0 {
         return;
     }
     let th = &state.theme;
-    let w = area.width as usize;
-    let left = format!(
-        "● {} MCP /mcp · {} plugin{} /plugins",
-        state.mcp_servers.len(),
-        state.plugin_count,
-        if state.plugin_count == 1 { "" } else { "s" },
+    let text = format!(
+        "Context limit: {}",
+        statusbar::fmt_count(state.tokens_max as u64)
     );
-    let right = format!("v{}", env!("CARGO_PKG_VERSION"));
-    // The trailing space after the left segment counts as a cell.
-    let gap = w.saturating_sub(left.chars().count() + 1 + right.chars().count());
     let brow = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(format!("{left} "), Style::default().fg(th.success)),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(right, Style::default().fg(th.dim)),
-        ])),
+        Paragraph::new(Line::from(Span::styled(text, Style::default().fg(th.dim)))),
         brow,
     );
 }
 
 /// New-session splash: big gradient PANTHEON wordmark, update hint,
-/// centered composer input, and a bottom line with plugin/MCP counts +
-/// version. Rendered while the transcript is empty (fresh or /clear'ed
+/// centered composer input, and a bottom line with the context limit
+/// only (MCP/plugin/version metadata lives in the sidebar). Rendered while the transcript is empty (fresh or /clear'ed
 /// session). The centered input mirrors `state.input` - the same draft
 /// the composer edits - so typing works before the first block exists.
 fn render_splash(f: &mut Frame, area: Rect, state: &TuiState) {
@@ -12182,6 +12175,47 @@ mod picker_render_tests {
         assert!(
             text.contains("Turns:"),
             "agent view must still render its metadata: {text}"
+        );
+    }
+
+    #[test]
+    fn splash_bottom_line_is_context_limit_only() {
+        let mut s = test_state();
+        s.tokens_max = 256_000;
+        s.mcp_servers = vec![("srv".to_string(), "ok".to_string())];
+        s.plugin_count = 75;
+        let text = render_to_string(render_splash_bottom, &s).join("\n");
+        assert!(text.contains("Context limit: 256.0k"), "got: {text}");
+        assert!(!text.contains("MCP"), "MCP must not be in the main view: {text}");
+        assert!(
+            !text.contains("plugin"),
+            "plugins must not be in the main view: {text}"
+        );
+        assert!(
+            !text.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
+            "version must not be in the main view: {text}"
+        );
+    }
+
+    #[test]
+    fn splash_bottom_line_renders_nothing_without_a_known_limit() {
+        let s = test_state();
+        assert_eq!(s.tokens_max, 0);
+        let text = render_to_string(render_splash_bottom, &s).join("\n");
+        assert!(text.trim().is_empty(), "got: {text}");
+    }
+
+    #[test]
+    fn sidebar_shows_mcp_plugins_and_version() {
+        let mut s = test_state();
+        s.mcp_servers = vec![("srv".to_string(), "ok".to_string())];
+        s.plugin_count = 75;
+        let text = render_to_string(render_sidebar, &s).join("\n");
+        assert!(text.contains("1 MCP /mcp"), "got: {text}");
+        assert!(text.contains("75 plugins /plugins"), "got: {text}");
+        assert!(
+            text.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
+            "got: {text}"
         );
     }
 
