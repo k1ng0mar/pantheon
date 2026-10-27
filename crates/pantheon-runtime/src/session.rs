@@ -1875,6 +1875,16 @@ fn map_child_outcome(
                 verify_delegation(model_policy, parent_run_id, supervisor, task, &result)
             };
             let mut out = result.to_json();
+            if verdict.is_none() && result.status != crate::swarm::ChildStatus::Failed {
+                // Verification OFF (the default) is not verification:
+                // without this mark, an unverified child claim travels
+                // to the parent indistinguishable from a verified
+                // completion. A child that reported failure needs no
+                // mark — its status already says it did not complete.
+                out.push_str(
+                    "\n[verification: not run - verify slot unconfigured]",
+                );
+            }
             if let Some(v) = verdict {
                 use pantheon_providers::VerifyVerdict;
                 match v {
@@ -6991,15 +7001,24 @@ fn redact_ui_tool_args(doc: &UiDocument, node_id: &str, args: &str) -> String {
     if secrets.is_empty() {
         return args.to_string();
     }
+    // Fail closed: when secret fields are declared but the args are
+    // not a parseable JSON object, returning them verbatim would land
+    // the (possibly secret-bearing) values in the durable ToolStarted
+    // event unredacted. Record a marker instead of the raw args; the
+    // tool itself already received the real values, so execution is
+    // unaffected. The normal call site always passes a JSON object,
+    // so this path is defensive — but a redaction boundary must not
+    // depend on its callers staying well-formed.
     let mut v: serde_json::Value = match serde_json::from_str(args) {
         Ok(v) => v,
-        Err(_) => return args.to_string(),
+        Err(_) => return "[unredacted: args not valid JSON]".to_string(),
     };
-    if let Some(map) = v.as_object_mut() {
-        for s in &secrets {
-            if let Some(slot) = map.get_mut(s) {
-                *slot = serde_json::Value::String("[redacted]".to_string());
-            }
+    let Some(map) = v.as_object_mut() else {
+        return "[unredacted: args not a JSON object]".to_string();
+    };
+    for s in &secrets {
+        if let Some(slot) = map.get_mut(s) {
+            *slot = serde_json::Value::String("[redacted]".to_string());
         }
     }
     v.to_string()
@@ -8014,6 +8033,30 @@ mod delegate_tool_tests {
         assert!(linked, "AgentCompleted carries the child run link");
     }
 
+    /// With the `[verify]` slot unconfigured (the default), a child's
+    /// claimed completion must not travel to the parent bare: it
+    /// carries an explicit "verification: not run" mark, so the parent
+    /// cannot mistake an unverified claim for a verified completion.
+    #[test]
+    fn unverified_delegation_result_is_marked_not_run() {
+        let (session, dir) = test_session();
+        attach_parent_agent(&session, &dir);
+        let driver = stubbed_driver(&session, "run-unverified", |c, r, t| {
+            success_stub(c, r, t)
+        });
+        let result =
+            run_delegate_child(&driver, "child", "task one", None, None, None)
+                .expect("delegate");
+        assert!(
+            result.contains("[verification: not run - verify slot unconfigured]"),
+            "unverified completion must be marked: {result}"
+        );
+        assert!(
+            !result.contains("[verification: holds]"),
+            "nothing verified here: {result}"
+        );
+    }
+
     /// Every non-Answered child outcome - and a child that errors - is a
     /// structured tool error, never mistaken for done.
     #[test]
@@ -8975,6 +9018,63 @@ mod delegate_tool_tests {
             matches!(&e.event, Event::ToolCompleted { call_id, .. } if call_id.starts_with("uia-"))
         });
         assert!(completed, "ToolCompleted closes the UI action's lifecycle");
+    }
+
+    /// Redaction must fail closed: with a secret field declared, args
+    /// that are not a parseable JSON object must never be recorded
+    /// verbatim into the ledger — they are replaced by a marker.
+    #[test]
+    fn redact_ui_tool_args_fails_closed_on_unparseable_args() {
+        let doc = UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "turn1-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Form(Form {
+                    title: None,
+                    description: None,
+                    fields: vec![FormField {
+                        name: "token".to_string(),
+                        label: "Token".to_string(),
+                        field_type: FieldType::Secret,
+                        required: true,
+                        default: None,
+                        placeholder: None,
+                    }],
+                    submit: pantheon_api::ui::ActionRef {
+                        action_id: "go".to_string(),
+                        label: "Go".to_string(),
+                        kind: UiActionKind::Tool {
+                            tool: "list_dir".to_string(),
+                            fixed_params: serde_json::json!({})
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        },
+                    },
+                }),
+            },
+        };
+        let secret = "super-secret-token-123";
+        let raw = format!("{{\"token\": \"{secret}\", broken");
+        let out = redact_ui_tool_args(&doc, "root", &raw);
+        assert!(
+            !out.contains(secret),
+            "unparseable args must not leak the secret: {out}"
+        );
+        let non_object = format!("\"{secret}\"");
+        let out = redact_ui_tool_args(&doc, "root", &non_object);
+        assert!(
+            !out.contains(secret),
+            "non-object args must not leak the secret: {out}"
+        );
+        // The happy path is unchanged: a JSON object still redacts
+        // the field and keeps the other fields.
+        let good = format!("{{\"token\": \"{secret}\", \"path\": \".\"}}");
+        let out = redact_ui_tool_args(&doc, "root", &good);
+        assert!(!out.contains(secret), "object args redact: {out}");
+        assert!(out.contains("[redacted]"), "field marked: {out}");
+        assert!(out.contains("\".\""), "other fields kept: {out}");
     }
 
     #[test]
