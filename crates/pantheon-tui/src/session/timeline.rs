@@ -38,6 +38,20 @@ pub fn build_turns(blocks: &[TranscriptBlock]) -> Vec<TimelineTurn> {
     turns
 }
 
+/// First visible row of the rail for a given selection: the window
+/// follows the selection, not the tail, so a selection moved above
+/// the tail window stays visible. Pure, so tests cover it directly.
+pub fn window_start(sel: usize, total: usize, rows: usize) -> usize {
+    let rows = rows.max(1);
+    if total <= rows {
+        0
+    } else if sel < rows {
+        0
+    } else {
+        (sel + 1 - rows).min(total - rows)
+    }
+}
+
 /// Selection state for the open rail. The selection is an index into the
 /// `build_turns` list; it clamps, never wraps, so arrowing past either end
 /// is a harmless no-op.
