@@ -103,6 +103,11 @@ impl PythonPlugin {
 pub struct RunnerConfig {
     pub python: String,
     pub timeout: Duration,
+    /// Data dir handed to hook children as the single allowlisted
+    /// `PANTHEON_DATA_DIR` env var (plugins such as
+    /// self-improving-agent resolve their learnings dir from it). The
+    /// child env is otherwise still scrubbed to PATH only.
+    pub data_dir: Option<PathBuf>,
     /// Capability policy gating plugin spawns. `Some` = every spawn goes
     /// through [`enforce`] first: `Deny` refuses the spawn, `Approval`
     /// holds it at the boundary, `Allow` runs it inside the enforcement's
@@ -115,9 +120,17 @@ pub struct RunnerConfig {
 impl Default for RunnerConfig {
     fn default() -> Self {
         Self {
-            python: "python3".into(),
+            // Overridable, not hardcoded: a missing/broken `python3` on
+            // PATH used to turn every gate-plugin fire into a fail-closed
+            // denial (total tool outage) with no operator recourse short
+            // of fixing PATH. `PANTHEON_PYTHON` names the interpreter.
+            python: std::env::var("PANTHEON_PYTHON")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "python3".into()),
             timeout: Duration::from_secs(10),
             policy: None,
+            data_dir: None,
         }
     }
 }
@@ -386,6 +399,12 @@ pub fn fire_hook_full(
     };
     // Third-party plugin code: no ambient host env crosses the boundary.
     crate::minimal_child_env(&mut cmd);
+    // One allowlisted exception: the data dir, so plugins can resolve
+    // operator-owned state (learnings, plans) instead of falling back to
+    // $HOME. Set only when the host configured one.
+    if let Some(dd) = &cfg.data_dir {
+        cmd.env("PANTHEON_DATA_DIR", dd);
+    }
     let (status, out_bytes, _err_bytes) =
         run_drained(cmd, cfg.timeout, "EXT_TIMEOUT", "plugin hook", group_leader)?;
     if !status.success() {
