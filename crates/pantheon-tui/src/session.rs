@@ -837,7 +837,7 @@ pub struct TuiState {
     /// status line below the composer.
     pub activity_status: String,
     /// Plan mode (Tab toggle). The sidebar mode tag flips between
-    /// "Build" and "Plan"; while a turn is live the footer status is
+    /// "Build" and "Plan"; while a turn is live the activity state is
     /// "Planning...". Mirrored into the runtime session via
     /// [`apply_plan_mode_to_session`], which is what actually gates
     /// write tools in the agent loop.
@@ -2119,7 +2119,7 @@ impl TuiState {
                 ..
             } => {
                 self.last_tool = Some((tool.clone(), args.clone()));
-                // Drive the footer phase from the real tool identity:
+                // Drive the activity state from the real tool identity:
                 // search tools → Searching, edits → Editing, plan/todo
                 // tools → Planning, everything else → Thinking. In plan
                 // mode the phase stays Planning for the whole turn.
@@ -4472,8 +4472,8 @@ fn render_composer_box(f: &mut Frame, area: Rect, state: &TuiState) {
     ));
     rows.push(bordered_row(
         Span::styled("│", accent),
-        composer_provider_row(state, th, inner - 1),
-        inner - 1,
+        composer_provider_row(state, th, inner),
+        inner,
         Span::styled("│", dim),
     ));
     rows.push(Line::from(vec![
@@ -4721,13 +4721,13 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
         bordered_row(
             Span::styled("│", accent),
             prompt,
-            inner - 1,
+            inner,
             Span::styled("│", dim),
         ),
         bordered_row(
             Span::styled("│", accent),
-            composer_provider_row(state, th, inner - 1),
-            inner - 1,
+            composer_provider_row(state, th, inner),
+            inner,
             Span::styled("│", dim),
         ),
         Line::from(vec![
@@ -4747,7 +4747,7 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
 /// rect is painted with the panel wash first; column separation is
 /// the divider column's bg tint - zero borders, zero box-drawing.
 /// No title/mode header: those already live in the tab bar and the
-/// footer. The agent view pins to the bottom (tail-anchored: the
+/// composer's provider row. The agent view pins to the bottom (tail-anchored: the
 /// latest activity always wins).
 fn render_sidebar(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
@@ -4760,7 +4760,7 @@ fn render_sidebar(f: &mut Frame, area: Rect, state: &TuiState) {
         return;
     }
     // No title/mode top card: the title already lives in the tab bar
-    // and the mode word already lives in the footer, so repeating
+    // and the mode word already lives in the composer's provider row, so repeating
     // them here would make the inspector a duplicate chrome column.
     // The switchable card below fills the whole sidebar area.
     // (The Todo view is not a duplicate either: the inline transcript
@@ -12653,6 +12653,15 @@ mod picker_render_tests {
         let top = lines.iter().position(|l| l.contains('╭')).expect("top border");
         let bottom = lines.iter().position(|l| l.contains('╰')).expect("bottom border");
         assert_eq!(bottom - top, 3, "composer must be exactly 4 rows: {text}");
+        // Content rows run the full box width: their right border
+        // lands under the top border's corner, not one column short.
+        for row in [&lines[top + 1], &lines[top + 2]] {
+            assert_eq!(
+                row.chars().last(),
+                Some('│'),
+                "content row must end flush with the border: {row:?} in {text}"
+            );
+        }
     }
 
     #[test]
