@@ -60,7 +60,9 @@ impl Theme {
             warning: Color::Rgb(251, 191, 36),
             failure: Color::Rgb(248, 113, 113),
             dim: Color::Rgb(107, 114, 128),
-            tab_active: Color::White,
+            // Brand purple #7223FF: the active tab accent. Inactive tabs
+            // stay dim; nothing else in the palette changes for this.
+            tab_active: Color::Rgb(114, 35, 255),
             tab_idle: Color::Rgb(107, 114, 128),
             tab_active_bg: Color::Rgb(0, 0, 0),
             heading: Color::White,
@@ -82,7 +84,9 @@ impl Theme {
             warning: Color::LightYellow,
             failure: Color::LightRed,
             dim: Color::Gray,
-            tab_active: Color::White,
+            // Same brand accent as the pantheon theme; the light theme
+            // keeps its own blue accent (its palette is blue-based).
+            tab_active: Color::Rgb(114, 35, 255),
             tab_idle: Color::DarkGray,
             tab_active_bg: Color::Rgb(30, 30, 40),
             heading: Color::Rgb(167, 139, 250),
