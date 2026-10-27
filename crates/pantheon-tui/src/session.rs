@@ -1658,6 +1658,7 @@ fn event_run_id(ev: &RuntimeErrorEvent) -> Option<&str> {
         | E::ToolStarted { run_id, .. }
         | E::ToolOutput { run_id, .. }
         | E::ToolCompleted { run_id, .. }
+        | E::ToolInterrupted { run_id, .. }
         | E::AssistantMessage { run_id, .. }
         | E::ToolMessage { run_id, .. }
         | E::ImportedReasoning { run_id, .. }
