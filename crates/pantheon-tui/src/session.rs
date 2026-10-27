@@ -1433,14 +1433,22 @@ impl TuiState {
                     }
                 }
                 // Track mid-session model switches (fallback chain).
-                if self.model != model {
+                // `state.model` is always in `provider/model` form, so
+                // compare against the full pair, not the bare model
+                // id: comparing bare ids made every Attempt look like
+                // a switch and then overwrote the provider with the
+                // bare model id, so the composer row rendered
+                // "Provider: auto" (the model sitting in the provider
+                // slot) after any fallback.
+                let switched = format!("{provider}/{model}");
+                if self.model != switched {
                     self.blocks.push(TranscriptBlock {
                         kind: BlockKind::Status(format!(
                             "routing: {} unavailable, falling back to {provider}/{model}",
                             self.model
                         )),
                     });
-                    self.model = model;
+                    self.model = switched;
                 }
             }
             ModelEvent::TextDelta { text } => {
@@ -1644,8 +1652,9 @@ impl TuiState {
                 }
                 // The fallback model is active now; the Attempt that
                 // follows must not print the old "routing:" line on top
-                // of this card.
-                self.model = to_model.clone();
+                // of this card. Keep `provider/model` form: a bare
+                // model id here lost the provider (see Attempt above).
+                self.model = format!("{to_provider}/{to_model}");
                 self.render_live_card(FallbackOutcome::Engaged {
                     provider: to_provider,
                     model: to_model,
@@ -4528,20 +4537,54 @@ fn composer_prompt_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> V
     vec![Span::styled(shown, Style::default().fg(th.body))]
 }
 
-/// The composer's `profile · provider · model · effort` row: profile in
-/// body bold (when a profile is active), provider in blue bold, model in
-/// body, effort in orange. The model string is
-/// `provider/model`; the provider segment replaces the old Build/Plan
-/// variant (the mode already shows in the sidebar tag). The profile
-/// segment is the active `[agents.<name>]` table name (`state.variant`,
-/// set at startup and by `/agent <name>`); with no profiles declared it
-/// is empty and the row renders exactly the old `provider · model ·
-/// effort` shape (fail-open: no declared profile, no change).
+/// Display-only capitalisation: first letter uppercased, the rest
+/// untouched. Routing ids are never changed by display code.
+fn capitalise_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+/// Display label for a provider id: the catalog/registry label when
+/// one exists and differs from the id (e.g. a cataloged "OpenAI"
+/// for id "openai"), otherwise the id with its first letter
+/// capitalised (a custom provider's registry label is its id, so
+/// "exoseed" displays as "Exoseed"). Display only — the id used
+/// for routing is never changed.
+fn provider_display(provider_id: &str) -> String {
+    if provider_id.is_empty() {
+        return String::new();
+    }
+    if let Some(meta) = pantheon_providers::catalog::provider(provider_id) {
+        if !meta.label.is_empty() && meta.label != provider_id {
+            return meta.label;
+        }
+    }
+    capitalise_first(provider_id)
+}
+
+/// The composer's `profile · provider: model · effort` row: profile
+/// in body bold (when a profile is active), provider in blue bold,
+/// model in body, effort in orange. The model string is
+/// `provider/model`; the provider segment is the provider, never the
+/// model — `state.model` stays in `provider/model` form through
+/// fallbacks and `/model` switches (see `handle_model_event`). The
+/// profile segment is the active `[agents.<name>]` table name
+/// (`state.variant`, set at startup and by `/agent <name>`); with
+/// no profiles declared it is empty and the row renders just
+/// `provider: model · effort`.
 fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> Vec<Span<'static>> {
     let (provider, model) = match state.model.split_once('/') {
         Some((p, _)) => (p, state.model.rsplit('/').next().unwrap_or(p)),
         None => ("", state.model.as_str()),
     };
+    // Design format: `Provider: <Provider>: <Model> • Build` — a
+    // colon, not a dot, between provider and model. Display names
+    // only: `auto` shows as `Auto`, the routing id stays `auto`.
+    let provider_shown = provider_display(provider);
+    let model_display = capitalise_first(model);
     // Base design: effort is omitted entirely when off, never shown
     // as " - " or "off".
     let effort = state.effort.clone();
@@ -4557,17 +4600,23 @@ fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> 
             text.chars().count() + 3
         }
     };
+    // Provider segment costs its text plus ": " (2 cells), not the
+    // " · " (3 cells) the profile and effort segments use.
     let fixed = leading(&profile)
-        + leading(provider)
+        + if provider_shown.is_empty() {
+            0
+        } else {
+            provider_shown.chars().count() + 2
+        }
         + if effort.is_some() { 3 + effort_len } else { 0 };
     // Over-wide: keep profile + provider + effort, middle-ellipsis the
     // model. `fixed + 1` reserves the ellipsis itself.
-    let model_shown: String = if fixed + model.chars().count() <= max_w {
-        model.to_string()
+    let model_shown: String = if fixed + model_display.chars().count() <= max_w {
+        model_display
     } else {
         let keep = max_w.saturating_sub(fixed + 1);
         if keep > 1 {
-            let m: String = model.chars().take(keep.saturating_sub(1)).collect();
+            let m: String = model_display.chars().take(keep.saturating_sub(1)).collect();
             format!("{m}...")
         } else {
             "...".to_string()
@@ -4581,12 +4630,12 @@ fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> 
         ));
         spans.push(Span::styled(" · ", Style::default().fg(th.dim)));
     }
-    if !provider.is_empty() {
+    if !provider_shown.is_empty() {
         spans.push(Span::styled(
-            provider.to_string(),
+            provider_shown,
             Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled(" · ", Style::default().fg(th.dim)));
+        spans.push(Span::styled(": ", Style::default().fg(th.dim)));
     }
     spans.push(Span::styled(model_shown, Style::default().fg(th.body)));
     if let Some(effort) = effort {
@@ -4598,7 +4647,7 @@ fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> 
 
 /// Provider row inside the unified composer box: `Provider: <provider>:
 /// <model> • <effort> • <Build|Plan>`, with the effort element omitted
-/// when off. Reuses `composer_variant_spans` (profile · provider ·
+/// when off. Reuses `composer_variant_spans` (profile · provider:
 /// model · effort) and appends the mode word. This row lives INSIDE
 /// the composer box, below the input line — it is not a separate
 /// footer. There is no footer row in the main view at all.
@@ -12849,6 +12898,86 @@ mod picker_render_tests {
         assert!(s.timeline.is_some(), "timeline must open");
         s.toggle_timeline();
         assert!(s.timeline.is_none(), "dismiss must return to base layout");
+    }
+
+    #[test]
+    fn provider_survives_fallback_and_renders_provider_colon_model() {
+        // The bug: after a fallback, `state.model` became the bare
+        // model id ("auto"), so the row rendered "Provider: auto" —
+        // the model sitting in the provider slot. After the fix the
+        // provider must survive fallback and `/model`-style switches,
+        // and the row must read `Provider: <Provider>: <Model> •
+        // Build`. "exoseed" has no catalog label distinct from its id
+        // in tests, so the first-letter rule displays it as "Exoseed"
+        // (not the brand's camel-case "ExoSeed", which no registry
+        // supplies); the assertion that matters is that the provider
+        // segment is the provider, not the model.
+        let mut s = test_state();
+        s.model = "exoseed/auto".to_string();
+        let provider_row = |s: &TuiState| {
+            render_to_string(render_input_block, s)
+                .into_iter()
+                .find(|l| l.contains("Provider:"))
+                .unwrap_or_default()
+        };
+        assert!(
+            provider_row(&s).contains("Provider: Exoseed: Auto"),
+            "splash-time row wrong: {}",
+            provider_row(&s)
+        );
+        // Same provider/model Attempt: no spurious routing line, and
+        // the provider is not lost.
+        s.handle_model_event(ModelEvent::Attempt {
+            provider: "exoseed".into(),
+            model: "auto".into(),
+            chain_index: 0,
+            streaming: true,
+        });
+        assert_eq!(s.model, "exoseed/auto");
+        assert!(
+            !s.blocks.iter().any(|b| matches!(&b.kind, BlockKind::Status(t) if t.contains("routing:"))),
+            "same-model Attempt must not print a routing line"
+        );
+        // Fallback to the same provider/model (e.g. a new chain
+        // entry): provider must still be there afterwards.
+        s.handle_model_event(ModelEvent::Fallback {
+            from_index: 0,
+            from_provider: "exoseed".into(),
+            from_model: "auto".into(),
+            from_code: "PROVIDER_HTTP".into(),
+            from_cause: "timeout".into(),
+            to_index: 1,
+            to_provider: "exoseed".into(),
+            to_model: "auto".into(),
+        });
+        assert_eq!(s.model, "exoseed/auto");
+        assert!(
+            provider_row(&s).contains("Provider: Exoseed: Auto"),
+            "fallback lost the provider: {}",
+            provider_row(&s)
+        );
+        // Switch to a different provider/model: row follows, provider
+        // segment is the new provider, never the model id.
+        s.handle_model_event(ModelEvent::Attempt {
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            chain_index: 1,
+            streaming: true,
+        });
+        assert_eq!(s.model, "openai/gpt-4o");
+        let row = provider_row(&s);
+        assert!(
+            row.contains(": Gpt-4o") && !row.contains("Provider: Gpt-4o"),
+            "switch row wrong (provider must not be the model): {row}"
+        );
+        // Splash and transcript composer rows agree: both use the
+        // same provider-row renderer.
+        s.model = "exoseed/auto".to_string();
+        let splash = render_to_string(render_composer_box, &s).join("\n");
+        assert!(
+            splash.contains("Provider: Exoseed: Auto"),
+            "splash row must agree with transcript row: {splash}"
+        );
     }
 
     #[test]
