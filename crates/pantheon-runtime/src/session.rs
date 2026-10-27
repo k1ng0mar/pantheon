@@ -2324,6 +2324,12 @@ pub struct Session {
     /// the guard at the end of the turn would miss `on_session_end` - the
     /// hook GalaxyMem-style consolidation depends on.
     pub hook_observer: ObserverGuard,
+    /// The lifecycle-hook dispatcher, kept so session teardown can drain
+    /// it: `on_session_end` fires are queued on a worker thread, and a
+    /// process exiting right after a run used to lose them because no
+    /// caller ever invoked `drain`. [`Drop`] for `Session` drains with a
+    /// bounded budget (best-effort; a wedged plugin cannot hang exit).
+    pub hook_dispatcher: std::sync::Arc<pantheon_extensions::HookDispatcher>,
     /// The agent profile this session runs as. Optional so a pre-profiles
     /// caller (tests, the AG-UI server) still constructs a Session; when it
     /// is `None` the session falls back to the legacy namespace and offers
@@ -2501,6 +2507,17 @@ pub struct CompressReport {
     pub unknown_window: bool,
 }
 
+impl Drop for Session {
+    fn drop(&mut self) {
+        // Flush queued observer fires (notably `on_session_end`) before
+        // the process can exit and lose them. Bounded: a wedged plugin
+        // delays exit by at most the budget, it cannot hang it.
+        let _ = self
+            .hook_dispatcher
+            .drain(std::time::Duration::from_secs(30));
+    }
+}
+
 impl Session {
     pub fn new(
         data_dir: std::path::PathBuf,
@@ -2558,9 +2575,11 @@ impl Session {
         // here (not per turn) so terminal events - emitted after `chat_turn`
         // returns - still reach `on_session_end`. Each fire is queued onto a
         // worker thread by the dispatcher, so this never blocks the emit path.
-        let hooks = Arc::new(load_mgr(&policy));
+        let hooks = Arc::new(load_mgr(&data_dir, &policy));
+        let hook_dispatcher =
+            Arc::new(pantheon_extensions::HookDispatcher::new(Arc::clone(&hooks)));
         let hook_observer = {
-            let dispatcher = pantheon_extensions::HookDispatcher::new(Arc::clone(&hooks));
+            let dispatcher = Arc::clone(&hook_dispatcher);
             sup.register_observer(std::sync::Arc::new(move |ev: &Event| dispatcher.fire(ev)))
         };
         let session = Self {
@@ -2586,6 +2605,7 @@ impl Session {
             steer_inbox: Arc::new(Mutex::new(VecDeque::new())),
             hooks,
             hook_observer,
+            hook_dispatcher,
             agent: Mutex::new(None),
             temporal: Mutex::new(pantheon_api::temporal::TemporalConfig::default()),
             current_run: Mutex::new(String::new()),
@@ -4841,13 +4861,16 @@ impl Session {
             // mobile app, and the agent's `enable_plugin` tool. It wins
             // over the manifest's own `enabled` flag when present; when
             // absent, the manifest flag is the default (true only for
-            // plugins that ship on, like noisegate). A missing or
-            // unparsable config fails closed (disabled).
+            // plugins that ship on, like noisegate). A missing config is
+            // an empty config, so manifest defaults apply; an unparsable
+            // config fails closed (disabled). Only canonical bundled
+            // dirs take this branch - a hand-dropped `bundled/` dir is
+            // third-party (manifest flag + approval in `spawn_verified`).
             // Third-party plugins keep their manifest flag; their gate is
             // the approval store, enforced in `spawn_verified` below.
             let plugin_cfg = pantheon_extensions::bundled::load_config(dd);
             for plugin in &discovered {
-                let enabled = if pantheon_exec::plugin_approval::is_bundled(plugin) {
+                let enabled = if pantheon_exec::plugin_approval::is_canonical_bundled(plugin) {
                     plugin_cfg
                         .as_ref()
                         .map(|c| {
@@ -5117,6 +5140,24 @@ impl Session {
                     }
                 }
             }
+            // Hook: on_session_start, fired as context on the fresh
+            // run's first turn. The event-bridge notification for this
+            // hook is observer-class, so its context return is discarded
+            // there by contract - without this fire site, plugins that
+            // advertise session-start injection (self-improving-agent,
+            // planning-with-files) never reached the model at all.
+            // Fail-open like pre_llm_call: a broken hook never blocks
+            // the turn.
+            if let Some(ctx) = mgr.fire(
+                pantheon_extensions::Hook::OnSessionStart,
+                run_id,
+                "cli",
+                [("run_id".to_string(), run_id.to_string())]
+                    .into_iter()
+                    .collect(),
+            ) {
+                hook_ctx = ctx;
+            }
             // Hook: pre_llm_call. Extensions may inject context (fail-open:
             // a broken hook never blocks the turn). Emitted per fresh run.
             if let Some(ctx) = mgr.fire(
@@ -5127,7 +5168,11 @@ impl Session {
                     .into_iter()
                     .collect(),
             ) {
-                hook_ctx = ctx;
+                if hook_ctx.is_empty() {
+                    hook_ctx = ctx;
+                } else {
+                    hook_ctx = format!("{hook_ctx}\n{ctx}");
+                }
             }
         }
         // An active `/goal` rides along in the system prompt so the model
@@ -7569,24 +7614,35 @@ fn video_tool_run(
 
 /// Load extension plugins from the default extension dir. Fail-open:
 /// a missing or unreadable dir means zero plugins, never an error.
-fn load_mgr(policy: &Policy) -> pantheon_extensions::ExtensionManager {
+fn load_mgr(data_dir: &std::path::Path, policy: &Policy) -> pantheon_extensions::ExtensionManager {
     // The session's capability policy gates every plugin spawn through
     // the sandbox enforcement bridge (deny/approval at the gate, the
     // enforcement's sandbox profile when allowed).
     let mut mgr = pantheon_extensions::ExtensionManager::new(
         pantheon_extensions::RunnerConfig::default().with_policy(policy.clone()),
+    )
+    // Explicit data dir: deriving it as `ext_dir.parent()` is wrong
+    // under a custom PANTHEON_EXT_DIR and silently disabled bundled
+    // hooks. The project root is the cwd the session runs in.
+    .with_data_dir(data_dir.to_path_buf())
+    .with_project_root(
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     );
     let dir = std::env::var("PANTHEON_EXT_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::env::var("PANTHEON_DATA_DIR")
-                .map(|d| std::path::PathBuf::from(d).join("extensions"))
-                .unwrap_or_else(|_| std::path::PathBuf::from(".pantheon-extensions"))
-        });
+        .unwrap_or_else(|_| data_dir.join("extensions"));
     // Materialize the bundled catalog (inert files, still disabled by
     // default) so an operator-enabled entry always has code to load.
     let _ = pantheon_extensions::seed(&dir);
     let _ = mgr.load_dir(&dir);
+    // Surface load failures at session start: a typo'd plugin.yaml
+    // must not masquerade as "no plugins".
+    for err in mgr.load_errors() {
+        eprintln!("warning: extension load: {err}");
+    }
+    for conflict in mgr.conflicts() {
+        eprintln!("warning: extension load: {conflict}");
+    }
     mgr
 }
 
