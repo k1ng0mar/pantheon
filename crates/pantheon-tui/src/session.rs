@@ -12158,6 +12158,16 @@ mod picker_render_tests {
     }
 
     #[test]
+    fn timeline_toggle_opens_and_dismisses_to_base() {
+        let mut s = test_state();
+        assert!(s.timeline.is_none());
+        s.toggle_timeline();
+        assert!(s.timeline.is_some(), "timeline must open");
+        s.toggle_timeline();
+        assert!(s.timeline.is_none(), "dismiss must return to base layout");
+    }
+
+    #[test]
     fn footer_mode_word_follows_plan_mode() {
         let mut s = test_state();
         s.plan_mode = false;
