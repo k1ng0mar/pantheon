@@ -9609,7 +9609,7 @@ fn build_model_rows() -> Vec<ModelRow> {
 /// A missing `[model]` section is created rather than failing, so a
 /// switch works on a config that predates the section.
 fn persist_model_choice(dd: &std::path::Path, provider: &str, model: &str) -> Result<(), String> {
-    let mut cfg = crate::config::Config::load(dd).unwrap_or_default();
+    let mut cfg = crate::config::Config::load_for_save(dd).map_err(|e| e.cause.clone())?;
     match cfg.model.as_mut() {
         Some(m) => {
             m.provider = provider.to_string();
@@ -9895,7 +9895,7 @@ fn persist_reasoning(
     budget: Option<u32>,
 ) -> Result<(), String> {
     use pantheon_api::model::ReasoningLevel;
-    let mut cfg = crate::config::Config::load(dd).unwrap_or_default();
+    let mut cfg = crate::config::Config::load_for_save(dd).map_err(|e| e.cause.clone())?;
     let Some(model) = cfg.model.as_mut() else {
         return Err("no [model] section yet; set a model first (/model P M)".into());
     };

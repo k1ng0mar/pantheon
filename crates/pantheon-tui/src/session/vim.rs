@@ -144,7 +144,7 @@ pub fn save_vim(
     data_dir: &std::path::Path,
     enabled: bool,
 ) -> Result<(), pantheon_api::error::PantheonError> {
-    let mut cfg = crate::config::Config::load(data_dir).unwrap_or_default();
+    let mut cfg = crate::config::Config::load_for_save(data_dir)?;
     let mut tui = cfg.tui.unwrap_or_default();
     tui.vim = Some(enabled);
     cfg.tui = Some(tui);

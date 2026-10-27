@@ -1888,8 +1888,18 @@ impl Ledger {
     /// what an operator scanning these wants to see, and hiding it inside a
     /// success count is how failure rates get misread.
     pub fn metrics(&self, run_id: &str) -> Result<RunMetrics, PantheonError> {
+        // An unknown run has no events at all; folding that into
+        // all-zero metrics with exit 0 used to masquerade a typo'd id
+        // as a run that did nothing. Fail loudly instead.
+        let entries = self.replay(run_id)?;
+        if entries.is_empty() {
+            return Err(err(
+                "LEDGER_NO_RUN",
+                format!("no such run {run_id:?}"),
+            ));
+        }
         let mut m = RunMetrics::default();
-        for e in self.replay(run_id)? {
+        for e in entries {
             match e.event {
                 Event::RunStarted { .. } => m.runs_started += 1,
                 Event::RunCompleted { .. } => m.runs_completed += 1,
@@ -2852,5 +2862,29 @@ mod cancel_and_recovery_tests {
             "a parked run has no started calls to retire"
         );
         std::fs::remove_dir_all(&_dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod metrics_tests {
+    use super::*;
+
+    #[test]
+    fn metrics_unknown_run_errors_instead_of_zeroes() {
+        let l = Ledger::open_in_memory().expect("in-memory ledger");
+        let err = l.metrics("no-such-run").expect_err("unknown run must error");
+        assert_eq!(err.code, "LEDGER_NO_RUN");
+    }
+
+    #[test]
+    fn metrics_known_run_counts() {
+        let l = Ledger::open_in_memory().expect("in-memory ledger");
+        l.append(&Event::RunStarted {
+            run_id: "r1".to_string(),
+        })
+        .expect("append");
+        let m = l.metrics("r1").expect("known run folds");
+        assert_eq!(m.runs_started, 1);
+        assert_eq!(m.runs_completed, 0);
     }
 }

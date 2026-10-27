@@ -45,26 +45,24 @@ pub fn cmd_fallback(args: &[String]) {
         }
     };
 
-    // A fallback chain is meaningless without a default to fall back from,
-    // so create the section rather than erroring on a config that has none.
-    if cfg.model.is_none() {
-        cfg.model = Some(crate::config::ModelSection {
-            reasoning_budget: None,
-            provider: String::new(),
-            model: String::new(),
-            api_key_env: None,
-            fallbacks: Vec::new(),
-            reasoning: None,
-            timeout_ms: None,
-        });
-    }
-    // Named `section` not `model`: the `add`/`insert` arms bind a `model`
-    // string parameter, which would otherwise shadow this.
-    let section = cfg.model.as_mut().expect("just ensured");
-
+    // A fallback chain is meaningless without a default to fall back
+    // from, and creating `[model]` here with empty provider/model used
+    // to poison resolution: the empty config values beat the environment
+    // and the local default in `build_model_policy`. So nothing here
+    // ever creates a `[model]` section: `list` reads the existing chain
+    // (or nothing), `remove` without a section is an out-of-range
+    // error, and `add`/`insert` refuse until a real default model
+    // exists. Named `section` not `model`: the `add`/`insert` arms bind
+    // a `model` string parameter, which would otherwise shadow this.
+    // The write arms take their `&mut` borrow inside the arm, after
+    // argument validation, so a bad invocation never mutates `cfg`.
     match sub {
         "list" => {
-            let chain = section.fallbacks.clone();
+            let chain = cfg
+                .model
+                .as_ref()
+                .map(|m| m.fallbacks.clone())
+                .unwrap_or_default();
             if chain.is_empty() {
                 println!("no fallbacks configured");
                 println!("add one: pantheon fallback add <provider> <model>");
@@ -87,6 +85,12 @@ pub fn cmd_fallback(args: &[String]) {
                 eprintln!("provider and model must both be non-empty");
                 std::process::exit(2);
             }
+            let Some(section) = cfg.model.as_mut() else {
+                eprintln!(
+                    "no [model] section yet; set a default model first (e.g. `pantheon model`), then add fallbacks"
+                );
+                std::process::exit(2);
+            };
             section.fallbacks.push(FallbackEntry { provider, model });
             let n = section.fallbacks.len();
             save(&dd, &cfg);
@@ -106,6 +110,12 @@ pub fn cmd_fallback(args: &[String]) {
                     eprintln!("'{idx}' is not an index");
                     std::process::exit(2);
                 }
+            };
+            let Some(section) = cfg.model.as_mut() else {
+                eprintln!(
+                    "no [model] section yet; set a default model first (e.g. `pantheon model`), then add fallbacks"
+                );
+                std::process::exit(2);
             };
             if at > section.fallbacks.len() {
                 eprintln!(
@@ -136,6 +146,10 @@ pub fn cmd_fallback(args: &[String]) {
                     eprintln!("'{idx}' is not an index; run `pantheon fallback list`");
                     std::process::exit(2);
                 }
+            };
+            let Some(section) = cfg.model.as_mut() else {
+                eprintln!("index {at} is out of range (no fallbacks configured)");
+                std::process::exit(2);
             };
             if at >= section.fallbacks.len() {
                 eprintln!(

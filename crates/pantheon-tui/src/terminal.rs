@@ -509,6 +509,36 @@ fn audit_help() {
     eprintln!("  writes OUT.jsonl when given, stdout otherwise");
 }
 
+/// Pure parse for `pantheon memory recall [--ns <name>] <query...>`:
+/// returns `(namespaces, query)`. `args` is the full argv; args[2] is
+/// the literal verb "recall". Kept pure so the off-by-one that used to
+/// join "recall" into the query stays testable.
+fn parse_memory_recall(args: &[String], default_namespace: &str) -> (Vec<String>, String) {
+    if args.get(3).map(String::as_str) == Some("--ns") {
+        let ns = args.get(4).cloned().unwrap_or_else(|| "*".to_string());
+        (
+            vec![ns],
+            args.get(5..).map(|a| a.join(" ")).unwrap_or_default(),
+        )
+    } else {
+        (
+            vec![default_namespace.to_string()],
+            args[3..].join(" "),
+        )
+    }
+}
+
+/// Pure parse for `pantheon runs [--metrics|-m] [<run_id>]`: the first
+/// non-flag positional is the run id, wherever the flag sits, so
+/// `runs --metrics <id>` no longer folds metrics for a run literally
+/// named "--metrics" (all zeros, exit 0).
+fn parse_runs_metrics_id(args: &[String]) -> Option<String> {
+    args.iter()
+        .skip(2)
+        .find(|a| !a.starts_with('-'))
+        .cloned()
+}
+
 fn runs_help() {
     eprintln!("usage: pantheon runs [--metrics] [<run_id>]");
     eprintln!("  no run id: list runs and their status");
@@ -820,22 +850,20 @@ pub fn run() {
                     });
                     // Recalls the same namespace `put` writes to, so the
                     // roundtrip is symmetric: `memory put k v` then
-                    // `memory recall k` finds it. An earlier version of
-                    // this verb read args[2] as the namespace, which broke
-                    // that contract -- the query is args[2].
+                    // `memory recall k` finds it. The verb layout is
+                    // `memory recall [--ns <name>] <query...>`: args[2]
+                    // is always the literal verb "recall", so the
+                    // `--ns` flag lives at args[3] and the query starts
+                    // at args[4] (or args[3] without the flag). Reading
+                    // args[2] as the flag/query used to join the word
+                    // "recall" into every query and sent `--ns` searches
+                    // to the agent namespace instead of the named one.
                     //
                     // `--ns <name>` (or `--ns '*'`) is the explicit way to
                     // read another agent's memory. Nothing defaults to it.
-                    let (namespaces, query): (Vec<&str>, String) =
-                        if args.get(2).map(String::as_str) == Some("--ns") {
-                            let ns = args.get(3).map(String::as_str).unwrap_or("*");
-                            (
-                                vec![ns],
-                                args.get(4..).map(|a| a.join(" ")).unwrap_or_default(),
-                            )
-                        } else {
-                            (vec![namespace.as_str()], args[2..].join(" "))
-                        };
+                    let (namespaces, query) = parse_memory_recall(args, &namespace);
+                    let namespaces: Vec<&str> =
+                        namespaces.iter().map(String::as_str).collect();
                     let hits = pantheon_memory::recall_via(
                         backend.as_ref(),
                         &Policy::coder(),
@@ -1464,7 +1492,12 @@ timeout_ms = 5000
             // the trace above. Without it, spotting a run that has been
             // quietly dropping context means scrolling a hundred events.
             if args.iter().any(|a| a == "--metrics" || a == "-m") {
-                match sup.run_metrics(&args[2]) {
+                let Some(id) = parse_runs_metrics_id(args) else {
+                    eprintln!("runs: --metrics needs a run id");
+                    runs_help();
+                    std::process::exit(2);
+                };
+                match sup.run_metrics(&id) {
                     Ok(m) => println!("{m}"),
                     Err(e) => {
                         eprintln!("runs: {e}");
@@ -1868,4 +1901,39 @@ pub fn splash_lines(
             .add_modifier(Modifier::BOLD),
     )));
     lines
+}
+
+#[cfg(test)]
+mod recall_and_runs_parse_tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn recall_query_excludes_the_verb() {
+        let args = argv(&["pantheon", "memory", "recall", "zzznomatch"]);
+        let (ns, query) = parse_memory_recall(&args, "nyx");
+        assert_eq!(ns, vec!["nyx".to_string()]);
+        assert_eq!(query, "zzznomatch");
+    }
+
+    #[test]
+    fn recall_ns_flag_reads_named_namespace() {
+        let args = argv(&["pantheon", "memory", "recall", "--ns", "foo", "hello", "world"]);
+        let (ns, query) = parse_memory_recall(&args, "nyx");
+        assert_eq!(ns, vec!["foo".to_string()]);
+        assert_eq!(query, "hello world");
+    }
+
+    #[test]
+    fn runs_metrics_flag_first_finds_the_id() {
+        let args = argv(&["pantheon", "runs", "--metrics", "run-123"]);
+        assert_eq!(parse_runs_metrics_id(&args).as_deref(), Some("run-123"));
+        let args = argv(&["pantheon", "runs", "run-123", "--metrics"]);
+        assert_eq!(parse_runs_metrics_id(&args).as_deref(), Some("run-123"));
+        let args = argv(&["pantheon", "runs", "--metrics"]);
+        assert_eq!(parse_runs_metrics_id(&args), None);
+    }
 }
