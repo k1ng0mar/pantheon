@@ -3,7 +3,12 @@ version: "1.0.0"
 description: Persistent file-based planning for multi-step agent work. Keeps task_plan.md, findings.md, and progress.md on disk; lifecycle hooks inject selected project planning context. Automatic recovery reads project planning files only.
 author: "Pantheon"
 license: "MIT"
-enabled: true
+# OFF until __init__.py gains register(ctx): the Python runner's SHIM
+# requires register(ctx) and this plugin only defines standalone
+# handle_* + main() handlers, so every fire errored and the tool gate
+# fail-closed to Deny - a default-on plugin denying every tool call.
+# (Cluster 1 (d); re-enable only with a register(ctx) implementation.)
+enabled: false
 provides_hooks:
   - pre_llm_call
   - pre_tool_call
