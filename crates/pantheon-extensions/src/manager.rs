@@ -600,11 +600,14 @@ impl ExtensionManager {
     /// Composition is first-wins in load order (plugins sort by name), NOT
     /// chained: when two transform plugins are enabled, the alphabetically
     /// first one's replacement is the whole payload and the second never
-    /// sees it. Operators who need both a noise filter and a secret
-    /// redactor must order them so the redactor wins, or run one as a
-    /// separate pass - chaining is a deliberate non-goal here because a
-    /// chained transform would let an early plugin rewrite text a later
-    /// security plugin was supposed to see verbatim.
+    /// sees it. There is currently no priority knob, so this is a known
+    /// limitation, not a security guarantee: a default-on noise
+    /// transform that sorts before a secret redactor will preempt it.
+    /// Chaining is a deliberate non-goal here because a chained
+    /// transform would let an early plugin rewrite text a later security
+    /// plugin was supposed to see verbatim; a priority field or an
+    /// explicit redaction-last pass would be the real fix if this
+    /// ordering ever matters in practice.
     pub fn fire_transform(
         &self,
         hook: Hook,
