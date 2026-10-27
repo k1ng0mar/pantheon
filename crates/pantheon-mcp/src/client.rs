@@ -531,21 +531,28 @@ impl McpClient {
         }
     }
 
-    /// `tools/list`: the tool definitions a later step can register.
+    /// `tools/list`: the tool definitions a later step can register,
+    /// following `nextCursor` pages like `list_resources` (a repeated
+    /// cursor or 1,000 pages ends the walk defensively).
     pub fn list_tools(&mut self) -> Result<Vec<McpToolDef>, McpError> {
-        let result = self.request("tools/list", serde_json::json!({}))?;
-        let tools = result
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .ok_or_else(|| McpError::Protocol("tools/list response has no tools array".into()))?;
-        tools
-            .iter()
-            .map(|t| {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..1000 {
+            let params = match &cursor {
+                Some(c) => serde_json::json!({"cursor": c}),
+                None => serde_json::json!({}),
+            };
+            let result = self.request("tools/list", params)?;
+            let tools = result
+                .get("tools")
+                .and_then(|t| t.as_array())
+                .ok_or_else(|| McpError::Protocol("tools/list response has no tools array".into()))?;
+            for t in tools {
                 let name = t
                     .get("name")
                     .and_then(|n| n.as_str())
                     .ok_or_else(|| McpError::Protocol("tool without a name".into()))?;
-                Ok(McpToolDef {
+                out.push(McpToolDef {
                     server: self.server.clone(),
                     name: name.to_string(),
                     description: t
@@ -554,9 +561,16 @@ impl McpClient {
                         .unwrap_or("")
                         .to_string(),
                     input_schema: t.get("inputSchema").cloned().unwrap_or(Value::Null),
-                })
-            })
-            .collect()
+                });
+            }
+            match crate::next_cursor(&result) {
+                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
+                _ => return Ok(out),
+            }
+        }
+        Err(McpError::Protocol(
+            "tools/list exceeded 1,000 pages".to_string(),
+        ))
     }
 
     /// `tools/call`: the gate runs **first** - a denial aborts the call
@@ -887,6 +901,55 @@ mod client_policy_tests {
                 .get("text")
                 .and_then(|v| v.as_str()),
             Some("a b")
+        );
+    }
+
+    /// `tools/list` follows `nextCursor`: tools past page 1 must surface.
+    #[test]
+    fn tools_list_follows_next_cursor() {
+        let script = [
+            "import sys, json",
+            "inp = sys.stdin.buffer",
+            "out = sys.stdout.buffer",
+            "def read_msg():",
+            "    line = inp.readline()",
+            "    if not line:",
+            "        return None",
+            "    text = line.decode().strip()",
+            "    if text.lower().startswith('content-length'):",
+            "        n = int(text.split(':')[1])",
+            "        inp.readline()",
+            "        return json.loads(inp.read(n).decode())",
+            "    return json.loads(text)",
+            "def write_msg(obj):",
+            "    out.write(json.dumps(obj).encode() + b'\\n')",
+            "    out.flush()",
+            "while True:",
+            "    msg = read_msg()",
+            "    if msg is None:",
+            "        break",
+            "    if not isinstance(msg, dict):",
+            "        continue",
+            "    method = msg.get('method')",
+            "    result = None",
+            "    if method == 'initialize':",
+            "        result = {'protocolVersion': '2025-06-18', 'serverInfo': {'version': 'tools-1'}}",
+            "    elif method == 'tools/list':",
+            "        if msg.get('params', {}).get('cursor') == 'p2':",
+            "            result = {'tools': [{'name': 'second', 'inputSchema': {'type': 'object'}}]}",
+            "        else:",
+            "            result = {'tools': [{'name': 'first', 'inputSchema': {'type': 'object'}}], 'nextCursor': 'p2'}",
+            "    if result is not None and 'id' in msg:",
+            "        write_msg({'jsonrpc': '2.0', 'id': msg['id'], 'result': result})",
+        ]
+        .join("\n");
+        let cfg = McpServerConfig::new("fake-tools", "python3")
+            .with_args(vec!["-c".to_string(), script]);
+        let mut client = McpClient::connect(&cfg, None).expect("connect fake server");
+        let tools = client.list_tools().expect("tools/list");
+        assert_eq!(
+            tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            vec!["first", "second"]
         );
     }
 }
