@@ -520,6 +520,33 @@ fn swarm_err(e: SwarmError) -> Response {
 /// must resolve to a real expert, then every profile must resolve. Any
 /// failure is a 400 and nothing spawns.
 ///
+/// Render the lead task from the team's brief template and the caller's
+/// `task` override. `{{task}}` is a placeholder, not a task: an
+/// override renders into the template when it has the placeholder, a
+/// template containing the placeholder without an override is a
+/// missing-task error (the old code launched a run whose transcript
+/// literally started `Review brief: {{task}}`), and a template without
+/// the placeholder keeps the old behavior (override wins, else the
+/// template itself is the task).
+fn render_brief(template: &str, task_override: &str) -> Result<String, &'static str> {
+    if template.contains("{{task}}") {
+        if task_override.is_empty() {
+            return Err(
+                "field \"task\" is required: this team's brief_template contains {{task}}",
+            );
+        }
+        Ok(template.replace("{{task}}", task_override))
+    } else if task_override.is_empty() {
+        if template.is_empty() {
+            Err("field \"task\" is required (or set the team's brief_template)")
+        } else {
+            Ok(template.to_string())
+        }
+    } else {
+        Ok(task_override.to_string())
+    }
+}
+
 /// The team's stages become an [`ExecutionPlan`] and execution goes
 /// through the swarm orchestrator's staged path (`create_staged`), which
 /// mechanically runs the topology: stages in order, handoff inputs
@@ -547,14 +574,10 @@ pub fn use_team(app: &App, id: &str, req: &Request) -> Response {
         .and_then(|v| v.as_str())
         .map(str::trim)
         .unwrap_or("");
-    let base_task = if task_override.is_empty() {
-        team.brief_template.trim()
-    } else {
-        task_override
+    let base_task = match render_brief(team.brief_template.trim(), task_override) {
+        Ok(t) => t,
+        Err(e) => return bad_json(e),
     };
-    if base_task.is_empty() {
-        return bad_json("field \"task\" is required (or set the team's brief_template)");
-    }
     let judge = body.get("judge").and_then(|v| v.as_bool()).unwrap_or(true);
     if team.members.is_empty() || team.members.len() > 8 {
         return bad_json("team must have 1..=8 members to launch");
@@ -935,3 +958,32 @@ fn bundled_teams() -> Vec<Team> {
 // ---------------------------------------------------------------------------
 // Tests (deterministic: tempdir, ScriptedWorker, no network/subprocesses)
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod render_brief_tests {
+    use super::*;
+
+    #[test]
+    fn override_renders_into_template() {
+        assert_eq!(
+            render_brief("Review brief: {{task}}\n\nReview it.", "src/main.rs").unwrap(),
+            "Review brief: src/main.rs\n\nReview it."
+        );
+    }
+
+    #[test]
+    fn placeholder_without_task_is_an_error_not_a_run() {
+        let err = render_brief("Review brief: {{task}}", "").unwrap_err();
+        assert!(err.contains("task"), "{err}");
+    }
+
+    #[test]
+    fn plain_template_and_override_keep_old_behavior() {
+        assert_eq!(
+            render_brief("Do the thing.", "").unwrap(),
+            "Do the thing."
+        );
+        assert_eq!(render_brief("Do the thing.", "other").unwrap(), "other");
+        assert!(render_brief("", "").is_err());
+    }
+}

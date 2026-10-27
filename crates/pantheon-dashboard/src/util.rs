@@ -17,19 +17,61 @@ pub(crate) fn project_root() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Atomic TOML config write: temp file in the same directory + rename,
-/// so a crash mid-write never leaves a half-written `config.toml`.
-/// (No fsync and no permission changes - both historical call sites in
-/// `config.rs` and `mcp.rs` behaved exactly this way; crash-atomicity,
-/// not durability, is the guarantee.)
+/// Atomic config write: unique temp file in the same directory +
+/// fsync + rename, so a crash mid-write never leaves a half-written
+/// file, and the existing file's permissions survive the rename.
 pub(crate) fn atomic_write(path: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-    Ok(())
+    // Unique temp name (pid + nanos): the old fixed `*.toml.tmp` name
+    // let concurrent writers clobber each other's temp file. Mode:
+    // preserve the existing file's mode instead of loosening it to the
+    // umask default on rename (a 0600 config.toml used to come back
+    // 0644); a brand-new file keeps the umask default, as before.
+    // fsync file + dir so the rename survives a crash.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = path.with_file_name(format!(
+        "{}.{}-{}.tmp",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "config".to_string()),
+        std::process::id(),
+        nanos
+    ));
+    #[cfg(unix)]
+    let existing_mode = std::fs::metadata(path)
+        .ok()
+        .map(|m| {
+            use std::os::unix::fs::MetadataExt;
+            m.mode() & 0o777
+        });
+    let write = (|| -> Result<(), String> {
+        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        if let Some(mode) = existing_mode {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
+                .map_err(|e| e.to_string())?;
+        }
+        std::fs::File::open(&tmp)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+        Ok(())
+    })();
+    if write.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    write
 }
 
 /// Navigate (and create) intermediate tables for a dotted path. Returns

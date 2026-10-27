@@ -250,10 +250,13 @@ pub fn reflect_run(_app: &App, req: &Request) -> Response {
         .get("dry_run")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    if dry_run {
-        let _ = spawn_pantheon(&["nightly", "--dry-run"]);
+    let spawn = if dry_run {
+        spawn_pantheon(&["nightly", "--dry-run"])
     } else {
-        let _ = spawn_pantheon(&["nightly"]);
+        spawn_pantheon(&["nightly"])
+    };
+    if let Err(e) = spawn {
+        return err_json(500, "SPAWN", &format!("failed to start nightly: {e}"));
     }
     json_ok(serde_json::json!({"ok": true, "accepted": true, "dry_run": dry_run}))
 }
@@ -290,10 +293,13 @@ pub fn consolidate_run(_app: &App, req: &Request) -> Response {
         .get("dry_run")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    if dry_run {
-        let _ = spawn_pantheon(&["nightly", "--dry-run"]);
+    let spawn = if dry_run {
+        spawn_pantheon(&["nightly", "--dry-run"])
     } else {
-        let _ = spawn_pantheon(&["nightly"]);
+        spawn_pantheon(&["nightly"])
+    };
+    if let Err(e) = spawn {
+        return err_json(500, "SPAWN", &format!("failed to start nightly: {e}"));
     }
     json_ok(serde_json::json!({"ok": true, "accepted": true, "dry_run": dry_run}))
 }

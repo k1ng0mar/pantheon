@@ -313,7 +313,7 @@ pub fn use_expert(app: &App, id: &str, req: &Request) -> Response {
         .ok()
         .and_then(|l| l.run_mode(&run_id).ok())
         .unwrap_or_else(|| crate::runs::DEFAULT_RUN_MODE.to_string());
-    if let Ok(pid) = crate::spawn_turn_child_with_stdin(
+    match crate::spawn_turn_child_with_stdin(
         &[
             "run",
             "--taskID",
@@ -327,7 +327,10 @@ pub fn use_expert(app: &App, id: &str, req: &Request) -> Response {
         ],
         first.as_bytes(),
     ) {
-        app.register_turn_child(&run_id, pid);
+        Ok(pid) => app.register_turn_child(&run_id, pid),
+        Err(e) => {
+            return err_json(500, "SPAWN", &format!("failed to start turn: {e}"));
+        }
     }
     created_json(serde_json::json!({
         "ok": true,
