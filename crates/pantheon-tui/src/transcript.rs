@@ -235,6 +235,108 @@ impl ShellView {
     }
 }
 
+/// One unified tool card for shell and non-shell tools (base design).
+///
+/// Header first, so the existing click-to-toggle on a block's first
+/// line keeps working: `● Running: <name> · 0.4s`, `✓ <name>`,
+/// `× <name>`, `■ <name>`. Body lines carry a dim left border
+/// (`│ `) instead of a full rectangle: transcript lines are
+/// width-agnostic, so a full-width top/bottom border cannot be drawn
+/// here — the Frame-rendered composer gets the full border, the
+/// transcript card gets the left border. Shell cards show `$ command`
+/// + output (last [`SHELL_VISIBLE_LINES`] when collapsed); non-shell
+/// cards show args (capped at 6 when collapsed) + error detail.
+/// `ShellView`/`ToolView` stay for their own tests; the live
+/// transcript path in `session.rs::render_block` renders through here.
+#[derive(Debug, Clone)]
+pub struct ToolCard {
+    pub display_name: String,
+    pub status: ToolStatus,
+    pub duration: Option<Duration>,
+    pub tokens: Option<String>,
+    pub expanded: bool,
+    /// Shell command, if this is a shell card.
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub output: Vec<String>,
+    pub error: Vec<String>,
+}
+
+impl ToolCard {
+    fn header(&self, th: &Theme) -> Line<'static> {
+        let (glyph, color) = match self.status {
+            ToolStatus::Running => ("●", th.success),
+            ToolStatus::Succeeded => ("✓", th.success),
+            ToolStatus::Failed => ("×", th.failure),
+            ToolStatus::Interrupted => ("■", th.dim),
+        };
+        let mut header = vec![Span::styled(
+            format!("{glyph} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )];
+        let state_word = match self.status {
+            ToolStatus::Running => "Running: ",
+            ToolStatus::Succeeded => "",
+            ToolStatus::Failed => "",
+            ToolStatus::Interrupted => "",
+        };
+        header.push(Span::styled(
+            format!("{state_word}{}", self.display_name),
+            Style::default().fg(th.body).add_modifier(Modifier::BOLD),
+        ));
+        if let Some(d) = self.duration {
+            header.push(dim_span(th, format!(" · {}", fmt_duration(d))));
+        }
+        if let Some(t) = &self.tokens {
+            header.push(dim_span(th, format!(" · {t}")));
+        }
+        Line::from(header)
+    }
+
+    pub fn lines(&self, th: &Theme) -> Vec<Line<'static>> {
+        let mut out = vec![self.header(th)];
+        let border = Style::default().fg(th.dim);
+        let mut body = |text: String, style: Style| {
+            out.push(Line::from(vec![
+                Span::styled("│ ", border),
+                Span::styled(text, style),
+            ]));
+        };
+        if let Some(cmd) = &self.command {
+            body(format!("$ {cmd}"), Style::default().fg(th.body));
+            let shown: &[String] = if self.expanded {
+                &self.output
+            } else {
+                let hidden = self.output.len().saturating_sub(SHELL_VISIBLE_LINES);
+                if hidden > 0 {
+                    body(
+                        format!("({hidden} earlier lines)"),
+                        Style::default().fg(th.dim),
+                    );
+                    &self.output[hidden..]
+                } else {
+                    &self.output
+                }
+            };
+            for line in shown {
+                body(line.clone(), Style::default().fg(th.dim));
+            }
+        } else {
+            let limit = if self.expanded { usize::MAX } else { 6 };
+            for arg in self.args.iter().take(limit) {
+                body(arg.clone(), Style::default().fg(th.dim));
+            }
+            for line in self.error.iter().take(10) {
+                body(
+                    format!("✕ {line}"),
+                    Style::default().fg(th.failure),
+                );
+            }
+        }
+        out
+    }
+}
+
 /// Footer indicator for background work: `↓ 2 shells`, dim.
 ///
 /// Renders in the footer's right cluster next to the context meter. Zero
@@ -300,6 +402,43 @@ mod tests {
     fn thought_without_duration_omits_suffix() {
         let v = ThoughtView::collapsed("x", None);
         assert_eq!(v.header_text(), "+ Thought");
+    }
+
+    #[test]
+    fn tool_card_shell_running_shows_command_and_output() {
+        let v = ToolCard {
+            display_name: "find_files".to_string(),
+            status: ToolStatus::Running,
+            duration: None,
+            tokens: None,
+            expanded: false,
+            command: Some("find ~/Downloads -type f".to_string()),
+            args: vec![],
+            output: vec!["1.4G /home/ubuntu/Downloads/x.iso".to_string()],
+            error: vec![],
+        };
+        let t = text(&v.lines(&theme()));
+        assert!(t.contains("● Running: find_files"), "got: {t}");
+        assert!(t.contains("$ find ~/Downloads -type f"), "got: {t}");
+        assert!(t.contains("1.4G"), "got: {t}");
+    }
+
+    #[test]
+    fn tool_card_nonshell_failed_shows_error() {
+        let v = ToolCard {
+            display_name: "write".to_string(),
+            status: ToolStatus::Failed,
+            duration: None,
+            tokens: None,
+            expanded: true,
+            command: None,
+            args: vec!["path: a.txt".to_string()],
+            output: vec![],
+            error: vec!["permission denied".to_string()],
+        };
+        let t = text(&v.lines(&theme()));
+        assert!(t.contains("× write"), "got: {t}");
+        assert!(t.contains("permission denied"), "got: {t}");
     }
 
     #[test]

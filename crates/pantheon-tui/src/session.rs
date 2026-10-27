@@ -900,7 +900,9 @@ impl Default for TuiState {
             tabs: crate::tabs::TabList::default(),
             drafts: std::collections::HashMap::new(),
             open_tabs: Vec::new(),
-            show_sidebar: true,
+            // Base design: single column; the sidebar is opt-in via
+            // Ctrl+B (toggle_sidebar), never default-on.
+            show_sidebar: false,
             term_width: 80,
             sidebar_overlay: false,
             sidebar_view: SidebarView::Agent,
@@ -1078,7 +1080,9 @@ impl TuiState {
             tabs: crate::tabs::TabList::default(),
             drafts: std::collections::HashMap::new(),
             open_tabs: Vec::new(),
-            show_sidebar: true,
+            // Base design: single column; the sidebar is opt-in via
+            // Ctrl+B (toggle_sidebar), never default-on.
+            show_sidebar: false,
             term_width: 80,
             sidebar_overlay: false,
             sidebar_view: SidebarView::Agent,
@@ -3491,11 +3495,12 @@ fn render_body(state: &mut TuiState, f: &mut Frame, area: Rect) {
     }
 }
 
-/// Left column: transcript above, the 2-row input block below. The
-/// reflect card owns the input row while it is open.
+/// Left column: transcript above, the bordered 3-row input block
+/// below (top border, prompt row, bottom border). The reflect card
+/// owns the input row while it is open.
 fn render_left(state: &mut TuiState, f: &mut Frame, area: Rect) {
     let [transcript_area, input_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(area);
+        Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(area);
     render_transcript(f, transcript_area, state);
     if state.pending_reflect.is_some() {
         render_reflect_card(f, input_area, state);
@@ -4362,8 +4367,10 @@ fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> 
         Some((p, _)) => (p, state.model.rsplit('/').next().unwrap_or(p)),
         None => ("", state.model.as_str()),
     };
-    let effort = state.effort.clone().unwrap_or_else(|| " - ".to_string());
-    let effort_len = effort.chars().count();
+    // Base design: effort is omitted entirely when off, never shown
+    // as " - " or "off".
+    let effort = state.effort.clone();
+    let effort_len = effort.as_ref().map(|e| e.chars().count()).unwrap_or(0);
     let profile: String = state.variant.trim().to_string();
     // Fixed cells around the (possibly truncated) model: each present
     // leading segment costs its text plus one ` · ` separator, and the
@@ -4375,7 +4382,9 @@ fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> 
             text.chars().count() + 3
         }
     };
-    let fixed = leading(&profile) + leading(provider) + 3 + effort_len;
+    let fixed = leading(&profile)
+        + leading(provider)
+        + if effort.is_some() { 3 + effort_len } else { 0 };
     // Over-wide: keep profile + provider + effort, middle-ellipsis the
     // model. `fixed + 1` reserves the ellipsis itself.
     let model_shown: String = if fixed + model.chars().count() <= max_w {
@@ -4405,37 +4414,81 @@ fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> 
         spans.push(Span::styled(" · ", Style::default().fg(th.dim)));
     }
     spans.push(Span::styled(model_shown, Style::default().fg(th.body)));
-    spans.push(Span::styled(" · ", Style::default().fg(th.dim)));
-    spans.push(Span::styled(effort, Style::default().fg(th.emphasis)));
+    if let Some(effort) = effort {
+        spans.push(Span::styled(" · ", Style::default().fg(th.dim)));
+        spans.push(Span::styled(effort, Style::default().fg(th.emphasis)));
+    }
     spans
 }
 
-/// Input block at the foot of the left column: row 0 is the
-/// `profile · provider · model · effort` model status line (the profile
-/// segment appears only while an agent profile is active), row 1 is
-/// `> ` plus the draft (or the dim italic placeholder when the draft
-/// is empty). Exactly 2 rows tall; zero chrome.
+/// Footer provider segment for the base design: `Provider: <provider>:
+/// <model> • <effort> • <Build|Plan>`, with the effort element omitted
+/// when off. Reuses `composer_variant_spans` (profile · provider ·
+/// model · effort) and appends the mode word; the "Provider: " prefix
+/// is the base footer's shape, not part of the composer row.
+fn footer_provider_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        "Provider: ",
+        Style::default().fg(th.dim),
+    )];
+    spans.extend(composer_variant_spans(state, th, max_w.saturating_sub(10)));
+    spans.push(Span::styled(" • ", Style::default().fg(th.dim)));
+    spans.push(Span::styled(
+        if state.plan_mode { "Plan" } else { "Build" },
+        Style::default().fg(th.body),
+    ));
+    spans
+}
+
+/// Input block at the foot of the left column, base design: a
+/// full-width bordered box (top border, prompt row, bottom border).
+/// The provider line no longer lives here — it moved to the footer
+/// (`render_footer` / `footer_provider_spans`). The prompt row reuses
+/// `bordered_row`'s language from the splash `render_composer_box`,
+/// not a second border implementation; the box is full-width here,
+/// not centred at 64 cols. Below 3 rows (cramped terminal) it falls
+/// back to the prompt line alone so the draft is never clipped away.
 fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
     if area.height == 0 || area.width == 0 {
         return;
     }
     let w = area.width as usize;
-    f.render_widget(
-        Paragraph::new(Line::from(composer_variant_spans(state, th, w))),
-        Rect::new(area.x, area.y, area.width, 1),
-    );
-    if area.height < 2 {
+    let mut prompt = composer_prompt_spans(state, th, w.saturating_sub(4));
+    if !state.input.is_empty() && state.is_inputting {
+        prompt.push(Span::styled("█", Style::default().fg(th.primary)));
+    }
+    if area.height < 3 || w < 8 {
+        f.render_widget(
+            Paragraph::new(Line::from(prompt)),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
         return;
     }
-    let mut prompt = vec![Span::styled(
-        "> ",
-        Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
-    )];
-    prompt.extend(composer_prompt_spans(state, th, w.saturating_sub(2)));
+    let dim = Style::default().fg(th.dim);
+    let accent = Style::default().fg(th.input_accent);
+    let inner = w - 2;
+    let rows = vec![
+        Line::from(vec![
+            Span::styled("╭", dim),
+            Span::styled("─".repeat(inner), dim),
+            Span::styled("╮", dim),
+        ]),
+        bordered_row(
+            Span::styled("│", accent),
+            prompt,
+            inner - 1,
+            Span::styled("│", dim),
+        ),
+        Line::from(vec![
+            Span::styled("╰", dim),
+            Span::styled("─".repeat(inner), dim),
+            Span::styled("╯", dim),
+        ]),
+    ];
     f.render_widget(
-        Paragraph::new(Line::from(prompt)),
-        Rect::new(area.x, area.y + 1, area.width, 1),
+        Paragraph::new(rows),
+        Rect::new(area.x, area.y, area.width, 3),
     );
 }
 
@@ -4552,53 +4605,43 @@ fn render_footer(f: &mut Frame, area: Rect, state: &TuiState) {
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         )]
     };
-    let live = state.tokens_used + state.turn_estimate;
-    let pct = if state.tokens_max > 0 {
-        format!("{:.0}%", 100.0 * live as f64 / state.tokens_max as f64)
+    // Base design footer: left is the provider line (moved here from
+    // the composer's variant row), right is `? Commands`. The token
+    // count and key-hint cluster move to `/status` — they are not in
+    // the default footer. While a turn is live, the travelling sweep
+    // replaces the provider line as the running indicator. A non-ready
+    // status word (approval, interrupt arm, …) is prepended so no
+    // status signal is lost in the move.
+    let left_spans: Vec<Span> = if sweeping {
+        left_spans
     } else {
-        " - ".to_string()
-    };
-    let left = left_text;
-    let max = area.width as usize;
-    let right = if state.ready {
-        if max >= 92 {
-            format!(
-                "^b sidebar · ^r history · ^m model · / commands · {} ({})",
-                statusbar::fmt_count(live as u64),
-                pct
-            )
-        } else if max >= 68 {
-            format!(
-                "^b · ^r · / commands · {} ({})",
-                statusbar::fmt_count(live as u64),
-                pct
-            )
-        } else {
-            format!("{} ({})", statusbar::fmt_count(live as u64), pct)
+        let mut spans: Vec<Span> = Vec::new();
+        if !state.ready {
+            spans.push(Span::styled(
+                format!("{left_text} · "),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
         }
-    } else {
-        format!(
-            "{} ({}) | / commands",
-            statusbar::fmt_count(live as u64),
-            pct
-        )
+        spans.extend(footer_provider_spans(state, th, area.width as usize));
+        spans
     };
+    let left_w = Line::from(left_spans.clone()).width();
+    let max = area.width as usize;
+    let right = "? Commands";
     // Shed the right side first on narrow terminals; the state always fits.
-    let shed = max > 0 && left.chars().count() + 3 + right.chars().count() > max;
+    let shed = max > 0 && left_w + 3 + right.chars().count() > max;
     let line = if shed {
-        // Narrow: clip the plain text. The sweep is decorative - static
-        // dim text survives the shed.
-        let mut text = left.clone();
+        let mut text: String = left_spans.iter().map(|s| s.content.as_ref()).collect();
         if text.chars().count() > max {
             text = text.chars().take(max.saturating_sub(1)).collect();
         }
         Line::from(vec![Span::styled(
             text,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
+            Style::default().fg(th.dim),
         )])
     } else {
         // Right-align the right side: pad between left and right.
-        let gap = max.saturating_sub(left.chars().count() + right.chars().count());
+        let gap = max.saturating_sub(left_w + right.chars().count());
         let mut spans = left_spans;
         spans.push(Span::raw(" ".repeat(gap)));
         spans.push(Span::styled(right, Style::default().fg(th.dim)));
@@ -5412,14 +5455,14 @@ fn render_block(
             // Colored sender label, no chrome: whitespace + color are
             // the only separators.
             lines.push(Line::from(Span::styled(
-                "You",
+                "User",
                 Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
             )));
             render_rich_text(lines, text, th, img, term_width);
         }
         BlockKind::AssistantMessage(text) => {
             lines.push(Line::from(Span::styled(
-                "Pantheon",
+                "Agent",
                 Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
             )));
             render_rich_text(lines, text, th, img, term_width);
@@ -5467,85 +5510,47 @@ fn render_block(
             expanded,
             output,
         } => {
-            // Shell calls with captured stdout render as `$ cmd` cards
-            // with collapsible output, opencode-style. Everything else
-            // keeps the one-line tool row; clicking expands full args.
-            if name == "shell" && !output.is_empty() {
-                let command = json_string_field(args, "command").unwrap_or_else(|| args.clone());
-                let status = match ok {
-                    None if interrupted => crate::transcript::ToolStatus::Interrupted,
-                    None => crate::transcript::ToolStatus::Running,
-                    Some(true) => crate::transcript::ToolStatus::Succeeded,
-                    Some(false) => crate::transcript::ToolStatus::Failed,
-                };
-                let view = crate::transcript::ShellView {
-                    command,
-                    output: output.clone(),
-                    status,
-                    duration: *duration,
-                    expanded: *expanded,
-                };
-                lines.extend(view.lines(th));
+            // Unified tool card (base design): one renderer for shell
+            // and non-shell tools, header first so click-to-toggle on
+            // the block's first line keeps working. Shell cards show
+            // `$ command` + output; other cards show args + error.
+            // The token count ticks live while the call runs and freezes
+            // at completion; cards completed before tracking omit it.
+            let status = match ok {
+                None if interrupted => crate::transcript::ToolStatus::Interrupted,
+                None => crate::transcript::ToolStatus::Running,
+                Some(true) => crate::transcript::ToolStatus::Succeeded,
+                Some(false) => crate::transcript::ToolStatus::Failed,
+            };
+            let count = match (tokens, ok) {
+                (Some(t), _) => Some(statusbar::fmt_count(*t as u64)),
+                (None, None) => Some(statusbar::fmt_count(live_tokens as u64)),
+                (None, Some(_)) => None,
+            };
+            let (command, args_lines) = if name == "shell" && !output.is_empty() {
+                (
+                    Some(json_string_field(args, "command").unwrap_or_else(|| args.clone())),
+                    Vec::new(),
+                )
             } else {
-                let (glyph, col) = match ok {
-                    // A tool still marked running after an interrupt was stopped
-                    // from the outside: show that honestly, in dim, instead of
-                    // spinning or going amber (amber is reserved for approvals).
-                    None if interrupted => ("■", th.dim),
-                    None => (icon::RUNNING, th.success),
-                    Some(true) => (icon::SUCCESS, th.success),
-                    Some(false) => (icon::FAILURE, th.failure),
-                };
-                // Minimal single-line header: `⚙ Execute · 0.4s · 154.2k ✓`.
-                // The token count ticks live while the call runs and freezes
-                // at completion; cards completed before tracking simply omit
-                // it. Tool names render presentable, never raw registry ids.
-                let display = activity::tool_display_name(name);
-                let mut timing = match duration {
-                    Some(d) => format!("{:.1}s", d.as_secs_f64()),
-                    None => match started {
-                        Some(_) => "...".to_string(),
-                        None => String::new(),
-                    },
-                };
-                if !timing.is_empty() {
-                    timing = format!(" · {timing}");
-                }
-                let count = match (tokens, ok) {
-                    (Some(t), _) => Some(statusbar::fmt_count(*t as u64)),
-                    (None, None) => Some(statusbar::fmt_count(live_tokens as u64)),
-                    (None, Some(_)) => None,
-                };
-                let tool_dim = Style::default().fg(th.dim);
-                let mut header = vec![
-                    Span::styled(format!("{} {display}", icon::TOOL), tool_dim),
-                    Span::styled(timing, tool_dim),
-                ];
-                if let Some(c) = count {
-                    header.push(Span::styled(format!(" · {c}"), tool_dim));
-                }
-                header.push(Span::styled(format!(" {glyph}"), Style::default().fg(col)));
-                lines.push(Line::from(header));
-                if !args.is_empty() {
-                    let limit = if *expanded { usize::MAX } else { 6 };
-                    for line in args.lines().take(limit) {
-                        lines.push(Line::from(Span::styled(format!("  {line}"), tool_dim)));
-                    }
-                }
-                // Failure detail: the worker records the error text on the
-                // card; the card renders it calmly under the header (tools
-                // stay calm - only approvals go amber).
-                if let Some(err) = error {
-                    if !err.is_empty() {
-                        for line in err.lines().take(10) {
-                            lines.push(Line::from(Span::styled(
-                                format!("  ✕ {line}"),
-                                Style::default().fg(th.failure),
-                            )));
-                        }
-                    }
-                }
-            }
+                (None, args.lines().map(str::to_string).collect())
+            };
+            let _ = started;
+            let card = crate::transcript::ToolCard {
+                display_name: activity::tool_display_name(name),
+                status,
+                duration: *duration,
+                tokens: count,
+                expanded: *expanded,
+                command,
+                args: args_lines,
+                output: output.clone(),
+                error: error
+                    .as_ref()
+                    .map(|e| e.lines().map(str::to_string).collect())
+                    .unwrap_or_default(),
+            };
+            lines.extend(card.lines(th));
         }
         BlockKind::Swarm { agents, task } => {
             lines.push(Line::from(Span::styled(
@@ -11664,6 +11669,13 @@ mod inline_todo_card_tests {
     }
 
     #[test]
+    fn base_sidebar_is_opt_in_not_default() {
+        let s = test_state();
+        assert!(!s.show_sidebar, "sidebar must default off in the base design");
+        assert!(!s.sidebar_visible());
+    }
+
+    #[test]
     fn inline_card_appears_in_narrow_mode() {
         let mut s = test_state();
         s.term_width = 60;
@@ -11688,6 +11700,10 @@ mod inline_todo_card_tests {
     fn no_inline_card_in_wide_mode() {
         let mut s = test_state();
         s.term_width = 140;
+        // Sidebar explicitly on: with the base opt-in default this must
+        // be set, otherwise the sidebar is off and the inline card is
+        // (correctly) the todo surface.
+        s.show_sidebar = true;
         s.todo_items = sample_items();
         sync_inline_todo_card(&mut s);
         assert!(todo_blocks(&s).is_empty());
@@ -11729,6 +11745,7 @@ mod inline_todo_card_tests {
         sync_inline_todo_card(&mut s);
         assert_eq!(todo_blocks(&s).len(), 1);
         s.term_width = 140;
+        s.show_sidebar = true;
         sync_inline_todo_card(&mut s);
         assert!(todo_blocks(&s).is_empty());
     }
@@ -11991,6 +12008,27 @@ mod picker_render_tests {
         );
         assert!(text.contains("Alpha work"), "row missing");
         assert!(text.contains("ctrl+d"), "footer hints missing");
+    }
+
+    #[test]
+    fn base_footer_carries_provider_and_commands_hint() {
+        let s = test_state();
+        let lines = render_to_string(render_footer, &s);
+        let text = lines.join("\n");
+        assert!(text.contains("Provider:"), "footer missing provider: {text}");
+        assert!(text.contains("? Commands"), "footer missing hint: {text}");
+        assert!(
+            !text.contains(" - "),
+            "effort must be omitted when off, not shown as '-': {text}"
+        );
+    }
+
+    #[test]
+    fn base_composer_is_bordered() {
+        let s = test_state();
+        let lines = render_to_string(render_input_block, &s);
+        let text = lines.join("\n");
+        assert!(text.contains('╭') && text.contains('╰'), "composer not bordered: {text}");
     }
 
     #[test]
