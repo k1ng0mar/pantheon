@@ -12158,6 +12158,17 @@ mod picker_render_tests {
     }
 
     #[test]
+    fn footer_mode_word_follows_plan_mode() {
+        let mut s = test_state();
+        s.plan_mode = false;
+        let text = render_to_string(render_footer, &s).join("\n");
+        assert!(text.contains("Build"), "Build mode word missing: {text}");
+        s.plan_mode = true;
+        let text = render_to_string(render_footer, &s).join("\n");
+        assert!(text.contains("Plan"), "Plan mode word missing: {text}");
+    }
+
+    #[test]
     fn base_composer_is_bordered() {
         let s = test_state();
         let lines = render_to_string(render_input_block, &s);
