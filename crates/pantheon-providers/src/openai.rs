@@ -151,13 +151,18 @@ pub fn request(
     }
     // Filter sampling params by the provider's allowed list. Providers that
     // reject unknown fields (Azure, newer Anthropic) need this to avoid 400s.
+    // `model`, `messages`, and `tools` are never filtered: they are the
+    // request itself, not sampling params, and an allowed list that omits
+    // them (as Azure's once did) must not strip the body down to a bare
+    // sampling dict that every endpoint rejects.
     if let Some(p) = crate::catalog::provider(provider_id) {
         if !p.allowed_params.is_empty() {
             let allowed: std::collections::HashSet<&str> =
                 p.allowed_params.iter().map(|s| s.as_str()).collect();
-            body.as_object_mut()
-                .unwrap()
-                .retain(|k, _| allowed.contains(k.as_str()));
+            body.as_object_mut().unwrap().retain(|k, _| {
+                matches!(k.as_str(), "model" | "messages" | "tools")
+                    || allowed.contains(k.as_str())
+            });
         }
     }
     let (header_name, auth_value) = crate::http::auth_header_pair(key_header, api_key);
@@ -566,6 +571,54 @@ mod openai_max_tokens_tests {
         );
         let body: serde_json::Value = serde_json::from_str(&req.body).expect("body is JSON");
         assert_eq!(body["max_tokens"], serde_json::json!(4_321));
+    }
+
+    /// Cluster 1 (g): Azure's `allowed_params` filter must never strip
+    /// the request itself. Before the fix the catalog list omitted
+    /// `model`, `messages`, and `tools`, so `retain` deleted them and
+    /// every Azure chat body went out as a bare sampling dict (400 /
+    /// fallback-exhaust). The filter now always keeps those three,
+    /// and the catalog list names them too.
+    #[test]
+    fn azure_request_body_keeps_model_messages_tools() {
+        let tools = vec![pantheon_api::message::ToolSchema {
+            name: "read_file".to_string(),
+            description: "read".to_string(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }];
+        let req = request(
+            "https://example.openai.azure.com/openai/v1",
+            "k",
+            "api-key",
+            "azure",
+            "my-deployment",
+            &[pantheon_api::message::Message::user("hi")],
+            &tools,
+            false,
+            1_000,
+            pantheon_api::model::ReasoningLevel::Off,
+            &TurnOptions::default(),
+        );
+        let body: serde_json::Value = serde_json::from_str(&req.body).expect("body is JSON");
+        assert_eq!(body["model"], serde_json::json!("my-deployment"));
+        assert!(
+            body["messages"].as_array().is_some_and(|m| !m.is_empty()),
+            "messages stripped: {body}"
+        );
+        assert!(
+            body["tools"].as_array().is_some_and(|t| !t.is_empty()),
+            "tools stripped: {body}"
+        );
+        assert_eq!(body["max_tokens"], serde_json::json!(1_000));
+        // And the catalog itself must name the three, so a future
+        // reader of allowed_params is not misled about what is sent.
+        let azure = crate::catalog::provider("azure").expect("azure in catalog");
+        for required in ["model", "messages", "tools"] {
+            assert!(
+                azure.allowed_params.iter().any(|p| p == required),
+                "azure allowed_params omits {required}"
+            );
+        }
     }
 }
 
