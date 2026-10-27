@@ -2257,6 +2257,14 @@ pub struct Session {
     /// a flip mid-turn reaches children spawned after it, and the gate
     /// reads it live per batch.
     pub permission_mode: Arc<Mutex<PermissionMode>>,
+    /// Provider HTTP timeout for this session's chat transport,
+    /// resolved once at construction: `PANTHEON_HTTP_TIMEOUT_MS`
+    /// overrides `[model] timeout_ms`, which overrides the 120s
+    /// default (see `pantheon_providers::http::resolve_http_timeout`).
+    /// Read per turn when the transport is built, so the config value
+    /// actually reaches the provider layer instead of the transport
+    /// silently falling back to env-only defaults.
+    pub provider_timeout: std::time::Duration,
     /// The session's todo list, shared with the `todo` tool (which
     /// replaces it wholesale) and read by `/todos` and the TUI card.
     /// Reloaded from the run's ledger snapshot on `set_current_run` so
@@ -2518,14 +2526,27 @@ impl Session {
             }
         };
         let sup = Supervisor::open(data_dir.clone())?;
-        // The configured permission mode, resolved once at construction.
-        // Absent or unparseable reads as `Ask`, the conservative default:
-        // a typo in config must never silently widen what runs unattended.
-        let configured_permission_mode = pantheon_api::config::Config::load(&data_dir)
-            .ok()
-            .and_then(|c| c.permission_mode)
+        // Config-file values, resolved once at construction from a
+        // single load (the permission mode and the provider timeout
+        // share it). Absent or unparseable permission mode reads as
+        // `Ask`, the conservative default: a typo in config must never
+        // silently widen what runs unattended.
+        let loaded_config = pantheon_api::config::Config::load(&data_dir).ok();
+        let configured_permission_mode = loaded_config
+            .as_ref()
+            .and_then(|c| c.permission_mode.clone())
             .and_then(|s| PermissionMode::parse(&s))
             .unwrap_or_default();
+        let provider_timeout = {
+            let env_ms = std::env::var("PANTHEON_HTTP_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok());
+            let config_ms = loaded_config
+                .as_ref()
+                .and_then(|c| c.model.as_ref())
+                .and_then(|m| m.timeout_ms);
+            pantheon_providers::http::resolve_http_timeout(env_ms, config_ms)
+        };
         // Vector recall layer: resolve the embeddings auxiliary from the
         // policy. Absent entry -> local hashing embedder (the client
         // itself decides; either way the supervisor indexes with vectors).
@@ -2552,6 +2573,7 @@ impl Session {
             goal: Mutex::new(None),
             mode: Arc::new(Mutex::new(AgentMode::default())),
             permission_mode: Arc::new(Mutex::new(configured_permission_mode)),
+            provider_timeout,
             todo_state: Arc::new(Mutex::new(TodoList::default())),
             verdict_tool: Mutex::new(false),
             depth: 0,
@@ -5250,7 +5272,9 @@ impl Session {
             ));
         }
         let transport: Box<dyn pantheon_providers::ChatTransport> =
-            Box::new(HttpTransport::default());
+            Box::new(HttpTransport {
+                timeout: self.provider_timeout,
+            });
         let mut chain = {
             let api_key: SecretValue = self
                 .secrets
