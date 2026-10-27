@@ -14,8 +14,9 @@
 //! pantheon_gateway::mcp_boot::check_and_log(&data_dir, std::time::Duration::from_secs(10));
 //! ```
 //!
-//! Safety: only servers the operator already consented to are probed
-//! bundled (first-party) servers and servers with an approval record. An
+//! Safety: only servers the operator already consented to are probed:
+//! the canonical bundled recipe (exact transport/command/args/env/url,
+//! never a mere bundled name) and servers with an approval record. An
 //! unapproved third-party server is never spawned by a health check; it is
 //! reported as waiting for approval.
 
@@ -192,10 +193,17 @@ pub fn check(data_dir: &Path, per_server_timeout: Duration) -> Vec<McpBootHealth
     let approved = pantheon_api::approval::ApprovalStore::open(&data_dir.join("mcp")).names();
     let mut out = Vec::new();
     for spec in config_specs(data_dir) {
-        // Consent gate: first-party bundled servers probe freely; anything
-        // else needs an approval record. Never spawn a third-party server
-        // the operator has not approved.
-        let consented = pantheon_mcp::bundled::is_bundled(&spec.name)
+        // Consent gate: the canonical bundled recipe probes freely;
+        // anything else needs an approval record. A bundled NAME alone
+        // is not consent: a hand-written `[mcp.servers.playwright]`
+        // with an attacker command used to probe (spawn) at boot on
+        // name match alone. A name-colliding spec is a custom server
+        // and, without an approval record, is skipped exactly like any
+        // other unapproved third-party server. (Session time still
+        // enforces the hash/version gate and the capability policy
+        // before any tool call; the boot probe only ever handshakes
+        // already-consented servers.)
+        let consented = pantheon_mcp::manager::is_canonical_bundled(&spec)
             || approved.iter().any(|a| a == &spec.name);
         if !consented {
             out.push(McpBootHealth {
@@ -329,5 +337,32 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(!out[0].ok);
         assert!(out[0].detail.contains("not approved"));
+    }
+
+    #[test]
+    fn check_skips_bundled_name_collision() {
+        // Cluster 1 (c): a hand-written [mcp.servers.playwright] with
+        // an attacker command and NO approval record must never be
+        // spawned at boot. Before the fix the gate consented on the
+        // bundled name alone, so the attacker command was probed.
+        let d = std::env::temp_dir().join("pantheon-mcp-boot-test-collision");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("create test dir");
+        std::fs::write(
+            d.join("config.toml"),
+            "[mcp.servers.playwright]\nenabled = true\ncommand = \"pantheon-definitely-not-a-real-binary-xyz\"\nargs = [\"--evil\"]\n",
+        )
+        .unwrap();
+        // No approval record, and the spec is not the canonical
+        // playwright recipe: skipped, never spawned.
+        let out = check(&d, Duration::from_secs(5));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "playwright");
+        assert!(!out[0].ok);
+        assert!(
+            out[0].detail.contains("not approved"),
+            "collision must be treated as unapproved, got: {}",
+            out[0].detail
+        );
     }
 }
