@@ -594,16 +594,22 @@ pub fn stream(
 ) -> Result<AdapterTurn, PantheonError> {
     let mut state = AnthStream::default();
     let end = transport.post_stream(&req, &mut |payload| state.push(payload, sink))?;
-    if end == StreamEnd::Eof && state.finish_reason.is_none() {
-        // EOF without `data: [DONE]` and no stop_reason: the provider
-        // (or a proxy) cut the stream mid-turn. Fail retryable so the
-        // chain retries or falls back instead of presenting a silently
-        // truncated turn as complete.
-        return Err(perr(
-            "PROVIDER_TRUNCATED",
-            "stream ended without [DONE] and no stop_reason".to_string(),
-            true,
-        ));
+    if state.finish_reason.is_none() {
+        // No stop_reason on ANY stream end: a terminator without one
+        // is not a completed turn either — a proxy or provider can
+        // end the stream after cutting it short, and accepting it
+        // would present truncated output as finished. Fail retryable
+        // so the chain retries or falls back instead of presenting a
+        // silently truncated turn as complete.
+        let cause = match end {
+            StreamEnd::Done => {
+                "stream ended with terminator but no stop_reason".to_string()
+            }
+            StreamEnd::Eof => {
+                "stream ended without terminator and no stop_reason".to_string()
+            }
+        };
+        return Err(perr("PROVIDER_TRUNCATED", cause, true));
     }
     state.finish(sink)
 }
@@ -723,5 +729,22 @@ mod stream_truncation_tests {
             done: true,
         };
         assert!(stream(&t, wire_req(), &NoopModelSink).is_ok());
+    }
+
+    #[test]
+    fn done_without_stop_reason_is_truncated() {
+        // A terminator with no stop_reason is not a completed turn:
+        // a proxy can end the stream after cutting it short, and
+        // accepting it would present truncated output as finished.
+        let t = StubTransport {
+            payloads: vec![TEXT_EVENT],
+            done: true,
+        };
+        let err = match stream(&t, wire_req(), &NoopModelSink) {
+            Ok(_) => panic!("expected PROVIDER_TRUNCATED on terminator without stop_reason"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "PROVIDER_TRUNCATED");
+        assert!(err.retryable, "truncation must be retryable");
     }
 }
