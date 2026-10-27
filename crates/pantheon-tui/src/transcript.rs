@@ -5,7 +5,7 @@
 //! `widget.rs`/`render.rs`, so tests assert on spans instead of ANSI.
 //!
 //! What this adds over the current transcript:
-//! - [`ThoughtView`]: reasoning as `+ Thought · 4.0s`, collapsed by
+//! - [`ThoughtView`]: reasoning as `◇ Thought · 4.0s`, collapsed by
 //!   default, expandable to the full text with its duration.
 //! - [`ToolView`]: tool calls as `› server.tool_name` rows with a live
 //!   marker while running, ✓/× on settle, expandable args/error detail.
@@ -39,9 +39,9 @@ fn dim_span(th: &Theme, text: String) -> Span<'static> {
     Span::styled(text, Style::default().fg(th.dim))
 }
 
-/// A reasoning block: `+ Thought · 4.0s` collapsed, full text expanded.
+/// A reasoning block: `◇ Thought · 4.0s` collapsed, full text expanded.
 ///
-/// The `+`/`−` marker is the amber highlight; everything else stays dim so
+/// The `◇` marker is the amber highlight; everything else stays dim so
 /// old reasoning never shouts over answers. Collapsed is the default
 /// settled thought should read as one quiet line, not a wall.
 #[derive(Debug, Clone)]
@@ -61,23 +61,25 @@ impl ThoughtView {
     }
 
     /// Header text without styling, for tests and screen readers.
+    /// Base design: `◇ Thinking` while expanded (live), `◇ Thought`
+    /// (+ duration when measured) when collapsed.
     pub fn header_text(&self) -> String {
-        let marker = if self.expanded { "−" } else { "+" };
+        let word = if self.expanded { "Thinking" } else { "Thought" };
         match self.duration {
-            Some(d) => format!("{marker} Thought · {}", fmt_duration(d)),
-            None => format!("{marker} Thought"),
+            Some(d) => format!("◇ {word} · {}", fmt_duration(d)),
+            None => format!("◇ {word}"),
         }
     }
 
     pub fn lines(&self, th: &Theme) -> Vec<Line<'static>> {
-        let marker = if self.expanded { "−" } else { "+" };
+        let word = if self.expanded { "Thinking" } else { "Thought" };
         let mut header = vec![Span::styled(
-            format!("{marker} "),
+            "◇ ".to_string(),
             Style::default()
                 .fg(th.emphasis)
                 .add_modifier(Modifier::BOLD),
         )];
-        header.push(dim_span(th, "Thought".to_string()));
+        header.push(dim_span(th, word.to_string()));
         if let Some(d) = self.duration {
             header.push(dim_span(th, format!(" · {}", fmt_duration(d))));
         }
@@ -385,7 +387,7 @@ mod tests {
     fn thought_collapsed_shows_duration() {
         let v = ThoughtView::collapsed("some long reasoning", Some(Duration::from_millis(4000)));
         let t = text(&v.lines(&theme()));
-        assert!(t.contains("+ Thought · 4.0s"), "got: {t}");
+        assert!(t.contains("◇ Thought · 4.0s"), "got: {t}");
         assert!(!t.contains("some long reasoning"), "body leaked: {t}");
     }
 
@@ -394,14 +396,14 @@ mod tests {
         let mut v = ThoughtView::collapsed("line one\nline two", Some(Duration::from_millis(400)));
         v.expanded = true;
         let t = text(&v.lines(&theme()));
-        assert!(t.contains("− Thought · 0.4s"), "got: {t}");
+        assert!(t.contains("◇ Thinking · 0.4s"), "got: {t}");
         assert!(t.contains("line one") && t.contains("line two"), "got: {t}");
     }
 
     #[test]
     fn thought_without_duration_omits_suffix() {
         let v = ThoughtView::collapsed("x", None);
-        assert_eq!(v.header_text(), "+ Thought");
+        assert_eq!(v.header_text(), "◇ Thought");
     }
 
     #[test]

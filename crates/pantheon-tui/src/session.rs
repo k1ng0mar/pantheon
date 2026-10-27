@@ -232,12 +232,17 @@ impl PaletteState {
 pub enum BlockKind {
     UserMessage(String),
     AssistantMessage(String),
-    /// Reasoning trace. Renders as a collapsible `+ Thought` row via
+    /// Reasoning trace. Renders as a collapsible `◇ Thought` row via
     /// [`crate::transcript::ThoughtView`]; the live (streaming) block
     /// stays expanded, settled ones collapse until clicked.
+    /// `duration` is measured from the first reasoning delta to the
+    /// first following non-reasoning event (see `settle_thinking`);
+    /// it is `None` while streaming and for imported traces, never
+    /// an invented number.
     Thinking {
         text: String,
         expanded: bool,
+        duration: Option<std::time::Duration>,
     },
     /// Tool card: running until the matching runtime completion event
     /// sets `ok`. `name` is the registry id (`shell`) - the UI shows
@@ -661,6 +666,9 @@ pub struct TuiState {
     pub turn_out: Option<u64>,
     /// When the current turn started; drives tokens/sec. `None` while idle.
     pub turn_started_at: Option<Instant>,
+    /// When the current thinking block started streaming; `settle_thinking`
+    /// turns it into the block's `duration`. `None` while not reasoning.
+    pub thinking_started_at: Option<Instant>,
     /// Completed turns. The status bar shows this + 1 while a turn runs.
     pub turns_completed: u32,
     /// Active `/goal`: the session objective plus its iteration budget.
@@ -889,6 +897,7 @@ impl Default for TuiState {
             turn_in: None,
             turn_out: None,
             turn_started_at: None,
+            thinking_started_at: None,
             turns_completed: 0,
             goal: None,
             attention: false,
@@ -1069,6 +1078,7 @@ impl TuiState {
             turn_in: None,
             turn_out: None,
             turn_started_at: None,
+            thinking_started_at: None,
             turns_completed: 0,
             goal: None,
             attention: false,
@@ -1265,6 +1275,23 @@ impl TuiState {
         self.turn_estimate += (text.len() as u32).div_ceil(4);
     }
 
+    /// Stamp the trailing thinking block's duration when reasoning
+    /// ends: the first non-reasoning event after a reasoning stream
+    /// settles it, so the collapsed summary can show a measured
+    /// duration. No-op when not reasoning.
+    fn settle_thinking(&mut self) {
+        let Some(start) = self.thinking_started_at.take() else {
+            return;
+        };
+        if let Some(TranscriptBlock {
+            kind: BlockKind::Thinking { duration, .. },
+            ..
+        }) = self.blocks.last_mut()
+        {
+            *duration = Some(start.elapsed());
+        }
+    }
+
     /// Process a model event into a transcript block or state update.
     pub fn handle_model_event(&mut self, ev: ModelEvent) {
         match ev {
@@ -1318,6 +1345,7 @@ impl TuiState {
                 }
             }
             ModelEvent::TextDelta { text } => {
+                self.settle_thinking();
                 self.bump_estimate(&text);
                 if let Some(TranscriptBlock {
                     kind: BlockKind::AssistantMessage(ref mut buf),
@@ -1343,10 +1371,12 @@ impl TuiState {
                 {
                     t.push_str(&text);
                 } else {
+                    self.thinking_started_at = Some(Instant::now());
                     self.blocks.push(TranscriptBlock {
                         kind: BlockKind::Thinking {
                             text,
                             expanded: false,
+                            duration: None,
                         },
                     });
                 }
@@ -1357,6 +1387,7 @@ impl TuiState {
                 arguments,
                 ..
             } => {
+                self.settle_thinking();
                 self.blocks.push(TranscriptBlock {
                     kind: BlockKind::ToolCall {
                         name,
@@ -1398,6 +1429,7 @@ impl TuiState {
                 self.pending_provider_failure = None;
             }
             ModelEvent::Completed { .. } => {
+                self.settle_thinking();
                 self.flip_recovered_card();
                 self.pending_provider_failure = None;
             }
@@ -3189,6 +3221,7 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
                 pantheon_runtime::session::TranscriptItem::Reasoning(text) => BlockKind::Thinking {
                     text,
                     expanded: false,
+                    duration: None,
                 },
                 // Structured UI: rebuilt at its latest revision.
                 pantheon_runtime::session::TranscriptItem::Ui {
@@ -5487,13 +5520,17 @@ fn render_block(
             )));
             render_rich_text(lines, output, th, img, term_width);
         }
-        BlockKind::Thinking { text, expanded } => {
-            // Reasoning as a collapsible `+ Thought` row: the live
+        BlockKind::Thinking {
+            text,
+            expanded,
+            duration,
+        } => {
+            // Reasoning as a collapsible `◇ Thought` row: the live
             // (streaming) block stays expanded, settled ones collapse
             // until clicked, so old reasoning never crowds out answers.
             let view = crate::transcript::ThoughtView {
                 text: text.clone(),
-                duration: None,
+                duration: *duration,
                 expanded: *expanded || is_last,
             };
             lines.extend(view.lines(th));
@@ -10434,6 +10471,7 @@ fn handle_slash_inner(
                                     BlockKind::Thinking {
                                         text,
                                         expanded: false,
+                                        duration: None,
                                     }
                                 }
                                 // Structured UI: rebuilt at its latest revision.
@@ -12154,6 +12192,25 @@ mod streaming_response_tests {
             })
             .collect();
         assert_eq!(assistant, ["Hello there."]);
+    }
+
+    #[test]
+    fn thinking_block_settles_with_measured_duration() {
+        let mut state = TuiState::new("run-thinking".into(), "test-model".into(), 0);
+        state.handle_model_event(ModelEvent::ReasoningDelta {
+            text: "hmm".into(),
+        });
+        state.handle_model_event(ModelEvent::TextDelta {
+            text: "answer".into(),
+        });
+        let thinking = state.blocks.iter().find_map(|block| match &block.kind {
+            BlockKind::Thinking { duration, .. } => Some(*duration),
+            _ => None,
+        });
+        assert!(
+            thinking.flatten().is_some(),
+            "settled thinking block must carry a measured duration"
+        );
     }
 }
 
