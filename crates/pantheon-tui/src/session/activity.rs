@@ -463,12 +463,16 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
         }
     }
 
-    // Subagent sections, in spawn order. Only what's real: the agent
-    // name plus running/done - never invented step text.
+    // Subagent sections, in spawn order, Running only: the sidebar is
+    // the live view, and done agents used to linger here (capped at
+    // 6, crowding live ones out). Done agents still render in the
+    // transcript's Swarm block, where history belongs. The live
+    // count (`active_subagent_count`, Running only, hidden at 0)
+    // already feeds the composer row.
     let subs: Vec<&SubAgentRecord> = state
         .subagents
         .iter()
-        .filter(|r| r.parent_run_id == state.session_id)
+        .filter(|r| r.parent_run_id == state.session_id && r.status == SubAgentStatus::Running)
         .collect();
     for (i, rec) in subs.iter().take(6).enumerate() {
         lines.push(Line::from(""));
@@ -634,6 +638,31 @@ mod tests {
         let text = view_text(&s);
         assert!(text.contains("Execute · done"), "got: {text}");
         assert!(text.contains("a.txt"), "expanded tool output missing: {text}");
+    }
+
+    #[test]
+    fn agent_view_shows_running_subagents_only() {
+        let mut s = state();
+        s.subagents.push(SubAgentRecord {
+            name: "live-one".to_string(),
+            status: SubAgentStatus::Running,
+            parent_run_id: "test-session".to_string(),
+            spawned_ms: 0,
+            finished_ms: None,
+        });
+        s.subagents.push(SubAgentRecord {
+            name: "done-one".to_string(),
+            status: SubAgentStatus::Done,
+            parent_run_id: "test-session".to_string(),
+            spawned_ms: 0,
+            finished_ms: Some(1),
+        });
+        let text = view_text(&s);
+        assert!(text.contains("live-one"), "running agent missing: {text}");
+        assert!(
+            !text.contains("done-one"),
+            "done agents must not crowd the live sidebar (transcript Swarm block keeps them): {text}"
+        );
     }
 
     #[test]
