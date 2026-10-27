@@ -5402,8 +5402,16 @@ fn render_rich_text(
             crate::richtext::RichSegment::Text(t) => {
                 // Markdown rendering (headings, lists, tables, fences,
                 // inline styles) lives in `crate::markdown`; this only
-                // routes each text segment there.
-                lines.extend(crate::markdown::render_markdown(&t, th));
+                // routes each text segment there. Wrapped at the
+                // transcript's current width (`term_width`, which is
+                // the transcript area width, so it shrinks when the
+                // sidebar opens) — see `render_markdown_wrapped` for
+                // why wrapping happens here and not in the Paragraph.
+                lines.extend(crate::markdown::render_markdown_wrapped(
+                    &t,
+                    th,
+                    term_width as usize,
+                ));
             }
             crate::richtext::RichSegment::Image(image) => {
                 let line_idx = lines.len();
@@ -12774,6 +12782,63 @@ mod picker_render_tests {
             .join("\n");
         assert!(text.contains("Permission required"), "got: {text}");
         assert!(lines.len() > 1, "card must be transcript lines: {text}");
+    }
+
+    #[test]
+    fn long_assistant_line_wraps_and_rewraps_when_width_shrinks() {
+        // The exact bug Umar saw: a long assistant line was clipped
+        // at the viewport edge ("Sunlight looks whi…") with no
+        // continuation. It must wrap at the transcript width, and
+        // re-wrap (more lines) when that width shrinks, e.g. when
+        // the sidebar opens, with no text lost.
+        let text = "Sunlight looks white because it is made of all the colours of the rainbow mixed together, and when they reach your eyes at the same time your brain sees them as white light, not as separate colours.";
+        let render_at = |width: u16| -> Vec<String> {
+            let th = theme::Theme::pantheon();
+            let mut img = crate::richtext::ImagePaintState::new();
+            let mut ctx = BlockRenderCtx {
+                th: &th,
+                img: &mut img,
+                term_width: width,
+                live_tokens: 0,
+                agent_label: "Pantheon",
+            };
+            let block = TranscriptBlock {
+                kind: BlockKind::AssistantMessage(text.to_string()),
+            };
+            let mut lines: Vec<Line> = Vec::new();
+            render_block(&mut lines, &block, false, false, &mut ctx);
+            // First line is the speaker label; the rest is the prose.
+            lines[1..]
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect()
+        };
+        for width in [80u16, 120] {
+            let prose = render_at(width);
+            assert!(prose.len() > 1, "must wrap at {width}: {prose:?}");
+            for l in &prose {
+                assert!(
+                    l.chars().count() <= width as usize,
+                    "line over {width}: [{l}]"
+                );
+            }
+            assert_eq!(prose.join(" "), text, "no text lost at {width}");
+            assert!(
+                prose.join(" ").contains("separate colours."),
+                "tail must survive wrapping at {width}"
+            );
+        }
+        // Sidebar opens: transcript width shrinks 120 -> 80, so the
+        // same message re-wraps into more lines, still complete.
+        assert!(
+            render_at(80).len() > render_at(120).len(),
+            "narrower transcript must wrap into more lines"
+        );
     }
 
     #[test]

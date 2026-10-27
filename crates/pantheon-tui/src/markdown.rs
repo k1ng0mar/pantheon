@@ -48,6 +48,24 @@ const SHORT_LINE: usize = 48;
 
 /// Render markdown `text` to styled lines (no trailing blank line).
 pub fn render_markdown(text: &str, th: &Theme) -> Vec<Line<'static>> {
+    render_markdown_at(text, th, None)
+}
+
+/// Render markdown `text`, wrapping prose lines to `width` columns.
+/// Fenced code blocks and tables are never wrapped (wrapping them
+/// would mangle their layout); prose, headings, blockquotes, and
+/// list bodies are wrapped at word boundaries, with styled spans
+/// preserved and continuation lines indented to the body column.
+/// Wrapping happens here, before the transcript builds its line
+/// list, so scroll offsets, jump targets, click-to-toggle rows, and
+/// image placements all stay in wrapped coordinates — a ratatui
+/// `Paragraph::wrap()` on the whole transcript would break those,
+/// because the transcript measures scroll in unwrapped lines.
+pub fn render_markdown_wrapped(text: &str, th: &Theme, width: usize) -> Vec<Line<'static>> {
+    render_markdown_at(text, th, Some(width))
+}
+
+fn render_markdown_at(text: &str, th: &Theme, width: Option<usize>) -> Vec<Line<'static>> {
     let lines: Vec<&str> = text.lines().collect();
     let n = lines.len();
     let mut out: Vec<Line<'static>> = Vec::new();
@@ -109,10 +127,15 @@ pub fn render_markdown(text: &str, th: &Theme) -> Vec<Line<'static>> {
         // Only for plain text lines: a heading, list item, blockquote or
         // tag line followed by `===`/`---` is not a setext heading.
         if setext_underline(&lines, i).is_some() && is_setext_text(trimmed) {
-            out.push(Line::from(Span::styled(
-                trimmed.to_string(),
-                Style::default().fg(th.heading).bold(),
-            )));
+            push_wrapped(
+                &mut out,
+                Line::from(Span::styled(
+                    trimmed.to_string(),
+                    Style::default().fg(th.heading).bold(),
+                )),
+                width,
+                0,
+            );
             i += 2;
             continue;
         }
@@ -132,10 +155,15 @@ pub fn render_markdown(text: &str, th: &Theme) -> Vec<Line<'static>> {
 
         // --- ATX headings (`# ...`, space required after the hashes) --------
         if let Some(heading) = atx_heading(trimmed) {
-            out.push(Line::from(Span::styled(
-                heading.to_string(),
-                Style::default().fg(th.heading).bold(),
-            )));
+            push_wrapped(
+                &mut out,
+                Line::from(Span::styled(
+                    heading.to_string(),
+                    Style::default().fg(th.heading).bold(),
+                )),
+                width,
+                0,
+            );
             i += 1;
             continue;
         }
@@ -156,7 +184,7 @@ pub fn render_markdown(text: &str, th: &Theme) -> Vec<Line<'static>> {
         if let Some(body) = trimmed.strip_prefix('>') {
             let mut spans = vec![Span::styled("> ", Style::default().fg(th.dim))];
             spans.extend(inline(body.trim_start(), th));
-            out.push(Line::from(spans));
+            push_wrapped(&mut out, Line::from(spans), width, 2);
             i += 1;
             continue;
         }
@@ -166,28 +194,34 @@ pub fn render_markdown(text: &str, th: &Theme) -> Vec<Line<'static>> {
         // so existing top-level rendering is unchanged).
         if let Some((marker, body)) = list_item(trimmed) {
             let indent = line.len() - line.trim_start().len();
+            let marker_len = marker.chars().count();
             let mut spans = vec![Span::styled(
                 format!("{}{}", " ".repeat(indent), marker),
                 Style::default().fg(th.dim),
             )];
             spans.extend(inline(body, th));
-            out.push(Line::from(spans));
+            push_wrapped(&mut out, Line::from(spans), width, indent + marker_len);
             i += 1;
             continue;
         }
 
         // --- bare section headers -------------------------------------------
         if is_section_header(&lines, i) {
-            out.push(Line::from(Span::styled(
-                trimmed.to_string(),
-                Style::default().fg(th.heading).bold(),
-            )));
+            push_wrapped(
+                &mut out,
+                Line::from(Span::styled(
+                    trimmed.to_string(),
+                    Style::default().fg(th.heading).bold(),
+                )),
+                width,
+                0,
+            );
             i += 1;
             continue;
         }
 
         // --- plain body ------------------------------------------------------
-        out.push(Line::from(inline(trimmed, th)));
+        push_wrapped(&mut out, Line::from(inline(trimmed, th)), width, 0);
         i += 1;
     }
 
@@ -196,6 +230,158 @@ pub fn render_markdown(text: &str, th: &Theme) -> Vec<Line<'static>> {
         out.pop();
     }
     out
+}
+
+/// Push `line`, wrapping it to `width` when a width is set and the
+/// line is too long. `cont_indent` is the column continuation lines
+/// start at (list body column, blockquote body column, or 0).
+fn push_wrapped(out: &mut Vec<Line<'static>>, line: Line<'static>, width: Option<usize>, cont_indent: usize) {
+    let Some(w) = width else {
+        out.push(line);
+        return;
+    };
+    if w == 0 || line.width() <= w {
+        out.push(line);
+        return;
+    }
+    out.extend(wrap_line(line, w, cont_indent));
+}
+
+/// Approximate display width of one char: 2 for wide CJK ranges, 1
+/// otherwise (0 for control chars). Exact Unicode width would need
+/// the unicode-width crate; prose wrapping only needs to be close,
+/// and no text is ever dropped by an off-by-one here.
+fn char_width(c: char) -> usize {
+    if c.is_control() {
+        0
+    } else {
+        match c as u32 {
+            0x1100..=0x115F
+            | 0x2E80..=0xA4CF
+            | 0xAC00..=0xD7A3
+            | 0xF900..=0xFAFF
+            | 0xFE30..=0xFE4F
+            | 0xFF00..=0xFF60
+            | 0xFFE0..=0xFFE6 => 2,
+            _ => 1,
+        }
+    }
+}
+
+/// Word-wrap one styled line to `width`, breaking at the last space
+/// that fits, or mid-word when a single word is longer than the
+/// width. Styled spans survive: chars are grouped back by style.
+/// Continuation lines are prefixed with `cont_indent` spaces.
+/// No input char is ever dropped: spaces used as break points are
+/// the only chars removed, and only at a line boundary.
+fn wrap_line(line: Line<'static>, width: usize, cont_indent: usize) -> Vec<Line<'static>> {
+    let cont_indent = cont_indent.min(width.saturating_sub(1));
+    let chars: Vec<(char, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|sp| sp.content.chars().map(move |c| (c, sp.style)))
+        .collect();
+    let flush = |cur: &[(char, Style)]| -> Line<'static> {
+        // Group consecutive same-style chars back into spans, and
+        // trim trailing spaces so wrapped lines do not end in blanks.
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut buf = String::new();
+        let mut cur_style: Option<Style> = None;
+        for &(c, style) in cur {
+            if cur_style != Some(style) {
+                if !buf.is_empty() {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut buf),
+                        cur_style.unwrap(),
+                    ));
+                }
+                cur_style = Some(style);
+            }
+            buf.push(c);
+        }
+        if !buf.is_empty() {
+            spans.push(Span::styled(buf, cur_style.unwrap()));
+        }
+        // Trim trailing spaces from the last span.
+        if let Some(last) = spans.last_mut() {
+            let trimmed = last.content.trim_end_matches(' ').to_string();
+            last.content = trimmed.into();
+            if last.content.is_empty() {
+                spans.pop();
+            }
+        }
+        Line::from(spans)
+    };
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut cur: Vec<(char, Style)> = Vec::new();
+    let mut cur_w = 0usize;
+    let mut last_space: Option<usize> = None; // index into `cur`
+    let mut first = true;
+
+    let start_line = |cur: &mut Vec<(char, Style)>, cur_w: &mut usize, first: &mut bool| {
+        cur.clear();
+        if !*first {
+            for _ in 0..cont_indent {
+                cur.push((' ', Style::default()));
+            }
+        }
+        *cur_w = if *first { 0 } else { cont_indent };
+        *first = false;
+    };
+    start_line(&mut cur, &mut cur_w, &mut first);
+
+    for &(c, style) in &chars {
+        let cw = char_width(c);
+        if cur_w + cw > width && !cur.iter().all(|&(ch, _)| ch == ' ') {
+            // Break before this char.
+            if let Some(sp) = last_space.filter(|&sp| sp > cont_indent || first) {
+                // Break at the last space: flush up to it, carry the
+                // remainder (after the space) to the next line.
+                let before = cur[..sp].to_vec();
+                let mut remainder = cur[sp + 1..].to_vec();
+                // The remainder may itself contain spaces; the last
+                // one is the new break candidate.
+                let mut new_last: Option<usize> = None;
+                for (idx, &(ch, _)) in remainder.iter().enumerate() {
+                    if ch == ' ' {
+                        new_last = Some(idx + cont_indent);
+                    }
+                }
+                out.push(flush(&before));
+                start_line(&mut cur, &mut cur_w, &mut first);
+                cur.append(&mut remainder);
+                cur_w += remainder_len(&cur, cont_indent);
+                last_space = new_last;
+                // Now place the current char (fall through to append).
+            } else {
+                out.push(flush(&cur));
+                start_line(&mut cur, &mut cur_w, &mut first);
+                last_space = None;
+            }
+        }
+        if c == ' ' {
+            last_space = Some(cur.len());
+        }
+        cur.push((c, style));
+        cur_w += cw;
+    }
+    if !cur.iter().all(|&(ch, _)| ch == ' ') {
+        out.push(flush(&cur));
+    }
+    if out.is_empty() {
+        out.push(Line::default());
+    }
+    out
+}
+
+/// Width of `cur` minus its continuation prefix, for recomputing
+/// `cur_w` after a break carries a remainder onto a new line.
+fn remainder_len(cur: &[(char, Style)], cont_indent: usize) -> usize {
+    cur.iter()
+        .skip(cont_indent)
+        .map(|&(c, _)| char_width(c))
+        .sum()
 }
 
 fn is_blank(s: &str) -> bool {
@@ -875,6 +1061,65 @@ mod tests {
         assert_eq!(render("![alt text](https://example.com/i.png)"), "alt text");
         assert_eq!(render("``code `x` ``"), "code `x` ");
         assert_eq!(render("\\*not em\\*"), "*not em*");
+    }
+
+    #[test]
+    fn wrapped_prose_breaks_at_width_and_loses_no_text() {
+        let input = "Sunlight looks white because it is made of all the colours of the rainbow mixed together, and when they reach your eyes at the same time your brain sees them as white light.";
+        for width in [80usize, 120] {
+            let lines = render_markdown_wrapped(input, &theme(), width);
+            assert!(lines.len() > 1, "must wrap at {width}: {lines:?}");
+            for l in &lines {
+                assert!(l.width() <= width, "line over {width}: [{l}]");
+            }
+            let joined = lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(joined, input, "wrapped text must not lose words");
+        }
+    }
+
+    #[test]
+    fn wrapped_prose_keeps_styled_spans_and_does_not_wrap_code_or_tables() {
+        let input = "The **sky looks blue** because air scatters blue light in every direction, and that scattered blue is what reaches our eyes from all over the sky above us.";
+        let lines = render_markdown_wrapped(input, &theme(), 40);
+        assert!(lines.len() > 1, "must wrap at 40");
+        let bold = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.as_ref() == "sky looks blue")
+            .expect("bold span must survive wrapping");
+        assert!(bold.style.add_modifier.contains(Modifier::BOLD));
+        // Fenced code: a long line stays one line, never wrapped.
+        let code = render_markdown_wrapped("```\nlet very_long_line = some_function_call(with_many_arguments, and_more_arguments, even_more);\n```", &theme(), 40);
+        assert_eq!(code.len(), 1, "code must not wrap: {code:?}");
+        assert!(code[0].width() > 40, "code line must stay long");
+        // Table: rows stay whole, never wrapped.
+        let table = render_markdown_wrapped("| Name | Cost |\n| --- | --- |\n| averylongname | 12345 |", &theme(), 20);
+        assert_eq!(table.len(), 2, "table must not wrap: {table:?}");
+        // List: continuation lines indent to the body column.
+        let list = render_markdown_wrapped("- a very long list item that keeps going and going until it must wrap onto another line", &theme(), 40);
+        assert!(list.len() > 1, "list must wrap");
+        assert!(
+            list[1].spans[0].content.starts_with("  "),
+            "continuation must indent: {:?}",
+            list[1]
+        );
+        // A single word longer than the width breaks mid-word, not lost.
+        let word = "a".repeat(100);
+        let lines = render_markdown_wrapped(&word, &theme(), 80);
+        assert_eq!(lines.len(), 2, "long word must split: {lines:?}");
+        assert_eq!(
+            lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<String>(),
+            word
+        );
     }
 
     #[test]
