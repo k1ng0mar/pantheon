@@ -380,6 +380,16 @@ pub fn record_spawned(records: &mut Vec<SubAgentRecord>, parent_run_id: &str, ag
     }
 }
 
+/// Live subagent count for the chrome (footer/tab): only Running
+/// records count. Callers render nothing at 0 — never a permanent
+/// empty indicator (base design layer 2).
+pub fn active_subagent_count(records: &[SubAgentRecord]) -> usize {
+    records
+        .iter()
+        .filter(|r| r.status == SubAgentStatus::Running)
+        .count()
+}
+
 /// Feed an `AgentCompleted` event: the newest live record for this
 /// agent under this parent flips to done.
 pub fn record_completed(records: &mut [SubAgentRecord], parent_run_id: &str, agent: &str) {

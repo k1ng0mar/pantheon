@@ -4658,6 +4658,17 @@ fn render_footer(f: &mut Frame, area: Rect, state: &TuiState) {
         spans.extend(footer_provider_spans(state, th, area.width as usize));
         spans
     };
+    // Layer 2: active subagent count, only when >0. It lives in the
+    // footer after the provider/mode line (or after the sweep while a
+    // turn is live) and vanishes entirely at 0 — no placeholder.
+    let mut left_spans = left_spans;
+    let agents = activity::active_subagent_count(&state.subagents);
+    if agents > 0 {
+        left_spans.push(Span::styled(
+            format!(" • {} agent{}", agents, if agents == 1 { "" } else { "s" }),
+            Style::default().fg(th.primary),
+        ));
+    }
     let left_w = Line::from(left_spans.clone()).width();
     let max = area.width as usize;
     let right = "? Commands";
@@ -12059,6 +12070,34 @@ mod picker_render_tests {
             !text.contains(" - "),
             "effort must be omitted when off, not shown as '-': {text}"
         );
+    }
+
+    #[test]
+    fn footer_subagent_count_appears_only_when_active() {
+        let s = test_state();
+        let lines = render_to_string(render_footer, &s);
+        let text = lines.join("\n");
+        assert!(!text.contains("agent"), "count must hide at 0: {text}");
+
+        let mut s = test_state();
+        s.subagents.push(activity::SubAgentRecord {
+            name: "researcher".to_string(),
+            status: activity::SubAgentStatus::Running,
+            parent_run_id: "r1".to_string(),
+            spawned_ms: 0,
+            finished_ms: None,
+        });
+        s.subagents.push(activity::SubAgentRecord {
+            name: "done-one".to_string(),
+            status: activity::SubAgentStatus::Done,
+            parent_run_id: "r1".to_string(),
+            spawned_ms: 0,
+            finished_ms: Some(1),
+        });
+        let lines = render_to_string(render_footer, &s);
+        let text = lines.join("\n");
+        assert!(text.contains("1 agent"), "only Running counts: {text}");
+        assert!(!text.contains("2 agent"), "Done must not count: {text}");
     }
 
     #[test]
