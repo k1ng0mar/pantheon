@@ -275,9 +275,13 @@ pub fn tab_key_action(code: KeyCode, mods: KeyModifiers) -> Option<TabAction> {
         }
         return None;
     }
-    if code == KeyCode::BackTab && mods == KeyModifiers::SHIFT {
-        return Some(TabAction::Prev);
-    }
+    // BackTab+SHIFT deliberately maps to NOTHING here: it is the
+    // permission-mode cycle key (handled by the main loop's BackTab
+    // arm). It used to map to previous-tab, which made the cycle
+    // unreachable on terminals that report Shift+Tab as BackTab+SHIFT
+    // (most of them). Previous-tab remains via Ctrl+Shift+Tab
+    // (Ctrl+BackTab, handled in the CONTROL branch above) and
+    // Ctrl+Tab cycling.
     if mods.is_empty() {
         // `[` steps left (previous), `]` steps right (next) - the same
         // direction as the image-preview cyclers.
@@ -442,6 +446,22 @@ mod tests {
     }
 
     #[test]
+    fn shift_tab_is_not_previous_tab() {
+        // Shift+Tab must reach the permission-mode cycle, not tab
+        // switching: most terminals report it as BackTab+SHIFT.
+        // Previous-tab stays on Ctrl+Shift+Tab (Ctrl+BackTab).
+        assert_eq!(
+            tab_key_action(KeyCode::BackTab, KeyModifiers::SHIFT),
+            None
+        );
+        assert_eq!(
+            tab_key_action(KeyCode::BackTab, KeyModifiers::CONTROL),
+            Some(TabAction::Prev)
+        );
+        assert_eq!(tab_key_action(KeyCode::BackTab, KeyModifiers::NONE), None);
+    }
+
+    #[test]
     fn active_tab_renders_brand_purple_inactive_unchanged() {
         use ratatui::{backend::TestBackend, Terminal};
         let mut list = TabList::default();
@@ -536,9 +556,21 @@ mod tests {
             tab_key_action(KeyCode::BackTab, KeyModifiers::CONTROL),
             Some(TabAction::Prev)
         );
-        // Shift+Tab falls back to Prev.
+        // Shift+Tab no longer falls back to Prev: it is the
+        // permission-mode cycle key (most terminals report Shift+Tab
+        // as BackTab+SHIFT, and the old mapping made the cycle
+        // unreachable). Previous-tab stays on Ctrl+Shift+Tab, i.e.
+        // Ctrl+BackTab above; Ctrl+Shift+Tab also carries SHIFT but
+        // the CONTROL branch wins.
         assert_eq!(
             tab_key_action(KeyCode::BackTab, KeyModifiers::SHIFT),
+            None
+        );
+        assert_eq!(
+            tab_key_action(
+                KeyCode::BackTab,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ),
             Some(TabAction::Prev)
         );
         assert_eq!(
