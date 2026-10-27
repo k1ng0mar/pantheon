@@ -430,9 +430,12 @@ pub fn activity_status(state: &TuiState) -> (&'static str, Style) {
 }
 
 /// Build the AGENT VIEW lines for a card `width` wide: the context
-/// meter, the activity status, the recent tool steps, and subagent
-/// sections. Pure function of state, so tests can assert the layout
-/// without a backend.
+/// meter, the activity status, timeline/checkpoint metadata, the
+/// selected-tool detail section, and subagent sections. It is
+/// deliberately NOT a second transcript: tool steps that merely repeat
+/// transcript cards were removed; the tool section shows detail for
+/// the one running/expanded tool only. Pure function of state, so
+/// tests can assert the layout without a backend.
 pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'static>> {
     let th = &state.theme;
     let dim = Style::default().fg(th.dim);
@@ -487,62 +490,105 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     lines.push(Line::from(Span::styled(status_text, status_style)));
     lines.push(Line::from(""));
 
-    // Main-task steps: tool calls since the last user message,
-    // chronological. Indented two spaces; no guide characters.
-    let mut steps: Vec<(String, Option<std::time::Duration>, StepStatus)> = Vec::new();
-    for block in state.blocks.iter().rev() {
-        match &block.kind {
-            BlockKind::UserMessage(_) => break,
-            BlockKind::ToolCall {
-                name,
-                args,
-                ok,
-                duration,
-                ..
-            } => {
-                let status = match ok {
-                    None => StepStatus::Running,
-                    Some(true) => StepStatus::Done,
-                    Some(false) => StepStatus::Failed,
-                };
-                let target = tool_target(args)
-                    .unwrap_or_else(|| args.lines().next().unwrap_or("").trim().to_string());
-                let display = tool_display_name(name);
-                let text = if target.is_empty() {
-                    display
-                } else {
-                    format!("{display} · {target}")
-                };
-                steps.push((text, *duration, status));
-            }
-            _ => {}
-        }
+    // Timeline: turn count + latest turn preview. This is metadata
+    // (how many turns, where the conversation is), not transcript
+    // lines: the transcript itself stays in the left column.
+    let turns = super::timeline::build_turns(&state.blocks);
+    lines.push(Line::from(Span::styled(
+        format!("Turns: {}", turns.len()),
+        dim,
+    )));
+    if let Some(last) = turns.last() {
+        lines.push(Line::from(Span::styled(
+            format!("  latest · {}", clip(&last.preview, inner.saturating_sub(12))),
+            body,
+        )));
     }
-    steps.reverse();
-    for (text, dur, status) in steps {
-        let (glyph, gstyle, tstyle) = match status {
-            StepStatus::Done => ("✓", Style::default().fg(th.success), dim),
-            StepStatus::Running => ("●", Style::default().fg(th.emphasis), body),
-            StepStatus::Failed => ("×", Style::default().fg(th.failure), dim),
-        };
-        let mut label = text;
-        if let Some(d) = dur {
-            // Clip the tool text first so the duration is never the part
-            // that gets cut.
-            label = clip(&label, inner.saturating_sub(4).saturating_sub(10))
-                .trim_end()
-                .to_string();
-            label.push_str(" · ");
-            label.push_str(&super::fmt_dur(d));
-        } else {
-            label = clip(&label, inner.saturating_sub(4));
+    if !state.checkpoint_names.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Checkpoints: {}",
+                state.checkpoint_names.join(", ")
+            ),
+            dim,
+        )));
+    }
+    lines.push(Line::from(""));
+
+    // Selected-tool details (the inspector's core): the running tool
+    // call if one is live, else the most recently expanded one.
+    // Detail lives here so the transcript card can stay one line;
+    // the section is omitted entirely when no tool is running or
+    // expanded, rather than showing an empty frame.
+    let selected = state.blocks.iter().rev().find_map(|b| match &b.kind {
+        BlockKind::ToolCall { ok: None, .. } => Some(b),
+        _ => None,
+    }).or_else(|| {
+        state.blocks.iter().rev().find(|b| {
+            matches!(&b.kind, BlockKind::ToolCall { expanded: true, .. })
+        })
+    });
+    if let Some(block) = selected {
+        if let BlockKind::ToolCall {
+            name,
+            args,
+            ok,
+            duration,
+            started,
+            error,
+            output,
+            ..
+        } = &block.kind
+        {
+            let (glyph, gstyle, word) = match ok {
+                None => ("●", Style::default().fg(th.emphasis), "running"),
+                Some(true) => ("✓", Style::default().fg(th.success), "done"),
+                Some(false) => ("×", Style::default().fg(th.failure), "failed"),
+            };
+            let timing = match duration {
+                Some(d) => super::fmt_dur(*d),
+                None => started
+                    .map(|t| super::fmt_dur(t.elapsed()))
+                    .unwrap_or_default(),
+            };
+            lines.push(Line::from(Span::styled("Tool", dim)));
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(glyph, gstyle),
+                Span::raw(" "),
+                Span::styled(
+                    format!(
+                        "{} · {word}{}",
+                        tool_display_name(name),
+                        if timing.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {timing}")
+                        }
+                    ),
+                    body,
+                ),
+            ]));
+            for arg in args.lines().take(4) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", clip(arg.trim(), inner.saturating_sub(4))),
+                    dim,
+                )));
+            }
+            if let Some(e) = error.as_deref().filter(|e| !e.is_empty()) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", clip(e.lines().next().unwrap_or(""), inner.saturating_sub(4))),
+                    Style::default().fg(th.failure),
+                )));
+            }
+            for out in output.iter().rev().take(4).collect::<Vec<_>>().into_iter().rev() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", clip(out.trim(), inner.saturating_sub(4))),
+                    dim,
+                )));
+            }
+            lines.push(Line::from(""));
         }
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(glyph, gstyle),
-            Span::raw(" "),
-            Span::styled(label, tstyle),
-        ]));
     }
 
     // Subagent sections, in spawn order. Only what's real: the agent
@@ -610,4 +656,104 @@ pub fn render_agent_card(f: &mut Frame, area: Rect, state: &TuiState) {
             .style(Style::default().bg(th.panel)),
         Rect::new(area.x, area.y, area.width, h as u16),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::TranscriptBlock;
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn state() -> TuiState {
+        TuiState::new("test-session".to_string(), "test-model".to_string(), 0)
+    }
+
+    fn tool_block(
+        name: &str,
+        args: &str,
+        ok: Option<bool>,
+        expanded: bool,
+        output: Vec<String>,
+    ) -> TranscriptBlock {
+        TranscriptBlock {
+            kind: BlockKind::ToolCall {
+                name: name.to_string(),
+                args: args.to_string(),
+                ok,
+                call_id: format!("c-{name}"),
+                started: Some(Instant::now()),
+                duration: None,
+                error: None,
+                tokens: None,
+                expanded,
+                output,
+            },
+        }
+    }
+
+    fn view_text(state: &TuiState) -> String {
+        build_agent_view_lines(state, 40)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn agent_view_shows_running_tool_detail_not_a_step_list() {
+        let mut s = state();
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::UserMessage("do things".to_string()),
+        });
+        s.blocks.push(tool_block(
+            "shell",
+            "{\"command\": \"cargo test\"}",
+            None,
+            false,
+            vec![],
+        ));
+        s.blocks.push(tool_block("read_file", "{\"path\": \"src/main.rs\"}", Some(true), false, vec![]));
+        let text = view_text(&s);
+        assert!(text.contains("Tool"), "tool section missing: {text}");
+        assert!(text.contains("Execute · running"), "got: {text}");
+        assert!(
+            !text.contains("Read file"),
+            "settled tools must not repeat as step lines: {text}"
+        );
+        assert!(text.contains("Turns: 1"), "got: {text}");
+    }
+
+    #[test]
+    fn agent_view_shows_expanded_tool_when_nothing_running() {
+        let mut s = state();
+        s.blocks.push(tool_block(
+            "shell",
+            "{\"command\": \"ls\"}",
+            Some(true),
+            true,
+            vec!["a.txt".to_string()],
+        ));
+        let text = view_text(&s);
+        assert!(text.contains("Execute · done"), "got: {text}");
+        assert!(text.contains("a.txt"), "expanded tool output missing: {text}");
+    }
+
+    #[test]
+    fn agent_view_shows_checkpoints_and_latest_turn() {
+        let mut s = state();
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::UserMessage("first task here".to_string()),
+        });
+        s.checkpoint_names.push("before-refactor".to_string());
+        let text = view_text(&s);
+        assert!(text.contains("Turns: 1"), "got: {text}");
+        assert!(text.contains("first task here"), "got: {text}");
+        assert!(text.contains("Checkpoints: before-refactor"), "got: {text}");
+        assert_eq!(Duration::from_secs(0), Duration::ZERO, "sanity");
+    }
 }
