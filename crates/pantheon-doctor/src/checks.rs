@@ -148,15 +148,32 @@ fn check_config_file(ctx: &DoctorCtx) -> Vec<Finding> {
             format!("parsed {}", path.display()),
         )
         .with_details(format!("path: {}", path.display()))],
-        Err(e) => vec![Finding::failed(
-            "config.file",
-            Subsystem::Config,
-            Severity::Critical,
-            format!("config does not parse: {}", e.cause),
-            "nothing can run: the agent, the gateway, and the dashboard all need a parseable config",
-            "run `pantheon setup`, or fix the TOML by hand",
-        )
-        .with_details(format!("path: {}\nerror: {}", path.display(), e.cause))],
+        Err(e) => {
+            // A missing file is not a broken file: it used to report as
+            // Critical "does not parse", sending users to fix TOML that
+            // does not exist. Missing = not configured yet (setup);
+            // present-but-unparseable stays Critical.
+            if !path.exists() {
+                return vec![Finding::failed(
+                    "config.file",
+                    Subsystem::Config,
+                    Severity::Warning,
+                    format!("no config at {}: not configured yet", path.display()),
+                    "nothing is configured yet - this is a fresh install, not a broken one",
+                    "run `pantheon setup`",
+                )
+                .with_details(format!("path: {}", path.display()))];
+            }
+            vec![Finding::failed(
+                "config.file",
+                Subsystem::Config,
+                Severity::Critical,
+                format!("config does not parse: {}", e.cause),
+                "nothing can run: the agent, the gateway, and the dashboard all need a parseable config",
+                "run `pantheon setup`, or fix the TOML by hand",
+            )
+            .with_details(format!("path: {}\nerror: {}", path.display(), e.cause))]
+        }
     }
 }
 
@@ -174,17 +191,40 @@ fn check_config_schema(ctx: &DoctorCtx) -> Vec<Finding> {
         }
     };
     let problems = cfg.validate();
+    // Inner-typo lint (see `unknown_inner_keys`): top-level unknowns
+    // already warn at load, but a typo *inside* a section
+    // (`model.providr`) was dropped silently everywhere. Doctor is the
+    // surface that explains a hand edit that "did nothing".
+    let mut findings: Vec<Finding> = Vec::new();
+    if let Ok(text) = std::fs::read_to_string(Config::path(&ctx.data_dir)) {
+        for key in pantheon_api::config::unknown_inner_keys(&text) {
+            findings.push(
+                Finding::failed(
+                    "config.schema",
+                    Subsystem::Config,
+                    Severity::Warning,
+                    format!("unknown config key '{key}' is ignored; check for a typo"),
+                    "the misspelled key has no effect - the feature it was meant to configure keeps its old behavior",
+                    "fix the spelling in config.toml, or delete the key",
+                )
+                .with_details(key),
+            );
+        }
+    }
     if problems.is_empty() {
-        return vec![Finding::passed(
-            "config.schema",
-            Subsystem::Config,
-            "validation clean",
-        )];
+        if findings.is_empty() {
+            findings.push(Finding::passed(
+                "config.schema",
+                Subsystem::Config,
+                "validation clean",
+            ));
+        }
+        return findings;
     }
     // A config problem is an error, not a warning: `doctor` is the
     // preflight a user runs before their first session, so "no [model]
     // section" has to be actionable, not advisory.
-    problems
+    let mut out: Vec<Finding> = problems
         .into_iter()
         .map(|p| {
             Finding::failed(
@@ -197,13 +237,18 @@ fn check_config_schema(ctx: &DoctorCtx) -> Vec<Finding> {
             )
             .with_details(p)
         })
-        .collect()
+        .collect();
+    out.extend(findings);
+    out
 }
 
 /// Deprecated-section nudge for the unified nightly pass. `[nightly]`
 /// is the single authoritative section; legacy `[reflect]` /
 /// `[consolidation]` tables are honored field-by-field only when
-/// `[nightly]` is absent, and ignored entirely when it is present.
+/// `[nightly]` is absent. When `[nightly]` exists, its knobs win -
+/// except enablement: a `[nightly]` table that makes no enable
+/// decision (no flag, no pin, no env) defers to the legacy flags
+/// instead of switching a previously enabled pass off.
 fn check_deprecated_sections(ctx: &DoctorCtx) -> Vec<Finding> {
     let cfg = match load_config(ctx) {
         Ok(c) => c,
@@ -315,12 +360,13 @@ fn check_agents(ctx: &DoctorCtx) -> Vec<Finding> {
 /// pipeline and repair loop - runs iff this is true. Mirrors the TUI's
 /// entry-point rule so doctor and the launcher cannot disagree.
 fn nightly_pass_enabled(cfg: Option<&Config>) -> bool {
+    let legacy = cfg.is_some_and(|c| {
+        c.reflect.as_ref().is_some_and(|s| s.enabled)
+            || c.consolidation.as_ref().is_some_and(|s| s.enabled)
+    });
     match cfg.and_then(|c| c.nightly.as_ref()) {
-        Some(n) => pantheon_api::config::nightly_enabled(n),
-        None => cfg.is_some_and(|c| {
-            c.reflect.as_ref().is_some_and(|s| s.enabled)
-                || c.consolidation.as_ref().is_some_and(|s| s.enabled)
-        }),
+        Some(n) => pantheon_api::config::nightly_enabled_with_legacy(n, legacy),
+        None => legacy,
     }
 }
 
@@ -338,7 +384,25 @@ fn check_nightly_state(ctx: &DoctorCtx) -> Vec<Finding> {
     let on = nightly_pass_enabled(Some(&cfg));
     match cfg.nightly.as_ref() {
         Some(n) => {
-            let reason = pantheon_api::config::nightly_enabled_reason(n);
+            // A [nightly] table that decides nothing defers to legacy,
+            // so its stock reason ("off (no flag, no model pin)") would
+            // contradict an enabled verdict - name the legacy source.
+            let legacy_on = cfg.reflect.as_ref().is_some_and(|s| s.enabled)
+                || cfg.consolidation.as_ref().is_some_and(|s| s.enabled);
+            let env_pin = std::env::var("PANTHEON_NIGHTLY_PROVIDER")
+                .is_ok_and(|v| !v.trim().is_empty())
+                || std::env::var("PANTHEON_NIGHTLY_MODEL")
+                    .is_ok_and(|v| !v.trim().is_empty());
+            let reason = if on
+                && n.enabled.is_none()
+                && !pantheon_api::config::nightly_model_pin_present(n)
+                && !env_pin
+                && legacy_on
+            {
+                "on via legacy [reflect]/[consolidation] enabled ([nightly] makes no enable decision)"
+            } else {
+                pantheon_api::config::nightly_enabled_reason(n)
+            };
             let pin = pantheon_api::config::nightly_model_pin_present(n);
             if on {
                 vec![Finding::passed(
@@ -384,19 +448,58 @@ fn check_nightly_state(ctx: &DoctorCtx) -> Vec<Finding> {
     }
 }
 
-fn check_gateway_channels(_ctx: &DoctorCtx) -> Vec<Finding> {
+fn check_gateway_channels(ctx: &DoctorCtx) -> Vec<Finding> {
     // No token means the surface is simply off, which is a legitimate
     // configuration - but a user who expects the gateway to answer
     // should see that it is idle, so this stays a warning, never
     // silent and never a failure. Only presence is reported, never the
     // token value.
+    //
+    // Sources mirror the daemon's resolution (env > gateway.env), plus
+    // the configured channels themselves: the old check read only
+    // process-env tokens, so a wizard-configured install (tokens in
+    // gateway.env, channels in `[gateway.channels.*]`) reported idle
+    // while the gateway itself ran fine.
     let mut live = Vec::new();
-    if std::env::var("PANTHEON_DISCORD_TOKEN").is_ok_and(|t| !t.is_empty()) {
-        live.push("discord");
+    if std::env::var("PANTHEON_DISCORD_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
+        live.push("discord (env)".to_string());
     }
-    if std::env::var("PANTHEON_TELEGRAM_BOT_TOKEN").is_ok_and(|t| !t.is_empty()) {
-        live.push("telegram");
+    if std::env::var("PANTHEON_TELEGRAM_BOT_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
+        live.push("telegram (env)".to_string());
     }
+    if let Ok(cfg) = load_config(ctx) {
+        if let Some(gw) = cfg.gateway.as_ref() {
+            for (name, ch) in &gw.channels {
+                let platform = ch
+                    .resolved_platform(name)
+                    .unwrap_or_else(|| name.clone());
+                let has_token = match ch.token_secret.as_deref() {
+                    Some(secret_name) => pantheon_secrets::gateway_token(
+                        &ctx.data_dir,
+                        secret_name,
+                    )
+                    .is_some(),
+                    // No token_secret: the platform's standard token,
+                    // resolved the daemon's way (env > gateway.env).
+                    None => {
+                        let std_name = match platform.as_str() {
+                            "telegram" => pantheon_secrets::TELEGRAM_TOKEN_NAME,
+                            "discord" => pantheon_secrets::DISCORD_TOKEN_NAME,
+                            _ => "",
+                        };
+                        !std_name.is_empty()
+                            && pantheon_secrets::gateway_token(&ctx.data_dir, std_name)
+                                .is_some()
+                    }
+                };
+                if has_token {
+                    live.push(format!("{name} ({platform})"));
+                }
+            }
+        }
+    }
+    live.sort();
+    live.dedup();
     if live.is_empty() {
         vec![Finding::failed(
             "runtime.gateway_channels",
@@ -482,10 +585,47 @@ fn check_model_key(ctx: &DoctorCtx) -> Vec<Finding> {
                 .as_ref()
                 .map(|m| m.provider.as_str())
                 .unwrap_or("unknown");
-            vec![Finding::passed(
+            // The old code passed every keyless provider with "no API
+            // key required" - including a keyless `openai`, which then
+            // failed at request time. Only `local` is keyless by
+            // construction. For anything else, mirror the runtime's
+            // fallback (`catalog::key_for`): the catalog's key env, else
+            // `PANTHEON_KEY_<PROVIDER>`; an unset fallback is a warning,
+            // not a silent pass.
+            if provider == "local" {
+                return vec![Finding::passed(
+                    "providers.model_key",
+                    Subsystem::Providers,
+                    "no API key required for local".to_string(),
+                )];
+            }
+            let fallback_env = pantheon_providers::catalog::provider(provider)
+                .map(|p| {
+                    if p.key_env.is_empty() {
+                        format!("PANTHEON_KEY_{}", provider.to_uppercase())
+                    } else {
+                        p.key_env.clone()
+                    }
+                })
+                .unwrap_or_else(|| format!("PANTHEON_KEY_{}", provider.to_uppercase()));
+            if std::env::var(&fallback_env)
+                .is_ok_and(|v| !v.trim().is_empty())
+            {
+                return vec![Finding::passed(
+                    "providers.model_key",
+                    Subsystem::Providers,
+                    format!("{fallback_env} is set (provider default key env)"),
+                )];
+            }
+            vec![Finding::failed(
                 "providers.model_key",
                 Subsystem::Providers,
-                format!("no API key required for {provider}"),
+                Severity::Warning,
+                format!(
+                    "no API key configured for {provider}: neither [model].api_key_env nor {fallback_env} is set"
+                ),
+                "model requests will fail authentication",
+                format!("set {fallback_env}=<key> (or run `pantheon setup` to store it)"),
             )]
         }
     }
@@ -555,6 +695,17 @@ fn check_provider_reachable(ctx: &DoctorCtx) -> Vec<Finding> {
 
 fn check_ledger(ctx: &DoctorCtx) -> Vec<Finding> {
     let path = ctx.data_dir.join("ledger.db");
+    // Doctor claims to be read-only, but opening a SQLite file creates
+    // it when absent: a `GET /api/health` on a fresh install used to
+    // materialize ledger.db. An absent ledger is not a failure - it
+    // just means no runs yet - so report that without opening.
+    if !path.exists() {
+        return vec![Finding::not_applicable(
+            "memory.ledger",
+            Subsystem::Memory,
+            "no ledger yet (no runs recorded)",
+        )];
+    }
     match pantheon_storage::Ledger::open(&path) {
         Ok(ledger) => {
             let seq = ledger.max_seq().unwrap_or(-1);
@@ -579,6 +730,14 @@ fn check_ledger(ctx: &DoctorCtx) -> Vec<Finding> {
 
 fn check_memory_store(ctx: &DoctorCtx) -> Vec<Finding> {
     let path = ctx.data_dir.join("memory.db");
+    // Same read-only rule as the ledger: opening creates the file.
+    if !path.exists() {
+        return vec![Finding::not_applicable(
+            "memory.store",
+            Subsystem::Memory,
+            "no memory store yet (no memories recorded)",
+        )];
+    }
     match pantheon_memory::MemoryStore::open(&path) {
         Ok(_) => vec![
             Finding::passed("memory.store", Subsystem::Memory, "memory store opens")
@@ -706,29 +865,34 @@ fn check_computer_use(ctx: &DoctorCtx) -> Vec<Finding> {
         )];
     }
     let section = cfg.computer_use.clone().unwrap_or_default();
-    let binary = section.binary.clone();
-    let found = match binary.as_deref() {
-        Some(b) => Path::new(b).is_file().then(|| b.to_string()),
-        None => std::env::var_os("PATH").and_then(|paths| {
-            std::env::split_paths(&paths).find_map(|dir| {
-                let p = dir.join("cua-driver");
-                p.is_file().then(|| p.to_string_lossy().into_owned())
-            })
-        }),
-    };
+    // Resolve exactly like the dashboard does (`cua_driver_spec`): the
+    // configured `[computer_use].driver` ("tapp" resolves to `tapp-mcp`,
+    // not `cua-driver`) and an explicit `binary` path. The old check
+    // always probed `cua-driver` on PATH and used `Path::is_file` on a
+    // bare name, so a configured tapp driver always reported missing.
+    let spec = pantheon_runtime::computer::cua_driver_spec(
+        section.driver.as_deref(),
+        section.binary.as_deref(),
+    );
+    let found = spec.and_then(|s| s.command);
+    let driver_label = section.driver.as_deref().unwrap_or("cua-driver");
     match found {
         Some(p) => vec![Finding::passed(
             "tools.computer_use",
             Subsystem::Tools,
-            format!("cua-driver at {p}"),
+            format!("{driver_label} driver at {p}"),
         )],
         None => vec![Finding::failed(
             "tools.computer_use",
             Subsystem::Tools,
             Severity::Warning,
-            "cua-driver not found on PATH",
+            format!("{driver_label} driver not found"),
             "the ComputerUse tool group is enabled but its driver is missing; computer-use calls fail",
-            "install: /bin/bash -c \"$(curl -fsSL https://cua.ai/driver/install.sh)\"",
+            if driver_label.eq_ignore_ascii_case("tapp") {
+                "install tapp-mcp and put it on PATH, or set [computer_use].binary to its path"
+            } else {
+                "install cua-driver (see the setup docs), or set [computer_use].binary to its path"
+            },
         )],
     }
 }
@@ -833,12 +997,16 @@ fn extra_skill_roots() -> Vec<PathBuf> {
 fn check_skills(ctx: &DoctorCtx) -> Vec<Finding> {
     // A broken SKILL.md is dropped silently by discovery, so count what
     // parsed and say so. Surface the roots, not every skill body (that
-    // is what `skills list` is for). Discovery idempotently seeds
-    // bundled skills first - the same seeding every session performs -
-    // and never overwrites a user-edited copy.
+    // is what `skills list` is for). Doctor uses the no-seed scan:
+    // the regular scan materializes bundled skills into the data dir,
+    // which is a write from a check that claims to be read-only (and
+    // from `GET /api/health`).
     let project_root = std::env::current_dir().unwrap_or_else(|_| ctx.data_dir.clone());
-    let scan =
-        pantheon_exec::skills::scan_skills_ext(&ctx.data_dir, &project_root, &extra_skill_roots());
+    let scan = pantheon_exec::skills::scan_skills_ext_noseed(
+        &ctx.data_dir,
+        &project_root,
+        &extra_skill_roots(),
+    );
     if scan.rejected.is_empty() {
         return vec![Finding::passed(
             "tools.skills",

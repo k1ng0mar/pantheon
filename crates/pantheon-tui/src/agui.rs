@@ -197,7 +197,16 @@ pub fn cmd_serve(args: &[String]) {
         Some(v) => v
             .parse()
             .unwrap_or_else(|_| fatal_bad_flag("--port", &v, "a port number")),
-        None => server.as_ref().map(|s| s.port).unwrap_or(18789),
+        None => crate::config::server_port(server.as_ref()),
+    };
+    // An explicit `--port 0` is the same undiscoverable ephemeral bind
+    // as a configured 0: resolve it to the default, loudly, rather
+    // than serving on a port nothing can address.
+    let port = if port == 0 {
+        eprintln!("serve: port 0 (auto) resolved to 18789 so GenUI URLs and remotes can address the server");
+        18789
+    } else {
+        port
     };
     // B-14: `--host` is canonical; `--bind` (the dashboard's historic
     // name) is accepted as an alias on both commands.

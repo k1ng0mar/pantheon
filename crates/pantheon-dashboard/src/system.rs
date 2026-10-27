@@ -19,10 +19,15 @@ use std::path::Path;
 /// on. Replaces the old raw `nightly.enabled` TOML bool read, which
 /// cannot express the `Option<bool>` flag or the pin-implied default.
 fn nightly_enabled_resolved(data_dir: &Path) -> bool {
-    pantheon_api::config::Config::load(data_dir)
-        .ok()
-        .and_then(|c| c.nightly)
-        .is_some_and(|s| pantheon_api::config::nightly_enabled(&s))
+    let Ok(cfg) = pantheon_api::config::Config::load(data_dir) else {
+        return false;
+    };
+    let legacy = cfg.reflect.as_ref().is_some_and(|s| s.enabled)
+        || cfg.consolidation.as_ref().is_some_and(|s| s.enabled);
+    match cfg.nightly.as_ref() {
+        Some(n) => pantheon_api::config::nightly_enabled_with_legacy(n, legacy),
+        None => legacy,
+    }
 }
 
 /// Next scheduled nightly run in epoch ms, if any: the earliest next

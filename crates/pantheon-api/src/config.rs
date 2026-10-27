@@ -732,6 +732,25 @@ pub fn nightly_enabled(section: &NightlySection) -> bool {
     }
 }
 
+/// Like [`nightly_enabled`], but a `[nightly]` table that makes no
+/// enable decision at all - no explicit flag, no model pin, no
+/// `PANTHEON_NIGHTLY_*` env - defers to `legacy_enabled` (the legacy
+/// `[reflect]` / `[consolidation]` flags). A partial `[nightly]` table
+/// holding only `cron` used to switch a previously enabled legacy pass
+/// off: the mere presence of the table was read as "the new section
+/// decides", even though it decided nothing. An explicit flag or pin
+/// still wins over legacy, always.
+pub fn nightly_enabled_with_legacy(
+    section: &NightlySection,
+    legacy_enabled: bool,
+) -> bool {
+    match section.enabled {
+        Some(v) => v,
+        None if nightly_model_pin_present(section) || nightly_env_pin_present() => true,
+        None => legacy_enabled,
+    }
+}
+
 /// Human-readable reason for a [`nightly_enabled`] verdict: the explicit
 /// flag state, or the pin-implied default. Used by `/nightly status`,
 /// `pantheon doctor`, and the dashboard so the user sees *why* the loop
@@ -1879,6 +1898,18 @@ impl DelegationSection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MemorySection {
     /// Backend name from the catalog: native | http | ...
+    ///
+    /// Display-only: the backend actually used comes from
+    /// `<data_dir>/memory-backend.toml` (see
+    /// `pantheon_memory::load_selection`), not from this field. This
+    /// section is shown by `/settings` and written by `setup`, which
+    /// syncs both files - which is why the wizard works while
+    /// hand-editing `[memory] backend` here changes nothing. To switch
+    /// backends, use the memory backend selection (`memory backend`
+    /// / setup), not a hand edit of this section. Making `cfg.memory`
+    /// effective (syncing it into `memory-backend.toml` on load) needs
+    /// a design decision about which file wins on conflict, so it is
+    /// documented + warned here, not silently implemented.
     pub backend: String,
     #[serde(default)]
     pub options: std::collections::HashMap<String, String>,
@@ -1886,7 +1917,10 @@ pub struct MemorySection {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ServerSection {
-    /// AG-UI HTTP port (0 = auto).
+    /// AG-UI HTTP port. 0 ("auto") resolves to the 18789 default in
+    /// `serve` and in remotes: a literal ephemeral bind was
+    /// undiscoverable (nothing reported the bound port, remotes
+    /// refused port 0, GenUI URLs baked in `:0`).
     #[serde(default)]
     pub port: u16,
     #[serde(default)]
