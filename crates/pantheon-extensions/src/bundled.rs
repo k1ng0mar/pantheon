@@ -1,5 +1,8 @@
-//! Bundled plugin catalog: the plugins Pantheon ships. All disabled by
-//! default; enabling one is always an explicit, recorded act.
+//! Bundled plugin catalog: the plugins Pantheon ships. Most are disabled
+//! by default; a plugin whose shipped manifest says `enabled: true`
+//! (noisegate, planning-with-files) ships on unless the operator's
+//! config entry says otherwise - that is the manifest default, and it
+//! applies whether or not a `config.toml` file exists yet.
 //!
 //! ## Plugins vs MCPs: the trust distinction
 //!
@@ -61,11 +64,12 @@
 //! `enable_plugin` tool. What wins, and why:
 //!
 //! - For a **bundled** plugin, the config entry wins over the plugin
-//!   manifest's own `enabled` flag. The manifest is install metadata that
-//!   ships with the plugin; the config is the operator's declared intent,
-//!   and it is the one value every surface (TUI, dashboard, app, agent)
-//!   can read and write. A bundled plugin whose manifest says enabled
-//!   but whose config entry is absent or false does not load.
+//!   manifest's own `enabled` flag when present. The manifest is install
+//!   metadata that ships with the plugin; the config is the operator's
+//!   declared intent, and it is the one value every surface (TUI,
+//!   dashboard, app, agent) can read and write. A bundled plugin whose
+//!   manifest says enabled and whose config entry is absent loads (the
+//!   manifest default); one whose config entry says false does not.
 //! - For a **third-party** plugin, the approval store
 //!   (`<scope>/.approvals.json`) remains the gate: unapproved third-party
 //!   code never loads no matter what any flag says. Its manifest
@@ -249,13 +253,17 @@ pub fn is_enabled_with_default(config: &Config, name: &str, manifest_default: bo
 /// Load the config for enablement decisions without
 /// [`Config::load_or_report`]'s process-exit behavior: a library must
 /// never `exit(2)` the host because the config has a typo. A missing
-/// config means every bundled plugin is disabled (fail closed); a config
-/// that exists but does not parse is reported on stderr and also fails
-/// closed - a typo must never silently flip a plugin on.
+/// config is an EMPTY config, so manifest defaults apply (a plugin that
+/// ships on, like noisegate or planning-with-files, is on; the rest are
+/// off) - the old "missing file means disabled" rule made default-on
+/// depend on whether any `config.toml` happened to exist, which is not
+/// a rule an operator can reason about. A config that exists but does
+/// not parse is reported on stderr and fails closed - a typo must never
+/// silently flip a plugin on.
 pub fn load_config(data_dir: &Path) -> Option<Config> {
     match Config::load(data_dir) {
         Ok(c) => Some(c),
-        Err(e) if e.code == "CONFIG_OPEN" => None,
+        Err(e) if e.code == "CONFIG_OPEN" => Some(Config::default()),
         Err(e) => {
             eprintln!("pantheon: bundled plugins disabled: {}", e.cause);
             eprintln!("pantheon: fix: {}", e.remediation);

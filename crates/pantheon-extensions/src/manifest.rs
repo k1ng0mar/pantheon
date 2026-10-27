@@ -42,6 +42,14 @@ pub struct PluginManifest {
     /// (false for every bundled plugin except noisegate).
     #[serde(default)]
     pub enabled: bool,
+    /// True when `plugin.yaml` explicitly sets `enabled` (set by
+    /// [`PluginManifest::load`], not by serde: an absent key and an
+    /// explicit `false` must differ, because a third-party plugin whose
+    /// manifest explicitly says `enabled: false` must not fire even
+    /// when approved, while one that merely omits the key keeps the
+    /// old approved-means-loaded behaviour).
+    #[serde(skip, default)]
+    pub enabled_set: bool,
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, serde_yaml::Value>,
 }
@@ -50,7 +58,16 @@ impl PluginManifest {
     pub fn load(path: &Path) -> Result<Self, PantheonError> {
         let text =
             std::fs::read_to_string(path).map_err(|e| xerr("EXT_MANIFEST_READ", e.to_string()))?;
-        serde_yaml::from_str(&text).map_err(|e| xerr("EXT_MANIFEST_PARSE", e.to_string()))
+        let mut m: Self =
+            serde_yaml::from_str(&text).map_err(|e| xerr("EXT_MANIFEST_PARSE", e.to_string()))?;
+        // Presence, not just value: see `enabled_set`.
+        m.enabled_set = serde_yaml::from_str::<serde_yaml::Value>(&text)
+            .ok()
+            .and_then(|v| v.as_mapping().cloned())
+            .is_some_and(|map| {
+                map.contains_key(serde_yaml::Value::String("enabled".to_string()))
+            });
+        Ok(m)
     }
     /// Union of both hook spellings, parsed. Unknown names are reported, not fatal.
     pub fn hook_list(&self) -> (Vec<Hook>, Vec<String>) {
