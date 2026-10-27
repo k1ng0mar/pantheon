@@ -3665,12 +3665,12 @@ fn render_body(state: &mut TuiState, f: &mut Frame, area: Rect) {
     }
 }
 
-/// Left column: transcript above, the bordered 3-row input block
-/// below (top border, prompt row, bottom border). The reflect card
-/// owns the input row while it is open.
+/// Left column: transcript above, the unified 4-row composer box
+/// below (top border, prompt row, provider row, bottom border). The
+/// reflect card owns the input row while it is open.
 fn render_left(state: &mut TuiState, f: &mut Frame, area: Rect) {
     let [transcript_area, input_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(area);
+        Layout::vertical([Constraint::Min(1), Constraint::Length(4)]).areas(area);
     render_transcript(f, transcript_area, state);
     if state.pending_reflect.is_some() {
         render_reflect_card(f, input_area, state);
@@ -4435,9 +4435,9 @@ fn composer_line_spans(
 }
 
 /// Composer: a rounded box with a dim border and a blue
-/// left accent, a prompt row, and a `provider · model · effort` row
-/// (variant in blue, effort in orange). Exactly 4 rows tall; too-small
-/// areas fall back to a single bare prompt row.
+/// left accent, a prompt row, and the provider row inside the box
+/// (`Provider: … · <mode>`, `? Commands` right). Exactly 4 rows tall;
+/// too-small areas fall back to a single bare prompt row.
 fn render_composer_box(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
     let dim = Style::default().fg(th.dim);
@@ -4467,8 +4467,8 @@ fn render_composer_box(f: &mut Frame, area: Rect, state: &TuiState) {
     ));
     rows.push(bordered_row(
         Span::styled("│", accent),
-        composer_variant_spans(state, th, inner - 1),
-        inner,
+        composer_provider_row(state, th, inner - 1),
+        inner - 1,
         Span::styled("│", dim),
     ));
     rows.push(Line::from(vec![
@@ -4591,12 +4591,13 @@ fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> 
     spans
 }
 
-/// Footer provider segment for the base design: `Provider: <provider>:
+/// Provider row inside the unified composer box: `Provider: <provider>:
 /// <model> • <effort> • <Build|Plan>`, with the effort element omitted
 /// when off. Reuses `composer_variant_spans` (profile · provider ·
-/// model · effort) and appends the mode word; the "Provider: " prefix
-/// is the base footer's shape, not part of the composer row.
-fn footer_provider_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> Vec<Span<'static>> {
+/// model · effort) and appends the mode word. This row lives INSIDE
+/// the composer box, below the input line — it is not a separate
+/// footer. There is no footer row in the main view at all.
+fn composer_provider_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(
         "Provider: ",
         Style::default().fg(th.dim),
@@ -4610,14 +4611,82 @@ fn footer_provider_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> V
     spans
 }
 
-/// Input block at the foot of the left column, base design: a
-/// full-width bordered box (top border, prompt row, bottom border).
-/// The provider line no longer lives here — it moved to the footer
-/// (`render_footer` / `footer_provider_spans`). The prompt row reuses
-/// `bordered_row`'s language from the splash `render_composer_box`,
-/// not a second border implementation; the box is full-width here,
-/// not centred at 64 cols. Below 3 rows (cramped terminal) it falls
-/// back to the prompt line alone so the draft is never clipped away.
+/// Full provider row for the unified composer box, padded to exactly
+/// `budget` cells: the provider line left, `? Commands` right.
+/// Layered elements ride on the provider line in its own language and
+/// only when active: the active subagent count (only when >0) and the
+/// `ctx` element (amber, only at >=78% of the context window). Below
+/// 78% the row is byte-identical to the base shape. Vim mode, when
+/// on, leads the row in dim text. When the left side does not fit,
+/// the right hint is shed first and the left side clips — the row
+/// never wraps and never grows the box.
+fn composer_provider_row(
+    state: &TuiState,
+    th: &theme::Theme,
+    budget: usize,
+) -> Vec<Span<'static>> {
+    const CTX_NEARLY_FULL_PCT: f64 = 78.0;
+    let mut left: Vec<Span<'static>> = Vec::new();
+    if let Some(mode) = state.vim.status_label() {
+        left.push(Span::styled(
+            format!("{mode} · "),
+            Style::default().fg(th.dim),
+        ));
+    }
+    left.extend(composer_provider_spans(state, th, budget));
+    let agents = activity::active_subagent_count(&state.subagents);
+    if agents > 0 {
+        left.push(Span::styled(
+            format!(" • {} agent{}", agents, if agents == 1 { "" } else { "s" }),
+            Style::default().fg(th.primary),
+        ));
+    }
+    if state.tokens_max > 0 {
+        let live = state.tokens_used + state.turn_estimate;
+        let pct = 100.0 * live as f64 / state.tokens_max as f64;
+        if pct >= CTX_NEARLY_FULL_PCT {
+            left.push(Span::styled(
+                format!(" • ctx {pct:.0}%"),
+                Style::default().fg(th.warning),
+            ));
+        }
+    }
+    let left_w = Line::from(left.clone()).width();
+    let right = "? Commands";
+    if left_w + 3 + right.chars().count() > budget {
+        // Shed the hint; clip the left side to the budget.
+        let mut out: Vec<Span<'static>> = Vec::new();
+        let mut used = 0usize;
+        for sp in left {
+            if used >= budget {
+                break;
+            }
+            let take = budget - used;
+            let text: String = sp.content.chars().take(take).collect();
+            used += text.chars().count();
+            out.push(Span::styled(text, sp.style));
+        }
+        if used < budget {
+            out.push(Span::raw(" ".repeat(budget - used)));
+        }
+        out
+    } else {
+        let gap = budget.saturating_sub(left_w + right.chars().count());
+        left.push(Span::raw(" ".repeat(gap)));
+        left.push(Span::styled(right, Style::default().fg(th.dim)));
+        left
+    }
+}
+
+/// Input block at the foot of the left column, base design: ONE
+/// unified bordered box, exactly 4 rows (top border, prompt row,
+/// provider row, bottom border). The provider line lives INSIDE the
+/// box, below the input — there is no separate footer row beneath
+/// it. The prompt row reuses `bordered_row`'s language from the
+/// splash `render_composer_box`, not a second border implementation;
+/// the box is full-width here, not centred at 64 cols. Below 4 rows
+/// (cramped terminal) it falls back to the prompt line alone so the
+/// draft is never clipped away.
 fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
     if area.height == 0 || area.width == 0 {
@@ -4628,7 +4697,7 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
     if !state.input.is_empty() && state.is_inputting {
         prompt.push(Span::styled("█", Style::default().fg(th.primary)));
     }
-    if area.height < 3 || w < 8 {
+    if area.height < 4 || w < 8 {
         f.render_widget(
             Paragraph::new(Line::from(prompt)),
             Rect::new(area.x, area.y, area.width, 1),
@@ -4650,6 +4719,12 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
             inner - 1,
             Span::styled("│", dim),
         ),
+        bordered_row(
+            Span::styled("│", accent),
+            composer_provider_row(state, th, inner - 1),
+            inner - 1,
+            Span::styled("│", dim),
+        ),
         Line::from(vec![
             Span::styled("╰", dim),
             Span::styled("─".repeat(inner), dim),
@@ -4658,7 +4733,7 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
     ];
     f.render_widget(
         Paragraph::new(rows),
-        Rect::new(area.x, area.y, area.width, 3),
+        Rect::new(area.x, area.y, area.width, 4),
     );
 }
 
@@ -4792,7 +4867,7 @@ fn render_footer(f: &mut Frame, area: Rect, state: &TuiState) {
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ));
         }
-        spans.extend(footer_provider_spans(state, th, area.width as usize));
+        spans.extend(composer_provider_spans(state, th, area.width as usize));
         spans
     };
     // Layer 2: active subagent count, only when >0. It lives in the
@@ -12402,22 +12477,34 @@ mod picker_render_tests {
     }
 
     #[test]
-    fn base_footer_carries_provider_and_commands_hint() {
+    fn unified_composer_carries_provider_row_inside_box() {
         let s = test_state();
-        let lines = render_to_string(render_footer, &s);
+        let lines = render_to_string(render_input_block, &s);
         let text = lines.join("\n");
-        assert!(text.contains("Provider:"), "footer missing provider: {text}");
-        assert!(text.contains("? Commands"), "footer missing hint: {text}");
+        assert!(text.contains("Provider:"), "composer missing provider: {text}");
+        assert!(text.contains("? Commands"), "composer missing hint: {text}");
         assert!(
             !text.contains(" - "),
             "effort must be omitted when off, not shown as '-': {text}"
         );
+        // The provider row sits INSIDE the box: between the top and
+        // bottom borders, not on a separate footer line below it.
+        let top = lines.iter().position(|l| l.contains('╭')).expect("top border");
+        let provider = lines
+            .iter()
+            .position(|l| l.contains("Provider:"))
+            .expect("provider row");
+        let bottom = lines.iter().position(|l| l.contains('╰')).expect("bottom border");
+        assert!(
+            top < provider && provider < bottom,
+            "provider row must be inside the composer box: {text}"
+        );
     }
 
     #[test]
-    fn footer_subagent_count_appears_only_when_active() {
+    fn composer_subagent_count_appears_only_when_active() {
         let s = test_state();
-        let lines = render_to_string(render_footer, &s);
+        let lines = render_to_string(render_input_block, &s);
         let text = lines.join("\n");
         assert!(!text.contains("agent"), "count must hide at 0: {text}");
 
@@ -12436,7 +12523,7 @@ mod picker_render_tests {
             spawned_ms: 0,
             finished_ms: Some(1),
         });
-        let lines = render_to_string(render_footer, &s);
+        let lines = render_to_string(render_input_block, &s);
         let text = lines.join("\n");
         assert!(text.contains("1 agent"), "only Running counts: {text}");
         assert!(!text.contains("2 agent"), "Done must not count: {text}");
@@ -12570,25 +12657,25 @@ mod picker_render_tests {
     }
 
     #[test]
-    fn footer_ctx_appears_only_at_nearly_full() {
+    fn composer_ctx_appears_only_at_nearly_full() {
         let mut s = test_state();
         s.tokens_max = 1000;
         s.tokens_used = 500;
-        let text = render_to_string(render_footer, &s).join("\n");
+        let text = render_to_string(render_input_block, &s).join("\n");
         assert!(!text.contains("ctx"), "ctx must hide below 78%: {text}");
         s.tokens_used = 800;
-        let text = render_to_string(render_footer, &s).join("\n");
+        let text = render_to_string(render_input_block, &s).join("\n");
         assert!(text.contains("ctx 80%"), "ctx must appear at >=78%: {text}");
     }
 
     #[test]
-    fn footer_mode_word_follows_plan_mode() {
+    fn composer_mode_word_follows_plan_mode() {
         let mut s = test_state();
         s.plan_mode = false;
-        let text = render_to_string(render_footer, &s).join("\n");
+        let text = render_to_string(render_input_block, &s).join("\n");
         assert!(text.contains("Build"), "Build mode word missing: {text}");
         s.plan_mode = true;
-        let text = render_to_string(render_footer, &s).join("\n");
+        let text = render_to_string(render_input_block, &s).join("\n");
         assert!(text.contains("Plan"), "Plan mode word missing: {text}");
     }
 
@@ -12598,6 +12685,11 @@ mod picker_render_tests {
         let lines = render_to_string(render_input_block, &s);
         let text = lines.join("\n");
         assert!(text.contains('╭') && text.contains('╰'), "composer not bordered: {text}");
+        // Exactly 4 rows: top border, prompt, provider row, bottom
+        // border. A separate footer row would be a fifth.
+        let top = lines.iter().position(|l| l.contains('╭')).expect("top border");
+        let bottom = lines.iter().position(|l| l.contains('╰')).expect("bottom border");
+        assert_eq!(bottom - top, 3, "composer must be exactly 4 rows: {text}");
     }
 
     #[test]
