@@ -1786,6 +1786,76 @@ impl Default for SwarmSection {
     }
 }
 
+/// One curated delegation route: a name the model picks, a one-line
+/// description it reads, and the agent profile the child runs as.
+/// Routes are an allowlist: only profiles named here can be picked
+/// via a route. A direct `delegate(agent = ...)` call is unaffected
+/// by this list - it keeps resolving profiles the old way.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DelegationRoute {
+    /// What the model picks. Must be unique within the section.
+    #[serde(default)]
+    pub name: String,
+    /// One line the model reads when choosing. Never a credential,
+    /// endpoint, or model id - names and descriptions only.
+    #[serde(default)]
+    pub description: String,
+    /// The `[agents.<name>]` profile the routed child runs as.
+    #[serde(default)]
+    pub profile: String,
+}
+
+/// `[delegation]`: curated routes for the `delegate` tool, plus an
+/// optional default. Absent section = no routes: `delegate` works
+/// exactly as before, and a `route` argument is refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DelegationSection {
+    /// The routes, in the order the model sees them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<DelegationRoute>,
+    /// Route used when a `delegate` call names neither an agent nor
+    /// a route. Must name one of `routes`; an unknown default is
+    /// refused at the call, like an unknown route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
+impl DelegationSection {
+    /// The route names, in config order. Pure, for error messages
+    /// and for the tool description the model reads.
+    pub fn route_names(&self) -> Vec<&str> {
+        self.routes.iter().map(|r| r.name.as_str()).collect()
+    }
+
+    /// Resolve a route name, fail-closed: unknown names and names
+    /// declared more than once are both refused, never silently
+    /// replaced with another profile. The error names the valid
+    /// routes so the caller can retry with one of them.
+    pub fn resolve(&self, name: &str) -> Result<&DelegationRoute, String> {
+        let matches: Vec<&DelegationRoute> =
+            self.routes.iter().filter(|r| r.name == name).collect();
+        match matches.as_slice() {
+            [route] => Ok(route),
+            [] => Err(format!(
+                "unknown delegation route {name:?}; valid routes: {}",
+                self.route_names().join(", ")
+            )),
+            _ => Err(format!(
+                "delegation route {name:?} is declared more than once; fix [delegation] so each route name is unique"
+            )),
+        }
+    }
+
+    /// The default route, if one is configured and resolves.
+    /// An unknown default is an error at the call, not a fallback.
+    pub fn default_route(&self) -> Result<Option<&DelegationRoute>, String> {
+        match self.default.as_deref() {
+            None => Ok(None),
+            Some(name) => self.resolve(name).map(Some),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MemorySection {
     /// Backend name from the catalog: native | http | ...
@@ -2036,6 +2106,11 @@ pub struct Config {
     /// defaults independently.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swarm: Option<SwarmSection>,
+    /// `[delegation]`: curated delegation routes for the `delegate`
+    /// tool (see [`DelegationSection`]). Absent = no routes: `delegate`
+    /// works exactly as before, and a `route` argument is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<DelegationSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compression: Option<CompressionSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2226,6 +2301,7 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "repair",
     "verify",
     "swarm",
+    "delegation",
     "compression",
     "title_gen",
     "reflect",
@@ -3026,6 +3102,86 @@ mod config_budget_delegation_tests {
 }
 
 #[cfg(test)]
+mod delegation_section_tests {
+    use super::*;
+
+    fn section() -> DelegationSection {
+        DelegationSection {
+            routes: vec![
+                DelegationRoute {
+                    name: "fast".into(),
+                    description: "Cheap and quick: lookups, summaries, simple edits.".into(),
+                    profile: "coder".into(),
+                },
+                DelegationRoute {
+                    name: "deep".into(),
+                    description: "Slow and careful: hard debugging and design work.".into(),
+                    profile: "researcher".into(),
+                },
+            ],
+            default: Some("fast".into()),
+        }
+    }
+
+    #[test]
+    fn routes_parse_from_toml_and_round_trip() {
+        let cfg: Config = toml::from_str(
+            "[delegation]\ndefault = \"fast\"\n\
+             [[delegation.routes]]\nname = \"fast\"\ndescription = \"Cheap and quick.\"\nprofile = \"coder\"\n\
+             [[delegation.routes]]\nname = \"deep\"\ndescription = \"Slow and careful.\"\nprofile = \"researcher\"\n",
+        )
+        .expect("config parses");
+        let section = cfg.delegation.as_ref().expect("[delegation] present");
+        assert_eq!(section.routes.len(), 2);
+        assert_eq!(section.resolve("deep").expect("deep resolves").profile, "researcher");
+        assert_eq!(
+            section.default_route().expect("default resolves").map(|r| r.name.as_str()),
+            Some("fast")
+        );
+        let back = toml::to_string(&cfg).expect("config serializes");
+        assert!(back.contains("[delegation]"));
+        assert!(back.contains("profile = \"coder\""));
+    }
+
+    #[test]
+    fn unknown_route_names_the_valid_routes() {
+        let err = section().resolve("local").expect_err("local is not configured");
+        assert!(err.contains("unknown delegation route"));
+        assert!(err.contains("fast"));
+        assert!(err.contains("deep"));
+    }
+
+    #[test]
+    fn duplicate_route_name_is_refused_not_silently_picked() {
+        let mut section = section();
+        section.routes.push(DelegationRoute {
+            name: "fast".into(),
+            description: "A second fast.".into(),
+            profile: "other".into(),
+        });
+        let err = section.resolve("fast").expect_err("duplicate fast");
+        assert!(err.contains("more than once"));
+    }
+
+    #[test]
+    fn unknown_default_is_an_error_and_no_default_is_none() {
+        let mut section = section();
+        section.default = Some("missing".into());
+        assert!(section.default_route().is_err());
+        section.default = None;
+        assert!(section.default_route().expect("no default").is_none());
+    }
+
+    #[test]
+    fn absent_section_serializes_to_nothing() {
+        let cfg = Config::default();
+        assert!(cfg.delegation.is_none());
+        let back = toml::to_string(&cfg).expect("config serializes");
+        assert!(!back.contains("delegation"));
+    }
+}
+
+#[cfg(test)]
 mod gateway_multi_agent_tests {
     use super::*;
 
@@ -3386,6 +3542,7 @@ mod fix_pass4_leaf1_tests {
             repair: Some(RepairSection::default()),
             verify: Some(AuxSection::default()),
             swarm: Some(SwarmSection::default()),
+            delegation: Some(DelegationSection::default()),
             compression: Some(CompressionSection::default()),
             title_gen: Some(TitleGenSection::default()),
             reflect: Some(ReflectSection::default()),

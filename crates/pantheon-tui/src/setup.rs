@@ -404,6 +404,10 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
         // Swarm caps (workstream: swarm backend): not configured by the
         // wizard; absent keeps the documented defaults (4/2/4).
         swarm: None,
+        // Delegation routes: not configured by the wizard; absent
+        // means no routes, so routed delegate calls are refused
+        // and direct delegate calls work as before.
+        delegation: None,
         goal: None,
         video: None,
         plugins: Default::default(),
