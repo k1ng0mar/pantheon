@@ -10535,3 +10535,145 @@ mod consecutive_failure_warning_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod child_context_retention_tests {
+    use super::*;
+
+    fn entry(seq: i64, event: Event) -> pantheon_storage::LedgerEntry {
+        pantheon_storage::LedgerEntry {
+            id: seq,
+            run_id: "parent-run".to_string(),
+            seq,
+            ts_ms: 0,
+            event,
+        }
+    }
+
+    fn msg_event(message: Message) -> Event {
+        Event::ToolMessage {
+            run_id: "parent-run".to_string(),
+            message,
+        }
+    }
+
+    #[test]
+    fn parent_context_survives_child_completion_on_rebuild() {
+        // Parent transcript: user request, assistant delegate call,
+        // delegate tool result, then a later user turn. Rebuild must
+        // return every parent row in order, with the child result intact
+        // and nothing before it dropped.
+        let entries = vec![
+            entry(
+                1,
+                Event::AssistantMessage {
+                    run_id: "parent-run".to_string(),
+                    message: Message::user("parent work: fix the login bug"),
+                },
+            ),
+            entry(
+                2,
+                Event::AssistantMessage {
+                    run_id: "parent-run".to_string(),
+                    message: Message::assistant_tool_calls(vec![ToolCallRef {
+                        id: "call_delegate_1".to_string(),
+                        name: "delegate".to_string(),
+                        arguments: "{\"agent\": \"coder\", \"task\": \"fix it\"}".to_string(),
+                    }]),
+                },
+            ),
+            entry(3, msg_event(Message::tool(
+                "call_delegate_1",
+                "child result: login fixed, tests pass",
+            ))),
+            entry(
+                4,
+                Event::AssistantMessage {
+                    run_id: "parent-run".to_string(),
+                    message: Message::user("continue with the next item"),
+                },
+            ),
+        ];
+        let rebuilt = rebuild_messages(entries);
+        assert_eq!(rebuilt.len(), 4, "no parent row may be dropped");
+        assert_eq!(rebuilt[0].content, "parent work: fix the login bug");
+        assert_eq!(rebuilt[2].content, "child result: login fixed, tests pass");
+        assert_eq!(rebuilt[2].tool_call_id.as_deref(), Some("call_delegate_1"));
+        assert_eq!(rebuilt[3].content, "continue with the next item");
+    }
+
+    #[test]
+    fn child_transcript_rows_are_not_imported_into_parent_context() {
+        // Spawn/completion/progress rows are the durable parent->child
+        // link for transcript clients, not parent context. Only the
+        // delegate tool result may enter the rebuilt parent transcript;
+        // the child's own lifecycle rows must not become messages.
+        let entries = vec![
+            entry(
+                1,
+                Event::AssistantMessage {
+                    run_id: "parent-run".to_string(),
+                    message: Message::user("delegate this"),
+                },
+            ),
+            entry(
+                2,
+                Event::AgentSpawned {
+                    run_id: "parent-run".to_string(),
+                    agent: "coder".to_string(),
+                    child_run_id: Some("child-run".to_string()),
+                    call_id: Some("call_delegate_1".to_string()),
+                },
+            ),
+            entry(3, msg_event(Message::tool(
+                "call_delegate_1",
+                "child result: done",
+            ))),
+            entry(
+                4,
+                Event::AgentCompleted {
+                    run_id: "parent-run".to_string(),
+                    agent: "coder".to_string(),
+                    child_run_id: Some("child-run".to_string()),
+                    call_id: Some("call_delegate_1".to_string()),
+                },
+            ),
+            entry(
+                5,
+                Event::RunProgress {
+                    run_id: "parent-run".to_string(),
+                    detail: "delegation to coder finished (17 chars)".to_string(),
+                },
+            ),
+        ];
+        let rebuilt = rebuild_messages(entries);
+        assert_eq!(rebuilt.len(), 2, "only parent messages + child result");
+        assert!(rebuilt.iter().all(|m| !m.content.contains("delegation to coder finished")));
+        assert_eq!(rebuilt[1].content, "child result: done");
+    }
+
+    #[test]
+    fn genuine_new_parent_content_still_reaches_rebuilt_context() {
+        // Retention is not stale-context pinning: a new parent user
+        // message after child completion appears in the rebuild.
+        let entries = vec![
+            entry(1, msg_event(Message::tool(
+                "call_delegate_1",
+                "child result: done",
+            ))),
+            entry(
+                2,
+                Event::AssistantMessage {
+                    run_id: "parent-run".to_string(),
+                    message: Message::user("new parent instruction after completion"),
+                },
+            ),
+        ];
+        let rebuilt = rebuild_messages(entries);
+        assert_eq!(rebuilt.len(), 2);
+        assert_eq!(
+            rebuilt[1].content,
+            "new parent instruction after completion"
+        );
+    }
+}
