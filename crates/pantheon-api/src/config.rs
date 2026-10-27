@@ -986,7 +986,8 @@ pub struct GoalSection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ComputerUseSection {
     /// Driver id: `cua-driver` (trycua/cua, MIT, the default) or `tapp`
-    /// (tapp-mcp). Unknown ids warn and fall back to `cua-driver`.
+    /// (tapp-mcp). An unknown id leaves computer use unregistered with
+    /// a diagnostic recorded on the session (`/status` reads it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver: Option<String>,
     /// Path to the driver binary. Absent = resolved from PATH.

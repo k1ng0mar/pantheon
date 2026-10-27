@@ -154,7 +154,7 @@ pub struct WebsearchToolConfig {
     pub enabled: bool,
     /// Provider name: a `pantheon-web` registry id (`tavily`, `exa`,
     /// `marginalia`, ...). An unknown id leaves `web_search` unregistered
-    /// with a warning.
+    /// with a diagnostic recorded on the session (`/status` reads it).
     pub provider: String,
     /// Secret name holding the provider API key, resolved via the
     /// secrets broker. Never hardcoded. `None` = the provider's own
