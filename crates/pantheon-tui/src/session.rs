@@ -9623,6 +9623,7 @@ fn persist_model_choice(dd: &std::path::Path, provider: &str, model: &str) -> Re
                 api_key_env: None,
                 fallbacks: Vec::new(),
                 reasoning: None,
+                timeout_ms: None,
             });
         }
     }

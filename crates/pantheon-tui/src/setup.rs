@@ -344,6 +344,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             },
             fallbacks,
             reasoning: None,
+            timeout_ms: None,
         }),
         judge: None,
         embeddings: None,

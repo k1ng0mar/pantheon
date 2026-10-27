@@ -997,6 +997,7 @@ pub fn save_choice(data_dir: &std::path::Path, choice: &ModelChoice) -> Result<(
                 // A model pick does not touch reasoning: changing providers
                 // must not silently reset an effort level the user chose.
                 reasoning: cfg.model.as_ref().and_then(|m| m.reasoning.clone()),
+                timeout_ms: None,
             });
         }
         Target::Auxiliary(kind) => pin_aux_slot(&mut cfg, kind.as_str(), choice)?,

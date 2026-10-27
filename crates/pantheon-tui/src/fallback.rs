@@ -55,6 +55,7 @@ pub fn cmd_fallback(args: &[String]) {
             api_key_env: None,
             fallbacks: Vec::new(),
             reasoning: None,
+            timeout_ms: None,
         });
     }
     // Named `section` not `model`: the `add`/`insert` arms bind a `model`
