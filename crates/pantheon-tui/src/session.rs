@@ -265,9 +265,18 @@ pub enum BlockKind {
         expanded: bool,
         output: Vec<String>,
     },
+    /// One delegation group: every agent spawned by the same parent
+    /// tool call (`call_id`) shares this block, and this block's
+    /// `agents` list is the ONLY place its rows render from. That is
+    /// what makes duplication impossible: the renderer never reads
+    /// the global `SubAgentRecord` registry under a Swarm block, so
+    /// an agent cannot repeat once per spawn. Spawns with no call id
+    /// (legacy rows, spawn paths with no tool call in hand) get one
+    /// single-agent block each, as before — still block-local, so
+    /// still no duplication.
     Swarm {
-        agents: u32,
-        task: String,
+        call_id: Option<String>,
+        agents: Vec<SwarmAgent>,
     },
     Status(String),
     /// Live todo checklist card, rendered inline in the transcript with
@@ -400,6 +409,89 @@ struct PendingProviderFailure {
 #[derive(Debug, Clone)]
 pub struct TranscriptBlock {
     pub kind: BlockKind,
+}
+
+/// One agent inside a [`BlockKind::Swarm`] block: the agent name plus
+/// its lifecycle, owned by the block itself. Status reuses
+/// [`activity::SubAgentStatus`] so the transcript and the sidebar
+/// timeline cannot drift into two status vocabularies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwarmAgent {
+    pub name: String,
+    pub status: activity::SubAgentStatus,
+}
+
+/// Feed an `AgentSpawned` into the transcript's Swarm blocks.
+/// Pure over the block list, so tests pin the grouping without a
+/// live event feed:
+/// - a spawn with a call id joins the block carrying that call id
+///   (created if absent), appending its agent once — the engine +
+///   runtime double-announce collapses here, as it does in the
+///   sidebar registry;
+/// - a spawn with no call id pushes a new single-agent block, as
+///   before (no grouping key exists to join on).
+pub fn swarm_spawn(blocks: &mut Vec<TranscriptBlock>, call_id: Option<String>, agent: &str) {
+    let name = agent.trim();
+    if name.is_empty() {
+        return;
+    }
+    if let Some(cid) = &call_id {
+        if let Some(block) = blocks.iter_mut().rev().find(|b| {
+            matches!(&b.kind, BlockKind::Swarm { call_id: c, .. } if c.as_deref() == Some(cid.as_str()))
+        }) {
+            if let BlockKind::Swarm { agents, .. } = &mut block.kind {
+                if !agents.iter().any(|a| a.name == name) {
+                    agents.push(SwarmAgent {
+                        name: name.to_string(),
+                        status: activity::SubAgentStatus::Running,
+                    });
+                }
+            }
+            return;
+        }
+    }
+    blocks.push(TranscriptBlock {
+        kind: BlockKind::Swarm {
+            call_id,
+            agents: vec![SwarmAgent {
+                name: name.to_string(),
+                status: activity::SubAgentStatus::Running,
+            }],
+        },
+    });
+}
+
+/// Feed an `AgentCompleted` into the transcript's Swarm blocks: flip
+/// the matching agent to Done. A completion with a call id flips
+/// only inside that call's block; without one it flips the most
+/// recent still-running row of that name. Unknown agents are a
+/// no-op, never a new row.
+pub fn swarm_complete(blocks: &mut Vec<TranscriptBlock>, call_id: Option<&str>, agent: &str) {
+    let name = agent.trim();
+    if name.is_empty() {
+        return;
+    }
+    let target = blocks.iter_mut().rev().find(|b| match &b.kind {
+        BlockKind::Swarm { call_id: c, agents } => {
+            (call_id.is_some() && c.as_deref() == call_id
+                || call_id.is_none()
+                    && agents
+                        .iter()
+                        .any(|a| a.name == name && a.status == activity::SubAgentStatus::Running))
+        }
+        _ => false,
+    });
+    if let Some(block) = target {
+        if let BlockKind::Swarm { agents, .. } = &mut block.kind {
+            if let Some(a) = agents
+                .iter_mut()
+                .rev()
+                .find(|a| a.name == name && a.status == activity::SubAgentStatus::Running)
+            {
+                a.status = activity::SubAgentStatus::Done;
+            }
+        }
+    }
 }
 
 /// One selectable row in the /models browser: a provider/model pair plus
@@ -2236,17 +2328,18 @@ impl TuiState {
             RuntimeErrorEvent::RunProgress { detail, .. } => {
                 self.status_line = detail.clone();
             }
-            RuntimeErrorEvent::AgentSpawned { agent, run_id, .. } => {
+            RuntimeErrorEvent::AgentSpawned {
+                agent,
+                run_id,
+                call_id,
+                ..
+            } => {
                 // Feed the sidebar activity timeline (dedupe collapses
                 // the engine + runtime double-announce), then the
-                // transcript card as before.
+                // transcript's Swarm block: same call id joins one
+                // block, so agent rows render once (see swarm_spawn).
                 activity::record_spawned(&mut self.subagents, run_id, agent);
-                self.blocks.push(TranscriptBlock {
-                    kind: BlockKind::Swarm {
-                        agents: 1,
-                        task: agent.clone(),
-                    },
-                });
+                swarm_spawn(&mut self.blocks, call_id.clone(), agent);
             }
             // The parent engine announces the delegation before the
             // runtime records it; the timeline dedupes against the
@@ -2254,8 +2347,14 @@ impl TuiState {
             RuntimeErrorEvent::AgentMessage { agent, run_id } => {
                 activity::record_spawned(&mut self.subagents, run_id, agent);
             }
-            RuntimeErrorEvent::AgentCompleted { agent, run_id, .. } => {
+            RuntimeErrorEvent::AgentCompleted {
+                agent,
+                run_id,
+                call_id,
+                ..
+            } => {
                 activity::record_completed(&mut self.subagents, run_id, agent);
+                swarm_complete(&mut self.blocks, call_id.as_deref(), agent);
             }
             // Title generation (aux or /name) lands as a durable event;
             // the header follows it with no polling.
@@ -5632,24 +5731,39 @@ fn render_block(
             };
             lines.extend(card.lines(th));
         }
-        BlockKind::Swarm { agents, task } => {
-            // Layer 7, count-only (deliberate): per-agent rows fed by
-            // SubAgentRecord are NOT clean here — every AgentSpawned
-            // pushes its own Swarm block (agents: 1, task: agent name),
-            // so rendering all records under every block would repeat
-            // each agent once per spawn. Per-agent rows need the Swarm
-            // block to carry its own agent list (a block-shape change),
-            // not a render tweak; the live count already lives in the
-            // footer (layer 2) and names in /team. Grammar fixed.
+        BlockKind::Swarm { agents, .. } => {
+            // Per-agent rows render ONLY from this block's own agent
+            // list (see swarm_spawn): never from the global registry,
+            // so a row cannot repeat across blocks. Header carries the
+            // count; each row carries name + lifecycle.
+            let n = agents.len();
             lines.push(Line::from(Span::styled(
                 format!(
-                    "{} Swarm · {agents} agent{}",
+                    "{} Swarm · {n} agent{}",
                     icon::AGENT,
-                    if *agents == 1 { "" } else { "s" }
+                    if n == 1 { "" } else { "s" }
                 ),
                 Style::default().fg(th.primary),
             )));
-            lines.push(Line::from(format!("  {task}")));
+            for agent in agents {
+                let (glyph, gstyle, word) = match agent.status {
+                    activity::SubAgentStatus::Running => {
+                        ("●", Style::default().fg(th.emphasis), "running")
+                    }
+                    activity::SubAgentStatus::Done => {
+                        ("✓", Style::default().fg(th.success), "done")
+                    }
+                };
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(glyph, gstyle),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{} · {word}", agent.name),
+                        Style::default().fg(th.dim),
+                    ),
+                ]));
+            }
         }
         BlockKind::Status(text) => {
             lines.push(Line::from(Span::styled(
@@ -9595,7 +9709,18 @@ fn export_transcript(blocks: &[TranscriptBlock], session_id: &str, format: &str)
                 }
                 ("tool", s)
             }
-            BlockKind::Swarm { agents, task } => ("swarm", format!("×{agents} {task}")),
+            BlockKind::Swarm { agents, .. } => (
+                "swarm",
+                format!(
+                    "×{} {}",
+                    agents.len(),
+                    agents
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ),
             BlockKind::BgResult {
                 task_id,
                 label,
@@ -12158,8 +12283,7 @@ mod picker_render_tests {
         assert!(!text.contains("2 agent"), "Done must not count: {text}");
     }
 
-    #[test]
-    fn swarm_block_renders_count_and_task() {
+    fn swarm_text(block: &TranscriptBlock) -> String {
         let th = theme::Theme::pantheon();
         let mut img = crate::richtext::ImagePaintState::new();
         let mut ctx = BlockRenderCtx {
@@ -12168,15 +12292,9 @@ mod picker_render_tests {
             term_width: 84,
             live_tokens: 0,
         };
-        let block = TranscriptBlock {
-            kind: BlockKind::Swarm {
-                agents: 1,
-                task: "researcher".to_string(),
-            },
-        };
         let mut lines: Vec<Line> = Vec::new();
-        render_block(&mut lines, &block, false, false, &mut ctx);
-        let text = lines
+        render_block(&mut lines, block, false, false, &mut ctx);
+        lines
             .iter()
             .map(|l| {
                 l.spans
@@ -12185,9 +12303,65 @@ mod picker_render_tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
-            .join("\n");
+            .join("\n")
+    }
+
+    #[test]
+    fn swarm_block_renders_count_and_agent_rows() {
+        let mut blocks = Vec::new();
+        swarm_spawn(&mut blocks, Some("call-1".to_string()), "researcher");
+        swarm_spawn(&mut blocks, Some("call-1".to_string()), "coder");
+        assert_eq!(blocks.len(), 1, "same call id must share one block");
+        let text = swarm_text(&blocks[0]);
+        assert!(text.contains("Swarm · 2 agents"), "got: {text}");
+        assert!(text.contains("researcher · running"), "got: {text}");
+        assert!(text.contains("coder · running"), "got: {text}");
+        assert_eq!(
+            text.matches("researcher").count(),
+            1,
+            "each agent row must render exactly once: {text}"
+        );
+    }
+
+    #[test]
+    fn swarm_double_announce_does_not_duplicate_rows() {
+        let mut blocks = Vec::new();
+        swarm_spawn(&mut blocks, Some("call-1".to_string()), "researcher");
+        swarm_spawn(&mut blocks, Some("call-1".to_string()), "researcher");
+        assert_eq!(blocks.len(), 1);
+        let text = swarm_text(&blocks[0]);
         assert!(text.contains("Swarm · 1 agent"), "got: {text}");
-        assert!(text.contains("researcher"), "got: {text}");
+        assert_eq!(text.matches("researcher").count(), 1, "got: {text}");
+    }
+
+    #[test]
+    fn swarm_different_call_ids_and_no_call_id_stay_separate() {
+        let mut blocks = Vec::new();
+        swarm_spawn(&mut blocks, Some("call-1".to_string()), "researcher");
+        swarm_spawn(&mut blocks, Some("call-2".to_string()), "coder");
+        swarm_spawn(&mut blocks, None, "explorer");
+        swarm_spawn(&mut blocks, None, "explorer");
+        assert_eq!(blocks.len(), 4, "distinct groups must not merge");
+        let all: Vec<String> = blocks.iter().map(swarm_text).collect();
+        assert_eq!(
+            all.join("\n").matches("explorer").count(),
+            2,
+            "no-call-id spawns keep one row each, never merged: {all:?}"
+        );
+    }
+
+    #[test]
+    fn swarm_completion_flips_only_its_own_row() {
+        let mut blocks = Vec::new();
+        swarm_spawn(&mut blocks, Some("call-1".to_string()), "researcher");
+        swarm_spawn(&mut blocks, Some("call-1".to_string()), "coder");
+        swarm_complete(&mut blocks, Some("call-1"), "researcher");
+        let text = swarm_text(&blocks[0]);
+        assert!(text.contains("researcher · done"), "got: {text}");
+        assert!(text.contains("coder · running"), "got: {text}");
+        swarm_complete(&mut blocks, Some("call-1"), "unknown-agent");
+        let text = swarm_text(&blocks[0]);
+        assert!(!text.contains("unknown-agent"), "completion must not invent rows");
     }
 
     #[test]
