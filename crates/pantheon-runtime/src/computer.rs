@@ -59,7 +59,9 @@ pub fn find_tapp_mcp() -> Option<PathBuf> {
 /// `cua-driver`. `binary` pins an explicit path (from
 /// `[computer_use].binary`); otherwise the driver's binary is resolved
 /// from PATH. Returns `None` when the driver id is unknown or no binary
-/// could be resolved.
+/// could be resolved. Never warns: absence of an optional driver is
+/// silent, and a misconfigured one is diagnosed by the registry
+/// builder that calls this, not printed here.
 pub fn computer_driver_spec(driver: Option<&str>, binary: Option<&str>) -> Option<McpServerSpec> {
     let id = driver.unwrap_or(CUA_DRIVER_ID);
 
@@ -72,7 +74,6 @@ pub fn computer_driver_spec(driver: Option<&str>, binary: Option<&str>) -> Optio
             // tapp-mcp speaks MCP over stdio directly, no subcommand.
             ("tapp-mcp", Vec::new(), TAPP_DRIVER_ID)
         } else {
-            log_warn!("computer-use: unknown driver '{id}' (supported: 'cua-driver', 'tapp')");
             return None;
         };
 
@@ -80,10 +81,6 @@ pub fn computer_driver_spec(driver: Option<&str>, binary: Option<&str>) -> Optio
         Some(b) => {
             let p = PathBuf::from(b);
             if !p.is_file() {
-                log_warn!(
-                    "computer-use: configured binary '{}' not found",
-                    p.display()
-                );
                 return None;
             }
             p

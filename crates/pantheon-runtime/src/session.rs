@@ -2387,6 +2387,17 @@ pub struct Session {
     /// registry build (per turn and `/tools reload`), so it always agrees
     /// with the registered tools.
     skills_cache: Mutex<Vec<pantheon_exec::skills::Skill>>,
+    /// Registration diagnostics from the last
+    /// [`Session::build_tool_registry`] call: failures of *configured*
+    /// capabilities (a registration error, an unknown provider id, a
+    /// skipped MCP server). Registration never writes to stderr: stderr
+    /// is the TUI's own screen, so a warning printed there lands in the
+    /// main view unprompted. Diagnostics live here instead and surface
+    /// only on demand (`/status`). Absence of an *optional* capability
+    /// is not a diagnostic at all: a missing web-search API key or a
+    /// driver binary that is simply not installed registers nothing,
+    /// silently.
+    tool_diagnostics: Mutex<Vec<String>>,
     /// Speech-to-text config (`[stt]` in config.toml). Feeds the video
     /// fallback's audio leg: when set, the video's soundtrack is
     /// transcribed and the transcript joins the frame synthesis. Set once
@@ -2572,6 +2583,7 @@ impl Session {
             browser_run_id: std::sync::Arc::new(Mutex::new(String::new())),
             shell_run_id: std::sync::Arc::new(Mutex::new(String::new())),
             skills_cache: Mutex::new(Vec::new()),
+            tool_diagnostics: Mutex::new(Vec::new()),
             stt_section: Mutex::new(None),
             budget_section: Mutex::new(None),
             delegation_section: Mutex::new(None),
@@ -3205,6 +3217,33 @@ impl Session {
     pub fn set_computer_config(&self, cfg: ComputerToolConfig) {
         if let Ok(mut c) = self.computer_config.lock() {
             *c = cfg;
+        }
+    }
+
+    /// Diagnostics from the last registry build (see the
+    /// `tool_diagnostics` field): failures of configured capabilities,
+    /// never the absence of an optional one. Read by `/status`; never
+    /// printed unprompted.
+    pub fn tool_diagnostics(&self) -> Vec<String> {
+        self.tool_diagnostics
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    /// Append per-turn registration diagnostics (plugin spawn failures),
+    /// deduplicated: a failing plugin must not flood the list once per
+    /// turn. The next registry build replaces the whole list.
+    fn record_turn_diagnostics(&self, new: Vec<String>) {
+        if new.is_empty() {
+            return;
+        }
+        if let Ok(mut g) = self.tool_diagnostics.lock() {
+            for d in new {
+                if !g.contains(&d) {
+                    g.push(d);
+                }
+            }
         }
     }
 
@@ -4050,6 +4089,13 @@ impl Session {
     /// they agree with the registry by construction.
     pub fn build_tool_registry(&self) -> (ToolRegistry, ToolCounts) {
         let mut reg = ToolRegistry::new();
+        // Registration diagnostics for this build (see the
+        // `tool_diagnostics` field): failures of configured capabilities
+        // are collected here and stored at the end, never printed.
+        // Printing to stderr during a TUI session would land in the
+        // main view; absence of an optional capability is not even
+        // collected (see the web_search and computer_use blocks).
+        let mut tool_diags: Vec<String> = Vec::new();
         let safewrite_dir = self.supervisor.data_dir().join("safewrite");
         // Tool-group enablement, snapshotted once per build so the whole
         // registry agrees on one answer. A disabled group never
@@ -4409,7 +4455,7 @@ impl Session {
                 ) {
                     Ok(()) => reg.names().len() - before,
                     Err(e) => {
-                        log_warn!("browser tools registration failed: {e}");
+                        tool_diags.push(format!("browser tools registration failed: {e}"));
                         0
                     }
                 }
@@ -4433,9 +4479,13 @@ impl Session {
                 // Provider-agnostic: the `[websearch] provider` id goes
                 // through the pantheon-web registry, which builds the
                 // backend and enforces its auth requirement. A keyed
-                // provider with no resolvable key is a skip with a
-                // message, never a dead tool in the model's list; a
-                // keyless provider registers without one.
+                // provider with no resolvable key is an unconfigured
+                // optional tool, not an error: it is skipped silently,
+                // with no warning anywhere — a missing web-search key
+                // is not something the session needs to be told about.
+                // A keyless provider registers without one; any other
+                // build failure (e.g. an unknown provider id) is a
+                // misconfiguration and is recorded as a diagnostic.
                 let secret_name = wcfg.api_key_secret.clone().or_else(|| {
                     pantheon_web::websearch::default_key_env(&wcfg.provider).map(str::to_string)
                 });
@@ -4443,27 +4493,34 @@ impl Session {
                     .as_deref()
                     .and_then(|name| self.secrets.resolve(name).ok().flatten())
                     .map(|v| v.expose().to_owned());
-                match pantheon_web::websearch::build_provider(
-                    &wcfg.provider,
-                    api_key,
-                    wcfg.base_url.as_deref(),
-                ) {
-                    Ok(provider) => {
-                        match pantheon_web::websearch::register_search_tools(
-                            &mut reg,
-                            provider,
-                            wcfg.max_results,
-                        ) {
-                            Ok(n) => n,
-                            Err(e) => {
-                                log_warn!("web_search registration failed: {e}");
-                                0
+                let keyed = pantheon_web::websearch::default_key_env(&wcfg.provider).is_some();
+                let key_missing = api_key.as_deref().map(str::trim).unwrap_or("").is_empty();
+                if keyed && key_missing {
+                    0
+                } else {
+                    match pantheon_web::websearch::build_provider(
+                        &wcfg.provider,
+                        api_key,
+                        wcfg.base_url.as_deref(),
+                    ) {
+                        Ok(provider) => {
+                            match pantheon_web::websearch::register_search_tools(
+                                &mut reg,
+                                provider,
+                                wcfg.max_results,
+                            ) {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    tool_diags
+                                        .push(format!("web_search registration failed: {e}"));
+                                    0
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        log_warn!("web_search: {e}");
-                        0
+                        Err(e) => {
+                            tool_diags.push(format!("web_search: {e}"));
+                            0
+                        }
                     }
                 }
             }
@@ -4489,13 +4546,13 @@ impl Session {
                     self.mcp_manager.register_resource_tools(&mut reg);
                 }
                 for (server, reason) in &report.skipped {
-                    log_warn!("mcp: server '{server}' skipped: {reason}");
+                    tool_diags.push(format!("mcp: server '{server}' skipped: {reason}"));
                 }
                 if !report.pending_approval.is_empty() {
-                    log_warn!(
+                    tool_diags.push(format!(
                         "mcp: {} server(s) need approval: pantheon mcp approve <name>",
                         report.pending_approval.len()
-                    );
+                    ));
                 }
                 reg.names().len() - before
             }
@@ -4524,16 +4581,30 @@ impl Session {
                 );
                 match spec {
                     None => {
+                        // A driver that is simply not installed is an
+                        // unconfigured optional tool, not an error: a
+                        // missing cua-driver binary never warns, at
+                        // startup or otherwise. The agent says computer
+                        // use is unavailable only if the user actually
+                        // tries to use it, in conversation. A
+                        // configured binary path that does not exist,
+                        // or an unknown driver id, is a misconfiguration
+                        // and is recorded as a diagnostic instead.
+                        let known = cfg.driver.eq_ignore_ascii_case(
+                            crate::computer::CUA_DRIVER_ID,
+                        ) || cfg
+                            .driver
+                            .eq_ignore_ascii_case(crate::computer::TAPP_DRIVER_ID);
                         if cfg.binary.is_some() {
-                            eprintln!(
+                            tool_diags.push(format!(
                                 "computer-use: configured [computer_use] binary not found for driver '{}'",
                                 cfg.driver
-                            );
-                        } else {
-                            eprintln!(
-                                "computer-use: driver '{}' binary not found on PATH - install it or set [computer_use].binary to enable desktop control",
+                            ));
+                        } else if !known {
+                            tool_diags.push(format!(
+                                "computer-use: unknown driver '{}' (supported: 'cua-driver', 'tapp')",
                                 cfg.driver
-                            );
+                            ));
                         }
                         0
                     }
@@ -4556,12 +4627,14 @@ impl Session {
                             Some(pantheon_api::capability::Capability::ComputerUse),
                         );
                         for (server, reason) in &report.skipped {
-                            log_warn!("computer-use: server '{server}' skipped: {reason}");
+                            tool_diags.push(format!(
+                                "computer-use: server '{server}' skipped: {reason}"
+                            ));
                         }
                         if !report.pending_approval.is_empty() {
-                            log_warn!(
+                            tool_diags.push(format!(
                                 "computer-use: driver needs approval: pantheon mcp approve {server_name}"
-                            );
+                            ));
                         }
                         reg.names().len() - before
                     }
@@ -4593,6 +4666,12 @@ impl Session {
             computer: n_computer,
             code_intel: n_codeintel,
         };
+        // Store this build's diagnostics for on-demand reads (`/status`).
+        // A fresh build replaces the previous build's diagnostics, so a
+        // fixed misconfiguration stops showing once it is fixed.
+        if let Ok(mut g) = self.tool_diagnostics.lock() {
+            *g = tool_diags;
+        }
         (reg, counts)
     }
 
@@ -4718,6 +4797,10 @@ impl Session {
         // the end of the call to avoid orphaned processes.
         let mut plugin_supers =
             PluginCleanup::new(self.supervisor.clone(), run_id, Arc::clone(lease_healthy));
+        // Per-turn plugin diagnostics: same policy as the registry build
+        // (see `tool_diagnostics`) — a plugin spawn failure is non-fatal
+        // and is recorded for `/status`, never printed into the session.
+        let mut turn_diags: Vec<String> = Vec::new();
         // Plugin tools: discover installed plugins, verify + spawn the enabled
         // ones, register their tools behind the capability gate. A plugin
         // spawn failure is non-fatal: log it and continue without that plugin.
@@ -4779,7 +4862,9 @@ impl Session {
                     Ok(mut sup) => {
                         let label = format!("plugin:{}", plugin.manifest.name);
                         if let Err(e) = self.supervisor.register_process_group(run_id, sup.pgid()) {
-                            log_warn!("plugin '{label}': process group not registered: {e}");
+                            turn_diags.push(format!(
+                                "plugin '{label}': process group not registered: {e}"
+                            ));
                             sup.stop();
                         } else {
                             let sup_arc = Arc::new(Mutex::new(sup));
@@ -4796,9 +4881,9 @@ impl Session {
                                 Err(e) => {
                                     // Name squat or malformed manifest: don't register
                                     // anything from this plugin, stop the spawned supervisor.
-                                    log_warn!(
+                                    turn_diags.push(format!(
                                         "plugin '{label}': tool registration rejected, skipping: {e}"
-                                    );
+                                    ));
                                     if let Ok(mut guard) = sup_arc.lock() {
                                         guard.stop();
                                     }
@@ -4807,14 +4892,15 @@ impl Session {
                         }
                     }
                     Err(e) => {
-                        log_warn!(
+                        turn_diags.push(format!(
                             "plugin '{}': spawn failed, skipping: {e}",
                             plugin.manifest.name
-                        );
+                        ));
                     }
                 }
             }
         }
+        self.record_turn_diagnostics(turn_diags);
         plugin_supers
     }
 
@@ -10674,6 +10760,127 @@ mod child_context_retention_tests {
         assert_eq!(
             rebuilt[1].content,
             "new parent instruction after completion"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tool_registration_diagnostics_tests {
+    use super::*;
+    use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy, ReasoningLevel};
+
+    fn test_session() -> (Session, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session = Session::new(
+            dir.path().to_path_buf(),
+            Policy::coder(),
+            ModelPolicy {
+                reasoning_budget: None,
+                reasoning: ReasoningLevel::default(),
+                default: DefaultModel {
+                    provider: "local".into(),
+                    model: "default".into(),
+                },
+                fallbacks: FallbackChain { fallbacks: vec![] },
+                auxiliaries: vec![],
+            },
+            SecretsBroker::from_system_env(),
+        )
+        .expect("session");
+        (session, dir)
+    }
+
+    #[test]
+    fn missing_web_search_key_registers_nothing_and_records_nothing() {
+        let (session, _dir) = test_session();
+        let mut w = WebsearchToolConfig::default();
+        w.provider = "tinyfish".to_string();
+        // A secret name no environment provides: the key cannot resolve.
+        w.api_key_secret = Some("PANTHEON_TEST_ABSENT_KEY_7f3a".to_string());
+        session.set_websearch_config(w);
+        let (reg, counts) = session.build_tool_registry();
+        assert_eq!(counts.websearch, 0, "keyless web_search must not register");
+        assert!(
+            !reg.names().iter().any(|n| n == "web_search"),
+            "web_search must be absent from the tool list"
+        );
+        assert!(
+            !session
+                .tool_diagnostics()
+                .iter()
+                .any(|d| d.contains("web_search")),
+            "a missing key is silent, not a diagnostic: {:?}",
+            session.tool_diagnostics()
+        );
+    }
+
+    #[test]
+    fn unknown_web_search_provider_is_a_diagnostic_not_a_tool() {
+        let (session, _dir) = test_session();
+        let mut w = WebsearchToolConfig::default();
+        w.provider = "not-a-real-provider".to_string();
+        session.set_websearch_config(w);
+        let (_reg, counts) = session.build_tool_registry();
+        assert_eq!(counts.websearch, 0);
+        assert!(
+            session
+                .tool_diagnostics()
+                .iter()
+                .any(|d| d.contains("web_search") && d.contains("not-a-real-provider")),
+            "unknown provider must be recorded for /status: {:?}",
+            session.tool_diagnostics()
+        );
+    }
+
+    #[test]
+    fn uninstalled_computer_driver_is_silent_but_unknown_driver_is_a_diagnostic() {
+        // Known driver, no explicit binary: whether or not the binary
+        // happens to be on PATH in this environment, a missing driver
+        // must never produce a "not found" diagnostic.
+        let (session, _dir) = test_session();
+        session.set_computer_config(ComputerToolConfig::default());
+        let _ = session.build_tool_registry();
+        assert!(
+            !session.tool_diagnostics().iter().any(|d| d.contains("computer-use")
+                && (d.contains("not found") || d.contains("PATH"))),
+            "an uninstalled driver is silent: {:?}",
+            session.tool_diagnostics()
+        );
+
+        // Unknown driver id: a misconfiguration, recorded for /status.
+        let (session, _dir) = test_session();
+        let mut c = ComputerToolConfig::default();
+        c.driver = "not-a-driver".to_string();
+        session.set_computer_config(c);
+        let (_reg, counts) = session.build_tool_registry();
+        assert_eq!(counts.computer, 0);
+        assert!(
+            session
+                .tool_diagnostics()
+                .iter()
+                .any(|d| d.contains("computer-use") && d.contains("not-a-driver")),
+            "unknown driver must be recorded for /status: {:?}",
+            session.tool_diagnostics()
+        );
+    }
+
+    #[test]
+    fn configured_but_missing_driver_binary_is_a_diagnostic() {
+        let (session, _dir) = test_session();
+        let mut c = ComputerToolConfig::default();
+        c.binary = Some(std::path::PathBuf::from(
+            "/definitely/not/a/real/cua-driver-binary",
+        ));
+        session.set_computer_config(c);
+        let (_reg, counts) = session.build_tool_registry();
+        assert_eq!(counts.computer, 0);
+        assert!(
+            session
+                .tool_diagnostics()
+                .iter()
+                .any(|d| d.contains("computer-use") && d.contains("binary not found")),
+            "a configured binary path that does not exist must be recorded: {:?}",
+            session.tool_diagnostics()
         );
     }
 }
