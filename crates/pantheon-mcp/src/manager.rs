@@ -183,7 +183,10 @@ impl McpServerSpec {
             url: e.url.clone(),
             enabled: e.enabled,
             timeout: Duration::from_secs(e.timeout_secs.unwrap_or(30).max(1)),
-            headers: HashMap::new(),
+            // Headers ride with the spec; `env:NAME` refs inside
+            // them resolve at connect time (see `connect_new`), so
+            // dropping them here would silently lose remote auth.
+            headers: e.headers.clone(),
             auth: McpAuth::parse(e.auth.as_deref())?,
             scopes: e.scopes.clone(),
             client_id: e.client_id.clone(),
@@ -447,7 +450,9 @@ fn is_transport_error(e: &McpError) -> bool {
 /// Backoff after `failures` consecutive failures: 2s, 4s, 8s ... capped
 /// at 5 minutes.
 fn backoff_delay(failures: u32) -> Duration {
-    // 1s, 2s, 4s, 8s, ... capped at 300s. saturating_pow never panics
+    // 2s, 4s, 8s, ... capped at 300s. Callers increment `failures`
+    // before computing the delay, so the first failure arms 2s.
+    // saturating_pow never panics
     // on huge failure counts; the min(300) does the capping.
     Duration::from_secs(2u64.saturating_pow(failures).min(300))
 }
@@ -502,6 +507,8 @@ fn content_hash(spec: &McpServerSpec) -> Result<String, McpError> {
             let mut bytes = Vec::new();
             if is_launcher_shim(cmd) {
                 // Bind what determines the code, not the shim binary.
+                // Honest limit: the requested package spec is bound,
+                // not the bytes the registry actually served.
                 bytes.extend_from_slice(b"mcp-launcher-shim\0");
                 bytes.extend_from_slice(cmd.as_bytes());
                 for a in &spec.args {
@@ -511,30 +518,54 @@ fn content_hash(spec: &McpServerSpec) -> Result<String, McpError> {
                 return Ok(approval::bytes_hash(&bytes));
             }
             match resolve_command(cmd) {
-                Some(p) => match std::fs::read(&p) {
-                    Ok(b) => bytes.extend_from_slice(&b),
-                    Err(e) => return Err(McpError::Io(format!("hash {}: {e}", p.display()))),
-                },
+                Some(p) => {
+                    // Bind the resolved path as well as the bytes:
+                    // identical bytes at a different path are a
+                    // different installation, not the same approval.
+                    bytes.extend_from_slice(p.as_os_str().as_encoded_bytes());
+                    bytes.push(0);
+                    match std::fs::read(&p) {
+                        Ok(b) => bytes.extend_from_slice(&b),
+                        Err(e) => return Err(McpError::Io(format!("hash {}: {e}", p.display()))),
+                    }
+                }
                 None => {
+                    // Fallback, honest limit: the command could not
+                    // be resolved to a file (e.g. PATH differs at
+                    // approval time), so only the command string is
+                    // bound. A swapped binary under the same name
+                    // would not lapse approval.
                     bytes.extend_from_slice(cmd.as_bytes());
                     bytes.push(0);
                 }
             }
             // Bind script files passed as arguments: the interpreter
             // binary alone would not lapse approval when the script
-            // changes.
+            // changes. An unreadable script file fails the hash
+            // instead of silently contributing nothing to it.
             for a in &spec.args {
                 let p = Path::new(a);
                 if p.is_file() {
-                    if let Ok(b) = std::fs::read(p) {
-                        bytes.push(0);
-                        bytes.extend_from_slice(&b);
+                    match std::fs::read(p) {
+                        Ok(b) => {
+                            bytes.push(0);
+                            bytes.extend_from_slice(&b);
+                        }
+                        Err(e) => {
+                            return Err(McpError::Io(format!(
+                                "hash {}: {e}",
+                                p.display()
+                            )))
+                        }
                     }
                 }
             }
             Ok(approval::bytes_hash(&bytes))
         }
         McpTransport::Sse | McpTransport::Http => {
+            // Honest limit: a remote transport has no bytes to bind,
+            // so only the endpoint URL is hashed. Server code changing
+            // at the same URL never lapses approval.
             let url = spec.url.as_deref().unwrap_or("");
             Ok(approval::bytes_hash(url.as_bytes()))
         }
@@ -546,6 +577,11 @@ struct ServerState {
     status: ServerStatus,
     conn: Option<Box<dyn McpConn>>,
     tools: Vec<McpToolDef>,
+    /// `connects` value the cached `tools` were fetched on. A
+    /// per-turn re-list is skipped when the connection is unchanged
+    /// (see `register_names`): a transient list failure must not
+    /// drop the server's tools for the turn.
+    tools_connects: u32,
     /// Content hash, computed at configure time and re-verified on every
     /// (re)connect by the approval gate.
     hash: Option<String>,
@@ -572,6 +608,7 @@ impl ServerState {
             status,
             conn: None,
             tools: Vec::new(),
+            tools_connects: 0,
             hash,
             hash_error,
             connects: 0,
@@ -1127,7 +1164,11 @@ impl McpManager {
         overrides: &McpCapabilityOverrides,
     ) -> McpReport {
         let mut report = McpReport::default();
-        let mut used: HashSet<String> = HashSet::new();
+        // Dedup against names already in the registry, not just
+        // within this call: two servers sanitizing to the same
+        // `mcp_*` name across register_tools + register_server_tools
+        // previously overwrote each other silently.
+        let mut used: HashSet<String> = reg.names().into_iter().collect();
         // Hold the lock for the whole pass: server I/O is sequential and
         // the agent loop calls tools one at a time anyway.
         let mut inner = match self.inner.lock() {
@@ -1209,23 +1250,36 @@ impl McpManager {
                 report.pending_approval.push(name);
                 continue;
             }
+            // Per-turn tool list: reuse the last good list when
+            // this connection already supplied it. A transient
+            // list failure then falls back to the cache instead of
+            // dropping the server's tools for the turn.
             let tools = {
                 let st = inner.states.get_mut(&name).expect("state");
-                let res = st.conn.as_mut().expect("connected").list_tools();
-                match res {
-                    Ok(t) => t,
-                    Err(e) => {
-                        Self::note_failure(st, e.to_string());
-                        let msg = st.last_error.clone().unwrap_or_default();
-                        report.skipped.push((name, msg));
-                        continue;
+                if !st.tools.is_empty() && st.tools_connects == st.connects {
+                    st.tools.clone()
+                } else {
+                    match st.conn.as_mut().expect("connected").list_tools() {
+                        Ok(t) => t,
+                        Err(e) => {
+                            if !st.tools.is_empty() {
+                                st.tools.clone()
+                            } else {
+                                Self::note_failure(st, e.to_string());
+                                let msg = st.last_error.clone().unwrap_or_default();
+                                report.skipped.push((name, msg));
+                                continue;
+                            }
+                        }
                     }
                 }
             };
             {
                 let st = inner.states.get_mut(&name).expect("state");
                 st.tools = tools.clone();
+                st.tools_connects = st.connects;
                 st.status = ServerStatus::Ready;
+                st.failures = 0;
                 st.last_error = None;
             }
             let san_server = sanitize_segment(&name);
@@ -1291,6 +1345,21 @@ impl McpManager {
         server: &str,
         f: impl Fn(&mut dyn McpConn) -> Result<T, McpError>,
     ) -> Result<T, McpError> {
+        let result = self.with_conn_inner(server, f);
+        if result.is_err() {
+            // A failed call changes status / last_error in memory;
+            // live.json must reflect it instead of showing the old
+            // tool counts and state until the next health check.
+            self.write_live_state();
+        }
+        result
+    }
+
+    fn with_conn_inner<T>(
+        &self,
+        server: &str,
+        f: impl Fn(&mut dyn McpConn) -> Result<T, McpError>,
+    ) -> Result<T, McpError> {
         let mut inner = self
             .inner
             .lock()
@@ -1307,7 +1376,12 @@ impl McpManager {
         };
         match res {
             Ok(v) => {
-                inner.states.get_mut(server).expect("state").last_error = None;
+                // Success resets the consecutive-failure count (see
+                // `check_health`): a recovered server must not keep
+                // stale failures toward the repair threshold.
+                let st = inner.states.get_mut(server).expect("state");
+                st.last_error = None;
+                st.failures = 0;
                 Ok(v)
             }
             Err(e) if is_transport_error(&e) => {
@@ -1352,6 +1426,9 @@ impl McpManager {
                             Ok(_) => None,
                             Err(e) => Some(e.to_string()),
                         };
+                        if retry.is_ok() {
+                            st.failures = 0;
+                        }
                         retry
                     }
                     Err(ce) => {
@@ -1426,11 +1503,16 @@ impl McpManager {
             let live = st.conn.as_mut().is_some_and(|c| c.alive());
             if st.status == ServerStatus::Ready && !live {
                 st.status = ServerStatus::Failed;
+                // A dead server keeps no tool count: live.json must
+                // not keep advertising tools it can no longer serve.
+                st.tools.clear();
                 st.last_error = Some("connection lost".to_string());
             }
             out.push(health_of(st));
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
+        drop(inner);
+        self.write_live_state();
         out
     }
 
@@ -1443,6 +1525,7 @@ impl McpManager {
                 return Vec::new();
             };
             let names: Vec<String> = inner.specs.iter().map(|s| s.name.clone()).collect();
+            let scope = inner.scope_dir();
             for name in names {
                 let live = inner
                     .states
@@ -1461,6 +1544,12 @@ impl McpManager {
                     let _ = Self::ensure_connected_inner(&mut inner, &name);
                 }
                 let probe = {
+                    // Gate the probe like every other execution path:
+                    // a revoked-but-still-connected server must not
+                    // be probed past its revoked approval.
+                    if Self::gate_approval(&mut inner.states, &scope, &name, false).is_err() {
+                        continue;
+                    }
                     let st = match inner.states.get_mut(&name) {
                         Some(s) => s,
                         None => continue,
@@ -1477,6 +1566,11 @@ impl McpManager {
                     Ok(tools) => {
                         let st = inner.states.get_mut(&name).expect("state");
                         st.tools = tools;
+                        // `failures` counts consecutive failures: a
+                        // successful probe resets it, so a recovered
+                        // server cannot cross the repair threshold
+                        // on stale failures.
+                        st.failures = 0;
                         st.last_error = None;
                     }
                     Err(e) => {
@@ -1526,7 +1620,7 @@ impl McpManager {
         Self::gate_approval(&mut inner.states, &scope, name, true)?;
         let secrets = inner.secrets.clone();
         let elicitation = inner.elicitation.clone();
-        match Self::connect_new(
+        let result = match Self::connect_new(
             &spec,
             &resolver,
             &policy,
@@ -1548,7 +1642,12 @@ impl McpManager {
                 Self::note_failure(st, e.to_string());
                 Err(e)
             }
-        }
+        };
+        // Live state must not keep showing the pre-attempt tools /
+        // status after a failed (or successful) forced retry.
+        drop(inner);
+        self.write_live_state();
+        result
     }
 
     /// Shut every server down: kill children, drop streams. Idempotent.
@@ -1875,7 +1974,30 @@ impl McpManager {
                     McpTransport::Sse => HttpTransport::Sse,
                     _ => HttpTransport::Streamable,
                 };
-                let mut headers = resolved_headers(&spec.headers);
+                // Resolve header `env:NAME` refs at connect time
+                // through the broker-first resolver (the stdio env
+                // path already does this): a vault-only token must
+                // reach the server, and an unresolvable ref fails
+                // loudly here instead of surfacing as a later 401.
+                let mut headers: Vec<(String, String)> = Vec::new();
+                for (k, v) in &spec.headers {
+                    let value = match v.strip_prefix("env:") {
+                        Some(var) => resolver
+                            .as_ref()
+                            .and_then(|r| r(var))
+                            .or_else(|| std::env::var(var).ok())
+                            .filter(|s| !s.is_empty())
+                            .ok_or_else(|| {
+                                McpError::Io(format!(
+                                    "mcp server '{}': header '{k}' env var '{var}' did not resolve",
+                                    spec.name
+                                ))
+                            })?,
+                        None => v.clone(),
+                    };
+                    headers.push((k.clone(), value));
+                }
+                headers.sort();
                 let has_auth = headers
                     .iter()
                     .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
@@ -1886,8 +2008,16 @@ impl McpManager {
                             spec.name, spec.name
                         ))
                     })?;
-                    let token = crate::oauth::ensure_token(spec, broker)?;
-                    headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+                    let (token, token_type) = crate::oauth::ensure_token(spec, broker)?;
+                    // Honour the stored token type (default Bearer):
+                    // a server that issued e.g. `DPoP` or `mac` must
+                    // not be sent a Bearer scheme it did not issue.
+                    let scheme = if token_type.trim().is_empty() {
+                        "Bearer".to_string()
+                    } else {
+                        token_type
+                    };
+                    headers.push(("Authorization".to_string(), format!("{scheme} {token}")));
                 }
                 Ok(Box::new(HttpMcpClient::connect_with(
                     &spec.name,
