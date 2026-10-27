@@ -902,6 +902,12 @@ pub struct TuiState {
     /// renders the ones whose parent run is the visible session, so
     /// background tabs keep their own.
     pub subagents: Vec<activity::SubAgentRecord>,
+    /// Checkpoint names recorded from `CheckpointCreated` events for
+    /// the visible session (see `handle_runtime_event`). This is the
+    /// live-feed view, not the authoritative list: `/checkpoints`
+    /// reads the ledger. Names are deduped; rewound-over checkpoints
+    /// are not removed here because the feed carries no retraction.
+    pub checkpoint_names: Vec<String>,
     /// Inline image state: thumbnail placements recorded during render,
     /// terminal graphics capability, and the fullscreen preview.
     pub img: crate::richtext::ImagePaintState,
@@ -1042,6 +1048,7 @@ impl Default for TuiState {
             bg_tasks: Vec::new(),
             bg_seq: 0,
             subagents: Vec::new(),
+            checkpoint_names: Vec::new(),
             img: crate::richtext::ImagePaintState::new(),
             todo_count: 0,
             todo_items: Vec::new(),
@@ -1223,6 +1230,7 @@ impl TuiState {
             bg_tasks: Vec::new(),
             bg_seq: 0,
             subagents: Vec::new(),
+            checkpoint_names: Vec::new(),
             img: crate::richtext::ImagePaintState::new(),
             todo_count: 0,
             todo_items: Vec::new(),
@@ -2368,6 +2376,13 @@ impl TuiState {
             } => {
                 activity::record_completed(&mut self.subagents, run_id, agent);
                 swarm_complete(&mut self.blocks, call_id.as_deref(), agent);
+            }
+            RuntimeErrorEvent::CheckpointCreated { name, .. } => {
+                // Inspector sidebar data: deduped, visible session only
+                // (handle_runtime_event already filtered other runs).
+                if !self.checkpoint_names.iter().any(|n| n == name) {
+                    self.checkpoint_names.push(name.clone());
+                }
             }
             // Title generation (aux or /name) lands as a durable event;
             // the header follows it with no polling.
@@ -4832,11 +4847,13 @@ fn render_footer(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_widget(Paragraph::new(line), area);
 }
 
-/// Right sidebar: session title + mode tag, and the switchable bottom
-/// card (agent view | todo view, `^g`). The whole rect is painted with
-/// the panel wash first; column separation is the divider column's bg
-/// tint - zero borders, zero box-drawing. The bottom card pins to the
-/// bottom (tail-anchored: the latest activity always wins).
+/// Right sidebar (inspector, >=160 cols only): the switchable card
+/// (agent view | todo view, `^g`) filling the whole rect. The whole
+/// rect is painted with the panel wash first; column separation is
+/// the divider column's bg tint - zero borders, zero box-drawing.
+/// No title/mode header: those already live in the tab bar and the
+/// footer. The agent view pins to the bottom (tail-anchored: the
+/// latest activity always wins).
 fn render_sidebar(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
     // Panel wash over the whole rect: this fill IS the column separation.
@@ -4847,52 +4864,18 @@ fn render_sidebar(f: &mut Frame, area: Rect, state: &TuiState) {
     if area.width < 12 || area.height < 6 {
         return;
     }
-    let dim = Style::default().fg(th.dim);
-    let wash =
-        |lines: Vec<Line<'static>>| Paragraph::new(lines).style(Style::default().bg(th.panel));
-    let w = area.width as usize;
-    let clip = |text: &str| -> String { text.chars().take(w.saturating_sub(2)).collect() };
-
-    // TOP card: the session title, then a subtle dim mode tag
-    // ("Build"/"Plan"). The activity status heads the task list in the
-    // agent view below instead - it describes the tasks, so it sits
-    // with them. No bright boxes - the tag is plain dim text.
-    let title = state
-        .title
-        .as_deref()
-        .filter(|t| !t.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            state
-                .session_id
-                .rsplit('/')
-                .next()
-                .unwrap_or(&state.session_id)
-                .to_string()
-        });
-    let mut top: Vec<Line> = Vec::new();
-    top.push(Line::from(Span::styled(
-        clip(&title),
-        Style::default().fg(th.body).add_modifier(Modifier::BOLD),
-    )));
-    top.push(Line::from(Span::styled(
-        if state.plan_mode { "Plan" } else { "Build" },
-        dim,
-    )));
-    // Paint: the top card at the top, the switchable bottom card flowing
-    // downward right beneath it (top-anchored: content sits high).
+    // No title/mode top card: the title already lives in the tab bar
+    // and the mode word already lives in the footer, so repeating
+    // them here would make the inspector a duplicate chrome column.
+    // The switchable card below fills the whole sidebar area.
+    // (The Todo view is not a duplicate either: the inline transcript
+    // todo card is suppressed while the sidebar is visible, so the
+    // sidebar owns the todo list in wide mode.)
     let h = area.height as usize;
-    let top_h = top.len().min(h);
-    f.render_widget(
-        wash(top.into_iter().take(top_h).collect()),
-        Rect::new(area.x, area.y, area.width, top_h as u16),
-    );
-    let avail = h.saturating_sub(top_h);
-    if avail >= 4 {
-        let card = Rect::new(area.x, area.y + top_h as u16, area.width, avail as u16);
+    if h >= 4 {
         match state.sidebar_view {
-            SidebarView::Agent => activity::render_agent_card(f, card, state),
-            SidebarView::Todo => render_sidebar_todos(f, card, state),
+            SidebarView::Agent => activity::render_agent_card(f, area, state),
+            SidebarView::Todo => render_sidebar_todos(f, area, state),
         }
     }
 }
@@ -12253,6 +12236,25 @@ mod picker_render_tests {
         );
         assert!(text.contains("Alpha work"), "row missing");
         assert!(text.contains("ctrl+d"), "footer hints missing");
+    }
+
+    #[test]
+    fn sidebar_omits_title_and_mode_duplicates() {
+        let mut s = test_state();
+        s.title = Some("My Session Title".to_string());
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::UserMessage("hello".to_string()),
+        });
+        let lines = render_to_string(render_sidebar, &s);
+        let text = lines.join("\n");
+        assert!(
+            !text.contains("My Session Title"),
+            "sidebar must not repeat the tab-bar title: {text}"
+        );
+        assert!(
+            text.contains("Turns:"),
+            "agent view must still render its metadata: {text}"
+        );
     }
 
     #[test]
