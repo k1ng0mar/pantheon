@@ -678,6 +678,9 @@ pub fn remember_custom_model(
         context_limit: None,
         max_output_tokens: None,
         video: false,
+        vision: false,
+        tools: true,
+        streaming: true,
     });
     sec.models.sort_by(|a, b| a.id.cmp(&b.id));
     cfg.save(data_dir).map_err(|e| e.to_string())?;
@@ -730,6 +733,17 @@ pub fn register_custom_providers(cfg: &Config) {
                 if m.video {
                     meta.video = true;
                 }
+                // Same trust model for the other capabilities: without
+                // these, a vision-capable custom model kept
+                // `vision=false` and the chain vision gate refused its
+                // image turns. Defaults (vision off, tools/streaming
+                // on) match the conservative `model_meta` defaults, so
+                // a row that declares nothing behaves as before.
+                if m.vision {
+                    meta.vision = true;
+                }
+                meta.tools = m.tools;
+                meta.streaming = m.streaming;
                 meta
             })
             .collect();
