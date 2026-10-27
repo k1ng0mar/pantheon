@@ -204,12 +204,25 @@ fn checksum_line_matches(text: &str, actual_hex: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Gate a verification outcome: only a digest match installs.
+/// Ok(false) — checksum file exists but carries no usable digest — is
+/// an error here, not a silent skip: the caller must not treat "no
+/// digest found" as "verified". Pure, for testing.
+fn require_verified(verified: Result<bool, String>) -> Result<(), String> {
+    match verified {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("verify failed: checksum file carries no usable digest".into()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Verify `asset_bytes` against the published `.sha256` file.
 ///
 /// Fail-closed: a missing checksum file (404), any network error, or an
 /// unreadable checksum file is an error, not a silent skip. Returns
 /// Ok(true) only when the digest matches; Ok(false) only when the
-/// checksum file exists but carries no usable digest.
+/// checksum file exists but carries no usable digest (callers must
+/// pass this through [`require_verified`], never install on it).
 fn verify_checksum(asset_url: &str, asset_bytes: &[u8]) -> Result<bool, String> {
     let sha_url = format!("{asset_url}.sha256");
     let resp = update_agent()
@@ -288,7 +301,7 @@ pub fn check_for_update() -> Option<String> {
 }
 
 pub fn usage() -> &'static str {
-    "usage: pantheon update [--check] [--version TAG] [--repo OWNER/REPO] [--allow-unverified] [--rollback]\n  \n  Fetches the latest GitHub release and replaces this binary.\n  --check reports without changing anything.\n  --rollback restores the previous binary (pantheon.prev, kept next to\n  the binary by every update) without touching the network.\n  Verification is fail-closed: a missing, unreadable, or mismatched\n  checksum aborts the update. Pass --allow-unverified to install anyway."
+    "usage: pantheon update [--check] [--version TAG] [--repo OWNER/REPO] [--rollback]\n  \n  Fetches the latest GitHub release and replaces this binary.\n  --check reports without changing anything.\n  --rollback restores the previous binary (pantheon.prev, kept next to\n  the binary by every update) without touching the network.\n  Verification is fail-closed: a missing, unreadable, digest-less, or mismatched\n  checksum aborts the update. There is no --allow-unverified flag: an unverified binary is never installed."
 }
 
 /// `pantheon update --rollback`: restore the previous binary from the
@@ -422,7 +435,7 @@ pub fn cmd_update(args: &[String]) {
                 std::process::exit(1);
             }
         };
-        if let Err(e) = verify_checksum(&helper_url, &helper_bytes) {
+        if let Err(e) = require_verified(verify_checksum(&helper_url, &helper_bytes)) {
             eprintln!("update: {e}");
             std::process::exit(1);
         }
@@ -499,6 +512,8 @@ fn restart_systemd_unit(unit: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::require_verified;
+
     #[test]
     fn state_file_round_trips_units_for_rollback() {
         let exe = std::env::current_exe().unwrap();
@@ -509,6 +524,19 @@ mod tests {
         let parsed: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
         assert_eq!(parsed, vec!["pantheon-gateway.service"]);
         let _ = std::fs::remove_file(&state_path);
+    }
+
+    #[test]
+    fn verification_gate_rejects_digest_less_and_failed_checks() {
+        // Only a digest match installs. A checksum file with no usable
+        // digest used to pass through as Ok(false) in the helper
+        // download path; require_verified closes that hole.
+        assert!(require_verified(Ok(true)).is_ok());
+        assert!(require_verified(Ok(false)).is_err());
+        assert_eq!(
+            require_verified(Err("verify failed: checksum mismatch".to_string())).unwrap_err(),
+            "verify failed: checksum mismatch"
+        );
     }
 
     #[test]
