@@ -69,6 +69,23 @@ use pantheon_gateway::http::{Request, Response};
 fn is_bundled(name: &str) -> bool {
     mcp_catalog::find(name).is_some()
 }
+
+/// Canonical-recipe comparison, mirroring the manager's
+/// `is_canonical_bundled`: a config entry counts as bundled only when
+/// it matches the catalog recipe exactly (transport, command, args,
+/// env, url). A name-colliding custom entry is a custom server, not
+/// first-party, even though it borrows a bundled name.
+fn is_canonical_bundled_entry(name: &str, e: &pantheon_api::config::McpServerEntry) -> bool {
+    let Some(recipe) = mcp_catalog::find(name) else {
+        return false;
+    };
+    let canonical = recipe.to_config_entry();
+    canonical.transport == e.transport
+        && canonical.command == e.command
+        && canonical.args == e.args
+        && canonical.env == e.env
+        && canonical.url == e.url
+}
 use pantheon_migration::{read_mcp_declarations, server_readiness, McpServer};
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -406,7 +423,7 @@ fn config_server_json(
     live: &HashMap<String, serde_json::Value>,
     approved: &[String],
 ) -> serde_json::Value {
-    let bundled = is_bundled(name);
+    let bundled = is_canonical_bundled_entry(name, e);
     serde_json::json!({
         "name": name,
         "transport": e.transport,
@@ -418,8 +435,9 @@ fn config_server_json(
         "enabled": e.enabled,
         "bundled": bundled,
         "readiness": e.problems(name).into_iter().next(),
-        // Bundled servers are first-party: no consent record needed, the
-        // enabled flag is the only gate.
+        // Only a canonical bundled recipe is first-party: no consent
+        // record needed, the enabled flag is the only gate. A
+        // name-colliding custom entry needs approval like any other.
         "approved": bundled || approved.iter().any(|a| a == name),
         "health": live.get(name).cloned().unwrap_or(serde_json::Value::Null),
     })
@@ -843,17 +861,26 @@ pub fn approve(app: &App, name: &str, req: &Request) -> Response {
     if !safe_name(name) {
         return bad_json("unsafe server name");
     }
-    if is_bundled(name) {
+    let (shape, origin) = match find_shape(&app.data_dir, name) {
+        Some(found) => found,
+        None => return err_json(404, "NOT_FOUND", "no server by that name"),
+    };
+    // Only a canonical bundled recipe skips consent (409). A bundled
+    // name with a modified shape is a custom server: it goes through
+    // approval here instead of being unapprovable via the dashboard
+    // while the list claims approved:true.
+    let canonical_bundled = origin == "bundled"
+        || config_servers(&app.data_dir)
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .is_some_and(|(_, e)| is_canonical_bundled_entry(name, &e));
+    if canonical_bundled {
         return err_json(
             409,
             "MCP_BUNDLED",
             "bundled servers are first-party: no consent record needed, enabling is the gate",
         );
     }
-    let (shape, _) = match find_shape(&app.data_dir, name) {
-        Some(found) => found,
-        None => return err_json(404, "NOT_FOUND", "no server by that name"),
-    };
     if let Some(problem) = shape.problems(name).into_iter().next() {
         return bad_json(&format!("cannot approve an invalid server: {problem}"));
     }
@@ -967,10 +994,13 @@ pub fn reload(app: &App) -> Response {
     list(app)
 }
 
-/// `POST /api/mcp/servers/:name/test` - a real probe: for stdio, resolve
-/// the command on PATH (or as an absolute path); for http/sse, attempt a
-/// TCP connect to the URL's host:port with a 3s timeout. The readiness
-/// blocker, if any, is reported alongside.
+/// `POST /api/mcp/servers/:name/test` - a readiness check, NOT a
+/// handshake: for stdio, resolve the command on PATH (or as an
+/// absolute path); for http/sse, attempt a TCP connect to the URL's
+/// host:port with a 3s timeout. A crashing server still reports ok
+/// here because it is never spawned; use `pantheon mcp health` for a
+/// real handshake. The readiness blocker, if any, is reported
+/// alongside.
 pub fn test(app: &App, name: &str) -> Response {
     let (shape, origin) = match find_shape(&app.data_dir, name) {
         Some(found) => found,
@@ -985,7 +1015,10 @@ pub fn test(app: &App, name: &str) -> Response {
     let (ok, detail) = match shape.transport.as_str() {
         "stdio" => {
             let cmd = shape.command.as_deref().unwrap_or("");
-            (resolve_command(cmd).is_some(), format!("command {cmd:?}"))
+            (
+                resolve_command(cmd).is_some(),
+                format!("command {cmd:?} found (readiness only, no handshake)"),
+            )
         }
         _ => match shape.url.as_deref() {
             Some(url) => probe_url(url),

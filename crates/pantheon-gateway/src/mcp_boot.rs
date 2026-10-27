@@ -37,21 +37,120 @@ pub struct McpBootHealth {
 }
 
 /// Configured `[mcp.servers.<name>]` entries, enabled ones only.
+/// The `[mcp]` master switch gates the whole set: `enabled = false`
+/// or `PANTHEON_MCP_ENABLED=0` yields no specs, so boot never probes
+/// a server the operator switched off.
 fn config_specs(data_dir: &Path) -> Vec<McpServerSpec> {
+    if std::env::var("PANTHEON_MCP_ENABLED").map(|v| v == "0").unwrap_or(false) {
+        return Vec::new();
+    }
     let raw = std::fs::read_to_string(data_dir.join("config.toml")).unwrap_or_default();
     let cfg: Result<pantheon_api::config::Config, _> = toml::from_str(&raw);
-    let servers = cfg
+    let (master, servers) = cfg
         .map(|c| {
-            c.mcp
-                .map(|m| m.servers.into_iter().collect::<Vec<_>>())
-                .unwrap_or_default()
+            (
+                c.mcp.as_ref().and_then(|m| m.enabled).unwrap_or(true),
+                c.mcp
+                    .map(|m| m.servers.into_iter().collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            )
         })
-        .unwrap_or_default();
+        .unwrap_or((true, Vec::new()));
+    if !master {
+        return Vec::new();
+    }
     servers
         .into_iter()
         .filter(|(_, e)| e.enabled)
         .filter_map(|(name, e)| McpServerSpec::from_entry(&name, &e))
         .collect()
+}
+
+/// Convertible, enabled declaration servers not already covered by a
+/// config entry: boot probes the same merged view sessions use.
+fn declaration_specs(data_dir: &Path) -> Vec<McpServerSpec> {
+    let mut out = Vec::new();
+    for decl in pantheon_migration::read_mcp_declarations(data_dir) {
+        for s in &decl.servers {
+            if !s.enabled {
+                continue;
+            }
+            let transport = match s.transport.as_str() {
+                "stdio" => McpTransport::Stdio,
+                "sse" => McpTransport::Sse,
+                "http" => McpTransport::Http,
+                _ => continue,
+            };
+            let command = s.command.clone().filter(|c| !c.trim().is_empty());
+            let url = s.url.clone().filter(|u| !u.trim().is_empty());
+            let ready = match transport {
+                McpTransport::Stdio => command.is_some(),
+                _ => url.is_some(),
+            };
+            if !ready {
+                continue;
+            }
+            out.push(McpServerSpec {
+                name: s.name.clone(),
+                transport,
+                command,
+                args: s.args.clone(),
+                env: s
+                    .requires_env
+                    .iter()
+                    .map(|v| (v.clone(), format!("env:{v}")))
+                    .collect(),
+                url,
+                enabled: s.enabled,
+                timeout: Duration::from_secs(30),
+                headers: Default::default(),
+                auth: pantheon_mcp::McpAuth::None,
+                scopes: Vec::new(),
+                client_id: None,
+            });
+        }
+    }
+    out
+}
+/// (unknown transport/auth, missing command/url): reported as
+/// unhealthy at boot instead of silently dropped.
+fn dropped_declaration_specs(data_dir: &Path) -> Vec<McpBootHealth> {
+    let mut out = Vec::new();
+    for decl in pantheon_migration::read_mcp_declarations(data_dir) {
+        for s in &decl.servers {
+            if !s.enabled {
+                continue;
+            }
+            let convertible = matches!(s.transport.as_str(), "stdio" | "sse" | "http")
+                && match s.transport.as_str() {
+                    "stdio" => s.command.as_deref().map(str::trim).unwrap_or("").len() > 0,
+                    _ => s.url.as_deref().map(str::trim).unwrap_or("").len() > 0,
+                };
+            if !convertible {
+                out.push(McpBootHealth {
+                    name: s.name.clone(),
+                    transport: match s.transport.as_str() {
+                        "stdio" => "stdio",
+                        "sse" => "sse",
+                        "http" => "http",
+                        _ => "unknown",
+                    },
+                    target: s
+                        .command
+                        .clone()
+                        .or_else(|| s.url.clone())
+                        .unwrap_or_else(|| "-".to_string()),
+                    ok: false,
+                    detail: format!(
+                        "dropped at boot: {}",
+                        pantheon_migration::server_readiness(s)
+                            .unwrap_or_else(|| "unconvertible declaration".to_string())
+                    ),
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Resolve `env:NAME` secret refs against the process environment (the
@@ -191,7 +290,13 @@ fn probe_remote(spec: &McpServerSpec) -> McpBootHealth {
 pub fn check(data_dir: &Path, per_server_timeout: Duration) -> Vec<McpBootHealth> {
     let approved = pantheon_api::approval::ApprovalStore::open(&data_dir.join("mcp")).names();
     let mut out = Vec::new();
-    for spec in config_specs(data_dir) {
+    let mut specs = config_specs(data_dir);
+    for spec in declaration_specs(data_dir) {
+        if !specs.iter().any(|s| s.name == spec.name) {
+            specs.push(spec);
+        }
+    }
+    for spec in specs {
         // Consent gate: first-party bundled servers probe freely; anything
         // else needs an approval record. Never spawn a third-party server
         // the operator has not approved.
@@ -216,6 +321,11 @@ pub fn check(data_dir: &Path, per_server_timeout: Duration) -> Vec<McpBootHealth
             McpTransport::Sse | McpTransport::Http => probe_remote(&spec),
         };
         out.push(health);
+    }
+    for dropped in dropped_declaration_specs(data_dir) {
+        if !out.iter().any(|r| r.name == dropped.name) {
+            out.push(dropped);
+        }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
