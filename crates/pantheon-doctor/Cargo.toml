@@ -17,6 +17,8 @@ pantheon-memory = { path = "../pantheon-memory" }
 pantheon-providers = { path = "../pantheon-providers" }
 pantheon-extensions = { path = "../pantheon-extensions" }
 pantheon-exec = { path = "../pantheon-exec" }
+pantheon-secrets = { path = "../pantheon-secrets" }
+pantheon-runtime = { path = "../pantheon-runtime" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 chrono.workspace = true

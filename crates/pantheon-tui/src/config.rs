@@ -413,12 +413,17 @@ pub fn consolidation_aux_model(
 /// `[consolidation]` `enabled` flags were explicit opt-ins, honored
 /// field-by-field. Absent everything = off (nightly is off by default).
 pub fn nightly_pass_enabled(cfg: Option<&Config>) -> bool {
+    // A partial [nightly] table (cron only) no longer switches a
+    // previously enabled legacy pass off: see
+    // `nightly_enabled_with_legacy` - only an explicit flag or pin in
+    // [nightly] overrides the legacy flags.
+    let legacy = cfg.is_some_and(|c| {
+        c.reflect.as_ref().is_some_and(|s| s.enabled)
+            || c.consolidation.as_ref().is_some_and(|s| s.enabled)
+    });
     match cfg.and_then(|c| c.nightly.as_ref()) {
-        Some(n) => pantheon_api::config::nightly_enabled(n),
-        None => cfg.is_some_and(|c| {
-            c.reflect.as_ref().is_some_and(|s| s.enabled)
-                || c.consolidation.as_ref().is_some_and(|s| s.enabled)
-        }),
+        Some(n) => pantheon_api::config::nightly_enabled_with_legacy(n, legacy),
+        None => legacy,
     }
 }
 
@@ -439,14 +444,19 @@ pub fn nightly_config(
     let n = cfg.and_then(|c| c.nightly.as_ref());
     let r = cfg.and_then(|c| c.reflect.as_ref());
     let c = cfg.and_then(|c| c.consolidation.as_ref());
-    // Authoritative-when-present: legacy flags must not leak into a pass
-    // whose `[nightly]` section exists - a legacy `enabled = true` must
-    // not turn on LLM steps the user thought they turned off.
+    // Authoritative-when-present, except for enablement: an explicit
+    // `[nightly]` flag or pin overrides legacy, but a `[nightly]`
+    // table that decides nothing (cron only) defers to the legacy
+    // flags instead of silently switching a previously enabled pass off.
+    // A legacy `enabled = true` still never overrides an explicit
+    // `[nightly] enabled = false`.
+    let legacy_llm = r.map(|s| s.enabled).unwrap_or(false) || c.map(|s| s.enabled).unwrap_or(false);
     let llm_enabled = match n {
-        // The single enable rule: explicit flag wins, else the model pin
-        // implies on. See pantheon_api::config::nightly_enabled.
-        Some(s) => pantheon_api::config::nightly_enabled(s),
-        None => r.map(|s| s.enabled).unwrap_or(false) || c.map(|s| s.enabled).unwrap_or(false),
+        // The single enable rule, with the partial-table legacy fallback:
+        // explicit flag wins, else the model pin implies on, else a
+        // [nightly] table that decides nothing defers to legacy.
+        Some(s) => pantheon_api::config::nightly_enabled_with_legacy(s, legacy_llm),
+        None => legacy_llm,
     };
     pantheon_nightly::NightlyConfig {
         data_dir: data_dir.to_path_buf(),
@@ -826,6 +836,19 @@ pub fn build_routed_model_policy(
         }
     }
     policy
+}
+
+/// Effective serve port for a `[server]` section: the configured port,
+/// except 0 (the documented "auto") and absence both resolve to the
+/// 18789 default. A literal 0 used to bind an ephemeral port nobody
+/// reported - remotes refused it (`port 0 => None`), GenUI blob URLs
+/// baked in `:0`, and nothing printed the bound port - so "auto" now
+/// means "the default port", addressable by everything downstream.
+pub fn server_port(server: Option<&ServerSection>) -> u16 {
+    match server.map(|s| s.port).unwrap_or(0) {
+        0 => 18789,
+        p => p,
+    }
 }
 
 /// Resolve the model policy for one session: explicit override > environment >

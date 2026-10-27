@@ -756,7 +756,14 @@ pub fn serve(cfg: ServerConfig) -> std::io::Result<()> {
         };
         std::io::Error::new(e.kind(), remedy)
     })?;
-    eprintln!("{} on http://{bind_addr}", cfg.label);
+    // Report the port actually bound, not just the requested one: a
+    // `:0` (ephemeral) bind used to print `http://host:0`, a URL
+    // nothing could connect to, and remotes refused port 0 outright.
+    let actual = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| bind_addr.clone());
+    eprintln!("{} on http://{actual}", cfg.label);
     serve_on(listener, cfg);
 }
 

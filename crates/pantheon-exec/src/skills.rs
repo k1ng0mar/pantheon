@@ -1018,6 +1018,17 @@ pub fn scan_skills_ext(data_dir: &Path, project_root: &Path, extra_roots: &[Path
     scan_skills_with_home(data_dir, project_root, extra_roots, &home_dir())
 }
 
+/// Same scan without the bundled-skill seeding write, for read-only
+/// callers (doctor, `GET /api/health`): seeding from a diagnostic
+/// would materialize files in the data dir on a GET.
+pub fn scan_skills_ext_noseed(
+    data_dir: &Path,
+    project_root: &Path,
+    extra_roots: &[PathBuf],
+) -> SkillScan {
+    scan_skills_with_home(data_dir, project_root, extra_roots, &home_dir())
+}
+
 fn scan_skills_with_home(
     data_dir: &Path,
     project_root: &Path,

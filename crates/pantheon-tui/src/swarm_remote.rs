@@ -63,7 +63,7 @@ fn server_base(data_dir: &Path) -> Option<String> {
         .as_ref()
         .map(|s| s.host.clone())
         .unwrap_or_else(|| "127.0.0.1".to_string());
-    let port = server.as_ref().map(|s| s.port).unwrap_or(18789);
+    let port = crate::config::server_port(server.as_ref());
     if port == 0 {
         return None;
     }
