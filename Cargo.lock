@@ -2443,6 +2443,8 @@ dependencies = [
  "pantheon-extensions",
  "pantheon-memory",
  "pantheon-providers",
+ "pantheon-runtime",
+ "pantheon-secrets",
  "pantheon-storage",
  "serde",
  "serde_json",
