@@ -442,6 +442,54 @@ mod tests {
     }
 
     #[test]
+    fn active_tab_renders_brand_purple_inactive_unchanged() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut list = TabList::default();
+        list.refresh_from_explicit(
+            &[
+                ("r1".to_string(), Some("Alpha".to_string())),
+                ("r2".to_string(), Some("Beta".to_string())),
+            ],
+            |_| false,
+            "r1",
+        );
+        let theme = crate::session::theme::Theme::pantheon();
+        let backend = TestBackend::new(80, 1);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            render_tab_bar(f, f.area(), &list, &theme);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let row: String = (0..buf.area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        // Scan cells, not string bytes: the dot/close glyphs are
+        // multi-byte, so a byte index from str::find would land on the
+        // wrong cell.
+        let cells: Vec<String> = (0..buf.area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        let find_label = |label: &str| -> u16 {
+            cells
+                .windows(label.chars().count())
+                .position(|w| w.concat() == label)
+                .expect("label missing") as u16
+        };
+        let active_at = find_label("Alpha");
+        let idle_at = find_label("Beta");
+        assert_eq!(
+            buf[(active_at, 0)].fg,
+            ratatui::style::Color::Rgb(114, 35, 255),
+            "active tab must be brand purple #7223FF, row: {row}"
+        );
+        assert_eq!(
+            buf[(idle_at, 0)].fg, theme.tab_idle,
+            "inactive tab must keep the idle colour, row: {row}"
+        );
+    }
+
+    #[test]
     fn untitled_tab_shows_new_session_not_id_stem() {
         let t = tab("abcdefgh12345678", None);
         assert_eq!(t.label(), "new session");
