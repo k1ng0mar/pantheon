@@ -121,6 +121,10 @@ pub struct BundledMcpServer {
     /// What enabling this server actually authorizes, in plain terms.
     /// Shown by approval surfaces before the operator decides.
     pub privilege_notes: String,
+    /// Remote auth mode materialized into the config entry, e.g.
+    /// `Some("oauth")` for Cloudflare's hosted endpoint. `None` means
+    /// no auth (cloudflare-docs is public and correctly needs none).
+    pub auth: Option<String>,
 }
 
 impl BundledMcpServer {
@@ -150,7 +154,7 @@ impl BundledMcpServer {
             enabled: false,
             timeout_secs: None,
             headers: Default::default(),
-            auth: None,
+            auth: self.auth.clone(),
             scopes: Vec::new(),
             client_id: None,
         }
@@ -213,6 +217,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 bundle entry; the container image is third-party code run by \
                 Docker, not by Pantheon."
                 .to_string(),
+            auth: None,
         },
         BundledMcpServer {
             name: "google-workspace".to_string(),
@@ -253,6 +258,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 and documents are all in reach of its tools. Treat its outputs \
                 as untrusted - emails and docs can carry hidden instructions."
                 .to_string(),
+            auth: None,
         },
         BundledMcpServer {
             name: "chrome-devtools".to_string(),
@@ -295,6 +301,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 statistics and update checks phone home to Google unless \
                 disabled; performance tools call the CrUX API."
                 .to_string(),
+            auth: None,
         },
         BundledMcpServer {
             name: "cloudflare".to_string(),
@@ -329,6 +336,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 act on your Cloudflare account (Workers, DNS, zones). No \
                 local code runs - trust is in the endpoint and your account."
                 .to_string(),
+            auth: Some("oauth".to_string()),
         },
         BundledMcpServer {
             name: "cloudflare-docs".to_string(),
@@ -355,6 +363,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 hosted endpoint. No account access: the server is public and \\\
                 unauthenticated."
                 .to_string(),
+            auth: None,
         },
         BundledMcpServer {
             name: "playwright".to_string(),
@@ -388,6 +397,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 visits run arbitrary web content. Filesystem access is \
                 restricted to workspace roots unless relaxed."
                 .to_string(),
+            auth: None,
         },
         BundledMcpServer {
             name: "notion".to_string(),
@@ -428,6 +438,7 @@ fn catalog_rows() -> Vec<BundledMcpServer> {
                 integration token. Note: Notion has marked this repo \
                 unmaintained and may sunset it - plan a remote-Notion path."
                 .to_string(),
+            auth: None,
         },
     ]
 }
@@ -624,3 +635,16 @@ pub fn set_enabled(data_dir: &Path, name: &str, enabled: bool) -> Result<(), Pan
 // Small deterministic invariant tests only. Filesystem behavior
 // (set_enabled round-trip, config preservation, catalog-name rejection)
 // is covered in `pantheon-eval` (`eval/tests/mcp_enablement.rs`).
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloudflare_materializes_oauth_and_docs_materializes_none() {
+        let cf = find("cloudflare").expect("cloudflare recipe");
+        assert_eq!(cf.to_config_entry().auth.as_deref(), Some("oauth"));
+        let docs = find("cloudflare-docs").expect("cloudflare-docs recipe");
+        assert_eq!(docs.to_config_entry().auth, None);
+    }
+}
