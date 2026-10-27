@@ -5736,6 +5736,12 @@ fn render_block(
             target,
             decision,
         } => {
+            // Base design layer 4 (prose-first rule, documented, not a
+            // new widget): agent-proposed destructive actions are asked
+            // in prose in the transcript and answered in prose in the
+            // composer. This gate card is only for capability-gated
+            // tools, and it renders inline in transcript flow here —
+            // never as a modal overlay covering the transcript.
             // Decision point: resolved cards collapse to a dim one-line
             // marker; the pending card is the amber surface. The tool
             // intent above it stays visually calm.
@@ -12115,6 +12121,40 @@ mod picker_render_tests {
         let text = lines.join("\n");
         assert!(text.contains("1 agent"), "only Running counts: {text}");
         assert!(!text.contains("2 agent"), "Done must not count: {text}");
+    }
+
+    #[test]
+    fn approval_card_renders_inline_in_transcript_flow() {
+        let th = theme::Theme::pantheon();
+        let mut img = crate::richtext::ImagePaintState::new();
+        let mut ctx = BlockRenderCtx {
+            th: &th,
+            img: &mut img,
+            term_width: 84,
+            live_tokens: 0,
+        };
+        let block = TranscriptBlock {
+            kind: BlockKind::Approval {
+                tool: "shell".to_string(),
+                sentence: "Run this command?".to_string(),
+                target: "rm x".to_string(),
+                decision: None,
+            },
+        };
+        let mut lines: Vec<Line> = Vec::new();
+        render_block(&mut lines, &block, false, false, &mut ctx);
+        let text = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Permission required"), "got: {text}");
+        assert!(lines.len() > 1, "card must be transcript lines: {text}");
     }
 
     #[test]
