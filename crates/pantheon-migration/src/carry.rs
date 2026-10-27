@@ -62,6 +62,13 @@ pub struct McpServer {
     /// Operator toggle. Defaults to true so every declaration written
     /// before this field existed reads as enabled. The launcher honors
     /// it: a disabled declaration is never configured.
+    ///
+    /// Deliberate asymmetry, documented not changed: config entries
+    /// default to disabled ("fresh installs enable zero"), while
+    /// migrated declarations default to enabled because a migration
+    /// preserves the source's intent. Enabling is still not execution:
+    /// an enabled declaration still needs an explicit
+    /// `pantheon mcp approve <name>` before it ever launches.
     #[serde(default = "mcp_enabled_default")]
     pub enabled: bool,
 }
@@ -844,16 +851,51 @@ pub fn read_mcp_declarations(data_dir: &Path) -> Vec<McpDeclaration> {
     paths.sort();
     let mut out = Vec::new();
     for p in paths {
-        let doc: Option<Doc> = std::fs::read_to_string(&p)
-            .ok()
-            .and_then(|b| serde_json::from_str(&b).ok());
-        if let Some(d) = doc {
-            if !d.servers.is_empty() {
-                out.push(McpDeclaration {
-                    source: d.source,
-                    servers: d.servers,
-                });
+        let file_name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let body = match std::fs::read_to_string(&p) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("mcp: declaration '{file_name}' unreadable: {e}");
+                continue;
             }
+        };
+        let doc: Doc = match serde_json::from_str(&body) {
+            Ok(d) => d,
+            Err(e) => {
+                // Never silently drop a broken file: warn with the
+                // file name + parse error, and keep a placeholder
+                // row so the file shows in every MCP view instead
+                // of vanishing. Transport "corrupt" is unlaunchable:
+                // the resolver skips unknown transports.
+                eprintln!("mcp: declaration '{file_name}' unparseable: {e}");
+                let stem = p
+                    .file_stem()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| file_name.clone());
+                out.push(McpDeclaration {
+                    source: stem.clone(),
+                    servers: vec![McpServer {
+                        name: format!("corrupt:{stem}"),
+                        transport: "corrupt".to_string(),
+                        command: None,
+                        args: Vec::new(),
+                        url: None,
+                        requires_env: Vec::new(),
+                        needs_credentials: false,
+                        enabled: true,
+                    }],
+                });
+                continue;
+            }
+        };
+        if !doc.servers.is_empty() {
+            out.push(McpDeclaration {
+                source: doc.source,
+                servers: doc.servers,
+            });
         }
     }
     out
@@ -1110,6 +1152,27 @@ mod carry_env_tests {
         assert_eq!(
             pantheon_api::dotenv::read_dotenv_value(&data_dir, "MIG_B_API_KEY").as_deref(),
             Some("fresh")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_declaration_is_kept_as_placeholder_not_dropped() {
+        let dir = scratch("corrupt-decl");
+        let data_dir = dir.join("data");
+        std::fs::create_dir_all(data_dir.join("mcp")).unwrap();
+        std::fs::write(
+            data_dir.join("mcp").join("broken.json"),
+            "{not valid json",
+        )
+        .unwrap();
+        let decls = read_mcp_declarations(&data_dir);
+        assert_eq!(decls.len(), 1, "corrupt file must leave a placeholder row");
+        assert_eq!(decls[0].servers.len(), 1);
+        assert_eq!(decls[0].servers[0].transport, "corrupt");
+        assert!(
+            server_readiness(&decls[0].servers[0]).is_some(),
+            "placeholder must read as blocked, never launchable"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
