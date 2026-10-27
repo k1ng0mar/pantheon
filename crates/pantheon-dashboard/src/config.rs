@@ -250,13 +250,66 @@ fn validate_change(
     }
 }
 
+/// Is a dotted JSON path secret-bearing? Leaf names that carry secret
+/// material, plus MCP server `env` tables (literal env values for a
+/// spawned server, which are secrets in practice, not references).
+fn is_redact_path(path: &str) -> bool {
+    let leaf = path.rsplit('.').next().unwrap_or(path);
+    leaf == "token_secret"
+        || leaf == "api_key"
+        || leaf == "api_key_secret"
+        || leaf.contains("secret")
+        || leaf.contains("token")
+        || (path.starts_with("mcp.servers.") && path.contains(".env."))
+}
+
+/// Redact secret-bearing leaves in a JSON view of the config, in place.
+fn redact_values(path: &str, v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            for (k, child) in map.iter_mut() {
+                let child_path = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                if is_redact_path(&child_path) && !child.is_object() && !child.is_array() {
+                    *child = serde_json::Value::String("[redacted]".to_string());
+                } else {
+                    redact_values(&child_path, child);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_values(path, item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// `GET /api/config`: the document as JSON plus the raw TOML.
+///
+/// Inside the token boundary that is acceptable on loopback, but a
+/// token holder on a non-loopback bind is a much wider blast radius:
+/// when bound non-loopback, secret leaves are redacted and the raw
+/// TOML (which cannot be reliably redacted as free text) is omitted.
 pub fn get(app: &App) -> Response {
     let (doc, raw) = match read_doc(&app.data_dir) {
         Ok(d) => d,
         Err(r) => return r,
     };
-    let values = serde_json::to_value(&doc).unwrap_or(serde_json::Value::Null);
+    let mut values = serde_json::to_value(&doc).unwrap_or(serde_json::Value::Null);
+    if app.bind_all {
+        redact_values("", &mut values);
+        return json_ok(serde_json::json!({
+            "path": config_path(&app.data_dir).display().to_string(),
+            "values": values,
+            "raw": serde_json::Value::Null,
+            "raw_omitted": "bound to a non-loopback address; raw TOML omitted because it may contain secrets (read the file locally instead)",
+        }));
+    }
     json_ok(serde_json::json!({
         "path": config_path(&app.data_dir).display().to_string(),
         "values": values,
@@ -297,10 +350,26 @@ pub fn schema(app: &App) -> Response {
 /// startup, so a change only takes effect after a restart. Everything
 /// else applies live to new turns/sessions. Deliberately small and
 /// documented: `[stt]`/`[tts]`/`[voice]` back long-lived voice
-/// pipelines that never re-read config, and `[gateway]` backs the
-/// gateway process itself (channels, voice replies).
+/// pipelines that never re-read config, `[gateway]` backs the
+/// gateway process itself (channels, voice replies), `[server]` backs
+/// the listener itself (host/port), and `[swarm]` caps are baked into
+/// the orchestrator at startup - all four used to report "live" while
+/// needing a restart/rebuild to take effect.
 fn restart_scoped(top: &str) -> bool {
-    matches!(top, "stt" | "tts" | "voice" | "gateway")
+    matches!(top, "stt" | "tts" | "voice" | "gateway" | "server" | "swarm")
+}
+
+/// Does a [`Config::validate`] problem name exactly one of the changed
+/// paths? Same prefix rule as the CLI's `config set` gate: a problem
+/// about an untouched key (e.g. a missing `[model]` section) must not
+/// veto an unrelated change, but a problem about the changed key does.
+fn problem_names_changed(problem: &str, changed: &[String]) -> bool {
+    changed.iter().any(|key| {
+        problem == key
+            || problem.starts_with(&format!("{key} "))
+            || problem.starts_with(&format!("{key}:"))
+            || problem.starts_with(&format!("{key}."))
+    })
 }
 
 /// Sorted, deduplicated top-level sections among `changed` that need a
@@ -356,11 +425,38 @@ pub(crate) fn apply_changes(
             Err(e) => return bad_json(&e),
         }
     }
+    // `validate_change` above checks shape and schema membership, but
+    // never ran `Config::validate()`: a semantically bad value (bad
+    // reasoning level, unparseable permission_mode, zero aux timeout)
+    // was written and only surfaced later in doctor. Reject here when
+    // validation implicates a changed key; nothing is written then.
+    match pantheon_api::config::Config::try_from(doc.clone()) {
+        Ok(typed) => {
+            let problems: Vec<String> = typed
+                .validate()
+                .into_iter()
+                .filter(|p| problem_names_changed(p, &names))
+                .collect();
+            if !problems.is_empty() {
+                return bad_json(&format!(
+                    "config change rejected by validation: {}",
+                    problems.join("; ")
+                ));
+            }
+        }
+        Err(e) => return bad_json(&format!("config change does not form a valid document: {e}")),
+    }
     let text = toml::to_string_pretty(&doc).unwrap_or_default();
     if let Err(e) = atomic_write(&config_path(&app.data_dir), &text) {
         return err_json(500, "CONFIG", &format!("write: {e}"));
     }
-    json_ok(serde_json::json!({"ok": true, "changed": names, "restart_required": restart_required}))
+    // Comment preservation: PUT rewrites the document from its parsed
+    // form, so comments in config.toml are lost (unlike the CLI's
+    // format-preserving `config set`). A full format-preserving PUT is
+    // a bigger rework of read_doc/apply_changes onto toml_edit; until
+    // then the loss is disclosed on every successful write instead of
+    // discovered later.
+    json_ok(serde_json::json!({"ok": true, "changed": names, "restart_required": restart_required, "note": "config.toml was rewritten from its parsed form: comments are not preserved (use `pantheon config set` for format-preserving edits)"}))
 }
 
 /// Remove whole tables (or leaves) at dotted `paths` through the same
@@ -448,7 +544,18 @@ pub fn put(app: &App, req: &Request) -> Response {
 }
 
 /// `GET /api/config/export`: download the raw TOML.
+///
+/// Refused when bound non-loopback: raw TOML cannot be reliably
+/// redacted as free text (literal MCP env secrets, api keys), and the
+/// token is the only boundary there. Read the file locally instead.
 pub fn export(app: &App) -> Response {
+    if app.bind_all {
+        return err_json(
+            403,
+            "CONFIG",
+            "config export is disabled when bound to a non-loopback address: raw TOML may contain secrets; read config.toml locally instead",
+        );
+    }
     let path = config_path(&app.data_dir);
     match std::fs::read(&path) {
         Ok(bytes) => Response::download("config.toml", "text/plain; charset=utf-8", bytes),
@@ -493,10 +600,20 @@ pub fn import(app: &App, req: &Request) -> Response {
             ));
         }
     };
-    // Doctor-level problems (empty provider, unset env var, unknown agent
-    // table...) travel as warnings, not rejections: the leaf checks above
-    // are the import gate, this is the shared document's second opinion.
+    // Doctor-level problems (empty provider, bad reasoning level,
+    // unknown agent table...) used to travel as warnings while the
+    // import was still written - a broken document landed with a
+    // shrug. On confirm they are rejections; the preview still reports
+    // them as warnings so the caller can fix before committing. (Import
+    // replaces the whole document, so unlike PUT's per-key gate, the
+    // full validation result applies here.)
     let doc_warnings = typed.validate();
+    if confirm && !doc_warnings.is_empty() {
+        return bad_json(&format!(
+            "import rejected by validation: {}",
+            doc_warnings.join("; ")
+        ));
+    }
     let (old_doc, _) = match read_doc(&app.data_dir) {
         Ok(d) => d,
         Err(r) => return r,
@@ -528,7 +645,11 @@ pub fn import(app: &App, req: &Request) -> Response {
             "note": "names only. Resubmit with confirm=true to apply",
         }));
     }
-    let out = toml::to_string_pretty(&new_doc).unwrap_or_else(|_| text.to_string());
+    // Write the submitted text verbatim, not a re-serialized document:
+    // it parsed and validated above, and re-serializing would strip the
+    // author's comments. (PUT cannot do this - it merges changes into
+    // the existing document - so PUT still discloses its comment loss.)
+    let out = text.to_string();
     if let Err(e) = atomic_write(&config_path(&app.data_dir), &out) {
         return err_json(500, "CONFIG", &format!("write: {e}"));
     }
@@ -633,8 +754,10 @@ mod tests {
         assert!(r.is_err(), "wrong-shaped value must Err, got {r:?}");
     }
 
-    /// A-3: restart scoping covers the four restart sections and leaves
+    /// A-3: restart scoping covers the restart sections and leaves
     /// everything else live; output is sorted and deduplicated.
+    /// `[server]` and `[swarm]` used to report live while needing a
+    /// restart/rebuild.
     #[test]
     fn restart_required_scopes() {
         let paths = [
@@ -643,13 +766,34 @@ mod tests {
             "gateway.port".to_string(),
             "tts.provider".to_string(),
             "stt.provider".to_string(),
+            "server.port".to_string(),
+            "swarm.max_agents".to_string(),
         ];
         let rr = restart_required_for(paths.iter());
         assert_eq!(
             rr,
-            vec!["gateway".to_string(), "stt".to_string(), "tts".to_string()]
+            vec![
+                "gateway".to_string(),
+                "server".to_string(),
+                "stt".to_string(),
+                "swarm".to_string(),
+                "tts".to_string()
+            ]
         );
         let empty: Vec<String> = vec![];
         assert!(restart_required_for(empty.iter()).is_empty());
+    }
+
+    #[test]
+    fn redact_values_hides_secret_leaves() {
+        let mut v = serde_json::json!({
+            "model": {"provider": "openai"},
+            "gateway": {"channels": {"bot": {"token_secret": "shh"}}},
+            "mcp": {"servers": {"srv": {"env": {"KEY": "literal-secret"}}}},
+        });
+        redact_values("", &mut v);
+        assert_eq!(v["model"]["provider"], "openai");
+        assert_eq!(v["gateway"]["channels"]["bot"]["token_secret"], "[redacted]");
+        assert_eq!(v["mcp"]["servers"]["srv"]["env"]["KEY"], "[redacted]");
     }
 }

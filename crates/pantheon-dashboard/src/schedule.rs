@@ -678,9 +678,12 @@ pub fn trigger_job(app: &App, _req: &Request, id: &str) -> Response {
     if !jobs.iter().any(|j| j.job.id == id) {
         return err_json(404, "NOT_FOUND", "unknown job");
     }
-    let id_owned = id.to_string();
-    std::thread::spawn(move || {
-        let _ = spawn_pantheon(&["schedule", "run", &id_owned]);
-    });
+    // `spawn_pantheon` only spawns the child (it does not wait for the
+    // job), so doing it synchronously costs nothing - but doing it in a
+    // detached thread used to swallow spawn failures and still answer
+    // `triggered`. A spawn failure now 500s with SPAWN.
+    if let Err(e) = spawn_pantheon(&["schedule", "run", id]) {
+        return err_json(500, "SPAWN", &format!("failed to trigger job: {e}"));
+    }
     json_ok(serde_json::json!({"ok": true, "triggered": id}))
 }
