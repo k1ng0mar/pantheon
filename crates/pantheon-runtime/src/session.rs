@@ -7597,6 +7597,32 @@ pub fn rebuild_transcript(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Tr
                     }
                 }
             }
+            Event::ToolInterrupted {
+                call_id, tool, args, ..
+            } => {
+                // Retired by recovery: the call is settled, not running.
+                // `ok: Some(false)` is the only settled marker the
+                // transcript item has; it means "did not complete", not
+                // "failed" — the ledger's ToolInterrupted row carries the
+                // unconfirmed-outcome detail.
+                if let Some(&idx) = tool_index.get(&call_id) {
+                    if let Some(TranscriptItem::ToolCall { ok, .. }) = out.get_mut(idx) {
+                        if ok.is_none() {
+                            *ok = Some(false);
+                        }
+                    }
+                } else {
+                    let idx = out.len();
+                    tool_index.insert(call_id.clone(), idx);
+                    out.push(TranscriptItem::ToolCall {
+                        call_id: call_id.clone(),
+                        name: tool.clone(),
+                        args: args.clone(),
+                        output: Vec::new(),
+                        ok: Some(false),
+                    });
+                }
+            }
             Event::ImportedReasoning { text, .. } => out.push(TranscriptItem::Reasoning(text)),
             Event::UiContent {
                 ui_id, document, ..
@@ -7648,6 +7674,10 @@ pub fn rebuild_transcript(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Tr
 }
 
 /// Call ids that started and never completed.
+/// A call retired by recovery (`ToolInterrupted`) is settled, not
+/// pending: it must not be re-run on resume, and a second recovery
+/// pass must not surface it again. Only started-but-neither-completed-
+/// nor-interrupted calls are returned.
 pub fn unfinished_calls(entries: &[pantheon_storage::LedgerEntry]) -> Vec<String> {
     let mut started = std::collections::BTreeSet::new();
     let mut done = std::collections::BTreeSet::new();
@@ -7656,7 +7686,8 @@ pub fn unfinished_calls(entries: &[pantheon_storage::LedgerEntry]) -> Vec<String
             Event::ToolStarted { call_id, .. } => {
                 started.insert(call_id.clone());
             }
-            Event::ToolCompleted { call_id, .. } => {
+            Event::ToolCompleted { call_id, .. }
+            | Event::ToolInterrupted { call_id, .. } => {
                 done.insert(call_id.clone());
             }
             _ => {}
@@ -7703,7 +7734,8 @@ fn done_call_ids(entries: &[pantheon_storage::LedgerEntry]) -> std::collections:
     entries
         .iter()
         .filter_map(|e| match &e.event {
-            Event::ToolCompleted { call_id, .. } => Some(call_id.clone()),
+            Event::ToolCompleted { call_id, .. }
+            | Event::ToolInterrupted { call_id, .. } => Some(call_id.clone()),
             _ => None,
         })
         .collect()
@@ -9759,6 +9791,66 @@ mod delegate_tool_tests {
                 }
             }
             other => panic!("expected Ui, got {other:?}"),
+        }
+    }
+
+    /// Recovery provenance, runtime half: a `ToolInterrupted` row
+    /// settles its call. `unfinished_calls` must not report it as
+    /// pending (so a resumed turn never re-runs it), the transcript
+    /// must not show it as still running, and `rebuild_messages`
+    /// must not surface it as a new message.
+    #[test]
+    fn interrupted_call_is_settled_not_pending() {
+        use crate::session::{rebuild_messages, rebuild_transcript, unfinished_calls};
+        let entries = vec![
+            pantheon_storage::LedgerEntry {
+                id: 1,
+                run_id: "r".to_string(),
+                seq: 1,
+                ts_ms: 1,
+                event: Event::ToolStarted {
+                    run_id: "r".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool: "shell".to_string(),
+                    args: "{\"command\":\"ls\"}".to_string(),
+                    provenance: Provenance::system("test"),
+                },
+            },
+            pantheon_storage::LedgerEntry {
+                id: 2,
+                run_id: "r".to_string(),
+                seq: 2,
+                ts_ms: 2,
+                event: Event::ToolInterrupted {
+                    run_id: "r".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool: "shell".to_string(),
+                    args: "{\"command\":\"ls\"}".to_string(),
+                    output_seen: false,
+                    result_seen: false,
+                    detail: "interrupted before completion; outcome unconfirmed".to_string(),
+                },
+            },
+        ];
+        assert!(
+            unfinished_calls(&entries).is_empty(),
+            "interrupted call must not look pending"
+        );
+        assert!(
+            rebuild_messages(entries.clone()).is_empty(),
+            "interrupted row must not become a message"
+        );
+        let items = rebuild_transcript(entries);
+        assert_eq!(items.len(), 1, "one transcript item for the call");
+        match &items[0] {
+            crate::session::TranscriptItem::ToolCall { ok, .. } => {
+                assert_eq!(
+                    *ok,
+                    Some(false),
+                    "interrupted call is settled (not running), not successful"
+                );
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
         }
     }
 
