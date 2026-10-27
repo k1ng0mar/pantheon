@@ -607,6 +607,33 @@ pub fn backspace(text: &mut String, vim: &mut VimState) {
     }
 }
 
+/// Move the cursor by an arrow key, in either mode. This is the vim
+/// equivalent of `h`/`j`/`k`/`l`: the column is preserved across lines
+/// (the renderer's `cursor()` clamps it per line), and edges are
+/// sticky — pressing Up on the first line or Left at column 0 does not
+/// move or reset the column. Arrow keys previously reached no handler
+/// in the main loop at all, so vim users had no cursor keys.
+pub fn move_arrow(text: &str, vim: &mut VimState, drow: isize, dcol: isize) {
+    let lines = split_lines(text);
+    let (row, col) = vim.cursor(text);
+    // Vertical moves must preserve the *stored* column, not the
+    // clamped display column: cursor() clamps to the current line,
+    // so reading it would lose the column after crossing a short
+    // line (line0 col2 -> short line1 -> line2 would land at col1
+    // instead of col2). Horizontal moves keep the display column.
+    let base_col = if drow != 0 { vim.col } else { col };
+    let new_row = (row as isize + drow).clamp(0, lines.len() as isize - 1) as usize;
+    let new_col = if dcol < 0 {
+        base_col.saturating_sub((-dcol) as usize)
+    } else {
+        base_col + dcol as usize
+    };
+    // When the row changes, keep the column; `cursor()` clamps it to
+    // the target line on render, so a short line does not lose the
+    // column for the line after it.
+    vim.set_cursor(new_row, new_col);
+}
+
 /// Move the cursor to the end of the input (used before `@` mentions,
 /// which complete at end-of-input).
 pub fn move_to_end(text: &str, vim: &mut VimState) {
@@ -625,3 +652,46 @@ pub fn begin_insert_undo(text: &str, vim: &mut VimState) {
 // Small deterministic invariant unit tests. Behavioral, integration, and
 // timing tests live in `pantheon-eval`, never here.
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod move_arrow_tests {
+    use super::*;
+
+    fn vim_at(row: usize, col: usize, mode: VimMode) -> VimState {
+        let mut v = VimState::new();
+        v.enabled = true;
+        v.mode = mode;
+        v.row = row;
+        v.col = col;
+        v
+    }
+
+    #[test]
+    fn arrow_moves_and_sticks_at_edges() {
+        let text = "abc\ndef";
+        let mut v = vim_at(0, 1, VimMode::Insert);
+        move_arrow(text, &mut v, 0, -1);
+        assert_eq!(v.cursor(text), (0, 0));
+        move_arrow(text, &mut v, 0, -1);
+        assert_eq!(v.cursor(text), (0, 0));
+        move_arrow(text, &mut v, 1, 0);
+        assert_eq!(v.cursor(text), (1, 0));
+        move_arrow(text, &mut v, 1, 0);
+        assert_eq!(v.cursor(text), (1, 0));
+        move_arrow(text, &mut v, 0, 1);
+        assert_eq!(v.cursor(text), (1, 1));
+    }
+
+    #[test]
+    fn arrow_down_preserves_column_across_short_line() {
+        // Column 2 survives the one-char middle line: the renderer
+        // clamps it to 1 there, and the stored column is still 2 on
+        // the line after.
+        let text = "abc\nx\ndef";
+        let mut v = vim_at(0, 2, VimMode::Insert);
+        move_arrow(text, &mut v, 1, 0);
+        assert_eq!(v.cursor(text), (1, 1));
+        move_arrow(text, &mut v, 1, 0);
+        assert_eq!(v.cursor(text), (2, 2));
+    }
+}

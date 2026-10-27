@@ -545,6 +545,24 @@ pub struct TuiState {
     pub cost_cents: u32,
     pub blocks: Vec<TranscriptBlock>,
     pub input: String,
+    /// Non-vim composer cursor: char index into `input` (never a byte
+    /// index, so multi-byte text cannot split a character). The composer
+    /// was append-only, which made Left/Right/Home/End dead keys; the
+    /// cursor is what makes them work. Always clamped on use, so a
+    /// direct `input = …` assignment elsewhere can only park it at the
+    /// end, never out of range. Vim mode keeps its own cursor and
+    /// ignores this field.
+    pub input_cursor: usize,
+    /// Submitted composer messages, oldest first, for Up/Down recall.
+    /// Capped (see `INPUT_HISTORY_CAP`); consecutive duplicates are
+    /// not stored twice.
+    pub input_history: Vec<String>,
+    /// While recalling: index into `input_history`, or `None` when the
+    /// composer holds a fresh draft. `input_history_draft` is the draft
+    /// that was in the composer when recall started, restored when
+    /// recall walks past the newest entry.
+    pub input_history_idx: Option<usize>,
+    pub input_history_draft: String,
     pub scroll_offset: usize,
     pub ready: bool,
     pub shutting_down: bool,
@@ -815,6 +833,9 @@ pub struct TuiState {
 /// `git status` is a subprocess and must never run per frame.
 const GIT_REFRESH: Duration = Duration::from_secs(5);
 
+/// Cap on submitted-message history for Up/Down recall.
+const INPUT_HISTORY_CAP: usize = 200;
+
 impl Default for TuiState {
     fn default() -> Self {
         Self {
@@ -828,6 +849,10 @@ impl Default for TuiState {
             cost_cents: 0,
             blocks: Vec::new(),
             input: String::new(),
+            input_cursor: 0,
+            input_history: Vec::new(),
+            input_history_idx: None,
+            input_history_draft: String::new(),
             scroll_offset: 0,
             ready: false,
             shutting_down: false,
@@ -1002,6 +1027,10 @@ impl TuiState {
             cost_cents: 0,
             blocks: Vec::new(),
             input: String::new(),
+            input_cursor: 0,
+            input_history: Vec::new(),
+            input_history_idx: None,
+            input_history_draft: String::new(),
             scroll_offset: 0,
             ready: true,
             shutting_down: false,
@@ -2621,6 +2650,211 @@ impl TuiState {
         self.scroll_offset = self.scroll_offset.saturating_sub(lines);
     }
 
+    // --- Non-vim composer cursor + history (arrow keys) -----------------
+    // The composer used to be append-only (`input.push` / `input.pop`),
+    // so Left/Right/Home/End/Up/Down were dead keys in the main loop.
+    // These helpers are the whole cursor model: char indices, never
+    // byte indices. Vim mode keeps its own cursor and never uses them.
+    // Any direct `input = …` assignment elsewhere leaves the cursor
+    // clamped by `composer_cursor`, i.e. parked at the end — never out
+    // of range, never splitting a character.
+
+    /// Submitted-message history cap: enough for a session's recall,
+    /// bounded so a long session cannot grow it without limit.
+    pub fn composer_cursor(&self) -> usize {
+        self.input_cursor.min(self.input.chars().count())
+    }
+
+    fn composer_byte_at(&self, char_idx: usize) -> usize {
+        self.input
+            .char_indices()
+            .nth(char_idx)
+            .map(|(b, _)| b)
+            .unwrap_or(self.input.len())
+    }
+
+    /// Replace the composer text and park the cursor at the end. Use
+    /// this (not a bare `input = …`) wherever a new draft is installed:
+    /// editor take, rewind draft, tab-switch restore, form-fill start.
+    pub fn set_composer_text(&mut self, text: String) {
+        self.input = text;
+        self.input_cursor = self.input.chars().count();
+        self.input_history_idx = None;
+        self.input_history_draft.clear();
+    }
+
+    /// Clear the composer and its recall state.
+    pub fn clear_composer(&mut self) {
+        self.input.clear();
+        self.input_cursor = 0;
+        self.input_history_idx = None;
+        self.input_history_draft.clear();
+    }
+
+    /// Insert one char at the cursor (non-vim typing). Typing while
+    /// recalling ends recall: the recalled text plus the typed char
+    /// becomes the new draft.
+    pub fn composer_insert_char(&mut self, c: char) {
+        self.composer_insert_str(&c.to_string());
+    }
+
+    /// Insert text at the cursor (typing and bracketed paste share it,
+    /// so a pasted multi-line block lands at the cursor, not the end).
+    pub fn composer_insert_str(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let at = self.composer_byte_at(self.composer_cursor());
+        self.input.insert_str(at, text);
+        self.input_cursor = self.composer_cursor() + text.chars().count();
+        self.input_history_idx = None;
+        self.input_history_draft.clear();
+    }
+
+    /// Delete the char before the cursor; at the start, a no-op.
+    pub fn composer_backspace(&mut self) {
+        let cur = self.composer_cursor();
+        if cur == 0 {
+            return;
+        }
+        let start = self.composer_byte_at(cur - 1);
+        let end = self.composer_byte_at(cur);
+        self.input.drain(start..end);
+        self.input_cursor = cur - 1;
+        self.input_history_idx = None;
+        self.input_history_draft.clear();
+    }
+
+    /// Delete the char under the cursor (Delete key); at the end, a
+    /// no-op. Previously Delete was not handled in the composer at all.
+    pub fn composer_delete(&mut self) {
+        let cur = self.composer_cursor();
+        let len = self.input.chars().count();
+        if cur >= len {
+            return;
+        }
+        let start = self.composer_byte_at(cur);
+        let end = self.composer_byte_at(cur + 1);
+        self.input.drain(start..end);
+        self.input_history_idx = None;
+        self.input_history_draft.clear();
+    }
+
+    pub fn composer_move_left(&mut self) {
+        self.input_cursor = self.composer_cursor().saturating_sub(1);
+    }
+
+    pub fn composer_move_right(&mut self) {
+        self.input_cursor = (self.composer_cursor() + 1).min(self.input.chars().count());
+    }
+
+    pub fn composer_move_home(&mut self) {
+        self.input_cursor = 0;
+    }
+
+    pub fn composer_move_end(&mut self) {
+        self.input_cursor = self.input.chars().count();
+    }
+
+    /// Move the cursor one line up/down within a multi-line draft,
+    /// keeping the column where the target line allows it. Returns
+    /// true when the draft is multi-line (i.e. the key was a cursor
+    /// move); single-line drafts return false so the caller can use
+    /// Up/Down for history recall instead.
+    pub fn composer_move_vertical(&mut self, dy: isize) -> bool {
+        let text = self.input.clone();
+        let lines: Vec<&str> = text.split('\n').collect();
+        if lines.len() < 2 {
+            return false;
+        }
+        let cur = self.composer_cursor();
+        let mut row = 0usize;
+        let mut col = cur;
+        let mut seen = 0usize;
+        for (i, line) in lines.iter().enumerate() {
+            let len = line.chars().count();
+            if cur <= seen + len {
+                row = i;
+                col = cur - seen;
+                break;
+            }
+            seen += len + 1;
+            if i == lines.len() - 1 {
+                row = i;
+                col = len;
+            }
+        }
+        let new_row = (row as isize + dy).clamp(0, lines.len() as isize - 1) as usize;
+        if new_row == row {
+            return true;
+        }
+        let new_len = lines[new_row].chars().count();
+        let new_col = col.min(new_len);
+        let mut pos = 0usize;
+        for line in lines.iter().take(new_row) {
+            pos += line.chars().count() + 1;
+        }
+        self.input_cursor = pos + new_col;
+        true
+    }
+
+    /// Record a submitted message for Up/Down recall. Called from
+    /// `submit_text` only; empty messages and consecutive duplicates
+    /// are not stored.
+    pub fn composer_push_history(&mut self, msg: &str) {
+        if msg.is_empty() {
+            return;
+        }
+        if self.input_history.last().is_some_and(|l| l == msg) {
+            return;
+        }
+        self.input_history.push(msg.to_string());
+        if self.input_history.len() > INPUT_HISTORY_CAP {
+            let excess = self.input_history.len() - INPUT_HISTORY_CAP;
+            self.input_history.drain(..excess);
+        }
+    }
+
+    /// Walk recall one step older. First step saves the current draft;
+    /// the caller restores it via `composer_history_down` past the end.
+    /// Returns true when the composer now shows a recalled entry.
+    pub fn composer_history_up(&mut self) -> bool {
+        if self.input_history.is_empty() {
+            return false;
+        }
+        let idx = match self.input_history_idx {
+            None => {
+                self.input_history_draft = self.input.clone();
+                self.input_history.len() - 1
+            }
+            Some(i) => i.saturating_sub(1),
+        };
+        self.input_history_idx = Some(idx);
+        self.input = self.input_history[idx].clone();
+        self.input_cursor = self.input.chars().count();
+        true
+    }
+
+    /// Walk recall one step newer; past the newest entry, restore the
+    /// draft saved by `composer_history_up` and end recall. Returns
+    /// true when recall is still active afterwards, false when it ended
+    /// (caller may still have restored the draft).
+    pub fn composer_history_down(&mut self) -> bool {
+        let Some(idx) = self.input_history_idx else {
+            return false;
+        };
+        if idx + 1 >= self.input_history.len() {
+            self.input = std::mem::take(&mut self.input_history_draft);
+            self.input_history_idx = None;
+            self.input_cursor = self.input.chars().count();
+            return false;
+        }
+        self.input_history_idx = Some(idx + 1);
+        self.input = self.input_history[idx + 1].clone();
+        self.input_cursor = self.input.chars().count();
+        true
+    }
+
     pub fn tick(&mut self) {
         self.elapsed = self.start_time.elapsed();
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
@@ -2905,6 +3139,7 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
     } else {
         state.input.clear();
     }
+    state.input_cursor = 0;
     // A visible run is an open tab by definition: reopening a parked
     // run re-adds it. Decisions hydrate from the ledger first so the
     // card renders from durable state, not stale memory.
@@ -2997,7 +3232,8 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
         }
         state.scroll_to_bottom();
     }
-    state.input = state.drafts.remove(id).unwrap_or_default();
+    let draft = state.drafts.remove(id).unwrap_or_default();
+    state.set_composer_text(draft);
     state.attention_clear();
     state.blocks.push(TranscriptBlock {
         kind: BlockKind::Status(format!("{verb} {id}")),
@@ -3886,6 +4122,9 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
         ("Esc", "stop typing"),
         ("Esc x2", "interrupt run / offer rewind"),
         ("PgUp PgDn", "scroll transcript"),
+        ("Left / Right", "move composer cursor"),
+        ("Up / Down", "recall submitted messages (single-line draft)"),
+        ("Home / End", "start / end of composer draft"),
         (
             "click block header",
             "expand / collapse thinking, output, diffs",
@@ -3898,7 +4137,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
         ("Ctrl+Tab", "next session"),
         ("Ctrl+Shift+Tab", "previous session"),
         ("Alt+1..9", "jump to session"),
-        ("Up / Down", "move in lists"),
+        ("Up / Down", "move in lists / pickers"),
         ("a / d", "approve / deny approval"),
         ("y / n", "allow / deny (alias)"),
         ("digit (clarify)", "answer pending question"),
@@ -3968,9 +4207,16 @@ fn composer_text(state: &TuiState) -> String {
             }
         }
         out
+    } else if state.is_inputting {
+        // Non-vim cursor: the `_` sits at the cursor char index, not
+        // at the end. When idle there is no cursor to show, so the
+        // trailing space of the old behaviour is kept below.
+        let at = state.composer_cursor();
+        let mut chars: Vec<char> = state.input.chars().collect();
+        chars.insert(at.min(chars.len()), '_');
+        chars.into_iter().collect()
     } else {
-        let cursor = if state.is_inputting { "_" } else { " " };
-        format!("{}{}", state.input, cursor)
+        format!("{} ", state.input)
     }
 }
 
@@ -6021,7 +6267,7 @@ pub fn run_tui_session_with(
         if state.pending_approval.is_some() || state.pending_clarify.is_some() {
             // A parked run needs its approval/answer before another turn can
             // start. Keep the requested message ready in the composer.
-            state.input = prompt;
+            state.set_composer_text(prompt);
             state.add_status(
                 "resolve the pending request, then press Enter to send your message".into(),
             );
@@ -7157,7 +7403,7 @@ fn start_form_fill(state: &mut TuiState) -> bool {
                 index: 0,
                 values: serde_json::Map::new(),
             });
-            state.input.clear();
+            state.clear_composer();
             state.is_inputting = true;
             let prompt = state
                 .form_fill
@@ -7243,10 +7489,11 @@ fn advance_form_fill(state: &mut TuiState, session: &Arc<Session>) {
         return;
     };
     let raw = std::mem::take(&mut state.input);
+    state.input_cursor = 0;
     match validate_form_input(&field, &raw) {
         Err(e) => {
             state.form_fill = Some(fill);
-            state.input = raw;
+            state.set_composer_text(raw);
             state.status_line = e;
         }
         Ok(None) => {
@@ -7404,7 +7651,8 @@ fn submit_text(
     raw: &str,
 ) {
     let msg = raw.trim().to_string();
-    state.input.clear();
+    state.composer_push_history(&msg);
+    state.clear_composer();
     state.is_inputting = false;
     // A sent message leaves the composer in Normal mode, cursor home.
     state.vim.on_submit();
@@ -7502,7 +7750,7 @@ pub(crate) fn rewind_to_turn(
         _ => String::new(),
     };
     state.blocks.truncate(drop_block);
-    state.input = draft;
+    state.set_composer_text(draft);
     state.is_inputting = false;
     state.turn_in = None;
     state.turn_out = None;
@@ -7532,7 +7780,7 @@ fn handle_editor_key(
         KeyCode::Esc => {
             // Cancel: the draft survives in the input box.
             if let Some(ed) = state.editor.take() {
-                state.input = ed.text();
+                state.set_composer_text(ed.text());
             }
             state.is_inputting = false;
             state.status_line = "ready".into();
@@ -7580,7 +7828,8 @@ fn handle_mention_key(state: &mut TuiState, code: KeyCode) -> bool {
     match code {
         KeyCode::Enter | KeyCode::Tab => {
             if let Some(picker) = state.mention.take() {
-                state.input = picker.apply_to(&state.input);
+                let applied = picker.apply_to(&state.input);
+                state.set_composer_text(applied);
                 if state.vim.enabled {
                     // The replacement lands at end-of-input; park the
                     // vim cursor there.
@@ -7604,7 +7853,14 @@ fn handle_mention_key(state: &mut TuiState, code: KeyCode) -> bool {
             if state.vim.enabled {
                 vim::insert_char(&mut state.input, &mut state.vim, c);
             } else {
+                // Mentions complete at end-of-input (as before): the
+                // filter text always lands at the end, so keep the
+                // non-vim cursor parked there while the picker is open.
+                // Direct field write (not composer_move_end(), a &mut
+                // self method) so it compiles while `picker` borrows
+                // state.mention; semantics are identical.
                 state.input.push(c);
+                state.input_cursor = state.input.chars().count();
             }
             picker.input.push(c);
             picker.requery();
@@ -7614,6 +7870,8 @@ fn handle_mention_key(state: &mut TuiState, code: KeyCode) -> bool {
                 vim::backspace(&mut state.input, &mut state.vim);
             } else {
                 state.input.pop();
+                // Direct field write, as above (picker borrow in scope).
+                state.input_cursor = state.input.chars().count();
             }
             picker.input.pop();
             if state.input.len() <= picker.anchor {
@@ -7624,6 +7882,70 @@ fn handle_mention_key(state: &mut TuiState, code: KeyCode) -> bool {
         _ => {}
     }
     false
+}
+
+/// Arrow keys in the main composer (and, via the Ctrl block, Ctrl+arrows).
+/// Returns true when the key was an arrow key owned here, even when it
+/// was a no-op at an edge — the caller must not let it fall through to
+/// anything else. Overlays (palette, mention, models, history, timeline,
+/// image preview, editor) own the keyboard while open and never reach
+/// this: they handle arrows themselves, above the main match.
+///
+/// Behaviour:
+/// - Vim on + inputting: arrows move the vim cursor (either mode).
+/// - Vim on + not inputting: untouched, as today (arrows do not wake
+///   the composer).
+/// - Vim off: Left/Right/Home/End/Delete move/edit at the composer
+///   cursor; Up/Down move the cursor vertically in a multi-line draft,
+///   otherwise recall submitted messages (Up older, Down newer, past
+///   the newest entry restores the saved draft).
+fn handle_composer_arrow(state: &mut TuiState, code: KeyCode) -> bool {
+    if state.vim.enabled {
+        if !state.is_inputting {
+            return false;
+        }
+        match code {
+            KeyCode::Left => vim::move_arrow(&state.input, &mut state.vim, 0, -1),
+            KeyCode::Right => vim::move_arrow(&state.input, &mut state.vim, 0, 1),
+            KeyCode::Up => vim::move_arrow(&state.input, &mut state.vim, -1, 0),
+            KeyCode::Down => vim::move_arrow(&state.input, &mut state.vim, 1, 0),
+            KeyCode::Home => {
+                let (_, col) = state.vim.cursor(&state.input);
+                vim::move_arrow(&state.input, &mut state.vim, 0, -(col as isize));
+            }
+            KeyCode::End => {
+                let (row, col) = state.vim.cursor(&state.input);
+                let len = state
+                    .input
+                    .split('\n')
+                    .nth(row)
+                    .map(|l| l.chars().count())
+                    .unwrap_or(0);
+                vim::move_arrow(&state.input, &mut state.vim, 0, (len - col) as isize);
+            }
+            _ => return false,
+        }
+        return true;
+    }
+    match code {
+        KeyCode::Left => state.composer_move_left(),
+        KeyCode::Right => state.composer_move_right(),
+        KeyCode::Home => state.composer_move_home(),
+        KeyCode::End => state.composer_move_end(),
+        KeyCode::Delete => state.composer_delete(),
+        KeyCode::Up => {
+            if !state.composer_move_vertical(-1) {
+                state.composer_history_up();
+            }
+        }
+        KeyCode::Down => {
+            if !state.composer_move_vertical(1) {
+                state.composer_history_down();
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 
 fn tui_loop(
@@ -7879,7 +8201,7 @@ fn tui_loop(
                         vim::insert_char(&mut state.input, &mut state.vim, c);
                     }
                 } else {
-                    state.input.push_str(&text);
+                    state.composer_insert_str(&text);
                 }
                 state.tick();
                 terminal.draw(|f| render(state, f))?;
@@ -8113,18 +8435,27 @@ fn tui_loop(
                     match key.code {
                         KeyCode::Esc => {
                             state.form_fill = None;
-                            state.input.clear();
+                            state.clear_composer();
                             state.is_inputting = false;
                             state.status_line = "form cancelled".into();
                         }
                         KeyCode::Enter => {
                             advance_form_fill(state, &session);
                         }
+                        // Form fields are single-line composer text with
+                        // vim bypassed, so the composer cursor applies
+                        // here too; Up/Down stay unbound (no field list
+                        // to move through in this arm).
+                        KeyCode::Left => state.composer_move_left(),
+                        KeyCode::Right => state.composer_move_right(),
+                        KeyCode::Home => state.composer_move_home(),
+                        KeyCode::End => state.composer_move_end(),
+                        KeyCode::Delete => state.composer_delete(),
                         KeyCode::Backspace => {
-                            state.input.pop();
+                            state.composer_backspace();
                         }
                         KeyCode::Char(c) => {
-                            state.input.push(c);
+                            state.composer_insert_char(c);
                         }
                         _ => {}
                     }
@@ -8309,6 +8640,21 @@ fn tui_loop(
                 }
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     match key.code {
+                        // Ctrl+arrows used to be swallowed by this
+                        // block's unconditional `continue` below: they
+                        // never reached the main match. Route them to
+                        // the same composer-arrow handling as plain
+                        // arrows (Ctrl+Left/Right do not word-jump;
+                        // that would be a new binding, not a fix).
+                        KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Up
+                        | KeyCode::Down
+                        | KeyCode::Home
+                        | KeyCode::End
+                        | KeyCode::Delete => {
+                            handle_composer_arrow(state, key.code);
+                        }
                         // Ctrl+Tab / Ctrl+Shift+Tab: these never reach
                         // tab_key_action below (this block catches every
                         // Ctrl-modified key first), so cycle here.
@@ -8633,15 +8979,19 @@ fn tui_loop(
                             if c == '@' {
                                 // Open the `@` file picker: the `@` stays in
                                 // the composer and the picker filters on the
-                                // text typed after it.
-                                state.input.push('@');
+                                // text typed after it. Mentions complete
+                                // at end-of-input (as before), so park
+                                // the cursor there first; the anchor
+                                // formula below still holds.
+                                state.composer_move_end();
+                                state.composer_insert_char('@');
                                 let anchor = state.input.len() - 1;
                                 let cwd =
                                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                                 state.mention =
                                     Some(crate::mentions::MentionPicker::open(cwd, anchor));
                             } else {
-                                state.input.push(c);
+                                state.composer_insert_char(c);
                             }
                         } else {
                             match c {
@@ -8656,7 +9006,7 @@ fn tui_loop(
                                 'v' | 'V' => {
                                     if state.img.placements.is_empty() {
                                         state.is_inputting = true;
-                                        state.input.push(c);
+                                        state.composer_insert_char(c);
                                     } else {
                                         state.img.open_preview();
                                     }
@@ -8667,7 +9017,7 @@ fn tui_loop(
                                 // reached the handler.
                                 _ => {
                                     state.is_inputting = true;
-                                    state.input.push(c);
+                                    state.composer_insert_char(c);
                                 }
                             }
                         }
@@ -8689,7 +9039,7 @@ fn tui_loop(
                                 }
                             }
                         } else if state.is_inputting {
-                            state.input.pop();
+                            state.composer_backspace();
                         }
                     }
                     KeyCode::Enter => {
@@ -8699,7 +9049,7 @@ fn tui_loop(
                             let raw = state.input.clone();
                             if state.pending_clarify.is_some() && !raw.trim().is_empty() {
                                 // Free-text answer to the clarify card.
-                                state.input.clear();
+                                state.clear_composer();
                                 answer_clarify(state, &session, tx, raw.trim());
                             } else {
                                 submit_text(state, &session, tx, &raw);
@@ -8787,6 +9137,20 @@ fn tui_loop(
                                 session.cancel_current_run(&target, "user pressed esc twice");
                             }
                         }
+                    }
+                    // Arrow keys in the composer. Previously this
+                    // match had no arrow arms at all, so Up/Down/
+                    // Left/Right/Home/End/Delete fell to `_` and did
+                    // nothing in the most common TUI state. PageUp/
+                    // PageDown below still scroll the transcript.
+                    KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::Delete => {
+                        handle_composer_arrow(state, key.code);
                     }
                     KeyCode::PageUp if state.pending_approval.is_none() => {
                         // The permission card owns the keyboard while it is
@@ -11750,5 +12114,155 @@ mod streaming_response_tests {
             })
             .collect();
         assert_eq!(assistant, ["Hello there."]);
+    }
+}
+
+#[cfg(test)]
+mod composer_arrow_tests {
+    use super::*;
+
+    fn state() -> TuiState {
+        TuiState::new("run-arrows".into(), "test-model".into(), 0)
+    }
+
+    #[test]
+    fn cursor_insert_backspace_delete_midline() {
+        let mut s = state();
+        s.set_composer_text("hello".into());
+        s.composer_move_left();
+        s.composer_move_left();
+        assert_eq!(s.composer_cursor(), 3);
+        s.composer_insert_char('X');
+        assert_eq!(s.input, "helXlo");
+        s.composer_backspace();
+        assert_eq!(s.input, "hello");
+        assert_eq!(s.composer_cursor(), 3);
+        s.composer_delete();
+        assert_eq!(s.input, "helo");
+    }
+
+    #[test]
+    fn cursor_home_end_and_clamp_on_new_text() {
+        let mut s = state();
+        s.set_composer_text("abc".into());
+        s.composer_move_home();
+        assert_eq!(s.composer_cursor(), 0);
+        s.composer_move_left();
+        assert_eq!(s.composer_cursor(), 0);
+        s.composer_move_end();
+        assert_eq!(s.composer_cursor(), 3);
+        s.composer_move_right();
+        assert_eq!(s.composer_cursor(), 3);
+        // A new draft must not keep a stale cursor past its end.
+        s.set_composer_text("x".into());
+        assert_eq!(s.composer_cursor(), 1);
+    }
+
+    #[test]
+    fn cursor_is_char_not_byte_index() {
+        let mut s = state();
+        s.set_composer_text("aé".into());
+        s.composer_move_left();
+        assert_eq!(s.composer_cursor(), 1);
+        s.composer_insert_char('X');
+        assert_eq!(s.input, "aXé");
+    }
+
+    #[test]
+    fn history_up_down_restores_draft() {
+        let mut s = state();
+        s.composer_push_history("first");
+        s.composer_push_history("second");
+        s.set_composer_text("draft".into());
+        assert!(s.composer_history_up());
+        assert_eq!(s.input, "second");
+        assert!(s.composer_history_up());
+        assert_eq!(s.input, "first");
+        // Older than the oldest entry: stays put.
+        assert!(s.composer_history_up());
+        assert_eq!(s.input, "first");
+        assert!(s.composer_history_down());
+        assert_eq!(s.input, "second");
+        assert!(!s.composer_history_down());
+        assert_eq!(s.input, "draft");
+        assert_eq!(s.input_history_idx, None);
+    }
+
+    #[test]
+    fn history_ignores_empty_and_consecutive_duplicates() {
+        let mut s = state();
+        s.composer_push_history("");
+        s.composer_push_history("a");
+        s.composer_push_history("a");
+        s.composer_push_history("b");
+        assert_eq!(s.input_history, vec!["a".to_string(), "b".to_string()]);
+        let mut s2 = state();
+        assert!(!s2.composer_history_up());
+    }
+
+    #[test]
+    fn history_typing_ends_recall() {
+        let mut s = state();
+        s.composer_push_history("old");
+        s.set_composer_text(String::new());
+        assert!(s.composer_history_up());
+        assert_eq!(s.input, "old");
+        s.composer_insert_char('!');
+        assert_eq!(s.input, "old!");
+        assert_eq!(s.input_history_idx, None);
+        assert!(!s.composer_history_down());
+    }
+
+    #[test]
+    fn multiline_up_down_moves_cursor_not_history() {
+        let mut s = state();
+        s.composer_push_history("history-entry");
+        s.set_composer_text("aaa\nbbb".into());
+        assert_eq!(s.composer_cursor(), 7);
+        assert!(s.composer_move_vertical(-1));
+        assert_eq!(s.composer_cursor(), 3);
+        assert!(s.composer_move_vertical(1));
+        assert_eq!(s.composer_cursor(), 7);
+        // Single-line draft: Up is history, not a cursor move.
+        let mut s2 = state();
+        s2.composer_push_history("history-entry");
+        s2.set_composer_text("hi".into());
+        assert!(!s2.composer_move_vertical(-1));
+        assert!(handle_composer_arrow(&mut s2, KeyCode::Up));
+        assert_eq!(s2.input, "history-entry");
+    }
+
+    #[test]
+    fn handle_arrow_vim_moves_cursor_only_when_inputting() {
+        let mut s = state();
+        s.vim.enabled = true;
+        s.vim.mode = vim::VimMode::Insert;
+        s.set_composer_text("abcd".into());
+        vim::move_to_end(&s.input, &mut s.vim);
+        assert_eq!(s.vim.cursor(&s.input), (0, 4));
+        s.is_inputting = false;
+        assert!(!handle_composer_arrow(&mut s, KeyCode::Left));
+        assert_eq!(s.vim.cursor(&s.input), (0, 4));
+        s.is_inputting = true;
+        assert!(handle_composer_arrow(&mut s, KeyCode::Left));
+        assert_eq!(s.vim.cursor(&s.input), (0, 3));
+        assert!(handle_composer_arrow(&mut s, KeyCode::Home));
+        assert_eq!(s.vim.cursor(&s.input), (0, 0));
+        assert!(handle_composer_arrow(&mut s, KeyCode::End));
+        // Insert mode: End is the line length.
+        assert_eq!(s.vim.cursor(&s.input), (0, 4));
+    }
+
+    #[test]
+    fn handle_arrow_nonvim_moves_and_recalls() {
+        let mut s = state();
+        s.composer_push_history("previous");
+        s.set_composer_text("hello".into());
+        assert!(handle_composer_arrow(&mut s, KeyCode::Left));
+        assert_eq!(s.composer_cursor(), 4);
+        assert!(handle_composer_arrow(&mut s, KeyCode::Up));
+        assert_eq!(s.input, "previous");
+        assert!(handle_composer_arrow(&mut s, KeyCode::Down));
+        assert_eq!(s.input, "hello");
     }
 }

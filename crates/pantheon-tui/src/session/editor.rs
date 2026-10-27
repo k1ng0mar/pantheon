@@ -127,20 +127,21 @@ impl DraftEditor {
     }
 
     pub fn move_up(&mut self) {
+        // At the first line there is nowhere to go: stay put instead
+        // of resetting the column to 0 (which lost the column for
+        // nothing, and made Up at the top line a destructive move).
         if self.row > 0 {
             self.row -= 1;
             self.col = self.col.min(self.lines[self.row].chars().count());
-        } else {
-            self.col = 0;
         }
     }
 
     pub fn move_down(&mut self) {
+        // Same at the last line: stay put instead of jumping to the
+        // line end.
         if self.row + 1 < self.lines.len() {
             self.row += 1;
             self.col = self.col.min(self.lines[self.row].chars().count());
-        } else {
-            self.col = self.lines[self.row].chars().count();
         }
     }
 
@@ -150,5 +151,35 @@ impl DraftEditor {
 
     pub fn end(&mut self) {
         self.col = self.lines[self.row].chars().count();
+    }
+}
+
+#[cfg(test)]
+mod move_edge_tests {
+    use super::*;
+
+    #[test]
+    fn move_up_at_first_line_keeps_column() {
+        let mut ed = DraftEditor::from_text("hello\nworld");
+        // Cursor starts at end of last line; move to first line col 3.
+        ed.move_up();
+        ed.move_left();
+        ed.move_left();
+        assert_eq!(ed.cursor(), (0, 3));
+        ed.move_up();
+        assert_eq!(ed.cursor(), (0, 3));
+    }
+
+    #[test]
+    fn move_down_at_last_line_keeps_column() {
+        let mut ed = DraftEditor::from_text("hello\nworld");
+        ed.move_up();
+        ed.move_left();
+        ed.move_left();
+        assert_eq!(ed.cursor(), (0, 3));
+        ed.move_down();
+        assert_eq!(ed.cursor(), (1, 3));
+        ed.move_down();
+        assert_eq!(ed.cursor(), (1, 3));
     }
 }
