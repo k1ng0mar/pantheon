@@ -3638,7 +3638,7 @@ fn render_left(state: &mut TuiState, f: &mut Frame, area: Rect) {
         let [transcript_area, rewind_area, input_area] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(1),
-            Constraint::Length(4),
+            Constraint::Length(5),
         ])
         .areas(area);
         render_transcript(f, transcript_area, state);
@@ -3651,7 +3651,7 @@ fn render_left(state: &mut TuiState, f: &mut Frame, area: Rect) {
         return;
     }
     let [transcript_area, input_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(4)]).areas(area);
+        Layout::vertical([Constraint::Min(1), Constraint::Length(5)]).areas(area);
     render_transcript(f, transcript_area, state);
     if state.pending_reflect.is_some() {
         render_reflect_card(f, input_area, state);
@@ -4654,19 +4654,10 @@ fn composer_provider_row(
             Style::default().fg(th.primary),
         ));
     }
-    // Live token count, incrementing as the turn streams: while
-    // `turn_estimate` is nonzero the number is an estimate (`~`);
-    // after the provider's `Usage` event it is the final number.
-    // Hidden at 0 so an idle composer row is byte-identical to base.
-    let live_tokens = state.tokens_used + state.turn_estimate;
-    if live_tokens > 0 {
-        let label = if state.turn_estimate > 0 {
-            format!(" • ~{} tok", statusbar::fmt_count(live_tokens as u64))
-        } else {
-            format!(" • {} tok", statusbar::fmt_count(live_tokens as u64))
-        };
-        left.push(Span::styled(label, Style::default().fg(th.dim)));
-    }
+    // NOTE: the live token count does NOT live here any more. It
+    // moved to the line directly below the composer box
+    // (`composer_token_line`, rendered by `render_input_block`), so
+    // the provider row inside the box never duplicates it.
     if state.tokens_max > 0 {
         let live = state.tokens_used + state.turn_estimate;
         let pct = 100.0 * live as f64 / state.tokens_max as f64;
@@ -4704,10 +4695,43 @@ fn composer_provider_row(
     }
 }
 
+/// Token line directly below the composer box, part of the composer
+/// area (not a footer, alert strip, or sweep): `N toks • N / N ctx` —
+/// live tokens (`tokens_used + turn_estimate`, estimate marked `~`
+/// while `turn_estimate` is nonzero, settling to the final number
+/// once the provider's `Usage` event lands), then context used /
+/// context limit. With no known limit (`tokens_max == 0`) only the
+/// toks part is shown, never an invented limit. Hidden at 0 tokens,
+/// matching the previous idle behaviour (an idle composer shows no
+/// token line at all).
+fn composer_token_line(state: &TuiState, th: &theme::Theme) -> Option<Line<'static>> {
+    let live = state.tokens_used + state.turn_estimate;
+    if live == 0 {
+        return None;
+    }
+    let toks = if state.turn_estimate > 0 {
+        format!("~{} toks", statusbar::fmt_count(live as u64))
+    } else {
+        format!("{} toks", statusbar::fmt_count(live as u64))
+    };
+    let text = if state.tokens_max > 0 {
+        format!(
+            "{} • {} / {} ctx",
+            toks,
+            statusbar::fmt_count(live as u64),
+            statusbar::fmt_count(state.tokens_max as u64)
+        )
+    } else {
+        toks
+    };
+    Some(Line::from(Span::styled(text, Style::default().fg(th.dim))))
+}
+
 /// Input block at the foot of the left column, base design: ONE
 /// unified bordered box, exactly 4 rows (top border, prompt row,
-/// provider row, bottom border). The provider line lives INSIDE the
-/// box, below the input — there is no separate footer row beneath
+/// provider row, bottom border), plus the token line directly below
+/// the box when tokens are nonzero. The provider line lives INSIDE
+/// the box, below the input — there is no separate footer row beneath
 /// it. The prompt row reuses `bordered_row`'s language from the
 /// splash `render_composer_box`, not a second border implementation;
 /// the box is full-width here, not centred at 64 cols. Below 4 rows
@@ -4761,6 +4785,17 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
         Paragraph::new(rows),
         Rect::new(area.x, area.y, area.width, 4),
     );
+    // Token line directly below the box, when nonzero. It needs a
+    // 5th row, which `render_left` reserves; in a cramped area (<5
+    // rows) it is simply not shown rather than shrinking the box.
+    if area.height >= 5 {
+        if let Some(line) = composer_token_line(state, th) {
+            f.render_widget(
+                Paragraph::new(line),
+                Rect::new(area.x, area.y + 4, area.width, 1),
+            );
+        }
+    }
 }
 
 /// Right sidebar (inspector, >=160 cols only): the switchable card
@@ -12241,35 +12276,57 @@ mod picker_render_tests {
     }
 
     #[test]
-    fn provider_row_increments_live_tokens_and_settles_on_usage() {
+    fn token_line_below_box_increments_live_and_settles_on_usage() {
         // Prior usage: 100 tokens. Deltas bump the estimate (~4 chars
-        // per token), so the provider row must tick up with a `~`
-        // estimate marker; the provider's Usage event then snaps it to
-        // the final number with no marker.
+        // per token), so the token line BELOW the composer box must
+        // tick up with a `~` estimate marker; the provider's Usage
+        // event then snaps it to the final number with no marker.
+        // The provider row inside the box must carry no token count.
         let mut s = test_state();
-        let row = |s: &TuiState| render_to_string(render_input_block, s).join("\n");
-        assert!(!row(&s).contains("tok"), "idle row must stay base");
+        s.tokens_max = 256_000;
+        let lines = |s: &TuiState| render_to_string(render_input_block, s);
+        let provider_row = |s: &TuiState| {
+            let ls = lines(s);
+            ls.iter()
+                .find(|l| l.contains("Provider:"))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let token_line = |s: &TuiState| {
+            let ls = lines(s);
+            let bottom = ls.iter().position(|l| l.contains('╰')).expect("box bottom");
+            ls.get(bottom + 1).cloned().unwrap_or_default()
+        };
+        assert!(!lines(&s).join("\n").contains("tok"), "idle must stay base");
         s.tokens_used = 100;
         assert!(
-            row(&s).contains("100 tok") && !row(&s).contains('~'),
-            "prior final usage shows without estimate marker: {}",
-            row(&s)
+            !provider_row(&s).contains("tok"),
+            "provider row must not duplicate tokens: {}",
+            provider_row(&s)
+        );
+        assert_eq!(
+            token_line(&s).trim(),
+            "100 toks • 100 / 256.0k ctx",
+            "token line format wrong: {}",
+            token_line(&s)
         );
         s.handle_model_event(ModelEvent::TextDelta {
             text: "Hello world, this is a test.".into(), // 28 chars -> +7
         });
-        assert!(
-            row(&s).contains("~107 tok"),
+        assert_eq!(
+            token_line(&s).trim(),
+            "~107 toks • 107 / 256.0k ctx",
             "estimate must tick on first delta: {}",
-            row(&s)
+            token_line(&s)
         );
         s.handle_model_event(ModelEvent::TextDelta {
             text: "12345678".into(), // 8 chars -> +2
         });
-        assert!(
-            row(&s).contains("~109 tok"),
+        assert_eq!(
+            token_line(&s).trim(),
+            "~109 toks • 109 / 256.0k ctx",
             "estimate must tick on second delta: {}",
-            row(&s)
+            token_line(&s)
         );
         s.handle_model_event(ModelEvent::Usage {
             usage: pantheon_providers::model_event::ModelUsage {
@@ -12279,11 +12336,19 @@ mod picker_render_tests {
                 cost_usd: None,
             },
         });
-        let final_row = row(&s);
-        assert!(final_row.contains("150 tok"), "final must settle: {final_row}");
-        assert!(
-            !final_row.contains('~'),
-            "final must carry no estimate marker: {final_row}"
+        assert_eq!(
+            token_line(&s).trim(),
+            "150 toks • 150 / 256.0k ctx",
+            "final must settle: {}",
+            token_line(&s)
+        );
+        // No known limit: toks only, never an invented limit.
+        s.tokens_max = 0;
+        assert_eq!(
+            token_line(&s).trim(),
+            "150 toks",
+            "unknown limit must show toks only: {}",
+            token_line(&s)
         );
     }
 
@@ -12723,11 +12788,16 @@ mod picker_render_tests {
 
     #[test]
     fn composer_ctx_appears_only_at_nearly_full() {
+        // The `ctx NN%` element in the provider row appears only at
+        // >=78%. The token line below the box always shows the ctx
+        // ratio (`N / N ctx`) once tokens are nonzero, so this test
+        // checks the percentage element specifically, not the word
+        // "ctx" anywhere in the frame.
         let mut s = test_state();
         s.tokens_max = 1000;
         s.tokens_used = 500;
         let text = render_to_string(render_input_block, &s).join("\n");
-        assert!(!text.contains("ctx"), "ctx must hide below 78%: {text}");
+        assert!(!text.contains("ctx 50%"), "ctx% must hide below 78%: {text}");
         s.tokens_used = 800;
         let text = render_to_string(render_input_block, &s).join("\n");
         assert!(text.contains("ctx 80%"), "ctx must appear at >=78%: {text}");
