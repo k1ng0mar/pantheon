@@ -33,6 +33,15 @@ pub struct ModelSection {
     /// 0 disables thinking entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_budget: Option<u32>,
+    /// Provider HTTP timeout in milliseconds (`timeout_ms`).
+    /// Applies to single-shot calls as an overall deadline and to
+    /// streams as a per-read / connection deadline - never as a total
+    /// cap on a live stream, so a slow-but-alive provider is not cut
+    /// off mid-answer. Absent or 0 = the 120s default; the
+    /// `PANTHEON_HTTP_TIMEOUT_MS` env var overrides this value when
+    /// set; values above 1h are clamped to 1h.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 /// One aux-model slot: every `[judge]`, `[compression]`, `[title_gen]`,
