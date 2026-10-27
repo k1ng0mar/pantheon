@@ -763,6 +763,19 @@ pub fn numbered_diff(old: &str, new: &str) -> Vec<NumberedDiffLine> {
                 new_no: None,
                 kind: NumberedKind::Truncated(n),
             }),
+            // A skipped diff renders as a hunk-header line naming
+            // the skip: no new NumberedKind needed, and line numbers
+            // are meaningless here.
+            DiffLine::TooLarge {
+                old_lines,
+                new_lines,
+            } => out.push(NumberedDiffLine {
+                old_no: None,
+                new_no: None,
+                kind: NumberedKind::Hunk(format!(
+                    "diff skipped: too many lines ({old_lines} → {new_lines})"
+                )),
+            }),
         }
     }
     out
