@@ -20,6 +20,42 @@ use std::collections::BTreeMap;
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 
+/// Tools whose presence depends on the turn's caller, not on the
+/// conversation: the collaboration/swarm tools `register_turn_tools`
+/// gates on the session's agent profile, policy, and reviewer flag.
+/// Their set can appear, disappear, or grow between turns of the same
+/// parent session (a profile attaches, a swarm reviewer spawns, a
+/// delegation ends) while the parent's own context is unchanged.
+pub const CALLER_TOOLS: &[&str] = &[
+    "agent_inbox",
+    "agent_message",
+    "delegate",
+    "delegate_async",
+    "subagent_list",
+    "subagent_read",
+    "subagent_wait",
+    "verdict",
+];
+
+/// Split a tool list into the cacheable prefix and the caller-specific
+/// tail, each sorted by name so registry (HashMap) order can never churn
+/// the wire order. The first element is the stable set, the second the
+/// caller-specific set.
+fn split_tools(tools: &[ToolSchema]) -> (Vec<&ToolSchema>, Vec<&ToolSchema>) {
+    let mut stable: Vec<&ToolSchema> = Vec::new();
+    let mut caller: Vec<&ToolSchema> = Vec::new();
+    for t in tools {
+        if CALLER_TOOLS.contains(&t.name.as_str()) {
+            caller.push(t);
+        } else {
+            stable.push(t);
+        }
+    }
+    stable.sort_by(|a, b| a.name.cmp(&b.name));
+    caller.sort_by(|a, b| a.name.cmp(&b.name));
+    (stable, caller)
+}
+
 /// Build the wire request for one attempt.
 // Ten params for the same reason as the OpenAI builder: explicit wire
 // arguments at every call site beat a bundled struct nobody else uses.
@@ -190,9 +226,22 @@ pub fn request(
         }]);
     }
     if !tools.is_empty() {
-        let n = tools.len();
+        // Context retention: only the stable tools sit inside the cached
+        // prefix. The cache breakpoint goes on the last stable tool, and
+        // caller-specific tools follow it uncached, in sorted order. A
+        // caller-tool-only change (a delegation tool appears, a reviewer
+        // tool goes away) therefore leaves the cached system + stable
+        // prefix untouched instead of invalidating the whole prefix and
+        // forcing a full re-read of the parent's context; the caller
+        // tools themselves are simply re-sent, uncached, each turn. A
+        // change to the stable set still invalidates the prefix, as
+        // before, and never breaks the request.
+        let (stable, caller) = split_tools(tools);
+        let mut ordered = stable.clone();
+        ordered.extend(caller);
+        let n_stable = stable.len();
         body["tools"] = serde_json::Value::Array(
-            tools
+            ordered
                 .iter()
                 .enumerate()
                 .map(|(i, t)| {
@@ -201,10 +250,7 @@ pub fn request(
                         "description": t.description,
                         "input_schema": t.parameters,
                     });
-                    // The breakpoint on the last tool caches the entire
-                    // array; a changed tool list just invalidates the
-                    // cache, it never breaks the request.
-                    if i + 1 == n {
+                    if i + 1 == n_stable && n_stable > 0 {
                         tool["cache_control"] = serde_json::json!({ "type": "ephemeral" });
                     }
                     tool
@@ -723,5 +769,135 @@ mod stream_truncation_tests {
             done: true,
         };
         assert!(stream(&t, wire_req(), &NoopModelSink).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod context_retention_tests {
+    use super::*;
+    use crate::http::TurnOptions;
+
+    fn schema(name: &str) -> ToolSchema {
+        ToolSchema {
+            name: name.to_string(),
+            description: format!("{name} tool"),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }
+    }
+
+    fn body_for(messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
+        let req = request(
+            "https://api.example.test/v1",
+            "k",
+            "test-model",
+            messages,
+            tools,
+            false,
+            4096,
+            pantheon_api::model::ReasoningLevel::Off,
+            None,
+            &TurnOptions::default(),
+        );
+        serde_json::from_str(&req.body).expect("body is JSON")
+    }
+
+    fn tool_names(body: &serde_json::Value) -> Vec<String> {
+        body["tools"]
+            .as_array()
+            .map(|ts| {
+                ts.iter()
+                    .map(|t| t["name"].as_str().unwrap_or("").to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn cached_names(body: &serde_json::Value) -> Vec<String> {
+        body["tools"]
+            .as_array()
+            .map(|ts| {
+                ts.iter()
+                    .filter(|t| t.get("cache_control").is_some())
+                    .map(|t| t["name"].as_str().unwrap_or("").to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn caller_tool_change_keeps_stable_prefix_and_messages() {
+        let messages = vec![Message::user("parent work in progress")];
+        let before = body_for(
+            &messages,
+            &[schema("shell"), schema("delegate"), schema("read")],
+        );
+        let after = body_for(
+            &messages,
+            &[
+                schema("shell"),
+                schema("delegate"),
+                schema("agent_message"),
+                schema("read"),
+            ],
+        );
+        // The parent's own context is untouched.
+        assert_eq!(before["messages"], after["messages"]);
+        // Stable tools, in order, with the breakpoint on the last one.
+        assert_eq!(
+            tool_names(&before),
+            vec!["read", "shell", "delegate"]
+        );
+        assert_eq!(cached_names(&before), vec!["shell"]);
+        assert_eq!(cached_names(&after), vec!["shell"]);
+        // Caller tools ride after the breakpoint, uncached.
+        assert_eq!(
+            tool_names(&after),
+            vec!["read", "shell", "agent_message", "delegate"]
+        );
+        let after_tools = after["tools"].as_array().unwrap();
+        for t in &after_tools[2..] {
+            assert!(
+                t.get("cache_control").is_none(),
+                "caller tool {} must not carry the cache breakpoint",
+                t["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn tool_order_is_deterministic_regardless_of_registry_order() {
+        let messages = vec![Message::user("hi")];
+        let a = body_for(
+            &messages,
+            &[schema("shell"), schema("verdict"), schema("read")],
+        );
+        let b = body_for(
+            &messages,
+            &[schema("read"), schema("shell"), schema("verdict")],
+        );
+        assert_eq!(a["tools"], b["tools"]);
+        assert_eq!(tool_names(&a), vec!["read", "shell", "verdict"]);
+    }
+
+    #[test]
+    fn genuine_message_change_changes_body_messages() {
+        // Retention must not become stale-context pinning: new parent
+        // content still reaches the provider verbatim.
+        let tools = [schema("shell")];
+        let before = body_for(&[Message::user("first")], &tools);
+        let after = body_for(&[Message::user("second, after child finished")], &tools);
+        assert_ne!(before["messages"], after["messages"]);
+    }
+
+    #[test]
+    fn stable_tool_change_changes_the_cached_prefix() {
+        let messages = vec![Message::user("hi")];
+        let before = body_for(&messages, &[schema("shell"), schema("delegate")]);
+        let after = body_for(
+            &messages,
+            &[schema("shell"), schema("read"), schema("delegate")],
+        );
+        assert_ne!(before["tools"], after["tools"]);
+        assert_eq!(cached_names(&after), vec!["shell"]);
     }
 }
