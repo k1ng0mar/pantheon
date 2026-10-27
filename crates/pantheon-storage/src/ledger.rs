@@ -160,6 +160,7 @@ pub fn run_id_of(event: &Event) -> &str {
         | Event::ToolStarted { run_id, .. }
         | Event::ToolOutput { run_id, .. }
         | Event::ToolCompleted { run_id, .. }
+        | Event::ToolInterrupted { run_id, .. }
         | Event::AgentSpawned { run_id, .. }
         | Event::AgentMessage { run_id, .. }
         | Event::AgentCompleted { run_id, .. }
@@ -361,6 +362,21 @@ fn has_pending_approval(
     Ok(requested
         .iter()
         .any(|scope| Some(scope.as_str()) != resolved_scope && !resolved.contains(scope)))
+}
+
+/// One tool call that started and never completed, with the
+/// provenance a recovery pass can actually confirm from the ledger.
+/// `output_seen`/`result_seen` are about ledger rows, not about the
+/// outside world: a `ToolOutput` or `ToolMessage` row may exist while
+/// the tool's side effect is still unknown, so neither flag may be
+/// read as "the tool finished".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnfinishedCall {
+    pub call_id: String,
+    pub tool: String,
+    pub args: String,
+    pub output_seen: bool,
+    pub result_seen: bool,
 }
 
 impl Ledger {
@@ -1694,6 +1710,96 @@ impl Ledger {
         Ok(out)
     }
 
+    /// Tool calls of one run that started and were never completed or
+    /// interrupted, in first-started order. This is the ledger-level
+    /// form of the runtime's `unfinished_calls` helper, with tool and
+    /// args attached so a recovery record can name what was in flight.
+    /// Rewind markers are already applied by [`Ledger::replay`], so a
+    /// rewound call is not reported as unfinished.
+    pub fn unfinished_calls(&self, run_id: &str) -> Result<Vec<UnfinishedCall>, PantheonError> {
+        let entries = self.replay(run_id)?;
+        let mut started: Vec<UnfinishedCall> = Vec::new();
+        let mut index: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut done: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut interrupted: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut output_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut result_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for e in &entries {
+            match &e.event {
+                Event::ToolStarted {
+                    call_id, tool, args, ..
+                } => {
+                    if !index.contains_key(call_id) {
+                        index.insert(call_id.clone(), started.len());
+                        started.push(UnfinishedCall {
+                            call_id: call_id.clone(),
+                            tool: tool.clone(),
+                            args: args.clone(),
+                            output_seen: false,
+                            result_seen: false,
+                        });
+                    }
+                }
+                Event::ToolOutput { call_id, .. } => {
+                    output_seen.insert(call_id.clone());
+                }
+                Event::ToolMessage { message, .. } => {
+                    if let Some(call_id) = message.tool_call_id.as_deref() {
+                        result_seen.insert(call_id.to_string());
+                    }
+                }
+                Event::ToolCompleted { call_id, .. } => {
+                    done.insert(call_id.clone());
+                }
+                Event::ToolInterrupted { call_id, .. } => {
+                    interrupted.insert(call_id.clone());
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for mut call in started {
+            if done.contains(&call.call_id) || interrupted.contains(&call.call_id) {
+                continue;
+            }
+            call.output_seen = output_seen.contains(&call.call_id);
+            call.result_seen = result_seen.contains(&call.call_id);
+            out.push(call);
+        }
+        Ok(out)
+    }
+
+    /// Retire every unfinished tool call of one run as interrupted.
+    /// Each retired call gets one [`Event::ToolInterrupted`] row carrying
+    /// its tool, issued args, and what the ledger had already confirmed
+    /// about it. Idempotent: a call that already has a `ToolInterrupted`
+    /// (or a `ToolCompleted`) row is skipped, so a second pass returns
+    /// an empty vec and writes nothing. This does not change the run's
+    /// status — call it before a terminal event, as
+    /// [`Ledger::settle_stuck_run`] does, if the run itself must end.
+    /// It does not retire approval-parked calls (they never emitted
+    /// `ToolStarted`) and it does not touch `ApprovalRequested` rows:
+    /// operator decisions are not recovery residue.
+    pub fn retire_unfinished_calls(&self, run_id: &str) -> Result<Vec<String>, PantheonError> {
+        let mut retired = Vec::new();
+        for call in self.unfinished_calls(run_id)? {
+            self.append(&Event::ToolInterrupted {
+                run_id: run_id.to_string(),
+                call_id: call.call_id.clone(),
+                tool: call.tool.clone(),
+                args: call.args.clone(),
+                output_seen: call.output_seen,
+                result_seen: call.result_seen,
+                detail: "interrupted before completion; outcome unconfirmed — \
+                         do not assume the tool's side effect completed or failed"
+                    .to_string(),
+            })?;
+            retired.push(call.call_id);
+        }
+        Ok(retired)
+    }
+
     /// Force a stuck run to a terminal state, refusing while a live lease
     /// exists.
     ///
@@ -1717,6 +1823,12 @@ impl Ledger {
                 format!("run {run_id} is {status}, which is already terminal"),
             ));
         }
+        // Retire in-flight calls first, while the run is still
+        // non-terminal: once the run is failed, its unfinished calls
+        // would otherwise keep looking pending to every replay consumer
+        // even though they can never complete. Idempotent, and a no-op
+        // when there are none.
+        self.retire_unfinished_calls(run_id)?;
         // `RunFailed` carries only a code, so the reason goes out as a
         // progress event first. That is what a reader replaying the ledger
         // actually needs: the terminal event says the run was repaired, and
@@ -1745,8 +1857,10 @@ impl Ledger {
     ///
     /// Each settle goes through [`settle_stuck_run`], which re-checks the
     /// lease fail-closed - a run whose driver came back between the scan
-    /// and the settle is left alone. Returns the settled run ids, oldest
-    /// first.
+    /// and the settle is left alone - and retires that run's unfinished
+    /// tool calls as [`Event::ToolInterrupted`] first, so the settled
+    /// run leaves no pending-call residue behind. Returns the settled
+    /// run ids, oldest first.
     pub fn settle_expired_runs(&self) -> Result<Vec<String>, PantheonError> {
         let mut settled = Vec::new();
         for (run_id, status, _, _, _, _, _) in self.stuck_runs()? {
@@ -1857,6 +1971,15 @@ fn describe(ev: &Event) -> String {
             if *truncated { " (compacted)" } else { "" }
         ),
         Event::ToolCompleted { tool, .. } => format!("tool done: {tool}"),
+        Event::ToolInterrupted {
+            tool,
+            call_id,
+            output_seen,
+            result_seen,
+            ..
+        } => format!(
+            "tool interrupted: {tool} ({call_id}; outcome unconfirmed; output_seen={output_seen}, result_seen={result_seen})"
+        ),
         Event::AgentSpawned { agent, .. } => format!("spawned sub-agent: {agent}"),
         Event::AgentMessage { agent, .. } => format!("sub-agent message: {agent}"),
         Event::AgentCompleted { agent, .. } => format!("sub-agent done: {agent}"),
@@ -2553,5 +2676,181 @@ mod cancel_and_recovery_tests {
     fn settle_expired_runs_empty_when_nothing_stuck() {
         let l = Ledger::open_in_memory().expect("in-memory ledger");
         assert_eq!(l.settle_expired_runs().unwrap(), Vec::<String>::new());
+    }
+
+    fn started_call(
+        ledger: &Ledger,
+        run_id: &str,
+        call_id: &str,
+        tool: &str,
+        args: &str,
+    ) {
+        ledger
+            .append(&Event::ToolStarted {
+                run_id: run_id.to_string(),
+                call_id: call_id.to_string(),
+                tool: tool.to_string(),
+                args: args.to_string(),
+                provenance: pantheon_api::provenance::Provenance::system("test"),
+            })
+            .expect("append ToolStarted");
+    }
+
+    /// Recovery provenance: an interrupted call is recorded with its
+    /// identity, tool, issued args, and what the ledger had already
+    /// confirmed about it — never as a bare "run interrupted".
+    #[test]
+    fn retire_unfinished_calls_records_provenance() {
+        let l = Ledger::open_in_memory().expect("in-memory ledger");
+        start(&l, "r1");
+        started_call(&l, "r1", "call-1", "shell", "{\"command\":\"ls\"}");
+        started_call(&l, "r1", "call-2", "read", "{\"path\":\"a.txt\"}");
+        // call-1 emitted output but never completed; call-2 emitted
+        // nothing at all; call-3 completed and must never be retired.
+        l.append(&Event::ToolOutput {
+            run_id: "r1".into(),
+            call_id: "call-1".into(),
+            tool: "shell".into(),
+            truncated: false,
+            provenance: pantheon_api::provenance::Provenance::system("test"),
+        })
+        .expect("output");
+        started_call(&l, "r1", "call-3", "read", "{\"path\":\"b.txt\"}");
+        l.append(&Event::ToolCompleted {
+            run_id: "r1".into(),
+            call_id: "call-3".into(),
+            tool: "read".into(),
+            provenance: pantheon_api::provenance::Provenance::system("test"),
+        })
+        .expect("complete");
+
+        let unfinished = l.unfinished_calls("r1").expect("unfinished");
+        assert_eq!(
+            unfinished.iter().map(|c| c.call_id.as_str()).collect::<Vec<_>>(),
+            vec!["call-1", "call-2"],
+            "completed calls are not unfinished"
+        );
+        let call_1 = &unfinished[0];
+        assert_eq!(call_1.tool, "shell");
+        assert_eq!(call_1.args, "{\"command\":\"ls\"}");
+        assert!(call_1.output_seen, "ToolOutput row must be recorded");
+        assert!(!call_1.result_seen, "no ToolMessage row exists for call-1");
+        assert!(!unfinished[1].output_seen);
+
+        let retired = l.retire_unfinished_calls("r1").expect("retire");
+        assert_eq!(retired, vec!["call-1".to_string(), "call-2".to_string()]);
+        assert!(
+            l.unfinished_calls("r1").expect("re-scan").is_empty(),
+            "retired calls are settled, not pending"
+        );
+
+        let interrupted: Vec<_> = l
+            .replay("r1")
+            .expect("replay")
+            .into_iter()
+            .filter_map(|e| match e.event {
+                Event::ToolInterrupted {
+                    call_id,
+                    tool,
+                    args,
+                    output_seen,
+                    result_seen,
+                    detail,
+                    ..
+                } => Some((call_id, tool, args, output_seen, result_seen, detail)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(interrupted.len(), 2, "one row per retired call");
+        assert_eq!(interrupted[0].1, "shell");
+        assert_eq!(interrupted[0].2, "{\"command\":\"ls\"}");
+        assert!(interrupted[0].3);
+        assert!(!interrupted[0].4);
+        assert!(
+            interrupted[0].5.contains("unconfirmed"),
+            "interrupted detail must not claim an outcome: {}",
+            interrupted[0].5
+        );
+        assert!(
+            !interrupted.iter().any(|(c, ..)| c == "call-3"),
+            "completed call must never get an interrupted row"
+        );
+    }
+
+    /// Recovery is idempotent: a second pass settles nothing new and
+    /// writes no duplicate interrupted rows.
+    #[test]
+    fn retire_unfinished_calls_is_idempotent() {
+        let l = Ledger::open_in_memory().expect("in-memory ledger");
+        start(&l, "r1");
+        started_call(&l, "r1", "call-1", "shell", "{\"command\":\"ls\"}");
+        assert_eq!(
+            l.retire_unfinished_calls("r1").expect("first retire"),
+            vec!["call-1".to_string()]
+        );
+        let before = l.replay("r1").expect("replay").len();
+        assert_eq!(
+            l.retire_unfinished_calls("r1").expect("second retire"),
+            Vec::<String>::new(),
+            "second pass must settle nothing new"
+        );
+        assert_eq!(
+            l.replay("r1").expect("replay").len(),
+            before,
+            "second pass must write nothing"
+        );
+    }
+
+    /// The startup sweep retires unfinished calls before it fails the
+    /// run, so a settled run leaves no pending-call residue behind,
+    /// while a completed call and an awaiting-approval park are untouched.
+    #[test]
+    fn settle_expired_runs_retires_unfinished_calls() {
+        let (_dir, db) = tmp_db("settle-retires-calls");
+        let l = Ledger::open(&db).expect("open ledger");
+        start(&l, "orphan");
+        started_call(&l, "orphan", "call-1", "shell", "{\"command\":\"sleep 60\"}");
+        started_call(&l, "orphan", "call-done", "read", "{\"path\":\"x\"}");
+        l.append(&Event::ToolCompleted {
+            run_id: "orphan".into(),
+            call_id: "call-done".into(),
+            tool: "read".into(),
+            provenance: pantheon_api::provenance::Provenance::system("test"),
+        })
+        .expect("complete");
+        start(&l, "parked");
+        l.append(&Event::ApprovalRequested {
+            run_id: "parked".into(),
+            scope: "shell:rm -rf /".into(),
+        })
+        .expect("park");
+
+        let settled = l.settle_expired_runs().expect("settle");
+        assert_eq!(settled, vec!["orphan".to_string()]);
+        assert_eq!(l.status("orphan").unwrap().as_deref(), Some("failed"));
+        assert!(
+            l.unfinished_calls("orphan").expect("re-scan").is_empty(),
+            "settled run must have no pending calls"
+        );
+        let interrupted: Vec<String> = l
+            .replay("orphan")
+            .expect("replay")
+            .into_iter()
+            .filter_map(|e| match e.event {
+                Event::ToolInterrupted { call_id, .. } => Some(call_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(interrupted, vec!["call-1".to_string()]);
+        assert_eq!(
+            l.status("parked").unwrap().as_deref(),
+            Some("awaiting_approval"),
+            "approval parks are still untouched by the sweep"
+        );
+        assert!(
+            l.unfinished_calls("parked").expect("parked scan").is_empty(),
+            "a parked run has no started calls to retire"
+        );
+        std::fs::remove_dir_all(&_dir).ok();
     }
 }

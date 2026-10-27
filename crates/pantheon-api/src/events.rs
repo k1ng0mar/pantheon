@@ -201,6 +201,28 @@ pub enum Event {
         /// Provenance of the completion boundary.
         provenance: Provenance,
     },
+    /// A tool call that started but never completed before its run was
+    /// settled by recovery (crash, or an explicit repair). This is the
+    /// first-class provenance record for an unfinished outcome: it names
+    /// the call, repeats the issued arguments, and says what was already
+    /// confirmed (`output_seen`: a `ToolOutput` row exists;
+    /// `result_seen`: a `ToolMessage` row exists) — and, by its existence,
+    /// that the outcome itself was never confirmed. It is deliberately
+    /// NOT a success and NOT a failure: the tool may or may not have
+    /// had its side effect, and no consumer may assume either. A call
+    /// with this event is settled, never pending: recovery must not
+    /// re-run it, and a second recovery pass must not write it again.
+    ToolInterrupted {
+        run_id: String,
+        call_id: String,
+        tool: String,
+        args: String,
+        output_seen: bool,
+        result_seen: bool,
+        /// Fixed explanation, not a tool result: the call was interrupted
+        /// and its outcome is unconfirmed.
+        detail: String,
+    },
     /// The agent replaced its todo list via the `todo` tool. The items
     /// ride on the event so transcript observers (TUI card, gateway) see
     /// every change as it happens; the durable per-run snapshot lives in
@@ -636,6 +658,23 @@ impl Event {
                 call_id,
                 tool,
                 provenance,
+            },
+            Event::ToolInterrupted {
+                run_id: _,
+                call_id,
+                tool,
+                args,
+                output_seen,
+                result_seen,
+                detail,
+            } => Event::ToolInterrupted {
+                run_id: run_id.to_string(),
+                call_id,
+                tool,
+                args,
+                output_seen,
+                result_seen,
+                detail,
             },
             Event::TodosUpdated { run_id: _, items } => Event::TodosUpdated {
                 run_id: run_id.to_string(),
