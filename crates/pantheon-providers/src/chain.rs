@@ -650,6 +650,53 @@ impl<T: ChatTransport> ProviderChain<T> {
             };
             match self.attempt_with_retries(idx, model, messages, stream, opts, sink) {
                 Ok(turn) => {
+                    // Output cap hit with zero visible answer: this is
+                    // NOT a successful turn. Reasoning can consume the
+                    // whole output budget first, leaving nothing for an
+                    // answer — and retrying identically (same reasoning
+                    // level, same cap) fails identically on every
+                    // attempt. Fail non-retryable here, before the
+                    // fallback walk, with the remedy attached: the
+                    // operator must change a parameter, not retry.
+                    // (A non-empty `length` finish still returns its
+                    // partial text; only the zero-answer case is
+                    // converted, so no visible output is ever hidden
+                    // behind this error.)
+                    let output_empty = matches!(
+                        &turn.outcome,
+                        TurnOutcome::Text { text, .. } if text.trim().is_empty()
+                    );
+                    let hit_cap = matches!(
+                        turn.finish_reason.as_deref(),
+                        Some("length") | Some("max_tokens")
+                    );
+                    if output_empty && hit_cap {
+                        let remedy = if self.policy.reasoning
+                            != pantheon_api::model::ReasoningLevel::Off
+                        {
+                            "lower reasoning effort (`/reasoning low` or \
+                             `/reasoning off` — reasoning can consume the \
+                             output budget before any answer is produced) \
+                             or raise the output cap (`/tokens N` or \
+                             [budget].max_tokens)"
+                        } else {
+                            "raise the output cap (`/tokens N` or \
+                             [budget].max_tokens)"
+                        };
+                        return Err(PantheonError::new(
+                            "PROVIDER_OUTPUT_LIMIT",
+                            Layer::Provider,
+                            false,
+                            format!(
+                                "model hit its output-token limit before \
+                                 producing any visible answer \
+                                 (finish_reason: length) on {}/{}",
+                                model.provider, model.model
+                            ),
+                            remedy,
+                            "",
+                        ));
+                    }
                     *self.last_resolved.borrow_mut() = Some(ResolvedModel {
                         provider: model.provider.clone(),
                         model: model.model.clone(),
@@ -789,4 +836,98 @@ fn is_key_failure(e: &PantheonError) -> bool {
         && (e.cause.contains("HTTP 401")
             || e.cause.contains("HTTP 403")
             || e.cause.contains("HTTP 429"))
+}
+
+#[cfg(test)]
+mod output_limit_tests {
+    use super::*;
+    use crate::http::{StreamEnd, WireRequest};
+    use crate::model_event::NoopModelSink;
+    use pantheon_api::message::Message;
+    use pantheon_api::model::{DefaultModel, FallbackChain, ReasoningLevel};
+
+    /// Scripted OpenAI-compatible transport: feeds one chunk, then
+    /// `[DONE]`. The chunk carries `finish_reason: "length"` and
+    /// either empty or non-empty visible content.
+    struct LengthTransport {
+        content: &'static str,
+    }
+
+    impl ChatTransport for LengthTransport {
+        fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
+            Err(PantheonError::new(
+                "STUB",
+                Layer::Provider,
+                false,
+                "single-shot unused in this stub",
+                "",
+                "",
+            ))
+        }
+
+        fn post_stream(
+            &self,
+            _req: &WireRequest,
+            on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+        ) -> Result<StreamEnd, PantheonError> {
+            let chunk = format!(
+                "{{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":\"length\"}}]}}",
+                serde_json::to_string(self.content).unwrap()
+            );
+            on_payload(&chunk)?;
+            on_payload("[DONE]")?;
+            Ok(StreamEnd::Done)
+        }
+    }
+
+    fn chain_with(content: &'static str) -> ProviderChain<LengthTransport> {
+        let policy = ModelPolicy {
+            default: DefaultModel {
+                provider: "openai".to_string(),
+                model: "gpt-test".to_string(),
+            },
+            fallbacks: FallbackChain { fallbacks: vec![] },
+            auxiliaries: vec![],
+            reasoning: ReasoningLevel::High,
+            reasoning_budget: None,
+        };
+        ProviderChain::new(
+            policy,
+            LengthTransport { content },
+            vec![],
+            pantheon_secrets::SecretValue::new("test-key"),
+        )
+    }
+
+    #[test]
+    fn length_finish_with_no_visible_answer_is_an_error_not_an_empty_answer() {
+        let chain = chain_with("");
+        let err = chain
+            .turn_stream(&[Message::user("hi")], &NoopModelSink)
+            .expect_err("empty length finish must fail");
+        assert_eq!(err.code, "PROVIDER_OUTPUT_LIMIT");
+        assert!(!err.retryable, "must not retry identically");
+        assert!(
+            err.remediation.contains("/reasoning"),
+            "remedy names lowering reasoning: {}",
+            err.remediation
+        );
+        assert!(
+            err.remediation.contains("/tokens"),
+            "remedy names raising the cap: {}",
+            err.remediation
+        );
+    }
+
+    #[test]
+    fn length_finish_with_visible_text_still_returns_it() {
+        let chain = chain_with("partial answer");
+        let outcome = chain
+            .turn_stream(&[Message::user("hi")], &NoopModelSink)
+            .expect("non-empty length finish returns its text");
+        assert!(matches!(
+            outcome,
+            TurnOutcome::Text { ref text, .. } if text == "partial answer"
+        ));
+    }
 }

@@ -521,16 +521,22 @@ pub fn stream(
 ) -> Result<AdapterTurn, PantheonError> {
     let mut state = OpenStream::default();
     let end = transport.post_stream(&req, &mut |payload| state.push(payload, sink))?;
-    if end == StreamEnd::Eof && state.finish_reason.is_none() {
-        // EOF without `data: [DONE]` and no finish_reason: the provider
-        // (or a proxy) cut the stream mid-turn. Fail retryable so the
-        // chain retries or falls back instead of presenting a silently
-        // truncated turn as complete.
-        return Err(perr(
-            "PROVIDER_TRUNCATED",
-            "stream ended without [DONE] and no finish_reason".to_string(),
-            true,
-        ));
+    if state.finish_reason.is_none() {
+        // No finish_reason on ANY stream end: a `[DONE]` terminator
+        // without one is not a completed turn either — a proxy or
+        // provider can emit `[DONE]` after cutting the stream short,
+        // and accepting it would present truncated output as finished.
+        // Fail retryable so the chain retries or falls back instead
+        // of presenting a silently truncated turn as complete.
+        let cause = match end {
+            StreamEnd::Done => {
+                "stream ended with [DONE] but no finish_reason".to_string()
+            }
+            StreamEnd::Eof => {
+                "stream ended without [DONE] and no finish_reason".to_string()
+            }
+        };
+        return Err(perr("PROVIDER_TRUNCATED", cause, true));
     }
     state.finish(sink)
 }
@@ -639,6 +645,24 @@ mod stream_truncation_tests {
         let turn = stream(&t, wire_req(), &NoopModelSink).unwrap();
         assert!(matches!(turn.outcome, TurnOutcome::Text { .. }));
         assert_eq!(turn.finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn done_without_finish_reason_is_truncated() {
+        // A `[DONE]` terminator with no finish_reason is not a
+        // completed turn: a proxy can emit it after cutting the
+        // stream short, and accepting it would present truncated
+        // output as finished.
+        let t = StubTransport {
+            payloads: vec![TEXT_CHUNK],
+            done: true,
+        };
+        let err = match stream(&t, wire_req(), &NoopModelSink) {
+            Ok(_) => panic!("expected PROVIDER_TRUNCATED on DONE without finish_reason"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "PROVIDER_TRUNCATED");
+        assert!(err.retryable, "truncation must be retryable");
     }
 
     #[test]
