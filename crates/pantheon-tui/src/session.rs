@@ -5368,6 +5368,7 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
         // Live session token count for the tool-card tickers; copied
         // up front so the blocks borrow below stays shared.
         let live_tokens = state.tokens_used + state.turn_estimate;
+        let agent_label = agent_label(&state.variant);
         for (i, block) in state.blocks.iter().enumerate() {
             block_starts.push(lines.len());
             let is_last = i + 1 == block_count;
@@ -5381,6 +5382,7 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
                     img,
                     term_width: area.width,
                     live_tokens,
+                    agent_label,
                 },
             );
             // Airy: messages breathe with two blank
@@ -5595,6 +5597,22 @@ struct BlockRenderCtx<'a> {
     img: &'a mut crate::richtext::ImagePaintState,
     term_width: u16,
     live_tokens: u32,
+    /// Second-speaker label: the active agent profile's name
+    /// (`state.variant`, i.e. `profile().name`), or "Pantheon" when
+    /// no profile is active — the pre-redesign fallback.
+    agent_label: &'a str,
+}
+
+/// Active agent profile name for the transcript's second-speaker
+/// label. Empty/blank variant means no named profile is active, so
+/// the pre-redesign label "Pantheon" is kept, never a guess.
+fn agent_label(variant: &str) -> &str {
+    let v = variant.trim();
+    if v.is_empty() {
+        "Pantheon"
+    } else {
+        v
+    }
 }
 
 /// Render a single transcript block as Lines. `is_last` marks the streaming
@@ -5612,8 +5630,10 @@ fn render_block(
         img,
         term_width,
         live_tokens,
+        agent_label,
     } = ctx;
-    let (th, term_width, live_tokens) = (*th, *term_width, *live_tokens);
+    let (th, term_width, live_tokens, agent_label) =
+        (*th, *term_width, *live_tokens, *agent_label);
     let img = &mut **img;
     match &block.kind {
         BlockKind::UserMessage(text) => {
@@ -5626,8 +5646,12 @@ fn render_block(
             render_rich_text(lines, text, th, img, term_width);
         }
         BlockKind::AssistantMessage(text) => {
+            // Label is the active agent profile's name, never a
+            // hardcoded "Agent": `agent_label` is `state.variant`
+            // (profile().name) at the render call site, or "Pantheon"
+            // when no named profile is active.
             lines.push(Line::from(Span::styled(
-                "Agent",
+                agent_label.to_owned(),
                 Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
             )));
             render_rich_text(lines, text, th, img, term_width);
@@ -12268,6 +12292,9 @@ mod picker_render_tests {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let mut s = test_state();
+        // The transcript's second speaker is the active agent
+        // profile's name, not a hardcoded "Agent".
+        s.variant = "coder".to_string();
         s.tabs.refresh_from_explicit(
             &[("r1".to_string(), Some("Session 1".to_string()))],
             |_| false,
@@ -12328,7 +12355,10 @@ mod picker_render_tests {
         let wide = snapshot_frame(180, 40).join("\n");
         for (name, text) in [("narrow", &narrow), ("normal", &normal), ("wide", &wide)] {
             assert!(text.contains("User"), "{name} missing User label:\n{text}");
-            assert!(text.contains("Agent"), "{name} missing Agent label:\n{text}");
+            assert!(
+                text.contains("coder"),
+                "{name} missing profile-name label:\n{text}"
+            );
             assert!(text.contains("Provider:"), "{name} missing footer:\n{text}");
             assert!(text.contains("Yes, go ahead"), "{name} missing composer:\n{text}");
         }
@@ -12337,6 +12367,38 @@ mod picker_render_tests {
         assert!(!normal.contains("Turns:"), "sidebar leaked at 120:\n{normal}");
         assert!(wide.contains("Turns:"), "sidebar missing at 180:\n{wide}");
         assert!(wide.contains("Swarm"), "wide frame missing swarm block:\n{wide}");
+    }
+
+    #[test]
+    fn assistant_label_uses_profile_name_with_pantheon_fallback() {
+        // The second-speaker label is the active profile's name;
+        // with no named profile it falls back to the pre-redesign
+        // label "Pantheon", never a hardcoded "Agent".
+        assert_eq!(agent_label("coder"), "coder");
+        assert_eq!(agent_label(""), "Pantheon");
+        assert_eq!(agent_label("   "), "Pantheon");
+        for (label, expected) in [("researcher", "researcher"), ("Pantheon", "Pantheon")] {
+            let th = theme::Theme::pantheon();
+            let mut img = crate::richtext::ImagePaintState::new();
+            let mut ctx = BlockRenderCtx {
+                th: &th,
+                img: &mut img,
+                term_width: 84,
+                live_tokens: 0,
+                agent_label: label,
+            };
+            let block = TranscriptBlock {
+                kind: BlockKind::AssistantMessage("hello".to_string()),
+            };
+            let mut lines: Vec<Line> = Vec::new();
+            render_block(&mut lines, &block, false, false, &mut ctx);
+            let first: String = lines[0]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert_eq!(first, expected);
+        }
     }
 
     #[test]
@@ -12388,6 +12450,7 @@ mod picker_render_tests {
             img: &mut img,
             term_width: 84,
             live_tokens: 0,
+            agent_label: "Pantheon",
         };
         let mut lines: Vec<Line> = Vec::new();
         render_block(&mut lines, block, false, false, &mut ctx);
@@ -12470,6 +12533,7 @@ mod picker_render_tests {
             img: &mut img,
             term_width: 84,
             live_tokens: 0,
+            agent_label: "Pantheon",
         };
         let block = TranscriptBlock {
             kind: BlockKind::Approval {
