@@ -362,8 +362,13 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
         .get("content")
         .and_then(|c| c.as_array())
         .ok_or_else(|| perr("PROVIDER_PARSE", "no content in response".into(), false))?;
+    let finish_reason = v.get("stop_reason").and_then(|x| x.as_str()).map(map_stop);
     let mut text = String::new();
-    let mut out = Vec::new();
+    // Collect + validate everything first, THEN emit: emitting a
+    // ToolCall event for an early block and failing on a later
+    // missing-name block left a ledger tool card that a retry or
+    // fallback would duplicate.
+    let mut parsed: Vec<(String, String, String)> = Vec::new();
     for block in content {
         match block.get("type").and_then(|t| t.as_str()) {
             Some("text") => {
@@ -377,7 +382,7 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
                     .and_then(|x| x.as_str())
                     .filter(|s| !s.is_empty())
                     .map(str::to_string)
-                    .unwrap_or_else(|| format!("call_{}", out.len()));
+                    .unwrap_or_else(|| format!("call_{}", parsed.len()));
                 let name = block
                     .get("name")
                     .and_then(|x| x.as_str())
@@ -394,22 +399,26 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
                         false,
                     ));
                 }
-                sink.emit(ModelEvent::ToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    arguments: args.clone(),
-                });
-                out.push(ToolCall {
-                    name,
-                    capability: Capability::Other("tool".into()),
-                    args,
-                });
+                let args = crate::http::normalise_tool_args(&args, finish_reason.as_deref())?;
+                parsed.push((id, name, args));
             }
             _ => {}
         }
     }
+    let mut out = Vec::with_capacity(parsed.len());
+    for (id, name, args) in parsed {
+        sink.emit(ModelEvent::ToolCall {
+            id: id.clone(),
+            name: name.clone(),
+            arguments: args.clone(),
+        });
+        out.push(ToolCall {
+            name,
+            capability: Capability::Other("tool".into()),
+            args,
+        });
+    }
     let usage = usage_of(&v);
-    let finish_reason = v.get("stop_reason").and_then(|x| x.as_str()).map(map_stop);
     let tokens = usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0);
     let cost_cents = usage
         .as_ref()
@@ -428,6 +437,7 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
     } else {
         TurnOutcome::Tools {
             calls: out,
+            text,
             tokens,
             cost_cents,
         }
@@ -437,6 +447,19 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
         usage,
         finish_reason,
     })
+}
+
+/// Block index on the wire: Anthropic sends `index`, not
+/// `content_block_index`. Reading only the latter defaulted every
+/// block to 0, so a second `tool_use` overwrote the first in
+/// `tools[0]` and multi-tool streams silently dropped all but the
+/// last call. `content_block_index` stays as a fallback for
+/// gateways that rename the field.
+fn block_index(v: &serde_json::Value) -> u32 {
+    v.get("index")
+        .or_else(|| v.get("content_block_index"))
+        .and_then(|i| i.as_u64())
+        .unwrap_or(0) as u32
 }
 
 /// Streaming state: accumulates Anthropic SSE event payloads into one turn.
@@ -452,7 +475,13 @@ pub struct AnthStream {
 impl AnthStream {
     /// Feed one SSE `data:` payload (its `type` field selects the handler).
     pub fn push(&mut self, payload: &str, sink: &dyn ModelEventSink) -> Result<(), PantheonError> {
-        let v: serde_json::Value = serde_json::from_str(payload)
+        // `[DONE]` is an OpenAI terminator, not an Anthropic event, but
+        // a gateway may still send it: swallow it (trimmed) instead of
+        // failing the whole stream with PROVIDER_PARSE.
+        if payload.trim() == "[DONE]" {
+            return Ok(());
+        }
+        let v: serde_json::Value = serde_json::from_str(payload.trim())
             .map_err(|e| perr("PROVIDER_PARSE", format!("stream chunk: {e}"), false))?;
         match v.get("type").and_then(|t| t.as_str()) {
             Some("message_start") => {
@@ -475,10 +504,7 @@ impl AnthStream {
             Some("content_block_start") => {
                 let block = v.get("content_block");
                 if block.and_then(|b| b.get("type")).and_then(|t| t.as_str()) == Some("tool_use") {
-                    let idx = v
-                        .get("content_block_index")
-                        .and_then(|i| i.as_u64())
-                        .unwrap_or(0) as u32;
+                    let idx = block_index(&v);
                     let id = block
                         .and_then(|b| b.get("id"))
                         .and_then(|x| x.as_str())
@@ -493,10 +519,7 @@ impl AnthStream {
                 }
             }
             Some("content_block_delta") => {
-                let idx = v
-                    .get("content_block_index")
-                    .and_then(|i| i.as_u64())
-                    .unwrap_or(0) as u32;
+                let idx = block_index(&v);
                 match v.pointer("/delta/type").and_then(|t| t.as_str()) {
                     Some("text_delta") => {
                         if let Some(t) = v.pointer("/delta/text").and_then(|x| x.as_str()) {
@@ -547,18 +570,17 @@ impl AnthStream {
 
     /// Assemble the final turn. Emits ToolCall events for completed blocks.
     pub fn finish(self, sink: &dyn ModelEventSink) -> Result<AdapterTurn, PantheonError> {
+        // With no `message_start` the input count is unknown, not zero:
+        // reporting input_tokens=0 understated context and cost. Only
+        // report usage when the opening block was seen.
         let usage = match (self.usage_in, self.usage_out) {
-            (None, None) => None,
-            (i, o) => {
-                let input = i.unwrap_or(0);
-                let output = o.unwrap_or(0);
-                Some(ModelUsage {
-                    input_tokens: input,
-                    output_tokens: output,
-                    total_tokens: input + output,
-                    cost_usd: None,
-                })
-            }
+            (Some(i), o) => Some(ModelUsage {
+                input_tokens: i,
+                output_tokens: o.unwrap_or(0),
+                total_tokens: i + o.unwrap_or(0),
+                cost_usd: None,
+            }),
+            (None, _) => None,
         };
         let finish_reason = self.finish_reason;
         if self.tools.is_empty() {
@@ -578,7 +600,10 @@ impl AnthStream {
                 finish_reason,
             });
         }
-        let mut out = Vec::with_capacity(self.tools.len());
+        // Validate everything before emitting anything (see
+        // parse_response): a late missing-name error must not leave
+        // early ToolCall events behind for a retry to duplicate.
+        let mut parsed: Vec<(String, String, String)> = Vec::with_capacity(self.tools.len());
         for (idx, (mut id, name, args)) in self.tools {
             if id.is_empty() {
                 id = format!("call_{idx}");
@@ -590,11 +615,11 @@ impl AnthStream {
                     false,
                 ));
             }
-            let args = if args.is_empty() {
-                "{}".to_string()
-            } else {
-                args
-            };
+            let args = crate::http::normalise_tool_args(&args, finish_reason.as_deref())?;
+            parsed.push((id, name, args));
+        }
+        let mut out = Vec::with_capacity(parsed.len());
+        for (id, name, args) in parsed {
             sink.emit(ModelEvent::ToolCall {
                 id: id.clone(),
                 name: name.clone(),
@@ -609,6 +634,7 @@ impl AnthStream {
         Ok(AdapterTurn {
             outcome: TurnOutcome::Tools {
                 calls: out,
+                text: self.text,
                 tokens: usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0),
                 cost_cents: usage
                     .as_ref()
@@ -922,5 +948,120 @@ mod context_retention_tests {
         );
         assert_ne!(before["tools"], after["tools"]);
         assert_eq!(cached_names(&after), vec!["shell"]);
+    }
+}
+
+#[cfg(test)]
+mod fix_model_tests {
+    use super::*;
+    use crate::model_event::NoopModelSink;
+
+    struct RecordingSink {
+        tool_calls: std::sync::Mutex<Vec<String>>,
+    }
+    impl ModelEventSink for RecordingSink {
+        fn emit(&self, event: ModelEvent) {
+            if let ModelEvent::ToolCall { name, .. } = event {
+                self.tool_calls.lock().unwrap().push(name);
+            }
+        }
+    }
+
+    #[test]
+    fn multi_tool_stream_keeps_blocks_by_wire_index() {
+        let mut s = AnthStream::default();
+        let sink = NoopModelSink;
+        for p in [
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_a","name":"first"}}"#,
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_b","name":"second"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"x\":1}"}}"#,
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"y\":2}"}}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}"#,
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":10}}}"#,
+        ] {
+            s.push(p, &sink).unwrap();
+        }
+        let turn = s.finish(&sink).unwrap();
+        match turn.outcome {
+            TurnOutcome::Tools { calls, .. } => {
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[0].name, "first");
+                assert_eq!(calls[0].args, "{\"x\":1}");
+                assert_eq!(calls[1].name, "second");
+                assert_eq!(calls[1].args, "{\"y\":2}");
+            }
+            other => panic!("expected Tools, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn content_block_index_fallback_still_works() {
+        let mut s = AnthStream::default();
+        let sink = NoopModelSink;
+        s.push(
+            r#"{"type":"content_block_start","content_block_index":3,"content_block":{"type":"tool_use","id":"c","name":"only"}}"#,
+            &sink,
+        )
+        .unwrap();
+        s.push(
+            r#"{"type":"content_block_delta","content_block_index":3,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#,
+            &sink,
+        )
+        .unwrap();
+        let turn = s.finish(&sink).unwrap();
+        assert!(matches!(turn.outcome, TurnOutcome::Tools { .. }));
+    }
+
+    #[test]
+    fn done_terminator_swallowed_with_whitespace() {
+        let mut s = AnthStream::default();
+        let sink = NoopModelSink;
+        assert!(s.push(" [DONE] ", &sink).is_ok());
+        assert!(s.push("[DONE]", &sink).is_ok());
+    }
+
+    #[test]
+    fn parse_response_emits_nothing_on_late_missing_name() {
+        let sink = RecordingSink {
+            tool_calls: std::sync::Mutex::new(vec![]),
+        };
+        let body = r#"{"type":"message","content":[
+            {"type":"tool_use","id":"a","name":"good","input":{}},
+            {"type":"tool_use","id":"b","input":{}}
+        ],"stop_reason":"tool_use"}"#;
+        assert!(parse_response(body, &sink).is_err());
+        assert!(
+            sink.tool_calls.lock().unwrap().is_empty(),
+            "no ToolCall event may precede a parse failure"
+        );
+    }
+
+    #[test]
+    fn streamed_empty_args_normalise_to_empty_object() {
+        let mut s = AnthStream::default();
+        let sink = NoopModelSink;
+        s.push(
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"bare"}}"#,
+            &sink,
+        )
+        .unwrap();
+        let turn = s.finish(&sink).unwrap();
+        match turn.outcome {
+            TurnOutcome::Tools { calls, .. } => assert_eq!(calls[0].args, "{}"),
+            other => panic!("expected Tools, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_message_start_reports_no_usage_not_zero_input() {
+        let mut s = AnthStream::default();
+        let sink = NoopModelSink;
+        s.push(
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#,
+            &sink,
+        )
+        .unwrap();
+        let turn = s.finish(&sink).unwrap();
+        assert!(turn.usage.is_none(), "unknown input must not report 0");
     }
 }

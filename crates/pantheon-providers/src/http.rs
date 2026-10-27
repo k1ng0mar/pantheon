@@ -405,6 +405,47 @@ pub fn retry_after_secs(err: &PantheonError) -> Option<u64> {
     crate::error_kind::retry_after_secs_from_cause(&err.cause)
 }
 
+/// Normalize streamed/single-shot tool arguments. Empty (an
+/// argument-less call) becomes `"{}"`, matching the Anthropic finish
+/// path and both single-shot parsers; the OpenAI streamed path used
+/// to leave `""`, which failed JSON parsing downstream. Invalid JSON
+/// is never passed to the tool runner as an ordinary tool error: on a
+/// `length`/`max_tokens` finish it is a truncation
+/// (`PROVIDER_TRUNCATED`, retryable — the args were cut off, not
+/// wrong), otherwise a parse error.
+pub fn normalise_tool_args(
+    args: &str,
+    finish_reason: Option<&str>,
+) -> Result<String, PantheonError> {
+    if args.trim().is_empty() {
+        return Ok("{}".to_string());
+    }
+    if serde_json::from_str::<serde_json::Value>(args).is_ok() {
+        return Ok(args.to_string());
+    }
+    match finish_reason {
+        Some("length") | Some("max_tokens") => Err(perr(
+            "PROVIDER_TRUNCATED",
+            "streamed tool arguments are not valid JSON (output limit hit mid-call)".into(),
+            true,
+        )),
+        _ => Err(perr(
+            "PROVIDER_PARSE",
+            "streamed tool arguments are not valid JSON".into(),
+            false,
+        )),
+    }
+}
+
+/// Retryability of an HTTP status for `send()`: 5xx / 408-class
+/// server trouble and transport errors are retryable; 4xx is a
+/// client/config problem — except 429, which is transient. (408 was
+/// previously non-retryable despite the comment claiming otherwise:
+/// it falls in 400..500 and is not 429.)
+pub fn is_retryable_status(code: u16) -> bool {
+    !(400..500).contains(&code) || code == 429 || code == 408
+}
+
 /// Wire attribution headers stamped on every outbound provider request.
 /// Lets providers identify traffic coming from pantheon (abuse tracking,
 /// quota attribution, debugging) without parsing user agents.
@@ -466,7 +507,7 @@ fn send(
         // retryable (fallback-eligible); 4xx is a client/config problem
         // - except 429, which is transient: another key or provider may
         // still have quota, and the stamped Retry-After paces the retry.
-        let retryable = !(400..500).contains(&code) || code == 429;
+        let retryable = is_retryable_status(code);
         let mut cause = format!("{}: HTTP {code} {snippet}", req.url);
         if let Some(secs) = retry_after {
             cause.push_str(&format!(" (retry-after: {secs}s)"));
@@ -662,24 +703,79 @@ impl ChatTransport for HttpTransport {
             )
             .build()
             .new_agent();
-        let resp = send(&agent, req)?;
+        // Ask for SSE explicitly: some gateways default to a buffered
+        // non-streaming body without it.
+        let mut req2 = req.clone();
+        if !req2
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("accept"))
+        {
+            req2.headers.push(("Accept".into(), "text/event-stream".into()));
+        }
+        let resp = send(&agent, &req2)?;
         let reader = BufReader::new(resp.into_body().into_reader());
+        // SSE events are separated by blank lines, and one event's
+        // `data:` field may span several lines (joined with `\n`).
+        // Accumulate consecutive `data:` lines and deliver one payload
+        // per event; a buffer that already parses as complete JSON is
+        // flushed before the next `data:` line so providers that omit
+        // the blank separator still deliver promptly. `[DONE]` is
+        // handled here, before adapter parsing, and fully trimmed:
+        // `data: [DONE] ` previously reached the adapters, where
+        // OpenAI tried to JSON-parse it and Anthropic failed outright.
+        // NOTE: `lines()` still only yields a chunk once its newline
+        // arrives, so a provider that sends a JSON payload with no
+        // trailing newline stalls until EOF. Fixing that needs a
+        // byte-level reader, not this line loop (listed as a remainder).
+        let mut pending = String::new();
+        let flush = |pending: &mut String,
+                         on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>|
+         -> Result<bool, PantheonError> {
+            if pending.is_empty() {
+                return Ok(false);
+            }
+            let payload = pending.trim().to_string();
+            pending.clear();
+            if payload.is_empty() {
+                return Ok(false);
+            }
+            if payload == "[DONE]" {
+                return Ok(true);
+            }
+            on_payload(&payload)?;
+            Ok(false)
+        };
         for line in reader.lines() {
             let line = line.map_err(|e| perr("PROVIDER_READ", e.to_string(), true))?;
             let line = line.trim_end_matches('\r');
             if line.is_empty() || line.starts_with(':') || line.starts_with("event:") {
-                continue; // blank line, keepalive comment, or event tag
+                // Blank line / comment / event tag ends the current event.
+                if flush(&mut pending, on_payload)? {
+                    return Ok(StreamEnd::Done);
+                }
+                continue;
             }
             if let Some(payload) = line.strip_prefix("data:") {
                 let payload = payload.trim_start();
                 if payload.is_empty() {
                     continue;
                 }
-                on_payload(payload)?;
-                if payload == "[DONE]" {
-                    return Ok(StreamEnd::Done);
+                if !pending.is_empty()
+                    && serde_json::from_str::<serde_json::Value>(pending.trim()).is_ok()
+                {
+                    if flush(&mut pending, on_payload)? {
+                        return Ok(StreamEnd::Done);
+                    }
                 }
+                if !pending.is_empty() {
+                    pending.push('\n');
+                }
+                pending.push_str(payload);
             }
+        }
+        if flush(&mut pending, on_payload)? {
+            return Ok(StreamEnd::Done);
         }
         Ok(StreamEnd::Eof)
     }
@@ -688,6 +784,17 @@ impl ChatTransport for HttpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retryable_status_covers_408_and_5xx_not_other_4xx() {
+        assert!(is_retryable_status(408));
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(500));
+        assert!(is_retryable_status(503));
+        assert!(!is_retryable_status(400));
+        assert!(!is_retryable_status(401));
+        assert!(!is_retryable_status(404));
+    }
 
     #[test]
     fn timeout_default_when_nothing_set() {
