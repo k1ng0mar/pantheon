@@ -4619,12 +4619,20 @@ fn composer_provider_spans(state: &TuiState, th: &theme::Theme, max_w: usize) ->
 /// Full provider row for the unified composer box, padded to exactly
 /// `budget` cells: the provider line left, `? Commands` right.
 /// Layered elements ride on the provider line in its own language and
-/// only when active: the active subagent count (only when >0) and the
-/// `ctx` element (amber, only at >=78% of the context window). Below
-/// 78% the row is byte-identical to the base shape. Vim mode, when
-/// on, leads the row in dim text. When the left side does not fit,
-/// the right hint is shed first and the left side clips — the row
-/// never wraps and never grows the box.
+/// only when active: the active subagent count (only when >0), the
+/// live token count (see below), and the `ctx` element (amber, only
+/// at >=78% of the context window). Vim mode, when on, leads the row
+/// in dim text. When the left side does not fit, the right hint is
+/// shed first and the left side clips — the row never wraps and
+/// never grows the box.
+///
+/// Live token count: `tokens_used + turn_estimate`, where
+/// `turn_estimate` is bumped on every streamed delta (~4 chars per
+/// token) and snapped away when the provider's authoritative `Usage`
+/// event lands. While a turn streams the count is therefore an
+/// ESTIMATE, marked with `~` (`~107 tok`); once `Usage` lands,
+/// `turn_estimate` is 0 and the same element shows the FINAL number
+/// with no `~`. The estimate is never presented as a final number.
 fn composer_provider_row(
     state: &TuiState,
     th: &theme::Theme,
@@ -4645,6 +4653,19 @@ fn composer_provider_row(
             format!(" • {} agent{}", agents, if agents == 1 { "" } else { "s" }),
             Style::default().fg(th.primary),
         ));
+    }
+    // Live token count, incrementing as the turn streams: while
+    // `turn_estimate` is nonzero the number is an estimate (`~`);
+    // after the provider's `Usage` event it is the final number.
+    // Hidden at 0 so an idle composer row is byte-identical to base.
+    let live_tokens = state.tokens_used + state.turn_estimate;
+    if live_tokens > 0 {
+        let label = if state.turn_estimate > 0 {
+            format!(" • ~{} tok", statusbar::fmt_count(live_tokens as u64))
+        } else {
+            format!(" • {} tok", statusbar::fmt_count(live_tokens as u64))
+        };
+        left.push(Span::styled(label, Style::default().fg(th.dim)));
     }
     if state.tokens_max > 0 {
         let live = state.tokens_used + state.turn_estimate;
@@ -12216,6 +12237,53 @@ mod picker_render_tests {
         assert!(
             text.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
             "got: {text}"
+        );
+    }
+
+    #[test]
+    fn provider_row_increments_live_tokens_and_settles_on_usage() {
+        // Prior usage: 100 tokens. Deltas bump the estimate (~4 chars
+        // per token), so the provider row must tick up with a `~`
+        // estimate marker; the provider's Usage event then snaps it to
+        // the final number with no marker.
+        let mut s = test_state();
+        let row = |s: &TuiState| render_to_string(render_input_block, s).join("\n");
+        assert!(!row(&s).contains("tok"), "idle row must stay base");
+        s.tokens_used = 100;
+        assert!(
+            row(&s).contains("100 tok") && !row(&s).contains('~'),
+            "prior final usage shows without estimate marker: {}",
+            row(&s)
+        );
+        s.handle_model_event(ModelEvent::TextDelta {
+            text: "Hello world, this is a test.".into(), // 28 chars -> +7
+        });
+        assert!(
+            row(&s).contains("~107 tok"),
+            "estimate must tick on first delta: {}",
+            row(&s)
+        );
+        s.handle_model_event(ModelEvent::TextDelta {
+            text: "12345678".into(), // 8 chars -> +2
+        });
+        assert!(
+            row(&s).contains("~109 tok"),
+            "estimate must tick on second delta: {}",
+            row(&s)
+        );
+        s.handle_model_event(ModelEvent::Usage {
+            usage: pantheon_providers::model_event::ModelUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                total_tokens: 150,
+                cost_usd: None,
+            },
+        });
+        let final_row = row(&s);
+        assert!(final_row.contains("150 tok"), "final must settle: {final_row}");
+        assert!(
+            !final_row.contains('~'),
+            "final must carry no estimate marker: {final_row}"
         );
     }
 
