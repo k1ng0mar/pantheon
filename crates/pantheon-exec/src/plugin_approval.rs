@@ -36,10 +36,20 @@ pub fn is_bundled(plugin: &DiscoveredPlugin) -> bool {
     approval::is_bundled(&scope_dir_of(plugin), &plugin.root)
 }
 
+/// True only when the plugin is a bundled-path dir whose contents match
+/// the embedded shipped registry byte-for-byte. A hand-dropped dir under
+/// `bundled/` (or a tampered shipped dir) is path-bundled but NOT
+/// canonical: it must go through third-party approval like any other
+/// unvetted code. This is the check approval gates must use; the
+/// path-only [`is_bundled`] is for listing/layout only.
+pub fn is_canonical_bundled(plugin: &DiscoveredPlugin) -> bool {
+    is_bundled(plugin) && crate::plugins::verify_bundled_dir(&plugin.root)
+}
+
 /// True when the plugin is bundled, or a third-party plugin whose recorded
 /// approval is still bound to its current content hash.
 pub fn is_approved(plugin: &DiscoveredPlugin) -> bool {
-    if is_bundled(plugin) {
+    if is_canonical_bundled(plugin) {
         return true;
     }
     let scope = scope_dir_of(plugin);
@@ -72,7 +82,7 @@ pub fn is_approved_with_pinned_runner(
     runner_bytes: &[u8],
     runner_md: &std::fs::Metadata,
 ) -> bool {
-    if is_bundled(plugin) {
+    if is_canonical_bundled(plugin) {
         return true;
     }
     let scope = scope_dir_of(plugin);
@@ -109,6 +119,6 @@ pub fn revoke_approval(plugin: &DiscoveredPlugin) -> Result<bool, PantheonError>
 pub fn pending_approvals(plugins: &[DiscoveredPlugin]) -> Vec<&DiscoveredPlugin> {
     plugins
         .iter()
-        .filter(|p| !is_bundled(p) && !is_approved(p))
+        .filter(|p| !is_canonical_bundled(p) && !is_approved(p))
         .collect()
 }

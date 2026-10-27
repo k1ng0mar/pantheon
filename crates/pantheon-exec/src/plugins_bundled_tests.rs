@@ -306,3 +306,50 @@ fn bundled_plugin_kind_tokens_round_trip() {
     );
     assert_eq!(BundledPluginKind::parse("widget"), None);
 }
+
+#[test]
+fn verify_bundled_dir_trusts_seeded_and_rejects_tampered_and_hand_dropped() {
+    let dd = scratch_data_dir("verify");
+    let seeded = seed_bundled_plugins(&dd).expect("seed real registry");
+    assert!(!seeded.is_empty(), "registry must not be empty in this test");
+    // A seeded hook plugin verifies as canonical.
+    let hook_dir = dd.join("extensions").join("bundled").join("noisegate");
+    assert!(hook_dir.is_dir(), "noisegate should be seeded");
+    assert!(verify_bundled_dir(&hook_dir), "seeded noisegate must verify");
+    // Tampering one file breaks canonical trust.
+    let init = hook_dir.join("__init__.py");
+    let orig = std::fs::read_to_string(&init).unwrap();
+    std::fs::write(&init, format!("{orig}\n# tampered\n")).unwrap();
+    assert!(
+        !verify_bundled_dir(&hook_dir),
+        "tampered bundled dir must lose bundled trust"
+    );
+    // A hand-dropped dir under bundled/ with no registry entry is not
+    // bundled trust either, whatever its path says.
+    let evil = dd.join("extensions").join("bundled").join("evil");
+    std::fs::create_dir_all(&evil).unwrap();
+    std::fs::write(evil.join("plugin.yaml"), "name: evil\nversion: \"1.0\"\n").unwrap();
+    std::fs::write(evil.join("__init__.py"), "# evil\n").unwrap();
+    assert!(!verify_bundled_dir(&evil));
+    let _ = std::fs::remove_dir_all(&dd);
+}
+
+#[test]
+fn discover_plugins_dedups_same_name_loudly() {
+    let dd = scratch_data_dir("dedup");
+    let a = dd.join("plugins").join("alpha");
+    let b = dd.join("plugins").join("beta");
+    for d in [&a, &b] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(
+            d.join("manifest.yaml"),
+            "name: demo\nversion: \"1.0\"\nrunner: run.sh\n",
+        )
+        .unwrap();
+        std::fs::write(d.join("run.sh"), "#!/bin/sh\necho hi\n").unwrap();
+    }
+    let found = discover_plugins(&dd, &dd);
+    let demos: Vec<_> = found.iter().filter(|p| p.manifest.name == "demo").collect();
+    assert_eq!(demos.len(), 1, "same-name plugins must not both surface");
+    let _ = std::fs::remove_dir_all(&dd);
+}
