@@ -119,18 +119,42 @@ impl Default for HttpTransport {
     }
 }
 
-/// Provider HTTP timeout. Overridable via `PANTHEON_HTTP_TIMEOUT_MS`
-/// (default 120_000). Applies to single-shot calls as an overall
-/// deadline and to streams as a per-chunk read idle deadline so a
-/// hanging provider cannot wedge the session thread forever.
-/// The turn watchdog covers process liveness; this covers provider hang.
-pub fn http_timeout() -> Duration {
-    std::env::var("PANTHEON_HTTP_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
+/// Default provider HTTP timeout (120s) and its ceiling (1h): a
+/// configured value above the ceiling is clamped, never a silent
+/// forever-hang from a typo'd extra zero.
+pub const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(120);
+pub const MAX_HTTP_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// Resolve the provider HTTP timeout. Precedence: the
+/// `PANTHEON_HTTP_TIMEOUT_MS` env var (when set to a positive number)
+/// overrides everything; otherwise the `[model] timeout_ms` config
+/// value (when positive); otherwise the 120s default. A zero or
+/// unparseable value at one level falls through to the next, never to
+/// a zero timeout. Values above the 1h ceiling are clamped to it.
+/// Takes the env value as a parameter so the precedence is unit
+/// testable without mutating process-global env in tests.
+pub fn resolve_http_timeout(env_ms: Option<u64>, config_ms: Option<u64>) -> Duration {
+    let chosen = env_ms
         .filter(|&ms| ms > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(Duration::from_secs(120))
+        .or_else(|| config_ms.filter(|&ms| ms > 0));
+    match chosen {
+        Some(ms) => Duration::from_millis(ms).min(MAX_HTTP_TIMEOUT),
+        None => DEFAULT_HTTP_TIMEOUT,
+    }
+}
+
+/// Provider HTTP timeout, from the env var alone (config-file values
+/// are resolved by the runtime session, which owns the data dir, and
+/// passed in via [`resolve_http_timeout`] + the transport's `timeout`
+/// field). Applies to single-shot calls as an overall deadline and
+/// to streams as a per-read deadline so a hanging provider cannot
+/// wedge the session thread forever. The turn watchdog covers process
+/// liveness; this covers provider hang.
+pub fn http_timeout() -> Duration {
+    let env_ms = std::env::var("PANTHEON_HTTP_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+    resolve_http_timeout(env_ms, None)
 }
 
 /// Shared request agent honoring [`http_timeout`]. Every provider-plane
@@ -610,11 +634,23 @@ impl ChatTransport for HttpTransport {
         req: &WireRequest,
         on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
     ) -> Result<StreamEnd, PantheonError> {
-        // No overall timeout: a stream may run long. The per-call bound
-        // covers connect through response headers; the read timeout is a
-        // per-chunk idle deadline.
+        // No total timeout: a stream may run long, and a slow-but-alive
+        // provider must not be cut off mid-answer. NOTE the old code
+        // capped streams at 15s via `timeout_per_call`, believing it
+        // covered only "connect through response headers" - that is
+        // wrong for ureq 3.5.0: `timeout_per_call` is the max total
+        // duration for one HTTP exchange, headers AND body included,
+        // which is exactly how long streamed answers were being cut
+        // off with PROVIDER_STREAM_INTERRUPTED after partial output.
+        // Hang protection for a stream is therefore the per-read
+        // deadline (each transport read must complete within
+        // `self.timeout`; a provider that stops sending trips it) plus
+        // the connection-setup deadline, plus the existing turn
+        // watchdog for process liveness - never a wall-clock cap on a
+        // live stream. Single-shot `post` above keeps its overall
+        // `timeout_global` deadline.
         let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_per_call(Some(self.timeout.min(Duration::from_secs(15))))
+            .timeout_connect(Some(self.timeout))
             .timeout_per_read(Some(self.timeout))
             .max_redirects(0)
             .max_redirects_will_error(false)
@@ -646,5 +682,51 @@ impl ChatTransport for HttpTransport {
             }
         }
         Ok(StreamEnd::Eof)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_default_when_nothing_set() {
+        assert_eq!(resolve_http_timeout(None, None), DEFAULT_HTTP_TIMEOUT);
+    }
+
+    #[test]
+    fn timeout_config_value_used_when_env_absent() {
+        assert_eq!(
+            resolve_http_timeout(None, Some(30_000)),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn timeout_env_overrides_config() {
+        assert_eq!(
+            resolve_http_timeout(Some(45_000), Some(30_000)),
+            Duration::from_secs(45)
+        );
+    }
+
+    #[test]
+    fn timeout_zero_falls_through_to_next_level() {
+        // Zero env -> config wins; zero config -> default wins. A zero
+        // timeout must never mean "no deadline" by accident.
+        assert_eq!(
+            resolve_http_timeout(Some(0), Some(30_000)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(resolve_http_timeout(None, Some(0)), DEFAULT_HTTP_TIMEOUT);
+        assert_eq!(resolve_http_timeout(Some(0), Some(0)), DEFAULT_HTTP_TIMEOUT);
+    }
+
+    #[test]
+    fn timeout_clamped_to_one_hour_ceiling() {
+        assert_eq!(
+            resolve_http_timeout(None, Some(10_000_000)),
+            MAX_HTTP_TIMEOUT
+        );
     }
 }
