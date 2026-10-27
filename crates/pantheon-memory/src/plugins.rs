@@ -309,12 +309,19 @@ impl StdioBackend {
     fn call(&self, req: &serde_json::Value) -> Result<serde_json::Value, PantheonError> {
         use std::io::{BufRead, BufReader, Read, Write};
         use std::process::{Command, Stdio};
-        let mut child = Command::new(&self.command)
-            .args(&self.args)
+        // Memory stdio plugins used to inherit the full host env,
+        // including secrets, unlike hook/tool plugins which scrub to
+        // PATH (+ allowlist). Same scrub here: env_clear, then PATH.
+        let mut cmd = Command::new(&self.command);
+        cmd.args(&self.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
+            .stderr(Stdio::null());
+        cmd.env_clear();
+        if let Ok(path) = std::env::var("PATH") {
+            cmd.env("PATH", path);
+        }
+        let mut child = cmd.spawn()
             .map_err(|e| {
                 perr(
                     "MEM_PLUGIN_SPAWN",
