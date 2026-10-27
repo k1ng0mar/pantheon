@@ -68,7 +68,7 @@ pub fn send_to_target(data_dir: &Path, target: &Deliver, message: &str) -> Resul
     if message.is_empty() {
         return Err("message is empty".to_string());
     }
-    let sender = RestChannelSender;
+    let sender = RestChannelSender::with_data_dir(data_dir);
     match target {
         Deliver::Telegram => sender
             .send_telegram(message)
