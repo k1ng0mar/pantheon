@@ -12257,6 +12257,88 @@ mod picker_render_tests {
         );
     }
 
+    /// Full-frame TestBackend snapshot at one width: the redesigned
+    /// layout (tabs, transcript, tool card, composer, footer, and the
+    /// inspector sidebar when wide enough). This is the strongest
+    /// visual check available without a live terminal: it renders
+    /// through the real `render()` path, not a hand-built line list.
+    /// When `PANTHEON_SNAPSHOT_DIR` is set, the buffer text is also
+    /// written there as `frame-{width}.txt` for human inspection.
+    fn snapshot_frame(width: u16, height: u16) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut s = test_state();
+        s.tabs.refresh_from_explicit(
+            &[("r1".to_string(), Some("Session 1".to_string()))],
+            |_| false,
+            "r1",
+        );
+        s.show_sidebar = true;
+        // term_width is a stored field updated from real terminal
+        // resizes in the event loop; TestBackend does not set it, so
+        // the snapshot must, or the >=160 sidebar gate never opens.
+        s.term_width = width;
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::UserMessage(
+                "find the largest files in my Downloads".to_string(),
+            ),
+        });
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::AssistantMessage("scanning Downloads".to_string()),
+        });
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::ToolCall {
+                name: "shell".to_string(),
+                args: "{\"command\": \"find ~/Downloads -type f\"}".to_string(),
+                ok: None,
+                call_id: "c1".to_string(),
+                started: Some(std::time::Instant::now()),
+                duration: None,
+                error: None,
+                tokens: None,
+                expanded: false,
+                output: vec![],
+            },
+        });
+        swarm_spawn(&mut s.blocks, Some("call-9".to_string()), "researcher");
+        s.input = "Yes, go ahead".to_string();
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|f| render(&mut s, f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let lines: Vec<String> = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        if let Ok(dir) = std::env::var("PANTHEON_SNAPSHOT_DIR") {
+            let _ = std::fs::write(
+                format!("{dir}/frame-{width}.txt"),
+                lines.join("\n"),
+            );
+        }
+        lines
+    }
+
+    #[test]
+    fn full_frame_snapshots_narrow_normal_wide() {
+        let narrow = snapshot_frame(80, 24).join("\n");
+        let normal = snapshot_frame(120, 30).join("\n");
+        let wide = snapshot_frame(180, 40).join("\n");
+        for (name, text) in [("narrow", &narrow), ("normal", &normal), ("wide", &wide)] {
+            assert!(text.contains("User"), "{name} missing User label:\n{text}");
+            assert!(text.contains("Agent"), "{name} missing Agent label:\n{text}");
+            assert!(text.contains("Provider:"), "{name} missing footer:\n{text}");
+            assert!(text.contains("Yes, go ahead"), "{name} missing composer:\n{text}");
+        }
+        // Inspector sidebar only at >=160 cols, even when toggled on.
+        assert!(!narrow.contains("Turns:"), "sidebar leaked at 80:\n{narrow}");
+        assert!(!normal.contains("Turns:"), "sidebar leaked at 120:\n{normal}");
+        assert!(wide.contains("Turns:"), "sidebar missing at 180:\n{wide}");
+        assert!(wide.contains("Swarm"), "wide frame missing swarm block:\n{wide}");
+    }
+
     #[test]
     fn base_footer_carries_provider_and_commands_hint() {
         let s = test_state();
