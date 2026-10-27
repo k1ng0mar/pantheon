@@ -75,11 +75,8 @@ impl AguiServeConfig {
             .replace("http://0.0.0.0", "http://127.0.0.1")
             .replace("http://[::]", "http://[::1]")
     }
-    pub fn signer(&self) -> GenUiSigner {
-        let secret = std::env::var("PANTHEON_GENUI_SECRET")
-            .map(|s| s.into_bytes())
-            .unwrap_or_else(|_| b"pantheon-dev-genui-secret".to_vec());
-        GenUiSigner::new(self.effective_genui_base(), secret)
+    pub fn signer(&self) -> Option<GenUiSigner> {
+        genui_secret().map(|secret| GenUiSigner::new(self.effective_genui_base(), secret))
     }
     pub fn dispatcher(&self) -> crate::rpc::Dispatcher {
         crate::agui::dispatcher_for_with_hint_and_host(
@@ -425,6 +422,23 @@ fn blob_content_type(mime: &str) -> &'static str {
     cache.insert(mime.to_string(), leaked);
     leaked
 }
+/// GenUI signing secret: `PANTHEON_GENUI_SECRET` when set and
+/// non-empty, else `None` (not configured). There used to be a
+/// hardcoded dev default (`pantheon-dev-genui-secret`) here and in
+/// `agui.rs`: anyone holding a dashboard token could forge signatures
+/// for arbitrary task ids and read other runs' artifacts, because the
+/// secret was public knowledge. Fail closed instead: no secret means
+/// no signing and no verification, with a clear error naming the
+/// variable. (Alternative Umar could choose: generate + persist a
+/// random secret on first use; that needs a storage decision, so it
+/// is left as a follow-up, not silently picked here.)
+pub fn genui_secret() -> Option<Vec<u8>> {
+    std::env::var("PANTHEON_GENUI_SECRET")
+        .ok()
+        .map(|s| s.into_bytes())
+        .filter(|b| !b.iter().all(|c| c.is_ascii_whitespace()) && !b.is_empty())
+}
+
 fn handle_blob(cfg: &AguiServeConfig, path: &str, query: &HashMap<String, String>) -> Response {
     let task = path.trim_start_matches("/agui/blob/").to_string();
     let exp: i64 = query.get("exp").and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -432,7 +446,13 @@ fn handle_blob(cfg: &AguiServeConfig, path: &str, query: &HashMap<String, String
     if !valid_task_id(&task) {
         return json(400, br#"{"error":"bad task"}"#);
     }
-    if !cfg.signer().verify(&task, exp, &sig) {
+    let Some(signer) = cfg.signer() else {
+        return json(
+            500,
+            br#"{"error":"genui signing not configured: set PANTHEON_GENUI_SECRET"}"#,
+        );
+    };
+    if !signer.verify(&task, exp, &sig) {
         return json(403, br#"{"error":"bad signature or expired"}"#);
     }
     let sup = match crate::Supervisor::open(cfg.data_dir.clone()) {

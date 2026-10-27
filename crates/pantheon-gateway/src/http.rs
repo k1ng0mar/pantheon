@@ -84,6 +84,13 @@ impl Response {
     pub fn ok_json(body: String) -> Self {
         Self::buffered(200, "application/json", body.into_bytes())
     }
+    /// JSON error body with a real HTTP error status. The pre-parse
+    /// guards used to return `ok_json` (200) with an error body, so a
+    /// client that checked only the status saw oversize requests
+    /// succeed; the docstrings already promised 431/413.
+    pub fn status_json(status: u16, body: String) -> Self {
+        Self::buffered(status, "application/json", body.into_bytes())
+    }
     pub fn created_json(body: String) -> Self {
         Self::buffered(201, "application/json", body.into_bytes())
     }
@@ -533,7 +540,8 @@ fn read_request(stream: &TcpStream) -> Result<Option<Request>, Response> {
         }
         header_bytes += h.len();
         if header_bytes > MAX_HEADERS {
-            return Err(Response::ok_json(
+            return Err(Response::status_json(
+                431,
                 r#"{"error":"request headers too large"}"#.to_string(),
             ));
         }
@@ -552,7 +560,8 @@ fn read_request(stream: &TcpStream) -> Result<Option<Request>, Response> {
     // 413 before allocation: a lying Content-Length never becomes a Vec.
     let body_cap = body_cap_for(&raw_path);
     if len > body_cap {
-        return Err(Response::ok_json(
+        return Err(Response::status_json(
+            413,
             r#"{"error":"request body too large"}"#.to_string(),
         ));
     }
@@ -865,5 +874,40 @@ mod mutation_guard_tests {
     fn patch_without_origin_is_allowed() {
         let req = patch_req("127.0.0.1:7171", None);
         assert!(check_auth(&req, AuthGroup::DashboardApi, &ctx()).is_ok());
+    }
+
+    fn read_request_from(written: &[u8]) -> Result<Option<Request>, Response> {
+        use std::io::Write;
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            read_request(&stream)
+        });
+        let mut client = std::net::TcpStream::connect(addr).expect("connect");
+        client.write_all(written).expect("write request");
+        handle.join().expect("server thread")
+    }
+
+    /// Oversize heads used to answer 200 with an error body, contradicting
+    /// the docstring and the reason() table.
+    #[test]
+    fn oversize_headers_get_431_not_200() {
+        let big = "x-pad: ".to_string() + &"a".repeat(40_000) + "\r\n\r\n";
+        let req = format!("GET /api/health HTTP/1.1\r\n{big}");
+        match read_request_from(req.as_bytes()) {
+            Err(Response::Buffered { status, .. }) => assert_eq!(status, 431),
+            _ => panic!("expected 431 guard"),
+        }
+    }
+
+    #[test]
+    fn oversize_body_get_413_not_200() {
+        let req = b"POST /api/runs HTTP/1.1\r\nContent-Length: 2000000\r\n\r\n";
+        match read_request_from(req) {
+            Err(Response::Buffered { status, .. }) => assert_eq!(status, 413),
+            _ => panic!("expected 413 guard"),
+        }
     }
 }

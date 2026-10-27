@@ -392,9 +392,11 @@ impl MethodHandler for PutArtifact {
         sup_for(&dir)?
             .put_artifact(task, mime, &bytes)
             .map_err(|e| RpcError::internal(e.to_string()))?;
-        let secret = std::env::var("PANTHEON_GENUI_SECRET")
-            .map(|s| s.into_bytes())
-            .unwrap_or_else(|_| b"pantheon-dev-genui-secret".to_vec());
+        let Some(secret) = crate::agui_serve::genui_secret() else {
+            return Err(RpcError::internal(
+                "genui signing not configured: set PANTHEON_GENUI_SECRET",
+            ));
+        };
         let base = &self.default_base;
         let r = GenUiSigner::new(base, secret).sign(task, mime, 3_600_000);
         Ok(json!({"task_id": r.task_id, "url": r.url, "expires_ms": r.expires_ms, "mime": r.mime}))
@@ -450,9 +452,11 @@ impl MethodHandler for Sign {
             return Err(RpcError::invalid_params("ttl_ms must be positive"));
         }
         let base = self.default_base.clone();
-        let secret = std::env::var("PANTHEON_GENUI_SECRET")
-            .map(|s| s.into_bytes())
-            .unwrap_or_else(|_| b"pantheon-dev-genui-secret".to_vec());
+        let Some(secret) = crate::agui_serve::genui_secret() else {
+            return Err(RpcError::internal(
+                "genui signing not configured: set PANTHEON_GENUI_SECRET",
+            ));
+        };
         let signer = pantheon_gateway::GenUiSigner::new(base, secret);
         let r = signer.sign(task, mime, ttl);
         let _ = &self.data_dir;

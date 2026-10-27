@@ -1290,7 +1290,7 @@ fn deliver_job_result(
     };
     let body = schedule_delivery::build_summary(&text);
     if let Some(err) = schedule_delivery::deliver_best_effort(
-        &schedule_delivery::RestChannelSender,
+        &schedule_delivery::RestChannelSender::with_data_dir(data_dir),
         &target,
         &short_task_label(task, &sched.id),
         &body,
