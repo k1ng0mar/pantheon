@@ -42,8 +42,25 @@ fn send_err(resp: &mut ureq::http::Response<ureq::Body>) -> ChannelError {
         let body_secs = body_secs.filter(|n| *n > 0);
         ChannelError::rate_limited("TELEGRAM_HTTP", "sendMessage", body_secs.or(header))
     } else {
-        ChannelError::from_ureq("TELEGRAM_HTTP", resp)
+        telegram_http_err(resp)
     }
+}
+
+/// Telegram HTTP failure with an actionable credential diagnosis
+/// appended when the status maps to one. The message stays
+/// URL-free (from_ureq reports only the status code) and the
+/// diagnosis is static text, so the bot token in the request URL
+/// can never pass through it.
+fn telegram_http_err(resp: &ureq::http::Response<ureq::Body>) -> ChannelError {
+    let status = resp.status().as_u16();
+    let mut err = ChannelError::from_ureq("TELEGRAM_HTTP", resp);
+    if let Some(d) = pantheon_providers::credential_error::classify_telegram(status, "") {
+        err.message.push_str(&format!(
+            " [credential: {} {}]",
+            d.summary, d.remediation
+        ));
+    }
+    err
 }
 
 /// Bot API boundary. A live implementation can use any HTTP client; the
@@ -144,7 +161,7 @@ impl TelegramTransport for TelegramRestTransport {
             }))
             .map_err(|e| ChannelError::new("TELEGRAM_HTTP", e.to_string()))?;
         if resp.status().as_u16() >= 400 {
-            return Err(ChannelError::from_ureq("TELEGRAM_HTTP", &resp));
+            return Err(telegram_http_err(&resp));
         }
         let body: Value = resp
             .into_body()

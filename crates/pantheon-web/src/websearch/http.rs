@@ -38,6 +38,22 @@ fn agent() -> ureq::Agent {
         .new_agent()
 }
 
+/// Credential diagnosis for a search-provider failure, mirroring
+/// `pantheon_providers::credential_error::classify` (this crate does
+/// not depend on pantheon-providers, so the three static mappings
+/// live here too; keep them in sync). The diagnosis is static text
+/// only, never the body, so no credential can pass through it.
+fn credential_diagnosis(code: u16, body: &str) -> Option<&'static str> {
+    if body.contains("error code: 1010") {
+        return Some("Blocked at Cloudflare's edge by Browser Integrity Check: the request never reached the provider's auth layer. Do NOT replace the key. Fix: send a real User-Agent header.");
+    }
+    match code {
+        401 => Some("Key missing, invalid, or revoked. Check the key in the provider account; replace it if it was revoked or rotated."),
+        403 => Some("Key accepted but not permitted for this endpoint or model. Check permissions, scope, and plan; do not assume the key is wrong."),
+        _ => None,
+    }
+}
+
 fn status_error(provider: &str, code: u16, r: ureq::http::Response<ureq::Body>) -> SearchError {
     let detail: String = r
         .into_body()
@@ -46,7 +62,17 @@ fn status_error(provider: &str, code: u16, r: ureq::http::Response<ureq::Body>) 
         .chars()
         .take(300)
         .collect();
-    SearchError::RequestFailed(format!("{provider} HTTP {code}: {detail}"))
+    let mut message = format!("{provider} HTTP {code}: {detail}");
+    if let Some(d) = credential_diagnosis(code, &detail) {
+        message.push_str(&format!(" [credential: {d}]"));
+    }
+    SearchError::RequestFailed(message)
+}
+
+/// Branded User-Agent for search requests, matching the provider
+/// transport: edge checks rejecting default agents must not block us.
+fn user_agent() -> String {
+    format!("Pantheon/{}", env!("CARGO_PKG_VERSION"))
 }
 
 /// `Retry-After` delta-seconds from a response, if present and sane.
@@ -85,6 +111,7 @@ pub fn post_json(
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
+        req = req.header("User-Agent", user_agent().as_str());
         let response = match req.send_json(body.clone()) {
             Ok(r) => r,
             Err(e) if is_timeout(&e) => return Err(SearchError::Timeout),
@@ -125,6 +152,7 @@ pub fn get_json(
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
+        req = req.header("User-Agent", user_agent().as_str());
         let response = match req.call() {
             Ok(r) => r,
             Err(e) if is_timeout(&e) => return Err(SearchError::Timeout),
@@ -274,4 +302,29 @@ pub fn mcp_text_payload(body: &str) -> Result<String, super::error::SearchError>
     Err(SearchError::BadResponse(
         "MCP response contained no text content".to_string(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagnosis_maps_1010_401_403_and_nothing_else() {
+        assert!(credential_diagnosis(403, "error code: 1010")
+            .expect("1010 must diagnose")
+            .contains("Do NOT replace the key"));
+        assert!(credential_diagnosis(401, "unauthorized")
+            .expect("401 must diagnose")
+            .contains("revoked"));
+        assert!(credential_diagnosis(403, "forbidden")
+            .expect("403 must diagnose")
+            .contains("not permitted"));
+        assert!(credential_diagnosis(429, "rate limited").is_none());
+        assert!(credential_diagnosis(500, "error").is_none());
+    }
+
+    #[test]
+    fn websearch_user_agent_is_branded() {
+        assert!(user_agent().starts_with("Pantheon/"));
+    }
 }
