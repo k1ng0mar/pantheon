@@ -122,6 +122,11 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 const TOOL_CHUNK_MAX: usize = 8192;
 /// Max chars of a message indexed per chunk.
 const MESSAGE_CHUNK_MAX: usize = 4096;
+/// Cap on the semantic-scan leg of `search_hybrid` (most recent
+/// embedded chunks). Without a cap every hybrid query loads the whole
+/// embedding table; 512 chunks is ample for a top-`limit` blend while
+/// keeping per-query work bounded.
+const SEMANTIC_SCAN_CAP: usize = 512;
 
 /// SQLite-persisted session search index.
 ///
@@ -146,7 +151,16 @@ impl SessionSearch {
         // already have the column; the ALTER is a no-op error there.
         conn.execute_batch(SCHEMA_TABLES)
             .map_err(|e| err("SEARCH_SCHEMA", e.to_string()))?;
-        let _ = conn.execute("ALTER TABLE session_chunks ADD COLUMN embedding BLOB", []);
+        // The forward-only migration (ledgers created before the vector
+        // layer lack the embedding column). Only "duplicate column" is
+        // a benign no-op (fresh DBs already have the column); any other
+        // ALTER failure used to be swallowed with `let _ =`, leaving a
+        // sidecar that looks open but cannot store vectors.
+        match conn.execute("ALTER TABLE session_chunks ADD COLUMN embedding BLOB", []) {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
+            Err(e) => return Err(err("SEARCH_SCHEMA", e.to_string())),
+        }
         conn.execute_batch(SCHEMA_INDEXES)
             .map_err(|e| err("SEARCH_SCHEMA", e.to_string()))?;
         Ok(Self {
@@ -188,11 +202,19 @@ impl SessionSearch {
                 .take(MESSAGE_CHUNK_MAX)
                 .collect::<String>(),
         };
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| err("SEARCH_LOCK", e.to_string()))?;
-        conn.execute(
+        // One transaction for all three writes: chunk insert, FTS
+        // delete, FTS insert. As separate statements a concurrent
+        // re-index could interleave between the delete and the insert
+        // and leave duplicate FTS rows for one chunk (or a chunk with
+        // no FTS row at all); the transaction makes re-indexing atomic.
+        let tx = conn
+            .transaction()
+            .map_err(|e| err("SEARCH_INSERT", e.to_string()))?;
+        tx.execute(
             "INSERT OR REPLACE INTO session_chunks (chunk_id, run_id, seq, kind, text, ts_ms, embedding) VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![
                 chunk.chunk_id,
@@ -211,16 +233,18 @@ impl SessionSearch {
         // converged, and `search`'s join would then return the same chunk once
         // per leaked FTS row. Delete the chunk's FTS rows first so re-indexing
         // is genuinely idempotent, which is what the `index` doc promises.
-        conn.execute(
+        tx.execute(
             "DELETE FROM session_fts WHERE chunk_id = ?1",
             params![chunk.chunk_id],
         )
         .map_err(|e| err("SEARCH_FTS_DELETE", e.to_string()))?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO session_fts (chunk_id, text, kind, run_id) VALUES (?1,?2,?3,?4)",
             params![chunk.chunk_id, text, chunk.kind, chunk.run_id],
         )
         .map_err(|e| err("SEARCH_FTS_INSERT", e.to_string()))?;
+        tx.commit()
+            .map_err(|e| err("SEARCH_INSERT", e.to_string()))?;
         Ok(())
     }
 
@@ -356,41 +380,88 @@ impl SessionSearch {
             return Ok(lexical
                 .into_iter()
                 .map(|mut h| {
-                    h.score = h.score / 0.70 * 0.90;
+                    h.score = (h.score / 0.70 * 0.90).min(1.0);
                     h
                 })
                 .take(limit)
                 .collect());
         };
 
-        // Load embeddings for the lexical candidates plus a sample of
-        // never-lexically-matched chunks (semantic recall's whole point:
-        // find chunks the keyword query missed).
+        // Semantic scan, bounded: the old code loaded the ENTIRE
+        // embedding table per query (text + vectors for every chunk),
+        // which grows with the whole history. Now it loads only (a) the
+        // embeddings of the lexical candidates, so a dual lexical+
+        // semantic hit still blends, and (b) the most recent
+        // `SEMANTIC_SCAN_CAP` embedded chunks, so semantic recall still
+        // finds chunks the keyword query missed without scanning history.
         let conn = self
             .conn
             .lock()
             .map_err(|e| err("SEARCH_LOCK", e.to_string()))?;
-        let mut stmt = conn
-            .prepare("SELECT chunk_id, run_id, seq, kind, text, ts_ms, embedding FROM session_chunks WHERE embedding IS NOT NULL")
-            .map_err(|e| err("SEARCH_QUERY", e.to_string()))?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, i64>(5)?,
-                    r.get::<_, Option<Vec<u8>>>(6)?,
-                ))
-            })
-            .map_err(|e| err("SEARCH_QUERY", e.to_string()))?;
+        let mut rows: Vec<(String, String, i64, String, String, i64, Option<Vec<u8>>)> = Vec::new();
+        {
+            // (a) lexical candidates, by id.
+            let ids: Vec<&str> = lexical.iter().map(|h| h.chunk.chunk_id.as_str()).collect();
+            if !ids.is_empty() {
+                let placeholders: Vec<String> =
+                    (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
+                let sql = format!(
+                    "SELECT chunk_id, run_id, seq, kind, text, ts_ms, embedding \
+                     FROM session_chunks WHERE chunk_id IN ({}) AND embedding IS NOT NULL",
+                    placeholders.join(",")
+                );
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(|e| err("SEARCH_QUERY", e.to_string()))?;
+                let mapped = stmt
+                    .query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, i64>(5)?,
+                            r.get::<_, Option<Vec<u8>>>(6)?,
+                        ))
+                    })
+                    .map_err(|e| err("SEARCH_QUERY", e.to_string()))?;
+                for row in mapped {
+                    rows.push(row.map_err(|e| err("SEARCH_ROW", e.to_string()))?);
+                }
+            }
+            // (b) recent embedded chunks for semantic-only recall.
+            let mut stmt = conn
+                .prepare(
+                    "SELECT chunk_id, run_id, seq, kind, text, ts_ms, embedding \
+                     FROM session_chunks WHERE embedding IS NOT NULL \
+                     ORDER BY ts_ms DESC, seq DESC LIMIT ?1",
+                )
+                .map_err(|e| err("SEARCH_QUERY", e.to_string()))?;
+            let mapped = stmt
+                .query_map(params![SEMANTIC_SCAN_CAP as i64], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, i64>(5)?,
+                        r.get::<_, Option<Vec<u8>>>(6)?,
+                    ))
+                })
+                .map_err(|e| err("SEARCH_QUERY", e.to_string()))?;
+            for row in mapped {
+                rows.push(row.map_err(|e| err("SEARCH_ROW", e.to_string()))?);
+            }
+        }
         let now = now_ms();
         let mut semantic_hits: Vec<(SessionChunk, f32)> = Vec::new();
-        for row in rows {
-            let (chunk_id, run_id, seq, kind, text, ts_ms, emb) =
-                row.map_err(|e| err("SEARCH_ROW", e.to_string()))?;
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (chunk_id, run_id, seq, kind, text, ts_ms, emb) in rows {
+            if !seen.insert(chunk_id.clone()) {
+                continue;
+            }
             let Some(emb) = blob_to_embedding(emb) else {
                 continue;
             };
@@ -436,7 +507,9 @@ impl SessionSearch {
             .into_iter()
             .map(|(chunk_id, (score, chunk))| SearchHit {
                 chunk: SessionChunk { chunk_id, ..chunk },
-                score,
+                // A dual lexical+semantic hit sums to 0.70 + 0.30 + 0.10
+                // = 1.10 without this clamp; scores are defined as 0..1.
+                score: score.min(1.0),
                 lexical_rank: 0,
                 _bm25: 0.0,
             })
