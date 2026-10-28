@@ -52,8 +52,10 @@ pub mod vim;
 /// The slash-command registry: (command, one-line description). This is
 /// the single source of truth - `/help`, the `/` command palette, and
 /// completion all read from here, so a command can never be listed twice
-/// or drift out of sync. Entries with `<...>` placeholders (e.g.
-/// `/<skill>`) are documentation-only and are skipped by the palette.
+/// or drift out of sync. Only the dynamic `/<skill>` entry is
+/// documentation-only and skipped by the palette; real commands with
+/// `<...>` usage in their display string are offered, and Enter runs
+/// their bare form.
 const COMMANDS: &[(&str, &str)] = &[
     ("/help", "this list"),
     ("/models [FILTER]", "providers first, then models - Enter switches"),
@@ -85,6 +87,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/swarm retry <id>", "relaunch a swarm ([feedback])"),
     ("/swarm tree", "this session's delegation tree (read-only)"),
     ("/team [<id> [<task>]]", "team of experts: list, roster, or launch on a task"),
+    ("/plugins [import|search]", "plugins: import by URL/slug, search registry"),
     ("/plugin [import|search]", "plugins: import by URL/slug, search registry (also /plugins)"),
     ("/btw PROMPT", "run a task in the background (result lands here)"),
     ("/bg [ID]", "list background tasks, or show one's output"),
@@ -119,13 +122,18 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/tasks <agent>", "that agent's open tasks"),
     ("/inbox", "messages sent to this agent"),
     ("/approvals", "pending approvals for this run"),
+    ("/approve <index>", "approve a pending approval by index"),
+    ("/deny <index>", "deny a pending approval by index"),
     ("/schedule", "scheduled jobs"),
     ("/mcp [reload]", "MCP server declarations (reload re-scans them)"),
     ("/migrate", "import from other harnesses (hermes, openclaw, omp, claude)"),
+    ("/oauth [status|logout|login]", "connect hosted apps via local OAuth2"),
     ("/env", "secret names and status (never values)"),
     ("/voice", "speech backends ([stt]/[tts]) status"),
     ("/clear", "clear visible transcript"),
     ("/reset", "reset turn state: clear transcript, cancel turn, drop queue (session, title, ledger kept; /clear is display-only, /new starts a new session)"),
+    ("/quit", "leave pantheon"),
+    ("/exit", "leave pantheon"),
 ];
 
 /// Key hints shown at the end of `/help`. Not commands: kept separate so
@@ -137,10 +145,10 @@ const KEY_HINTS: &[(&str, &str)] = &[
     ("Ctrl+B", "toggle sidebar"),
     ("Ctrl+G", "sidebar: activity / todo view"),
     ("Tab", "toggle Build / Plan mode"),
-    ("Shift+Tab", "previous session"),
+    ("Shift+Tab", "cycle permission mode"),
+    ("Ctrl+Shift+Tab", "previous session"),
     ("/", "command palette (type to filter, Enter runs)"),
     ("Esc Esc (idle)", "offer to rewind the last turn"),
-    ("/exit, /quit", "leave pantheon"),
 ];
 
 /// One `/help` line per registry entry, in the two-space-separated format
@@ -184,8 +192,15 @@ pub struct PaletteState {
 }
 
 impl PaletteState {
-    /// Registry entries matching the filter, in registry order. Entries
-    /// with `<...>` placeholders are documentation-only and never offered.
+    /// Registry entries matching the filter, in registry order. Only
+    /// the dynamic `/<skill>` entry is documentation-only and never
+    /// offered: every other entry is a real command even when its
+    /// display string carries `<...>` usage (e.g. `/team [<id>
+    /// [<task>]]`, `/send <target> <message>`), and Enter on a pick
+    /// strips the usage suffix and runs the bare command. The old
+    /// filter excluded every entry containing `<`, so the palette
+    /// could never offer /team, /send, /tasks, /swarm <id>,
+    /// /agent new or /agents create at all.
     /// Name matches come before description matches: typing `agents`
     /// should offer `/agents`, not `/settings` (whose description happens
     /// to mention "agents").
@@ -194,7 +209,7 @@ impl PaletteState {
         let offered: Vec<(&'static str, &'static str)> = COMMANDS
             .iter()
             .copied()
-            .filter(|(name, _desc)| !name.contains('<'))
+            .filter(|(name, _desc)| !name.starts_with("/<"))
             .collect();
         if f.is_empty() {
             return offered;
@@ -1386,6 +1401,36 @@ impl TuiState {
         self.providers_input.clear();
         self.providers_sel = 0;
         self.models_close();
+    }
+
+    /// Take the models-picker selection for an Enter press: the
+    /// selected row, closing the pickers. `None` when the filtered
+    /// list is empty - and the pickers stay open, so Enter on "no
+    /// matches" no longer silently closed the whole browser (the
+    /// providers arm already stayed open on empty; the models arm
+    /// closed unconditionally).
+    pub fn take_model_selection(&mut self) -> Option<ModelRow> {
+        let target = self.filtered_models().get(self.models_sel).cloned();
+        if target.is_some() {
+            self.providers_close();
+        }
+        target
+    }
+
+    /// Take the history-picker selection for an Enter press: the
+    /// selected run id, closing the picker. `None` when the filtered
+    /// list is empty - and the picker stays open, instead of closing
+    /// silently with nothing selected (the old arm closed first and
+    /// then checked).
+    pub fn take_history_selection(&mut self) -> Option<String> {
+        let target = self
+            .filtered_history()
+            .get(self.history_sel)
+            .map(|r| r.0.clone());
+        if target.is_some() {
+            self.history_close();
+        }
+        target
     }
 
     /// Live token estimate: ~4 chars per token, updated on every streamed
@@ -9069,10 +9114,7 @@ fn tui_loop(
                             state.models_close();
                         }
                         KeyCode::Enter => {
-                            let sel = state.models_sel;
-                            let target = state.filtered_models().get(sel).cloned();
-                            state.providers_close();
-                            if let Some(row) = target {
+                            if let Some(row) = state.take_model_selection() {
                                 if row.model_id.is_empty() {
                                     state.add_status(format!(
                                         "{} lists no curated models; switch with: /model {} <id>",
@@ -9233,10 +9275,7 @@ fn tui_loop(
                         KeyCode::Down => state.history_move(1),
                         KeyCode::Esc => state.history_close(),
                         KeyCode::Enter => {
-                            let sel = state.history_sel;
-                            let target = state.filtered_history().get(sel).map(|r| r.0.clone());
-                            state.history_close();
-                            if let Some(id) = target {
+                            if let Some(id) = state.take_history_selection() {
                                 // Switch the run: reopen a terminal run and
                                 // rebuild the transcript from the ledger.
                                 // Compare against the selected session, not
@@ -11020,15 +11059,20 @@ fn handle_slash_inner(
         show_todos(state, session);
         return;
     }
-    if cmd == "/help" {
+    if cmd == "/help" || cmd.starts_with("/help ") {
         // Generated from the COMMANDS registry: one entry per command,
         // never duplicated, never drifting out of sync with the palette.
+        // Extra words are ignored: /help is the list, whatever follows.
         for line in help_lines() {
             state.add_status(line);
         }
         return;
     }
-    if cmd == "/exit" || cmd == "/quit" {
+    if cmd == "/exit"
+        || cmd == "/quit"
+        || cmd.starts_with("/exit ")
+        || cmd.starts_with("/quit ")
+    {
         state.shutting_down = true;
         return;
     }
@@ -11608,6 +11652,13 @@ fn handle_slash_inner(
         // idle session: the ledger is append-only, so rewind hides the
         // last turn from the live view behind a rewind marker instead of
         // rewriting history.
+        if !state.ready || state.active_run.is_some() || state.pending_approval.is_some() {
+            // rewind_candidate() also returns None while a turn runs,
+            // but "no finished turn to undo" then lies when finished
+            // turns exist: say to wait instead.
+            state.add_status("/undo: wait for the running turn to finish".into());
+            return;
+        }
         match state.rewind_candidate() {
             Some(offer) => {
                 state.rewind_offer = Some(offer);
@@ -12094,9 +12145,16 @@ fn handle_slash_inner(
     }
     // --- approvals ------------------------------------------------------
     if cmd == "/approvals" {
-        let pending = supervisor
-            .pending_approvals(&state.session_id)
-            .unwrap_or_default();
+        // A ledger failure used to read as "no pending approvals"
+        // (unwrap_or_default): report it instead of claiming the list
+        // is empty when it was never read.
+        let pending = match supervisor.pending_approvals(&state.session_id) {
+            Ok(p) => p,
+            Err(e) => {
+                state.add_status(format!("approvals: cannot list pending approvals: {e}"));
+                return;
+            }
+        };
         if pending.is_empty() {
             state.add_status("no pending approvals".into());
         } else {
@@ -12109,15 +12167,23 @@ fn handle_slash_inner(
         }
         return;
     }
+    if cmd == "/approve" {
+        state.add_status("usage: /approve <index> - see /approvals".into());
+        return;
+    }
     if let Some(idx) = cmd.strip_prefix("/approve ") {
         let idx = idx.trim();
         let Ok(i) = idx.parse::<usize>() else {
             state.add_status(format!("usage: /approve <index> (got {idx:?})"));
             return;
         };
-        let pending = supervisor
-            .pending_approvals(&state.session_id)
-            .unwrap_or_default();
+        let pending = match supervisor.pending_approvals(&state.session_id) {
+            Ok(p) => p,
+            Err(e) => {
+                state.add_status(format!("approve: cannot list pending approvals: {e}"));
+                return;
+            }
+        };
         let Some(scope) = pending.get(i) else {
             state.add_status(format!(
                 "no approval at index {i} ({} pending)",
@@ -12159,15 +12225,23 @@ fn handle_slash_inner(
         }
         return;
     }
+    if cmd == "/deny" {
+        state.add_status("usage: /deny <index> - see /approvals".into());
+        return;
+    }
     if let Some(idx) = cmd.strip_prefix("/deny ") {
         let idx = idx.trim();
         let Ok(i) = idx.parse::<usize>() else {
             state.add_status(format!("usage: /deny <index> (got {idx:?})"));
             return;
         };
-        let pending = supervisor
-            .pending_approvals(&state.session_id)
-            .unwrap_or_default();
+        let pending = match supervisor.pending_approvals(&state.session_id) {
+            Ok(p) => p,
+            Err(e) => {
+                state.add_status(format!("deny: cannot list pending approvals: {e}"));
+                return;
+            }
+        };
         let Some(scope) = pending.get(i) else {
             state.add_status(format!(
                 "no approval at index {i} ({} pending)",
@@ -12384,6 +12458,29 @@ fn handle_slash_inner(
             Err(e) => state.add_status(format!("env unset: {e}")),
         }
         return;
+    }
+    // Bare-only built-ins with trailing words used to fall through to
+    // "unknown command" (e.g. bare `/env set`, `/mcp bogus`,
+    // `/sessions extra`): every word above is a built-in, so no custom
+    // command or skill can claim it, and the honest answer is usage,
+    // not an unknown-command error with a did-you-mean.
+    {
+        let word = cmd.split_whitespace().next().unwrap_or(cmd);
+        let usage: Option<String> = match word {
+            "/env" => Some("usage: /env [set <name> <value>|unset <name>]".into()),
+            "/mcp" => Some("usage: /mcp [reload]".into()),
+            "/tools" => Some("usage: /tools [reload]".into()),
+            "/approvals" | "/schedule" | "/checkpoints" | "/todos" | "/inbox" | "/collab"
+            | "/voice" | "/doctor" | "/stats" | "/settings" | "/gateway" | "/sessions"
+            | "/history" | "/new" | "/compress" | "/clear" | "/reset" => {
+                Some(format!("{word} takes no arguments"))
+            }
+            _ => None,
+        };
+        if let Some(usage) = usage {
+            state.add_status(usage);
+            return;
+        }
     }
     // User-defined commands are checked before skills: an explicitly
     // configured `/review` should win over an installed skill with the
@@ -12905,6 +13002,42 @@ mod picker_tests {
         s.providers_close();
         assert!(s.providers.is_none());
         assert!(s.models.is_none());
+    }
+
+    #[test]
+    fn picker_enter_on_empty_list_keeps_picker_open() {
+        // Enter on "no matches" used to close the models browser and
+        // the history picker silently, with nothing selected.
+        let mut s = test_state();
+        s.providers = Some(provider_rows(&[model_row("a", "A", "m")]));
+        s.models = Some(vec![model_row("a", "A", "m")]);
+        s.models_input = "zzz-no-match".into();
+        assert!(s.take_model_selection().is_none());
+        assert!(s.models.is_some(), "models picker closed on empty Enter");
+        assert!(s.providers.is_some(), "providers picker closed on empty Enter");
+
+        let mut s = test_state();
+        s.history = Some(vec![run("a", "Alpha work", None, 1000)]);
+        s.history_input = "zzz-no-match".into();
+        assert!(s.take_history_selection().is_none());
+        assert!(s.history.is_some(), "history picker closed on empty Enter");
+    }
+
+    #[test]
+    fn picker_enter_with_match_takes_selection_and_closes() {
+        let mut s = test_state();
+        s.providers = Some(provider_rows(&[model_row("a", "A", "m")]));
+        s.models = Some(vec![model_row("a", "A", "m")]);
+        let row = s.take_model_selection().expect("model row");
+        assert_eq!(row.model_id, "m");
+        assert!(s.models.is_none());
+        assert!(s.providers.is_none());
+
+        let mut s = test_state();
+        s.history = Some(vec![run("a", "Alpha work", None, 1000)]);
+        let id = s.take_history_selection().expect("run id");
+        assert_eq!(id, "a");
+        assert!(s.history.is_none());
     }
 
     #[test]
@@ -14411,5 +14544,283 @@ mod composer_arrow_tests {
         assert_eq!(s.input, "previous");
         assert!(handle_composer_arrow(&mut s, KeyCode::Down));
         assert_eq!(s.input, "hello");
+    }
+}
+
+#[cfg(test)]
+mod slash_help_tests {
+    use super::*;
+
+    #[test]
+    fn help_lists_every_dispatched_command_and_true_key_hints() {
+        // /help used to omit /approve, /deny, /oauth, /plugins, /quit
+        // and /exit even though all six dispatch, and its key hints
+        // claimed Shift+Tab was "previous session" when Shift+Tab
+        // cycles the permission mode (previous session is
+        // Ctrl+Shift+Tab).
+        let lines = help_lines();
+        let joined = lines.join("\n");
+        for cmd in ["/approve", "/deny", "/oauth", "/plugins", "/quit", "/exit"] {
+            assert!(joined.contains(cmd), "/help omits {cmd}:\n{joined}");
+        }
+        assert!(joined.contains("Ctrl+Shift+Tab"), "{joined}");
+        // The only "previous session" hint must be the Ctrl+Shift+Tab
+        // one: a bare Shift+Tab hint with that description is the stale
+        // claim (Shift+Tab cycles the permission mode).
+        for line in &lines {
+            if line.contains("previous session") {
+                assert!(
+                    line.trim_start().starts_with("Ctrl+Shift+Tab"),
+                    "stale previous-session hint: {line}"
+                );
+            }
+        }
+        assert!(joined.contains("cycle permission mode"), "{joined}");
+    }
+}
+
+#[cfg(test)]
+mod slash_dispatch_tests {
+    use super::*;
+
+    /// A real runtime session over a scratch data dir: `handle_slash`
+    /// needs a `Session` (supervisor, budget, secrets), so these tests
+    /// drive the same entry the Enter key drives, not a copy of a
+    /// handler. No network, no provider calls: every command here
+    /// resolves locally. The scratch dir is per-test; the live
+    /// `PANTHEON_DATA_DIR` is never touched by these paths.
+    fn fixture(name: &str) -> (TuiState, Arc<Session>, std::sync::mpsc::Sender<TuiEvent>) {
+        let dir = std::env::temp_dir()
+            .join(format!("pantheon-sweep-tui-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let policy = pantheon_api::capability::Policy::coder_with_memory();
+        let model_policy = pantheon_api::model::ModelPolicy {
+            default: pantheon_api::model::DefaultModel {
+                provider: "test".into(),
+                model: "test".into(),
+            },
+            fallbacks: Default::default(),
+            auxiliaries: Vec::new(),
+            reasoning: pantheon_api::model::ReasoningLevel::Off,
+            reasoning_budget: None,
+        };
+        let secrets = pantheon_secrets::SecretsBroker::from_system_env_with_api_key(None);
+        let session = Arc::new(Session::new(dir, policy, model_policy, secrets).expect("session"));
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let state = TuiState::new("test-session".to_string(), "test/test".to_string(), 0);
+        (state, session, tx)
+    }
+
+    fn cmd_lines(state: &TuiState) -> Vec<String> {
+        match state.blocks.last() {
+            Some(TranscriptBlock {
+                kind: BlockKind::Command { lines, .. },
+                ..
+            }) => lines.clone(),
+            Some(TranscriptBlock {
+                kind: BlockKind::Status(text),
+                ..
+            }) => vec![text.clone()],
+            other => panic!("expected a command/status block, got {other:?}"),
+        }
+    }
+
+    fn run(
+        state: &mut TuiState,
+        session: &Arc<Session>,
+        tx: &std::sync::mpsc::Sender<TuiEvent>,
+        cmd: &str,
+    ) -> Vec<String> {
+        handle_slash(state, session, cmd, tx);
+        cmd_lines(state)
+    }
+
+    #[test]
+    fn bare_approve_and_deny_print_usage_not_unknown_command() {
+        let (mut s, sess, tx) = fixture("bare-approve");
+        let lines = run(&mut s, &sess, &tx, "/approve");
+        assert!(lines.iter().any(|l| l.contains("usage: /approve")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("unknown command")), "{lines:?}");
+        let lines = run(&mut s, &sess, &tx, "/deny");
+        assert!(lines.iter().any(|l| l.contains("usage: /deny")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("unknown command")), "{lines:?}");
+    }
+
+    #[test]
+    fn approvals_and_indexed_decisions_report_empty_list_honestly() {
+        let (mut s, sess, tx) = fixture("approvals-empty");
+        sess.supervisor.start_run("test-session").expect("start run");
+        let lines = run(&mut s, &sess, &tx, "/approvals");
+        assert_eq!(lines, vec!["no pending approvals".to_string()]);
+        let lines = run(&mut s, &sess, &tx, "/approve 0");
+        assert!(
+            lines.iter().any(|l| l.contains("no approval at index 0 (0 pending)")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/deny 0");
+        assert!(
+            lines.iter().any(|l| l.contains("no approval at index 0 (0 pending)")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn bare_only_commands_with_args_print_usage() {
+        let (mut s, sess, tx) = fixture("bare-only");
+        for (cmd, want) in [
+            ("/env set", "usage: /env"),
+            ("/env unset", "usage: /env"),
+            ("/env bogus", "usage: /env"),
+            ("/mcp bogus", "usage: /mcp [reload]"),
+            ("/tools bogus", "usage: /tools [reload]"),
+            ("/sessions extra", "/sessions takes no arguments"),
+            ("/clear extra", "/clear takes no arguments"),
+            ("/oauth", "usage: /oauth"),
+        ] {
+            let lines = run(&mut s, &sess, &tx, cmd);
+            assert!(
+                lines.iter().any(|l| l.contains(want)),
+                "{cmd}: expected {want:?} in {lines:?}"
+            );
+            assert!(
+                !lines.iter().any(|l| l.contains("unknown command")),
+                "{cmd}: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn undo_while_running_says_wait_not_no_finished_turn() {
+        let (mut s, sess, tx) = fixture("undo-running");
+        s.ready = false;
+        let lines = run(&mut s, &sess, &tx, "/undo");
+        assert!(
+            lines.iter().any(|l| l.contains("wait for the running turn")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("no finished turn")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn tokens_and_set_round_trip_through_dispatch() {
+        let (mut s, sess, tx) = fixture("tokens-set");
+        let lines = run(&mut s, &sess, &tx, "/tokens 123");
+        assert!(lines.iter().any(|l| l.contains("max tokens: 123")), "{lines:?}");
+        let lines = run(&mut s, &sess, &tx, "/tokens");
+        assert!(lines.iter().any(|l| l.contains("max tokens: 123")), "{lines:?}");
+        let lines = run(&mut s, &sess, &tx, "/tokens off");
+        assert!(lines.iter().any(|l| l.contains("uncapped")), "{lines:?}");
+        let lines = run(&mut s, &sess, &tx, "/set max_turns 3");
+        assert!(
+            lines.iter().any(|l| l.contains("max_turns = 3 (this session)")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/set");
+        assert!(lines.iter().any(|l| l.contains("session budget:")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("max_turns = 3")), "{lines:?}");
+    }
+
+    #[test]
+    fn reset_clears_view_but_keeps_session() {
+        let (mut s, sess, tx) = fixture("reset");
+        s.add_user_message("hello".into());
+        let lines = run(&mut s, &sess, &tx, "/reset");
+        assert!(
+            lines.iter().any(|l| l.contains("transcript and queue cleared")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("session, title, and ledger history kept")),
+            "{lines:?}"
+        );
+        assert!(
+            !s.blocks.iter().any(|b| matches!(b.kind, BlockKind::UserMessage(_))),
+            "user message survived /reset"
+        );
+    }
+
+    #[test]
+    fn status_checkpoints_and_resume_paths_answer() {
+        let (mut s, sess, tx) = fixture("status-cp");
+        sess.supervisor.start_run("test-session").expect("start run");
+        let lines = run(&mut s, &sess, &tx, "/status");
+        assert!(
+            lines.iter().any(|l| l.contains("run test-session")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/checkpoints");
+        assert!(
+            lines.iter().any(|l| l.contains("no checkpoints")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/checkpoint");
+        assert!(
+            lines.iter().any(|l| l.contains("no turn yet to snapshot")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/restore nope");
+        assert!(
+            lines.iter().any(|l| l.contains("no checkpoint named 'nope'")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/resume");
+        assert!(
+            lines.iter().any(|l| l.contains("resume which?")),
+            "{lines:?}"
+        );
+        sess.supervisor.start_run("other-run").expect("start other");
+        handle_slash(&mut s, &sess, "/resume other-run", &tx);
+        assert_eq!(s.session_id, "other-run");
+        assert!(matches!(
+            s.blocks.last().map(|b| &b.kind),
+            Some(BlockKind::Status(t)) if t.contains("resumed other-run")
+        ));
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    fn palette(input: &str) -> PaletteState {
+        PaletteState {
+            input: input.to_string(),
+            sel: 0,
+        }
+    }
+
+    #[test]
+    fn palette_offers_angle_bracket_commands_but_not_dynamic_skill() {
+        // The old filter dropped every entry containing '<', so /team,
+        // /send, /tasks and friends were unpickable in the palette.
+        let team = palette("team").filtered();
+        assert!(
+            team.iter().any(|(n, _)| n.starts_with("/team")),
+            "team not offered: {team:?}"
+        );
+        let send = palette("send").filtered();
+        assert!(
+            send.iter().any(|(n, _)| n.starts_with("/send")),
+            "send not offered: {send:?}"
+        );
+        let tasks = palette("tasks").filtered();
+        assert!(
+            tasks.iter().any(|(n, _)| n.starts_with("/tasks")),
+            "tasks not offered: {tasks:?}"
+        );
+        let all = palette("").filtered();
+        assert!(
+            all.iter().all(|(n, _)| !n.starts_with("/<")),
+            "dynamic /<skill> entry offered: {all:?}"
+        );
+        assert_eq!(
+            all.len(),
+            COMMANDS.len() - 1,
+            "palette should offer every command except /<skill>"
+        );
     }
 }
