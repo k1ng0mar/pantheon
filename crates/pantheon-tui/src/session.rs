@@ -1077,6 +1077,110 @@ fn parse_scope(scope: &str) -> Option<(&str, &str, &str)> {
     Some((call_id, tool, args))
 }
 
+/// Settle one approval card through the supervisor, and only clear the
+/// card on success. A failed grant/deny used to be swallowed with
+/// `let _ =` while the UI still claimed success, cleared the card, and
+/// resumed (or cancelled) a run whose decision never landed. On error
+/// the card stays pending with the failure on the status line, so the
+/// operator can retry instead of watching a still-parked run.
+fn settle_approval_card(
+    state: &mut TuiState,
+    supervisor: &pantheon_runtime::Supervisor,
+    run: &str,
+    scope: &str,
+    granted: bool,
+) -> Result<(), pantheon_api::error::PantheonError> {
+    let result = if granted {
+        supervisor.grant(run, scope)
+    } else {
+        supervisor.deny(run, scope)
+    };
+    match result {
+        Ok(()) => {
+            state.approvals.remove(run);
+            state.tabs.set_approval(run, false);
+            state.pending_approval = None;
+            Ok(())
+        }
+        Err(e) => {
+            state.pending_approval = Some((run.to_string(), scope.to_string()));
+            state.status_line = format!("approval failed: {e}");
+            Err(e)
+        }
+    }
+}
+
+#[cfg(test)]
+mod approval_card_tests {
+    use super::*;
+    use pantheon_api::events::Event;
+    use pantheon_runtime::Supervisor;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-tui-approval-card-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn parked_supervisor(dir: &std::path::Path, run: &str, scope: &str) -> Supervisor {
+        let sup = Supervisor::open(dir.to_path_buf()).expect("supervisor");
+        sup.start_run(run).expect("start");
+        sup.emit(Event::ApprovalRequested {
+            run_id: run.to_string(),
+            scope: scope.to_string(),
+        })
+        .expect("park");
+        sup
+    }
+
+    #[test]
+    fn grant_success_clears_the_card() {
+        let dir = scratch("grant-ok");
+        let run = "run-card-ok";
+        let scope = "call_1:shell:{\"command\":\"echo hi\"}";
+        let sup = parked_supervisor(&dir, run, scope);
+        let mut state = TuiState::new("test-session".to_string(), "test-model".to_string(), 0);
+        state.pending_approval = Some((run.to_string(), scope.to_string()));
+        assert!(settle_approval_card(&mut state, &sup, run, scope, true).is_ok());
+        assert_eq!(state.pending_approval, None);
+        assert!(sup.pending_approvals(run).expect("pending").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_decision_keeps_the_card_and_names_the_error() {
+        // Never parked: the grant must fail, and the card must survive
+        // with the failure on the status line - never a phantom "granted".
+        let dir = scratch("grant-fail");
+        let sup = Supervisor::open(dir.clone()).expect("supervisor");
+        let run = "run-card-fail";
+        sup.start_run(run).expect("start");
+        let scope = "call_1:shell:{\"command\":\"echo hi\"}";
+        let mut state = TuiState::new("test-session".to_string(), "test-model".to_string(), 0);
+        state.pending_approval = Some((run.to_string(), scope.to_string()));
+        let err = settle_approval_card(&mut state, &sup, run, scope, true).unwrap_err();
+        assert_eq!(
+            state.pending_approval,
+            Some((run.to_string(), scope.to_string())),
+            "a failed grant must leave the card pending for retry"
+        );
+        assert!(
+            state.status_line.starts_with("approval failed:"),
+            "status must name the failure: {}",
+            state.status_line
+        );
+        assert!(
+            state.status_line.contains(&err.code),
+            "status must carry the error code: {}",
+            state.status_line
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// Plain-language rendering of a pending tool call for the approval
 /// card. Returns `(action sentence, concrete target)`:
 /// "shell wants to delete:" / "~/notes/old.md". The tool details stay
@@ -9594,43 +9698,64 @@ fn tui_loop(
                             match c {
                                 'a' | 'A' | 'y' | 'Y' => {
                                     if let Some((run, scope)) = state.pending_approval.take() {
-                                        let _ = session.supervisor.grant(&run, &scope);
-                                        state.approvals.remove(&run);
-                                        state.tabs.set_approval(&run, false);
-                                        let tool =
-                                            parse_scope(&scope).map(|(_, t, _)| t.to_string());
-                                        state.resolve_approval_block_for(
-                                            tool.as_deref(),
-                                            Some(true),
-                                        );
-                                        state.status_line = "granted; resuming".into();
-                                        // Resume: chat_turn with empty
-                                        // message rebuilds from the ledger
-                                        // and continues the loop.
-                                        resume_parked_turn(state, &session, tx, &run);
+                                        if settle_approval_card(
+                                            state,
+                                            &session.supervisor,
+                                            &run,
+                                            &scope,
+                                            true,
+                                        )
+                                        .is_ok()
+                                        {
+                                            let tool =
+                                                parse_scope(&scope).map(|(_, t, _)| t.to_string());
+                                            state.resolve_approval_block_for(
+                                                tool.as_deref(),
+                                                Some(true),
+                                            );
+                                            state.status_line = "granted; resuming".into();
+                                            // Resume: chat_turn with empty
+                                            // message rebuilds from the ledger
+                                            // and continues the loop.
+                                            resume_parked_turn(state, &session, tx, &run);
+                                        }
+                                        // On error the card stays pending
+                                        // with the failure on the status
+                                        // line (see settle_approval_card):
+                                        // never resume a still-parked run.
                                     }
                                 }
                                 'd' | 'D' | 'n' | 'N' => {
                                     if let Some((run, scope)) = state.pending_approval.take() {
-                                        let _ = session.supervisor.deny(&run, &scope);
-                                        state.approvals.remove(&run);
-                                        state.tabs.set_approval(&run, false);
-                                        let tool = parse_scope(&scope).map(|(_, t, _)| t.to_string());
-                                        state.resolve_approval_block_for(
-                                            tool.as_deref(),
-                                            Some(false),
-                                        );
-                                        state.status_line = "denied".into();
-                                        state.ready = true;
-                                        state.active_run = None;
-                                        // Deny cancels the parked run, like
-                                        // Esc deny: without this a d-deny
-                                        // could start a new turn while the
-                                        // parked worker was still cleaning up.
-                                        session.cancel_current_run(&run, "user denied approval");
-                                        // Deny ends the parked turn without a
-                                        // TurnComplete event, so drain here.
-                                        drain_queued_message(state, &session, tx);
+                                        if settle_approval_card(
+                                            state,
+                                            &session.supervisor,
+                                            &run,
+                                            &scope,
+                                            false,
+                                        )
+                                        .is_ok()
+                                        {
+                                            let tool = parse_scope(&scope).map(|(_, t, _)| t.to_string());
+                                            state.resolve_approval_block_for(
+                                                tool.as_deref(),
+                                                Some(false),
+                                            );
+                                            state.status_line = "denied".into();
+                                            state.ready = true;
+                                            state.active_run = None;
+                                            // Deny cancels the parked run, like
+                                            // Esc deny: without this a d-deny
+                                            // could start a new turn while the
+                                            // parked worker was still cleaning up.
+                                            session.cancel_current_run(&run, "user denied approval");
+                                            // Deny ends the parked turn without a
+                                            // TurnComplete event, so drain here.
+                                            drain_queued_message(state, &session, tx);
+                                        }
+                                        // On error the card stays pending:
+                                        // never cancel a run whose denial
+                                        // never landed.
                                     }
                                 }
                                 _ => {}
@@ -9883,17 +10008,27 @@ fn tui_loop(
                             state.status_line = "dismissed".into();
                         } else if state.pending_approval.is_some() {
                             if let Some((run, scope)) = state.pending_approval.take() {
-                                let _ = session.supervisor.deny(&run, &scope);
-                                state.approvals.remove(&run);
-                                state.tabs.set_approval(&run, false);
-                                let tool = parse_scope(&scope).map(|(_, t, _)| t.to_string());
-                                state.resolve_approval_block_for(tool.as_deref(), Some(false));
-                                session
-                                    .cancel_current_run(&run, "user pressed esc during approval");
-                                state.status_line = "denied; turn cancelled".into();
-                                state.ready = true;
-                                state.active_run = None;
-                                drain_queued_message(state, &session, tx);
+                                if settle_approval_card(
+                                    state,
+                                    &session.supervisor,
+                                    &run,
+                                    &scope,
+                                    false,
+                                )
+                                .is_ok()
+                                {
+                                    let tool = parse_scope(&scope).map(|(_, t, _)| t.to_string());
+                                    state.resolve_approval_block_for(tool.as_deref(), Some(false));
+                                    session
+                                        .cancel_current_run(&run, "user pressed esc during approval");
+                                    state.status_line = "denied; turn cancelled".into();
+                                    state.ready = true;
+                                    state.active_run = None;
+                                    drain_queued_message(state, &session, tx);
+                                }
+                                // On error the card stays pending with the
+                                // failure on the status line: Esc must not
+                                // cancel a run whose denial never landed.
                             }
                         } else if state.pending_ui_approval.is_some() {
                             // Esc denies the UI approval card, mirroring
