@@ -648,7 +648,7 @@ fn check_model_key(ctx: &DoctorCtx) -> Vec<Finding> {
                     "no API key configured for {provider}: neither [model].api_key_env nor {fallback_env} is set"
                 ),
                 "model requests will fail authentication",
-                format!("set {fallback_env}=<key> (or run `pantheon setup` to store it)"),
+                format!("set {fallback_env}=<key> (or run `pantheon setup` to store it). When a request does fail, the provider layer appends a credential diagnosis (see pantheon_providers::credential_error): HTTP 401 means the key is missing, invalid, or revoked; HTTP 403 means the key is accepted but not permitted for that endpoint or model; a body reading 'error code: 1010' means Cloudflare blocked the request headers at the edge and the key is not at fault, so do not replace it"),
             )]
         }
     }

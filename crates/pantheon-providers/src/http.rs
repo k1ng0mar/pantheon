@@ -635,6 +635,14 @@ fn send(
     for (k, v) in attribution_headers() {
         r = r.header(k.as_str(), v.as_str());
     }
+    // Branded User-Agent: edge checks that reject default or missing
+    // User-Agents (Cloudflare error 1010, see credential_error) must
+    // not block provider requests. Applied last so it wins over any
+    // caller-supplied User-Agent.
+    r = r.header(
+        "User-Agent",
+        crate::credential_error::user_agent().as_str(),
+    );
     let mut resp = r
         .send(req.body.as_str())
         .map_err(|e| perr("PROVIDER_HTTP", format!("{}: {e}", req.url), true))?;
@@ -662,6 +670,15 @@ fn send(
         let mut cause = format!("{}: HTTP {code} {snippet}", req.url);
         if let Some(secs) = retry_after {
             cause.push_str(&format!(" (retry-after: {secs}s)"));
+        }
+        // Actionable diagnosis, advisory only: retryability above is
+        // unchanged. The diagnosis is static text, never the body or
+        // the URL, so no credential can pass through it.
+        if let Some(d) = crate::credential_error::classify(code, &body) {
+            cause.push_str(&format!(
+                " [credential: {} {}]",
+                d.summary, d.remediation
+            ));
         }
         return Err(perr("PROVIDER_HTTP", cause, retryable));
     }

@@ -293,6 +293,11 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "runtime",
         },
         CommandMeta {
+            name: "secrets",
+            desc: "secure secret entry: masked form, list, rotate, delete (never values)",
+            category: "runtime",
+        },
+        CommandMeta {
             name: "voice",
             desc: "speech backends: [stt]/[tts] status",
             category: "runtime",
