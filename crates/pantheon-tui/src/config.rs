@@ -842,31 +842,13 @@ pub fn build_model_policy(
     provider: Option<String>,
     model: Option<String>,
 ) -> pantheon_api::model::ModelPolicy {
-    let cfg_model = cfg
-        .and_then(|c| c.model.clone())
-        .map(|m| (m.provider, m.model));
-    let default = pantheon_api::model::DefaultModel {
-        provider: provider
-            .or_else(|| cfg_model.as_ref().map(|(p, _)| p.clone()))
-            .or_else(|| std::env::var("PANTHEON_PROVIDER").ok())
-            .unwrap_or_else(|| "local".into()),
-        model: model
-            .or_else(|| cfg_model.as_ref().map(|(_, m)| m.clone()))
-            .or_else(|| std::env::var("PANTHEON_MODEL").ok())
-            .unwrap_or_else(|| "llama3.2".into()),
-    };
-    let mut chain = pantheon_api::model::FallbackChain::default();
-    if let Some(fallbacks) = cfg
-        .and_then(|c| c.model.as_ref())
-        .map(|m| m.fallbacks.clone())
-    {
-        for f in fallbacks {
-            chain.fallbacks.push(pantheon_api::model::DefaultModel {
-                provider: f.provider,
-                model: f.model,
-            });
-        }
-    }
+    // Canonical precedence (explicit > env > config > default) and the
+    // configured fallback chain, resolved in `pantheon-api` so the TUI,
+    // the dashboard, and the runtime can no longer disagree. The
+    // previous hand-rolled order was config > env, and an empty env var
+    // shadowed config with "".
+    let default = pantheon_api::config_resolve::resolve_default_model(cfg, provider, model);
+    let chain = pantheon_api::config_resolve::resolve_fallback_chain(cfg);
     pantheon_api::model::ModelPolicy {
         reasoning_budget: resolve_reasoning_budget(cfg),
         reasoning: resolve_reasoning(cfg),
@@ -1141,4 +1123,64 @@ pub fn resolve_mcp_section(
 
     cfg.servers = specs;
     cfg
+}
+
+#[cfg(test)]
+mod build_model_policy_tests {
+    use super::*;
+
+    // These tests mutate process-global env; serialize them.
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn cfg_with_model(provider: &str, model: &str) -> Config {
+        Config {
+            model: Some(ModelSection {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn clear_env() {
+        std::env::remove_var("PANTHEON_PROVIDER");
+        std::env::remove_var("PANTHEON_MODEL");
+    }
+
+    #[test]
+    fn canonical_precedence_env_beats_config_empty_env_does_not_shadow() {
+        let _g = ENV_GUARD.lock().expect("env guard");
+        clear_env();
+        let cfg = cfg_with_model("cfg-provider", "cfg-model");
+
+        // Config beats default.
+        let policy = build_model_policy(Some(&cfg), None, None);
+        assert_eq!(policy.default.provider, "cfg-provider");
+        assert_eq!(policy.default.model, "cfg-model");
+
+        // Env beats config (the pre-migration order was config > env).
+        std::env::set_var("PANTHEON_PROVIDER", "env-provider");
+        std::env::set_var("PANTHEON_MODEL", "env-model");
+        let policy = build_model_policy(Some(&cfg), None, None);
+        assert_eq!(policy.default.provider, "env-provider");
+        assert_eq!(policy.default.model, "env-model");
+
+        // Explicit beats env.
+        let policy = build_model_policy(
+            Some(&cfg),
+            Some("flag-provider".into()),
+            Some("flag-model".into()),
+        );
+        assert_eq!(policy.default.provider, "flag-provider");
+        assert_eq!(policy.default.model, "flag-model");
+
+        // Empty env reads as unset: config still wins.
+        std::env::set_var("PANTHEON_PROVIDER", "");
+        std::env::remove_var("PANTHEON_MODEL");
+        let policy = build_model_policy(Some(&cfg), None, None);
+        assert_eq!(policy.default.provider, "cfg-provider");
+        assert_eq!(policy.default.model, "cfg-model");
+        clear_env();
+    }
 }

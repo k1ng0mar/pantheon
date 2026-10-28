@@ -24,11 +24,12 @@
 //! beat both. Empty and whitespace-only values are ignored at every
 //! level - an empty env var must not shadow a configured value.
 //!
-//! Follow-ups (other leaves own those crates): migrate the TUI's
-//! `build_model_policy` and the dashboard session factory's
-//! `default_model` to [`resolve_default_model`]. Note the behavior
-//! change that migration carries: today both prefer the config file
-//! over the environment; under this rule the environment wins.
+//! Follow-ups (done): the TUI's `build_model_policy` and the dashboard
+//! session factory's `default_model` now resolve through
+//! [`resolve_default_model`], and the runtime's `from_env` through
+//! [`resolve_fallback_chain`] for fallbacks. The behavior change that
+//! migration carried is live: env now beats the config file on all
+//! three surfaces, and empty values never shadow.
 
 use crate::config::Config;
 use crate::model::{DefaultModel, FallbackChain};

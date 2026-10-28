@@ -14,7 +14,7 @@ use pantheon_api::capability::Policy;
 use pantheon_api::config::Config;
 use pantheon_api::config_schema::PolicyPreset;
 use pantheon_api::model::{
-    AuxiliaryKind, AuxiliaryModel, DefaultModel, FallbackChain, ModelPolicy, ReasoningLevel,
+    AuxiliaryKind, AuxiliaryModel, DefaultModel, ModelPolicy, ReasoningLevel,
 };
 use pantheon_runtime::session::Session;
 use pantheon_secrets::vault::SecretVault;
@@ -39,26 +39,14 @@ fn env_nonempty(name: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// Resolve the default chat model: `[model]` section wins, then
-/// `PANTHEON_PROVIDER`/`PANTHEON_MODEL`, then the local default
-/// the TUI's `build_model_policy` order.
+/// Resolve the default chat model under the canonical precedence
+/// (explicit > env > config > default) in
+/// [`pantheon_api::config_resolve::resolve_default_model`]. The dashboard
+/// passes no explicit args, so this is env > config > default — the
+/// previous hand-rolled order (config > env) disagreed with the TUI and
+/// with the runtime, and an empty env var could no longer shadow config.
 fn default_model(cfg: Option<&Config>) -> DefaultModel {
-    let section = cfg.and_then(|c| c.model.as_ref());
-    let cfg_str = |f: fn(&pantheon_api::config::ModelSection) -> &str| {
-        section
-            .map(f)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    DefaultModel {
-        provider: cfg_str(|m| &m.provider)
-            .or_else(|| env_nonempty("PANTHEON_PROVIDER"))
-            .unwrap_or_else(|| "local".into()),
-        model: cfg_str(|m| &m.model)
-            .or_else(|| env_nonempty("PANTHEON_MODEL"))
-            .unwrap_or_else(|| "llama3.2".into()),
-    }
+    pantheon_api::config_resolve::resolve_default_model(cfg, None, None)
 }
 
 /// Resolve the compression auxiliary: `PANTHEON_COMPRESSION_PROVIDER` /
@@ -174,15 +162,7 @@ fn video_aux(cfg: Option<&Config>, default: &DefaultModel) -> Option<AuxiliaryMo
 fn model_policy(cfg: Option<&Config>) -> ModelPolicy {
     let section = cfg.and_then(|c| c.model.as_ref());
     let default = default_model(cfg);
-    let mut chain = FallbackChain::default();
-    if let Some(fallbacks) = section.map(|m| &m.fallbacks) {
-        for f in fallbacks {
-            chain.fallbacks.push(DefaultModel {
-                provider: f.provider.clone(),
-                model: f.model.clone(),
-            });
-        }
-    }
+    let chain = pantheon_api::config_resolve::resolve_fallback_chain(cfg);
     // `PANTHEON_REASONING_BUDGET` / `PANTHEON_REASONING` win, then the
     // `[model]` fields, then off - the TUI's resolution.
     let reasoning_budget = env_nonempty("PANTHEON_REASONING_BUDGET")
@@ -400,5 +380,38 @@ mod budget_tiering_tests {
             None
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod default_model_tests {
+    use super::*;
+
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn cfg_with_model(provider: &str, model: &str) -> Config {
+        Config {
+            model: Some(pantheon_api::config::ModelSection {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn canonical_precedence_env_beats_config() {
+        let _g = ENV_GUARD.lock().expect("env guard");
+        std::env::remove_var("PANTHEON_PROVIDER");
+        std::env::remove_var("PANTHEON_MODEL");
+        let cfg = cfg_with_model("cfg-provider", "cfg-model");
+        assert_eq!(default_model(Some(&cfg)).provider, "cfg-provider");
+        std::env::set_var("PANTHEON_PROVIDER", "env-provider");
+        assert_eq!(default_model(Some(&cfg)).provider, "env-provider");
+        std::env::set_var("PANTHEON_PROVIDER", "  ");
+        assert_eq!(default_model(Some(&cfg)).provider, "cfg-provider");
+        std::env::remove_var("PANTHEON_PROVIDER");
+        std::env::remove_var("PANTHEON_MODEL");
     }
 }

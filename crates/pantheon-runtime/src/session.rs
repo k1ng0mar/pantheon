@@ -2779,7 +2779,7 @@ impl Session {
     /// the CLI it never exits the process over a bad config file.
     pub fn from_env(data_dir: std::path::PathBuf) -> Result<Self, PantheonError> {
         use pantheon_api::capability::Policy;
-        use pantheon_api::model::{FallbackChain, ModelPolicy};
+        use pantheon_api::model::ModelPolicy;
 
         let cfg = pantheon_api::config::Config::load(&data_dir).ok();
         let default = pantheon_api::config_resolve::resolve_default_model(cfg.as_ref(), None, None);
@@ -2794,9 +2794,12 @@ impl Session {
             reasoning_budget,
             reasoning,
             default,
-            fallbacks: FallbackChain {
-                fallbacks: Vec::new(),
-            },
+            // The configured fallback chain, not an empty one: dropping
+            // it here silently removed every configured fallback for
+            // headless sessions. Auxiliaries stay empty on this path —
+            // that is semantically `auto`, since absent aux entries fall
+            // back to the default model at the call site.
+            fallbacks: pantheon_api::config_resolve::resolve_fallback_chain(cfg.as_ref()),
             auxiliaries: Vec::new(),
         };
         let policy = if std::env::var("PANTHEON_ALLOW_MEMORY").as_deref() == Ok("1") {
