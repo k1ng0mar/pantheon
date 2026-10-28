@@ -54,8 +54,10 @@ impl SearchProvider for SearxngProvider {
         );
         let text = http::get_json("searxng", &url, &[])?;
         let mut results = parse_searxng_response(&text)?;
-        // SearXNG has no count parameter: trim client-side.
-        results.truncate(usize::from(opts.max_results));
+        // SearXNG has no count parameter: trim client-side. `0`
+        // means one (see `SearchOptions::max_results`): truncating to
+        // 0 used to return an empty page for a `max_results: 0` call.
+        results.truncate(usize::from(opts.max_results.max(1)));
         Ok(results)
     }
 }

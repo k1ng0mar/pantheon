@@ -67,7 +67,10 @@ impl SearchProvider for ExaFreeProvider {
             body,
         )?;
         let payload = http::mcp_text_payload(&text)?;
-        Ok(parse_exa_text_blocks(&payload, opts.max_results))
+        // `max_results == 0` means one, like every other provider (see
+        // `SearchOptions::max_results`): passing 0 through would uncap
+        // the parse and return the whole page.
+        Ok(parse_exa_text_blocks(&payload, opts.max_results.max(1)))
     }
 }
 
@@ -81,10 +84,14 @@ fn after(line: &str, prefix: &str) -> String {
 
 /// Parse Exa's `---`-separated text blocks. Pure and unit-testable. A
 /// block without a usable URL is skipped; highlights join with spaces.
-/// `limit == 0` means no cap.
+/// `limit == 0` means no cap. Line endings are normalized first: a
+/// CRLF payload used to defeat the `\n---\n` block split (the
+/// separator arrived as `\r\n---\r\n`), collapsing every hit into one
+/// block and returning only the first result.
 pub fn parse_exa_text_blocks(text: &str, limit: u8) -> Vec<SearchResult> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let mut out = Vec::new();
-    for block in text.split("\n---\n") {
+    for block in normalized.split("\n---\n") {
         if limit > 0 && out.len() >= limit as usize {
             break;
         }
@@ -153,5 +160,15 @@ mod tests {
     fn limit_caps_results() {
         let hits = parse_exa_text_blocks(SAMPLE, 1);
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn crlf_payload_parses_all_blocks() {
+        let crlf = SAMPLE.replace('\n', "\r\n");
+        let hits = parse_exa_text_blocks(&crlf, 5);
+        assert_eq!(hits.len(), 2, "CRLF must not collapse blocks");
+        assert_eq!(hits[0].title, "First hit");
+        assert_eq!(hits[0].published.as_deref(), Some("2024-01-01"));
+        assert_eq!(hits[1].title, "Second");
     }
 }

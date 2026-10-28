@@ -430,7 +430,7 @@ fn run_full(
     let websearch = if wants(Section::WebSearch) {
         let pick = setup_providers::pick_provider(
             "Web search",
-            "Choose the provider behind the `web_search` tool",
+            "Choose the provider behind the `web_search` tool. Esc does not skip: it leaves this group on the recommended default (TinyFish) with no key, so `web_search` stays unregistered until a key is set - use the Skip row to leave it unconfigured instead",
             setup_providers::websearch_providers(),
         );
         collect_pick_key(data_dir, &pick, "Web search");

@@ -148,9 +148,10 @@ impl Default for CamofoxToolConfig {
 /// Runtime config for the `web_search` tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebsearchToolConfig {
-    /// Master switch. The tool is only registered when a key also
-    /// resolves - a keyless `web_search` would be a tool that can never
-    /// work, so it stays out of the model's tool list.
+    /// Master switch. Keyed providers register only when a key also
+    /// resolves; keyless providers (Marginalia, the `*_free` fallbacks,
+    /// `ddgs`, self-hosted SearXNG) register without one - the old "a
+    /// keyless `web_search` can never work" claim predates them.
     pub enabled: bool,
     /// Provider name: a `pantheon-web` registry id (`tavily`, `exa`,
     /// `marginalia`, ...). An unknown id leaves `web_search` unregistered

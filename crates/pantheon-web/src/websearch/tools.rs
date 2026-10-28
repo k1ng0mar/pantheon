@@ -75,7 +75,8 @@ pub fn register_search_tools(
         ToolSchema {
             name: "web_search".into(),
             description: "Look something up on the web: facts, news, docs, prices, \"what is X\". \
-                Returns a compact JSON array of {title, url, snippet, published?} results.\n\
+                Returns a compact JSON array of {title, url, snippet, published?} results. \
+                When nothing matches, the array holds a single {\"note\": \"no results found\"} object instead of an empty array, so silence is distinguishable from a failure.\n\
                 \n\
                 LOOKUP vs AUTOMATION - pick the right tool:\n\
                - web_search is for KNOWING something: search the open web for information.\n\
@@ -163,6 +164,16 @@ pub fn register_search_tools(
                     o
                 })
                 .collect();
+            // An empty array used to read as silence: the model could
+            // not tell "nothing matched" from "the call returned
+            // nothing". A single note object says it plainly (and a
+            // provider error still fails the call instead, so a note
+            // always means "searched, found nothing").
+            if compact.is_empty() {
+                return Ok(
+                    r#"[{"note":"no results found for this query"}]"#.to_string(),
+                );
+            }
             Ok(serde_json::to_string(&compact).unwrap_or_else(|_| "[]".to_string()))
         },
     );
@@ -273,5 +284,59 @@ mod domain_filter_tests {
     fn empty_lists_pass_through() {
         let results = vec![hit("https://a.org/")];
         assert_eq!(filter_domains(results, &[], &[]).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod empty_results_tests {
+    use super::register_search_tools;
+    use crate::websearch::error::SearchError;
+    use crate::websearch::provider::{SearchOptions, SearchProvider, SearchResult};
+    use pantheon_tools::tools::ToolRegistry;
+    use std::sync::Arc;
+
+    struct StubProvider {
+        hits: Vec<SearchResult>,
+    }
+
+    impl SearchProvider for StubProvider {
+        fn name(&self) -> &str {
+            "stub"
+        }
+
+        fn search(
+            &self,
+            _query: &str,
+            _opts: &SearchOptions,
+        ) -> Result<Vec<SearchResult>, SearchError> {
+            Ok(self.hits.clone())
+        }
+    }
+
+    fn run_with(hits: Vec<SearchResult>) -> String {
+        let mut reg = ToolRegistry::new();
+        register_search_tools(&mut reg, Arc::new(StubProvider { hits }), 5)
+            .expect("register");
+        reg.execute("web_search", r#"{"query":"hello"}"#)
+            .expect("execute")
+    }
+
+    #[test]
+    fn empty_results_carry_a_note_instead_of_silent_brackets() {
+        let out = run_with(Vec::new());
+        assert_eq!(out, r#"[{"note":"no results found for this query"}]"#);
+    }
+
+    #[test]
+    fn non_empty_results_have_no_note() {
+        let out = run_with(vec![SearchResult {
+            title: "T".to_string(),
+            url: "https://a.example/".to_string(),
+            snippet: "s".to_string(),
+            published: None,
+            score: None,
+        }]);
+        assert!(out.contains("https://a.example/"), "out: {out}");
+        assert!(!out.contains("no results found"), "out: {out}");
     }
 }
