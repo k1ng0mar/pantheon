@@ -5712,6 +5712,17 @@ impl Session {
                 pending.push(cid);
             }
         }
+        // Denied-but-never-executed calls are pending for the same reason:
+        // a call parked on approval never emits ToolStarted, so the deny
+        // settlement in `drive` (a "denied by operator" tool result) never
+        // ran for it, and the model was left with a dangling tool_call.
+        // Without this the deny-resume silently drops the call instead of
+        // settling it visibly in the transcript.
+        for cid in denied_unexecuted_calls(&entries) {
+            if !pending.contains(&cid) {
+                pending.push(cid);
+            }
+        }
         let grants: Vec<String> = entries
             .iter()
             .filter_map(|e| match &e.event {
@@ -6483,47 +6494,28 @@ impl Session {
                     *tool_calls_used += 1;
                     continue;
                 }
-                let mut needs_approval = false;
+                // Re-gate the granted call against the current policy.
+                // A Deny still propagates as an error (a stricter policy
+                // must be able to forbid the call). But NeedsApproval
+                // must NOT re-park: the grant in the ledger IS the human
+                // answer for this exact scope, and re-parking is a dead
+                // end - granting the re-parked scope fails as already
+                // resolved, so the run could never resume. The old code
+                // re-parked here, which made every grant-resume under an
+                // approval policy park again forever.
                 for cap in reg.required_capabilities(&tc.name, &tc.arguments) {
-                    if let pantheon_agent::GateOutcome::NeedsApproval { .. } =
-                        self.gate_with_mode(loop_, run_id, &tc.name, &tc.arguments, &cap)?
-                    {
-                        // Same call, same scope, but the policy now wants
-                        // a human. Park again rather than run it: the
-                        // operator gets to answer under the policy that
-                        // is actually in force.
-                        self.supervisor.emit(Event::ApprovalRequested {
-                            run_id: run_id.into(),
-                            scope: approval_scope(&tc.id, &tc.name, &tc.arguments),
-                        })?;
-                        needs_approval = true;
-                        break;
-                    }
+                    let _ = self.gate_with_mode(loop_, run_id, &tc.name, &tc.arguments, &cap)?;
                 }
-                if !needs_approval {
-                    regated.push(tc);
-                }
+                regated.push(tc);
             }
             let reexecute = regated;
-            if reexecute.is_empty() && !granted.is_empty() && ungranted.is_empty() {
-                // Every granted call now needs approval under the current
-                // policy. Park with the first one so the run does not spin.
-                let first = &granted[0];
-                let cap = reg
-                    .required_capabilities(&first.name, &first.arguments)
-                    .into_iter()
-                    .find(|c| {
-                        matches!(
-                            pantheon_agent::gate(&loop_.policy, c),
-                            Ok(pantheon_agent::GateOutcome::NeedsApproval { .. })
-                        )
-                    })
-                    .unwrap_or(pantheon_api::capability::Capability::Other("tool".into()));
-                return Ok(LoopOutcome::AwaitingApproval {
-                    capability: cap,
-                    scope: approval_scope(&first.id, &first.name, &first.arguments),
-                });
-            }
+            // No re-park branch here: with grants satisfying approval,
+            // an empty reexecute list only means every granted call was
+            // already settled above (plan refusal or stale-grant
+            // refusal, both with ToolCompleted rows). Parking on such a
+            // call would wait on a scope that can never be decided
+            // again, so the turn proceeds to the model with the refusal
+            // results in the transcript instead.
             if !reexecute.is_empty() {
                 for tc in &reexecute {
                     self.supervisor.emit(Event::ToolStarted {
@@ -8508,6 +8500,24 @@ pub fn granted_unexecuted_calls(entries: &[pantheon_storage::LedgerEntry]) -> Ve
         .iter()
         .filter_map(|e| match &e.event {
             Event::ApprovalGranted { scope, .. } => {
+                let call_id = approval_call_id(scope);
+                (!done.contains(call_id)).then(|| call_id.to_string())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Call ids that were approval-denied but never executed. Mirrors
+/// `granted_unexecuted_calls`: a denied call never emits ToolStarted
+/// either, so without this the deny settlement in `drive` never runs
+/// for it and the denial vanishes from the transcript.
+pub fn denied_unexecuted_calls(entries: &[pantheon_storage::LedgerEntry]) -> Vec<String> {
+    let done = done_call_ids(entries);
+    entries
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::ApprovalDenied { scope, .. } => {
                 let call_id = approval_call_id(scope);
                 (!done.contains(call_id)).then(|| call_id.to_string())
             }
