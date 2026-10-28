@@ -17,6 +17,7 @@ fn test_session(tag: &str) -> Session {
         default: pantheon_api::model::DefaultModel {
             provider: "openai".into(),
             model: "test-model".into(),
+            key_env: None,
         },
         fallbacks: pantheon_api::model::FallbackChain {
             fallbacks: Vec::new(),

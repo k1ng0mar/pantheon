@@ -374,6 +374,7 @@ fn configured_permission_mode_reaches_the_session() {
             default: DefaultModel {
                 provider: "test".into(),
                 model: "test".into(),
+                key_env: None,
             },
             fallbacks: FallbackChain {
                 fallbacks: Vec::new(),

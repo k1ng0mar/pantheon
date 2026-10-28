@@ -149,6 +149,7 @@ fn policy(first: &str, rest: &[&str]) -> ModelPolicy {
         default: DefaultModel {
             provider: first.into(),
             model: "chat".into(),
+            key_env: None,
         },
         fallbacks: FallbackChain {
             fallbacks: rest
@@ -156,6 +157,7 @@ fn policy(first: &str, rest: &[&str]) -> ModelPolicy {
                 .map(|p| DefaultModel {
                     provider: p.to_string(),
                     model: "chat".to_string(),
+                    key_env: None,
                 })
                 .collect(),
         },

@@ -38,6 +38,7 @@ fn default_model() -> DefaultModel {
     DefaultModel {
         provider: "openai".into(),
         model: "chat-model".into(),
+        key_env: None,
     }
 }
 

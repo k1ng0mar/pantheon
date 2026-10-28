@@ -54,6 +54,7 @@ fn harness() -> Harness {
             default: DefaultModel {
                 provider: "chat-provider".into(),
                 model: "chat-model".into(),
+                key_env: None,
             },
             fallbacks: Default::default(),
             auxiliaries: vec![],

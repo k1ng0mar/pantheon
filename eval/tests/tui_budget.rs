@@ -22,6 +22,7 @@ fn session_in(dir: &std::path::Path) -> pantheon_runtime::session::Session {
         default: pantheon_api::model::DefaultModel {
             provider: "openai".into(),
             model: "test-model".into(),
+            key_env: None,
         },
         fallbacks: pantheon_api::model::FallbackChain {
             fallbacks: Vec::new(),

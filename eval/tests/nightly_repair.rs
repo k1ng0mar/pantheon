@@ -573,6 +573,7 @@ fn resolve_repair_uses_the_repair_slot() {
         default: DefaultModel {
             provider: "p".into(),
             model: "m".into(),
+            key_env: None,
         },
         fallbacks: Default::default(),
         auxiliaries: vec![repair_aux()],
@@ -699,6 +700,7 @@ fn run_pass_contains_always_erroring_tool() {
         default: DefaultModel {
             provider: "p".into(),
             model: "m".into(),
+            key_env: None,
         },
         fallbacks: Default::default(),
         auxiliaries: vec![],

@@ -103,6 +103,7 @@ fn rate_limit_retry_after_floors_backoff_and_paces_rotation() {
         default: DefaultModel {
             provider: "ratelimit0".into(),
             model: "chat".into(),
+            key_env: None,
         },
         fallbacks: FallbackChain { fallbacks: vec![] },
         auxiliaries: vec![],
