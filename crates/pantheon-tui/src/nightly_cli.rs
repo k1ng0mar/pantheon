@@ -76,8 +76,9 @@ impl pantheon_providers::model_event::AuxiliaryUsageSink for NightlyUsageSink {
 /// Builds the model policy from the on-disk config (so any LLM step
 /// resolves through the Reflection/Consolidation aux slots), eval-gates
 /// skill/persona proposals with the subprocess runner, replay-gates them
-/// against the held-out task set, auto-applies memory lessons, queues
-/// the rest for approval, and audits everything.
+/// against the held-out task set, queues memory lessons and the rest
+/// for approval (nothing is auto-applied by an unattended pass), and
+/// audits everything.
 pub fn run_one_pass(data_dir: &Path, dry_run: bool) -> Result<PassResult, String> {
     let file_cfg = crate::config::Config::load_or_report(data_dir);
     // Master switch: the pipeline and its repair loop do nothing unless

@@ -80,7 +80,7 @@ pub fn all_providers() -> Vec<ProviderInfo> {
             id: "tinyfish",
             name: "TinyFish",
             auth: ProviderAuth::ApiKey { env_var: TINYFISH_API_KEY },
-            blurb: "Recommended default. Rank-stable, p50 <0.5s; free, no card. ~30 req/min free tier.",
+            blurb: "Recommended default. Rank-stable, p50 <0.5s; free, no card. Free-tier limits vary by plan (some report 5 req/min); requests are paced and Retry-After is honoured.",
             recommended: true,
         },
         ProviderInfo {
@@ -202,6 +202,34 @@ pub fn default_key_env(id: &str) -> Option<&'static str> {
     }
 }
 
+/// Provider wrapper enforcing the empty-query rule at the provider
+/// layer: the trait doc used to call an empty query "the provider's
+/// problem", but no provider rejected one, so direct provider use
+/// silently sent empty queries upstream. The tool layer rejects empty
+/// queries too; this guard covers direct `build_provider` use.
+struct QueryGuardProvider {
+    inner: Arc<dyn SearchProvider>,
+}
+
+impl SearchProvider for QueryGuardProvider {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn search(
+        &self,
+        query: &str,
+        opts: &super::provider::SearchOptions,
+    ) -> Result<Vec<super::provider::SearchResult>, super::error::SearchError> {
+        if query.trim().is_empty() {
+            return Err(super::error::SearchError::RequestFailed(
+                "search query must not be empty".to_string(),
+            ));
+        }
+        self.inner.search(query, opts)
+    }
+}
+
 /// Build a boxed provider for `id` (case-insensitive).
 ///
 /// - `api_key`: the already-resolved key for keyed providers; blank or
@@ -262,11 +290,31 @@ pub fn build_provider(
         "ddgs" => Arc::new(DdgsProvider::new()),
         _ => return Err(format!("unknown web search provider '{id}'")),
     };
-    Ok(provider)
+    Ok(Arc::new(QueryGuardProvider { inner: provider }))
 }
 
 /// The env var carrying the SearXNG instance URL override, for the
 /// config-resolution layer.
 pub fn searxng_url_env() -> &'static str {
     SEARXNG_URL
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::provider::SearchOptions;
+    use super::*;
+
+    #[test]
+    fn build_provider_rejects_empty_query_at_provider_layer() {
+        let provider = build_provider("tinyfish", Some("test-key".to_string()), None)
+            .expect("tinyfish builds with a key");
+        assert_eq!(provider.name(), "tinyfish");
+        let err = provider
+            .search("   ", &SearchOptions::default())
+            .expect_err("empty query must be rejected before any network call");
+        assert!(matches!(
+            err,
+            super::super::error::SearchError::RequestFailed(_)
+        ));
+    }
 }

@@ -2,7 +2,8 @@
 //! `GET {instance}/search?q=...&format=json`.
 //!
 //! Self-hosted only: the instance base URL is user-configured (config
-//! file `[websearch] searxng_url`, or the `SEARXNG_URL` env override).
+//! file `[websearch] base_url`, or the `SEARXNG_URL` env override, which
+//! wins over the config file).
 //! **Do not point this at a public instance** - public instances bot-gate
 //! the JSON API (403/429) and silently break. No auth is sent.
 //!

@@ -328,6 +328,22 @@ soul_file    = &quot;agents/zeus/SOUL.md&quot;
 <blockquote>what <code>agent</code> does), and <code>[tools]</code> never gated tool registration (registration</blockquote>
 <blockquote>is unconditional). They were removed; old files still load, the keys are</blockquote>
 <blockquote>simply ignored. There is no replacement to configure.</blockquote>
+<h2 id="delegation-routes" class="text-xl font-bold tracking-tight mt-10 mb-3">Delegation routes</h2>
+<pre><code>
+[delegation]
+default = &quot;fast&quot;   # used when a delegate call names neither an agent nor a route; optional
+
+[[delegation.routes]]
+name        = &quot;fast&quot;   # what the model picks; must be unique
+description = &quot;Cheap and quick: lookups, summaries, simple edits.&quot;  # one line the model reads
+profile     = &quot;coder&quot;  # the [agents.&lt;name&gt;] profile the routed child runs as
+
+[[delegation.routes]]
+name        = &quot;deep&quot;
+description = &quot;Slow and careful: hard debugging and design work.&quot;
+profile     = &quot;researcher&quot;
+</code></pre>
+<p class="my-3 leading-relaxed">Routes are an allowlist for the <code>delegate</code> tool: <code>delegate(route = &quot;fast&quot;, task = &quot;...&quot;)</code> runs the child as that route&#x27;s profile, and the result reports the route, profile, and policy actually used. An unknown or duplicated route name is refused before any child spawns, never silently replaced with another profile. A call that names both a route and an agent is refused unless they agree. With no <code>[delegation]</code> section, <code>delegate</code> works exactly as before and a <code>route</code> argument is refused.</p>
 <h2 id="custom-providers" class="text-xl font-bold tracking-tight mt-10 mb-3">Custom providers</h2>
 <pre><code>
 [custom_providers.my-llm]
@@ -408,12 +424,12 @@ timeout_secs  = &quot;300&quot;
 <pre><code>
 [websearch]
 enabled = true
-provider = &quot;tinyfish&quot;        # one of: tinyfish (recommended), tavily, ollama, exa, marginalia, brave, firecrawl, searxng, perplexity
+provider = &quot;tinyfish&quot;        # one of: tinyfish (recommended), tavily, ollama, exa, marginalia, brave, firecrawl, searxng, perplexity, exa_free, parallel_free, firecrawl_free, keenable_free, ddgs
 # api_key_secret = &quot;TINYFISH_API_KEY&quot;  # optional override; absent = the provider&#x27;s default secret name
 # base_url = &quot;http://localhost:8080&quot;  # endpoint override for self-hosted providers (SearXNG)
 max_results = 8
 </code></pre>
-<p class="my-3 leading-relaxed">The <code>web_search</code> tool only registers when the provider&#x27;s auth requirement is met - keyed providers need their key resolvable (default secret names: <code>TINYFISH_API_KEY</code>, <code>TAVILY_API_KEY</code>, <code>OLLAMA_API_KEY</code>, <code>EXA_API_KEY</code>, <code>BRAVE_API_KEY</code>, <code>FIRECRAWL_API_KEY</code>, <code>PERPLEXITY_API_KEY</code>); Marginalia is keyless and SearXNG needs a self-hosted instance URL. Without that, the tool stays out of the model&#x27;s tool list. Store keys with <code>pantheon secrets set &lt;NAME&gt;</code> (or in <code>&lt;data_dir&gt;/.env</code>).</p>
+<p class="my-3 leading-relaxed">The <code>web_search</code> tool only registers when the provider&#x27;s auth requirement is met - keyed providers need their key resolvable (default secret names: <code>TINYFISH_API_KEY</code>, <code>TAVILY_API_KEY</code>, <code>OLLAMA_API_KEY</code>, <code>EXA_API_KEY</code>, <code>BRAVE_API_KEY</code>, <code>FIRECRAWL_API_KEY</code>, <code>PERPLEXITY_API_KEY</code>); Marginalia, <code>exa_free</code>, <code>parallel_free</code>, <code>firecrawl_free</code>, <code>keenable_free</code>, and <code>ddgs</code> (local binary) are keyless and register without a key, and SearXNG needs a self-hosted instance URL. Without that, the tool stays out of the model&#x27;s tool list. Note: <code>base_url</code> is applied as the endpoint override for every provider, not just self-hosted ones - setting it for a keyed hosted provider redirects that provider&#x27;s calls (and its API key) to the override host, so only set it for self-hosted instances or test mirrors. Store keys with <code>pantheon secrets set &lt;NAME&gt;</code> (or in <code>&lt;data_dir&gt;/.env</code>).</p>
 <pre><code>
 [browser]
 enabled = true

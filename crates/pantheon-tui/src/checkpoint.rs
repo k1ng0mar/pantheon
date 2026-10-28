@@ -56,9 +56,15 @@ pub fn effective_turn_ids(entries: &[LedgerEntry]) -> Vec<String> {
 
 /// All checkpoints in the effective history, oldest first.
 ///
-/// A checkpoint whose turn was rewound over still appears (the marker is
-/// never rewritten away) but with `turn_no == 0` so callers can report it
-/// as unrestorable instead of guessing.
+/// `turn_no == 0` means the checkpoint's turn is not in the supplied
+/// entries. That happens only for raw (un-replayed) entries: on the
+/// `/checkpoints` path the entries come from `replay()`, which applies
+/// `TurnRewound` by truncating at the rewound turn - so a checkpoint
+/// rewound over vanishes from the list entirely instead of appearing
+/// with `turn_no == 0`. The `0` branch stays as the honest answer for
+/// raw-entry callers (and for `plan_restore`'s error path); it is not
+/// reachable via `/checkpoints` today, and the old doc claiming it was
+/// is corrected here.
 pub fn list_checkpoints(entries: &[LedgerEntry]) -> Vec<CheckpointInfo> {
     let turns = effective_turn_ids(entries);
     entries
@@ -252,4 +258,92 @@ pub fn cmd_restore(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
         plan.dropped as u32,
         &format!("checkpoint '{}' (turn {})", plan.name, plan.keep_turn_no),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(seq: i64, event: Event) -> LedgerEntry {
+        LedgerEntry {
+            id: seq,
+            run_id: "r".to_string(),
+            seq,
+            ts_ms: seq * 1000,
+            event,
+        }
+    }
+
+    fn turn(turn_id: &str) -> Event {
+        Event::TurnStarted {
+            run_id: "r".to_string(),
+            turn_id: turn_id.to_string(),
+        }
+    }
+
+    fn checkpoint(name: &str, turn_id: &str) -> Event {
+        Event::CheckpointCreated {
+            run_id: "r".to_string(),
+            turn_id: turn_id.to_string(),
+            name: name.to_string(),
+        }
+    }
+
+    fn history() -> Vec<LedgerEntry> {
+        vec![
+            entry(1, turn("t1")),
+            entry(2, checkpoint("cp-a", "t1")),
+            entry(3, turn("t2")),
+            entry(4, checkpoint("cp-b", "t2")),
+            entry(5, turn("t3")),
+        ]
+    }
+
+    #[test]
+    fn list_checkpoints_numbers_in_effective_order() {
+        let cps = list_checkpoints(&history());
+        assert_eq!(cps.len(), 2);
+        assert_eq!(cps[0].turn_no, 1);
+        assert_eq!(cps[1].turn_no, 2);
+        assert!(checkpoint_exists(&history(), "cp-a"));
+        assert!(!checkpoint_exists(&history(), "cp-z"));
+    }
+
+    #[test]
+    fn list_checkpoints_zero_for_turn_missing_from_raw_entries() {
+        // Raw entries (no replay truncation): a checkpoint whose turn
+        // is absent reports turn_no == 0 instead of being dropped.
+        let entries = vec![entry(1, checkpoint("cp-orphan", "t9"))];
+        let cps = list_checkpoints(&entries);
+        assert_eq!(cps.len(), 1);
+        assert_eq!(cps[0].turn_no, 0);
+    }
+
+    #[test]
+    fn plan_restore_keeps_checkpoint_turn_and_drops_later() {
+        let plan = plan_restore(&history(), "cp-a").unwrap();
+        assert_eq!(plan.keep_turn_no, 1);
+        assert_eq!(plan.drop_from_turn_no, 2);
+        assert_eq!(plan.rewind_target, "t2");
+        assert_eq!(plan.dropped, 2);
+    }
+
+    #[test]
+    fn plan_restore_rejects_rewound_over_and_at_tip() {
+        let orphan = vec![entry(1, checkpoint("cp-orphan", "t9"))];
+        assert!(plan_restore(&orphan, "cp-orphan").is_err());
+        assert!(plan_restore(&history(), "nope").is_err());
+        // cp-b sits on t2 with t3 after it, so restoring it is valid
+        // and drops exactly t3 (an earlier draft of this test wrongly
+        // claimed cp-b was at the tip).
+        let plan = plan_restore(&history(), "cp-b").unwrap();
+        assert_eq!(plan.keep_turn_no, 2);
+        assert_eq!(plan.drop_from_turn_no, 3);
+        assert_eq!(plan.rewind_target, "t3");
+        assert_eq!(plan.dropped, 1);
+        // A checkpoint on the last turn has nothing later to drop.
+        let mut at_tip = history();
+        at_tip.push(entry(6, checkpoint("cp-c", "t3")));
+        assert!(plan_restore(&at_tip, "cp-c").is_err());
+    }
 }

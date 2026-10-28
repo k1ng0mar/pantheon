@@ -60,7 +60,7 @@ fn save_pending(data_dir: &Path, pending: &[Proposal]) -> Result<(), String> {
     std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
-/// Queue a skill/persona proposal for human approval. No-op (returns
+/// Queue a proposal for human approval. No-op (returns
 /// false) when a proposal with the same id is already queued - the
 /// operator sees one decision per proposal.
 pub fn queue_for_approval(data_dir: &Path, proposal: &Proposal) -> Result<bool, String> {
@@ -69,7 +69,14 @@ pub fn queue_for_approval(data_dir: &Path, proposal: &Proposal) -> Result<bool, 
         return Ok(false);
     }
     let mut p = proposal.clone();
-    p.status = ProposalStatus::ReplayPassed;
+    // Only skill/persona proposals pass a replay gate before queueing,
+    // so only they may carry ReplayPassed here. A MemoryLesson never
+    // passes replay; stamping it ReplayPassed mislabelled a merely
+    // queued lesson as gate-validated. It keeps its incoming status
+    // (Proposed) in the queue.
+    if !matches!(p.kind, ProposalKind::MemoryLesson { .. }) {
+        p.status = ProposalStatus::ReplayPassed;
+    }
     pending.push(p);
     save_pending(data_dir, &pending)?;
     Ok(true)

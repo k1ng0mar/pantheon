@@ -318,13 +318,13 @@ Two separate systems, on purpose. `web_search` *looks things up* (facts, news, d
 ```toml
 [websearch]
 enabled = true
-provider = "tinyfish"        # one of: tinyfish (recommended), tavily, ollama, exa, marginalia, brave, firecrawl, searxng, perplexity
+provider = "tinyfish"        # one of: tinyfish (recommended), tavily, ollama, exa, marginalia, brave, firecrawl, searxng, perplexity, exa_free, parallel_free, firecrawl_free, keenable_free, ddgs
 # api_key_secret = "TINYFISH_API_KEY"  # optional override; absent = the provider's default secret name
 # base_url = "http://localhost:8080"  # endpoint override for self-hosted providers (SearXNG)
 max_results = 8
 ```
 
-The `web_search` tool only registers when the provider's auth requirement is met - keyed providers need their key resolvable (default secret names: `TINYFISH_API_KEY`, `TAVILY_API_KEY`, `OLLAMA_API_KEY`, `EXA_API_KEY`, `BRAVE_API_KEY`, `FIRECRAWL_API_KEY`, `PERPLEXITY_API_KEY`); Marginalia is keyless and SearXNG needs a self-hosted instance URL. Without that, the tool stays out of the model's tool list. Store keys with `pantheon secrets set <NAME>` (or in `<data_dir>/.env`).
+The `web_search` tool only registers when the provider's auth requirement is met - keyed providers need their key resolvable (default secret names: `TINYFISH_API_KEY`, `TAVILY_API_KEY`, `OLLAMA_API_KEY`, `EXA_API_KEY`, `BRAVE_API_KEY`, `FIRECRAWL_API_KEY`, `PERPLEXITY_API_KEY`); Marginalia, `exa_free`, `parallel_free`, `firecrawl_free`, `keenable_free`, and `ddgs` (local binary) are keyless and register without a key, and SearXNG needs a self-hosted instance URL. Without that, the tool stays out of the model's tool list. Note: `base_url` is applied as the endpoint override for every provider, not just self-hosted ones - setting it for a keyed hosted provider redirects that provider's calls (and its API key) to the override host, so only set it for self-hosted instances or test mirrors. Store keys with `pantheon secrets set <NAME>` (or in `<data_dir>/.env`).
 
 ```toml
 [browser]

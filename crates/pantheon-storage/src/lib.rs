@@ -9,8 +9,11 @@ use std::time::Duration;
 /// or in-memory: a 5s busy timeout (second process / thread never hits
 /// SQLITE_BUSY immediately), WAL journal mode (concurrent readers don't block
 /// writers; crash mid-commit leaves a replayable WAL, not a hot journal), and
-/// an explicit `synchronous = NORMAL` (fully durable under WAL without the
-/// double-fsync tax rollback-journal `FULL` imposes).
+/// an explicit `synchronous = NORMAL` (process-crash durable under WAL
+/// without the double-fsync tax rollback-journal `FULL` imposes - but
+/// NOT fully durable across an OS crash or power loss: NORMAL may lose
+/// recently committed transactions there. The old "fully durable" wording
+/// overstated this; use FULL for a ledger that must survive power loss).
 ///
 /// The `code` prefix names the store for error codes, e.g. `"LEDGER"`.
 ///

@@ -349,11 +349,26 @@ fn on(value: Option<bool>, default: bool) -> bool {
 /// Lives here (not in the TUI) so every client of the runtime - the TUI
 /// agent loop and the dashboard's browser stream endpoints - resolves the
 /// section identically.
+/// Parse an env-var boolean the way users write it. The old `v != "0"`
+/// reading meant `PANTHEON_BROWSER_ENABLED=false` *enabled* the browser
+/// (only the literal "0" disabled it). Unknown values warn and fall back
+/// to the caller's default instead of silently enabling.
+fn env_bool(var: &str) -> Option<bool> {
+    let v = std::env::var(var).ok()?;
+    match v.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        other => {
+            log_warn!("[pantheon] unknown {var} value '{other}'; ignoring it");
+            None
+        }
+    }
+}
+
 pub fn resolve_browser_section(s: &pantheon_api::config::BrowserSection) -> BrowserToolConfig {
     let mut cfg = BrowserToolConfig::default();
-    cfg.enabled = std::env::var("PANTHEON_BROWSER_ENABLED")
-        .map(|v| v != "0")
-        .unwrap_or_else(|_| on(s.enabled, cfg.enabled));
+    cfg.enabled =
+        env_bool("PANTHEON_BROWSER_ENABLED").unwrap_or_else(|| on(s.enabled, cfg.enabled));
     // Backend selection: env, then file, then the default. Unknown ids
     // warn and fall back to GSD (never fail the session over a typo).
     let backend_id = std::env::var("PANTHEON_BROWSER_BACKEND")
@@ -365,8 +380,15 @@ pub fn resolve_browser_section(s: &pantheon_api::config::BrowserSection) -> Brow
             None => log_warn!("[pantheon] unknown [browser] backend '{id}'; falling back to 'gsd'"),
         }
     }
+    // The docstring promises PANTHEON_BROWSER_BINARY wins over the file,
+    // but the code never read it: the binary came only from [browser].
+    // Env wins, then file.
     if cfg.binary.is_none() {
-        cfg.binary = s.binary.clone().map(std::path::PathBuf::from);
+        cfg.binary = std::env::var("PANTHEON_BROWSER_BINARY")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| s.binary.clone().map(std::path::PathBuf::from));
     }
     cfg.act_require_approval = on(s.act_require_approval, cfg.act_require_approval);
     if let Some(secs) = s.idle_timeout_secs.filter(|&s| s > 0) {

@@ -160,7 +160,10 @@ fn trust_str(t: TrustTier) -> &'static str {
 }
 
 fn trust_from(s: &str) -> TrustTier {
-    TrustTier::parse(s).unwrap_or(TrustTier::Memory)
+    // Fail closed: an unknown/corrupt trust string is Untrusted, never
+    // mid-trust Memory. Previously it defaulted to Memory, promoting
+    // tampered or mistyped rows into the trusted tier on read.
+    TrustTier::parse(s).unwrap_or(TrustTier::Untrusted)
 }
 
 /// SQL rank of a stored trust tier. `col` is a column reference in the
@@ -507,16 +510,30 @@ impl MemoryStore {
                 .conn
                 .lock()
                 .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
-            // Only upgrade: an existing higher tier wins. The WHERE clause
-            // constrains what can change, so a record already at or above
-            // the requested tier is untouched.
-            conn.execute(
-                "UPDATE memories SET trust=?4
-                 WHERE layer=?1 AND namespace=?2 AND key=?3
-                   AND trust IN ('untrusted','memory')",
-                params![layer_str(layer), namespace, key, trust_str(tier)],
-            )
-            .map_err(|e| serr("MEM_PUT", e.to_string()))?
+            // Only raises, as documented: the WHERE clause admits only
+            // existing tiers strictly below the requested one. The old
+            // `IN ('untrusted','memory')` shape let promote(..., Untrusted)
+            // demote a Memory row, and promote(..., Memory) rewrite an
+            // already-Memory row, despite the "only raises" contract.
+            // Promoting to Untrusted is a no-op by construction: there
+            // is no tier below Untrusted to raise from.
+            let allowed: &[&str] = match tier {
+                pantheon_api::provenance::TrustTier::System => &["untrusted", "memory", "user"],
+                pantheon_api::provenance::TrustTier::User => &["untrusted", "memory"],
+                pantheon_api::provenance::TrustTier::Memory => &["untrusted"],
+                pantheon_api::provenance::TrustTier::Untrusted => &[],
+            };
+            let mut updated = 0usize;
+            for existing in allowed {
+                updated += conn
+                    .execute(
+                        "UPDATE memories SET trust=?4
+                     WHERE layer=?1 AND namespace=?2 AND key=?3 AND trust=?5",
+                        params![layer_str(layer), namespace, key, trust_str(tier), existing],
+                    )
+                    .map_err(|e| serr("MEM_PUT", e.to_string()))?;
+            }
+            updated
         };
         if updated == 0 {
             // Distinguish "no such record" from "already at or above the
@@ -590,10 +607,13 @@ impl MemoryStore {
             // Trust is a ceiling on the write, not a field the writer sets.
             // A low-trust (model-origin) write must not clobber the value of
             // a record a human already confirmed, nor reset its tier. Ranks:
-            // untrusted(0) < memory(1) < user(2) < system(3). Equal rank is
-            // treated as "existing wins" so a repeat write at the same tier
-            // still updates (an agent re-asserting its own note works), and
-            // only a strictly-higher-trust write overwrites.
+            // untrusted(0) < memory(1) < user(2) < system(3). The guard is
+            // strictly `existing > incoming`, so equal rank overwrites
+            // (an agent re-asserting its own note works); only a
+            // strictly-higher-trust existing row holds. (The old comment
+            // here claimed equal rank was "existing wins" while also
+            // saying it still updates - the code, and upsert_memory_sql's
+            // doc, say incoming wins at equal rank.)
             &upsert_memory_sql(),
             params![
                 layer_str(p.layer),
@@ -878,4 +898,52 @@ pub fn damage_fts_for_test(db: &std::path::Path) {
     let conn = Connection::open(db).expect("open memory db");
     conn.execute_batch("DROP TABLE IF EXISTS memories_fts;")
         .expect("drop fts");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LayerKind;
+
+    fn proposal(trust: TrustTier) -> Proposal {
+        Proposal {
+            layer: LayerKind::Agent,
+            namespace: "test".to_string(),
+            key: "k".to_string(),
+            value: "v".to_string(),
+            provenance: Provenance {
+                source: "test".to_string(),
+                origin: "test".to_string(),
+                trust,
+                recorded_at_ms: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn promote_never_demotes() {
+        let store = MemoryStore::open_in_memory().unwrap();
+        store.put(&proposal(TrustTier::Memory)).unwrap();
+        // "Promoting" to Untrusted must leave the Memory tier intact.
+        let rec = store
+            .promote(LayerKind::Agent, "test", "k", TrustTier::Untrusted)
+            .unwrap();
+        assert_eq!(rec.provenance.trust, TrustTier::Memory);
+        // A genuine raise still works.
+        let rec = store
+            .promote(LayerKind::Agent, "test", "k", TrustTier::User)
+            .unwrap();
+        assert_eq!(rec.provenance.trust, TrustTier::User);
+        // And a raise back down to Memory is refused.
+        let rec = store
+            .promote(LayerKind::Agent, "test", "k", TrustTier::Memory)
+            .unwrap();
+        assert_eq!(rec.provenance.trust, TrustTier::User);
+    }
+
+    #[test]
+    fn unknown_trust_fails_closed_to_untrusted() {
+        assert_eq!(trust_from("bogus-tier"), TrustTier::Untrusted);
+        assert_eq!(trust_from("memory"), TrustTier::Memory);
+    }
 }

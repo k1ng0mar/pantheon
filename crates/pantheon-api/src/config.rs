@@ -1196,14 +1196,17 @@ pub struct CamofoxSection {
 /// *looking things up*; interacting with a site is `browser_*`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct WebsearchSection {
-    /// Master switch. Default true. The tool is only registered when a
-    /// key also resolves - a keyless `web_search` would be a tool that
-    /// can never work, so it stays out of the model's tool list.
+    /// Master switch. Default true. Keyed providers register only when
+    /// a key resolves; keyless providers (Marginalia, the `*_free`
+    /// fallbacks, `ddgs`) register without one - the old "a keyless
+    /// `web_search` can never work" claim predates them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// Provider name: one of the `pantheon-web` provider registry ids
     /// (`tinyfish` (recommended), `tavily`, `ollama`, `exa`,
-    /// `marginalia`, `brave`, `firecrawl`, `searxng`, `perplexity`).
+    /// `marginalia`, `brave`, `firecrawl`, `searxng`, `perplexity`,
+    /// `exa_free`, `parallel_free`, `firecrawl_free`, `keenable_free`,
+    /// `ddgs`).
     /// The setup wizard lists them with their
     /// auth requirements. An unknown id leaves `web_search`
     /// unregistered with a warning at session start.
@@ -1214,9 +1217,13 @@ pub struct WebsearchSection {
     /// (e.g. "TAVILY_API_KEY" for Tavily). Never hardcoded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_secret: Option<String>,
-    /// Endpoint override, used by self-hosted providers (e.g. a local
-    /// SearXNG instance URL). Hosted providers ignore it. Absent = the
-    /// provider's default endpoint.
+    /// Endpoint override. It is applied to every provider, not just
+    /// self-hosted ones (the old "hosted providers ignore it" claim
+    /// was false: the registry applies the override to all): setting
+    /// it for a keyed hosted provider redirects that provider's calls
+    /// - and its API key - to the override host. Only set it for
+    /// self-hosted instances (e.g. a local SearXNG URL) or test
+    /// mirrors. Absent = the provider's default endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     /// Default result count per query. Default 8.

@@ -579,9 +579,14 @@ struct LegacyStoredJob {
     deliver: Option<String>,
 }
 
-/// Missed-occurrence policy: how many runs a slept-through window enqueues.
-/// Kept as a real policy type (not just a legacy shim): the idempotency
-/// layer decides catch-up counts from it.
+/// Missed-occurrence policy for a slept-through window. Honest scope
+/// note: the stored job carries only a `catch_up` boolean, so `RunOnce`
+/// and `CatchUp` currently collapse to the same behaviour - a single
+/// catch-up fire for the latest missed occurrence (see
+/// [`Job::missed_catchup_ms`]), never one run per missed occurrence.
+/// A true multi-fire CatchUp would need a pending-count on the job, not
+/// just this enum; until then the doc must not promise per-occurrence
+/// enqueueing. `Skip` fires nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum MissedPolicy {
     Skip,

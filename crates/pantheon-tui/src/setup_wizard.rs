@@ -1451,18 +1451,19 @@ fn apply_extensions_skip(tools: &mut Vec<ToolGroup>, skipped: &mut Vec<ToolGroup
 
 /// One-line bundled-plugin status, printed when the Extensions screen
 /// opens. Bundled (first-party) plugins live under
-/// `<data_dir>/extensions/bundled/` and load without approval; there
-/// is no enable/disable switch for them in `pantheon-extensions`
-/// removing the directory is the disable path - so the screen reports
-/// what is there and moves on. Today nothing ships there, and the
-/// screen says so instead of inventing a registry.
+/// `<data_dir>/extensions/bundled/` and load without third-party
+/// approval, but they are config-gated: `[plugins.<name>] enabled`
+/// (and the manifest default) decides whether one runs - they are not
+/// "always on". The exec registry also seeds bundled hook plugins
+/// there on load, so the directory is normally non-empty; the screen
+/// reports what is there and moves on.
 fn print_bundled_status(data_dir: &Path) {
     let names = bundled_plugin_names(data_dir);
     if names.is_empty() {
         println!("pantheon: no bundled plugins installed");
     } else {
         println!(
-            "pantheon: bundled plugins (always on): {}",
+            "pantheon: bundled plugins (config-gated): {}",
             names.join(", ")
         );
     }

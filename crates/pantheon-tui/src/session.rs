@@ -242,6 +242,12 @@ pub enum BlockKind {
     Thinking {
         text: String,
         expanded: bool,
+        /// Explicit user collapse of the live (streaming) block. The
+        /// renderer expands the live block even when `expanded` is
+        /// false (new thinking starts collapsed in the field but must
+        /// show while streaming), so without this flag a click to shut
+        /// the live block did nothing until another block landed.
+        user_collapsed: bool,
         duration: Option<std::time::Duration>,
     },
     /// Tool card: running until the matching runtime completion event
@@ -1502,6 +1508,7 @@ impl TuiState {
                         kind: BlockKind::Thinking {
                             text,
                             expanded: false,
+                            user_collapsed: false,
                             duration: None,
                         },
                     });
@@ -2885,8 +2892,11 @@ impl TuiState {
 
     /// Scroll up into history by `lines`. New blocks reset via
     /// `scroll_to_bottom`; streaming follows the tail while the offset is 0.
+    /// Uncapped on purpose: the renderer clamps the offset against the
+    /// transcript's real length (`max_scroll`), so a hard cap here only
+    /// stranded the top of transcripts longer than the cap.
     pub fn scroll_up(&mut self, lines: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_add(lines).min(10_000);
+        self.scroll_offset = self.scroll_offset.saturating_add(lines);
     }
 
     /// Scroll back down toward the live tail.
@@ -3254,20 +3264,24 @@ fn sync_inline_todo_card(state: &mut TuiState) {
 }
 
 impl TuiState {
-    /// Apply a fresh todo snapshot: refreshes the count and, when the plan
-    /// actually changed, auto-switches the sidebar's bottom card to the
-    /// todo view. A manual ^g toggle afterwards still wins.
+    /// Apply a fresh todo snapshot: refreshes the count and, only on
+    /// first plan creation (empty -> non-empty), auto-switches the
+    /// sidebar's bottom card to the todo view. Later updates must not
+    /// undo a manual ^g toggle: the previous "switch on every change"
+    /// behaviour flipped the operator back to Todo on each progress
+    /// update, contradicting the "manual wins" comment.
     pub fn apply_todo_items(&mut self, items: Vec<crate::todo_card::TodoCardItem>) {
         use crate::todo_card::TodoStatus as CardStatus;
         self.todo_count = items
             .iter()
             .filter(|i| i.status != CardStatus::Completed)
             .count();
+        let first_plan = self.todo_items.is_empty() && !items.is_empty();
         if self.todo_items != items {
             self.todo_items = items;
-            // Fresh plan activity: the todo view becomes the sidebar's
-            // bottom card.
-            self.sidebar_view = SidebarView::Todo;
+            if first_plan {
+                self.sidebar_view = SidebarView::Todo;
+            }
         }
     }
 }
@@ -3464,6 +3478,7 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
                 pantheon_runtime::session::TranscriptItem::Reasoning(text) => BlockKind::Thinking {
                     text,
                     expanded: false,
+                    user_collapsed: false,
                     duration: None,
                 },
                 // Structured UI: rebuilt at its latest revision.
@@ -4749,7 +4764,10 @@ fn provider_display(provider_id: &str) -> String {
 /// `provider: model · effort`.
 fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> Vec<Span<'static>> {
     let (provider, model) = match state.model.split_once('/') {
-        Some((p, _)) => (p, state.model.rsplit('/').next().unwrap_or(p)),
+        // Provider is the first segment, model is everything after the
+        // first '/': rsplit dropped middle segments, so "a/b/c"
+        // rendered as provider a, model c, silently losing b.
+        Some((p, rest)) => (p, rest),
         None => ("", state.model.as_str()),
     };
     // Design format: `Provider: <Provider>: <Model> • Build` — a
@@ -4884,7 +4902,11 @@ fn composer_provider_row(
         let pct = 100.0 * live as f64 / state.tokens_max as f64;
         if pct >= CTX_NEARLY_FULL_PCT {
             left.push(Span::styled(
-                format!(" • ctx {pct:.0}%"),
+                if pct > 100.0 {
+                    format!(" • ctx {pct:.0}% over limit")
+                } else {
+                    format!(" • ctx {pct:.0}%")
+                },
                 Style::default().fg(th.warning),
             ));
         }
@@ -5507,13 +5529,28 @@ fn toggle_block_at_click(state: &mut TuiState, col: u16, row: u16) -> bool {
     if state.block_line_starts.get(idx) != Some(&line) {
         return false;
     }
+    // Last-block check before the mutable borrow below: the toggle
+    // for the live block flips `user_collapsed`, not `expanded`.
+    let is_last_block = idx + 1 == state.blocks.len();
     let block = match state.blocks.get_mut(idx) {
         Some(b) => b,
         None => return false,
     };
     match &mut block.kind {
-        BlockKind::Thinking { expanded, .. } => {
-            *expanded = !*expanded;
+        BlockKind::Thinking {
+            expanded,
+            user_collapsed,
+            ..
+        } => {
+            // The live (last) block renders expanded regardless of
+            // `expanded`, so toggling `expanded` alone could never shut
+            // it. For the last block, toggle the explicit-collapse flag;
+            // settled blocks toggle `expanded` as before.
+            if is_last_block {
+                *user_collapsed = !*user_collapsed;
+            } else {
+                *expanded = !*expanded;
+            }
             true
         }
         BlockKind::ToolCall { expanded, .. } => {
@@ -5526,6 +5563,33 @@ fn toggle_block_at_click(state: &mut TuiState, col: u16, row: u16) -> bool {
         }
         _ => false,
     }
+}
+
+/// Click handling for the "Jump to latest ↓" hint: the hint is drawn
+/// with Clear over the transcript's last row while scrolled up, but no
+/// handler ever checked that rect, so clicking it did nothing (and the
+/// click fell through to block toggling underneath). Recompute the
+/// hint rect from the same geometry the renderer uses; a hit scrolls
+/// to the live tail.
+fn jump_to_latest_at_click(state: &mut TuiState, col: u16, row: u16) -> bool {
+    if state.scroll_offset == 0 {
+        return false;
+    }
+    let Some(view) = &state.img.view else {
+        return false;
+    };
+    if view.height == 0 || view.width <= 20 {
+        return false;
+    }
+    let label = "Jump to latest ↓";
+    let w = (label.chars().count() as u16 + 2).min(view.width);
+    let hx = view.x + view.width.saturating_sub(w);
+    let hy = view.y + view.height - 1;
+    if row == hy && col >= hx && col < hx + w {
+        state.scroll_to_bottom();
+        return true;
+    }
+    false
 }
 
 /// Click handling for the tab bar: a tab switches to it, the
@@ -5941,15 +6005,17 @@ fn render_block(
         BlockKind::Thinking {
             text,
             expanded,
+            user_collapsed,
             duration,
         } => {
             // Reasoning as a collapsible `◇ Thought` row: the live
-            // (streaming) block stays expanded, settled ones collapse
-            // until clicked, so old reasoning never crowds out answers.
+            // (streaming) block stays expanded unless the user explicitly
+            // collapsed it; settled ones collapse until clicked, so old
+            // reasoning never crowds out answers.
             let view = crate::transcript::ThoughtView {
                 text: text.clone(),
                 duration: *duration,
-                expanded: *expanded || is_last,
+                expanded: *expanded || (is_last && !user_collapsed),
             };
             lines.extend(view.lines(th));
         }
@@ -6688,6 +6754,21 @@ pub fn run_tui_session_with(
     let mut terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
 
     let mut state = TuiState::new(pantheon_runtime::new_run_id(), header_model, tokens_max);
+
+    // Initialise the permission mode from config, not the Ask default:
+    // TuiState::new starts at Ask, and the first Tab/BackTab push into
+    // the runtime session overwrote any configured mode - so a
+    // configured AllowAll silently became Smart after one BackTab, and
+    // the TUI never honoured the config at all before that. Invalid
+    // values fall back to Ask (the conservative default).
+    if let Some(mode) = file_cfg
+        .as_ref()
+        .and_then(|c| c.permission_mode.as_deref())
+        .and_then(PermissionMode::parse)
+    {
+        state.permission_mode = mode;
+        session.set_permission_mode(mode);
+    }
 
     // Restore the saved theme before the first frame: load_theme_name
     // falls back to the default on missing config or unknown names.
@@ -8790,7 +8871,8 @@ fn tui_loop(
                 if matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
                     let handled = click_tab_bar(state, &session, me.column, me.row)
                         || (!state.sidebar_overlay_open()
-                            && toggle_block_at_click(state, me.column, me.row));
+                            && (jump_to_latest_at_click(state, me.column, me.row)
+                                || toggle_block_at_click(state, me.column, me.row)));
                     if handled {
                         state.tick();
                         terminal.draw(|f| render(state, f))?;
@@ -9745,6 +9827,14 @@ fn tui_loop(
                     // Left/Right/Home/End/Delete fell to `_` and did
                     // nothing in the most common TUI state. PageUp/
                     // PageDown below still scroll the transcript.
+                    // Ctrl+End jumps to the live tail: plain End is
+                    // the composer cursor key (see handle_composer_arrow),
+                    // so scrolled-up users previously had no key at all
+                    // that reached scroll_to_bottom - only the clickable
+                    // hint, which itself was not clickable.
+                    KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        state.scroll_to_bottom();
+                    }
                     KeyCode::Left
                     | KeyCode::Right
                     | KeyCode::Up

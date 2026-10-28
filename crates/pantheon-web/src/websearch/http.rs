@@ -49,63 +49,106 @@ fn status_error(provider: &str, code: u16, r: ureq::http::Response<ureq::Body>) 
     SearchError::RequestFailed(format!("{provider} HTTP {code}: {detail}"))
 }
 
+/// `Retry-After` delta-seconds from a response, if present and sane.
+/// HTTP-date form is not parsed (same stance as the gateway channel
+/// transports). Capped at 10s: a longer hint still earns one retry
+/// after a bounded wait, not a hung tool call.
+fn retry_after_secs(response: &ureq::http::Response<ureq::Body>) -> Option<u64> {
+    let v = response
+        .headers()
+        .get("retry-after")
+        .and_then(|h| h.to_str().ok())?;
+    let secs: u64 = v.trim().parse().ok()?;
+    if secs == 0 {
+        None
+    } else {
+        Some(secs.min(10))
+    }
+}
+
 /// POST a JSON body with extra headers, returning the response text.
+///
+/// On a 429 with a `Retry-After` hint, waits (capped at 10s) and retries
+/// once before reporting the rate limit. Previously no provider honoured
+/// `Retry-After` at all, so a throttled call failed immediately even
+/// when the provider said exactly how long to wait.
 pub fn post_json(
     provider: &str,
     url: &str,
     headers: &[(&str, &str)],
     body: serde_json::Value,
 ) -> Result<String, SearchError> {
-    let mut req = agent().post(url);
-    for (k, v) in headers {
-        req = req.header(*k, *v);
-    }
-    let response = match req.send_json(body) {
-        Ok(r) => r,
-        Err(e) if is_timeout(&e) => return Err(SearchError::Timeout),
-        Err(e) => {
-            return Err(SearchError::RequestFailed(format!(
-                "{provider} transport error: {e}"
-            )));
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let mut req = agent().post(url);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
         }
-    };
-    let code = response.status().as_u16();
-    if code >= 400 {
-        return Err(status_error(provider, code, response));
+        let response = match req.send_json(body.clone()) {
+            Ok(r) => r,
+            Err(e) if is_timeout(&e) => return Err(SearchError::Timeout),
+            Err(e) => {
+                return Err(SearchError::RequestFailed(format!(
+                    "{provider} transport error: {e}"
+                )));
+            }
+        };
+        let code = response.status().as_u16();
+        if code == 429 && attempt == 1 {
+            if let Some(secs) = retry_after_secs(&response) {
+                std::thread::sleep(std::time::Duration::from_secs(secs));
+                continue;
+            }
+        }
+        if code >= 400 {
+            return Err(status_error(provider, code, response));
+        }
+        return response
+            .into_body()
+            .read_to_string()
+            .map_err(|e| SearchError::BadResponse(format!("could not read response body: {e}")));
     }
-    response
-        .into_body()
-        .read_to_string()
-        .map_err(|e| SearchError::BadResponse(format!("could not read response body: {e}")))
 }
 
-/// GET with extra headers, returning the response text.
+/// GET with extra headers, returning the response text. Same one-retry
+/// `Retry-After` behaviour as [`post_json`].
 pub fn get_json(
     provider: &str,
     url: &str,
     headers: &[(&str, &str)],
 ) -> Result<String, SearchError> {
-    let mut req = agent().get(url);
-    for (k, v) in headers {
-        req = req.header(*k, *v);
-    }
-    let response = match req.call() {
-        Ok(r) => r,
-        Err(e) if is_timeout(&e) => return Err(SearchError::Timeout),
-        Err(e) => {
-            return Err(SearchError::RequestFailed(format!(
-                "{provider} transport error: {e}"
-            )));
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let mut req = agent().get(url);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
         }
-    };
-    let code = response.status().as_u16();
-    if code >= 400 {
-        return Err(status_error(provider, code, response));
+        let response = match req.call() {
+            Ok(r) => r,
+            Err(e) if is_timeout(&e) => return Err(SearchError::Timeout),
+            Err(e) => {
+                return Err(SearchError::RequestFailed(format!(
+                    "{provider} transport error: {e}"
+                )));
+            }
+        };
+        let code = response.status().as_u16();
+        if code == 429 && attempt == 1 {
+            if let Some(secs) = retry_after_secs(&response) {
+                std::thread::sleep(std::time::Duration::from_secs(secs));
+                continue;
+            }
+        }
+        if code >= 400 {
+            return Err(status_error(provider, code, response));
+        }
+        return response
+            .into_body()
+            .read_to_string()
+            .map_err(|e| SearchError::BadResponse(format!("could not read response body: {e}")));
     }
-    response
-        .into_body()
-        .read_to_string()
-        .map_err(|e| SearchError::BadResponse(format!("could not read response body: {e}")))
 }
 
 /// Minimal percent-encoding for query strings and path segments: keeps
@@ -133,7 +176,8 @@ pub fn percent_encode(s: &str) -> String {
     out
 }
 
-/// First text content item from an anonymous MCP `tools/call` response.
+/// Text content of an anonymous MCP `tools/call` response: every
+/// non-empty text block, joined with newlines.
 ///
 /// Vendors answer in two framings: plain JSON bodies (Parallel) or SSE
 /// `data: {...}` lines (Exa). Split only on SSE line terminators
@@ -180,10 +224,19 @@ pub fn mcp_text_payload(body: &str) -> Result<String, super::error::SearchError>
                 msg
             }));
         }
-        Ok(texts
+        // Concatenate every non-empty text block: taking only the
+        // first silently dropped later blocks (e.g. multi-part MCP
+        // results), which parsers then read as a truncated document.
+        let joined = texts
             .into_iter()
-            .find(|t| !t.is_empty())
-            .map(str::to_string))
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        })
     }
 
     let stripped = body.trim();
