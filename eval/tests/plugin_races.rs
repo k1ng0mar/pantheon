@@ -295,6 +295,7 @@ fn hook_cfg() -> RunnerConfig {
         python: "python3".into(),
         timeout: Duration::from_secs(15),
         policy: None,
+        data_dir: None,
     }
 }
 
