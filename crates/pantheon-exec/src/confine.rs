@@ -58,15 +58,64 @@ fn base_deny_patterns() -> Vec<String> {
 struct DenySet {
     /// Patterns as written (may contain a literal `~`).
     raw: Vec<String>,
-    /// Patterns with a leading `~` expanded to `$HOME` (when set).
+    /// Patterns with a leading `~` expanded to the effective home (see `effective_home`).
     expanded: Vec<String>,
 }
 
-fn deny_set() -> DenySet {
-    let home = std::env::var("HOME")
+/// Effective home for `~` expansion: `$HOME` first, then the passwd
+/// entry on Unix. Without the fallback, an unset `HOME` left every
+/// `~/.ssh`/`~/.gnupg` deny pattern unexpanded (literal `~`, matching
+/// nothing), so the deny list silently stopped covering the real home
+/// directory. Workspace containment is still the backstop for paths
+/// outside the workspace, but the deny list must work on its own.
+fn effective_home() -> Option<String> {
+    let from_env = std::env::var("HOME")
         .ok()
         .map(|h| h.trim_end_matches('/').to_string())
         .filter(|h| !h.is_empty());
+    if from_env.is_some() {
+        return from_env;
+    }
+    passwd_home()
+}
+
+/// Home directory from the passwd database (Unix only; `None` elsewhere
+/// or when the lookup fails). Read-only, no new dependency: `libc` is
+/// already a workspace dependency.
+#[cfg(unix)]
+fn passwd_home() -> Option<String> {
+    unsafe {
+        let mut pwd: libc::passwd = std::mem::zeroed();
+        let mut buf = vec![0u8; 4096];
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let rc = libc::getpwuid_r(
+            libc::getuid(),
+            &mut pwd,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            &mut result,
+        );
+        if rc != 0 || result.is_null() || pwd.pw_dir.is_null() {
+            return None;
+        }
+        let s = std::ffi::CStr::from_ptr(pwd.pw_dir)
+            .to_string_lossy()
+            .into_owned();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.trim_end_matches('/').to_string())
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn passwd_home() -> Option<String> {
+    None
+}
+
+fn deny_set() -> DenySet {
+    let home = effective_home();
     let mut raw = base_deny_patterns();
     let mut expanded: Vec<String> = raw
         .iter()
@@ -109,14 +158,12 @@ impl DenySet {
     }
 }
 
-/// Expand a leading `~` / `~/` to `$HOME`. `None` when there is no `~`
-/// prefix or `HOME` is unset.
+/// Expand a leading `~` / `~/` to the effective home (see
+/// [`effective_home`]). `None` when there is no `~` prefix or no home
+/// can be determined.
 fn expand_home_str(s: &str) -> Option<String> {
     if s == "~" || s.starts_with("~/") {
-        let home = std::env::var("HOME")
-            .ok()
-            .map(|h| h.trim_end_matches('/').to_string())
-            .filter(|h| !h.is_empty())?;
+        let home = effective_home()?;
         return Some(if s == "~" {
             home
         } else {
