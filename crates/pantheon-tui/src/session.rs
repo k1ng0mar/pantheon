@@ -52,8 +52,10 @@ pub mod vim;
 /// The slash-command registry: (command, one-line description). This is
 /// the single source of truth - `/help`, the `/` command palette, and
 /// completion all read from here, so a command can never be listed twice
-/// or drift out of sync. Entries with `<...>` placeholders (e.g.
-/// `/<skill>`) are documentation-only and are skipped by the palette.
+/// or drift out of sync. Only the dynamic `/<skill>` entry is
+/// documentation-only and skipped by the palette; real commands with
+/// `<...>` usage in their display string are offered, and Enter runs
+/// their bare form.
 const COMMANDS: &[(&str, &str)] = &[
     ("/help", "this list"),
     ("/models [FILTER]", "providers first, then models - Enter switches"),
@@ -190,8 +192,15 @@ pub struct PaletteState {
 }
 
 impl PaletteState {
-    /// Registry entries matching the filter, in registry order. Entries
-    /// with `<...>` placeholders are documentation-only and never offered.
+    /// Registry entries matching the filter, in registry order. Only
+    /// the dynamic `/<skill>` entry is documentation-only and never
+    /// offered: every other entry is a real command even when its
+    /// display string carries `<...>` usage (e.g. `/team [<id>
+    /// [<task>]]`, `/send <target> <message>`), and Enter on a pick
+    /// strips the usage suffix and runs the bare command. The old
+    /// filter excluded every entry containing `<`, so the palette
+    /// could never offer /team, /send, /tasks, /swarm <id>,
+    /// /agent new or /agents create at all.
     /// Name matches come before description matches: typing `agents`
     /// should offer `/agents`, not `/settings` (whose description happens
     /// to mention "agents").
@@ -200,7 +209,7 @@ impl PaletteState {
         let offered: Vec<(&'static str, &'static str)> = COMMANDS
             .iter()
             .copied()
-            .filter(|(name, _desc)| !name.contains('<'))
+            .filter(|(name, _desc)| !name.starts_with("/<"))
             .collect();
         if f.is_empty() {
             return offered;
@@ -14614,5 +14623,48 @@ mod slash_dispatch_tests {
             s.blocks.last().map(|b| &b.kind),
             Some(BlockKind::Status(t)) if t.contains("resumed other-run")
         ));
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    fn palette(input: &str) -> PaletteState {
+        PaletteState {
+            input: input.to_string(),
+            sel: 0,
+        }
+    }
+
+    #[test]
+    fn palette_offers_angle_bracket_commands_but_not_dynamic_skill() {
+        // The old filter dropped every entry containing '<', so /team,
+        // /send, /tasks and friends were unpickable in the palette.
+        let team = palette("team").filtered();
+        assert!(
+            team.iter().any(|(n, _)| n.starts_with("/team")),
+            "team not offered: {team:?}"
+        );
+        let send = palette("send").filtered();
+        assert!(
+            send.iter().any(|(n, _)| n.starts_with("/send")),
+            "send not offered: {send:?}"
+        );
+        let tasks = palette("tasks").filtered();
+        assert!(
+            tasks.iter().any(|(n, _)| n.starts_with("/tasks")),
+            "tasks not offered: {tasks:?}"
+        );
+        let all = palette("").filtered();
+        assert!(
+            all.iter().all(|(n, _)| !n.starts_with("/<")),
+            "dynamic /<skill> entry offered: {all:?}"
+        );
+        assert_eq!(
+            all.len(),
+            COMMANDS.len() - 1,
+            "palette should offer every command except /<skill>"
+        );
     }
 }
