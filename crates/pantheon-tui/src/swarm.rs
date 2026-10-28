@@ -403,8 +403,7 @@ fn swarm_turn(
         secrets,
     )
     .map_err(|e| format!("open session: {e}"))?;
-    crate::config::apply_tool_enablement(&session, file_cfg.as_ref());
-    crate::config::apply_delegation_section(&session, file_cfg.as_ref());
+    crate::config::apply_session_config(&session, file_cfg.as_ref());
     // The profile resolved again here: resolve_swarm_profiles already
     // validated every role, so a config that vanished in between is a
     // hard error rather than an anonymous turn.
