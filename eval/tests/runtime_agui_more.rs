@@ -171,13 +171,21 @@ fn live_voice_route_takes_over_the_socket() {
 
 #[test]
 fn blob_route_requires_a_valid_signature() {
+    // GenUI signing is fail-closed since the CLI cluster: signer()
+    // is None without a configured secret. This test supplies a
+    // test-only secret so it can mint a valid signature.
+    std::env::set_var("PANTHEON_GENUI_SECRET", "test-genui-secret");
     let dir = tempfile::tempdir().unwrap();
     let sup = pantheon_runtime::Supervisor::open(dir.path().to_path_buf()).unwrap();
     sup.put_artifact("task-1", "text/plain", b"hello").unwrap();
     let m = AguiMount {
         cfg: test_cfg(dir.path().to_path_buf()),
     };
-    let signed = m.cfg.signer().sign("task-1", "text/plain", 60_000);
+    let signed = m
+        .cfg
+        .signer()
+        .expect("test sets PANTHEON_GENUI_SECRET")
+        .sign("task-1", "text/plain", 60_000);
     let path = signed.url.split_once("http://127.0.0.1:9").unwrap().1;
     let (status, ctype, body) = buffered(m.handle(&req("GET", path, "")));
     assert_eq!(status, 200);
@@ -187,6 +195,7 @@ fn blob_route_requires_a_valid_signature() {
     assert_eq!(status, 403);
     let (status, _, _) = buffered(m.handle(&req("GET", "/agui/blob/../x?exp=1&sig=00", "")));
     assert_eq!(status, 400);
+    std::env::remove_var("PANTHEON_GENUI_SECRET");
 }
 
 #[test]
