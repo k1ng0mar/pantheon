@@ -39,7 +39,7 @@
 //! BrowserForge fingerprints by the launcher itself - prefer leaving
 //! them unset over inventing inconsistent values.
 
-use super::backend::BrowserBackend;
+use super::backend::{BrowserBackend, WAIT_CAP};
 use super::cdp::{build_extract_arrow, wait_plan, WaitPlan};
 use super::error::BrowserError;
 use super::proc::{snip, spawn_error};
@@ -612,13 +612,14 @@ impl CamofoxBackend {
     fn wait_for(&self, session: &str, argv: &[String]) -> Result<serde_json::Value, BrowserError> {
         match wait_plan(argv, "camofox")? {
             WaitPlan::Delay(ms) => {
-                let capped = ms.min(self.config.timeout().as_millis() as u64);
+                let capped = ms.min(WAIT_CAP.as_millis() as u64);
                 std::thread::sleep(Duration::from_millis(capped));
                 Ok(serde_json::json!({"ok": true, "slept_ms": capped}))
             }
             WaitPlan::Probe(probe) => {
                 let probe_js = format!("()=>{{return {probe};}}");
-                let deadline = std::time::Instant::now() + self.config.timeout();
+                // The single shared wait cap, not the command timeout.
+                let deadline = std::time::Instant::now() + self.config.timeout().min(WAIT_CAP);
                 loop {
                     let v =
                         self.invoke_shim(session, &["eval".to_string(), probe_js.clone()], argv)?;

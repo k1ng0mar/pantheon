@@ -21,7 +21,7 @@
 //! `browser_*` is for *doing things on a live site* - navigate, click,
 //! type, extract from JS-heavy pages that snippets cannot cover.
 
-use super::backend::BrowserBackend;
+use super::backend::{BrowserBackend, WAIT_CAP};
 
 /// Narration sink: invoked with `(session, action, detail)` before every
 /// backend call so the app can subtitle what the agent is doing.
@@ -359,14 +359,51 @@ fn lexically_normalize(path: &std::path::Path) -> std::path::PathBuf {
     norm
 }
 
+/// Canonicalize the longest existing prefix of `path`, re-appending
+/// the remainder verbatim. A screenshot path usually names a file that
+/// does not exist yet, so a plain `canonicalize` would fail; this
+/// still resolves symlinks in every component that does exist -
+/// including the file itself when it was planted as a symlink - so a
+/// symlink inside the confinement dir cannot smuggle the write out.
+fn canonicalize_best_effort(path: &std::path::Path) -> std::path::PathBuf {
+    use std::ffi::OsString;
+    let mut cur = path;
+    let mut tail: Vec<OsString> = Vec::new();
+    loop {
+        match std::fs::canonicalize(cur) {
+            Ok(canon) => {
+                let mut out = canon;
+                for part in tail.iter().rev() {
+                    out.push(part);
+                }
+                return out;
+            }
+            Err(_) => match cur.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => {
+                    if let Some(name) = cur.file_name() {
+                        tail.push(name.to_os_string());
+                    }
+                    cur = parent;
+                }
+                _ => return path.to_path_buf(),
+            },
+        }
+    }
+}
+
 /// Confine a model-supplied `browser_screenshot` path to the screenshots
 /// directory. With a dir configured, a relative path joins under it and
 /// an absolute path must already be inside it; without one, absolute
-/// paths and `..` escapes are rejected outright. The check runs on the
-/// lexically normalized *candidate*, not the raw string: a naive
+/// paths and `..` escapes are rejected outright. The check runs in two
+/// stages: first on the lexically normalized *candidate* (a naive
 /// `starts_with` on the joined path is component-based, so
 /// `screenshots/../escape.png` still "starts with" the screenshots
-/// dir while escaping it. Returns the path to hand the backend.
+/// dir while escaping it), then on the canonicalized candidate against
+/// the canonicalized dir - lexical confinement alone is not enough,
+/// because a symlink planted inside the dir can point outside it.
+/// Returns the canonical path to hand the backend. Without a dir there
+/// is no boundary to canonicalize against, so only the lexical checks
+/// apply (a residual the caller accepts by running dir-less).
 fn confine_screenshot_path(
     dir: Option<&std::path::Path>,
     requested: &str,
@@ -394,12 +431,35 @@ fn confine_screenshot_path(
             } else {
                 d.join(&norm)
             });
-            if candidate.starts_with(&d) {
-                Ok(candidate)
+            if !candidate.starts_with(&d) {
+                return Err(berr(
+                    "BROWSER_BAD_ARGS",
+                    format!("screenshot path escapes the screenshots directory: {requested}"),
+                ));
+            }
+            // Symlink stage: resolve both sides (absolutizing first,
+            // so a relative dir still compares against the same root)
+            // and re-check containment on canonical paths. A planted
+            // symlink inside the dir that points outside fails here.
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let absolutize = |p: &std::path::Path| {
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    cwd.join(p)
+                }
+            };
+            let canon_dir = std::fs::canonicalize(absolutize(&d))
+                .unwrap_or_else(|_| lexically_normalize(&absolutize(&d)));
+            let canon_candidate = canonicalize_best_effort(&absolutize(&candidate));
+            if canon_candidate.starts_with(&canon_dir) {
+                Ok(canon_candidate)
             } else {
                 Err(berr(
                     "BROWSER_BAD_ARGS",
-                    format!("screenshot path escapes the screenshots directory: {requested}"),
+                    format!(
+                        "screenshot path escapes the screenshots directory through a symlink: {requested}"
+                    ),
                 ))
             }
         }
@@ -841,7 +901,7 @@ pub fn register_browser_tools(
     serde_json::json!({
         "condition": str_prop("Condition to wait for: selector_visible | selector_hidden | url_contains | text_visible | text_hidden | delay | network_idle"),
         "value": str_prop("Condition value: CSS selector, URL substring, text, or milliseconds for delay"),
-        "timeout_ms": str_prop("Maximum wait in milliseconds (gsd-browser only)"),
+        "timeout_ms": str_prop("Maximum wait in milliseconds (gsd-browser only; clamped to the shared 30 s wait cap like every backend)"),
     }),
     &["condition"],
     false,
@@ -858,7 +918,16 @@ pub fn register_browser_tools(
         }
         if let Some(ms) = arg_opt_str(&v, "timeout_ms") {
             argv.push("--timeout".into());
-            argv.push(ms);
+            // The gsd path is the only one that honors a caller timeout;
+            // clamp it to the single shared wait cap so no wait path
+            // outlives WAIT_CAP. An unparsable value passes through
+            // untouched for the CLI to reject as before.
+            let capped = ms
+                .trim()
+                .parse::<u64>()
+                .map(|n| n.min(WAIT_CAP.as_millis() as u64).to_string())
+                .unwrap_or(ms);
+            argv.push(capped);
         }
         Ok(argv)
     },
@@ -1154,6 +1223,32 @@ mod tools_tests {
         assert!(confine_screenshot_path(None, "/tmp/shot.png").is_err());
         assert!(confine_screenshot_path(None, "../shot.png").is_err());
         assert!(confine_screenshot_path(None, "").is_err());
+    }
+
+    /// A symlink planted inside the screenshots dir must not smuggle
+    /// the write outside it: lexical confinement alone passes these,
+    /// the canonical stage rejects them.
+    #[test]
+    #[cfg(unix)]
+    fn screenshot_symlink_planting_is_rejected() {
+        use std::os::unix::fs::symlink;
+        let base = std::env::temp_dir()
+            .join(format!("pantheon-shot-conf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = base.join("screenshots");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(outside.join("secret.png"), dir.join("planted.png")).unwrap();
+        assert!(confine_screenshot_path(Some(&dir), "planted.png").is_err());
+        symlink(&outside, dir.join("linkdir")).unwrap();
+        assert!(confine_screenshot_path(Some(&dir), "linkdir/shot.png").is_err());
+        std::fs::write(dir.join("real.png"), b"x").unwrap();
+        assert_eq!(
+            confine_screenshot_path(Some(&dir), "real.png").unwrap(),
+            std::fs::canonicalize(&dir).unwrap().join("real.png")
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -25,6 +25,16 @@
 //! architecture (Pantheon is the agent; the backend is infrastructure).
 
 use super::error::BrowserError;
+use std::time::Duration;
+
+/// The single wait cap for every browser wait path: CDP, Playwright,
+/// Camofox, and the gsd-browser `--timeout` passthrough. No `wait-for`
+/// may run longer than this, whatever per-backend command timeout is
+/// configured. Previously each path capped differently (CDP 30 s, the
+/// Playwright/Camofox paths their full command timeout), so the same
+/// call waited different amounts depending on backend; there is now
+/// one cap, and every wait path reads this constant.
+pub const WAIT_CAP: Duration = Duration::from_secs(30);
 
 /// Drives a browser session identified by a sanitized session name.
 ///
