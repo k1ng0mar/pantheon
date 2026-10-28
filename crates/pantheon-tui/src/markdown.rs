@@ -457,12 +457,93 @@ impl<'a> Renderer<'a> {
             }
 
             // --- plain body ----------------------------------------------------------
-            let spans = inline(trimmed, self.th, self.defs);
-            self.push_wrapped(&mut out, Line::from(spans), 0);
-            self.last_was_paragraph = true;
-            i += 1;
+            // A backtick run unclosed at end of line joins the following
+            // lines into one logical paragraph for span parsing (GFM
+            // 6.3: a code span may cross a soft break), but the
+            // rendered line breaks do not move: the joined spans are
+            // split back at the original line boundaries, so layout is
+            // exactly the per-line rendering and only the span styling
+            // crosses the break. Full paragraph joining would re-flow
+            // soft breaks and is deliberately not done.
+            if let Some((joined, next)) = self.joined_span_lines(lines, i) {
+                for spans in joined {
+                    self.push_wrapped(&mut out, Line::from(spans), 0);
+                }
+                self.last_was_paragraph = true;
+                i = next;
+            } else {
+                let spans = inline(trimmed, self.th, self.defs);
+                self.push_wrapped(&mut out, Line::from(spans), 0);
+                self.last_was_paragraph = true;
+                i += 1;
+            }
         }
         out
+    }
+
+    /// If line `i` ends with an unclosed backtick run, gather the
+    /// following plain-body lines until the run closes and parse the
+    /// group as one logical paragraph, split back into one span list
+    /// per source line. Returns `None` when line `i` has no unclosed
+    /// run, or when the run never closes inside the paragraph — the
+    /// caller then renders the lines one by one exactly as before
+    /// (backticks literal), so a never-closed span changes nothing.
+    fn joined_span_lines(
+        &self,
+        lines: &[&str],
+        i: usize,
+    ) -> Option<(Vec<Vec<Span<'static>>>, usize)> {
+        let first = lines[i].trim();
+        if !unclosed_backtick_run(first) {
+            return None;
+        }
+        let mut group: Vec<&str> = vec![first];
+        let mut joined = first.to_string();
+        let mut j = i + 1;
+        while unclosed_backtick_run(&joined) {
+            if j >= lines.len() || !is_plain_body_continuation(lines, j) {
+                return None;
+            }
+            let t = lines[j].trim();
+            joined.push('\n');
+            joined.push_str(t);
+            group.push(t);
+            j += 1;
+        }
+        // Split the parsed spans back at the join boundaries. Every
+        // '\n' in span content came from a join (source lines contain
+        // none), and it sits inside the code span it belongs to — the
+        // join boundary itself renders as the line break, not as a
+        // visible space, so it is dropped.
+        let spans = inline(&joined, self.th, self.defs);
+        let mut per_line: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+        for sp in spans {
+            let mut rest = sp.content.as_ref();
+            while let Some(pos) = rest.find('\n') {
+                let (head, tail) = rest.split_at(pos);
+                if !head.is_empty() {
+                    per_line
+                        .last_mut()
+                        .expect("per_line never empty")
+                        .push(Span::styled(head.to_string(), sp.style));
+                }
+                per_line.push(Vec::new());
+                rest = &tail[1..];
+            }
+            if !rest.is_empty() {
+                per_line
+                    .last_mut()
+                    .expect("per_line never empty")
+                    .push(Span::styled(rest.to_string(), sp.style));
+            }
+        }
+        // Defensive: the split must yield exactly one line per source
+        // line; anything else means the join did not behave, and the
+        // caller falls back to per-line rendering.
+        if per_line.len() != group.len() {
+            return None;
+        }
+        Some((per_line, j))
     }
 
     /// Heading spans: inline formatting parsed, then recoloured to the
@@ -1150,6 +1231,95 @@ fn strip_quote_marker(line: &str) -> String {
     } else {
         after.to_string()
     }
+}
+
+/// Whether `text` ends with a backtick run the inline parser would
+/// leave unclosed. This mirrors `parse_inline_nodes` exactly: an
+/// escaped backtick never opens a run, but the closing search is raw,
+/// so an escaped backtick can close one; a run closes only on a later
+/// run of exactly the same length, and content inside a closed span
+/// cannot open another.
+fn unclosed_backtick_run(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' && i + 1 < chars.len() && chars[i + 1].is_ascii_punctuation() {
+            i += 2;
+            continue;
+        }
+        if c == '`' {
+            let mut j = i;
+            while j < chars.len() && chars[j] == '`' {
+                j += 1;
+            }
+            let run = j - i;
+            let mut k = j;
+            let mut close: Option<usize> = None;
+            while k < chars.len() {
+                if chars[k] == '`' {
+                    let mut m = k;
+                    while m < chars.len() && chars[m] == '`' {
+                        m += 1;
+                    }
+                    if m - k == run {
+                        close = Some(k);
+                        break;
+                    }
+                    k = m;
+                } else {
+                    k += 1;
+                }
+            }
+            match close {
+                Some(at) => i = at + run,
+                None => return true,
+            }
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Whether the block loop, arriving at `lines[j]` with a paragraph
+/// open, would render it as a plain body line rather than opening a
+/// new block. Only such lines may continue a joined code span:
+/// swallowing a heading, fence, list item, or other block start
+/// would eat structure that belongs to the next block. Indented
+/// lines count (indented code cannot interrupt a paragraph), and
+/// the list check is deliberately blanket — a non-interrupting list
+/// line simply ends the join instead of risking a wrong one.
+fn is_plain_body_continuation(lines: &[&str], j: usize) -> bool {
+    let line = lines[j];
+    let trimmed = line.trim();
+    if is_blank(line) {
+        return false;
+    }
+    if leading_spaces(line) > 3 {
+        return true;
+    }
+    if parse_def_at(lines, j).is_some()
+        || fence_open(trimmed).is_some()
+        || html_block_end(lines, j, true).is_some()
+        || is_table_start(lines, j)
+        || atx_heading(trimmed).is_some()
+        || is_hr(trimmed)
+        || is_quote_start(trimmed)
+        || list_item(trimmed).is_some()
+        || is_section_header(lines, j)
+    {
+        return false;
+    }
+    // A setext underline shape, or a short `+ ...` tag line: both
+    // render as something other than body text when reached fresh.
+    if trimmed.chars().all(|c| c == '=' || c == '-') {
+        return false;
+    }
+    if trimmed.chars().count() <= SHORT_LINE && trimmed.starts_with("+ ") {
+        return false;
+    }
+    true
 }
 
 /// Collect a blockquote starting at `i`: quote lines (markers
@@ -3298,6 +3468,42 @@ mod tests {
         assert_eq!(render("` code `"), "code");
         assert_eq!(render("`` ` ``"), "`");
         assert_eq!(render("`unclosed"), "`unclosed");
+    }
+
+    // --- Multi-line code spans: parse-time joining only --------------
+    #[test]
+    fn code_span_joins_only_unclosed_runs() {
+        assert!(unclosed_backtick_run("`foo"));
+        assert!(!unclosed_backtick_run("`foo`"));
+        assert!(!unclosed_backtick_run("`` ` ``"));
+        assert!(!unclosed_backtick_run("a \\` b"));
+        // The span closes on the next line: backticks drop, both
+        // halves keep code styling, and the line break stays put —
+        // no re-flow, no paragraph joining. (The first line is long
+        // on purpose: a short first line is a section header, which
+        // parses inline per line and never reaches the body join.)
+        assert_eq!(
+            render("please consider the following multi-line example `code\nmore` here"),
+            "please consider the following multi-line example code\nmore here"
+        );
+        let th = theme();
+        for part in ["code", "more"] {
+            let s = span_style(
+                "please consider the following multi-line example `code\nmore` here",
+                part,
+            )
+            .unwrap();
+            assert_eq!(s.fg, Some(th.code), "{part} must stay code-styled");
+        }
+        assert_eq!(render("`foo\nbar`"), "foo\nbar");
+        // Never closed inside the paragraph: both lines render
+        // exactly as before, backticks literal.
+        assert_eq!(render("`unclosed\nnext line"), "`unclosed\nnext line");
+        // A block start on the next line is never swallowed: the
+        // heading still renders as a heading, the span stays literal.
+        assert_eq!(render("`foo\n# heading"), "`foo\nheading");
+        // An escaped backtick does not open a span, so no join.
+        assert_eq!(render("a \\` b\nc `d`"), "a ` b\nc d");
     }
 
     // --- GFM 6.4 emphasis ---
