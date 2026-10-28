@@ -160,14 +160,20 @@ pub fn request(
     // `model`, `messages`, and `tools` are never filtered: they are the
     // request itself, not sampling params, and an allowed list that omits
     // them (as Azure's once did) must not strip the body down to a bare
-    // sampling dict that every endpoint rejects.
+    // sampling dict that every endpoint rejects. `stream` and
+    // `stream_options` are likewise never filtered: they are wire
+    // protocol, not sampling params, and stripping them silently drops
+    // the trailing usage chunk on every attempt - including retries,
+    // which is how token usage was lost on retry.
     if let Some(p) = crate::catalog::provider(provider_id) {
         if !p.allowed_params.is_empty() {
             let allowed: std::collections::HashSet<&str> =
                 p.allowed_params.iter().map(|s| s.as_str()).collect();
             body.as_object_mut().unwrap().retain(|k, _| {
-                matches!(k.as_str(), "model" | "messages" | "tools")
-                    || allowed.contains(k.as_str())
+                matches!(
+                    k.as_str(),
+                    "model" | "messages" | "tools" | "stream" | "stream_options"
+                ) || allowed.contains(k.as_str())
             });
         }
     }
@@ -560,12 +566,8 @@ pub fn stream(
         // Fail retryable so the chain retries or falls back instead
         // of presenting a silently truncated turn as complete.
         let cause = match end {
-            StreamEnd::Done => {
-                "stream ended with [DONE] but no finish_reason".to_string()
-            }
-            StreamEnd::Eof => {
-                "stream ended without [DONE] and no finish_reason".to_string()
-            }
+            StreamEnd::Done => "stream ended with [DONE] but no finish_reason".to_string(),
+            StreamEnd::Eof => "stream ended without [DONE] and no finish_reason".to_string(),
         };
         return Err(perr("PROVIDER_TRUNCATED", cause, true));
     }
@@ -576,6 +578,54 @@ pub fn stream(
 mod openai_max_tokens_tests {
     use super::*;
     use crate::http::TurnOptions;
+
+    /// Item 6: `stream` and `stream_options` survive the allowed-params
+    /// filter. (Before the fix, any provider with a non-empty
+    /// allowed_params list silently lost both on every attempt -
+    /// including retries - and the trailing usage chunk with them.)
+    #[test]
+    fn request_keeps_stream_options_under_allowed_params_filter() {
+        crate::catalog::register_custom_provider(crate::catalog::ProviderMeta {
+            id: "dec-rt-stream-allowed".to_string(),
+            label: "dec-rt-stream-allowed".to_string(),
+            base_url: "https://api.example.test/v1".to_string(),
+            api_mode: crate::catalog::ApiMode::OpenAi,
+            auth_command: None,
+            auth_refresh_ms: None,
+            reserved: false,
+            allowed_params: vec!["temperature".to_string()],
+            oauth_apps: vec![],
+            sigv4: false,
+            reasoning_map: Default::default(),
+            base_env: String::new(),
+            key_env: String::new(),
+            key_header: "Authorization".into(),
+            models: vec![],
+            prominent: false,
+            recommended: false,
+            dev: false,
+            tag: String::new(),
+        });
+        let req = request(
+            "https://api.example.test/v1",
+            "k",
+            "Authorization",
+            "dec-rt-stream-allowed",
+            "test-model",
+            &[],
+            &[],
+            true,
+            4_321,
+            pantheon_api::model::ReasoningLevel::Off,
+            &TurnOptions::default(),
+        );
+        let body: serde_json::Value = serde_json::from_str(&req.body).expect("body is JSON");
+        assert_eq!(body["stream"], serde_json::json!(true));
+        assert_eq!(
+            body["stream_options"]["include_usage"],
+            serde_json::json!(true)
+        );
+    }
 
     /// Item 4: the resolved per-request output cap reaches the OpenAI
     /// wire body as `max_tokens`. (Before the fix this adapter sent no
