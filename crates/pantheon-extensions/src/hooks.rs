@@ -38,6 +38,14 @@ pub enum HookClass {
     /// and a failing plugin leaves the payload unchanged.
     Transform,
     /// Notified only. Return values are ignored by the host.
+    ///
+    /// Deliberate, not a bug to work around: a plugin that needs its
+    /// text in front of the model must use a Context hook
+    /// (`pre_llm_call`, or `on_session_start`, which the session fires
+    /// as context on a fresh run's first turn). Observer returns from
+    /// `post_tool_call` / `on_session_end` are discarded by contract,
+    /// and reclassifying those hooks as Context would break the
+    /// observer fan-out that drives them.
     Observer,
 }
 

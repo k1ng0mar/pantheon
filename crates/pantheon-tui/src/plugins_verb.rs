@@ -64,9 +64,9 @@ fn one_line(s: &str, max: usize) -> String {
 
 /// Is the bundled plugin `name` enabled? The `[plugins.<name>]` config
 /// entry wins when present; when absent the bundled manifest's own
-/// `enabled` flag (`manifest_default`) is the default. A missing or
-/// unparsable config fails closed (disabled) - a typo must never
-/// silently flip a plugin on.
+/// `enabled` flag (`manifest_default`) is the default. A missing config
+/// is an empty config, so manifest defaults apply; an unparsable config
+/// fails closed (disabled) - a typo must never silently flip a plugin on.
 fn config_enabled(data_dir: &Path, name: &str, manifest_default: bool) -> bool {
     pantheon_extensions::bundled::load_config(data_dir)
         .map(|c| pantheon_extensions::bundled::is_enabled_with_default(&c, name, manifest_default))
@@ -114,7 +114,10 @@ pub(crate) fn collect_rows(data_dir: &Path) -> Vec<PluginRow> {
     // they are covered by sources 1 and 2 above.)
     let project_root = std::env::current_dir().unwrap_or_else(|_| data_dir.to_path_buf());
     for p in pantheon_exec::plugins::discover_plugins(data_dir, &project_root) {
-        if pantheon_exec::plugin_approval::is_bundled(&p) {
+        // Canonical bundled only: a hand-dropped dir under `bundled/`
+        // is listed here as third-party (approval-gated), not hidden
+        // behind the bundled rows above.
+        if pantheon_exec::plugin_approval::is_canonical_bundled(&p) {
             continue;
         }
         if seen(&rows, &p.manifest.name) {
