@@ -87,6 +87,8 @@ pub fn nightly_status(app: &App) -> Response {
         "model_pin": section.as_ref().is_some_and(pantheon_api::config::nightly_model_pin_present),
         "next_run_ms": next_nightly_run_ms(&app.data_dir),
         "last_run_ms": state.last_run_ms,
+        "last_outcome": state.last_outcome,
+        "last_outcome_reason": state.last_outcome_reason,
         "last_summary": pantheon_nightly::last_run_summary(&app.data_dir),
         "last_repairs_fixed": state.last_repairs_fixed,
         "last_repairs_contained": state.last_repairs_contained,
@@ -273,6 +275,8 @@ pub fn consolidate_status(app: &App) -> Response {
     json_ok(serde_json::json!({
         "enabled": nightly_enabled_resolved(&app.data_dir),
         "last_run_ms": state.last_run_ms,
+        "last_outcome": state.last_outcome,
+        "last_outcome_reason": state.last_outcome_reason,
         "last_summary": pantheon_nightly::last_run_summary(&app.data_dir),
         "last_repairs_fixed": state.last_repairs_fixed,
         "last_repairs_contained": state.last_repairs_contained,

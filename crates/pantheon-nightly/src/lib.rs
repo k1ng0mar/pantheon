@@ -501,6 +501,16 @@ pub fn run_pass(
             .iter()
             .filter(|r| r.outcome == RepairOutcome::Contained)
             .count(),
+        last_outcome: if config.dry_run {
+            "skipped".to_string()
+        } else {
+            "ok".to_string()
+        },
+        last_outcome_reason: if config.dry_run {
+            "dry run: no changes applied".to_string()
+        } else {
+            String::new()
+        },
     };
     state.save(&config.data_dir).map_err(nerr)?;
     let report = render_report(&state, &finished, &repairs, &events);

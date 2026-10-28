@@ -9,6 +9,18 @@ use crate::propose::Proposal;
 use crate::repair_targets::{RepairOutcome, RepairReport};
 use crate::state::NightlyState;
 
+/// The report label for a repair outcome: exactly `ok` | `skipped` |
+/// `failed`, never the Rust variant name (`Contained`, `SkippedDryRun`)
+/// and never a vague word. A contained target was disabled/paused with
+/// an escalation: from the operator's view that target failed.
+fn repair_label(outcome: &RepairOutcome) -> &'static str {
+    match outcome {
+        RepairOutcome::Healthy | RepairOutcome::Repaired => "ok",
+        RepairOutcome::SkippedDryRun => "skipped",
+        RepairOutcome::Contained => "failed",
+    }
+}
+
 pub fn render(
     state: &NightlyState,
     proposals: &[Proposal],
@@ -17,8 +29,14 @@ pub fn render(
 ) -> String {
     let mut md = String::from("# Nightly report\n\n");
     md.push_str(&format!(
-        "- Last run: {}\n- Runs scanned: {}\n- Signals: {}\n- Proposals: {}\n- Applied: {}\n- Pending approval: {}\n- Repairs fixed: {}\n- Repairs contained: {}\n- Dry run: {}\n\n",
+        "- Last run: {}\n- Outcome: {}{}\n- Runs scanned: {}\n- Signals: {}\n- Proposals: {}\n- Applied: {}\n- Pending approval: {}\n- Repairs fixed: {}\n- Repairs contained: {}\n- Dry run: {}\n\n",
         fmt_ms(state.last_run_ms),
+        state.last_outcome,
+        if state.last_outcome_reason.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", state.last_outcome_reason)
+        },
         state.last_runs_scanned,
         state.last_signals,
         state.last_proposals,
@@ -54,9 +72,19 @@ pub fn render(
         md.push_str("No broken targets this pass.\n\n");
     }
     for r in acted {
+        let detail = if r.detail.is_empty() {
+            match r.outcome {
+                RepairOutcome::SkippedDryRun => "dry run: detected, not changed",
+                _ => "(no detail)",
+            }
+        } else {
+            r.detail.as_str()
+        };
         md.push_str(&format!(
-            "- `{}` - {:?}: {}\n",
-            r.target, r.outcome, r.detail
+            "- `{}` - {}: {}\n",
+            r.target,
+            repair_label(&r.outcome),
+            detail
         ));
     }
     md.push('\n');
@@ -109,5 +137,32 @@ mod tests {
         // 1790449200s == 2026-09-26 19:00:00 UTC.
         assert_eq!(fmt_ms(1_790_449_200_000), "2026-09-26 19:00:00 UTC");
         assert_eq!(fmt_ms(1_000), "1970-01-01 00:00:01 UTC");
+    }
+
+    /// Repair lines carry exactly ok / skipped / failed, never the
+    /// Rust variant names and never a vague word.
+    #[test]
+    fn repair_labels_are_explicit() {
+        assert_eq!(repair_label(&RepairOutcome::Healthy), "ok");
+        assert_eq!(repair_label(&RepairOutcome::Repaired), "ok");
+        assert_eq!(repair_label(&RepairOutcome::SkippedDryRun), "skipped");
+        assert_eq!(repair_label(&RepairOutcome::Contained), "failed");
+    }
+
+    /// The header line names the pass outcome (with its reason), so
+    /// the report never leaves the operator guessing whether the pass
+    /// itself succeeded.
+    #[test]
+    fn report_header_names_outcome() {
+        let mut state = NightlyState::default();
+        state.last_run_ms = 1_790_449_200_000;
+        state.last_outcome = "failed".to_string();
+        state.last_outcome_reason = "ledger unreadable".to_string();
+        let md = render(&state, &[], &[], &[]);
+        assert!(md.contains("- Outcome: failed (ledger unreadable)"), "{md}");
+        state.last_outcome = "ok".to_string();
+        state.last_outcome_reason = String::new();
+        let md = render(&state, &[], &[], &[]);
+        assert!(md.contains("- Outcome: ok\n"), "{md}");
     }
 }

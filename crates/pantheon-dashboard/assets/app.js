@@ -2256,6 +2256,7 @@ renderers.system = async function () {
       "<dt>Loop</dt><dd>" + (night.enabled ? '<span class="pill" data-s="ok">enabled</span>' : '<span class="pill" data-s="warn">off</span>') + "</dd>" +
       "<dt>Why</dt><dd class='mono'>" + esc(night.reason || " - ") + "</dd>" +
       "<dt>Next run</dt><dd class='mono'>" + (night.next_run_ms ? fmtTime(night.next_run_ms) + " (" + relTime(night.next_run_ms) + ")" : "not scheduled") + "</dd>" +
+      "<dt>Last outcome</dt><dd>" + (night.last_outcome ? '<span class="pill" data-s="' + (night.last_outcome === "ok" ? "ok" : night.last_outcome === "failed" ? "failed" : "warn") + '">' + esc(night.last_outcome) + "</span>" + (night.last_outcome_reason ? " <span class='mono'>" + esc(night.last_outcome_reason) + "</span>" : "") : "no nightly passes yet") + "</dd>" +
       "<dt>Last pass</dt><dd class='mono' style='white-space:pre-wrap'>" + esc(night.last_summary || "no nightly passes yet") + "</dd>" +
       "</dl></div></div>" +
       '<div class="panel"><div class="panel-head"><span class="panel-title">Reflection</span><span class="spacer"></span>' +
