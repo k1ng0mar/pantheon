@@ -20,9 +20,10 @@ pub struct TurnRef {
 /// What the nightly pass wants to change.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProposalKind {
-    /// A durable lesson for the memory store. Auto-applies at the `Memory`
-    /// trust tier: informative, never authoritative, and it can never
-    /// clobber a user-confirmed record.
+    /// A durable lesson for the memory store. Proposed, never
+    /// auto-applied: an approved proposal is written at the configured
+    /// trust tier (informative, never authoritative, and it can never
+    /// clobber a user-confirmed record).
     MemoryLesson { key: String },
     /// Create or update a SKILL.md under `<data_dir>/skills`. Eval-gated,
     /// replay-gated, then approval-gated.

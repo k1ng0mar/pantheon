@@ -273,21 +273,37 @@ pub fn error(component: &str, msg: impl AsRef<str>) {
 /// Patterns redacted:
 /// - `sk-or-v1-...` (OpenRouter keys)
 /// - `sk-...` (OpenAI-style keys)
+/// - `AIza...` (Google API keys)
+/// - `ghp_...`, `gho_...`, `ghu_...`, `ghs_...`, `ghr_...` (GitHub tokens)
+/// - `glpat-...` (GitLab tokens), `xoxb-...` / `xoxp-...` (Slack tokens)
 /// - `Bearer <value>` (Authorization headers)
 /// - `api-key: <value>` (API key headers)
 /// - `PANTHEON_SECRET_<name>=<value>` (env-style secrets)
 /// - values under sensitive keys (`password`, `token`, `api_key`,
-///   `secret`, `authorization`, and close variants) when the input
-///   parses as JSON - a logged tool-args dump like
-///   `{"password": "..."}` carries no known prefix for the scan above.
+///   `secret`, `authorization`, and close variants) in JSON - whether
+///   the whole input parses as JSON or the JSON is embedded in a log
+///   line (`request: {"password": "..."}`). The embedded case used to
+///   leak: the JSON pass only ran when the whole input parsed, so a
+///   secret inside a larger line reached disk despite the "never reach
+///   disk" claim.
 pub fn redact(msg: &str) -> String {
     let mut out = msg.to_string();
     out = redact_prefix(&out, "sk-or-v1-");
     out = redact_prefix(&out, "sk-");
+    out = redact_prefix(&out, "AIza");
+    out = redact_prefix(&out, "ghp_");
+    out = redact_prefix(&out, "gho_");
+    out = redact_prefix(&out, "ghu_");
+    out = redact_prefix(&out, "ghs_");
+    out = redact_prefix(&out, "ghr_");
+    out = redact_prefix(&out, "glpat-");
+    out = redact_prefix(&out, "xoxb-");
+    out = redact_prefix(&out, "xoxp-");
     out = redact_prefix(&out, "Bearer ");
     out = redact_prefix(&out, "api-key: ");
     out = redact_prefix(&out, "api-key=");
     out = redact_prefix(&out, "PANTHEON_SECRET_");
+    out = redact_embedded_json(&out);
     out = redact_json_values(&out);
     out
 }
@@ -351,6 +367,49 @@ fn redact_json_node(v: &mut serde_json::Value) -> bool {
         _ => {}
     }
     changed
+}
+
+/// JSON-aware pass over a log line that is not itself JSON: scan for
+/// JSON objects/arrays embedded in the line and redact values under
+/// sensitive keys inside each one, leaving the surrounding text
+/// untouched. A `{` that does not start a parseable JSON value is
+/// emitted verbatim and scanning resumes after it, so Rust-Debug-style
+/// braces and truncated fragments pass through. A value that parses
+/// with nothing sensitive inside is copied verbatim, never
+/// re-serialized, so clean log lines keep their formatting.
+fn redact_embedded_json(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(pos) = rest.find('{') {
+        out.push_str(&rest[..pos]);
+        let candidate = &rest[pos..];
+        let mut stream =
+            serde_json::Deserializer::from_str(candidate).into_iter::<serde_json::Value>();
+        match stream.next() {
+            Some(Ok(mut v)) => {
+                let consumed = stream.byte_offset();
+                if redact_json_node(&mut v) {
+                    match serde_json::to_string(&v) {
+                        Ok(redacted) => {
+                            out.push_str(&redacted);
+                            rest = &candidate[consumed..];
+                            continue;
+                        }
+                        Err(_) => {}
+                    }
+                }
+                // Parsed but clean: copy verbatim, continue after it.
+                out.push_str(&candidate[..consumed]);
+                rest = &candidate[consumed..];
+            }
+            _ => {
+                out.push('{');
+                rest = &candidate[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// JSON-aware pass over [`redact`]: when the whole input parses as
@@ -437,5 +496,47 @@ mod redact_tests {
         assert_eq!(redact(clean), clean, "clean JSON is not re-serialized");
         let telemetry = r#"{"token_count": 1200, "model": "gpt"}"#;
         assert_eq!(redact(telemetry), telemetry);
+    }
+
+    /// A secret inside JSON embedded in a log line is redacted, not
+    /// leaked to disk: the old whole-input-only pass let
+    /// `request: {"password": ...}` straight through.
+    #[test]
+    fn embedded_json_secrets_are_redacted() {
+        let out = redact(r#"request: {"password": "hunter2", "user": "bob"} done"#);
+        assert!(!out.contains("hunter2"), "embedded password leaked: {out}");
+        assert!(out.contains("bob"), "non-sensitive value must survive: {out}");
+        assert!(out.starts_with("request: "), "surrounding text survives: {out}");
+        assert!(out.ends_with(" done"), "trailing text survives: {out}");
+        let nested = redact(r#"upstream said {"outer": {"api_key": "k-secret"}} ok"#);
+        assert!(!nested.contains("k-secret"), "nested embedded secret leaked: {nested}");
+        let in_array = redact(r#"got [{"token": "tok-9"}] done"#);
+        assert!(!in_array.contains("tok-9"), "array-embedded secret leaked: {in_array}");
+    }
+
+    /// Embedded clean JSON keeps its formatting; non-JSON braces pass
+    /// through untouched.
+    #[test]
+    fn embedded_clean_json_and_braces_pass_through() {
+        let clean = r#"request: {"command": "ls", "count": 3} done"#;
+        assert_eq!(redact(clean), clean);
+        let debug = "value {not json} here";
+        assert_eq!(redact(debug), debug);
+    }
+
+    /// Provider key prefixes beyond `sk-` are redacted.
+    #[test]
+    fn new_key_prefixes_are_redacted() {
+        for secret in [
+            "AIzaSyAbc123Xyz",
+            "ghp_abc123def456",
+            "gho_oauth789",
+            "glpat-xyz123",
+            "xoxb-1234567890",
+            "xoxp-0987654321",
+        ] {
+            let out = redact(&format!("saw key {secret} end"));
+            assert!(!out.contains(secret), "{secret} leaked: {out}");
+        }
     }
 }
