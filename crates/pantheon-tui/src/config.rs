@@ -147,9 +147,17 @@ pub fn resolve_browser_section(s: &BrowserSection) -> pantheon_runtime::BrowserT
 /// runtime defaults.
 pub fn resolve_websearch_section(s: &WebsearchSection) -> pantheon_runtime::WebsearchToolConfig {
     let mut cfg = pantheon_runtime::WebsearchToolConfig::default();
+    // Same parsing as the browser flag: `v != "0"` meant
+    // PANTHEON_WEBSEARCH_ENABLED=false still enabled search. Unknown
+    // values fall back to the file value instead of silently enabling.
     cfg.enabled = std::env::var("PANTHEON_WEBSEARCH_ENABLED")
-        .map(|v| v != "0")
-        .unwrap_or_else(|_| s.enabled.unwrap_or(cfg.enabled));
+        .ok()
+        .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or_else(|| s.enabled.unwrap_or(cfg.enabled));
     if let Some(provider) = s.provider.clone() {
         if !provider.trim().is_empty() {
             cfg.provider = provider;
@@ -163,22 +171,21 @@ pub fn resolve_websearch_section(s: &WebsearchSection) -> pantheon_runtime::Webs
     if let Some(n) = s.max_results.filter(|&n| n > 0) {
         cfg.max_results = n;
     }
-    // Endpoint override for self-hosted providers. The section wins; for
-    // SearXNG the `SEARXNG_URL` env var is the conventional fallback the
-    // provider registry documents.
-    cfg.base_url = s
-        .base_url
-        .clone()
-        .filter(|u| !u.trim().is_empty())
-        .or_else(|| {
-            if cfg.provider == "searxng" {
-                std::env::var(pantheon_web::websearch::searxng_url_env())
-                    .ok()
-                    .filter(|u| !u.trim().is_empty())
-            } else {
-                None
-            }
-        });
+    // Endpoint override for self-hosted providers. For SearXNG the
+    // `SEARXNG_URL` env var wins over the config file (env-wins is the
+    // project convention for overrides), falling back to the section's
+    // base_url. The provider comparison is case-insensitive: the
+    // registry lowercases ids, so "SearXNG" must not lose the env
+    // fallback. The env var is never applied to other providers, so a
+    // stray SEARXNG_URL cannot redirect a hosted provider's keyed calls.
+    cfg.base_url = if cfg.provider.eq_ignore_ascii_case("searxng") {
+        std::env::var(pantheon_web::websearch::searxng_url_env())
+            .ok()
+            .filter(|u| !u.trim().is_empty())
+            .or_else(|| s.base_url.clone().filter(|u| !u.trim().is_empty()))
+    } else {
+        s.base_url.clone().filter(|u| !u.trim().is_empty())
+    };
     cfg
 }
 

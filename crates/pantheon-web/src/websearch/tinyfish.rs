@@ -38,8 +38,10 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_BASE_URL: &str = "https://api.search.tinyfish.ai";
 /// Env/secret name the parent resolves the TinyFish key from.
 pub const TINYFISH_API_KEY: &str = "TINYFISH_API_KEY";
-/// Conservative default pacing: 2s between requests ≈ 30 req/min, the
-/// free-tier rate limit.
+/// Conservative default pacing: 2s between requests ≈ 30 req/min.
+/// That was once described as "the free-tier rate limit", but limits
+/// vary by plan (some report 5 req/min); pacing is a default, and 429
+/// `Retry-After` hints are honoured on top.
 pub const DEFAULT_MIN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// TinyFish search provider.
