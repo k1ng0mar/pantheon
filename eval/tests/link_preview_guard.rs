@@ -139,4 +139,20 @@ fn is_public_ip_matches_the_guard_contract() {
     }
     // The top of the CGNAT block is the classic off-by-one.
     assert!(!is_public_ip(&"100.127.255.255".parse::<IpAddr>().unwrap()));
+    // IPv4-mapped IPv6 must get the IPv4 verdict: these route to the
+    // same hosts as their IPv4 spellings.
+    for ip in ["::ffff:127.0.0.1", "::ffff:192.168.1.1", "::ffff:10.0.0.5"] {
+        assert!(
+            !is_public_ip(&ip.parse::<IpAddr>().unwrap()),
+            "{ip} must not be treated as public"
+        );
+    }
+    assert!(is_public_ip(&"::ffff:8.8.8.8".parse::<IpAddr>().unwrap()));
+    // Reserved IPv4 ranges are not public hosts.
+    for ip in ["192.0.0.1", "198.18.0.1", "198.19.255.255", "240.0.0.1", "255.255.255.255"] {
+        assert!(
+            !is_public_ip(&ip.parse::<IpAddr>().unwrap()),
+            "{ip} must not be treated as public"
+        );
+    }
 }

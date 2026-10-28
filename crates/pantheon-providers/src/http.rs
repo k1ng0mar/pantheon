@@ -287,18 +287,52 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
 
 fn is_public_ip(ip: std::net::IpAddr) -> bool {
     match ip {
-        std::net::IpAddr::V4(v4) => {
-            !(v4.is_private()
-                || v4.is_loopback()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                || v4.is_unspecified())
-        }
+        std::net::IpAddr::V4(v4) => is_public_v4(v4),
         std::net::IpAddr::V6(v6) => {
-            !(v6.is_loopback() || v6.is_unspecified() || is_unique_local_v6(v6))
+            // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible
+            // (::a.b.c.d) addresses route to the IPv4 host: judge them
+            // by the IPv4 rules, or ::ffff:127.0.0.1 sails past the V6
+            // branch untouched (same hole as the link-preview guard).
+            if let Some(v4) = v6.to_ipv4() {
+                return is_public_v4(v4);
+            }
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || v6.is_unicast_link_local()
+                || is_unique_local_v6(v6))
         }
     }
+}
+
+fn is_public_v4(v4: std::net::Ipv4Addr) -> bool {
+    if v4.is_private()
+        || v4.is_loopback()
+        || v4.is_link_local()
+        || v4.is_broadcast()
+        || v4.is_documentation()
+        || v4.is_unspecified()
+    {
+        return false;
+    }
+    let o = v4.octets();
+    // Carrier-grade NAT: 100.64.0.0/10.
+    if o[0] == 100 && (64..128).contains(&o[1]) {
+        return false;
+    }
+    // IETF protocol assignments: 192.0.0.0/24.
+    if o[0] == 192 && o[1] == 0 && o[2] == 0 {
+        return false;
+    }
+    // Benchmarking: 198.18.0.0/15.
+    if o[0] == 198 && (o[1] == 18 || o[1] == 19) {
+        return false;
+    }
+    // Reserved: 240.0.0.0/4.
+    if o[0] >= 240 {
+        return false;
+    }
+    true
 }
 
 fn is_unique_local_v6(ip: std::net::Ipv6Addr) -> bool {
