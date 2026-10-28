@@ -227,7 +227,14 @@ fn with_dotenv_write_lock<T>(
     path: &Path,
     f: impl FnOnce() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
-    let _proc = DOTENV_WRITE_LOCK.lock().unwrap();
+    // Recover from a poisoned lock (a prior writer panicked while
+    // holding it) instead of panicking the process: same pattern as the
+    // workspace lock. A poisoned lock means the previous write may be
+    // half-done, but the flock + atomic rename below still bound the
+    // damage, and refusing to ever write again is strictly worse.
+    let _proc = DOTENV_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let lock_path = dotenv_lock_path(path);
     let lock_file = match open_dotenv_lock_file(&lock_path) {
         Ok(f) => f,
@@ -327,12 +334,31 @@ pub fn upsert_dotenv(data_dir: &Path, key: &str, value: &str) -> std::io::Result
 /// Holds the full cross-process write exclusion (process mutex + exclusive
 /// flock) for the whole read-modify-write, so concurrent writers in this
 /// or any other process serialize instead of losing updates.
+///
+/// Validates exactly like [`apply_dotenv_batch`]: the key must be a
+/// valid dotenv key and the value single-line. The validation used to
+/// live only on the batch path (the secrets vault layer validates its
+/// own calls), so a direct caller could write a key with spaces or a
+/// multi-line value that `quote_dotenv_value` does not escape - and
+/// silently corrupt the `.env` structure on the next parse.
 pub fn upsert_dotenv_file(
     data_dir: &Path,
     file_name: &str,
     key: &str,
     value: &str,
 ) -> std::io::Result<()> {
+    if !valid_key(key) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid env key {key:?}"),
+        ));
+    }
+    if value.contains('\n') || value.contains('\r') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("value for {key} must be single-line"),
+        ));
+    }
     std::fs::create_dir_all(data_dir)?;
     let path = dotenv_file_path(data_dir, file_name);
     with_dotenv_write_lock(&path, || {
@@ -802,6 +828,48 @@ mod dotenv_durability_tests {
             0,
             "lost {missing} of {} cross-process writes",
             PROCS * SETS
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Raw upserts validate like the batch path: bad keys and
+    /// multi-line values are rejected instead of corrupting `.env`.
+    #[test]
+    fn upsert_dotenv_file_rejects_bad_key_and_multiline_value() {
+        let dir = scratch_dir("validate");
+        for bad_key in ["", "HAS SPACE", "has-dash", "key=value"] {
+            let err = upsert_dotenv_file(&dir, ".env", bad_key, "v").unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "key {bad_key:?}");
+        }
+        for bad_value in ["line1\nline2", "line1\rline2"] {
+            let err = upsert_dotenv_file(&dir, ".env", "GOOD_KEY", bad_value).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        }
+        // Rejected writes left nothing behind.
+        assert!(!dir.join(".env").exists(), "no file may be created by a rejected upsert");
+        // Valid upserts still round-trip.
+        upsert_dotenv_file(&dir, ".env", "GOOD_KEY", "fine value").unwrap();
+        assert_eq!(
+            read_dotenv_file_value(&dir, ".env", "GOOD_KEY").as_deref(),
+            Some("fine value")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A poisoned write lock (prior writer panicked mid-write) must not
+    /// panic the process: the lock recovers and writes proceed.
+    #[test]
+    fn poisoned_write_lock_recovers() {
+        let dir = scratch_dir("poison");
+        let poisoned = std::thread::spawn(|| {
+            let _guard = super::DOTENV_WRITE_LOCK.lock().unwrap();
+            panic!("deliberate poison for test");
+        });
+        assert!(poisoned.join().is_err(), "poisoning thread must panic");
+        upsert_dotenv_file(&dir, ".env", "AFTER_POISON", "works").unwrap();
+        assert_eq!(
+            read_dotenv_file_value(&dir, ".env", "AFTER_POISON").as_deref(),
+            Some("works")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
