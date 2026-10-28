@@ -328,12 +328,17 @@ impl IdeaStore {
     ///
     /// Transition rules (the documented lifecycle: the dashboard only
     /// accepts/dismisses `pending` ideas, and every non-pending status
-    /// is terminal): `Pending` may move to `Accepted` or `Dismissed`;
-    /// re-setting the current status is a no-op; any other move is a
-    /// hard `IDEA_STATE` error, not a silent rewrite. How an idea ever
-    /// reaches `Done` is not documented anywhere in-tree (no caller
-    /// sets it), so `Pending -> Done` is deliberately NOT allowed here
-    /// - that transition needs a product decision, not an invented rule.
+    /// is terminal except `Accepted -> Done`):
+    /// - `Pending` may move to `Accepted`, `Dismissed`, or `Done`
+    ///   (direct launch: a flow that accepts and runs/publishes the
+    ///   idea in one step lands it in `Done` without an intermediate
+    ///   `Accepted` record);
+    /// - `Accepted` may move to `Done` (the work the accept spawned
+    ///   ran/published through the ideas flow, so the idea is done);
+    /// - re-setting the current status is a no-op;
+    /// - any other move is a hard `IDEA_STATE` error, not a silent
+    ///   rewrite: `Dismissed` and `Done` are terminal, and nothing
+    ///   moves backwards to `Pending` or `Accepted`.
     pub fn set_status(
         &self,
         id: &str,
@@ -352,7 +357,11 @@ impl IdeaStore {
             IdeaStatus::parse(&current).map_err(|e| err("IDEA_STATUS_SET", e.to_string()))?;
         let allowed = current == status
             || (current == IdeaStatus::Pending
-                && matches!(status, IdeaStatus::Accepted | IdeaStatus::Dismissed));
+                && matches!(
+                    status,
+                    IdeaStatus::Accepted | IdeaStatus::Dismissed | IdeaStatus::Done
+                ))
+            || (current == IdeaStatus::Accepted && status == IdeaStatus::Done);
         if !allowed {
             return Err(err(
                 "IDEA_STATE",
@@ -561,9 +570,37 @@ mod tests {
             .set_status("i1", IdeaStatus::Dismissed, Some(2))
             .expect_err("accepted -> dismissed must fail");
         assert_eq!(err.code, "IDEA_STATE");
+        // Accepted -> Done is the completion transition: the work the
+        // accept spawned ran/published through the ideas flow.
+        assert!(store
+            .set_status("i1", IdeaStatus::Done, Some(3))
+            .unwrap());
+        assert_eq!(
+            store.get("i1").unwrap().unwrap().status,
+            IdeaStatus::Done
+        );
+        // Done is terminal: nothing leaves it.
+        let err = store
+            .set_status("i1", IdeaStatus::Accepted, Some(4))
+            .expect_err("done -> accepted must fail");
+        assert_eq!(err.code, "IDEA_STATE");
+        // Pending -> Done is the direct-launch transition.
+        assert!(store.mint(&new_idea("i2")).unwrap());
+        assert!(store
+            .set_status("i2", IdeaStatus::Done, Some(5))
+            .unwrap());
+        // Dismissed is terminal too.
+        assert!(store.mint(&new_idea("i3")).unwrap());
+        assert!(store
+            .set_status("i3", IdeaStatus::Dismissed, Some(6))
+            .unwrap());
+        let err = store
+            .set_status("i3", IdeaStatus::Done, Some(7))
+            .expect_err("dismissed -> done must fail");
+        assert_eq!(err.code, "IDEA_STATE");
         // Re-setting the current status is a no-op, not an error.
         assert!(store
-            .set_status("i1", IdeaStatus::Accepted, Some(3))
+            .set_status("i1", IdeaStatus::Done, Some(8))
             .unwrap());
         // Unknown id is still Ok(false), not an error.
         assert!(!store
