@@ -5,9 +5,11 @@
 //! Line shape:
 //!   {"seq": 7, "event": "ToolStarted", "tool": "shell", "call_id": "call_1_0", ...}
 //!
-//! `seq` is the ledger row id: monotonic per run. Export refuses to emit
-//! a file with duplicate or decreasing seq values (a corrupted ledger
-//! should fail loudly here, not downstream).
+//! `seq` is the per-run sequence number (the ledger row id is a separate
+//! `id` field on [`LedgerEntry`]; the two coincide only when no rows were
+//! ever deleted). Export validates `seq`, the value it actually emits,
+//! and refuses to emit a file with duplicate or decreasing seq values (a
+//! corrupted ledger should fail loudly here, not downstream).
 use crate::ledger::LedgerEntry;
 use pantheon_api::error::{Layer, PantheonError};
 use std::io::Write;
@@ -99,6 +101,33 @@ fn event_name(e: &pantheon_api::events::Event) -> &'static str {
         AgentCompleted { .. } => "AgentCompleted",
         SessionTitled { .. } => "SessionTitled",
         CheckpointCreated { .. } => "CheckpointCreated",
+        AgentBound { .. } => "AgentBound",
+        TurnStarted { .. } => "TurnStarted",
+        TurnParked { .. } => "TurnParked",
+        TurnCompleted { .. } => "TurnCompleted",
+        TurnFailed { .. } => "TurnFailed",
+        TurnRewound { .. } => "TurnRewound",
+        SteeringProvided { .. } => "SteeringProvided",
+        AgentMessageDelivered { .. } => "AgentMessageDelivered",
+        ToolInterrupted { .. } => "ToolInterrupted",
+        TodosUpdated { .. } => "TodosUpdated",
+        UiContent { .. } => "UiContent",
+        UiUpdated { .. } => "UiUpdated",
+        UiActionRequested { .. } => "UiActionRequested",
+        UiActionSubmitted { .. } => "UiActionSubmitted",
+        ImportedReasoning { .. } => "ImportedReasoning",
+        MemoryProposed { .. } => "MemoryProposed",
+        UserInputRequested { .. } => "UserInputRequested",
+        UserInputProvided { .. } => "UserInputProvided",
+        DecisionRequested { .. } => "DecisionRequested",
+        DecisionMade { .. } => "DecisionMade",
+        DecisionRecorded { .. } => "DecisionRecorded",
+        ContextTrimmed { .. } => "ContextTrimmed",
+        ContextCompressed { .. } => "ContextCompressed",
+        UsageRecorded { .. } => "UsageRecorded",
+        BrowserActivity { .. } => "BrowserActivity",
+        ScheduledTaskFailed { .. } => "ScheduledTaskFailed",
+        ScheduledTaskRecovered { .. } => "ScheduledTaskRecovered",
         _ => "Other",
     }
 }
@@ -106,12 +135,14 @@ fn event_name(e: &pantheon_api::events::Event) -> &'static str {
 /// Export a run's ledger entries to a JSONL file. Refuses non-monotonic
 /// or duplicate seq values - a corrupted ledger must fail loudly here.
 pub fn export_jsonl(entries: &[LedgerEntry], path: &Path) -> Result<usize, PantheonError> {
-    // Validate sequence first: strictly increasing.
+    // Validate the emitted sequence first: strictly increasing `seq`.
+    // (Validating `id` here used to pass while the emitted `seq` values
+    // decreased, and vice versa - the two coincide only without deletions.)
     for w in entries.windows(2) {
-        if w[1].id <= w[0].id {
+        if w[1].seq <= w[0].seq {
             return Err(aerr(
                 "AUDIT_SEQ",
-                format!("ledger seq not increasing: {} then {}", w[0].id, w[1].id),
+                format!("ledger seq not increasing: {} then {}", w[0].seq, w[1].seq),
             ));
         }
     }
