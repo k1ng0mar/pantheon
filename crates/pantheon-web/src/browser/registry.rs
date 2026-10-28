@@ -1,4 +1,4 @@
-//! Backend registry: the seven-backend lineup behind [`BrowserBackend`].
+//! Backend registry: the six-backend lineup behind [`BrowserBackend`].
 //!
 //! [`BackendKind`] is the stable id selected via `[browser] backend` in
 //! config. [`BackendConfig`] carries the resolved per-backend settings

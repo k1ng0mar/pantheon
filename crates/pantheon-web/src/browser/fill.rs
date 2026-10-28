@@ -126,7 +126,10 @@ fn normalize(snapshot: &Value) -> Vec<Element> {
     }
     // GSD/camofox-style: {"version": N, "refs": {"e0": {...}}}.
     if let Some(refs) = snapshot.get("refs").and_then(Value::as_object) {
-        let version = snapshot.get("version").and_then(Value::as_u64).unwrap_or(0);
+        // No fabricated version: a snapshot without `version` used to
+        // yield `@v0:eM` refs, which may not match the backend's real
+        // version. Without a version, fall back to the bare key.
+        let version = snapshot.get("version").and_then(Value::as_u64);
         // Sort e0, e1, ... e10 numerically for document order.
         let mut keys: Vec<&String> = refs.keys().collect();
         keys.sort_by_key(|k| {
@@ -140,7 +143,10 @@ fn normalize(snapshot: &Value) -> Vec<Element> {
                 .get("ref")
                 .and_then(Value::as_str)
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("@v{version}:{k}"));
+                .unwrap_or_else(|| match version {
+                    Some(v) => format!("@v{v}:{k}"),
+                    None => k.to_string(),
+                });
             push(
                 &mut out,
                 &r,
