@@ -9,7 +9,8 @@
 //!
 //! Endpoints (all under `/api/`, so the dashboard token auth applies):
 //!
-//! * `GET /api/browser/status` → `{enabled, backend, session}`.
+//! * `GET /api/browser/status` → `{enabled, backend, ready,
+//!   binary_found, secret_present, detail, needs, last_activity}`.
 //! * `GET /api/browser/stream?session=<name>&fps=<1-10>` → **WebSocket**.
 //!   Server → client: one `{"type":"ready",...}` text frame, then binary PNG
 //!   frames at the requested rate (default 2 fps). Capture failures
@@ -74,13 +75,176 @@ fn backend_for(app: &App) -> Result<Arc<dyn BrowserBackend>, Response> {
         .ok_or_else(|| err_json(503, "BROWSER_DISABLED", "browser tool is disabled"))
 }
 
+/// Readiness of the configured browser backend, without launching
+/// anything and without resolving secret *values* (presence only).
+/// This is the honest version of `enabled`/`backend`: the old status
+/// reported `backend: "gsd"` even with no `gsd-browser` on the host,
+/// and the gap only surfaced as a 500 on the first input/stream call.
+/// The blockers are named exactly: for the recommended `gsd` backend
+/// the blocker is the binary (gsd-browser on PATH, or `[browser]
+/// binary`) plus Chrome/Chromium on the host - never a provider API
+/// key (GSD's vault key is optional: an unresolved vault key does not
+/// block it). `steel` is the hosted/keyed one (its key, or a
+/// self-hosted base URL); `camofox` is keyless (no API key at all -
+/// only a proxy password if a proxy is configured).
+struct BrowserReadiness {
+    ready: bool,
+    binary_found: Option<bool>,
+    secret_present: Option<bool>,
+    detail: String,
+}
+
+fn on_path(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path)
+        .any(|dir| dir.join(name).is_file())
+}
+
+fn binary_found(explicit: Option<&std::path::PathBuf>, path_name: &str) -> bool {
+    match explicit {
+        Some(p) => p.is_file(),
+        None => on_path(path_name),
+    }
+}
+
+fn browser_readiness(
+    cfg: &Option<pantheon_api::config::Config>,
+    tool_cfg: &pantheon_runtime::BrowserToolConfig,
+) -> BrowserReadiness {
+    if !tool_cfg.enabled {
+        return BrowserReadiness {
+            ready: false,
+            binary_found: None,
+            secret_present: None,
+            detail: "browser tool is disabled ([browser] enabled = false)".to_string(),
+        };
+    }
+    let broker = crate::session_factory::secrets_broker(cfg.as_ref());
+    let secret_present = |name: Option<&String>| -> Option<bool> {
+        name.map(|n| broker.resolve(n).ok().flatten().is_some())
+    };
+    match tool_cfg.backend.id() {
+        "gsd" => {
+            let found = binary_found(tool_cfg.binary.as_ref(), "gsd-browser");
+            let vault = secret_present(tool_cfg.vault_key_secret.as_ref());
+            let detail = if !found {
+                "gsd-browser binary not found: install with `npm install -g @opengsd/gsd-browser` or set [browser] binary (plus Chrome/Chromium on the host)".to_string()
+            } else {
+                match vault {
+                    Some(true) => "gsd-browser found; vault key resolved".to_string(),
+                    Some(false) => {
+                        "gsd-browser found; no vault key resolved (vault is optional, not a blocker)".to_string()
+                    }
+                    None => "gsd-browser found; no vault configured".to_string(),
+                }
+            };
+            BrowserReadiness {
+                ready: found,
+                binary_found: Some(found),
+                secret_present: vault,
+                detail,
+            }
+        }
+        "chromiumoxide" => {
+            let found = match tool_cfg.chrome_binary.as_ref() {
+                Some(p) => p.is_file(),
+                None => [
+                    "google-chrome",
+                    "google-chrome-stable",
+                    "chromium",
+                    "chromium-browser",
+                    "chrome",
+                ]
+                .iter()
+                .any(|n| on_path(n)),
+            };
+            BrowserReadiness {
+                ready: found,
+                binary_found: Some(found),
+                secret_present: None,
+                detail: if found {
+                    "Chrome/Chromium found".to_string()
+                } else {
+                    "no Chrome/Chromium binary found on PATH (or [browser] chrome_binary)".to_string()
+                },
+            }
+        }
+        "steel" => {
+            let key = secret_present(tool_cfg.steel_api_key_secret.as_ref());
+            let self_hosted = tool_cfg
+                .steel_base_url
+                .as_deref()
+                .is_some_and(|u| !u.trim().is_empty());
+            let ready = key == Some(true) || self_hosted;
+            BrowserReadiness {
+                ready,
+                binary_found: None,
+                secret_present: key,
+                detail: if ready {
+                    "steel configured".to_string()
+                } else {
+                    "steel needs an API key (STEEL_API_KEY secret) or a self-hosted steel_base_url".to_string()
+                },
+            }
+        }
+        "browserbase" => {
+            let key = secret_present(tool_cfg.browserbase_api_key_secret.as_ref());
+            let project = tool_cfg
+                .browserbase_project_id
+                .as_deref()
+                .is_some_and(|p| !p.trim().is_empty());
+            let ready = key == Some(true) && project;
+            BrowserReadiness {
+                ready,
+                binary_found: None,
+                secret_present: key,
+                detail: if ready {
+                    "browserbase configured".to_string()
+                } else {
+                    "browserbase needs BROWSERBASE_API_KEY and a browserbase project id".to_string()
+                },
+            }
+        }
+        "playwright" => {
+            let found = binary_found(tool_cfg.playwright_binary.as_ref(), "playwright-cli");
+            BrowserReadiness {
+                ready: found,
+                binary_found: Some(found),
+                secret_present: None,
+                detail: if found {
+                    "playwright-cli found".to_string()
+                } else {
+                    "playwright-cli not found on PATH (or [browser] playwright_binary)".to_string()
+                },
+            }
+        }
+        // camofox: keyless by design - no API key exists for it. The
+        // camoufox Python package and fetched browser are checked at
+        // first use, so status reports ready with that caveat rather
+        // than inventing a binary check it does not perform.
+        _ => BrowserReadiness {
+            ready: true,
+            binary_found: None,
+            secret_present: None,
+            detail: "camofox is keyless: no API key needed (only a proxy password if a proxy is configured); the camoufox Python package and fetched browser are checked at first use".to_string(),
+        },
+    }
+}
+
 /// `GET /api/browser/status?session=<name>` →
-/// `{enabled, backend, note, last_activity}`.
+/// `{enabled, backend, ready, binary_found, secret_present, detail,
+/// needs, note, last_activity}`.
 /// `last_activity` is `{action, detail, at}` (RFC-3339 UTC) for the
 /// session's latest browser narration - what the agent or take-control
 /// last did - or `null` when nothing was recorded yet. Never fails:
 /// reports the configured state even when the backend itself would not
-/// build, and a dead ledger degrades `last_activity` to null.
+/// build, and a dead ledger degrades `last_activity` to null. `ready`
+/// is the gap check the old status lacked: a configured backend with
+/// a missing binary or key reports `ready: false` with the exact gap
+/// in `detail`, instead of looking healthy until the first input call
+/// 500s.
 pub fn status(app: &App, req: &Request) -> Response {
     let cfg = crate::session_factory::load_config(&app.data_dir).unwrap_or(None);
     let section = cfg
@@ -88,10 +252,20 @@ pub fn status(app: &App, req: &Request) -> Response {
         .and_then(|c| c.browser.clone())
         .unwrap_or_default();
     let tool_cfg = pantheon_runtime::resolve_browser_section(&section);
+    let readiness = browser_readiness(&cfg, &tool_cfg);
+    let needs = pantheon_web::browser::all_backends()
+        .into_iter()
+        .find(|b| b.kind == tool_cfg.backend)
+        .map(|b| b.needs.to_string());
     let session = session_name(req.query.get("session").map(String::as_str));
     json_ok(serde_json::json!({
         "enabled": tool_cfg.enabled,
         "backend": tool_cfg.backend.id(),
+        "ready": readiness.ready,
+        "binary_found": readiness.binary_found,
+        "secret_present": readiness.secret_present,
+        "detail": readiness.detail,
+        "needs": needs,
         "note": "sessions are per-process; see module docs",
         "last_activity": latest_activity(app, &session),
     }))
@@ -492,5 +666,141 @@ fn short_err(e: &str) -> String {
         format!("{}...", &line[..MAX])
     } else {
         line.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn test_app_with_config(config: Option<&str>) -> (App, std::path::PathBuf) {
+        let n = SEQ.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-dashboard-browser-test-{}-{}",
+            std::process::id(),
+            n
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp data dir");
+        if let Some(text) = config {
+            std::fs::write(dir.join("config.toml"), text).expect("seed config");
+        }
+        let app = App {
+            data_dir: dir.clone(),
+            token: "test-token".to_string(),
+            bind: "127.0.0.1".to_string(),
+            bind_all: false,
+            on_approval: None,
+            send_locks: Default::default(),
+            ui_action_locks: Default::default(),
+            turn_children: Default::default(),
+            swarm: crate::swarm::orchestrator_for(&dir),
+            desktop: Default::default(),
+        };
+        (app, dir)
+    }
+
+    fn status_json(app: &App) -> (u16, serde_json::Value) {
+        let req = Request {
+            method: "GET".to_string(),
+            path: "/api/browser/status".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+            body: Vec::new(),
+        };
+        match status(app, &req) {
+            Response::Buffered { status, body, .. } => {
+                (status, serde_json::from_slice(&body).unwrap_or_default())
+            }
+            _ => panic!("expected a buffered response"),
+        }
+    }
+
+    /// Sweep (dashboard/API): the old status reported `backend: gsd`
+    /// with no hint that the binary was missing, and the gap only
+    /// surfaced as a 500 on first input. An unresolvable gsd binary
+    /// must report ready:false naming gsd-browser.
+    #[test]
+    fn status_gsd_missing_binary_reports_gap() {
+        let (app, dir) = test_app_with_config(Some(
+            "[browser]\nbinary = \"/nonexistent/pantheon-sweep-gsd-browser\"\n",
+        ));
+        let (code, body) = status_json(&app);
+        assert_eq!(code, 200, "status never fails: {body}");
+        assert_eq!(body["backend"], "gsd");
+        assert_eq!(body["ready"], false);
+        assert_eq!(body["binary_found"], false);
+        assert!(
+            body["detail"].as_str().unwrap_or("").contains("gsd-browser"),
+            "detail must name the missing binary: {body}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GSD's vault key is optional, not a blocker: a found binary with
+    /// an unresolvable vault secret is still ready, and the detail
+    /// says the vault absence is not a blocker (never a key demand).
+    #[test]
+    fn status_gsd_binary_found_vault_absence_is_not_a_blocker() {
+        let (app, dir) = test_app_with_config(Some(
+            "[browser]\nbinary = \"/bin/true\"\nvault_key_secret = \"PANTHEON_SWEEP_TEST_ABSENT_VAULT_XYZ\"\n",
+        ));
+        let (code, body) = status_json(&app);
+        assert_eq!(code, 200, "status never fails: {body}");
+        assert_eq!(body["backend"], "gsd");
+        assert_eq!(body["ready"], true);
+        assert_eq!(body["binary_found"], true);
+        assert_eq!(body["secret_present"], false);
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not a blocker"),
+            "detail must say the vault is optional: {body}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Steel is the hosted/keyed backend: an unresolvable steel secret
+    /// (and no self-hosted base URL) reports ready:false naming the
+    /// key need - the one backend where a key genuinely is the gap.
+    #[test]
+    fn status_steel_absent_key_reports_key_gap() {
+        let (app, dir) = test_app_with_config(Some(
+            "[browser]\nbackend = \"steel\"\nsteel_api_key_secret = \"PANTHEON_SWEEP_TEST_ABSENT_STEEL_XYZ\"\n",
+        ));
+        let (code, body) = status_json(&app);
+        assert_eq!(code, 200, "status never fails: {body}");
+        assert_eq!(body["backend"], "steel");
+        assert_eq!(body["ready"], false);
+        assert_eq!(body["secret_present"], false);
+        assert!(
+            body["detail"].as_str().unwrap_or("").contains("STEEL_API_KEY"),
+            "detail must name the steel key need: {body}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Camofox is keyless: status must never present an API key as
+    /// its requirement - only a proxy password, if a proxy is used.
+    #[test]
+    fn status_camofox_is_keyless() {
+        let (app, dir) = test_app_with_config(Some("[browser]\nbackend = \"camofox\"\n"));
+        let (code, body) = status_json(&app);
+        assert_eq!(code, 200, "status never fails: {body}");
+        assert_eq!(body["backend"], "camofox");
+        assert_eq!(body["ready"], true);
+        assert!(body["secret_present"].is_null());
+        let detail = body["detail"].as_str().unwrap_or("");
+        assert!(detail.contains("keyless"), "detail must say keyless: {body}");
+        assert!(
+            detail.contains("no API key"),
+            "detail must state no API key is needed: {body}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
