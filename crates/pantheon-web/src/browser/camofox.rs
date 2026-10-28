@@ -157,7 +157,9 @@ impl CamofoxConfig {
             .unwrap_or_else(|| PathBuf::from("python3"))
     }
 
-    /// The launch-config JSON handed to the shim as argv[1].
+    /// The launch-config JSON handed to the shim as its first stdin
+    /// line (never argv: the config carries the proxy password, and
+    /// argv is visible to every local user via ps / /proc/PID/cmdline).
     fn launch_config_json(&self) -> serde_json::Value {
         let headless = if self.headless_virtual {
             serde_json::json!("virtual")
@@ -417,17 +419,28 @@ impl CamofoxBackend {
             .unwrap_or_else(|_| "{}".into());
         let mut child = Command::new(&python)
             .arg(&shim)
-            .arg(&cfg_json)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| self.spawn_error(&python, e))?;
-        let stdin = child.stdin.take().ok_or_else(|| BrowserError::Failed {
+        let mut stdin = child.stdin.take().ok_or_else(|| BrowserError::Failed {
             argv: Vec::new(),
             exit: None,
             stderr: "camofox backend: could not pipe shim stdin".into(),
         })?;
+        // Launch config travels as the first stdin line, NOT argv:
+        // it carries the proxy password, and argv is world-readable
+        // via ps(1) / /proc/PID/cmdline while the shim runs.
+        if writeln!(stdin, "{cfg_json}").is_err() || stdin.flush().is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(BrowserError::Failed {
+                argv: Vec::new(),
+                exit: None,
+                stderr: "camofox backend: could not write launch config to shim stdin".into(),
+            });
+        }
         let stdout = child.stdout.take().ok_or_else(|| BrowserError::Failed {
             argv: Vec::new(),
             exit: None,

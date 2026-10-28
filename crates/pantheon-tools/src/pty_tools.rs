@@ -340,7 +340,7 @@ fn ju16(v: &serde_json::Value, key: &str, default: u16) -> u16 {
 /// programming error, so this function takes the manager explicitly.
 pub fn register_pty_tools(reg: &mut ToolRegistry, manager: Arc<PtyManager>) {
     let m = manager.clone();
-    reg.register(
+    reg.register_with(
         ToolSchema {
             name: "terminal_open".into(),
             description: "Open a persistent PTY. Returns a terminal id. With no `command`, starts an interactive shell; with `command`, runs it through the shell and keeps the PTY for follow-up input. Use terminal_write/read to drive it. Requires ShellExecute.".into(),
@@ -367,6 +367,22 @@ pub fn register_pty_tools(reg: &mut ToolRegistry, manager: Arc<PtyManager>) {
                 "{id}\nUse terminal_read {id} to collect output and terminal_write {id} to send input."
             ))
         },
+        // Same GitPush classification as the `shell` tool: without it,
+        // `terminal_open` with a `git push` command ran with no push
+        // approval at all (only the danger pre-gate applied). Input
+        // typed later via `terminal_write` is inherently
+        // unclassifiable and stays the documented residual.
+        Some(Box::new(|args: &str| {
+            let Ok(v) = parse_args(args) else {
+                return Vec::new();
+            };
+            match jstr(&v, "command") {
+                Some(cmd) if pantheon_exec::danger::is_git_push(&cmd) => {
+                    vec![Capability::GitPush]
+                }
+                _ => Vec::new(),
+            }
+        })),
     );
 
     let m = manager.clone();

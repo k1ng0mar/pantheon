@@ -291,16 +291,40 @@ pub(crate) fn secrets_broker(cfg: Option<&Config>) -> pantheon_secrets::SecretsB
     seed_compression_key(broker, cfg)
 }
 
+/// Resolve the maintenance-session policy, mirroring the TUI's
+/// `policy_for_config`: config preset, then `PANTHEON_POLICY`, then
+/// `PANTHEON_ALLOW_MEMORY`, then coder. The dashboard cannot depend on
+/// the TUI crate, so this small resolution lives here next to its use.
+fn policy_for_config(cfg: Option<&Config>) -> Policy {
+    if let Some(preset) = cfg.and_then(|c| c.policy) {
+        return preset.to_policy();
+    }
+    if let Ok(p) = std::env::var("PANTHEON_POLICY") {
+        if let Some(preset) = PolicyPreset::parse(&p) {
+            return preset.to_policy();
+        }
+    }
+    let allow_memory = std::env::var("PANTHEON_ALLOW_MEMORY")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    if allow_memory {
+        Policy::coder_with_memory()
+    } else {
+        Policy::coder()
+    }
+}
+
 /// Open a session for a maintenance endpoint, mirroring
 /// `pantheon-tui`'s `resume_after_grant`. `data_dir` is the Pantheon data
 /// directory (the dashboard's `App::data_dir`).
 pub fn open_maintenance_session(data_dir: &Path) -> Result<Session, String> {
     let cfg = load_config(data_dir)?;
     let cfg_ref = cfg.as_ref();
-    let policy = match cfg_ref.and_then(|c| c.policy) {
-        Some(PolicyPreset::CoderMemory) => Policy::coder_with_memory(),
-        _ => Policy::coder(),
-    };
+    // Policy preset honored verbatim, same precedence as the TUI's
+    // `policy_for_config`: config preset, then `PANTHEON_POLICY`, then
+    // `PANTHEON_ALLOW_MEMORY`, then coder. A Reader config must stay
+    // read-only here, not silently widen to coder.
+    let policy = policy_for_config(cfg_ref);
     let model_policy = model_policy(cfg_ref);
     let secrets = secrets_broker(cfg_ref);
     let session = Session::new(data_dir.to_path_buf(), policy, model_policy, secrets)
