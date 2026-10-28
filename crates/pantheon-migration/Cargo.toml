@@ -7,6 +7,9 @@ authors.workspace = true
 
 [dependencies]
 pantheon-api = { path = "../pantheon-api" }
+# Skill validation reuses the runtime parser (see `validate_skill_md`):
+# exec depends only on api/storage/secrets, so this edge is acyclic.
+pantheon-exec = { path = "../pantheon-exec" }
 pantheon-extensions = { path = "../pantheon-extensions" }
 pantheon-storage = { path = "../pantheon-storage" }
 # Custom-provider import reconciles against the provider catalog.
