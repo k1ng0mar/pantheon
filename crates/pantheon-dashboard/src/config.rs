@@ -430,7 +430,7 @@ pub(crate) fn apply_changes(
     // reasoning level, unparseable permission_mode, zero aux timeout)
     // was written and only surfaced later in doctor. Reject here when
     // validation implicates a changed key; nothing is written then.
-    match pantheon_api::config::Config::try_from(doc.clone()) {
+    match <pantheon_api::config::Config as serde::Deserialize>::deserialize(doc.clone()) {
         Ok(typed) => {
             let problems: Vec<String> = typed
                 .validate()
