@@ -190,6 +190,17 @@ pub struct IdeaStore {
 }
 
 impl IdeaStore {
+    /// Lock the connection, failing closed on poison like every other
+    /// store (`CLAIM_LOCK`, `LEDGER_LOCK`, ...). The old code recovered
+    /// poisoned mutexes with `into_inner`, silently continuing after a
+    /// panic in another thread had potentially left the connection
+    /// mid-statement.
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, PantheonError> {
+        self.conn
+            .lock()
+            .map_err(|e| err("IDEA_LOCK", format!("ideas lock poisoned: {e}")))
+    }
+
     /// Open (creating) the ideas database under `data_dir`.
     pub fn open(data_dir: &Path) -> Result<Self, PantheonError> {
         Self::open_path(&data_dir.join("ideas.db"))
@@ -233,7 +244,7 @@ impl IdeaStore {
             .map(serde_json::to_string)
             .transpose()
             .map_err(|e| err("IDEA_JSON", e.to_string()))?;
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock()?;
         let n = conn
             .execute(
                 "INSERT OR IGNORE INTO ideas
@@ -255,7 +266,7 @@ impl IdeaStore {
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Idea>, PantheonError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock()?;
         conn.query_row(
             "SELECT id, title, description, includes_json, kind, topic, status,
                     created_day, schedule_json, more, less, decided_ms
@@ -269,7 +280,7 @@ impl IdeaStore {
 
     /// All ideas, newest day first.
     pub fn list(&self) -> Result<Vec<Idea>, PantheonError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock()?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, description, includes_json, kind, topic, status,
@@ -287,7 +298,7 @@ impl IdeaStore {
 
     /// `true` when at least one idea was minted on `day` (`YYYY-MM-DD`).
     pub fn has_day(&self, day: &str) -> Result<bool, PantheonError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock()?;
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM ideas WHERE created_day = ?1",
@@ -301,7 +312,7 @@ impl IdeaStore {
     /// `true` when a `pending` idea already carries this topic: generation
     /// must not pile up duplicates for a topic the user hasn't answered.
     pub fn pending_topic_exists(&self, topic: &str) -> Result<bool, PantheonError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock()?;
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM ideas WHERE topic = ?1 AND status = 'pending'",
@@ -314,13 +325,44 @@ impl IdeaStore {
 
     /// Set the status. Returns `false` when the id does not exist.
     /// `decided_ms` stamps when the idea left `pending`.
+    ///
+    /// Transition rules (the documented lifecycle: the dashboard only
+    /// accepts/dismisses `pending` ideas, and every non-pending status
+    /// is terminal): `Pending` may move to `Accepted` or `Dismissed`;
+    /// re-setting the current status is a no-op; any other move is a
+    /// hard `IDEA_STATE` error, not a silent rewrite. How an idea ever
+    /// reaches `Done` is not documented anywhere in-tree (no caller
+    /// sets it), so `Pending -> Done` is deliberately NOT allowed here
+    /// - that transition needs a product decision, not an invented rule.
     pub fn set_status(
         &self,
         id: &str,
         status: IdeaStatus,
         decided_ms: Option<i64>,
     ) -> Result<bool, PantheonError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock()?;
+        let current: Option<String> = conn
+            .query_row("SELECT status FROM ideas WHERE id = ?1", [id], |r| r.get(0))
+            .optional()
+            .map_err(|e| err("IDEA_STATUS_SET", e.to_string()))?;
+        let Some(current) = current else {
+            return Ok(false);
+        };
+        let current =
+            IdeaStatus::parse(&current).map_err(|e| err("IDEA_STATUS_SET", e.to_string()))?;
+        let allowed = current == status
+            || (current == IdeaStatus::Pending
+                && matches!(status, IdeaStatus::Accepted | IdeaStatus::Dismissed));
+        if !allowed {
+            return Err(err(
+                "IDEA_STATE",
+                format!(
+                    "idea {id} is {} (terminal); cannot move it to {}",
+                    current.as_str(),
+                    status.as_str()
+                ),
+            ));
+        }
         let n = conn
             .execute(
                 "UPDATE ideas SET status = ?1, decided_ms = ?2 WHERE id = ?3",
@@ -331,14 +373,20 @@ impl IdeaStore {
     }
 
     /// Record explicit `more`/`less` feedback on the idea and its topic.
-    /// Returns `false` when the id does not exist.
+    /// Returns `false` when the id does not exist. The idea-counter
+    /// bump and the topic-counter bump run in one transaction: the old
+    /// code updated the idea, then the topic, so a failure between them
+    /// left the counters permanently diverged.
     pub fn record_feedback(&self, id: &str, signal: FeedbackSignal) -> Result<bool, PantheonError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.lock()?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| err("IDEA_FEEDBACK", e.to_string()))?;
         let col = match signal {
             FeedbackSignal::More => "more",
             FeedbackSignal::Less => "less",
         };
-        let n = conn
+        let n = tx
             .execute(
                 &format!("UPDATE ideas SET {col} = {col} + 1 WHERE id = ?1"),
                 [id],
@@ -347,11 +395,11 @@ impl IdeaStore {
         if n != 1 {
             return Ok(false);
         }
-        let topic: String = conn
+        let topic: String = tx
             .query_row("SELECT topic FROM ideas WHERE id = ?1", [id], |r| r.get(0))
             .map_err(|e| err("IDEA_FEEDBACK", e.to_string()))?;
         if !topic.is_empty() {
-            conn.execute(
+            tx.execute(
                 &format!(
                     "INSERT INTO idea_topic_signals (topic, {col}) VALUES (?1, 1)
                      ON CONFLICT(topic) DO UPDATE SET {col} = {col} + 1"
@@ -360,13 +408,15 @@ impl IdeaStore {
             )
             .map_err(|e| err("IDEA_FEEDBACK", e.to_string()))?;
         }
+        tx.commit()
+            .map_err(|e| err("IDEA_FEEDBACK", e.to_string()))?;
         Ok(true)
     }
 
     /// Delete `pending` ideas created before `day` (`YYYY-MM-DD`,
     /// exclusive). Returns the number removed.
     pub fn expire_pending_before(&self, day: &str) -> Result<usize, PantheonError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock()?;
         let n = conn
             .execute(
                 "DELETE FROM ideas WHERE status = 'pending' AND created_day < ?1",
@@ -378,7 +428,7 @@ impl IdeaStore {
 
     /// Feedback counters for a topic. Missing topic = all zeros.
     pub fn topic_signals(&self, topic: &str) -> Result<TopicSignals, PantheonError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock()?;
         conn.query_row(
             "SELECT accepted, dismissed, more, less FROM idea_topic_signals WHERE topic = ?1",
             [topic],
@@ -402,7 +452,7 @@ impl IdeaStore {
             return Ok(());
         }
         let col = if accepted { "accepted" } else { "dismissed" };
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.lock()?;
         conn.execute(
             &format!(
                 "INSERT INTO idea_topic_signals (topic, {col}) VALUES (?1, 1)
@@ -417,7 +467,13 @@ impl IdeaStore {
 
 fn row_to_idea(r: &rusqlite::Row<'_>) -> rusqlite::Result<Idea> {
     let includes_json: String = r.get(3)?;
-    let includes: Vec<String> = serde_json::from_str(&includes_json).unwrap_or_default();
+    // Corrupt JSON is a hard error, like corrupt kind/status below:
+    // the old `unwrap_or_default` silently turned a damaged includes
+    // list into an empty plan, so a broken idea looked intentionally
+    // empty instead of broken.
+    let includes: Vec<String> = serde_json::from_str(&includes_json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
+    })?;
     let kind: String = r.get(4)?;
     let status: String = r.get(6)?;
     let schedule_json: Option<String> = r.get(8)?;
@@ -450,4 +506,86 @@ fn row_to_idea(r: &rusqlite::Row<'_>) -> rusqlite::Result<Idea> {
         less: r.get(10)?,
         decided_ms: r.get(11)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_idea(id: &str) -> NewIdea {
+        NewIdea {
+            id: id.to_string(),
+            title: "Test idea".to_string(),
+            description: "desc".to_string(),
+            includes: vec!["step one".to_string()],
+            kind: IdeaKind::General,
+            topic: "test-topic".to_string(),
+            created_day: "2026-10-28".to_string(),
+            schedule: None,
+        }
+    }
+
+    fn tmp_store() -> (IdeaStore, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let store = IdeaStore::open(dir.path()).expect("ideas store");
+        (store, dir)
+    }
+
+    #[test]
+    fn record_feedback_bumps_idea_and_topic_together() {
+        let (store, _dir) = tmp_store();
+        assert!(store.mint(&new_idea("i1")).unwrap());
+        assert!(store.record_feedback("i1", FeedbackSignal::More).unwrap());
+        let idea = store.get("i1").unwrap().unwrap();
+        assert_eq!(idea.more, 1);
+        assert_eq!(store.topic_signals("test-topic").unwrap().more, 1);
+        assert!(!store
+            .record_feedback("missing", FeedbackSignal::More)
+            .unwrap());
+    }
+
+    #[test]
+    fn set_status_enforces_the_documented_lifecycle() {
+        let (store, _dir) = tmp_store();
+        assert!(store.mint(&new_idea("i1")).unwrap());
+        // Pending -> Accepted is the documented dashboard path.
+        assert!(store
+            .set_status("i1", IdeaStatus::Accepted, Some(1))
+            .unwrap());
+        assert_eq!(
+            store.get("i1").unwrap().unwrap().status,
+            IdeaStatus::Accepted
+        );
+        // Terminal states have no outgoing transitions.
+        let err = store
+            .set_status("i1", IdeaStatus::Dismissed, Some(2))
+            .expect_err("accepted -> dismissed must fail");
+        assert_eq!(err.code, "IDEA_STATE");
+        // Re-setting the current status is a no-op, not an error.
+        assert!(store
+            .set_status("i1", IdeaStatus::Accepted, Some(3))
+            .unwrap());
+        // Unknown id is still Ok(false), not an error.
+        assert!(!store
+            .set_status("nope", IdeaStatus::Accepted, None)
+            .unwrap());
+    }
+
+    #[test]
+    fn corrupt_includes_json_is_a_hard_error_not_an_empty_plan() {
+        let (store, dir) = tmp_store();
+        assert!(store.mint(&new_idea("i1")).unwrap());
+        // Corrupt the row behind the store's back, like a damaged DB.
+        let conn = Connection::open(dir.path().join("ideas.db")).expect("raw conn");
+        conn.execute(
+            "UPDATE ideas SET includes_json = 'not json' WHERE id = 'i1'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(
+            store.get("i1").is_err(),
+            "corrupt includes_json must error like corrupt kind/status"
+        );
+    }
 }
