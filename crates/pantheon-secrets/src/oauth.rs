@@ -22,7 +22,7 @@ use crate::SecretsBroker;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How the token endpoint authenticates this client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,24 +189,56 @@ impl<'a> OAuthStore<'a> {
     }
 
     /// Persist a token set. Overwrites any previous records for the app.
+    ///
+    /// All-or-nothing: the previous set is snapshotted first, and any
+    /// failure mid-save restores it (best-effort) before the error
+    /// propagates. The old order wrote access, then refresh, then meta
+    /// with no rollback, so a failure left a mixed token set - a new
+    /// access token paired with an old refresh token and old metadata.
     pub fn save(&self, app: &str, token: &OAuthToken) -> Result<(), SecretsError> {
         provider(app).ok_or_else(|| SecretsError::Invalid(format!("unknown oauth app {app:?}")))?;
         let (access_name, refresh_name, meta_name) = Self::names(app);
-        self.broker.set(&access_name, token.access_token.clone())?;
-        match &token.refresh_token {
-            Some(rt) => self.broker.set(&refresh_name, rt.clone())?,
-            None => self.broker.delete(&refresh_name)?,
+        let prev_access = self.broker.resolve(&access_name)?;
+        let prev_refresh = self.broker.resolve(&refresh_name)?;
+        let prev_meta = self.broker.resolve(&meta_name)?;
+        let write = (|| -> Result<(), SecretsError> {
+            self.broker.set(&access_name, token.access_token.clone())?;
+            match &token.refresh_token {
+                Some(rt) => self.broker.set(&refresh_name, rt.clone())?,
+                None => self.broker.delete(&refresh_name)?,
+            }
+            let meta = TokenMeta {
+                expires_at: token
+                    .expires_at
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs()),
+                scopes: token.scopes.clone(),
+                token_type: token.token_type.clone(),
+            };
+            let json = serde_json::to_string(&meta).map_err(SecretsError::from)?;
+            self.broker.set(&meta_name, SecretValue::new(json))?;
+            Ok(())
+        })();
+        if let Err(e) = write {
+            // Restore the previous set; rollback failures are ignored
+            // (the original error is the one reported) but attempted for
+            // every record, not just the first.
+            for (name, prev) in [
+                (&access_name, &prev_access),
+                (&refresh_name, &prev_refresh),
+                (&meta_name, &prev_meta),
+            ] {
+                match prev {
+                    Some(v) => {
+                        let _ = self.broker.set(name, v.clone());
+                    }
+                    None => {
+                        let _ = self.broker.delete(name);
+                    }
+                }
+            }
+            return Err(e);
         }
-        let meta = TokenMeta {
-            expires_at: token
-                .expires_at
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs()),
-            scopes: token.scopes.clone(),
-            token_type: token.token_type.clone(),
-        };
-        let json = serde_json::to_string(&meta).map_err(SecretsError::from)?;
-        self.broker.set(&meta_name, SecretValue::new(json))?;
         Ok(())
     }
 
@@ -665,23 +697,75 @@ fn respond(stream: &TcpStream, status: u16, message: &str) -> Result<(), Secrets
 /// Accept the single OAuth callback on the loopback listener and return
 /// the authorization code. The `state` parameter is checked against the
 /// value sent (CSRF protection); a mismatch fails closed.
-fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<String, SecretsError> {
-    let (stream, _) = listener.accept().map_err(SecretsError::from)?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(300)))
+///
+/// Bounded: `accept()` used to block forever, with the 300s timeout
+/// applying only after a connection arrived - so a user who abandoned
+/// the flow hung the caller indefinitely, contradicting the login
+/// flow's "blocks until user completes (or abandons)" contract. The
+/// whole wait (accept + stray connections) is now bounded by
+/// `timeout`. Stray connections (health checks, a second browser tab,
+/// a request without a matching code/state) are answered 400 and
+/// ignored instead of aborting the flow on the first one; only a real
+/// provider `error` response aborts immediately.
+fn wait_for_code(
+    listener: &TcpListener,
+    expected_state: &str,
+    timeout: Duration,
+) -> Result<String, SecretsError> {
+    let deadline = Instant::now() + timeout;
+    listener
+        .set_nonblocking(true)
         .map_err(SecretsError::from)?;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(SecretsError::Invalid(format!(
+                "timed out waiting for OAuth callback after {timeout:?}"
+            )));
+        }
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // Accepted sockets inherit non-blocking mode; reads
+                // below need blocking mode plus a read deadline that
+                // never extends past the overall deadline.
+                stream
+                    .set_nonblocking(false)
+                    .map_err(SecretsError::from)?;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                stream
+                    .set_read_timeout(Some(remaining))
+                    .map_err(SecretsError::from)?;
+                if let Some(code) = handle_callback(&stream, expected_state)? {
+                    return Ok(code);
+                }
+                // Stray connection: keep waiting for the real callback.
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(SecretsError::from(e)),
+        }
+    }
+}
+
+/// Handle one accepted callback connection. `Ok(Some(code))` is the real
+/// callback; `Ok(None)` is a stray to ignore; `Err` is a real outcome
+/// (provider error, oversize head) that aborts the flow.
+fn handle_callback(
+    stream: &TcpStream,
+    expected_state: &str,
+) -> Result<Option<String>, SecretsError> {
     // One small GET: cap the head so a stray connection cannot make us
     // buffer without bound.
     let mut head = Vec::new();
     {
-        let mut reader = BufReader::new(&stream);
+        let mut reader = BufReader::new(stream);
         loop {
             let mut line = Vec::new();
             let n = reader
                 .read_until(b'\n', &mut line)
                 .map_err(SecretsError::from)?;
             if n == 0 {
-                break; // EOF or timeout
+                break; // EOF or timeout: a stray, not a callback.
             }
             head.extend_from_slice(&line);
             if head.len() > 16_384 {
@@ -694,27 +778,28 @@ fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<String,
             }
         }
     }
+    if head.is_empty() {
+        return Ok(None);
+    }
     let head_str = String::from_utf8_lossy(&head);
     let request_line = head_str.lines().next().unwrap_or("");
     let target = request_line.split_whitespace().nth(1).unwrap_or("");
     let query = target.split('?').nth(1).unwrap_or("");
     let params = parse_query(query);
     if let Some(err) = params.get("error") {
-        let _ = respond(&stream, 400, "Authorization failed.");
+        let _ = respond(stream, 400, "Authorization failed.");
         return Err(SecretsError::Invalid(format!(
             "provider returned error: {err}"
         )));
     }
     match (params.get("code"), params.get("state")) {
         (Some(code), Some(state)) if state == expected_state && !code.is_empty() => {
-            let _ = respond(&stream, 200, "Signed in.");
-            Ok(code.clone())
+            let _ = respond(stream, 200, "Signed in.");
+            Ok(Some(code.clone()))
         }
         _ => {
-            let _ = respond(&stream, 400, "Authorization failed.");
-            Err(SecretsError::Invalid(
-                "callback missing code or state mismatch (possible CSRF)".into(),
-            ))
+            let _ = respond(stream, 400, "Authorization failed.");
+            Ok(None)
         }
     }
 }
@@ -722,8 +807,8 @@ fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<String,
 /// Run the RFC 8252 loopback authorization flow: open the provider's
 /// consent page, receive the authorization code on an ephemeral
 /// `127.0.0.1` listener, and exchange it for tokens. Blocks until the
-/// user completes (or abandons) the browser step. `client_id` is a public
-/// identifier, never a secret.
+/// user completes (or abandons) the browser step, bounded by a 300s
+/// callback timeout. `client_id` is a public identifier, never a secret.
 pub fn login_flow(prov: OAuthProvider, client_id: &str) -> Result<OAuthToken, SecretsError> {
     validate_name(prov.id)?;
     let listener = TcpListener::bind("127.0.0.1:0").map_err(SecretsError::from)?;
@@ -750,7 +835,7 @@ pub fn login_flow(prov: OAuthProvider, client_id: &str) -> Result<OAuthToken, Se
         prov.display
     );
     open_browser(&url);
-    let code = wait_for_code(&listener, &state)?;
+    let code = wait_for_code(&listener, &state, Duration::from_secs(300))?;
     exchange_code(
         &http_agent(),
         prov,
@@ -1168,5 +1253,120 @@ mod tests {
             "wedged endpoint must fail within the budget, took {:?} (err: {err})",
             start.elapsed()
         );
+    }
+}
+
+#[cfg(test)]
+mod callback_tests {
+    use super::*;
+    use crate::vault::{MemoryVault, SecretVault};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    /// No connection at all: the wait ends at the deadline instead of
+    /// hanging forever (the old `accept()` had no timeout).
+    #[test]
+    fn wait_for_code_times_out_without_connections() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let start = Instant::now();
+        let err = wait_for_code(&listener, "state-1", Duration::from_millis(300)).unwrap_err();
+        assert!(err.to_string().contains("timed out"), "err: {err}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "timeout must bound the wait, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// A stray connection (no code) does not abort the flow: the real
+    /// callback arriving afterwards still wins.
+    #[test]
+    fn stray_connection_does_not_abort_wait() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            // Stray: a request with no code/state.
+            let mut stray = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stray
+                .write_all(b"GET /other HTTP/1.1\r\nHost: x\r\n\r\n")
+                .unwrap();
+            let mut buf = [0u8; 256];
+            use std::io::Read as _;
+            let _ = stray.read(&mut buf);
+            drop(stray);
+            std::thread::sleep(Duration::from_millis(100));
+            // Real callback.
+            let mut real = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            real.write_all(
+                b"GET /callback?code=code-abc&state=state-1 HTTP/1.1\r\nHost: x\r\n\r\n",
+            )
+            .unwrap();
+            let mut buf = [0u8; 256];
+            let _ = real.read(&mut buf);
+        });
+        let code = wait_for_code(&listener, "state-1", Duration::from_secs(10)).unwrap();
+        assert_eq!(code, "code-abc");
+        handle.join().unwrap();
+    }
+
+    /// A vault that fails refresh writes: a failed save restores the
+    /// previous token set instead of leaving a mixed one.
+    #[derive(Debug)]
+    struct FailRefreshVault {
+        inner: MemoryVault,
+        fail: Arc<AtomicBool>,
+    }
+
+    impl SecretVault for FailRefreshVault {
+        fn get(&self, name: &str) -> Result<Option<SecretValue>, SecretsError> {
+            self.inner.get(name)
+        }
+        fn set(&self, name: &str, value: SecretValue) -> Result<(), SecretsError> {
+            if self.fail.load(Ordering::SeqCst) && name.contains("refresh_token") {
+                return Err(SecretsError::Backend("refresh write failed".into()));
+            }
+            self.inner.set(name, value)
+        }
+        fn delete(&self, name: &str) -> Result<(), SecretsError> {
+            self.inner.delete(name)
+        }
+        fn names(&self) -> Result<Vec<String>, SecretsError> {
+            self.inner.names()
+        }
+    }
+
+    fn token(access: &str, refresh: &str) -> OAuthToken {
+        OAuthToken {
+            access_token: SecretValue::new(access),
+            refresh_token: Some(SecretValue::new(refresh)),
+            expires_at: None,
+            scopes: vec!["read:user".into()],
+            token_type: "Bearer".into(),
+        }
+    }
+
+    #[test]
+    fn failed_save_restores_previous_token_set() {
+        let fail = Arc::new(AtomicBool::new(false));
+        let vault = FailRefreshVault {
+            inner: MemoryVault::new(),
+            fail: Arc::clone(&fail),
+        };
+        let broker = SecretsBroker::new()
+            .with_vault(Box::new(vault))
+            .with_env(crate::env::EnvVault::from_map(Vec::<(&str, &str)>::new()));
+        let store = OAuthStore::new(&broker);
+        store.save("github", &token("old-access", "old-refresh")).unwrap();
+        fail.store(true, Ordering::SeqCst);
+        assert!(store.save("github", &token("new-access", "new-refresh")).is_err());
+        let loaded = store.load("github").unwrap().expect("previous set restored");
+        assert_eq!(loaded.access_token.expose(), "old-access");
+        assert_eq!(loaded.refresh_token.unwrap().expose(), "old-refresh");
+        // And with the failure cleared, a fresh save lands whole.
+        fail.store(false, Ordering::SeqCst);
+        store.save("github", &token("new-access", "new-refresh")).unwrap();
+        let loaded = store.load("github").unwrap().expect("saved token");
+        assert_eq!(loaded.access_token.expose(), "new-access");
     }
 }

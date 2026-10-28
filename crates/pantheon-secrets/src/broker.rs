@@ -305,21 +305,56 @@ impl SecretsBroker {
         }
     }
 
-    /// All secret names across durable vaults and the environment, sorted.
-    /// Never returns values - only names, so a caller can list what exists
-    /// without exposing any secret material.
-    pub fn names(&self) -> Vec<String> {
+    /// All secret names across durable vaults and the environment, sorted,
+    /// plus one warning per vault whose listing failed. Never returns
+    /// values - only names, so a caller can list what exists without
+    /// exposing any secret material.
+    ///
+    /// The list is NOT complete when warnings are non-empty: a vault
+    /// error is swallowed by no one here, it is reported. In
+    /// particular the OS keychain vault can never enumerate
+    /// ([`crate::keychain::KeychainVault::names`] always returns
+    /// `Unsupported` - the platform APIs expose lookup-by-name, not
+    /// listing), so any broker backed by the keychain omits every
+    /// keychain entry from this list by design. Callers that must not
+    /// present a partial list as complete (the dashboard env page, for
+    /// example) use the warnings, not just the names.
+    pub fn names_with_warnings(&self) -> (Vec<String>, Vec<String>) {
         let mut names: Vec<String> = Vec::new();
-        for vault in &self.durable {
-            if let Ok(vault_names) = vault.names() {
-                names.extend(vault_names);
+        let mut warnings: Vec<String> = Vec::new();
+        for (i, vault) in self.durable.iter().enumerate() {
+            match vault.names() {
+                Ok(vault_names) => names.extend(vault_names),
+                Err(e) => warnings.push(format!(
+                    "durable vault {i} could not list names ({e}); entries held there are missing from this list"
+                )),
             }
         }
-        if let Ok(env_names) = self.env.names() {
-            names.extend(env_names);
+        match self.env.names() {
+            Ok(env_names) => names.extend(env_names),
+            Err(e) => warnings.push(format!(
+                "environment vault could not list names ({e}); entries held there are missing from this list"
+            )),
         }
         names.sort();
         names.dedup();
+        (names, warnings)
+    }
+
+    /// All secret names across durable vaults and the environment, sorted.
+    /// Never returns values - only names, so a caller can list what exists
+    /// without exposing any secret material.
+    ///
+    /// Convenience over [`names_with_warnings`](Self::names_with_warnings):
+    /// warnings are printed to stderr, because a silently partial list
+    /// used to be the behaviour here and it hid keychain entries and
+    /// broken vaults alike. Callers that render the list to a user
+    /// should use `names_with_warnings` and show the warnings alongside.
+    pub fn names(&self) -> Vec<String> {
+        let (names, warnings) = self.names_with_warnings();
+        for w in warnings {
+            eprintln!("secrets: {w}");
+        }
         names
     }
 
@@ -497,6 +532,54 @@ mod broker_registry_tests {
         assert_eq!(
             broker.redaction_registry().scrub("clean text"),
             "clean text"
+        );
+    }
+}
+
+#[cfg(test)]
+mod broker_names_warnings_tests {
+    use super::*;
+    use crate::vault::{MemoryVault, SecretVault};
+
+    /// A vault that answers everything except listing: the keychain
+    /// shape (lookup works, enumeration does not).
+    #[derive(Debug)]
+    struct UnlistableVault;
+
+    impl SecretVault for UnlistableVault {
+        fn get(&self, _name: &str) -> Result<Option<SecretValue>, SecretsError> {
+            Ok(None)
+        }
+        fn set(&self, _name: &str, _value: SecretValue) -> Result<(), SecretsError> {
+            Ok(())
+        }
+        fn delete(&self, _name: &str) -> Result<(), SecretsError> {
+            Ok(())
+        }
+        fn names(&self) -> Result<Vec<String>, SecretsError> {
+            Err(SecretsError::Backend("cannot enumerate".into()))
+        }
+    }
+
+    /// A listing failure surfaces as a warning, not a silently partial
+    /// list: the caller learns the names are incomplete.
+    #[test]
+    fn names_with_warnings_reports_unlistable_vault() {
+        let memory = MemoryVault::new();
+        memory
+            .set("LISTED", SecretValue::new("v"))
+            .unwrap();
+        let broker = SecretsBroker::new()
+            .with_vault(Box::new(memory))
+            .with_vault(Box::new(UnlistableVault))
+            .with_env(crate::env::EnvVault::from_map(Vec::<(&str, &str)>::new()));
+        let (names, warnings) = broker.names_with_warnings();
+        assert_eq!(names, vec!["LISTED".to_string()]);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("missing"),
+            "warning must say entries are missing: {}",
+            warnings[0]
         );
     }
 }

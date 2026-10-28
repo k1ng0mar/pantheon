@@ -5,6 +5,20 @@
 //! rename) so a crash can't leave a torn vault, and any bit flip in the file
 //! fails decryption loudly instead of returning wrong secrets.
 //!
+//! Two limitations are by design and documented, not hidden:
+//!
+//! - **The key sits beside the vault.** The key file lives in the same
+//!   data dir as `secrets.json` (that is the only location the vault is
+//!   ever told about), so anyone who can read the data dir can read
+//!   both the ciphertext and its key. The vault protects secrets at
+//!   rest from casual reads, not from a data-dir compromise. Moving the
+//!   key elsewhere (OS keychain, separate mount) needs a migration plan
+//!   for existing installs and is deliberately not done silently here.
+//! - **Permissions are ratcheted, not just set on creation.** An
+//!   existing key file that is group/world-readable is tightened to
+//!   0600 on load; a file whose mode cannot be tightened fails the open
+//!   rather than proceeding with a readable key.
+//!
 //! OS keychains are the preferred backend; this is the self-hosted fallback.
 
 use crate::error::SecretsError;
@@ -88,16 +102,37 @@ impl SecretVault for EncryptedFileVault {
 
     fn set(&self, name: &str, value: SecretValue) -> Result<(), SecretsError> {
         crate::error::validate_name(name)?;
+        // Persist first, then swap the cache: the old code mutated the
+        // in-memory cache before persisting, so a persist failure
+        // returned Err while the process-local cache already reflected
+        // the change until restart - a lie to every later `get` in this
+        // process. The mutex is not held across the write.
+        let new_map = {
+            let map = self.state();
+            let mut new_map = map.clone();
+            new_map.insert(name.to_string(), value);
+            new_map
+        };
+        self.persist(&new_map)?;
         let mut map = self.state();
-        map.insert(name.to_string(), value);
-        self.persist(&map)
+        *map = new_map;
+        Ok(())
     }
 
     fn delete(&self, name: &str) -> Result<(), SecretsError> {
         crate::error::validate_name(name)?;
+        // Same persist-first rule as `set`: a failed delete must leave
+        // the cached secret readable, not silently gone.
+        let new_map = {
+            let map = self.state();
+            let mut new_map = map.clone();
+            new_map.remove(name);
+            new_map
+        };
+        self.persist(&new_map)?;
         let mut map = self.state();
-        map.remove(name);
-        self.persist(&map)
+        *map = new_map;
+        Ok(())
     }
 
     fn names(&self) -> Result<Vec<String>, SecretsError> {
@@ -116,6 +151,18 @@ fn load_or_create_key(path: &Path) -> Result<Zeroizing<[u8; 32]>, SecretsError> 
                 path.display(),
                 bytes.len()
             )));
+        }
+        // 0600 was previously set only on creation: an existing key file
+        // left group/world-readable (umask, restore, copy) stayed that
+        // way forever. Ratchet it on every load; failing to tighten
+        // fails the open rather than proceeding with a readable key.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(path)?.permissions().mode() & 0o777;
+            if mode != 0o600 {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            }
         }
         let mut key = [0u8; 32];
         key.copy_from_slice(&bytes);
@@ -252,4 +299,73 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, SecretsError> {
                 .map_err(|e| SecretsError::Crypto(format!("bad hex: {e}")))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vault::SecretVault;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-filevault-test-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn open_vault(dir: &Path) -> EncryptedFileVault {
+        EncryptedFileVault::open(dir.join("secrets.json"), dir.join(".secrets.key")).unwrap()
+    }
+
+    /// A persist failure must not pollute the process-local cache: the
+    /// old code inserted into the cache first, so `get` reported the
+    /// change even though the call returned `Err`.
+    #[test]
+    fn failed_set_and_delete_leave_cache_unchanged() {
+        let dir = scratch("atomic");
+        let vault = open_vault(&dir);
+        vault
+            .set("KEEP", SecretValue::new("keep-value"))
+            .unwrap();
+        // Block the atomic write: the tmp file path is a directory, so
+        // the persist fails while the cache must stay untouched.
+        std::fs::create_dir_all(dir.join("secrets.tmp")).unwrap();
+        assert!(vault.set("NEW", SecretValue::new("new-value")).is_err());
+        assert!(vault.get("NEW").unwrap().is_none(), "failed set must not cache");
+        assert!(
+            vault.get("KEEP").unwrap().is_some(),
+            "failed set must not disturb other entries"
+        );
+        assert!(vault.delete("KEEP").is_err());
+        assert!(
+            vault.get("KEEP").unwrap().is_some(),
+            "failed delete must not drop the cached secret"
+        );
+        // Unblock: the vault is usable again, nothing stuck half-applied.
+        std::fs::remove_dir_all(dir.join("secrets.tmp")).unwrap();
+        vault
+            .set("NEW", SecretValue::new("new-value"))
+            .unwrap();
+        assert!(vault.get("NEW").unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An existing key file left group/world-readable is tightened to
+    /// 0600 on load, not just when first created.
+    #[test]
+    #[cfg(unix)]
+    fn existing_key_file_permissions_ratcheted_to_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("keyperms");
+        let key_path = dir.join(".secrets.key");
+        std::fs::write(&key_path, [7u8; 32]).unwrap();
+        std::fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).unwrap();
+        let _vault = open_vault(&dir);
+        let mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "existing key file must be tightened to 0600");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

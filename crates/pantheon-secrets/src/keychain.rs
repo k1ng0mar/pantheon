@@ -272,6 +272,13 @@ impl SecretVault for KeychainVault {
     }
 
     fn names(&self) -> Result<Vec<String>, SecretsError> {
+        // Enumeration gap, by platform design: the OS keychain APIs
+        // expose lookup-by-name, not listing, so no broker list that
+        // includes this vault is ever complete. The broker surfaces
+        // this as a warning via `names_with_warnings` instead of
+        // letting callers present a partial list as the whole store;
+        // the only complete record of keychain-held names is the
+        // operator's own tracking alongside the references.
         Err(SecretsError::Unsupported(
             "the OS keychain API cannot enumerate entries; track names \
              alongside their references"
