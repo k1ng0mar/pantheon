@@ -44,74 +44,125 @@ use crate::setup::{CustomProviderSpec, SetupAnswers};
 use crate::setup_providers;
 use pantheon_api::config::{McpServerEntry, ToolGroup};
 
+/// One screen of the wizard's linear spine. Esc moves to the
+/// previous screen; Esc on the first screen cancels the wizard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetupStep {
+    Mode,
+    Provider,
+    Model,
+}
+
+/// Where Esc from `step` goes: `None` on the first screen cancels
+/// the wizard outright; any later screen steps back one screen.
+/// Scoped to this wizard: the shared pickers still just return
+/// `None` on Esc, and only this loop decides what that means — no
+/// global picker behaviour changes.
+fn esc_step(step: SetupStep) -> Option<SetupStep> {
+    match step {
+        SetupStep::Mode => None,
+        SetupStep::Provider => Some(SetupStep::Mode),
+        SetupStep::Model => Some(SetupStep::Provider),
+    }
+}
+
 /// Run the wizard to completion, then write the result.
 ///
-/// Returns nothing and never loops: if the user cancels a screen, the answers
-/// gathered so far are still written, because a half-configured agent is
-/// closer to working than no config file at all, and the entry point re-checks
-/// whether the result is usable before opening a session.
+/// Esc on the first screen cancels with nothing committed (the
+/// entry point re-checks usability before opening a session); Esc
+/// on a later screen steps back one screen instead of aborting the
+/// run. A cancelled run writes no config — only key values already
+/// pasted to `.env` persist, as before.
 pub fn run_setup_flow(data_dir: &Path) {
-    // --- Mode -----------------------------------------------------------
-    // Asked first, because it decides every other screen. Blank Slate skips
-    // the whole agent section, so it short-circuits before any agent
-    // question is asked.
-    let mode = pick_mode();
-    if mode == Mode::Blank {
-        // No agent, no model, no tools. Provision the runtime and stop.
-        commit(
-            data_dir,
-            SetupAnswers {
-                provider: None,
-                model: None,
-                api_key_env: None,
-                fallback_provider: None,
-                fallback_model: None,
-                policy: None,
-                tools: None,
-                websearch: None,
-                browser: None,
-                stt: None,
-                tts: None,
-                memory: None,
-                computer: None,
-                key: None,
-                custom_provider: None,
-                skipped_tools: Vec::new(),
-                skipped_stt: false,
-                skipped_tts: false,
-                // Blank provisions no agent and no skills, so the
-                // skill-deps screen never runs here.
-                skill_deps_skipped: Vec::new(),
-                mcp_servers: Vec::new(),
-            },
-        );
-        return;
-    }
-
-    // --- Provider, key, then model ------------------------------------
+    // --- Mode → provider → key → model, with back navigation --------
+    // Asked first, because mode decides every other screen. Blank
+    // Slate skips the whole agent section, so it short-circuits
+    // before any agent question is asked.
+    //
     // Order matters: the model step fetches the live `/models` list
-    // *with* the key, so the key env has to be chosen first. Both agent
-    // modes start here; Recommended fills in everything else, Full goes
-    // on to ask it.
-    let (provider, custom) = match pick_provider("Step 2/5") {
-        Some(p) => p,
-        None => return,
-    };
-    let api_key_env = pick_model_key_env(data_dir, provider.as_str(), custom.as_ref(), "Step 3/5");
-    let model = pick_model(
-        provider.as_str(),
-        custom.as_ref(),
-        api_key_env.as_deref(),
-        "Step 4/5",
-    );
-    if model.is_none() {
-        return;
-    }
-
-    if mode == Mode::Recommended {
-        run_recommended(data_dir, provider, model, custom, api_key_env);
-    } else {
-        run_full(data_dir, provider, model, custom, api_key_env);
+    // *with* the key, so the key env has to be chosen first. Both
+    // agent modes start here; Recommended fills in everything else,
+    // Full goes on to ask it.
+    let mut step = SetupStep::Mode;
+    let mut mode = Mode::Recommended;
+    let mut provider = String::new();
+    let mut custom: Option<CustomProviderSpec> = None;
+    loop {
+        match step {
+            SetupStep::Mode => match pick_mode() {
+                Some(m) => {
+                    if m == Mode::Blank {
+                        // No agent, no model, no tools. Provision the
+                        // runtime and stop.
+                        commit(
+                            data_dir,
+                            SetupAnswers {
+                                provider: None,
+                                model: None,
+                                api_key_env: None,
+                                fallback_provider: None,
+                                fallback_model: None,
+                                policy: None,
+                                tools: None,
+                                websearch: None,
+                                browser: None,
+                                stt: None,
+                                tts: None,
+                                memory: None,
+                                computer: None,
+                                key: None,
+                                custom_provider: None,
+                                skipped_tools: Vec::new(),
+                                skipped_stt: false,
+                                skipped_tts: false,
+                                // Blank provisions no agent and no skills, so the
+                                // skill-deps screen never runs here.
+                                skill_deps_skipped: Vec::new(),
+                                mcp_servers: Vec::new(),
+                            },
+                        );
+                        return;
+                    }
+                    mode = m;
+                    step = SetupStep::Provider;
+                }
+                None => return,
+            },
+            SetupStep::Provider => match pick_provider("Step 2/5") {
+                Some((p, c)) => {
+                    provider = p;
+                    custom = c;
+                    step = SetupStep::Model;
+                }
+                None => match esc_step(step) {
+                    Some(prev) => step = prev,
+                    None => return,
+                },
+            },
+            SetupStep::Model => {
+                let api_key_env =
+                    pick_model_key_env(data_dir, provider.as_str(), custom.as_ref(), "Step 3/5");
+                match pick_model(
+                    provider.as_str(),
+                    custom.as_ref(),
+                    api_key_env.as_deref(),
+                    "Step 4/5",
+                ) {
+                    Some(model) => {
+                        if mode == Mode::Recommended {
+                            run_recommended(data_dir, provider, Some(model), custom, api_key_env);
+                        } else {
+                            run_full(data_dir, provider, Some(model), custom, api_key_env);
+                        }
+                        return;
+                    }
+                    None => match esc_step(step) {
+                        Some(prev) => step = prev,
+                        None => return,
+                    },
+                }
+            }
+        }
     }
 }
 
@@ -589,23 +640,22 @@ fn commit(data_dir: &Path, answers: SetupAnswers) {
 // screens
 // ---------------------------------------------------------------------------
 
-fn pick_mode() -> Mode {
+/// The mode screen. `None` means Esc: the user changed their mind
+/// about being here, so the wizard cancels instead of inventing an
+/// answer — proceeding with a default mode the user never picked
+/// would write a config they did not ask for.
+fn pick_mode() -> Option<Mode> {
     let items = vec![
         Item::new("Recommended", "recommended")
             .desc("pick your provider and model; everything else gets recommended defaults"),
         Item::new("Full Setup", "full").desc("everything, skipping anything that does not apply"),
         Item::new("Blank Slate", "blank").desc("create the runtime without configuring an agent"),
     ];
-    match crate::prompt::pick_one("Setup", "Choose your setup", items) {
-        Some(v) => match v.as_str() {
-            "full" => Mode::Full,
-            "blank" => Mode::Blank,
-            _ => Mode::Recommended,
-        },
-        // Cancelling the first screen means the user changed their mind
-        // about being here. Recommended is the least presumptuous default.
-        None => Mode::Recommended,
-    }
+    crate::prompt::pick_one("Setup", "Choose your setup", items).map(|v| match v.as_str() {
+        "full" => Mode::Full,
+        "blank" => Mode::Blank,
+        _ => Mode::Recommended,
+    })
 }
 
 /// The provider picker. `router` is filtered out here rather than in the
@@ -1739,6 +1789,16 @@ mod tests {
         assert!(validate_server_name("", &[]).is_some());
         let existing = vec![("my-server".to_string(), dummy_entry())];
         assert!(validate_server_name("my-server", &existing).is_some());
+    }
+
+    // --- wizard Esc: cancel on the first screen, back a step after --
+
+    #[test]
+    fn wizard_esc_cancels_first_and_steps_back_later() {
+        use super::{esc_step, SetupStep};
+        assert_eq!(esc_step(SetupStep::Mode), None);
+        assert_eq!(esc_step(SetupStep::Provider), Some(SetupStep::Mode));
+        assert_eq!(esc_step(SetupStep::Model), Some(SetupStep::Provider));
     }
 
     // --- first-run provider picker rows ---------------------------------
