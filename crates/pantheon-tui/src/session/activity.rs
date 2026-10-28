@@ -326,8 +326,11 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     };
     // The bar is clamped to full, but the suffix keeps the raw number
     // past 100% so an over-limit context reads as over, not as 100%.
+    // The warn threshold is the one shared threshold
+    // (`state.context_warn_pct`, from `[tui] context_warn_pct`, 80 by
+    // default) — the same value the composer row's `ctx NN%` uses.
     let pct = raw_pct.clamp(0.0, 100.0);
-    let over = pct >= 80.0;
+    let over = pct >= state.context_warn_pct;
     lines.push(Line::from(Span::styled("Context", dim)));
     // Adaptive bar: the suffix text is fixed first, the bar takes what
     // fits so the line never overflows narrow cards.
@@ -681,6 +684,42 @@ mod tests {
         assert!(text.contains("first task here"), "got: {text}");
         assert!(text.contains("Checkpoints: before-refactor"), "got: {text}");
         assert_eq!(Duration::from_secs(0), Duration::ZERO, "sanity");
+    }
+
+    #[test]
+    fn context_meter_warns_at_the_shared_threshold() {
+        // The sidebar meter warns at the same threshold as the
+        // composer row: `[tui] context_warn_pct`, 80 by default —
+        // not a second, different value.
+        let mut s = state();
+        s.tokens_max = 1000;
+        let suffix_style = |s: &TuiState| {
+            build_agent_view_lines(s, 40)[1]
+                .spans
+                .iter()
+                .find(|sp| sp.content.contains("% used"))
+                .map(|sp| sp.style)
+        };
+        s.tokens_used = 790;
+        assert_ne!(
+            suffix_style(&s).unwrap().fg,
+            Some(s.theme.failure),
+            "meter must not warn below 80%"
+        );
+        s.tokens_used = 800;
+        assert_eq!(
+            suffix_style(&s).unwrap().fg,
+            Some(s.theme.failure),
+            "meter must warn at 80%"
+        );
+        // A configured threshold moves the meter with it.
+        s.context_warn_pct = 50.0;
+        s.tokens_used = 500;
+        assert_eq!(
+            suffix_style(&s).unwrap().fg,
+            Some(s.theme.failure),
+            "meter must follow context_warn_pct"
+        );
     }
 
     #[test]

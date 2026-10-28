@@ -658,6 +658,11 @@ pub struct TuiState {
     /// Added to tokens_used for the live counter; snapped away when Usage lands.
     pub turn_estimate: u32,
     pub tokens_max: u32,
+    /// Context-warning threshold in percent, from `[tui]
+    /// context_warn_pct` (default 80). The composer's `ctx NN%`
+    /// element and the sidebar context meter share this one
+    /// threshold — there is no second, different split.
+    pub context_warn_pct: f64,
     pub cost_cents: u32,
     pub blocks: Vec<TranscriptBlock>,
     pub input: String,
@@ -969,6 +974,7 @@ impl Default for TuiState {
             tokens_used: 0,
             turn_estimate: 0,
             tokens_max: 0,
+            context_warn_pct: DEFAULT_CONTEXT_WARN_PCT,
             cost_cents: 0,
             blocks: Vec::new(),
             input: String::new(),
@@ -1149,6 +1155,7 @@ impl TuiState {
             tokens_used: 0,
             turn_estimate: 0,
             tokens_max,
+            context_warn_pct: DEFAULT_CONTEXT_WARN_PCT,
             cost_cents: 0,
             blocks: Vec::new(),
             input: String::new(),
@@ -4937,12 +4944,28 @@ fn composer_provider_spans(state: &TuiState, th: &theme::Theme, max_w: usize) ->
     spans
 }
 
+/// Default context-warning threshold (percent) when `[tui]
+/// context_warn_pct` is absent or out of range.
+const DEFAULT_CONTEXT_WARN_PCT: f64 = 80.0;
+
+/// Resolve `[tui] context_warn_pct` to the threshold `TuiState`
+/// carries: the configured value when it lies in (0, 100],
+/// otherwise the default. Out-of-range values fall back rather than
+/// warning always (0) or never (>100).
+fn resolve_context_warn_pct(cfg: Option<&crate::config::Config>) -> f64 {
+    cfg.and_then(|c| c.tui.as_ref())
+        .and_then(|t| t.context_warn_pct)
+        .filter(|v| *v > 0.0 && *v <= 100.0)
+        .unwrap_or(DEFAULT_CONTEXT_WARN_PCT)
+}
+
 /// Full provider row for the unified composer box, padded to exactly
 /// `budget` cells: the provider line left, `? Commands` right.
 /// Layered elements ride on the provider line in its own language and
 /// only when active: the active subagent count (only when >0), the
 /// live token count (see below), and the `ctx` element (amber, only
-/// at >=78% of the context window). Vim mode, when on, leads the row
+/// at or above the configured context-warning threshold, default
+/// 80% of the context window). Vim mode, when on, leads the row
 /// in dim text. When the left side does not fit, the right hint is
 /// shed first and the left side clips — the row never wraps and
 /// never grows the box.
@@ -4959,7 +4982,9 @@ fn composer_provider_row(
     th: &theme::Theme,
     budget: usize,
 ) -> Vec<Span<'static>> {
-    const CTX_NEARLY_FULL_PCT: f64 = 78.0;
+    // ONE threshold, shared with the sidebar meter
+    // (`build_agent_view_lines`): `[tui] context_warn_pct`, 80 by
+    // default. The old 78% (row) vs 80% (meter) split is gone.
     let mut left: Vec<Span<'static>> = Vec::new();
     if let Some(mode) = state.vim.status_label() {
         left.push(Span::styled(
@@ -4982,7 +5007,7 @@ fn composer_provider_row(
     if state.tokens_max > 0 {
         let live = state.tokens_used + state.turn_estimate;
         let pct = 100.0 * live as f64 / state.tokens_max as f64;
-        if pct >= CTX_NEARLY_FULL_PCT {
+        if pct >= state.context_warn_pct {
             left.push(Span::styled(
                 if pct > 100.0 {
                     format!(" • ctx {pct:.0}% over limit")
@@ -6880,6 +6905,10 @@ pub fn run_tui_session_with(
     // falls back to the default on missing config or unknown names.
     let saved_theme = theme::load_theme_name(&crate::terminal::data_dir());
     state.set_theme(&saved_theme);
+    // The single context-warning threshold, from `[tui]
+    // context_warn_pct` (80 by default): the composer row and the
+    // sidebar meter both read it off the state.
+    state.context_warn_pct = resolve_context_warn_pct(file_cfg.as_ref());
     // Restore saved vim mode the same way: absent config = off.
     state.vim.enabled = vim::load_vim(&crate::terminal::data_dir());
     // Prime the git segment so the first frame already shows it.
@@ -13657,18 +13686,57 @@ mod picker_render_tests {
     #[test]
     fn composer_ctx_appears_only_at_nearly_full() {
         // The `ctx NN%` element in the provider row appears only at
-        // >=78%. The token line below the box always shows the ctx
-        // ratio (`N / N ctx`) once tokens are nonzero, so this test
-        // checks the percentage element specifically, not the word
-        // "ctx" anywhere in the frame.
+        // or above the single shared threshold (default 80%, from
+        // `[tui] context_warn_pct` — the same value the sidebar
+        // meter warns at). The token line below the box always shows
+        // the ctx ratio (`N / N ctx`) once tokens are nonzero, so
+        // this test checks the percentage element specifically, not
+        // the word "ctx" anywhere in the frame.
         let mut s = test_state();
         s.tokens_max = 1000;
         s.tokens_used = 500;
         let text = render_to_string(render_input_block, &s).join("\n");
-        assert!(!text.contains("ctx 50%"), "ctx% must hide below 78%: {text}");
+        assert!(!text.contains("ctx 50%"), "ctx% must hide below 80%: {text}");
+        s.tokens_used = 790;
+        let text = render_to_string(render_input_block, &s).join("\n");
+        assert!(
+            !text.contains("ctx 79%"),
+            "ctx% must hide below 80%: {text}"
+        );
         s.tokens_used = 800;
         let text = render_to_string(render_input_block, &s).join("\n");
-        assert!(text.contains("ctx 80%"), "ctx must appear at >=78%: {text}");
+        assert!(text.contains("ctx 80%"), "ctx must appear at >=80%: {text}");
+        // A configured threshold moves the row with it.
+        s.context_warn_pct = 50.0;
+        s.tokens_used = 500;
+        let text = render_to_string(render_input_block, &s).join("\n");
+        assert!(
+            text.contains("ctx 50%"),
+            "ctx must follow context_warn_pct: {text}"
+        );
+    }
+
+    #[test]
+    fn context_warn_pct_resolves_from_tui_section() {
+        assert_eq!(resolve_context_warn_pct(None), 80.0);
+        let mut cfg = crate::config::Config::default();
+        assert_eq!(resolve_context_warn_pct(Some(&cfg)), 80.0);
+        cfg.tui = Some(crate::config::TuiSection {
+            context_warn_pct: Some(60.0),
+            ..Default::default()
+        });
+        assert_eq!(resolve_context_warn_pct(Some(&cfg)), 60.0);
+        // Out of range falls back instead of warning always or never.
+        cfg.tui = Some(crate::config::TuiSection {
+            context_warn_pct: Some(0.0),
+            ..Default::default()
+        });
+        assert_eq!(resolve_context_warn_pct(Some(&cfg)), 80.0);
+        cfg.tui = Some(crate::config::TuiSection {
+            context_warn_pct: Some(101.0),
+            ..Default::default()
+        });
+        assert_eq!(resolve_context_warn_pct(Some(&cfg)), 80.0);
     }
 
     #[test]

@@ -1550,6 +1550,11 @@ pub struct TuiSection {
     /// Modal vim editing for the composer (`/vim`). Absent = off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vim: Option<bool>,
+    /// Context-warning threshold in percent: the single threshold
+    /// both the composer's `ctx NN%` element and the sidebar context
+    /// meter warn at. Absent or out of range (0, 100] = 80.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_warn_pct: Option<f64>,
 }
 
 impl Default for RetentionSection {
