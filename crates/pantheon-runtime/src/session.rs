@@ -4760,6 +4760,9 @@ impl Session {
                         login_store: Some(std::sync::Arc::new(pantheon_secrets::LoginStore::open(
                             self.supervisor.data_dir(),
                         ))),
+                        // Screenshots are confined here: the agent tool
+                        // may only write under this directory.
+                        screenshot_dir: Some(self.supervisor.data_dir().join("screenshots")),
                     },
                 ) {
                     Ok(()) => reg.names().len() - before,
