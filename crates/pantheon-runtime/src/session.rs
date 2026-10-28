@@ -5,7 +5,7 @@
 //! -> terminal outcome, every step event-sourced in the ledger.
 
 use crate::agent_runtime::AgentRuntime;
-use crate::operation::{run_tool_operation, ToolOperationAdapter};
+use crate::operation::{operation_err, run_tool_operation, ToolOperationAdapter};
 use crate::tool_config::{
     BrowserToolConfig, ComputerToolConfig, McpToolConfig, ToolEnablement, WebsearchToolConfig,
 };
@@ -428,6 +428,14 @@ impl<'a> ModelEventSink for LedgerModelSink<'a> {
 /// stop the call, and a transform must return the payload the model sees.
 /// The manager is optional so a bare `Session` (tests, embedded use) keeps
 /// working with no extensions loaded.
+/// Legacy `ToolRunner` path. The production turn loop executes tools
+/// through `RegistryToolAdapter` (`durable_tool`), not through this
+/// runner, so gates that live only here (loop guard, extension gates,
+/// redaction) would be dead on the production path. The adapter now
+/// enforces the same gates; this runner keeps them for the remaining
+/// `AgentLoop::tools` consumers (engine paths that still take a
+/// `ToolRunner`) on its own guard instance. Do not add a new gate here
+/// without adding it to the adapter too.
 struct RegRunner<'a> {
     registry: &'a ToolRegistry,
     /// Policy for Code Mode's nested calls. The outer call has already been
@@ -564,6 +572,14 @@ struct RegistryToolAdapter<'a> {
     redaction: Arc<RedactionRegistry>,
     /// Data dir for the Bot Screen takeover gate (see RegRunner).
     data_dir: PathBuf,
+    /// Loop-hygiene gate for this turn. `drive` executes tools through
+    /// this adapter (`durable_tool`), never through `RegRunner`, so the
+    /// guard must live here or the production path has no loop
+    /// protection at all: the only `admit` call used to be in
+    /// `RegRunner::run`, which the parallel tool path never invoked.
+    /// `None` keeps bare-adapter tests and embedded uses working; the
+    /// production `durable_tool` path always passes `Some`.
+    loop_guard: Option<&'a crate::loop_guard::LoopGuard>,
 }
 
 impl<'a> RegistryToolAdapter<'a> {
@@ -588,6 +604,78 @@ impl<'a> RegistryToolAdapter<'a> {
     }
 }
 
+/// Durable result cache for one tool operation, under the session data
+/// dir. A crash after `execute` but before the operation store persists
+/// `raw_result` used to leave the operation in phase `execute`, so the
+/// resume re-ran it and side-effecting tools (shell writes, messages,
+/// file edits) executed twice. The adapter writes the result here
+/// atomically (temp file + rename) before returning it, and
+/// `execute_keyed` replays the cached result when the phase is retried
+/// instead of executing again. `translate_result` removes the entry
+/// best-effort once the operation store holds `raw_result`, so only
+/// crashed-mid-operation entries linger.
+fn tool_result_cache_path(data_dir: &std::path::Path, operation_id: &str) -> std::path::PathBuf {
+    let safe: String = operation_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    data_dir.join("tool_results").join(format!("{safe}.json"))
+}
+
+fn read_cached_tool_result(
+    data_dir: &std::path::Path,
+    operation_id: &str,
+    translated: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let bytes = std::fs::read(tool_result_cache_path(data_dir, operation_id)).ok()?;
+    let cached: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    if cached.get("translated") != Some(translated) {
+        return None;
+    }
+    cached.get("result").cloned()
+}
+
+fn write_cached_tool_result(
+    data_dir: &std::path::Path,
+    operation_id: &str,
+    translated: &serde_json::Value,
+    result: &serde_json::Value,
+) -> Result<(), PantheonError> {
+    let path = tool_result_cache_path(data_dir, operation_id);
+    let parent = path
+        .parent()
+        .ok_or_else(|| operation_err("TOOL_RESULT_CACHE", "cache path has no parent".into()))?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        operation_err(
+            "TOOL_RESULT_CACHE",
+            format!("cannot create tool result cache dir: {e}"),
+        )
+    })?;
+    let tmp = parent.join(format!(
+        ".tmp-{}-{}",
+        std::process::id(),
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("result")
+    ));
+    let payload = serde_json::json!({"translated": translated, "result": result});
+    std::fs::write(&tmp, serde_json::to_vec(&payload).map_err(|e| {
+        operation_err("TOOL_RESULT_CACHE", format!("cannot serialize tool result: {e}"))
+    })?)
+    .and_then(|_| std::fs::rename(&tmp, &path))
+    .map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        operation_err(
+            "TOOL_RESULT_CACHE",
+            format!("cannot persist tool result for crash-safe replay: {e}"),
+        )
+    })
+}
+
 impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
     fn translate(&self, request: &serde_json::Value) -> Result<serde_json::Value, PantheonError> {
         Ok(serde_json::json!({
@@ -604,6 +692,19 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
             .get("args")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        // Runtime-owned loop hygiene, on the production path: a stuck
+        // model gets the same tool-shaped refusal an extension deny
+        // produces, and the underlying tool never runs for the denied
+        // call. This is the adapter's gate; `RegRunner::run` keeps its
+        // own guard for the legacy `ToolRunner` path, on a separate
+        // instance, so a call is never counted twice.
+        if let Some(guard) = self.loop_guard {
+            if let Err(reason) = guard.admit(name, args) {
+                return Ok(serde_json::Value::String(format!(
+                    "[blocked by runtime policy] {reason}"
+                )));
+            }
+        }
         let computer_use = crate::desktop_takeover::is_computer_use_tool(name);
         if computer_use {
             if let Some(refusal) = desktop_takeover_gate(&self.data_dir, name) {
@@ -656,10 +757,34 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
         }
         Ok(serde_json::Value::String(out))
     }
+    /// Crash-safe execution: a retry of the `execute` phase (crash after
+    /// the tool ran but before the operation store persisted
+    /// `raw_result`) replays the cached result instead of running the
+    /// tool a second time. A cache-write failure fails the operation
+    /// rather than returning an uncached success that a resume would
+    /// silently double-execute.
+    fn execute_keyed(
+        &self,
+        operation_id: &str,
+        translated: &serde_json::Value,
+    ) -> Result<serde_json::Value, PantheonError> {
+        if let Some(cached) = read_cached_tool_result(&self.data_dir, operation_id, translated) {
+            return Ok(cached);
+        }
+        let result = self.execute(translated)?;
+        write_cached_tool_result(&self.data_dir, operation_id, translated, &result)?;
+        Ok(result)
+    }
     fn translate_result(
         &self,
         result: &serde_json::Value,
     ) -> Result<serde_json::Value, PantheonError> {
+        // The operation store now holds `raw_result`, so the replay cache
+        // is no longer needed for this call. Best-effort: a leftover file
+        // is harmless (it only replays for the same operation id and
+        // translated request).
+        let operation_id = format!("{}:{}", self.run_id, self.call_id);
+        let _ = std::fs::remove_file(tool_result_cache_path(&self.data_dir, &operation_id));
         Ok(result.clone())
     }
 }
@@ -907,10 +1032,35 @@ fn build_delegate_session(
     // stores, and the child should not inherit a snapshot
     // of the parent's resolution state.
     let child_secrets = SecretsBroker::from_system_env();
+    // The profile's model/provider pin applies to the child session's
+    // default: a profile pinned to a cheap model must actually run on
+    // it, not silently inherit the parent's (possibly switched) model.
+    // Each field overrides independently — a model-only pin keeps the
+    // parent's provider, a provider-only pin keeps the parent's model —
+    // and an absent pin leaves the parent's default untouched. Auto
+    // auxiliaries (entries still pointing at the parent's default) move
+    // with the child default, exactly as `switch_model` moves them;
+    // pinned auxiliaries stay pinned.
+    let mut child_model_policy = model_policy.clone();
+    let old_default = child_model_policy.default.clone();
+    if let Some(provider) = child.profile().provider.value.clone() {
+        child_model_policy.default.provider = provider;
+    }
+    if let Some(model) = child.profile().model.value.clone() {
+        child_model_policy.default.model = model;
+    }
+    if child_model_policy.default != old_default {
+        for aux in child_model_policy.auxiliaries.iter_mut() {
+            if aux.provider == old_default.provider && aux.model == old_default.model {
+                aux.provider = child_model_policy.default.provider.clone();
+                aux.model = child_model_policy.default.model.clone();
+            }
+        }
+    }
     let mut child_session = Session::new(
         data_dir.to_path_buf(),
         child_policy,
-        model_policy.clone(),
+        child_model_policy,
         child_secrets,
     )?;
     child_session.with_agent(child)?;
@@ -2462,8 +2612,9 @@ pub struct ToolCounts {
     /// `mcp_cua-driver_*` desktop-control tools (0 when the ComputerUse
     /// group is off, the driver is not installed, or it is unapproved).
     pub computer: usize,
-    /// LSP + git-undo code-intel tools (0 when the CodeIntel group is
-    /// off). LSP is 3 tools, git-undo is 4 tools when the group is on.
+    /// LSP + git-undo + worktree + code-graph tools (0 when the
+    /// CodeIntel group is off). LSP is 3 tools, git-undo is 4 tools
+    /// when the group is on.
     pub code_intel: usize,
 }
 
@@ -2653,7 +2804,7 @@ impl Session {
     /// the CLI it never exits the process over a bad config file.
     pub fn from_env(data_dir: std::path::PathBuf) -> Result<Self, PantheonError> {
         use pantheon_api::capability::Policy;
-        use pantheon_api::model::{FallbackChain, ModelPolicy};
+        use pantheon_api::model::ModelPolicy;
 
         let cfg = pantheon_api::config::Config::load(&data_dir).ok();
         let default = pantheon_api::config_resolve::resolve_default_model(cfg.as_ref(), None, None);
@@ -2668,9 +2819,12 @@ impl Session {
             reasoning_budget,
             reasoning,
             default,
-            fallbacks: FallbackChain {
-                fallbacks: Vec::new(),
-            },
+            // The configured fallback chain, not an empty one: dropping
+            // it here silently removed every configured fallback for
+            // headless sessions. Auxiliaries stay empty on this path —
+            // that is semantically `auto`, since absent aux entries fall
+            // back to the default model at the call site.
+            fallbacks: pantheon_api::config_resolve::resolve_fallback_chain(cfg.as_ref()),
             auxiliaries: Vec::new(),
         };
         let policy = if std::env::var("PANTHEON_ALLOW_MEMORY").as_deref() == Ok("1") {
@@ -2853,12 +3007,22 @@ impl Session {
 
     /// Switch the default model of a live session.
     ///
-    /// Only the default target changes; fallbacks and auxiliaries are
-    /// untouched, and the next turn resolves keys and endpoints for the new
-    /// target from scratch. Validation is deliberately shallow (non-empty):
-    /// unknown ids fail at request time with structured provider errors,
-    /// and a provider string may be a raw base URL rather than a catalog
-    /// id, so catalog membership is not a valid gate here.
+    /// Switch the chat model for the next turn. The default target moves,
+    /// and so does every auxiliary that still points at the OLD default:
+    /// those entries are the materialised `auto` slots (the TUI's
+    /// `auxiliaries()` clones the default into them at build time), and
+    /// leaving them on the old model after a `/model` switch froze the
+    /// title/compression/judge/vision helpers on the previous model.
+    /// Auxiliaries pinned to a different target stay pinned — that is the
+    /// point of pinning them. Known limit, stated plainly: an entry that
+    /// was explicitly pinned to a value that happens to equal the old
+    /// default is indistinguishable from an `auto` entry after
+    /// materialisation, so it moves too. Fallbacks are untouched, and
+    /// the next turn resolves keys and endpoints for the new target from
+    /// scratch. Validation is deliberately shallow (non-empty): unknown
+    /// ids fail at request time with structured provider errors, and a
+    /// provider string may be a raw base URL rather than a catalog id,
+    /// so catalog membership is not a valid gate here.
     pub fn switch_model(&self, provider: &str, model: &str) -> Result<(), PantheonError> {
         let provider = provider.trim();
         let model = model.trim();
@@ -2882,8 +3046,15 @@ impl Session {
                 "",
             )
         })?;
+        let old = policy.default.clone();
         policy.default.provider = provider.to_string();
         policy.default.model = model.to_string();
+        for aux in policy.auxiliaries.iter_mut() {
+            if aux.provider == old.provider && aux.model == old.model {
+                aux.provider = provider.to_string();
+                aux.model = model.to_string();
+            }
+        }
         Ok(())
     }
     /// The live default target, for display and pre-marking pickers.
@@ -3698,6 +3869,7 @@ impl Session {
         name: &str,
         args: &str,
         registry: &ToolRegistry,
+        loop_guard: &crate::loop_guard::LoopGuard,
     ) -> Result<String, PantheonError> {
         self.supervisor.assert_lease(run_id).map_err(|e| {
             PantheonError::new(
@@ -3718,6 +3890,7 @@ impl Session {
             call_id: call_id.to_string(),
             redaction: self.secrets.redaction_registry(),
             data_dir: self.supervisor.data_dir().to_path_buf(),
+            loop_guard: Some(loop_guard),
         };
         let operation_id = format!("{run_id}:{call_id}");
         let op = run_tool_operation(
@@ -5439,6 +5612,7 @@ impl Session {
             &mut tool_failures,
             &mut failure_warned,
             &watchdog,
+            &loop_guard,
             &ledger_poison,
         ) {
             Ok(o) => o,
@@ -5908,6 +6082,7 @@ impl Session {
         failure_warned: &mut bool,
 
         watchdog: &std::sync::Mutex<TurnWatchdog>,
+        loop_guard: &crate::loop_guard::LoopGuard,
         ledger_poison: &LedgerPoison,
     ) -> Result<LoopOutcome, PantheonError> {
         // A dead ledger parks the turn: the infallible sinks (SupSink, the
@@ -5953,11 +6128,23 @@ impl Session {
         // the mailbox is a read-only view and no peer message ever reaches a
         // running turn.
         self.deliver_agent_messages(messages, run_id)?;
-        // Watchdog: every turn entry counts as observed progress. A stalled
-        // provider turn is caught when the probe (a lightweight ledger
-        // status read) fails, not by wall-clock duration.
+        // Watchdog: poll BEFORE recording activity. The previous order
+        // called `activity()` first, which reset `last_activity` and made
+        // `poll()` always return `Continue`, so the probe closure never
+        // ran and `WATCHDOG_KILL` was unreachable from `drive`. Polling
+        // first lets a stall carried over from the previous turn escalate
+        // on its failed liveness probe; only a non-kill outcome counts
+        // turn entry as observed progress.
+        //
+        // Honest scope: this is a turn-boundary ledger-liveness check,
+        // not a mid-turn stall killer. The probe is a ledger status read,
+        // and `drive` cannot poll while blocked inside the synchronous
+        // `chain.turn_stream()` below, so a provider hang inside that
+        // call is not interrupted here; the transport's own timeout
+        // bounds it. `probe_timed_out` exists for async supervisors that
+        // run the probe out of band; the synchronous path escalates
+        // through `poll_with_probe` instead.
         if let Ok(mut w) = watchdog.lock() {
-            w.activity();
             let action = w.poll_with_probe(|| {
                 self.supervisor
                     .ledger_status(run_id)
@@ -5974,6 +6161,7 @@ impl Session {
                     "",
                 ));
             }
+            w.activity();
         }
         // Recovered pending tool calls settle first, before the next model
         // call. Tools already completed (matching ToolMessage rows in the
@@ -6195,7 +6383,7 @@ impl Session {
                             let run_ref = run_id;
                             let call_id = tc.id.clone();
                             s.spawn(move || {
-                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref)
+                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref, loop_guard)
                             })
                         })
                         .collect();
@@ -6305,6 +6493,12 @@ impl Session {
             };
             chain.turn_stream(messages, &msink)?
         };
+        // A provider return is observed progress, whatever the outcome:
+        // the next turn entry's poll must measure silence from here, not
+        // from the previous turn's entry.
+        if let Ok(mut w) = watchdog.lock() {
+            w.activity();
+        }
 
         match outcome {
             pantheon_agent::TurnOutcome::Text {
@@ -6510,7 +6704,7 @@ impl Session {
                             let args = c.args.clone();
                             let run_ref = run_id;
                             s.spawn(move || {
-                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref)
+                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref, loop_guard)
                             })
                         })
                         .collect();
@@ -6597,6 +6791,7 @@ impl Session {
                     tool_failures,
                     failure_warned,
                     watchdog,
+                    loop_guard,
                     ledger_poison,
                 )
             }
@@ -6779,18 +6974,38 @@ impl Session {
                     // parked call is NOT settled here. The operator's
                     // decision settles it later through `submit_ui_action`,
                     // so the call keeps exactly one tool result at every
-                    // ledger state.
-                    let parks = if park.is_none() {
-                        self.latest_ui_document(run_id, &ui_id)
-                            .ok()
-                            .flatten()
-                            .map(|(doc, _)| doc.has_approval_card())
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
-                    if parks {
-                        park = Some((ui_id, call_id));
+                    // ledger state. Only ONE card can park: a second
+                    // approval card in the same batch gets no
+                    // `UiActionRequested` (the park outcome carries a
+                    // single call id), so settling it with "ui
+                    // published" success would complete a call whose
+                    // decision was never requested — undecidable work
+                    // reported as done. It is refused instead, with an
+                    // instruction to re-issue after the operator decides
+                    // the first card, exactly like a parked sibling.
+                    let has_card = self
+                        .latest_ui_document(run_id, &ui_id)
+                        .ok()
+                        .flatten()
+                        .map(|(doc, _)| doc.has_approval_card())
+                        .unwrap_or(false);
+                    if has_card {
+                        if park.is_none() {
+                            park = Some((ui_id, call_id));
+                            continue;
+                        }
+                        let refusal = Message::tool(
+                            call_id.clone(),
+                            "not executed: this batch already parked on an approval card; \
+                             only one approval card can park a turn. Re-issue this render_ui \
+                             call separately after the operator decides the first card",
+                        )
+                        .with_provenance(Provenance::system("pantheon"));
+                        messages.push(refusal.clone());
+                        self.supervisor.emit(Event::ToolMessage {
+                            run_id: run_id.into(),
+                            message: refusal,
+                        })?;
                         continue;
                     }
                     let mut text = if is_update {
@@ -7771,6 +7986,16 @@ pub fn outgoing_user_message(temporal_hint: &Option<String>, user_message: &str)
 
 pub fn rebuild_messages(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Message> {
     let mut out = Vec::new();
+    // Calls retired by crash recovery: settled, never re-run, but their
+    // assistant `tool_calls` row still ships to the provider. Without a
+    // matching tool result row the provider rejects the next call, so
+    // the post-pass below fabricates one result per retired call.
+    let mut interrupted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for e in &entries {
+        if let Event::ToolInterrupted { call_id, .. } = &e.event {
+            interrupted.insert(call_id.clone());
+        }
+    }
     for e in entries {
         match e.event {
             Event::AssistantMessage { message, .. } | Event::ToolMessage { message, .. } => {
@@ -7811,6 +8036,53 @@ pub fn rebuild_messages(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Mess
             }
             _ => {}
         }
+    }
+    // Retired-call repair: every assistant `tool_calls` row must have
+    // exactly one matching tool result row before the transcript ships
+    // to the provider. A call retired by recovery has no result row in
+    // the ledger (that is what "settled, not pending" means), so fabricate
+    // one here, directly after its assistant row, stating the outcome is
+    // unconfirmed — never a success, never a re-run. Calls that are still
+    // genuinely pending (started, neither completed nor interrupted) are
+    // NOT fabricated here: `drive`'s pending path settles or re-runs
+    // them, and inventing a result would hide a call that may still run.
+    // Only interrupted ids get a fabricated row.
+    if !interrupted.is_empty() {
+        let has_result: std::collections::BTreeSet<String> = out
+            .iter()
+            .filter_map(|m| {
+                if m.role == pantheon_api::message::Role::Tool {
+                    m.tool_call_id.clone()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut repaired = Vec::with_capacity(out.len() + interrupted.len());
+        for message in out {
+            let calls: Vec<String> = if message.role == pantheon_api::message::Role::Assistant {
+                message
+                    .tool_calls
+                    .iter()
+                    .map(|c| c.id.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            repaired.push(message);
+            for call_id in calls {
+                if interrupted.contains(&call_id) && !has_result.contains(&call_id) {
+                    repaired.push(
+                        Message::tool(
+                            call_id,
+                            "interrupted; outcome unconfirmed: the call was retired by crash recovery before completing, so its result is unknown. Do not assume it succeeded or failed; re-check state before relying on it.",
+                        )
+                        .with_provenance(Provenance::system("pantheon")),
+                    );
+                }
+            }
+        }
+        return repaired;
     }
     out
 }
@@ -8991,6 +9263,213 @@ mod delegate_tool_tests {
         );
     }
 
+    /// Adapter-level loop guard: the production path (`durable_tool`)
+    /// executes through `RegistryToolAdapter`, never `RegRunner`, so the
+    /// guard must bite here. Three consecutive identical calls through
+    /// one adapter deny the third with a tool-shaped refusal, and the
+    /// underlying tool runs exactly twice.
+    #[test]
+    fn adapter_loop_guard_denies_third_identical_call() {
+        use pantheon_api::message::ToolSchema;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (session, dir) = test_session();
+        let runs = std::sync::Arc::new(AtomicUsize::new(0));
+        let runs_clone = std::sync::Arc::clone(&runs);
+        let mut reg = ToolRegistry::new();
+        reg.register(
+            ToolSchema {
+                name: "echo".into(),
+                description: "echo".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            pantheon_api::capability::Capability::Other("echo".into()),
+            move |_args| {
+                runs_clone.fetch_add(1, Ordering::SeqCst);
+                Ok("ok".to_string())
+            },
+        );
+        let guard = crate::loop_guard::LoopGuard::new();
+        let adapter = RegistryToolAdapter {
+            registry: &reg,
+            policy: &session.policy,
+            name: "echo".to_string(),
+            hooks: None,
+            run_id: "run-guard".to_string(),
+            call_id: "call_guard".to_string(),
+            redaction: RedactionRegistry::for_scope("test-adapter-guard"),
+            data_dir: dir.path().to_path_buf(),
+            loop_guard: Some(&guard),
+        };
+        let req = serde_json::json!({"name": "echo", "args": r#"{"x":1}"#});
+        assert_eq!(adapter.execute(&req).unwrap().as_str(), Some("ok"));
+        assert_eq!(adapter.execute(&req).unwrap().as_str(), Some("ok"));
+        let third = adapter.execute(&req).unwrap();
+        let text = third.as_str().expect("tool-shaped refusal is text");
+        assert!(
+            text.contains("loop guard") && text.contains("3 times"),
+            "third identical call must be refused, not executed: {text}"
+        );
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "denied call never ran");
+        // A differing call resets the streak.
+        let other = serde_json::json!({"name": "echo", "args": r#"{"x":2}"#});
+        assert_eq!(adapter.execute(&other).unwrap().as_str(), Some("ok"));
+        assert_eq!(runs.load(Ordering::SeqCst), 3);
+    }
+
+    /// Crash-resume idempotency: `execute_keyed` runs the tool once and
+    /// replays the cached result on a second call with the same operation
+    /// id and translated request — the resume-after-crash path — instead
+    /// of executing a side effect twice.
+    #[test]
+    fn adapter_execute_keyed_replays_cached_result() {
+        use pantheon_api::message::ToolSchema;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (session, dir) = test_session();
+        let runs = std::sync::Arc::new(AtomicUsize::new(0));
+        let runs_clone = std::sync::Arc::clone(&runs);
+        let mut reg = ToolRegistry::new();
+        reg.register(
+            ToolSchema {
+                name: "counting".into(),
+                description: "counting".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            pantheon_api::capability::Capability::Other("counting".into()),
+            move |_args| {
+                runs_clone.fetch_add(1, Ordering::SeqCst);
+                Ok("done-once".to_string())
+            },
+        );
+        let adapter = RegistryToolAdapter {
+            registry: &reg,
+            policy: &session.policy,
+            name: "counting".to_string(),
+            hooks: None,
+            run_id: "run-keyed".to_string(),
+            call_id: "call_keyed".to_string(),
+            redaction: RedactionRegistry::for_scope("test-adapter-keyed"),
+            data_dir: dir.path().to_path_buf(),
+            loop_guard: None,
+        };
+        let translated = serde_json::json!({"name": "counting", "args": "{}"});
+        let first = adapter.execute_keyed("run-keyed:call_keyed", &translated).unwrap();
+        let second = adapter.execute_keyed("run-keyed:call_keyed", &translated).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.as_str(), Some("done-once"));
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "second call must replay, not run");
+        // A different translated request for the same id is not a replay.
+        let other = serde_json::json!({"name": "counting", "args": r#"{"x":1}"#});
+        adapter.execute_keyed("run-keyed:call_keyed", &other).unwrap();
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    /// Profile pin applies to the child: a child profile pinned to a
+    /// cheap model must run on that pin, not on the parent's (possibly
+    /// `/model`-switched) default. An unpinned child keeps the parent's
+    /// default, and the child's auto auxiliaries follow its own default.
+    #[test]
+    fn delegate_child_applies_profile_model_pin() {
+        use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, FallbackChain};
+        let (session, dir) = test_session();
+        let mut registry = ProfileRegistry::new();
+        registry
+            .insert("parent", AgentProfile::default())
+            .expect("insert parent");
+        let mut pinned = AgentProfile::default();
+        pinned.model = Some("cheap-model".to_string());
+        pinned.provider = Some("cheap-provider".to_string());
+        registry.insert("child", pinned).expect("insert child");
+        registry
+            .insert("plain", AgentProfile::default())
+            .expect("insert plain");
+        let effective = registry.resolve("parent", "coder").expect("resolve parent");
+        let agent = AgentRuntime::new(
+            session.supervisor.clone(),
+            registry,
+            effective,
+            dir.path().to_path_buf(),
+        )
+        .expect("agent runtime");
+        let parent_policy = ModelPolicy {
+            reasoning_budget: None,
+            reasoning: pantheon_api::model::ReasoningLevel::default(),
+            default: DefaultModel {
+                provider: "openai".into(),
+                model: "gpt-4o-mini".into(),
+            },
+            fallbacks: FallbackChain { fallbacks: vec![] },
+            auxiliaries: vec![AuxiliaryModel {
+                kind: AuxiliaryKind::TitleGen,
+                provider: "openai".into(),
+                model: "gpt-4o-mini".into(),
+                timeout_secs: 10,
+                target_percent: None,
+            }],
+        };
+        let tools = crate::tool_config::ToolEnablement::default();
+        // Inline (not a closure): a closure returning DelegateContext
+        // ties the borrowed `tools` lifetime to the `profile` argument
+        // lifetime and will not compile.
+        let mk_policy = || DelegatePolicy {
+            max_delegate_depth: 2,
+            allow_child_spawn: true,
+            budget_section: None,
+            delegation_section: None,
+        };
+        let child = build_delegate_session(
+            &agent,
+            &parent_policy,
+            dir.path(),
+            DelegateContext {
+                parent_depth: 0,
+                profile: "child",
+                parent_goal: None,
+                parent_tools: &tools,
+                parent_mode: AgentMode::default(),
+                parent_permission_mode: PermissionMode::default(),
+            },
+            mk_policy(),
+        )
+        .expect("build pinned child");
+        let (provider, model) = child.default_model();
+        assert_eq!(
+            (provider.as_str(), model.as_str()),
+            ("cheap-provider", "cheap-model"),
+            "pinned child must run on its pin, not the parent default"
+        );
+        let title = child
+            .policy_snapshot()
+            .auxiliary(&AuxiliaryKind::TitleGen)
+            .expect("title aux")
+            .clone();
+        assert_eq!(
+            (title.provider.as_str(), title.model.as_str()),
+            ("cheap-provider", "cheap-model"),
+            "child auto auxiliaries follow the child's default"
+        );
+        let plain = build_delegate_session(
+            &agent,
+            &parent_policy,
+            dir.path(),
+            DelegateContext {
+                parent_depth: 0,
+                profile: "plain",
+                parent_goal: None,
+                parent_tools: &tools,
+                parent_mode: AgentMode::default(),
+                parent_permission_mode: PermissionMode::default(),
+            },
+            mk_policy(),
+        )
+        .expect("build unpinned child");
+        let (provider, model) = plain.default_model();
+        assert_eq!(
+            (provider.as_str(), model.as_str()),
+            ("openai", "gpt-4o-mini"),
+            "unpinned child keeps the parent default"
+        );
+    }
+
     /// End-to-end linkage: the registered `delegate` tool, executed
     /// through the production adapter seam, stamps the executing call's
     /// id onto both lifecycle events. The component tests above pass the
@@ -9013,6 +9492,7 @@ mod delegate_tool_tests {
             call_id: "call_e2e".to_string(),
             redaction: RedactionRegistry::for_scope("test-adapter-redaction"),
             data_dir: dir.path().to_path_buf(),
+            loop_guard: None,
         };
         let out = adapter
             .execute(&serde_json::json!({
@@ -10260,6 +10740,104 @@ mod delegate_tool_tests {
     }
 
     #[test]
+    fn second_approval_card_in_one_batch_is_refused_not_settled() {
+        // Regression: `publish_ui_batch` computed the park only while
+        // no card had parked yet, so a second approval card in the same
+        // batch got a "ui published" success and no UiActionRequested —
+        // a call completed while its decision was never requested.
+        use pantheon_agent::ToolCall;
+        use pantheon_api::message::ToolCallRef;
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-two-cards";
+        ui_run(&session, run_id);
+        let card_doc = |title: &str| UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "turn1-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Approval(ApprovalCard {
+                    title: title.to_string(),
+                    detail: "detail".to_string(),
+                    approve: pantheon_api::ui::ActionRef {
+                        action_id: "yes".to_string(),
+                        label: "Yes".to_string(),
+                        kind: UiActionKind::Approval {
+                            decision: ApprovalDecision::Grant,
+                        },
+                    },
+                    deny: pantheon_api::ui::ActionRef {
+                        action_id: "no".to_string(),
+                        label: "No".to_string(),
+                        kind: UiActionKind::Approval {
+                            decision: ApprovalDecision::Deny,
+                        },
+                    },
+                    scope_hint: "hint".to_string(),
+                }),
+            },
+        };
+        let mk = |id: &str, title: &str| {
+            let args = serde_json::json!({ "document": card_doc(title) }).to_string();
+            (
+                ToolCall {
+                    name: "render_ui".to_string(),
+                    capability: pantheon_api::capability::Capability::Other("render_ui".into()),
+                    args: args.clone(),
+                },
+                ToolCallRef {
+                    id: id.to_string(),
+                    name: "render_ui".to_string(),
+                    arguments: args,
+                },
+            )
+        };
+        let (c1, r1) = mk("call-card-1", "First?");
+        let (c2, r2) = mk("call-card-2", "Second?");
+        let mut messages = Vec::new();
+        let out = session
+            .publish_ui_batch(run_id, "turn1", &[c1, c2], &[r1, r2], &mut messages)
+            .expect("publish batch")
+            .expect("consumed");
+        let (ui_id, call_id) = match out.1.expect("first card parks") {
+            LoopOutcome::AwaitingUiAction { ui_id, call_id } => (ui_id, call_id),
+            other => panic!("expected park, got {other:?}"),
+        };
+        assert_eq!(call_id, "call-card-1");
+        let _ = ui_id;
+        // Exactly one UiActionRequested, for the first card.
+        let entries = session.supervisor.replay(run_id).expect("replay");
+        let requested: Vec<_> = entries
+            .iter()
+            .filter_map(|e| match &e.event {
+                Event::UiActionRequested { call_id, .. } => Some(call_id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requested, vec!["call-card-1".to_string()]);
+        // The second card must NOT get a success result: it gets a
+        // refusal to re-issue after the first decision.
+        let second: Vec<_> = messages
+            .iter()
+            .filter(|m| m.tool_call_id.as_deref() == Some("call-card-2"))
+            .collect();
+        assert_eq!(second.len(), 1, "second card settled exactly once: {messages:?}");
+        assert!(
+            second[0].content.contains("not executed")
+                && !second[0].content.contains("ui published"),
+            "second card must be refused, not succeeded: {}",
+            second[0].content
+        );
+        // And the parked first call is still unsettled.
+        assert!(
+            !entries.iter().any(|e| matches!(
+                &e.event,
+                Event::ToolCompleted { call_id: c, .. } if c == "call-card-1"
+            )),
+            "parked first call must stay unsettled"
+        );
+    }
+
+    #[test]
     fn ui_approval_card_parks_and_resolves() {
         let (session, _dir) = test_session();
         let run_id = "run-ui-approval";
@@ -10473,6 +11051,127 @@ mod delegate_tool_tests {
             }
             other => panic!("expected ToolCall, got {other:?}"),
         }
+    }
+
+    /// The realistic shape the settled test above omits: a retired call
+    /// always has a real assistant `tool_calls` row in the ledger. Without
+    /// a fabricated result row that row ships to the provider with no
+    /// result and the next provider call is rejected, so `rebuild_messages`
+    /// must fabricate an "interrupted; outcome unconfirmed" tool result
+    /// directly after the assistant row.
+    #[test]
+    fn retired_call_in_rebuilt_transcript_gets_unconfirmed_result() {
+        use crate::session::rebuild_messages;
+        use pantheon_api::message::ToolCallRef;
+        let assistant = Message::assistant_tool_calls(vec![ToolCallRef {
+            id: "call-1".to_string(),
+            name: "shell".to_string(),
+            arguments: "{\"command\":\"ls\"}".to_string(),
+        }]);
+        let entries = vec![
+            pantheon_storage::LedgerEntry {
+                id: 1,
+                run_id: "r".to_string(),
+                seq: 1,
+                ts_ms: 1,
+                event: Event::AssistantMessage {
+                    run_id: "r".to_string(),
+                    message: assistant,
+                },
+            },
+            pantheon_storage::LedgerEntry {
+                id: 2,
+                run_id: "r".to_string(),
+                seq: 2,
+                ts_ms: 2,
+                event: Event::ToolStarted {
+                    run_id: "r".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool: "shell".to_string(),
+                    args: "{\"command\":\"ls\"}".to_string(),
+                    provenance: Provenance::system("test"),
+                },
+            },
+            pantheon_storage::LedgerEntry {
+                id: 3,
+                run_id: "r".to_string(),
+                seq: 3,
+                ts_ms: 3,
+                event: Event::ToolInterrupted {
+                    run_id: "r".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool: "shell".to_string(),
+                    args: "{\"command\":\"ls\"}".to_string(),
+                    output_seen: false,
+                    result_seen: false,
+                    detail: "interrupted before completion; outcome unconfirmed".to_string(),
+                },
+            },
+        ];
+        let rebuilt = rebuild_messages(entries);
+        assert_eq!(rebuilt.len(), 2, "assistant row + fabricated result: {rebuilt:?}");
+        let result = &rebuilt[1];
+        assert_eq!(result.role, pantheon_api::message::Role::Tool);
+        assert_eq!(result.tool_call_id.as_deref(), Some("call-1"));
+        assert!(
+            result.content.contains("outcome unconfirmed"),
+            "fabricated result must not claim success or failure: {}",
+            result.content
+        );
+        // A real ToolMessage already present must not gain a duplicate.
+        let entries_with_result = {
+            let mut v = vec![pantheon_storage::LedgerEntry {
+                id: 4,
+                run_id: "r".to_string(),
+                seq: 4,
+                ts_ms: 4,
+                event: Event::ToolMessage {
+                    run_id: "r".to_string(),
+                    message: Message::tool("call-1", "real result"),
+                },
+            }];
+            // Rebuild the full ledger order: assistant, started,
+            // interrupted, then the real result row.
+            let mut full = vec![];
+            full.push(pantheon_storage::LedgerEntry {
+                id: 1,
+                run_id: "r".to_string(),
+                seq: 1,
+                ts_ms: 1,
+                event: Event::AssistantMessage {
+                    run_id: "r".to_string(),
+                    message: Message::assistant_tool_calls(vec![ToolCallRef {
+                        id: "call-1".to_string(),
+                        name: "shell".to_string(),
+                        arguments: "{\"command\":\"ls\"}".to_string(),
+                    }]),
+                },
+            });
+            full.push(pantheon_storage::LedgerEntry {
+                id: 3,
+                run_id: "r".to_string(),
+                seq: 3,
+                ts_ms: 3,
+                event: Event::ToolInterrupted {
+                    run_id: "r".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool: "shell".to_string(),
+                    args: "{\"command\":\"ls\"}".to_string(),
+                    output_seen: false,
+                    result_seen: false,
+                    detail: "interrupted".to_string(),
+                },
+            });
+            full.append(&mut v);
+            full
+        };
+        let rebuilt = rebuild_messages(entries_with_result);
+        assert_eq!(
+            rebuilt.len(),
+            2,
+            "existing result row must not be duplicated: {rebuilt:?}"
+        );
+        assert_eq!(rebuilt[1].content, "real result");
     }
 
     /// The `delegate_async` / `subagent_*` tools are wired end to end against
@@ -11072,6 +11771,77 @@ mod tool_registration_diagnostics_tests {
                 .any(|d| d.contains("computer-use") && d.contains("binary not found")),
             "a configured binary path that does not exist must be recorded: {:?}",
             session.tool_diagnostics()
+        );
+    }
+
+    #[test]
+    fn code_intel_false_registers_no_code_intel_tools() {
+        // Config -> enablement -> registry, end to end: `[tools]
+        // code_intel = false` used to leave the group on because
+        // `from_section` dropped the flag and `is_enabled` hardcoded
+        // true. The gate covers LSP, git-undo, worktrees, and the code
+        // graph, not just the LSP + git-undo the old label named.
+        let (session, _dir) = test_session();
+        let mut section = pantheon_api::config::ToolsSection::default();
+        section.code_intel = Some(false);
+        session.set_tool_enablement(crate::tool_config::ToolEnablement::from_section(&section));
+        let (reg, counts) = session.build_tool_registry();
+        assert_eq!(counts.code_intel, 0, "code_intel=false must register none");
+        assert!(
+            !reg.names().iter().any(|n| n.starts_with("lsp.")
+                || n.starts_with("gitundo.")
+                || n.starts_with("worktree.")
+                || n.starts_with("codebase.")),
+            "no code-intel tool may appear: {:?}",
+            reg.names()
+        );
+        let (session, _dir) = test_session();
+        let (_reg, counts) = session.build_tool_registry();
+        assert!(
+            counts.code_intel > 0,
+            "default enablement still registers code-intel tools"
+        );
+    }
+
+    #[test]
+    fn switch_model_moves_auto_auxiliaries_and_keeps_pins() {
+        use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel};
+        let (session, _dir) = test_session();
+        // test_session's default is local/default; seed one auto-like
+        // entry (== default) and one pinned entry (different target).
+        {
+            let mut policy = session.model_policy.lock().expect("policy lock");
+            policy.auxiliaries = vec![
+                AuxiliaryModel {
+                    kind: AuxiliaryKind::TitleGen,
+                    provider: "local".into(),
+                    model: "default".into(),
+                    timeout_secs: 10,
+                    target_percent: None,
+                },
+                AuxiliaryModel {
+                    kind: AuxiliaryKind::Judge,
+                    provider: "cheap".into(),
+                    model: "judge-mini".into(),
+                    timeout_secs: 10,
+                    target_percent: None,
+                },
+            ];
+        }
+        session.switch_model("openai", "gpt-4o-mini").expect("switch");
+        let policy = session.model_policy.lock().expect("policy lock");
+        assert_eq!(policy.default.provider, "openai");
+        let title = policy.auxiliary(&AuxiliaryKind::TitleGen).expect("title aux");
+        assert_eq!(
+            (title.provider.as_str(), title.model.as_str()),
+            ("openai", "gpt-4o-mini"),
+            "auto auxiliary must follow the switch"
+        );
+        let judge = policy.auxiliary(&AuxiliaryKind::Judge).expect("judge aux");
+        assert_eq!(
+            (judge.provider.as_str(), judge.model.as_str()),
+            ("cheap", "judge-mini"),
+            "pinned auxiliary must not follow the switch"
         );
     }
 }
