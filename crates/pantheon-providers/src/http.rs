@@ -274,6 +274,21 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
             format!("no addresses for host: {host}"),
         ));
     }
+    // Dev/test-only escape hatch, off by default: a loopback provider
+    // (127.0.0.1, ::1, localhost) is the only way to smoke-test a real
+    // Session turn against a fake provider without a live key, and the
+    // SSRF guard below otherwise rejects every such URL. Opt-in via
+    // `PANTHEON_ALLOW_LOOPBACK_PROVIDERS=1`; it permits loopback
+    // addresses ONLY - LAN/private ranges stay blocked, so a stray env
+    // value cannot turn a provider URL into an internal-network probe.
+    // Never set this in production: a loopback provider is trusted with
+    // the turn's transcript by construction.
+    if std::env::var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS").as_deref() == Ok("1")
+        && !addrs.is_empty()
+        && addrs.iter().all(|ip| ip.is_loopback())
+    {
+        return Ok(());
+    }
     for ip in &addrs {
         if !is_public_ip(*ip) {
             return Err(err(
@@ -869,5 +884,41 @@ mod tests {
             resolve_http_timeout(None, Some(10_000_000)),
             MAX_HTTP_TIMEOUT
         );
+    }
+
+    /// The loopback-provider gate is env-mutating, so its tests share one
+    /// lock: parallel tests in this binary must never observe each
+    /// other's opt-in value.
+    fn loopback_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn loopback_provider_blocked_by_default() {
+        let _g = loopback_env_lock();
+        std::env::remove_var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS");
+        let err = validate_url("http://127.0.0.1:9/v1/chat/completions").unwrap_err();
+        assert_eq!(err.code, "SSRF_BLOCKED");
+    }
+
+    #[test]
+    fn loopback_provider_allowed_only_with_explicit_opt_in() {
+        let _g = loopback_env_lock();
+        std::env::set_var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS", "1");
+        assert!(validate_url("http://127.0.0.1:9/v1/chat/completions").is_ok());
+        assert!(validate_url("http://localhost:9/v1/chat/completions").is_ok());
+        std::env::remove_var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS");
+    }
+
+    #[test]
+    fn loopback_opt_in_does_not_open_lan_ranges() {
+        let _g = loopback_env_lock();
+        std::env::set_var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS", "1");
+        let err = validate_url("http://192.168.1.10/v1/chat/completions").unwrap_err();
+        assert_eq!(err.code, "SSRF_BLOCKED");
+        let err = validate_url("http://10.0.0.5/v1/chat/completions").unwrap_err();
+        assert_eq!(err.code, "SSRF_BLOCKED");
+        std::env::remove_var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS");
     }
 }

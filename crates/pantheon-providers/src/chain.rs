@@ -326,12 +326,19 @@ impl<T: ChatTransport> ProviderChain<T> {
         let base = crate::http::resolve_base(&model.provider)?;
         // The configured key belongs to the default provider. Fallbacks may
         // use their own catalog/env credential, but must never receive the
-        // primary provider's secret by accident - so a fallback with no
-        // key_env resolves per-provider (catalog/env), NOT from the
-        // default's key. A fallback WITH key_env resolves that named
-        // variable (broker first, then process env) and passes it as
-        // the configured key, so different fallbacks can be different
-        // providers with different keys.
+        // primary provider's secret by accident - with two explicit
+        // exceptions, both provider-owned, never cross-provider:
+        // (a) a fallback WITH key_env resolves that named variable
+        // (broker first, then process env), so different fallbacks can
+        // be different providers with different keys; (b) a fallback
+        // that IS the same provider as the default (same provider id,
+        // different model, e.g. an NVIDIA custom endpoint falling back
+        // to another NVIDIA model) inherits the default's key, because
+        // there the key is the provider's own, not a leak - without it
+        // every same-provider fallback died with PROVIDER_CONFIG.
+        // A fallback with neither key_env nor the default's provider
+        // id resolves per-provider (catalog/env), NOT from the
+        // default's key.
         let configured = if idx == 0 {
             self.api_key
                 .as_ref()
@@ -339,6 +346,11 @@ impl<T: ChatTransport> ProviderChain<T> {
                 .unwrap_or_default()
         } else if let Some(name) = model.key_env.as_deref().filter(|s| !s.is_empty()) {
             resolve_named_key(name, self.oauth_broker.as_ref())
+        } else if model.provider == self.policy.default.provider {
+            self.api_key
+                .as_ref()
+                .map(|kv| kv.expose().to_string())
+                .unwrap_or_default()
         } else {
             String::new()
         };
