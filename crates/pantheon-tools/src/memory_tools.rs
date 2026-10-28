@@ -439,14 +439,19 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
                 &forget_opts.namespace,
             )?;
 
-            forget_opts.sink.record(MemoryToolEvent::Forgotten {
-                layer,
-                namespace: namespace.clone(),
-                key: key.clone(),
-            });
-
             match forget_opts.store.forget(layer, &namespace, &key) {
-                Ok(true) => Ok(format!("forgot {key}")),
+                Ok(true) => {
+                    // Recorded only on a successful forget: the old code
+                    // recorded `Forgotten` BEFORE the store call, so the
+                    // ledger claimed a forget even when nothing was
+                    // removed (`Ok(false)`) or the store errored.
+                    forget_opts.sink.record(MemoryToolEvent::Forgotten {
+                        layer,
+                        namespace: namespace.clone(),
+                        key: key.clone(),
+                    });
+                    Ok(format!("forgot {key}"))
+                }
                 Ok(false) => Err(crate::tools::tool_err(
                     "MEM_NOT_FOUND",
                     Layer::Execution,
@@ -536,4 +541,136 @@ pub fn register_memory_tools(reg: &mut ToolRegistry, opts: MemoryToolOptions) {
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pantheon_api::capability::Policy;
+    use pantheon_memory::MemoryStore;
+
+    fn harness(store: std::sync::Arc<dyn MemoryBackend>) -> (ToolRegistry, VecMemorySink) {
+        let sink = VecMemorySink::new();
+        let mut reg = ToolRegistry::default();
+        register_memory_tools(
+            &mut reg,
+            MemoryToolOptions {
+                store,
+                policy: std::sync::Arc::new(Policy::coder_with_memory()),
+                namespace: "test".to_string(),
+                max_bytes: 4096,
+                sink: std::sync::Arc::new(sink.clone()),
+                backend_label: "test".to_string(),
+            },
+        );
+        (reg, sink)
+    }
+
+    fn forgotten_count(sink: &VecMemorySink) -> usize {
+        sink.snapshot()
+            .iter()
+            .filter(|e| matches!(e, MemoryToolEvent::Forgotten { .. }))
+            .count()
+    }
+
+    #[test]
+    fn forget_records_forgotten_only_on_successful_removal() {
+        let store = std::sync::Arc::new(MemoryStore::open_in_memory().unwrap());
+        store
+            .put(&Proposal {
+                layer: LayerKind::Agent,
+                namespace: "test".to_string(),
+                key: "k".to_string(),
+                value: "v".to_string(),
+                provenance: Provenance {
+                    source: "test".to_string(),
+                    origin: "test".to_string(),
+                    trust: pantheon_api::provenance::TrustTier::Untrusted,
+                    recorded_at_ms: 1,
+                },
+            })
+            .unwrap();
+        let (reg, sink) = harness(store as std::sync::Arc<dyn MemoryBackend>);
+        // Success: one Forgotten event.
+        assert!(reg.execute("memory_forget", r#"{"key":"k"}"#).is_ok());
+        assert_eq!(forgotten_count(&sink), 1);
+        // Not found: an error, and NO second Forgotten event - the old
+        // code recorded Forgotten before the store call, so the ledger
+        // claimed a forget that never happened.
+        assert!(reg.execute("memory_forget", r#"{"key":"k"}"#).is_err());
+        assert_eq!(forgotten_count(&sink), 1);
+    }
+
+    #[derive(Debug)]
+    struct FailingForgetBackend;
+    impl MemoryBackend for FailingForgetBackend {
+        fn recall(
+            &self,
+            _policy: &Policy,
+            _namespaces: &[&str],
+            _layers: &[LayerKind],
+            _query: &str,
+            _limit: usize,
+        ) -> Result<Vec<pantheon_memory::Recalled>, PantheonError> {
+            Err(PantheonError::new(
+                "MEM_TEST_FAIL",
+                Layer::Memory,
+                false,
+                "boom".to_string(),
+                "test backend".to_string(),
+                "".to_string(),
+            ))
+        }
+        fn write(
+            &self,
+            _policy: &Policy,
+            _proposal: Proposal,
+            _max_bytes: usize,
+        ) -> Result<pantheon_memory::MemoryRecord, PantheonError> {
+            Err(PantheonError::new(
+                "MEM_TEST_FAIL",
+                Layer::Memory,
+                false,
+                "boom".to_string(),
+                "test backend".to_string(),
+                "".to_string(),
+            ))
+        }
+        fn list_agent(&self, _namespace: &str) -> Result<Vec<(String, String)>, PantheonError> {
+            Ok(Vec::new())
+        }
+        fn forget(
+            &self,
+            _layer: LayerKind,
+            _namespace: &str,
+            _key: &str,
+        ) -> Result<bool, PantheonError> {
+            Err(PantheonError::new(
+                "MEM_TEST_FAIL",
+                Layer::Memory,
+                false,
+                "boom".to_string(),
+                "test backend".to_string(),
+                "".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn forget_error_records_denied_not_forgotten() {
+        let (reg, sink) = harness(std::sync::Arc::new(FailingForgetBackend));
+        assert!(reg.execute("memory_forget", r#"{"key":"k"}"#).is_err());
+        assert_eq!(
+            forgotten_count(&sink),
+            0,
+            "a failed forget must not claim Forgotten"
+        );
+        assert!(
+            sink.snapshot().iter().any(
+                |e| matches!(e, MemoryToolEvent::Denied { code, .. } if code == "MEM_TEST_FAIL")
+            ),
+            "the error path records Denied: {:?}",
+            sink.snapshot()
+        );
+    }
 }
