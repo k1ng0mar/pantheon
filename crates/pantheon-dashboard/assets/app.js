@@ -293,6 +293,7 @@ const VIEWS = [
   ["memory", "Memory", "memory"],
   ["config", "Config", "config"],
   ["keys", "Keys", "keys"],
+  ["secrets", "Secrets", "keys"],
   ["logs", "Logs", "logs"],
   ["skills", "Skills", "skills"],
   ["mcp", "MCP", "mcp"],
@@ -1712,6 +1713,85 @@ function keyForm(existingKey) {
     } catch (e) { toast(e.message, "err"); }
   };
   $("#kf-key", root).focus();
+}
+
+/* ---------------- secrets (secure forms) ---------------- */
+renderers.secrets = async function () {
+  setView(viewHead("Secrets", "Broker secrets: values are write-only, never shown") +
+    '<div class="toolbar"><button class="btn primary" id="es-add">Add secret</button>' +
+    '<button class="btn small" id="es-refresh">Refresh</button></div><div id="es-body">' + loading("secrets") + "</div>");
+  $("#es-refresh").onclick = () => renderers.secrets();
+  $("#es-add").onclick = () => secretForm(null);
+  const load = async () => {
+    try {
+      const data = await api("GET", "/api/secrets");
+      if (!data.secrets.length) {
+        $("#es-body").innerHTML = emptyState("No broker secrets", "Add one. Values are write-only and never displayed.");
+        return;
+      }
+      $("#es-body").innerHTML = '<div class="panel"><div class="panel-body flush"><table class="grid"><thead><tr>' +
+        "<th>Name</th><th>Scope</th><th>Used by</th><th></th></tr></thead><tbody>" +
+        data.secrets.map((s) =>
+          "<tr><td class='mono'>" + esc(s.name) + "</td>" +
+          "<td class='mono'>" + esc(s.scope) + "</td>" +
+          "<td class='mono view-sub'>" + (s.used_by.length ? esc(s.used_by.join(", ")) : " - ") + "</td>" +
+          "<td><span class='btn-row'><button class='btn small' data-sverify='" + esc(s.name) + "'>Verify</button>" +
+          "<button class='btn small' data-sedit='" + esc(s.name) + "'>Rotate</button>" +
+          "<button class='btn small danger' data-sdel='" + esc(s.name) + "'>Delete</button></span></td></tr>"
+        ).join("") + "</tbody></table></div></div>";
+      $$("#es-body [data-sedit]").forEach((b) => b.onclick = () => secretForm(b.dataset.sedit));
+      $$("#es-body [data-sverify]").forEach((b) => b.onclick = async () => {
+        try {
+          const r = await api("POST", "/api/secrets/" + encodeURIComponent(b.dataset.sverify) + "/verify", {});
+          toast("Verification: " + r.verification.status + (r.verification.reason ? " (" + r.verification.reason + ")" : ""), r.verification.status === "verified" ? "ok" : "err");
+        } catch (e) { toast(e.message, "err"); }
+      });
+      $$("#es-body [data-sdel]").forEach((b) => b.onclick = async () => {
+        const ok = await confirmDialog({ title: "Delete secret " + b.dataset.sdel + "?", body: '<p class="m-sub">Removes it from the broker. Services referencing it will fail until a new value is saved.</p>', confirmLabel: "Delete", danger: true });
+        if (!ok) return;
+        try { await api("DELETE", "/api/secrets/" + encodeURIComponent(b.dataset.sdel)); toast("Deleted", "ok"); renderers.secrets(); }
+        catch (e) { toast(e.message, "err"); }
+      });
+    } catch (e) { $("#es-body").innerHTML = errorState(e.message, true); $("[data-retry]").onclick = load; }
+  };
+  load();
+};
+
+function secretForm(existingName) {
+  const root = $("#modal-root");
+  root.innerHTML = '<div class="modal-veil"><div class="modal" role="dialog" aria-modal="true" aria-label="' + (existingName ? "Rotate secret" : "Add secret") + '">' +
+    "<h3>" + (existingName ? "Rotate secret" : "Add secret") + "</h3>" +
+    '<p class="m-sub">Values are write-only: the server never returns them. The value is stored in the secrets broker, never in config.</p>' +
+    '<div class="field"><label>Secret name (env var name)</label><input id="sf-name" class="input mono" value="' + esc(existingName || "") + '"' + (existingName ? " disabled" : "") + ' spellcheck="false"></div>' +
+    '<div class="field"><label>Scope</label><select id="sf-scope" class="input">' +
+    '<option value="provider">provider</option><option value="mcp">mcp</option>' +
+    '<option value="browser_vault">browser_vault</option><option value="bot_token">bot_token</option>' +
+    '<option value="custom">custom</option></select></div>' +
+    '<div class="field"><label>Value</label><input id="sf-val" class="input mono" type="password" autocomplete="off" spellcheck="false"></div>' +
+    '<div class="field"><label>Provider base URL (provider scope only, optional)</label><input id="sf-base" class="input mono" placeholder="https://api.example.com/v1" spellcheck="false"></div>' +
+    '<div class="m-actions"><button class="btn" data-x>Cancel</button><button class="btn primary" data-ok>Save</button></div></div></div>';
+  const close = () => { root.innerHTML = ""; };
+  $("[data-x]", root).onclick = close;
+  $("[data-ok]", root).onclick = async () => {
+    const name = $("#sf-name", root).value.trim();
+    const val = $("#sf-val", root).value;
+    const scope = $("#sf-scope", root).value;
+    const base = $("#sf-base", root).value.trim();
+    if (!name) { toast("Secret name is required", "err"); return; }
+    if (!val) { toast("Value is required", "err"); return; }
+    try {
+      const body = { name, scope, value: val };
+      if (base) body.base_url = base;
+      let r;
+      if (existingName) r = await api("POST", "/api/secrets/" + encodeURIComponent(name) + "/rotate", { value: val, base_url: base || undefined });
+      else r = await api("POST", "/api/secrets", body);
+      close();
+      const v = r.verification;
+      toast("Saved. Verification: " + v.status + (v.reason ? " (" + v.reason + ")" : ""), v.status === "verified" ? "ok" : (v.status === "failed" ? "err" : "warn"));
+      renderers.secrets();
+    } catch (e) { toast(e.message, "err"); }
+  };
+  $("#sf-name", root).focus();
 }
 
 /* ---------------- logs ---------------- */
