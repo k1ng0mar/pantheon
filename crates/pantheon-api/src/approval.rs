@@ -25,6 +25,7 @@
 use crate::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use fs2::FileExt as _;
 use std::collections::HashMap;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -260,6 +261,77 @@ pub struct ApprovalStore {
     corrupt: bool,
 }
 
+/// Process-wide write lock for approval stores, the in-process half
+/// of the exclusion [`ApprovalStore::record`]/[`revoke`] hold. Same
+/// shape as the dotenv writer lock: a process mutex plus an exclusive
+/// flock on a sidecar `<store>.lock` file, so writers in *other*
+/// processes cannot interleave a read-modify-write either. The sidecar
+/// is never renamed, so the flock pins a stable inode across the
+/// atomic renames of the store file itself.
+static APPROVAL_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Read one store file: the records, plus whether the file existed
+/// but failed to parse.
+fn load_records(path: &Path) -> (HashMap<String, ApprovalRecord>, bool) {
+    match std::fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str::<HashMap<String, ApprovalRecord>>(&text) {
+            Ok(records) => (records, false),
+            Err(_) => (HashMap::new(), true),
+        },
+        Err(_) => (HashMap::new(), false),
+    }
+}
+
+/// Held across one [`ApprovalStore::record`]/[`revoke`]: the process
+/// mutex (dropped first) and the sidecar flock file (dropped last,
+/// releasing the flock). Kept as a named type so the two halves
+/// cannot be released independently by accident.
+struct ApprovalWriteGuard {
+    _proc: std::sync::MutexGuard<'static, ()>,
+    _file: std::fs::File,
+}
+
+/// Acquire the write exclusion for one store file: the process mutex,
+/// then an exclusive flock on the sidecar `<store>.lock` file (the
+/// dotenv writer pattern). Blocking: a writer waits its turn.
+fn lock_for_write(path: &Path) -> Result<ApprovalWriteGuard, PantheonError> {
+    let proc = APPROVAL_WRITE_LOCK.lock().map_err(|_| {
+        merr(
+            "APPROVAL_WRITE",
+            "approval write lock poisoned".to_string(),
+        )
+    })?;
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock_path = PathBuf::from(lock_path);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = match opts.open(&lock_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = lock_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    merr("APPROVAL_WRITE", format!("create lock dir: {e}"))
+                })?;
+            }
+            opts.open(&lock_path)
+                .map_err(|e| merr("APPROVAL_WRITE", format!("open lock file: {e}")))?
+        }
+        Err(e) => return Err(merr("APPROVAL_WRITE", format!("open lock file: {e}"))),
+    };
+    file.lock_exclusive()
+        .map_err(|e| merr("APPROVAL_WRITE", format!("flock: {e}")))?;
+    Ok(ApprovalWriteGuard {
+        _proc: proc,
+        _file: file,
+    })
+}
+
 impl ApprovalStore {
     /// Open (or create) the store for a plugin scope directory.
     pub fn open(scope_dir: &Path) -> Self {
@@ -268,17 +340,21 @@ impl ApprovalStore {
         // a later `record` doesn't fail on a missing directory.
         let _ = std::fs::create_dir_all(scope_dir);
         let path = scope_dir.join(APPROVALS_FILE);
-        let mut corrupt = false;
-        let records = match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<HashMap<String, ApprovalRecord>>(&text) {
-                Ok(records) => records,
-                Err(_) => {
-                    corrupt = true;
-                    HashMap::new()
-                }
-            },
-            Err(_) => HashMap::new(),
-        };
+        let (records, corrupt) = load_records(&path);
+        if corrupt {
+            // Loud, not silent: a corrupt store reads as empty
+            // (fail-closed), so without this an operator would see
+            // every plugin unapproved with no hint that the file they
+            // approved into is damaged. The log line reaches the
+            // agent log when a sink is set; stderr reaches every CLI
+            // caller even when it is not.
+            let msg = format!(
+                "WARNING: corrupt approval store {}: approvals read as empty (fail-closed) and the file will not be overwritten; repair or remove it by hand",
+                path.display()
+            );
+            crate::logging::warn("approval", &msg);
+            eprintln!("{msg}");
+        }
         Self {
             path,
             records,
@@ -318,18 +394,48 @@ impl ApprovalStore {
     }
 
     /// Record an approval (insert or overwrite).
+    ///
+    /// Holds the write exclusion and re-reads the file under it, so
+    /// two processes approving different plugins at once cannot lose
+    /// each other's record: the old read-at-open, write-at-record
+    /// shape overwrote whatever the other process wrote in between.
     pub fn record(&mut self, rec: ApprovalRecord) -> Result<(), PantheonError> {
+        let _guard = lock_for_write(&self.path)?;
+        self.refresh_under_lock()?;
         self.records.insert(rec.plugin.clone(), rec);
         self.save()
     }
 
     /// Revoke an approval. Returns true when one existed.
+    ///
+    /// Same write exclusion and re-read as [`Self::record`].
     pub fn revoke(&mut self, name: &str) -> Result<bool, PantheonError> {
+        let _guard = lock_for_write(&self.path)?;
+        self.refresh_under_lock()?;
         let removed = self.records.remove(name).is_some();
         if removed {
             self.save()?;
         }
         Ok(removed)
+    }
+
+    /// Re-read the store file under the write lock, failing closed on
+    /// a corrupt file (never overwrite it with a partial view).
+    fn refresh_under_lock(&mut self) -> Result<(), PantheonError> {
+        let (records, corrupt) = load_records(&self.path);
+        if corrupt {
+            self.corrupt = true;
+            return Err(merr(
+                "APPROVAL_CORRUPT",
+                format!(
+                    "refusing to overwrite corrupt approval store {}; repair or remove it by hand first",
+                    self.path.display()
+                ),
+            ));
+        }
+        self.corrupt = false;
+        self.records = records;
+        Ok(())
     }
 
     fn save(&self) -> Result<(), PantheonError> {
@@ -532,6 +638,39 @@ mod tests {
             std::fs::read_to_string(scope.join(".approvals.json")).unwrap(),
             "{not json"
         );
+    }
+
+    #[test]
+    fn stale_store_record_does_not_clobber_a_newer_record() {
+        // Two handles opened at the same time (two processes, or two
+        // call sites): the second record must re-read under the write
+        // lock instead of overwriting the first record with its stale
+        // at-open view.
+        let scope = test_dir("stale-record");
+        let mut a = ApprovalStore::open(&scope);
+        let mut b = ApprovalStore::open(&scope);
+        a.record(ApprovalRecord {
+            plugin: "one".to_string(),
+            version: "1".to_string(),
+            dir_hash: "aaa".to_string(),
+            approved_at_ms: 0,
+        })
+        .unwrap();
+        b.record(ApprovalRecord {
+            plugin: "two".to_string(),
+            version: "1".to_string(),
+            dir_hash: "bbb".to_string(),
+            approved_at_ms: 0,
+        })
+        .unwrap();
+        let after = ApprovalStore::open(&scope);
+        assert!(
+            after.is_approved("one", "1", "aaa"),
+            "first record must survive the second record: {:?}",
+            after.names()
+        );
+        assert!(after.is_approved("two", "1", "bbb"));
+        let _ = std::fs::remove_dir_all(&scope);
     }
 
     #[test]
