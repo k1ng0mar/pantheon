@@ -4582,23 +4582,34 @@ impl Session {
         // token never leaves the broker and every handed-out access token is
         // registered with the redaction registry, so responses are scrubbed
         // before reaching the model. Unconnected apps fail closed with the
-        // `pantheon oauth login <app>` remediation. Always registered: the
-        // tools carry NetworkOutbound and fail closed without a connection.
-        pantheon_tools::oauth_tools::register_oauth_tools(
-            &mut reg,
-            pantheon_tools::oauth_tools::OAuthToolOptions {
-                data_dir: self.supervisor.data_dir().to_path_buf(),
-            },
-        );
+        // `pantheon oauth login <app>` remediation. Gated on the Plugins
+        // group: like MCP server tools, these are third-party
+        // integrations, and a `[tools] plugins = false` operator expects
+        // no external-integration tool to reach the model. The tools
+        // still carry NetworkOutbound, so the capability gate applies
+        // on top of the group gate.
+        if tools.plugins {
+            pantheon_tools::oauth_tools::register_oauth_tools(
+                &mut reg,
+                pantheon_tools::oauth_tools::OAuthToolOptions {
+                    data_dir: self.supervisor.data_dir().to_path_buf(),
+                },
+            );
+        }
         // Session search: the model can look up prior/active conversations
         // by content. Same trust level as reading the ledger (FilesystemRead).
-        register_session_search(
-            &mut reg,
-            SessionSearchOptions {
-                store: self.supervisor.shared_search(),
-                embedder: self.supervisor.shared_embedder(),
-            },
-        );
+        // Gated on the Memory group: it is recall of past conversations,
+        // and a `[tools] memory = false` operator expects no recall
+        // tool to reach the model.
+        if tools.memory {
+            register_session_search(
+                &mut reg,
+                SessionSearchOptions {
+                    store: self.supervisor.shared_search(),
+                    embedder: self.supervisor.shared_embedder(),
+                },
+            );
+        }
         let n_search = reg.names().len();
         // Vision tool: the model's own eyes mid-turn ("look at this
         // screenshot and tell me what it shows"). Gated on the Vision
@@ -4945,9 +4956,23 @@ impl Session {
         // sessions, `/tools reload`, and the TUI all build through here
         // so the skip lives here rather than in every caller. The counts
         // below still describe gross registration; the returned registry
-        // is gross minus disabled. A missing or corrupt list reads as
-        // empty (fail-open: the build never fails on this).
-        for name in crate::nightly_tools::load_disabled_tools(self.supervisor.data_dir()) {
+        // is gross minus disabled. A missing list reads as empty (no
+        // tool has ever been disabled); a corrupt list also reads as
+        // empty - the build cannot know which tools it named - but it
+        // must never do so quietly, or a contained dangerous tool
+        // comes back with no trace. Warn loudly (log + `/status`
+        // diagnostic) instead.
+        let (disabled, disabled_corrupt) =
+            crate::nightly_tools::load_disabled_tools_status(self.supervisor.data_dir());
+        if disabled_corrupt {
+            let msg = format!(
+                "nightly disabled-tools list {} is corrupt: previously disabled tools may be live again; repair or remove the file by hand",
+                crate::nightly_tools::disabled_tools_path(self.supervisor.data_dir()).display()
+            );
+            pantheon_api::logging::warn("nightly", &msg);
+            tool_diags.push(msg);
+        }
+        for name in disabled {
             reg.remove(&name);
         }
         let counts = ToolCounts {
@@ -11961,6 +11986,69 @@ mod tool_registration_diagnostics_tests {
         assert!(
             counts.code_intel > 0,
             "default enablement still registers code-intel tools"
+        );
+    }
+
+    #[test]
+    fn memory_false_registers_no_session_search_and_plugins_false_registers_no_oauth_tools() {
+        // `[tools]` toggles used to be bypassed by these two: OAuth
+        // connector tools and session_search registered
+        // unconditionally, gated only by capability. They now ride
+        // existing groups - Memory for recall, Plugins for external
+        // integrations - so disabling the group removes them.
+        let (session, _dir) = test_session();
+        let (reg, counts) = session.build_tool_registry();
+        assert!(
+            counts.session_search > 0,
+            "default enablement still registers session_search"
+        );
+        assert!(
+            reg.names().iter().any(|n| n == "github_api"),
+            "default enablement still registers OAuth tools: {:?}",
+            reg.names()
+        );
+        let mut section = pantheon_api::config::ToolsSection::default();
+        section.memory = Some(false);
+        section.plugins = Some(false);
+        session.set_tool_enablement(crate::tool_config::ToolEnablement::from_section(&section));
+        let (reg, counts) = session.build_tool_registry();
+        assert_eq!(
+            counts.session_search, 0,
+            "memory=false must register no session_search"
+        );
+        assert!(
+            !reg.names().iter().any(|n| n == "session_search"),
+            "no session_search tool may appear: {:?}",
+            reg.names()
+        );
+        assert!(
+            !reg.names().iter().any(|n| matches!(
+                n.as_str(),
+                "github_api" | "google_api" | "notion_api" | "spotify_api"
+            )),
+            "no OAuth tool may appear: {:?}",
+            reg.names()
+        );
+    }
+
+    #[test]
+    fn corrupt_disabled_tools_list_is_a_diagnostic_not_a_silent_reenable() {
+        // A corrupt nightly disabled-tools list used to read as
+        // empty, silently re-enabling contained tools. The build
+        // still proceeds (it cannot know the lost names), but the
+        // corruption must surface on /status.
+        let (session, dir) = test_session();
+        let path = crate::nightly_tools::disabled_tools_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{not json").unwrap();
+        let (_reg, _counts) = session.build_tool_registry();
+        assert!(
+            session
+                .tool_diagnostics()
+                .iter()
+                .any(|d| d.contains("disabled-tools") && d.contains("corrupt")),
+            "a corrupt disabled-tools list must be a diagnostic: {:?}",
+            session.tool_diagnostics()
         );
     }
 

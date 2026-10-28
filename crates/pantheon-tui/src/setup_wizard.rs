@@ -1137,7 +1137,7 @@ fn tool_group_desc(g: ToolGroup) -> &'static str {
         ToolGroup::Browser => "browser automation \u{2014} provider screen follows",
         ToolGroup::Terminal => "run shell commands",
         ToolGroup::Files => "read, write, and list files",
-        ToolGroup::Memory => "persistent memory \u{2014} provider screen follows",
+        ToolGroup::Memory => "persistent memory + session_search recall \u{2014} provider screen follows",
         ToolGroup::Skills => "SKILL.md capabilities",
         ToolGroup::Tasks => "the agent's todo list",
         ToolGroup::Delegation => "spawn subagents",
@@ -1149,7 +1149,7 @@ fn tool_group_desc(g: ToolGroup) -> &'static str {
         ToolGroup::ComputerUse => {
             "desktop control via the CUA driver \u{2014} provider screen follows"
         }
-        ToolGroup::Plugins => "plugin tools and MCP server integrations",
+        ToolGroup::Plugins => "plugin tools, MCP server integrations, and OAuth connector tools",
         ToolGroup::CodeIntel => "LSP diagnostics + repo-level git undo (code-intel tool group)",
     }
 }
