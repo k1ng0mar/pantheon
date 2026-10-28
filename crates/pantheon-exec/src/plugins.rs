@@ -142,7 +142,27 @@ pub fn discover_plugins(data_dir: &Path, project_root: &Path) -> Vec<DiscoveredP
     scan_dir(&project_plugins, PluginLocation::Project, &mut out);
     // Sort for deterministic ordering.
     out.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
-    out
+    // Same-name collisions must fail loudly, not shadow: the runtime
+    // spawns by name and the TUI lists by name, so a silently dropped
+    // second plugin used to diverge the two views (runtime spawned the
+    // first and logged a registration conflict for the second; the TUI
+    // hid the second entirely). Keep the first by (name, root) order
+    // and report every dropped duplicate to stderr.
+    let mut deduped: Vec<DiscoveredPlugin> = Vec::with_capacity(out.len());
+    for p in out {
+        if let Some(first) = deduped.iter().find(|q| q.manifest.name == p.manifest.name) {
+            eprintln!(
+                "plugin name collision: '{}' at {} is ignored; '{}' at {} wins (rename one of them)",
+                p.manifest.name,
+                p.root.display(),
+                first.manifest.name,
+                first.root.display()
+            );
+            continue;
+        }
+        deduped.push(p);
+    }
+    deduped
 }
 
 fn scan_dir(dir: &Path, loc: PluginLocation, out: &mut Vec<DiscoveredPlugin>) {
@@ -913,6 +933,82 @@ pub fn seed_bundled_plugins(data_dir: &Path) -> Result<Vec<String>, PantheonErro
     Ok(seeded)
 }
 
+/// True when the on-disk dir at `dir` is exactly the shipped bundled
+/// plugin: its directory name matches a registry entry and its file set
+/// and contents hash to that entry's embedded digest. Any extra, missing,
+/// unreadable, non-regular, or altered file fails the check.
+///
+/// This is the canonical-bundled test loaders use instead of the old
+/// path-only check: a hand-dropped `extensions/bundled/evil/` (or a
+/// tampered shipped dir) is not bundled trust, whatever its path says.
+pub fn verify_bundled_dir(dir: &Path) -> bool {
+    let dir_name = match dir.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return false,
+    };
+    // Copy the entry's data out: the registry Vec is a temporary and
+    // the entry borrows from it, so it cannot outlive this statement.
+    // (File contents are `&'static str` via include_str, but the Vec
+    // itself is not static.)
+    let (expected_sha, expected_files) = {
+        let registry = bundled_plugins();
+        match registry.iter().find(|e| e.dir_name == dir_name) {
+            Some(e) => (
+                e.sha256.to_string(),
+                e.files.iter().map(|f| f.path.to_string()).collect::<Vec<_>>(),
+            ),
+            None => return false,
+        }
+    };
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    fn walk(
+        dir: &Path,
+        root: &Path,
+        out: &mut Vec<(String, String)>,
+    ) -> Result<(), ()> {
+        let entries = std::fs::read_dir(dir).map_err(|_| ())?;
+        for entry in entries {
+            let entry = entry.map_err(|_| ())?;
+            // Mirror the build's artifact skip (gen_plugins.rs): runtime
+            // artifacts (__pycache__, *.pyc, dotfiles) are never registry
+            // content, so their appearance must not strip bundled trust.
+            let fname = entry.file_name().to_string_lossy().into_owned();
+            if fname.starts_with('.') || fname == "__pycache__" || fname.ends_with(".pyc") {
+                continue;
+            }
+            let ft = entry.file_type().map_err(|_| ())?;
+            if ft.is_symlink() || (!ft.is_file() && !ft.is_dir()) {
+                return Err(());
+            }
+            if ft.is_dir() {
+                walk(&entry.path(), root, out)?;
+            } else {
+                let rel = entry
+                    .path()
+                    .strip_prefix(root)
+                    .map_err(|_| ())?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let content = std::fs::read_to_string(entry.path()).map_err(|_| ())?;
+                out.push((rel, content));
+            }
+        }
+        Ok(())
+    }
+    if walk(dir, dir, &mut pairs).is_err() {
+        return false;
+    }
+    let embedded: std::collections::BTreeSet<String> =
+        expected_files.into_iter().collect();
+    let on_disk: std::collections::BTreeSet<String> =
+        pairs.iter().map(|(r, _)| r.clone()).collect();
+    if on_disk != embedded {
+        return false;
+    }
+    let pair_refs: Vec<(&str, &str)> = pairs.iter().map(|(r, c)| (r.as_str(), c.as_str())).collect();
+    plugin_hash::canonical_sha256(&pair_refs) == expected_sha
+}
+
 /// Seed one registry entry. Returns `Ok(Some(name))` when the plugin
 /// was materialized, `Ok(None)` when the target dir already existed
 /// (never overwritten).
@@ -944,7 +1040,19 @@ fn seed_bundled_plugin(
     };
     let target = scope.join(entry.dir_name);
     if target.exists() {
-        // Never overwrite: operator edits or newer installs win.
+        // Never overwrite: operator edits or newer installs win. But an
+        // existing dir is NOT trusted as bundled just for being here: if
+        // its contents no longer match the embedded registry, warn loudly
+        // so the operator knows it lost bundled trust (loaders now
+        // require a third-party approval for non-canonical bundled dirs).
+        if !verify_bundled_dir(&target) {
+            eprintln!(
+                "bundled plugin '{}' at {} does not match the shipped registry; \
+                 it is no longer trusted as bundled and needs a third-party approval to load",
+                entry.dir_name,
+                target.display()
+            );
+        }
         return Ok(None);
     }
     // Reject manifest paths that would escape the plugin dir. The

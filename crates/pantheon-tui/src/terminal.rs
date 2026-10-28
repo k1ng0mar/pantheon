@@ -558,7 +558,18 @@ fn reject_unknown_verb(unknown: &str) -> ! {
 }
 
 fn load_mgr() -> ExtensionManager {
-    let mut m = ExtensionManager::new(RunnerConfig::default());
+    // Operator-direct CLI path: there is no capability policy here (the
+    // operator typing at their own terminal is the authorization), so
+    // spawns are un-gated by policy - but the approval store IS still
+    // checked at load and again immediately before every spawn
+    // (`verify_hook_spawn`). Documented exception, not an oversight:
+    // production sessions always attach the session policy instead.
+    let dd = data_dir();
+    let mut m = ExtensionManager::new(RunnerConfig::default())
+        .with_data_dir(dd.clone())
+        .with_project_root(
+            std::env::current_dir().unwrap_or_else(|_| dd.clone()),
+        );
     let d = ext_dir();
     if d.exists() {
         // Report a failed load. Swallowing it made a broken plugin directory
@@ -570,6 +581,12 @@ fn load_mgr() -> ExtensionManager {
                 "warning: could not load extensions from {}: {e}",
                 d.display()
             );
+        }
+        for err in m.load_errors() {
+            eprintln!("warning: {err}");
+        }
+        for conflict in m.conflicts() {
+            eprintln!("warning: {conflict}");
         }
     }
     m
@@ -611,12 +628,44 @@ fn write_seen(keys: &HashSet<(String, String, String)>) {
     }
 }
 
-fn cli_fire(hook: Hook, session: &str, platform: &str) -> Option<String> {
+/// CLI hook fire, routed by hook class - the old code called only
+/// `mgr.fire` (the context path) for every hook, so a gate hook's deny
+/// had no effect and an unwired hook fired live while `pantheon doctor`
+/// on the same plugin said its handler "will not run".
+/// - Unwired hooks are refused (same as `compat::map_hook`).
+/// - Gate hooks go through `fire_gate` and report deny/allow.
+/// - Transform hooks have no payload on the CLI, so they are refused
+///   with a clear error instead of silently doing nothing.
+/// - Context/observer hooks use the context path as before.
+/// Returns `Err` for refused hooks so the caller can exit non-zero.
+fn cli_fire(hook: Hook, session: &str, platform: &str) -> Result<Option<String>, String> {
+    if !hook.is_wired() {
+        return Err(format!(
+            "hook '{}' is not wired in this runtime and will not run (see `pantheon doctor`)",
+            hook.name()
+        ));
+    }
     let mgr = load_mgr();
     mgr.preseed_seen(read_seen());
-    let out = mgr.fire(hook, session, platform, Default::default());
+    let out = match hook.class() {
+        pantheon_extensions::HookClass::Gate => {
+            match mgr.fire_gate(hook, session, platform, Default::default()) {
+                pantheon_extensions::GateDecision::Allow => Some("(allowed)".to_string()),
+                pantheon_extensions::GateDecision::Deny { reason, plugin } => {
+                    return Err(format!("denied by extension '{plugin}': {reason}"));
+                }
+            }
+        }
+        pantheon_extensions::HookClass::Transform => {
+            return Err(format!(
+                "hook '{}' is a transform hook and needs a payload; it cannot be fired from the CLI (use a live tool call)",
+                hook.name()
+            ));
+        }
+        _ => mgr.fire(hook, session, platform, Default::default()),
+    };
     write_seen(&mgr.seen_snapshot());
-    out
+    Ok(out)
 }
 
 fn memory_file() -> PathBuf {
@@ -1594,14 +1643,43 @@ timeout_ms = 5000
                     let name = match args.get(3) {
                         Some(n) if !n.is_empty() => n.clone(),
                         _ => {
-                            eprintln!("usage: pantheon extensions approve <name>");
+                            eprintln!("usage: pantheon extensions approve <name> [--yes]");
                             std::process::exit(2);
                         }
                     };
+                    let yes = args.iter().any(|a| a == "--yes" || a == "-y");
                     let pending_list = mgr.pending();
                     let pending = pending_list.iter().find(|p| p.name == name);
                     match pending {
                         Some(p) => {
+                            // Same pattern as `pantheon mcp approve`: show
+                            // the privilege warning and require the
+                            // operator to type the name, unless --yes.
+                            // `record_approval_for` requires the caller to
+                            // have shown the warning and obtained explicit
+                            // consent first; the old code recorded with
+                            // neither, printing only `approved <name>`.
+                            println!("{}", pantheon_api::approval::warning_text(&p.name));
+                            println!();
+                            println!(
+                                "plugin: {} (v{}) at {}",
+                                p.name,
+                                p.version,
+                                p.dir.display()
+                            );
+                            println!();
+                            if !yes {
+                                use std::io::Write as _;
+                                print!("Type the plugin name to approve it: ");
+                                let _ = std::io::stdout().flush();
+                                let mut line = String::new();
+                                if std::io::stdin().read_line(&mut line).is_err()
+                                    || line.trim() != name
+                                {
+                                    println!("extensions: approval aborted");
+                                    std::process::exit(1);
+                                }
+                            }
                             match pantheon_api::approval::record_approval_for(
                                 &ext_dir, &p.name, &p.version, &p.dir,
                             ) {
@@ -1704,8 +1782,12 @@ timeout_ms = 5000
                 i += 1;
             }
             match cli_fire(hook, &session, &platform) {
-                Some(c) => println!("{c}"),
-                None => println!("(silent)"),
+                Ok(Some(c)) => println!("{c}"),
+                Ok(None) => println!("(silent)"),
+                Err(e) => {
+                    eprintln!("hook: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         "doctor" => {
