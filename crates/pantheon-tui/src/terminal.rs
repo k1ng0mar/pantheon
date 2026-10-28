@@ -274,15 +274,10 @@ fn run_delivered_task(
     }
     let model_policy =
         crate::config::build_routed_model_policy(file_cfg.as_ref(), None, None, Some("chat"));
-    let allow_memory = file_cfg
-        .as_ref()
-        .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
-        .unwrap_or(false);
-    let policy = if allow_memory {
-        pantheon_api::capability::Policy::coder_with_memory()
-    } else {
-        pantheon_api::capability::Policy::coder()
-    };
+    // Policy preset honored verbatim: a Reader config must stay
+    // read-only here, not silently widen to coder (the old
+    // CoderMemory-only boolean did exactly that on this path).
+    let policy = crate::config_schema::policy_for_config(&file_cfg);
     let secrets = crate::config::chat_secrets(file_cfg.as_ref());
     let session =
         match pantheon_runtime::session::Session::new(data_dir(), policy, model_policy, secrets) {

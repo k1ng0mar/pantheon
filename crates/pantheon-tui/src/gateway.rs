@@ -61,19 +61,9 @@ fn resume_parked_run(data_dir: &Path, run_id: &str) -> Result<String, String> {
     use crate::config::build_model_policy;
     let file_cfg = config::Config::load_or_report(data_dir);
     let model_policy = build_model_policy(file_cfg.as_ref(), None, None);
-    let allow_memory = file_cfg
-        .as_ref()
-        .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
-        .unwrap_or_else(|| {
-            std::env::var("PANTHEON_ALLOW_MEMORY")
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or(false)
-        });
-    let policy = if allow_memory {
-        pantheon_api::capability::Policy::coder_with_memory()
-    } else {
-        pantheon_api::capability::Policy::coder()
-    };
+    // Policy preset honored verbatim: a Reader config must stay
+    // read-only on resume, not silently widen to coder.
+    let policy = crate::config_schema::policy_for_config(&file_cfg);
     let secrets = config::chat_secrets(file_cfg.as_ref());
     let session = pantheon_runtime::session::Session::new(
         data_dir.to_path_buf(),
