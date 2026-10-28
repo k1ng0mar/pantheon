@@ -309,8 +309,14 @@ impl<T: ChatTransport> ProviderChain<T> {
         let base = crate::http::resolve_base(&model.provider)?;
         // The configured key belongs to the default provider. Fallbacks may
         // use their own catalog/env credential, but must never receive the
-        // primary provider's secret by accident.
-        let configured = if idx == 0 {
+        // primary provider's secret by accident - except when the
+        // fallback IS the same provider (same provider id, different
+        // model, e.g. an NVIDIA custom endpoint falling back to another
+        // NVIDIA model). There the key is the provider's own, not a
+        // leak: without it every same-provider fallback died with
+        // PROVIDER_CONFIG ("no API key"), because a custom URL has no
+        // usable catalog/env credential of its own.
+        let configured = if idx == 0 || model.provider == self.policy.default.provider {
             self.api_key.as_ref().map(|kv| kv.expose()).unwrap_or("")
         } else {
             ""
