@@ -48,13 +48,19 @@ fn unknown_plugin_names_are_rejected() {
 #[test]
 fn bundled_plugins_ship_disabled() {
     // No config at all: every catalog plugin disabled (fail closed).
+    // load_config's documented contract is that a missing config counts
+    // as an EMPTY config, not as None (None is reserved for a config
+    // that exists but does not parse), so the assertion is on the
+    // returned config's plugin decisions, not on None-ness.
     let d = tempdir().unwrap();
-    let config = bundled::load_config(d.path());
-    assert!(config.is_none());
+    let config = bundled::load_config(d.path()).expect("missing config reads as empty config");
     let empty = Config::default();
+    assert!(config.plugins.is_empty(), "missing config must carry no plugin entries");
     for p in bundled::bundled_plugins() {
+        assert!(!bundled::is_enabled(&config, &p.name));
         assert!(!bundled::is_enabled(&empty, &p.name));
     }
+    assert!(!config.plugin_enabled("time-gap"));
     assert!(!empty.plugin_enabled("time-gap"));
     assert!(!empty.plugin_enabled("not-a-plugin"));
 }
