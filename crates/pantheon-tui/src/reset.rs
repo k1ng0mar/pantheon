@@ -71,6 +71,32 @@ pub fn active_lease_exists(data_dir: &Path) -> Result<bool, PantheonError> {
 }
 
 pub fn cmd_reset(args: &[String]) {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("usage: pantheon reset --config|--state|--everything [--yes]");
+        println!("  --config      delete config.toml + memory-backend.toml (keeps ledger, memory, gateway state)");
+        println!("  --state       delete ledger, memory, gateway cursors/outbox (keeps config)");
+        println!("  --everything  delete config and state");
+        println!("  --yes         skip the 'type reset to confirm' prompt");
+        return;
+    }
+    // An unknown flag used to be swallowed whenever a scope flag was
+    // also present, so `reset --config --bogus` deleted config while
+    // looking like it had honored something else.
+    for a in args.iter().skip(2) {
+        if a.starts_with('-')
+            && !matches!(
+                a.as_str(),
+                "--config" | "--state" | "--everything" | "--yes"
+            )
+        {
+            eprintln!("reset: unknown flag '{a}' (want --config|--state|--everything [--yes])");
+            std::process::exit(2);
+        }
+        if !a.starts_with('-') {
+            eprintln!("reset: unexpected argument '{a}'");
+            std::process::exit(2);
+        }
+    }
     // Collect every scope flag first. Chaining `if/else if` meant
     // `--config --state` silently reset only the config and said nothing
     // about the state the user also asked to clear.
