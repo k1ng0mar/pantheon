@@ -4802,15 +4802,29 @@ fn capitalise_first(s: &str) -> String {
     }
 }
 
-/// Display label for a provider id: the catalog/registry label when
-/// one exists and differs from the id (e.g. a cataloged "OpenAI"
-/// for id "openai"), otherwise the id with its first letter
-/// capitalised (a custom provider's registry label is its id, so
-/// "exoseed" displays as "Exoseed"). Display only — the id used
-/// for routing is never changed.
+/// Display-name overrides for provider ids whose brand casing the
+/// first-letter rule cannot produce: a custom provider's registry
+/// label is its id, so "exoseed" would otherwise display as
+/// "Exoseed", not the brand's "ExoSeed". This map is the one place
+/// that knows brand spellings — the composer row (and every other
+/// `provider_display` caller) just asks for the label, never
+/// special-cases an id. Display only: routing ids are never changed.
+const PROVIDER_DISPLAY_OVERRIDES: &[(&str, &str)] = &[("exoseed", "ExoSeed")];
+
+/// Display label for a provider id: an override above when one
+/// exists, else the catalog/registry label when one exists and
+/// differs from the id (e.g. a cataloged "OpenAI" for id "openai"),
+/// otherwise the id with its first letter capitalised. Display
+/// only — the id used for routing is never changed.
 fn provider_display(provider_id: &str) -> String {
     if provider_id.is_empty() {
         return String::new();
+    }
+    if let Some((_, display)) = PROVIDER_DISPLAY_OVERRIDES
+        .iter()
+        .find(|(id, _)| *id == provider_id)
+    {
+        return display.to_string();
     }
     if let Some(meta) = pantheon_providers::catalog::provider(provider_id) {
         if !meta.label.is_empty() && meta.label != provider_id {
@@ -13569,10 +13583,9 @@ mod picker_render_tests {
         // provider must survive fallback and `/model`-style switches,
         // and the row must read `Provider: <Provider>: <Model> •
         // Build`. "exoseed" has no catalog label distinct from its id
-        // in tests, so the first-letter rule displays it as "Exoseed"
-        // (not the brand's camel-case "ExoSeed", which no registry
-        // supplies); the assertion that matters is that the provider
-        // segment is the provider, not the model.
+        // in tests, so the display-name override map supplies the
+        // brand's camel-case "ExoSeed"; the assertion that matters is
+        // that the provider segment is the provider, not the model.
         let mut s = test_state();
         s.model = "exoseed/auto".to_string();
         let provider_row = |s: &TuiState| {
@@ -13582,7 +13595,7 @@ mod picker_render_tests {
                 .unwrap_or_default()
         };
         assert!(
-            provider_row(&s).contains("Provider: Exoseed: Auto"),
+            provider_row(&s).contains("Provider: ExoSeed: Auto"),
             "splash-time row wrong: {}",
             provider_row(&s)
         );
@@ -13613,7 +13626,7 @@ mod picker_render_tests {
         });
         assert_eq!(s.model, "exoseed/auto");
         assert!(
-            provider_row(&s).contains("Provider: Exoseed: Auto"),
+            provider_row(&s).contains("Provider: ExoSeed: Auto"),
             "fallback lost the provider: {}",
             provider_row(&s)
         );
@@ -13636,7 +13649,7 @@ mod picker_render_tests {
         s.model = "exoseed/auto".to_string();
         let splash = render_to_string(render_composer_box, &s).join("\n");
         assert!(
-            splash.contains("Provider: Exoseed: Auto"),
+            splash.contains("Provider: ExoSeed: Auto"),
             "splash row must agree with transcript row: {splash}"
         );
     }
