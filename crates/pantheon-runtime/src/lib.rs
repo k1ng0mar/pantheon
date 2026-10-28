@@ -1458,6 +1458,21 @@ impl Supervisor {
     /// not from the hidden turns. The fork keeps the source title with a
     /// ` (fork)` suffix and records its provenance in a `RunProgress`
     /// marker, so the audit trail shows where the branch came from.
+    ///
+    /// Not copied, deliberately:
+    /// - the source's run boundary (`RunStarted`): `start_run` already
+    ///   emitted the fork's own;
+    /// - run-terminal events (`RunCompleted`/`RunFailed`/`RunCanceled`):
+    ///   copying them would mark the fresh fork terminal before it runs;
+    /// - `UsageRecorded` rows: they are accounting, not conversation,
+    ///   and copying them would double-count the source's spend in
+    ///   `usage_between` (the fork's own later usage is still recorded);
+    /// - the queued-message list: queued follow-ups belong to the
+    ///   source's future, not to a branch taken at an earlier turn, so
+    ///   copying them needs a product decision (see `fork_run`'s
+    ///   needs-decision note) and they are left behind.
+    /// Copied alongside the events: the source's todo snapshot and its
+    /// agent mode, so the fork resumes the same plan in the same mode.
     pub fn fork_run(
         &self,
         src: &str,
@@ -1506,11 +1521,31 @@ impl Supervisor {
         for e in &entries[..cut] {
             // Skip the source's run boundary: start_run already emitted
             // the fork's own RunStarted, and a boundary is per-run.
-            if matches!(e.event, Event::RunStarted { .. }) {
+            // Skip run-terminal events and usage rows too (see the doc
+            // above): a fork must start live, and must not double-count
+            // the source's spend.
+            if matches!(
+                e.event,
+                Event::RunStarted { .. }
+                    | Event::RunCompleted { .. }
+                    | Event::RunFailed { .. }
+                    | Event::RunCanceled { .. }
+                    | Event::UsageRecorded { .. }
+            ) {
                 continue;
             }
             self.emit(e.event.with_run_id(&new_id))?;
         }
+        // Resume state: the source's todo snapshot and agent mode move
+        // to the fork (the queued-message list deliberately does not).
+        // Failures propagate rather than leaving a fork that silently
+        // lost its plan.
+        let items = self.ledger().todos(src)?;
+        if !items.is_empty() {
+            self.ledger().set_todos(&new_id, &items)?;
+        }
+        let mode = self.ledger().run_mode(src)?;
+        self.ledger().set_run_mode(&new_id, &mode)?;
         if let Some(title) = self
             .ledger_title(&new_id)
             .ok()
@@ -1701,5 +1736,121 @@ mod tests {
             "settlement carries the REPAIRED note"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod fork_tests {
+    use super::*;
+
+    fn fork_supervisor() -> (Supervisor, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let sup = Supervisor::open(dir.path().to_path_buf()).expect("test supervisor opens");
+        (sup, dir)
+    }
+
+    #[test]
+    fn fork_run_skips_terminal_and_usage_and_copies_todos_and_mode() {
+        let (sup, _dir) = fork_supervisor();
+        let src = new_run_id();
+        sup.start_run(&src).unwrap();
+        sup.emit(Event::AssistantMessage {
+            run_id: src.clone(),
+            message: pantheon_api::message::Message::user("hello"),
+        })
+        .unwrap();
+        sup.emit(Event::AssistantMessage {
+            run_id: src.clone(),
+            message: pantheon_api::message::Message::assistant("hi"),
+        })
+        .unwrap();
+        sup.emit(Event::ApprovalDenied {
+            run_id: src.clone(),
+            scope: "test-scope".into(),
+        })
+        .unwrap();
+        sup.emit(Event::PreStateRecorded {
+            run_id: src.clone(),
+            scope: "test-scope".into(),
+            path: "/tmp/x".into(),
+            sha256: "abc".into(),
+        })
+        .unwrap();
+        sup.emit(Event::UsageRecorded {
+            run_id: src.clone(),
+            model: "m".into(),
+            provider: "p".into(),
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            cost_usd: Some(0.01),
+        })
+        .unwrap();
+        sup.emit(Event::RunCompleted {
+            run_id: src.clone(),
+        })
+        .unwrap();
+        sup.save_todos(
+            &src,
+            &[pantheon_api::todo::TodoItem {
+                content: "do the thing".into(),
+                status: pantheon_api::todo::TodoStatus::Pending,
+                active_form: None,
+            }],
+        )
+        .unwrap();
+        sup.ledger().set_run_mode(&src, "plan").unwrap();
+
+        let (fork, turns) = sup.fork_run(&src, None).unwrap();
+        assert_eq!(turns, 1);
+        let entries = sup.replay(&fork).unwrap();
+        assert!(
+            !entries
+                .iter()
+                .any(|e| matches!(e.event, Event::UsageRecorded { .. })),
+            "forked usage must not double-count the source's spend"
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|e| matches!(e.event, Event::RunCompleted { .. })),
+            "a fork must not start terminal"
+        );
+        // Event-level run ids must agree with the ledger row: no
+        // "<redacted>" leftovers from with_run_id.
+        for e in &entries {
+            if let Event::ApprovalDenied { run_id, .. } = &e.event {
+                assert_eq!(run_id, &fork);
+            }
+            if let Event::PreStateRecorded { run_id, .. } = &e.event {
+                assert_eq!(run_id, &fork);
+            }
+        }
+        assert!(
+            entries
+                .iter()
+                .any(|e| matches!(e.event, Event::ApprovalDenied { .. })),
+            "approval-denied event itself is still copied, re-addressed"
+        );
+        assert_eq!(
+            sup.ledger_status(&fork).unwrap().as_deref(),
+            Some("running"),
+            "fork stays live after skipping the terminal event"
+        );
+        assert_eq!(
+            sup.load_todos(&fork).unwrap().len(),
+            1,
+            "todo snapshot copies"
+        );
+        assert_eq!(
+            sup.ledger_run_mode(&fork).unwrap(),
+            "plan",
+            "agent mode copies"
+        );
+        // The source is untouched by the fork.
+        assert_eq!(
+            sup.ledger_status(&src).unwrap().as_deref(),
+            Some("completed")
+        );
     }
 }
