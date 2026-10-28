@@ -80,7 +80,7 @@ pub fn all_providers() -> Vec<ProviderInfo> {
             id: "tinyfish",
             name: "TinyFish",
             auth: ProviderAuth::ApiKey { env_var: TINYFISH_API_KEY },
-            blurb: "Recommended default. Rank-stable, p50 <0.5s; free, no card. Free-tier limits vary by plan (some report 5 req/min); requests are paced and Retry-After is honoured.",
+            blurb: "Recommended default. Rank-stable, p50 <0.5s; free, no card. Paced at 2s between requests (≈30/min) with Retry-After honoured - but free-tier limits vary by plan and some report 5 req/min, which 2s pacing does NOT stay under, so those plans still throttle.",
             recommended: true,
         },
         ProviderInfo {
@@ -206,7 +206,11 @@ pub fn default_key_env(id: &str) -> Option<&'static str> {
 /// layer: the trait doc used to call an empty query "the provider's
 /// problem", but no provider rejected one, so direct provider use
 /// silently sent empty queries upstream. The tool layer rejects empty
-/// queries too; this guard covers direct `build_provider` use.
+/// queries too; this guard covers direct `build_provider` use. It also
+/// normalizes `max_results == 0` to 1 (see
+/// [`super::provider::SearchOptions::max_results`]) so a registry-built
+/// provider never sees the value, even if a provider's own trim
+/// forgets `.max(1)`.
 struct QueryGuardProvider {
     inner: Arc<dyn SearchProvider>,
 }
@@ -226,7 +230,9 @@ impl SearchProvider for QueryGuardProvider {
                 "search query must not be empty".to_string(),
             ));
         }
-        self.inner.search(query, opts)
+        let mut opts = opts.clone();
+        opts.max_results = opts.max_results.max(1);
+        self.inner.search(query, &opts)
     }
 }
 
@@ -316,5 +322,44 @@ mod tests {
             err,
             super::super::error::SearchError::RequestFailed(_)
         ));
+    }
+
+    /// The guard's `max_results` normalization, driven through a stub
+    /// (no network): 0 arrives at the inner provider as 1.
+    #[test]
+    fn query_guard_clamps_zero_max_results_to_one() {
+        use super::super::error::SearchError;
+        use super::super::provider::{SearchProvider, SearchResult};
+        use std::sync::Mutex;
+
+        struct CapturingProvider {
+            seen: Mutex<Vec<u8>>,
+        }
+
+        impl SearchProvider for CapturingProvider {
+            fn name(&self) -> &str {
+                "stub"
+            }
+
+            fn search(
+                &self,
+                _query: &str,
+                opts: &SearchOptions,
+            ) -> Result<Vec<SearchResult>, SearchError> {
+                self.seen.lock().unwrap().push(opts.max_results);
+                Ok(Vec::new())
+            }
+        }
+
+        let stub = Arc::new(CapturingProvider {
+            seen: Mutex::new(Vec::new()),
+        });
+        let guard = QueryGuardProvider {
+            inner: stub.clone(),
+        };
+        let mut opts = SearchOptions::default();
+        opts.max_results = 0;
+        guard.search("hello", &opts).expect("guard passes through");
+        assert_eq!(*stub.seen.lock().unwrap(), vec![1]);
     }
 }

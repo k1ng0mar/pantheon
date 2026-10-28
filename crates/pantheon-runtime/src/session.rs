@@ -4773,9 +4773,11 @@ impl Session {
                 }
             }
         };
-        // Web search: query -> snippets. Only registers when a key
-        // resolves; a keyless web_search would be a dead tool in the
-        // model's list, so it stays out.
+        // Web search: query -> snippets. Keyed providers register only
+        // when a key resolves; keyless providers (Marginalia, the
+        // `*_free` fallbacks, `ddgs`, SearXNG) register without one.
+        // The old "a keyless web_search would be a dead tool" comment
+        // predates those providers.
         let n_websearch = {
             let wcfg = self
                 .websearch_config
@@ -4801,9 +4803,14 @@ impl Session {
                 let secret_name = wcfg.api_key_secret.clone().or_else(|| {
                     pantheon_web::websearch::default_key_env(&wcfg.provider).map(str::to_string)
                 });
+                // `inject`, not `resolve`: every other keyed call site
+                // registers the handed-out value for redaction, so a
+                // later echo of the web-search key in a tool result is
+                // scrubbed before it reaches the model. `resolve` alone
+                // skipped that registration.
                 let api_key = secret_name
                     .as_deref()
-                    .and_then(|name| self.secrets.resolve(name).ok().flatten())
+                    .and_then(|name| self.secrets.inject(name).ok().flatten())
                     .map(|v| v.expose().to_owned());
                 let keyed = pantheon_web::websearch::default_key_env(&wcfg.provider).is_some();
                 let key_missing = api_key.as_deref().map(str::trim).unwrap_or("").is_empty();

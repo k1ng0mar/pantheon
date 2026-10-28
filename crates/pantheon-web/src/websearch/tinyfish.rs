@@ -126,8 +126,9 @@ impl SearchProvider for TinyFishProvider {
         }
         let text = http::get_json("tinyfish", &url, &[("X-API-Key", &self.api_key)])?;
         let mut results = parse_tinyfish_response(&text)?;
-        // No count parameter on the API: trim client-side.
-        results.truncate(usize::from(opts.max_results));
+        // No count parameter on the API: trim client-side. `0`
+        // means one (see `SearchOptions::max_results`).
+        results.truncate(usize::from(opts.max_results.max(1)));
         Ok(results)
     }
 }
@@ -163,4 +164,36 @@ pub fn parse_tinyfish_response(body: &str) -> Result<Vec<SearchResult>, SearchEr
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tinyfish_parser_tests {
+    use super::parse_tinyfish_response;
+
+    const FIXTURE: &str = r#"{
+        "query": "rust",
+        "results": [
+            {"position": 1, "site_name": "rust-lang", "title": "Rust", "snippet": "a language", "url": "https://www.rust-lang.org/", "date": "2024-05-01"},
+            {"position": 2, "site_name": "x", "title": "No URL", "snippet": "skipped"},
+            {"position": 3, "site_name": "y", "title": "Undated", "snippet": "s", "url": "https://undated.example/"}
+        ],
+        "total_results": 3,
+        "page": 1
+    }"#;
+
+    #[test]
+    fn parses_hits_dates_and_skips_url_less_rows() {
+        let hits = parse_tinyfish_response(FIXTURE).expect("parse");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].title, "Rust");
+        assert_eq!(hits[0].published.as_deref(), Some("2024-05-01"));
+        assert_eq!(hits[1].url, "https://undated.example/");
+        assert_eq!(hits[1].published, None);
+    }
+
+    #[test]
+    fn missing_results_array_is_bad_response() {
+        assert!(parse_tinyfish_response(r#"{"query": "x"}"#).is_err());
+        assert!(parse_tinyfish_response("not json").is_err());
+    }
 }
