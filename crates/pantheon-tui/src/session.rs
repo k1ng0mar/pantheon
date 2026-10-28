@@ -10979,15 +10979,20 @@ fn handle_slash_inner(
         show_todos(state, session);
         return;
     }
-    if cmd == "/help" {
+    if cmd == "/help" || cmd.starts_with("/help ") {
         // Generated from the COMMANDS registry: one entry per command,
         // never duplicated, never drifting out of sync with the palette.
+        // Extra words are ignored: /help is the list, whatever follows.
         for line in help_lines() {
             state.add_status(line);
         }
         return;
     }
-    if cmd == "/exit" || cmd == "/quit" {
+    if cmd == "/exit"
+        || cmd == "/quit"
+        || cmd.starts_with("/exit ")
+        || cmd.starts_with("/quit ")
+    {
         state.shutting_down = true;
         return;
     }
@@ -11567,6 +11572,13 @@ fn handle_slash_inner(
         // idle session: the ledger is append-only, so rewind hides the
         // last turn from the live view behind a rewind marker instead of
         // rewriting history.
+        if !state.ready || state.active_run.is_some() || state.pending_approval.is_some() {
+            // rewind_candidate() also returns None while a turn runs,
+            // but "no finished turn to undo" then lies when finished
+            // turns exist: say to wait instead.
+            state.add_status("/undo: wait for the running turn to finish".into());
+            return;
+        }
         match state.rewind_candidate() {
             Some(offer) => {
                 state.rewind_offer = Some(offer);
@@ -12042,9 +12054,16 @@ fn handle_slash_inner(
     }
     // --- approvals ------------------------------------------------------
     if cmd == "/approvals" {
-        let pending = supervisor
-            .pending_approvals(&state.session_id)
-            .unwrap_or_default();
+        // A ledger failure used to read as "no pending approvals"
+        // (unwrap_or_default): report it instead of claiming the list
+        // is empty when it was never read.
+        let pending = match supervisor.pending_approvals(&state.session_id) {
+            Ok(p) => p,
+            Err(e) => {
+                state.add_status(format!("approvals: cannot list pending approvals: {e}"));
+                return;
+            }
+        };
         if pending.is_empty() {
             state.add_status("no pending approvals".into());
         } else {
@@ -12057,15 +12076,23 @@ fn handle_slash_inner(
         }
         return;
     }
+    if cmd == "/approve" {
+        state.add_status("usage: /approve <index> - see /approvals".into());
+        return;
+    }
     if let Some(idx) = cmd.strip_prefix("/approve ") {
         let idx = idx.trim();
         let Ok(i) = idx.parse::<usize>() else {
             state.add_status(format!("usage: /approve <index> (got {idx:?})"));
             return;
         };
-        let pending = supervisor
-            .pending_approvals(&state.session_id)
-            .unwrap_or_default();
+        let pending = match supervisor.pending_approvals(&state.session_id) {
+            Ok(p) => p,
+            Err(e) => {
+                state.add_status(format!("approve: cannot list pending approvals: {e}"));
+                return;
+            }
+        };
         let Some(scope) = pending.get(i) else {
             state.add_status(format!(
                 "no approval at index {i} ({} pending)",
@@ -12107,15 +12134,23 @@ fn handle_slash_inner(
         }
         return;
     }
+    if cmd == "/deny" {
+        state.add_status("usage: /deny <index> - see /approvals".into());
+        return;
+    }
     if let Some(idx) = cmd.strip_prefix("/deny ") {
         let idx = idx.trim();
         let Ok(i) = idx.parse::<usize>() else {
             state.add_status(format!("usage: /deny <index> (got {idx:?})"));
             return;
         };
-        let pending = supervisor
-            .pending_approvals(&state.session_id)
-            .unwrap_or_default();
+        let pending = match supervisor.pending_approvals(&state.session_id) {
+            Ok(p) => p,
+            Err(e) => {
+                state.add_status(format!("deny: cannot list pending approvals: {e}"));
+                return;
+            }
+        };
         let Some(scope) = pending.get(i) else {
             state.add_status(format!(
                 "no approval at index {i} ({} pending)",
@@ -12332,6 +12367,29 @@ fn handle_slash_inner(
             Err(e) => state.add_status(format!("env unset: {e}")),
         }
         return;
+    }
+    // Bare-only built-ins with trailing words used to fall through to
+    // "unknown command" (e.g. bare `/env set`, `/mcp bogus`,
+    // `/sessions extra`): every word above is a built-in, so no custom
+    // command or skill can claim it, and the honest answer is usage,
+    // not an unknown-command error with a did-you-mean.
+    {
+        let word = cmd.split_whitespace().next().unwrap_or(cmd);
+        let usage: Option<String> = match word {
+            "/env" => Some("usage: /env [set <name> <value>|unset <name>]".into()),
+            "/mcp" => Some("usage: /mcp [reload]".into()),
+            "/tools" => Some("usage: /tools [reload]".into()),
+            "/approvals" | "/schedule" | "/checkpoints" | "/todos" | "/inbox" | "/collab"
+            | "/voice" | "/doctor" | "/stats" | "/settings" | "/gateway" | "/sessions"
+            | "/history" | "/new" | "/compress" | "/clear" | "/reset" => {
+                Some(format!("{word} takes no arguments"))
+            }
+            _ => None,
+        };
+        if let Some(usage) = usage {
+            state.add_status(usage);
+            return;
+        }
     }
     // User-defined commands are checked before skills: an explicitly
     // configured `/review` should win over an installed skill with the
@@ -14353,5 +14411,208 @@ mod slash_help_tests {
             }
         }
         assert!(joined.contains("cycle permission mode"), "{joined}");
+    }
+}
+
+#[cfg(test)]
+mod slash_dispatch_tests {
+    use super::*;
+
+    /// A real runtime session over a scratch data dir: `handle_slash`
+    /// needs a `Session` (supervisor, budget, secrets), so these tests
+    /// drive the same entry the Enter key drives, not a copy of a
+    /// handler. No network, no provider calls: every command here
+    /// resolves locally. The scratch dir is per-test; the live
+    /// `PANTHEON_DATA_DIR` is never touched by these paths.
+    fn fixture(name: &str) -> (TuiState, Arc<Session>, std::sync::mpsc::Sender<TuiEvent>) {
+        let dir = std::env::temp_dir()
+            .join(format!("pantheon-sweep-tui-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let policy = pantheon_api::capability::Policy::coder_with_memory();
+        let model_policy = pantheon_api::model::ModelPolicy {
+            default: pantheon_api::model::DefaultModel {
+                provider: "test".into(),
+                model: "test".into(),
+            },
+            fallbacks: Default::default(),
+            auxiliaries: Vec::new(),
+            reasoning: pantheon_api::model::ReasoningLevel::Off,
+            reasoning_budget: None,
+        };
+        let secrets = pantheon_secrets::SecretsBroker::from_system_env_with_api_key(None);
+        let session = Arc::new(Session::new(dir, policy, model_policy, secrets).expect("session"));
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let state = TuiState::new("test-session".to_string(), "test/test".to_string(), 0);
+        (state, session, tx)
+    }
+
+    fn cmd_lines(state: &TuiState) -> Vec<String> {
+        match state.blocks.last() {
+            Some(TranscriptBlock {
+                kind: BlockKind::Command { lines, .. },
+                ..
+            }) => lines.clone(),
+            Some(TranscriptBlock {
+                kind: BlockKind::Status(text),
+                ..
+            }) => vec![text.clone()],
+            other => panic!("expected a command/status block, got {other:?}"),
+        }
+    }
+
+    fn run(
+        state: &mut TuiState,
+        session: &Arc<Session>,
+        tx: &std::sync::mpsc::Sender<TuiEvent>,
+        cmd: &str,
+    ) -> Vec<String> {
+        handle_slash(state, session, cmd, tx);
+        cmd_lines(state)
+    }
+
+    #[test]
+    fn bare_approve_and_deny_print_usage_not_unknown_command() {
+        let (mut s, sess, tx) = fixture("bare-approve");
+        let lines = run(&mut s, &sess, &tx, "/approve");
+        assert!(lines.iter().any(|l| l.contains("usage: /approve")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("unknown command")), "{lines:?}");
+        let lines = run(&mut s, &sess, &tx, "/deny");
+        assert!(lines.iter().any(|l| l.contains("usage: /deny")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("unknown command")), "{lines:?}");
+    }
+
+    #[test]
+    fn approvals_and_indexed_decisions_report_empty_list_honestly() {
+        let (mut s, sess, tx) = fixture("approvals-empty");
+        sess.supervisor.start_run("test-session").expect("start run");
+        let lines = run(&mut s, &sess, &tx, "/approvals");
+        assert_eq!(lines, vec!["no pending approvals".to_string()]);
+        let lines = run(&mut s, &sess, &tx, "/approve 0");
+        assert!(
+            lines.iter().any(|l| l.contains("no approval at index 0 (0 pending)")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/deny 0");
+        assert!(
+            lines.iter().any(|l| l.contains("no approval at index 0 (0 pending)")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn bare_only_commands_with_args_print_usage() {
+        let (mut s, sess, tx) = fixture("bare-only");
+        for (cmd, want) in [
+            ("/env set", "usage: /env"),
+            ("/env unset", "usage: /env"),
+            ("/env bogus", "usage: /env"),
+            ("/mcp bogus", "usage: /mcp [reload]"),
+            ("/tools bogus", "usage: /tools [reload]"),
+            ("/sessions extra", "/sessions takes no arguments"),
+            ("/clear extra", "/clear takes no arguments"),
+            ("/oauth", "usage: /oauth"),
+        ] {
+            let lines = run(&mut s, &sess, &tx, cmd);
+            assert!(
+                lines.iter().any(|l| l.contains(want)),
+                "{cmd}: expected {want:?} in {lines:?}"
+            );
+            assert!(
+                !lines.iter().any(|l| l.contains("unknown command")),
+                "{cmd}: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn undo_while_running_says_wait_not_no_finished_turn() {
+        let (mut s, sess, tx) = fixture("undo-running");
+        s.ready = false;
+        let lines = run(&mut s, &sess, &tx, "/undo");
+        assert!(
+            lines.iter().any(|l| l.contains("wait for the running turn")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("no finished turn")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn tokens_and_set_round_trip_through_dispatch() {
+        let (mut s, sess, tx) = fixture("tokens-set");
+        let lines = run(&mut s, &sess, &tx, "/tokens 123");
+        assert!(lines.iter().any(|l| l.contains("max tokens: 123")), "{lines:?}");
+        let lines = run(&mut s, &sess, &tx, "/tokens");
+        assert!(lines.iter().any(|l| l.contains("max tokens: 123")), "{lines:?}");
+        let lines = run(&mut s, &sess, &tx, "/tokens off");
+        assert!(lines.iter().any(|l| l.contains("uncapped")), "{lines:?}");
+        let lines = run(&mut s, &sess, &tx, "/set max_turns 3");
+        assert!(
+            lines.iter().any(|l| l.contains("max_turns = 3 (this session)")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/set");
+        assert!(lines.iter().any(|l| l.contains("session budget:")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("max_turns = 3")), "{lines:?}");
+    }
+
+    #[test]
+    fn reset_clears_view_but_keeps_session() {
+        let (mut s, sess, tx) = fixture("reset");
+        s.add_user_message("hello".into());
+        let lines = run(&mut s, &sess, &tx, "/reset");
+        assert!(
+            lines.iter().any(|l| l.contains("transcript and queue cleared")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("session, title, and ledger history kept")),
+            "{lines:?}"
+        );
+        assert!(
+            !s.blocks.iter().any(|b| matches!(b.kind, BlockKind::UserMessage(_))),
+            "user message survived /reset"
+        );
+    }
+
+    #[test]
+    fn status_checkpoints_and_resume_paths_answer() {
+        let (mut s, sess, tx) = fixture("status-cp");
+        sess.supervisor.start_run("test-session").expect("start run");
+        let lines = run(&mut s, &sess, &tx, "/status");
+        assert!(
+            lines.iter().any(|l| l.contains("run test-session")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/checkpoints");
+        assert!(
+            lines.iter().any(|l| l.contains("no checkpoints")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/checkpoint");
+        assert!(
+            lines.iter().any(|l| l.contains("no turn yet to snapshot")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/restore nope");
+        assert!(
+            lines.iter().any(|l| l.contains("no checkpoint named 'nope'")),
+            "{lines:?}"
+        );
+        let lines = run(&mut s, &sess, &tx, "/resume");
+        assert!(
+            lines.iter().any(|l| l.contains("resume which?")),
+            "{lines:?}"
+        );
+        sess.supervisor.start_run("other-run").expect("start other");
+        handle_slash(&mut s, &sess, &tx, "/resume other-run");
+        assert_eq!(s.session_id, "other-run");
+        assert!(matches!(
+            s.blocks.last().map(|b| &b.kind),
+            Some(BlockKind::Status(t)) if t.contains("resumed other-run")
+        ));
     }
 }
