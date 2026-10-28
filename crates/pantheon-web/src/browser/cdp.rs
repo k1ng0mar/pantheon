@@ -35,6 +35,7 @@
 //! `block_on`s each call. The handler future is parked on a spawned task
 //! per connection (chromiumoxide requires the handler to be polled).
 
+use super::backend::WAIT_CAP;
 use super::error::BrowserError;
 use chromiumoxide::cdp::browser_protocol::{accessibility, dom, page as cdp_page};
 use chromiumoxide::cdp::js_protocol::runtime;
@@ -51,8 +52,6 @@ pub const DEFAULT_OP_TIMEOUT_SECS: u64 = 120;
 
 /// Poll interval for `wait-for` conditions.
 const WAIT_POLL: Duration = Duration::from_millis(250);
-/// Upper bound for one `wait-for` invocation.
-const WAIT_MAX: Duration = Duration::from_secs(30);
 
 /// One shared tokio runtime for all CDP drivers in the process.
 pub(crate) fn shared_runtime() -> &'static tokio::runtime::Runtime {
@@ -150,6 +149,10 @@ enum Connector {
         chrome_path: Option<PathBuf>,
         headless: bool,
         request_timeout: Duration,
+        /// Explicit `--no-sandbox` opt-in. `false` unless
+        /// [`CdpDriver::with_no_sandbox`] was called with `true`:
+        /// never default to unsandboxed.
+        no_sandbox: bool,
     },
     Connect {
         url: String,
@@ -182,6 +185,7 @@ impl CdpDriver {
                 chrome_path,
                 headless,
                 request_timeout: Duration::from_secs(DEFAULT_OP_TIMEOUT_SECS),
+                no_sandbox: false,
             },
             inner: tokio::sync::Mutex::new(DriverInner {
                 browser: None,
@@ -219,6 +223,24 @@ impl CdpDriver {
         })
     }
 
+    /// Explicit `--no-sandbox` opt-in for local Chrome launches.
+    /// Default off: [`launch_lazy`] never passes the flag unless this
+    /// is called with `true` (wired from `[browser] no_sandbox`). The
+    /// flag is kept for environments that need it - headless CI
+    /// containers running as root, where Chrome refuses to launch
+    /// without it - but opting in prints a loud warning at launch
+    /// (see [`start_browser`]). Remote (`Connect`) drivers ignore it:
+    /// they launch nothing locally.
+    pub fn with_no_sandbox(mut self, no_sandbox: bool) -> Self {
+        if let Connector::Launch {
+            no_sandbox: flag, ..
+        } = &mut self.connector
+        {
+            *flag = no_sandbox;
+        }
+        self
+    }
+
     pub fn with_op_timeout(mut self, secs: u64) -> Self {
         self.op_timeout_secs = secs.max(1);
         if let Connector::Launch {
@@ -248,21 +270,28 @@ impl CdpDriver {
                     chrome_path,
                     headless,
                     request_timeout,
+                    no_sandbox,
                 } => {
-                    // Deliberate: `--no-sandbox` is Chrome's own sandbox
-                    // flag, not Pantheon's. Headless CI containers run
-                    // as root, and Chrome refuses to launch as root
-                    // without it, so dropping the flag breaks exactly
-                    // the environments that drive this backend
-                    // unattended. The browser backends are documented
-                    // as unsandboxed by design (see browser/mod.rs) -
-                    // the control is the capability gate, not the
-                    // Chrome sandbox. Remote CDP (`Connect`) never
+                    // `--no-sandbox` is Chrome's own sandbox flag, not
+                    // Pantheon's, and it is opt-in only: it is passed
+                    // solely when the operator explicitly set it (see
+                    // `with_no_sandbox`), never by default. The browser
+                    // backends are documented as unsandboxed by design
+                    // (see browser/mod.rs) - the control is the
+                    // capability gate, not the Chrome sandbox - but
+                    // that design choice must not silently become a
+                    // sandboxed-off Chrome: warn loudly at every
+                    // launch that opts in. Remote CDP (`Connect`) never
                     // launches a browser, so this flag touches only the
                     // local-launch path.
-                    let mut builder = BrowserConfig::builder()
-                        .request_timeout(*request_timeout)
-                        .no_sandbox();
+                    let mut builder =
+                        BrowserConfig::builder().request_timeout(*request_timeout);
+                    if *no_sandbox {
+                        eprintln!(
+                            "WARNING: launching local Chrome with --no-sandbox (explicit [browser] no_sandbox opt-in): the browser runs without Chrome's sandbox; the capability gate is the only control"
+                        );
+                        builder = builder.no_sandbox();
+                    }
                     if let Some(p) = chrome_path {
                         builder = builder.chrome_executable(p);
                     }
@@ -622,13 +651,13 @@ impl CdpDriver {
     ) -> Result<serde_json::Value, BrowserError> {
         match wait_plan(argv, &self.backend_name)? {
             WaitPlan::Delay(ms) => {
-                let capped = ms.min(WAIT_MAX.as_millis() as u64);
+                let capped = ms.min(WAIT_CAP.as_millis() as u64);
                 tokio::time::sleep(Duration::from_millis(capped)).await;
                 Ok(serde_json::json!({"ok": true, "slept_ms": capped}))
             }
             WaitPlan::Probe(probe) => {
                 let js = format!("(()=>{{ return {}; }})()", probe);
-                let deadline = tokio::time::Instant::now() + WAIT_MAX;
+                let deadline = tokio::time::Instant::now() + WAIT_CAP;
                 loop {
                     let hit: bool = self.eval_js(page, argv, &js).await?;
                     if hit {
@@ -640,7 +669,10 @@ impl CdpDriver {
                         return Err(BrowserError::Failed {
                             argv: argv.to_vec(),
                             exit: None,
-                            stderr: "wait-for condition not met within 30s".into(),
+                            stderr: format!(
+                                "wait-for condition not met within {}s",
+                                WAIT_CAP.as_secs()
+                            ),
                         });
                     }
                     tokio::time::sleep(WAIT_POLL).await;

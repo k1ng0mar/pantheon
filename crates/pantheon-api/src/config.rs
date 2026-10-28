@@ -1160,6 +1160,15 @@ pub struct BrowserSection {
     /// Headless mode for the `chromiumoxide` backend. Default true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headless: Option<bool>,
+    /// `--no-sandbox` for the `chromiumoxide` backend. Default false:
+    /// Chrome runs sandboxed unless the operator explicitly opts in
+    /// (headless CI containers running as root need it, since Chrome
+    /// refuses to launch as root without it). Opting in prints a loud
+    /// warning at launch; the flag never applies to remote CDP
+    /// connections, which launch nothing locally. Never default to
+    /// unsandboxed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_sandbox: Option<bool>,
     /// Per-command timeout in seconds for browser backends.
     /// Default 120.
     #[serde(default, skip_serializing_if = "Option::is_none")]
