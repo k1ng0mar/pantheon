@@ -6,7 +6,7 @@
 //! runs via `cargo test -p pantheon-eval`.
 
 use pantheon_api::capability::Capability;
-use pantheon_exec::plugins::{EnvVarDecl, PluginManifest, ToolCapability};
+use pantheon_exec::plugins::{DiscoveredPlugin, EnvVarDecl, PluginLocation, PluginManifest, ToolCapability};
 use pantheon_exec::supervisor::*;
 use std::time::{Duration, Instant};
 
@@ -22,15 +22,27 @@ use std::time::{Duration, Instant};
 /// spawn failure still fails loudly, and persistent ETXTBSY panics after the
 /// budget is exhausted.
 fn spawn_plugin(
-    runner: &std::path::Path,
-    manifest: &PluginManifest,
     dir: &std::path::Path,
+    manifest: &PluginManifest,
+    data_dir: &std::path::Path,
     timeout: Duration,
     allowlist: &[String],
 ) -> PluginSupervisor {
+    // The approval-free spawn was deleted (minor-a): spawn through
+    // spawn_verified, with an operator approval recorded for the test
+    // plugin first. The approval store lands in the parent of the plugin
+    // dir, so tests keep plugin root and data dir under one unique base
+    // dir that they remove afterwards.
+    let plugin = DiscoveredPlugin {
+        manifest: manifest.clone(),
+        location: PluginLocation::User,
+        root: dir.to_path_buf(),
+    };
+    pantheon_exec::plugin_approval::record_approval(&plugin)
+        .expect("record test plugin approval");
     let mut last_err = None;
     for _ in 0..50 {
-        match PluginSupervisor::spawn(runner, manifest, dir, timeout, allowlist) {
+        match PluginSupervisor::spawn_verified(&plugin, data_dir, timeout, allowlist) {
             Ok(sup) => return sup,
             Err(e) if e.code == "PLUGIN_SPAWN" && e.cause.contains("os error 26") => {
                 last_err = Some(e);
@@ -46,7 +58,7 @@ fn spawn_plugin(
 /// and drive a full call through the supervisor.
 #[test]
 fn live_call_round_trip() {
-    let dir = std::env::temp_dir().join(format!(
+    let base = std::env::temp_dir().join(format!(
         "pantheon-sup-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -54,7 +66,10 @@ fn live_call_round_trip() {
             .unwrap()
             .as_nanos()
     ));
+    let dir = base.join("plugin");
+    let data_dir = base.join("data");
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
     let runner = dir.join("run.sh");
     // Reads one request line, answers with result "pong:<tool>".
     std::fs::write(
@@ -85,17 +100,17 @@ fn live_call_round_trip() {
         runner: "run.sh".into(),
         enabled: true,
     };
-    let mut sup = spawn_plugin(&runner, &manifest, &dir, Duration::from_secs(5), &[]);
+    let mut sup = spawn_plugin(&dir, &manifest, &data_dir, Duration::from_secs(5), &[]);
     let out = sup.call("ping", serde_json::json!({})).unwrap();
     assert!(out.contains("pong:ping"), "got: {out}");
     sup.stop();
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// A plugin that never answers must time out and die, not hang the test.
 #[test]
 fn timeout_kills_wedged_plugin() {
-    let dir = std::env::temp_dir().join(format!(
+    let base = std::env::temp_dir().join(format!(
         "pantheon-sup-wedge-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -103,7 +118,10 @@ fn timeout_kills_wedged_plugin() {
             .unwrap()
             .as_nanos()
     ));
+    let dir = base.join("plugin");
+    let data_dir = base.join("data");
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
     let runner = dir.join("run.sh");
     // Reads one line, then sleeps forever.
     std::fs::write(&runner, "#!/bin/sh\nread -r line\nsleep 60\n").unwrap();
@@ -125,7 +143,7 @@ fn timeout_kills_wedged_plugin() {
         runner: "run.sh".into(),
         enabled: true,
     };
-    let mut sup = spawn_plugin(&runner, &manifest, &dir, Duration::from_millis(300), &[]);
+    let mut sup = spawn_plugin(&dir, &manifest, &data_dir, Duration::from_millis(300), &[]);
     let t0 = Instant::now();
     let err = sup.call("anything", serde_json::json!({})).unwrap_err();
     assert_eq!(err.code, "PLUGIN_TIMEOUT");
@@ -135,7 +153,7 @@ fn timeout_kills_wedged_plugin() {
     let err2 = sup.call("anything", serde_json::json!({})).unwrap_err();
     assert_eq!(err2.code, "PLUGIN_DEAD");
     sup.stop();
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// A manifest-declared env var reaches the plugin ONLY on an allowlist hit.
@@ -148,7 +166,7 @@ fn manifest_env_needs_allowlist_hit() {
     std::env::set_var("PANTHEON_SUP_TEST_ALLOWED", "visible");
     std::env::set_var("PANTHEON_SUP_TEST_DENIED", "must-not-leak");
 
-    let dir = std::env::temp_dir().join(format!(
+    let base = std::env::temp_dir().join(format!(
         "pantheon-sup-env-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -156,7 +174,10 @@ fn manifest_env_needs_allowlist_hit() {
             .unwrap()
             .as_nanos()
     ));
+    let dir = base.join("plugin");
+    let data_dir = base.join("data");
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
     let runner = dir.join("run.sh");
     // Echoes what the child environment actually contains, inside the
     // protocol reply.
@@ -201,7 +222,7 @@ fn manifest_env_needs_allowlist_hit() {
         enabled: true,
     };
     let allowlist = vec!["PANTHEON_SUP_TEST_ALLOWED".to_string()];
-    let mut sup = spawn_plugin(&runner, &manifest, &dir, Duration::from_secs(5), &allowlist);
+    let mut sup = spawn_plugin(&dir, &manifest, &data_dir, Duration::from_secs(5), &allowlist);
     let out = sup.call("ping", serde_json::json!({})).unwrap();
     assert!(
         out.contains("allowed=visible"),
@@ -214,7 +235,7 @@ fn manifest_env_needs_allowlist_hit() {
     sup.stop();
 
     // Empty allowlist: nothing declared crosses, even when set on the host.
-    let mut sup = spawn_plugin(&runner, &manifest, &dir, Duration::from_secs(5), &[]);
+    let mut sup = spawn_plugin(&dir, &manifest, &data_dir, Duration::from_secs(5), &[]);
     let out = sup.call("ping", serde_json::json!({})).unwrap();
     assert!(
         out.contains("allowed=<unset>"),
@@ -224,5 +245,5 @@ fn manifest_env_needs_allowlist_hit() {
 
     std::env::remove_var("PANTHEON_SUP_TEST_ALLOWED");
     std::env::remove_var("PANTHEON_SUP_TEST_DENIED");
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }

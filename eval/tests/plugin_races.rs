@@ -141,12 +141,15 @@ fn verify_plugin_returns_canonical_runner_path() {
 // ---------------------------------------------------------------------------
 // (b) behavioral: a symlink swap between verify and spawn cannot redirect
 // exec. The runner "run.sh" is a symlink -> good.sh; verify returns the
-// canonical target. Swap the symlink to evil.sh AFTER verify, then spawn
-// the verified path: the child must still execute good.sh.
+// canonical target. Swap the symlink to evil.sh AFTER verify, then spawn:
+// the old spawn took a verified path and would still exec good.sh, but
+// that path no longer exists. spawn_verified re-resolves run.sh (now
+// evil.sh) and re-checks the approval hash, so it must fail closed
+// instead of executing the swapped bytes.
 // BEFORE FIX: verify returned the raw path and spawn exec'd through the
 // swapped symlink -> evil.sh ran -> this test failed.
 #[test]
-fn spawn_execs_verified_target_despite_symlink_swap() {
+fn spawn_fails_closed_after_symlink_swap() {
     let tmp = TempDir::new().unwrap();
     let plug = tmp.path().join("bundled").join("t");
     std::fs::create_dir_all(&plug).unwrap();
@@ -191,20 +194,17 @@ fn spawn_execs_verified_target_despite_symlink_swap() {
     #[cfg(unix)]
     std::os::unix::fs::symlink(plug.join("evil.sh"), plug.join("run.sh")).unwrap();
 
-    // Spawn the VERIFIED path: must execute good.sh, not the swapped link.
-    let mut sup = PluginSupervisor::spawn(
-        &verified,
-        &plugin.manifest,
-        tmp.path(),
-        Duration::from_secs(5),
-        &[],
-    )
-    .unwrap();
-    let got = call_who(&mut sup).expect("call works");
-    sup.stop();
-    assert_eq!(
-        got, "GOOD",
-        "spawn must exec the verified target, not the swapped symlink"
+    // Spawn after the swap: must fail closed, never execute evil.sh.
+    // `verified` (the good.sh path from verify time) is no longer an
+    // input to spawn at all; spawn_verified re-resolves from the manifest.
+    let err = match PluginSupervisor::spawn_verified(&plugin, tmp.path(), Duration::from_secs(5), &[]) {
+        Ok(_) => panic!("swapped bytes must fail closed at spawn"),
+        Err(e) => e,
+    };
+    assert!(
+        err.code == "PLUGIN_TAMPERED" || err.code == "PLUGIN_NOT_APPROVED",
+        "unexpected code: {}",
+        err.code
     );
 }
 
@@ -447,12 +447,15 @@ fn spawn_dir_swapper(
 
 const RACE_ITERS: usize = 200;
 
-/// Tool-plugin race. BEFORE: old call-site pattern (verify -> gap ->
-/// spawn raw path, no re-hash). AFTER: spawn_verified (re-hash at spawn).
+/// Tool-plugin race. The old call-site pattern (verify -> gap -> spawn
+/// raw path, no re-hash) no longer exists: the approval-free spawn was
+/// deleted, so the BEFORE arm cannot be replicated. What remains is the
+/// product behaviour under test: spawn_verified (re-hash at spawn) must
+/// never execute swapped bytes while a swapper flips the plugin dir.
 /// A "dangerous win" = approval/hash bound to A at check time, but B
 /// executed.
 #[test]
-fn race_tool_plugin_swap_old_vs_new() {
+fn race_tool_plugin_swap_spawn_verified_never_executes_swapped() {
     let tmp = TempDir::new().unwrap();
     let plugins = tmp.path().join("plugins");
     let victim = plugins.join("victim");
@@ -474,42 +477,16 @@ fn race_tool_plugin_swap_old_vs_new() {
         Arc::clone(&stop),
     );
 
-    // ---- BEFORE: verify, sleep (the session-start gap), spawn, use ----
-    let raw_runner = victim.join("run.sh");
-    let mut before_wins = 0usize;
-    let mut before_checked = 0usize;
-    let mut js = 0x9E3779B97F4A7C15u64;
-    for _ in 0..RACE_ITERS {
-        std::thread::sleep(Duration::from_micros(jitter_us(&mut js, 4000)));
-        // Old call-site pattern: verify_plugin's Ok was the whole check.
-        if pantheon_exec::plugins::verify_plugin(&plugin).is_err() {
-            continue; // bytes were B at check time: correctly refused
-        }
-        before_checked += 1;
-        std::thread::sleep(Duration::from_millis(5)); // the verify->spawn gap
-        let mut sup = match PluginSupervisor::spawn(
-            &raw_runner,
-            &plugin.manifest,
-            tmp.path(),
-            Duration::from_secs(5),
-            &[],
-        ) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        if call_who(&mut sup).as_deref() == Some("who:B") {
-            before_wins += 1; // checked H(A), executed B
-        }
-        sup.stop();
-    }
-
-    // ---- AFTER: spawn_verified re-hashes immediately before exec ----
+    // ---- spawn_verified re-hashes immediately before exec ----
     let mut after_wins = 0usize;
     let mut after_refused = 0usize;
+    let mut after_ok = 0usize;
+    let mut js = 0x9E3779B97F4A7C15u64;
     for _ in 0..RACE_ITERS {
         std::thread::sleep(Duration::from_micros(jitter_us(&mut js, 4000)));
         match PluginSupervisor::spawn_verified(&plugin, tmp.path(), Duration::from_secs(5), &[]) {
             Ok(mut sup) => {
+                after_ok += 1;
                 if call_who(&mut sup).as_deref() == Some("who:B") {
                     after_wins += 1;
                 }
@@ -522,14 +499,11 @@ fn race_tool_plugin_swap_old_vs_new() {
     stop.store(true, Ordering::Relaxed);
     swapper.join().unwrap();
 
-    eprintln!("tool race: before wins={before_wins}/{before_checked} after wins={after_wins} refused={after_refused}");
-    assert!(
-        before_checked > 0,
-        "race never got a clean check; harness broken"
-    );
-    assert!(
-        before_wins > 0,
-        "expected the old verify->gap->spawn pattern to lose the race at least once in {RACE_ITERS} iters"
+    eprintln!("tool race: wins={after_wins} refused={after_refused} ok={after_ok}");
+    assert_eq!(
+        after_ok + after_refused,
+        RACE_ITERS,
+        "every iteration must either spawn or refuse, none may hang"
     );
     assert_eq!(
         after_wins, 0,
