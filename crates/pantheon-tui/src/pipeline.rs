@@ -105,7 +105,11 @@ fn open_session(
         fallbacks: pantheon_api::model::FallbackChain::default(),
         auxiliaries: crate::config::auxiliaries(
             cfg.as_ref(),
-            &pantheon_api::model::DefaultModel { provider, model },
+            &pantheon_api::model::DefaultModel {
+                provider,
+                model,
+                key_env: None,
+            },
         ),
     };
     let secrets = crate::config::chat_secrets(cfg.as_ref());

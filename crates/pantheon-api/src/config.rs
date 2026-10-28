@@ -105,6 +105,12 @@ pub type TitleGenSection = AuxSection;
 pub struct FallbackEntry {
     pub provider: String,
     pub model: String,
+    /// Env var name holding this fallback's API key. Absent = resolve
+    /// via the provider's own catalog/env credential. See
+    /// [`crate::model::DefaultModel::key_env`] for why an absent entry
+    /// does NOT inherit the default entry's key value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_env: Option<String>,
 }
 
 /// One model row inside `[custom_providers.<name>.models]`.
@@ -2809,6 +2815,13 @@ impl Config {
                 if f.provider.trim().is_empty() || f.model.trim().is_empty() {
                     problems.push(format!("model.fallbacks[{i}] has empty provider or model"));
                 }
+                if let Some(k) = f.key_env.as_deref() {
+                    if k.trim().is_empty() {
+                        problems.push(format!(
+                            "model.fallbacks[{i}].key_env is empty; omit it to resolve via the provider's catalog/env credential"
+                        ));
+                    }
+                }
                 // A fallback that cannot help at runtime used to be
                 // accepted silently and burn 3 retries per turn: one
                 // identical to the default, or a duplicate of an
@@ -4388,21 +4401,26 @@ mod config_repair_section_tests {
                 FallbackEntry {
                     provider: "openai".into(),
                     model: "gpt-4o".into(),
+                    key_env: None,
                 },
                 FallbackEntry {
                     provider: "anthropic".into(),
                     model: "claude-sonnet-4-6".into(),
+                    key_env: None,
                 },
                 FallbackEntry {
                     provider: "anthropic".into(),
                     model: "claude-sonnet-4-6".into(),
+                    key_env: None,
                 },
             ],
             ..ModelSection::default()
         });
         let problems = cfg.validate();
         assert!(
-            problems.iter().any(|p| p.contains("identical to the default")),
+            problems
+                .iter()
+                .any(|p| p.contains("identical to the default")),
             "self-fallback must be flagged: {problems:?}"
         );
         assert!(
