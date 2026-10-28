@@ -38,6 +38,7 @@ fn vision_policy(provider: &str, model: &str) -> ModelPolicy {
         default: DefaultModel {
             provider: provider.into(),
             model: model.into(),
+            key_env: None,
         },
         fallbacks: FallbackChain { fallbacks: vec![] },
         auxiliaries: vec![],

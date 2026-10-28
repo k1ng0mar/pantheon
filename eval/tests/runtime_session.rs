@@ -178,11 +178,13 @@ fn switch_test_session(tag: &str) -> Session {
         default: pantheon_api::model::DefaultModel {
             provider: "test".into(),
             model: "test".into(),
+            key_env: None,
         },
         fallbacks: pantheon_api::model::FallbackChain {
             fallbacks: vec![pantheon_api::model::DefaultModel {
                 provider: "fb".into(),
                 model: "fb-model".into(),
+                key_env: None,
             }],
         },
         auxiliaries: Vec::new(),
@@ -208,6 +210,7 @@ fn drive_test_policy() -> pantheon_api::model::ModelPolicy {
         default: pantheon_api::model::DefaultModel {
             provider: "openai".into(),
             model: "test-model".into(),
+            key_env: None,
         },
         fallbacks: pantheon_api::model::FallbackChain {
             fallbacks: Vec::new(),

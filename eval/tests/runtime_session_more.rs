@@ -33,6 +33,7 @@ fn sess(tag: &str) -> (Session, std::path::PathBuf) {
         default: pantheon_api::model::DefaultModel {
             provider: "test".into(),
             model: "test".into(),
+            key_env: None,
         },
         fallbacks: pantheon_api::model::FallbackChain { fallbacks: vec![] },
         auxiliaries: Vec::new(),

@@ -21,6 +21,7 @@ fn gating_session(tag: &str) -> Session {
         default: pantheon_api::model::DefaultModel {
             provider: "test".into(),
             model: "test".into(),
+            key_env: None,
         },
         fallbacks: pantheon_api::model::FallbackChain {
             fallbacks: Vec::new(),
@@ -203,6 +204,7 @@ fn vision_and_video_aux_entries_gate_on_their_groups() {
     let default = DefaultModel {
         provider: "test".into(),
         model: "test".into(),
+        key_env: None,
     };
     // Vision off: no vision aux entry, video untouched.
     let mut cfg = pantheon_api::config::Config {

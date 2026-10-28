@@ -360,6 +360,7 @@ fn chat_on_parked_run_is_refused() {
             default: pantheon_api::model::DefaultModel {
                 provider: "unreachable.test".into(),
                 model: "x".into(),
+                key_env: None,
             },
             fallbacks: pantheon_api::model::FallbackChain::default(),
             auxiliaries: vec![],

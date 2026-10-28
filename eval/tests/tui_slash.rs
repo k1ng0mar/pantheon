@@ -45,6 +45,7 @@ fn test_runtime_session(dir: &std::path::Path) -> pantheon_runtime::session::Ses
         default: pantheon_api::model::DefaultModel {
             provider: "test".into(),
             model: "test".into(),
+            key_env: None,
         },
         fallbacks: pantheon_api::model::FallbackChain { fallbacks: vec![] },
         auxiliaries: Vec::new(),
@@ -212,6 +213,7 @@ fn tools_test_session(dir: &std::path::Path) -> pantheon_runtime::session::Sessi
         default: pantheon_api::model::DefaultModel {
             provider: "test".into(),
             model: "test".into(),
+            key_env: None,
         },
         fallbacks: pantheon_api::model::FallbackChain {
             fallbacks: Vec::new(),
