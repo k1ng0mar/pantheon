@@ -12,6 +12,7 @@
 //! Missing tokens disable that surface; at least one must be set.
 
 use pantheon_api::capability::Policy;
+use pantheon_extensions::{ExtensionManager, Hook, RunnerConfig};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -140,6 +141,11 @@ struct RuntimeSink {
     /// namespace. A channel with no entry here runs anonymous, exactly as
     /// before profiles existed.
     agents: HashMap<String, pantheon_runtime::AgentRuntime>,
+    /// Extension manager for the `pre_gateway_dispatch` observer hook.
+    /// Fired by the surface sink before any inbound event reaches the
+    /// runtime, so plugins that log, tag, or metric inbound traffic
+    /// actually run. `None` = no hook (tests / manager-less paths).
+    hooks: Option<Arc<ExtensionManager>>,
 }
 
 /// Namespace a raw platform thread id under its channel so two bots on
@@ -164,6 +170,7 @@ impl RuntimeSink {
             allow,
             resume,
             agents: HashMap::new(),
+            hooks: None,
         }
     }
 
@@ -172,6 +179,13 @@ impl RuntimeSink {
     /// `new` unchanged.
     fn with_agents(mut self, agents: HashMap<String, pantheon_runtime::AgentRuntime>) -> Self {
         self.agents = agents;
+        self
+    }
+
+    /// Attach the extension manager whose `pre_gateway_dispatch`
+    /// hook fires on every inbound event before dispatch.
+    fn with_hooks(mut self, hooks: Arc<ExtensionManager>) -> Self {
+        self.hooks = Some(hooks);
         self
     }
 
@@ -268,6 +282,19 @@ struct SurfaceSink<'a> {
 
 impl pantheon_gateway::EventSink for SurfaceSink<'_> {
     fn on_message(&self, thread_id: &str, sender: Option<&str>, text: &str) {
+        // `pre_gateway_dispatch`: observer-class, fired before the
+        // runtime sees the message. Its return is discarded by
+        // contract; a broken plugin never blocks the dispatch (the
+        // manager's fire path already fails open for observers).
+        if let Some(mgr) = &self.inner.hooks {
+            let mut extra = HashMap::new();
+            extra.insert("thread_id".to_string(), thread_id.to_string());
+            if let Some(sender) = sender {
+                extra.insert("sender".to_string(), sender.to_string());
+            }
+            extra.insert("text".to_string(), text.to_string());
+            let _ = mgr.fire(Hook::PreGatewayDispatch, thread_id, self.gateway, extra);
+        }
         self.inner.on_message(self.gateway, thread_id, sender, text);
     }
     fn on_approval(
@@ -278,6 +305,19 @@ impl pantheon_gateway::EventSink for SurfaceSink<'_> {
         scope: &str,
         grant: bool,
     ) {
+        if let Some(mgr) = &self.inner.hooks {
+            let mut extra = HashMap::new();
+            extra.insert("thread_id".to_string(), thread_id.to_string());
+            if let Some(sender) = sender {
+                extra.insert("sender".to_string(), sender.to_string());
+            }
+            if let Some(run_id) = run_id {
+                extra.insert("run_id".to_string(), run_id.to_string());
+            }
+            extra.insert("scope".to_string(), scope.to_string());
+            extra.insert("grant".to_string(), grant.to_string());
+            let _ = mgr.fire(Hook::PreGatewayDispatch, thread_id, self.gateway, extra);
+        }
         self.inner
             .on_approval(self.gateway, thread_id, sender, run_id, scope, grant);
     }
@@ -890,8 +930,33 @@ fn run_gateway_foreground() {
             }
         }
     }
+    // Extension manager for `pre_gateway_dispatch`: same load path as
+    // the terminal's `load_mgr` (data dir + project root + the
+    // extensions dir, with loud warnings on a broken plugin dir so a
+    // broken directory never looks like an empty one). With no
+    // plugins loaded the fire call below is a no-op.
+    let hooks = {
+        let mut m = ExtensionManager::new(RunnerConfig::default())
+            .with_data_dir(data_dir.clone())
+            .with_project_root(std::env::current_dir().unwrap_or_else(|_| data_dir.clone()));
+        let d = crate::terminal::ext_dir();
+        if d.exists() {
+            if let Err(e) = m.load_dir(&d) {
+                eprintln!(
+                    "warning: could not load extensions from {}: {e}",
+                    d.display()
+                );
+            }
+            for err in m.load_errors() {
+                eprintln!("warning: {err}");
+            }
+        }
+        Arc::new(m)
+    };
     let sink = Arc::new(
-        RuntimeSink::new(data_dir.clone(), policy, queues.clone(), Some(allow)).with_agents(agents),
+        RuntimeSink::new(data_dir.clone(), policy, queues.clone(), Some(allow))
+            .with_agents(agents)
+            .with_hooks(hooks),
     );
     let state_dir = data_dir.join("gateway");
     let _ = std::fs::create_dir_all(&state_dir);

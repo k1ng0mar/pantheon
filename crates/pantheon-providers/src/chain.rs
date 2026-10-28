@@ -1605,3 +1605,232 @@ mod tracking_sink_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::*;
+    use crate::http::{StreamEnd, WireRequest};
+    use pantheon_api::message::Message;
+    use pantheon_api::model::{DefaultModel, FallbackChain, ReasoningLevel};
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// Fake clock: records every backoff wait instead of sleeping, so
+    /// the test proves the Retry-After wait was honoured without
+    /// actually waiting it out. Jitter fixed at 1.0 so the exponential
+    /// component never masks the Retry-After floor.
+    struct RecSleeper {
+        sleeps: Mutex<Vec<Duration>>,
+    }
+    impl Sleeper for RecSleeper {
+        fn sleep(&self, dur: Duration) {
+            self.sleeps.lock().unwrap().push(dur);
+        }
+        fn jitter(&self) -> f64 {
+            1.0
+        }
+    }
+
+    /// Records the user-visible chain events: every RetryAttempt (the
+    /// TUI's live "retrying n/3" line) and every Fallback (the ledger
+    /// + logs transition), in order.
+    struct RecSink {
+        events: Mutex<Vec<String>>,
+    }
+    impl ModelEventSink for RecSink {
+        fn emit(&self, event: ModelEvent) {
+            let s = match event {
+                ModelEvent::RetryAttempt {
+                    provider,
+                    model,
+                    attempt,
+                    max_attempts,
+                    code,
+                    wait_secs,
+                    ..
+                } => format!("retry:{provider}/{model}:{attempt}/{max_attempts}:{code}:wait={wait_secs}s"),
+                ModelEvent::Fallback {
+                    from_provider,
+                    from_model,
+                    to_provider,
+                    to_model,
+                    from_cause,
+                    ..
+                } => format!(
+                    "fallback:{from_provider}/{from_model}->{to_provider}/{to_model}:{from_cause}"
+                ),
+                ModelEvent::AttemptFailed { code, cause, .. } => {
+                    format!("attempt_failed:{code}:{cause}")
+                }
+                _ => return,
+            };
+            self.events.lock().unwrap().push(s);
+        }
+    }
+
+    /// Scripted OpenAI-compatible transport: the default model always
+    /// answers 429 with a stamped Retry-After (exactly the cause shape
+    /// `http::send` stamps from a real `Retry-After` header); the
+    /// fallback model answers with text.
+    struct RateLimitTransport;
+    impl ChatTransport for RateLimitTransport {
+        fn post(&self, req: &WireRequest) -> Result<String, PantheonError> {
+            let body: serde_json::Value =
+                serde_json::from_str(&req.body).unwrap_or(serde_json::Value::Null);
+            let model = body["model"].as_str().unwrap_or("").to_string();
+            if model == "nvidia-rate-model-a" {
+                return Err(PantheonError::new(
+                    "PROVIDER_HTTP",
+                    Layer::Provider,
+                    true,
+                    "https://nvidia-rate.example.test: HTTP 429 rate limited (retry-after: 5s)"
+                        .to_string(),
+                    "wait and retry",
+                    "",
+                ));
+            }
+            Ok(
+                r#"{"choices":[{"message":{"content":"fallback answer"},"finish_reason":"stop"}]}"#
+                    .to_string(),
+            )
+        }
+        fn post_stream(
+            &self,
+            _req: &WireRequest,
+            _o: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+        ) -> Result<StreamEnd, PantheonError> {
+            Ok(StreamEnd::Eof)
+        }
+    }
+
+    fn register_nvidia_rate_provider() {
+        catalog::register_custom_provider(catalog::ProviderMeta {
+            id: "nvidia-rate".to_string(),
+            label: "nvidia-rate".to_string(),
+            base_url: "https://nvidia-rate.example.test/v1".to_string(),
+            api_mode: ApiMode::OpenAi,
+            auth_command: None,
+            auth_refresh_ms: None,
+            reserved: false,
+            allowed_params: vec![],
+            oauth_apps: vec![],
+            sigv4: false,
+            reasoning_map: Default::default(),
+            base_env: String::new(),
+            key_env: "PANTHEON_NVIDIA_RATE_TEST_KEY".to_string(),
+            key_header: "Authorization".into(),
+            models: vec![
+                catalog::ModelMeta {
+                    provider: "nvidia-rate".to_string(),
+                    model: "nvidia-rate-model-a".to_string(),
+                    context_limit: Some(100_000),
+                    max_output_tokens: Some(8_192),
+                    tools: true,
+                    vision: false,
+                    video: false,
+                    reasoning: false,
+                    streaming: true,
+                    cost: catalog::ModelCost::default(),
+                    cache_cost: None,
+                    aliases: vec![],
+                },
+                catalog::ModelMeta {
+                    provider: "nvidia-rate".to_string(),
+                    model: "nvidia-rate-model-b".to_string(),
+                    context_limit: Some(100_000),
+                    max_output_tokens: Some(8_192),
+                    tools: true,
+                    vision: false,
+                    video: false,
+                    reasoning: false,
+                    streaming: true,
+                    cost: catalog::ModelCost::default(),
+                    cache_cost: None,
+                    aliases: vec![],
+                },
+            ],
+            prominent: false,
+            recommended: false,
+            dev: false,
+            tag: String::new(),
+        });
+    }
+
+    #[test]
+    fn rate_limited_default_retries_with_retry_after_then_falls_back_cleanly() {
+        register_nvidia_rate_provider();
+        // The fallback entry resolves its own credential from env
+        // (the default's key is never handed to a fallback entry).
+        // SAFETY: unique env name, restored at the end of this test.
+        unsafe { std::env::set_var("PANTHEON_NVIDIA_RATE_TEST_KEY", "spare-key") };
+        let sleeper = std::sync::Arc::new(RecSleeper {
+            sleeps: Mutex::new(vec![]),
+        });
+        let sink = RecSink {
+            events: Mutex::new(vec![]),
+        };
+        let mut chain = ProviderChain::new(
+            ModelPolicy {
+                default: DefaultModel {
+                    provider: "nvidia-rate".to_string(),
+                    model: "nvidia-rate-model-a".to_string(),
+                },
+                fallbacks: FallbackChain {
+                    fallbacks: vec![DefaultModel {
+                        provider: "nvidia-rate".to_string(),
+                        model: "nvidia-rate-model-b".to_string(),
+                    }],
+                },
+                auxiliaries: vec![],
+                reasoning: ReasoningLevel::Off,
+                reasoning_budget: None,
+            },
+            RateLimitTransport,
+            vec![],
+            pantheon_secrets::SecretValue::new("primary-key"),
+        );
+        chain.sleeper = sleeper.clone();
+        let outcome = chain
+            .turn_with_sink(&[Message::user("hi")], &sink)
+            .expect("a rate-limited default must fall back, not hard-fail the turn");
+        match outcome {
+            TurnOutcome::Text { text, .. } => assert_eq!(text, "fallback answer"),
+            other => panic!("expected fallback Text, got {other:?}"),
+        }
+        // The Retry-After wait was honoured as a floor on every retry
+        // of the rate-limited entry (default: 3 retries).
+        let sleeps = sleeper.sleeps.lock().unwrap().clone();
+        assert!(
+            !sleeps.is_empty(),
+            "no backoff sleep was recorded for the 429"
+        );
+        assert!(
+            sleeps.iter().all(|d| *d >= Duration::from_secs(5)),
+            "every 429 retry wait must honour the 5s Retry-After floor, got: {sleeps:?}"
+        );
+        // The user saw what happened: RetryAttempt events (with the
+        // wait) and then a Fallback event naming the 429 cause.
+        let events = sink.events.lock().unwrap().clone();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.starts_with("retry:nvidia-rate/nvidia-rate-model-a")
+                    && e.contains("wait=5s")),
+            "expected a RetryAttempt event with wait=5s, got: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| e.starts_with(
+                "fallback:nvidia-rate/nvidia-rate-model-a->nvidia-rate/nvidia-rate-model-b"
+            ) && e.contains("HTTP 429")),
+            "expected a Fallback event naming the 429, got: {events:?}"
+        );
+        unsafe { std::env::remove_var("PANTHEON_NVIDIA_RATE_TEST_KEY") };
+    }
+
+    #[test]
+    fn retry_after_header_is_capped_so_one_endpoint_cannot_wedge_the_turn() {
+        assert_eq!(crate::http::parse_retry_after("5"), Some(5));
+        assert_eq!(crate::http::parse_retry_after("3600"), Some(60));
+        assert_eq!(crate::http::parse_retry_after("garbage"), None);
+    }
+}
