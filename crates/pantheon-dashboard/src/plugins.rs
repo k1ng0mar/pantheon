@@ -342,24 +342,33 @@ pub fn approve(app: &App, kind: &str, name: &str, req: &Request) -> Response {
     }
     match kind {
         "tool" => match find_tool_plugin(app, name) {
-            Some(p) => match plugin_approval::record_approval(&p) {
-                Ok(rec) => {
-                    // Approval alone does not enable: the runtime skips
-                    // a plugin whose manifest flag is false before
-                    // `spawn_verified`, so an approved-but-disabled plugin
-                    // used to stay unloaded while the list showed
-                    // `approved: true, enabled: false` with no enable
-                    // action. Approving here also flips the manifest on.
-                    if let Err(e) = plugins::set_enabled(&p, true) {
-                        return err_json(500, "PLUGIN_APPROVE", &e.to_string());
-                    }
-                    json_ok(serde_json::json!({
-                        "ok": true, "kind": "tool", "name": name,
-                        "version": rec.version, "approved": true,
-                    }))
+            Some(p) => {
+                // Order matters: approval is bound to the directory
+                // hash, and flipping the manifest rewrites it. Flip
+                // first, then record approval for the post-flip bytes -
+                // recording first used to leave the list showing
+                // approved:false right after a successful approve.
+                if let Err(e) = plugins::set_enabled(&p, true) {
+                    return err_json(500, "PLUGIN_APPROVE", &e.to_string());
                 }
-                Err(e) => err_json(500, "PLUGIN_APPROVE", &e.to_string()),
-            },
+                match plugin_approval::record_approval(&p) {
+                    Ok(rec) => {
+                        // Approval alone does not enable: the runtime skips
+                        // a plugin whose manifest flag is false before
+                        // `spawn_verified`, so an approved-but-disabled plugin
+                        // used to stay unloaded while the list showed
+                        // `approved: true, enabled: false` with no enable
+                        // action. Approving here also flips the manifest on
+                        // (done above, before recording, so the approval
+                        // hash covers the enabled manifest).
+                        json_ok(serde_json::json!({
+                            "ok": true, "kind": "tool", "name": name,
+                            "version": rec.version, "approved": true,
+                        }))
+                    }
+                    Err(e) => err_json(500, "PLUGIN_APPROVE", &e.to_string()),
+                }
+            }
             None => err_json(404, "NOT_FOUND", "no tool plugin by that name"),
         },
         "hook" => {
