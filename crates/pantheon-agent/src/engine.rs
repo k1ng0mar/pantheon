@@ -31,6 +31,12 @@ pub enum TurnOutcome {
     /// One or more tool calls to execute.
     Tools {
         calls: Vec<ToolCall>,
+        /// Text the model produced alongside the calls. Previously
+        /// discarded by both adapters, so the assistant tool-calls
+        /// message pushed by the loop had empty content and the next
+        /// turn's model never saw its own text. Empty when the model
+        /// sent calls with no accompanying text.
+        text: String,
         /// Tokens consumed for the turn that produced these calls.
         tokens: u32,
         cost_cents: u32,

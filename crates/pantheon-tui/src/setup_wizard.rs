@@ -963,6 +963,8 @@ fn curated_rows(
             context_limit: mm.context_limit.map(u64::from),
             input_per_mtok_usd: mm.cost.input_per_mtok_usd,
             output_per_mtok_usd: mm.cost.output_per_mtok_usd,
+            vision: Some(mm.vision),
+            reasoning: Some(mm.reasoning),
         })
         .collect()
 }

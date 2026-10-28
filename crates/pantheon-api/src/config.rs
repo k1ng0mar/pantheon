@@ -120,6 +120,19 @@ pub struct CustomModel {
     /// bytes through the endpoint's wire format.
     #[serde(default)]
     pub video: bool,
+    /// Operator-declared capabilities, same trust model as `video`:
+    /// without them a vision-capable custom model kept `vision=false`
+    /// from the conservative defaults and the chain's vision gate
+    /// refused every image turn on it; likewise a non-streaming or
+    /// tool-less endpoint could not say so. Defaults match the
+    /// conservative `model_meta` defaults (tools/streaming on, vision
+    /// off) so existing rows parse unchanged.
+    #[serde(default)]
+    pub vision: bool,
+    #[serde(default = "default_true")]
+    pub tools: bool,
+    #[serde(default = "default_true")]
+    pub streaming: bool,
 }
 
 /// `[custom_providers.<name>]`: a user-defined endpoint (written by
@@ -2594,6 +2607,25 @@ impl Config {
                 if f.provider.trim().is_empty() || f.model.trim().is_empty() {
                     problems.push(format!("model.fallbacks[{i}] has empty provider or model"));
                 }
+                // A fallback that cannot help at runtime used to be
+                // accepted silently and burn 3 retries per turn: one
+                // identical to the default, or a duplicate of an
+                // earlier entry. (Unknown providers cannot be checked
+                // here — pantheon-api cannot depend on the catalog —
+                // so `pantheon fallback add` warns about those.)
+                if f.provider == m.provider && f.model == m.model {
+                    problems.push(format!(
+                        "model.fallbacks[{i}] is identical to the default model; it adds retries, not resilience"
+                    ));
+                }
+                if m.fallbacks[..i]
+                    .iter()
+                    .any(|g| g.provider == f.provider && g.model == f.model)
+                {
+                    problems.push(format!(
+                        "model.fallbacks[{i}] duplicates an earlier fallback entry"
+                    ));
+                }
             }
             if let Some(r) = m.reasoning.as_deref().filter(|s| !s.trim().is_empty()) {
                 if crate::model::ReasoningLevel::parse(r).is_none() {
@@ -3677,4 +3709,49 @@ mod config_repair_section_tests {
             3
         );
     }
+    #[test]
+    fn validate_flags_duplicate_and_self_fallbacks() {
+        let mut cfg = Config::default();
+        cfg.model = Some(ModelSection {
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            fallbacks: vec![
+                FallbackEntry {
+                    provider: "openai".into(),
+                    model: "gpt-4o".into(),
+                },
+                FallbackEntry {
+                    provider: "anthropic".into(),
+                    model: "claude-sonnet-4-6".into(),
+                },
+                FallbackEntry {
+                    provider: "anthropic".into(),
+                    model: "claude-sonnet-4-6".into(),
+                },
+            ],
+            ..ModelSection::default()
+        });
+        let problems = cfg.validate();
+        assert!(
+            problems.iter().any(|p| p.contains("identical to the default")),
+            "self-fallback must be flagged: {problems:?}"
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("duplicates an earlier")),
+            "duplicate fallback must be flagged: {problems:?}"
+        );
+    }
+
+    #[test]
+    fn custom_model_capability_defaults_match_model_meta() {
+        // A row declaring nothing keeps the old behaviour (vision off,
+        // tools/streaming on); a row declaring vision round-trips.
+        let plain: CustomModel = toml::from_str("id = \"m\"").expect("parses");
+        assert!(!plain.vision && plain.tools && plain.streaming);
+        let seeing: CustomModel =
+            toml::from_str("id = \"m\"\nvision = true\nstreaming = false")
+                .expect("parses");
+        assert!(seeing.vision && !seeing.streaming && seeing.tools);
+    }
+
 }

@@ -251,10 +251,34 @@ impl<T: ChatTransport> ProviderChain<T> {
         opts: &TurnOptions,
         sink: &dyn ModelEventSink,
     ) -> Result<AdapterTurn, PantheonError> {
+        // Canonical wire id first: an alias (e.g. `opus`) resolves for
+        // limits but must not reach the wire, where Anthropic rejects it.
+        let wire = DefaultModel {
+            provider: model.provider.clone(),
+            model: catalog::canonical_model(&model.provider, &model.model),
+        };
+        let model = &wire;
         let meta = catalog::model_meta(&model.provider, &model.model);
         // A session model below the 32k context floor is refused before
         // any request goes out (unknown window fails open).
         pantheon_api::config::check_context_window(&model.model, meta.context_limit)?;
+        // Per-attempt vision gate, not just the default-model gate in
+        // `run()`: a vision-capable default can fall back to a
+        // non-vision model, which used to receive image parts and 400
+        // (or silently drop them) mid-turn.
+        if messages.iter().any(|m| !m.images.is_empty()) && !meta.vision {
+            return Err(PantheonError::new(
+                "VISION_UNSUPPORTED",
+                Layer::Provider,
+                false,
+                format!(
+                    "turn carries image(s) but {}/{} has no vision support (catalog vision=false)",
+                    model.provider, model.model
+                ),
+                "use a vision-capable model for turns with images, or attach the files as plain paths instead",
+                "",
+            ));
+        }
         // Per-request output cap: /tokens > [budget].max_tokens > the
         // model's known maximum output (16k fallback when unknown),
         // clamped to the model's known maximum. The aux paths (title,
@@ -292,6 +316,36 @@ impl<T: ChatTransport> ProviderChain<T> {
         };
         let effective_key =
             catalog::credential_for(&model.provider, configured, self.oauth_broker.as_ref());
+        // No key anywhere for this provider: fail here naming the env
+        // var, instead of sending an empty key and burning retries on
+        // a 401 that `list`/`doctor` never warned about. Loopback
+        // endpoints are exempt: keyless local providers are legitimate
+        // and an empty key is how they are called.
+        let loopback = base.contains("127.0.0.1")
+            || base.contains("localhost")
+            || base.contains("[::1]");
+        if effective_key.trim().is_empty() && !loopback {
+            let key_env = catalog::provider(&model.provider)
+                .map(|p| {
+                    if p.key_env.trim().is_empty() {
+                        format!("PANTHEON_KEY_{}", model.provider.to_uppercase())
+                    } else {
+                        p.key_env.clone()
+                    }
+                })
+                .unwrap_or_else(|| format!("PANTHEON_KEY_{}", model.provider.to_uppercase()));
+            return Err(PantheonError::new(
+                "PROVIDER_CONFIG",
+                Layer::Provider,
+                false,
+                format!(
+                    "no API key for provider {} (checked {key_env})",
+                    model.provider
+                ),
+                format!("set {key_env} before using {}/{}", model.provider, model.model),
+                "",
+            ));
+        }
         let mut keys: Vec<String> = effective_key
             .split(',')
             .map(|k| k.trim().to_string())
@@ -312,10 +366,22 @@ impl<T: ChatTransport> ProviderChain<T> {
         let mut key_failures = 0usize;
         for (ki, one_key) in keys.iter().enumerate() {
             let last_key = ki + 1 >= keys.len();
-            let mut result: Result<AdapterTurn, PantheonError> = match api_mode {
+            // A model the catalog knows cannot take reasoning never
+            // gets a thinking budget either: like the OpenAI adapter's
+            // effort skip, this stops one 400 from poisoning every
+            // fallback with the same body. An explicit budget still
+            // flows (explicit intent beats the catalog flag).
+            let anth_reasoning = if catalog::model_known(&model.provider, &model.model)
+                && !meta.reasoning
+            {
+                pantheon_api::model::ReasoningLevel::Off
+            } else {
+                self.policy.reasoning
+            };
+            let req = match api_mode {
                 ApiMode::OpenAi => {
                     let key_header = catalog::key_header_for(&model.provider);
-                    let req = openai::request(
+                    openai::request(
                         &base,
                         one_key,
                         &key_header,
@@ -327,7 +393,52 @@ impl<T: ChatTransport> ProviderChain<T> {
                         max_tokens,
                         self.policy.reasoning,
                         opts,
-                    );
+                    )
+                }
+                ApiMode::Anthropic => anthropic::request(
+                    &base,
+                    one_key,
+                    &model.model,
+                    messages,
+                    &self.tools,
+                    stream,
+                    max_tokens,
+                    anth_reasoning,
+                    self.policy.reasoning_budget,
+                    opts,
+                ),
+            };
+            // Reasoning/thinking that never reached the wire used to
+            // vanish silently (budget outside 1024..max_tokens, or a
+            // model that cannot take it): warn with the cause instead.
+            let reasoning_wanted = self.policy.reasoning
+                != pantheon_api::model::ReasoningLevel::Off
+                || self.policy.reasoning_budget.is_some_and(|b| b > 0);
+            if reasoning_wanted {
+                match api_mode {
+                    ApiMode::OpenAi if !req.body.contains("reasoning_effort") => {
+                        pantheon_api::logging::warn(
+                            "provider",
+                            format!(
+                                "reasoning effort dropped for {}/{}: model cannot take it, or the provider filters the parameter",
+                                model.provider, model.model
+                            ),
+                        );
+                    }
+                    ApiMode::Anthropic if !req.body.contains("\"thinking\"") => {
+                        pantheon_api::logging::warn(
+                            "provider",
+                            format!(
+                                "thinking dropped for {}/{}: budget outside 1024..max_tokens, or the model cannot take it",
+                                model.provider, model.model
+                            ),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            let mut result: Result<AdapterTurn, PantheonError> = match api_mode {
+                ApiMode::OpenAi => {
                     if stream {
                         openai::stream(&self.transport, req, &tracked_sink)
                     } else {
@@ -335,18 +446,6 @@ impl<T: ChatTransport> ProviderChain<T> {
                     }
                 }
                 ApiMode::Anthropic => {
-                    let req = anthropic::request(
-                        &base,
-                        one_key,
-                        &model.model,
-                        messages,
-                        &self.tools,
-                        stream,
-                        max_tokens,
-                        self.policy.reasoning,
-                        self.policy.reasoning_budget,
-                        opts,
-                    );
                     if stream {
                         anthropic::stream(&self.transport, req, &tracked_sink)
                     } else {
@@ -409,7 +508,14 @@ impl<T: ChatTransport> ProviderChain<T> {
                         code,
                         Layer::Provider,
                         false,
-                        format!("provider stream failed after partial output: {}", e.code),
+                        // Previously only `e.code` survived here, losing
+                        // the original cause (the event above kept the
+                        // snippet, the returned error did not).
+                        format!(
+                            "provider stream failed after partial output: {} ({})",
+                            e.code,
+                            failure_snippet(e)
+                        ),
                         "review the partial output and retry the prompt if needed",
                         "",
                     ));
@@ -670,6 +776,21 @@ impl<T: ChatTransport> ProviderChain<T> {
                         turn.finish_reason.as_deref(),
                         Some("length") | Some("max_tokens")
                     );
+                    // A non-empty `length` finish still returns its
+                    // partial text, but it used to do so silently: the
+                    // loop reported it as a successful answer with no
+                    // hint anything was cut. Warn so the truncation is
+                    // visible in `pantheon logs` (the empty case below
+                    // is an error, not a warning, as before).
+                    if hit_cap && !output_empty {
+                        pantheon_api::logging::warn(
+                            "provider",
+                            format!(
+                                "model hit its output-token limit on {}/{}; the returned answer may be truncated",
+                                model.provider, model.model
+                            ),
+                        );
+                    }
                     if output_empty && hit_cap {
                         let remedy = if self.policy.reasoning
                             != pantheon_api::model::ReasoningLevel::Off
@@ -930,4 +1051,296 @@ mod output_limit_tests {
             TurnOutcome::Text { ref text, .. } if text == "partial answer"
         ));
     }
+}
+
+#[cfg(test)]
+mod fix_model_chain_tests {
+    use super::*;
+    use crate::http::{StreamEnd, WireRequest};
+    use pantheon_api::message::{ImagePart, Message};
+    use pantheon_api::model::{DefaultModel, FallbackChain, ReasoningLevel};
+    use std::sync::Mutex;
+
+    /// Capturing transport: `post` returns `body` and records bodies.
+    struct CaptureTransport {
+        bodies: Mutex<Vec<String>>,
+        body: &'static str,
+        fail: bool,
+    }
+
+    impl ChatTransport for CaptureTransport {
+        fn post(&self, req: &WireRequest) -> Result<String, PantheonError> {
+            self.bodies.lock().unwrap().push(req.body.clone());
+            if self.fail {
+                return Err(PantheonError::new(
+                    "PROVIDER_HTTP",
+                    Layer::Provider,
+                    true,
+                    "https://example.test: HTTP 500 boom".to_string(),
+                    "",
+                    "",
+                ));
+            }
+            Ok(self.body.to_string())
+        }
+        fn post_stream(
+            &self,
+            _req: &WireRequest,
+            _on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+        ) -> Result<StreamEnd, PantheonError> {
+            Ok(StreamEnd::Eof)
+        }
+    }
+
+    fn test_policy(default: (&str, &str), fallbacks: Vec<(&str, &str)>) -> ModelPolicy {
+        ModelPolicy {
+            default: DefaultModel {
+                provider: default.0.to_string(),
+                model: default.1.to_string(),
+            },
+            fallbacks: FallbackChain {
+                fallbacks: fallbacks
+                    .into_iter()
+                    .map(|(p, m)| DefaultModel {
+                        provider: p.to_string(),
+                        model: m.to_string(),
+                    })
+                    .collect(),
+            },
+            auxiliaries: vec![],
+            reasoning: ReasoningLevel::Off,
+            reasoning_budget: None,
+        }
+    }
+
+    const ANTH_BODY: &str = r#"{"type":"message","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":3}}"#;
+
+    #[test]
+    fn alias_is_canonicalised_on_the_wire() {
+        let bodies = std::sync::Arc::new(Mutex::new(vec![]));
+        struct Cap {
+            bodies: std::sync::Arc<Mutex<Vec<String>>>,
+        }
+        impl ChatTransport for Cap {
+            fn post(&self, req: &WireRequest) -> Result<String, PantheonError> {
+                self.bodies.lock().unwrap().push(req.body.clone());
+                Ok(ANTH_BODY.to_string())
+            }
+            fn post_stream(
+                &self,
+                _req: &WireRequest,
+                _o: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+            ) -> Result<StreamEnd, PantheonError> {
+                Ok(StreamEnd::Eof)
+            }
+        }
+        let chain = ProviderChain::new(
+            test_policy(("anthropic", "opus"), vec![]),
+            Cap {
+                bodies: bodies.clone(),
+            },
+            vec![],
+            pantheon_secrets::SecretValue::new("test-key"),
+        );
+        let outcome = chain
+            .turn_messages(&[Message::user("hi")])
+            .expect("alias turn succeeds");
+        assert!(matches!(outcome, TurnOutcome::Text { .. }));
+        let sent = bodies.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let body: serde_json::Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(body["model"], serde_json::json!("claude-opus-4-8"));
+    }
+
+    #[test]
+    fn text_beside_tool_calls_survives_the_chain() {
+        let body = r#"{"choices":[{"message":{"content":"hello first","tool_calls":[{"id":"c","type":"function","function":{"name":"read","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let mut chain = ProviderChain::new(
+            test_policy(("openai", "gpt-test"), vec![]),
+            CaptureTransport {
+                bodies: Mutex::new(vec![]),
+                body,
+                fail: false,
+            },
+            vec![],
+            pantheon_secrets::SecretValue::new("test-key"),
+        );
+        chain.retry.max_retries = 0;
+        let outcome = chain
+            .turn_messages(&[Message::user("hi")])
+            .expect("tool turn succeeds");
+        match outcome {
+            TurnOutcome::Tools { text, calls, .. } => {
+                assert_eq!(text, "hello first");
+                assert_eq!(calls.len(), 1);
+            }
+            other => panic!("expected Tools, got {other:?}"),
+        }
+    }
+
+    fn custom_provider(id: &str, model: &str, vision: bool, key_env: &str) {
+        catalog::register_custom_provider(catalog::ProviderMeta {
+            id: id.to_string(),
+            label: id.to_string(),
+            base_url: "https://fixmodel.example.test/v1".to_string(),
+            api_mode: ApiMode::OpenAi,
+            auth_command: None,
+            auth_refresh_ms: None,
+            reserved: false,
+            allowed_params: vec![],
+            oauth_apps: vec![],
+            sigv4: false,
+            reasoning_map: Default::default(),
+            base_env: String::new(),
+            key_env: key_env.to_string(),
+            key_header: "Authorization".into(),
+            models: vec![catalog::ModelMeta {
+                provider: id.to_string(),
+                model: model.to_string(),
+                context_limit: Some(100_000),
+                max_output_tokens: Some(8_192),
+                tools: true,
+                vision,
+                video: false,
+                reasoning: false,
+                streaming: true,
+                cost: catalog::ModelCost::default(),
+                cache_cost: None,
+                aliases: vec![],
+            }],
+            prominent: false,
+            recommended: false,
+            dev: false,
+            tag: String::new(),
+        });
+    }
+
+    #[test]
+    fn non_vision_fallback_never_receives_images() {
+        custom_provider(
+            "fixmodel-vision",
+            "seeing",
+            true,
+            "PANTHEON_FIXMODEL_VISION_KEY",
+        );
+        custom_provider("fixmodel-blind", "blind", false, "PANTHEON_FIXMODEL_BLIND_KEY");
+        let calls = std::sync::Arc::new(Mutex::new(0usize));
+        struct FailCount {
+            calls: std::sync::Arc<Mutex<usize>>,
+        }
+        impl ChatTransport for FailCount {
+            fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
+                *self.calls.lock().unwrap() += 1;
+                Err(PantheonError::new(
+                    "PROVIDER_HTTP",
+                    Layer::Provider,
+                    true,
+                    "https://fixmodel.example.test: HTTP 500 boom".to_string(),
+                    "",
+                    "",
+                ))
+            }
+            fn post_stream(
+                &self,
+                _req: &WireRequest,
+                _o: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+            ) -> Result<StreamEnd, PantheonError> {
+                Ok(StreamEnd::Eof)
+            }
+        }
+        let mut chain = ProviderChain::new(
+            test_policy(
+                ("fixmodel-vision", "seeing"),
+                vec![("fixmodel-blind", "blind")],
+            ),
+            FailCount {
+                calls: calls.clone(),
+            },
+            vec![],
+            pantheon_secrets::SecretValue::new("test-key"),
+        );
+        chain.retry.max_retries = 0;
+        // Default key: the chain passes the configured key only to
+        // idx 0; fallbacks resolve their own env key. The vision
+        // gate must fire before any fallback request goes out, so
+        // the transport count stays 1 even though the fallback's key
+        // env is unset.
+        let img = Message::user("look").with_images(vec![ImagePart {
+            name: "x.png".into(),
+            mime: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        }]);
+        let err = chain
+            .turn_messages(&[img])
+            .expect_err("chain must exhaust, not send images to a blind model");
+        assert_eq!(err.code, "PROVIDER_EXHAUSTED");
+        assert!(
+            err.cause.contains("VISION_UNSUPPORTED"),
+            "last failure must be the vision gate, got cause: {}",
+            err.cause
+        );
+        assert_eq!(*calls.lock().unwrap(), 1, "fallback must not be called");
+    }
+    #[test]
+    fn keyless_fallback_fails_preflight_without_a_request() {
+        custom_provider(
+            "fixmodel-keyed",
+            "main",
+            false,
+            "PANTHEON_FIXMODEL_KEYED_KEY",
+        );
+        custom_provider(
+            "fixmodel-keyless",
+            "spare",
+            false,
+            "PANTHEON_FIXMODEL_KEYLESS_MISSING_KEY",
+        );
+        let calls = std::sync::Arc::new(Mutex::new(0usize));
+        struct FailCount {
+            calls: std::sync::Arc<Mutex<usize>>,
+        }
+        impl ChatTransport for FailCount {
+            fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
+                *self.calls.lock().unwrap() += 1;
+                Err(PantheonError::new(
+                    "PROVIDER_HTTP",
+                    Layer::Provider,
+                    true,
+                    "https://fixmodel.example.test: HTTP 500 boom".to_string(),
+                    "",
+                    "",
+                ))
+            }
+            fn post_stream(
+                &self,
+                _req: &WireRequest,
+                _o: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+            ) -> Result<StreamEnd, PantheonError> {
+                Ok(StreamEnd::Eof)
+            }
+        }
+        let mut chain = ProviderChain::new(
+            test_policy(
+                ("fixmodel-keyed", "main"),
+                vec![("fixmodel-keyless", "spare")],
+            ),
+            FailCount {
+                calls: calls.clone(),
+            },
+            vec![],
+            pantheon_secrets::SecretValue::new("test-key"),
+        );
+        chain.retry.max_retries = 0;
+        let err = chain
+            .turn_messages(&[Message::user("hi")])
+            .expect_err("keyless fallback must exhaust");
+        assert_eq!(err.code, "PROVIDER_EXHAUSTED");
+        assert!(
+            err.cause.contains("PROVIDER_CONFIG"),
+            "last failure must be the key preflight, got cause: {}",
+            err.cause
+        );
+        assert_eq!(*calls.lock().unwrap(), 1, "keyless fallback must not be called");
+    }
+
 }

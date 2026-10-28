@@ -56,30 +56,42 @@ pub fn browse(title: &str, rows: &[ModelRow], manual_idx: Option<usize>) -> Opti
     let mut selected = 0usize;
     let mut detail = false;
 
+    // Capability tabs filter on catalog flags, not id substrings:
+    // the old Vision tab listed every `claude`/`gemini` id (including
+    // text-only rows) and missed vision models whose ids say nothing
+    // about vision. A row with unknown flags (live-only, `None`)
+    // keeps the old substring heuristic as a fallback — unknown is
+    // not false — while a catalogued `Some(false)` is excluded.
     fn tab_match(tab: usize, row: &ModelRow) -> bool {
         let id = row.id.to_lowercase();
         match tab {
             0 => true,
             1 => id.contains("coder") || id.contains("code") || id.contains("codex"),
-            2 => {
-                id.contains("reasoning")
-                    || id.contains("thinking")
-                    || id.starts_with("o1")
-                    || id.starts_with("o3")
-                    || id.starts_with("o4")
-                    || id.contains("-r1")
-                    || id.contains(":r1")
-            }
+            2 => match row.reasoning {
+                Some(r) => r,
+                None => {
+                    id.contains("reasoning")
+                        || id.contains("thinking")
+                        || id.starts_with("o1")
+                        || id.starts_with("o3")
+                        || id.starts_with("o4")
+                        || id.contains("-r1")
+                        || id.contains(":r1")
+                }
+            },
             3 => {
                 matches!(row.input_per_mtok_usd, Some(0.0))
                     && matches!(row.output_per_mtok_usd, Some(0.0))
             }
-            4 => {
-                id.contains("vision")
-                    || id.contains("4o")
-                    || id.contains("claude")
-                    || id.contains("gemini")
-            }
+            4 => match row.vision {
+                Some(v) => v,
+                None => {
+                    id.contains("vision")
+                        || id.contains("4o")
+                        || id.contains("claude")
+                        || id.contains("gemini")
+                }
+            },
             _ => true,
         }
     }

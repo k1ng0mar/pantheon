@@ -87,6 +87,7 @@ pub fn cmd_fallback(args: &[String]) {
                 eprintln!("provider and model must both be non-empty");
                 std::process::exit(2);
             }
+            warn_about(&dd, section, &provider, &model);
             section.fallbacks.push(FallbackEntry { provider, model });
             let n = section.fallbacks.len();
             save(&dd, &cfg);
@@ -114,6 +115,7 @@ pub fn cmd_fallback(args: &[String]) {
                 );
                 std::process::exit(2);
             }
+            warn_about(&dd, section, &provider, &model);
             section
                 .fallbacks
                 .insert(at, FallbackEntry { provider, model });
@@ -153,6 +155,60 @@ pub fn cmd_fallback(args: &[String]) {
             eprintln!("unknown subcommand '{other}'");
             eprintln!("{}", usage());
             std::process::exit(2);
+        }
+    }
+}
+
+/// Warnings for a fallback that would burn retries at runtime:
+/// unknown provider, a duplicate of an earlier entry, an entry
+/// identical to the default (a fallback to itself), or a provider
+/// whose key env var is unset in both the process env and
+/// `<data_dir>/.env`. Warnings, not refusals: the chain walk still
+/// decides at runtime, but adding a dead entry silently used to cost
+/// 3 retries per turn before anyone noticed.
+fn warn_about(dd: &Path, section: &crate::config::ModelSection, provider: &str, model: &str) {
+    let known = pantheon_providers::catalog::provider(provider).is_some()
+        || provider.starts_with("http://")
+        || provider.starts_with("https://");
+    if !known {
+        eprintln!("warning: '{provider}' is not a catalog provider; this fallback will fail as PROVIDER_CONFIG");
+    }
+    if section.provider == provider && section.model == model {
+        eprintln!("warning: fallback {provider}/{model} is identical to the default model; it adds retries, not resilience");
+    }
+    if section
+        .fallbacks
+        .iter()
+        .any(|f| f.provider == provider && f.model == model)
+    {
+        eprintln!("warning: fallback {provider}/{model} duplicates an existing entry");
+    }
+    if known {
+        let key_env = pantheon_providers::catalog::provider(provider)
+            .map(|p| {
+                if p.key_env.trim().is_empty() {
+                    crate::config::provider_key_env(provider, None)
+                } else {
+                    p.key_env.clone()
+                }
+            })
+            .unwrap_or_else(|| crate::config::provider_key_env(provider, None));
+        let in_env = std::env::var(&key_env)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some();
+        let in_dotenv = std::fs::read_to_string(dd.join(".env"))
+            .map(|text| {
+                text.lines().any(|line| match line.trim().split_once('=') {
+                    Some((name, value)) => {
+                        name.trim() == key_env && !value.trim().trim_matches('"').is_empty()
+                    }
+                    None => false,
+                })
+            })
+            .unwrap_or(false);
+        if !in_env && !in_dotenv {
+            eprintln!("warning: {key_env} is not set; this fallback will 401 before it can help");
         }
     }
 }

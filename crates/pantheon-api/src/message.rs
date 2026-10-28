@@ -92,9 +92,16 @@ impl Message {
         }
     }
     pub fn assistant_tool_calls(calls: Vec<ToolCallRef>) -> Self {
+        Self::assistant_tool_calls_text(calls, String::new())
+    }
+
+    /// Assistant tool-calls row carrying the model's accompanying text
+    /// (see `TurnOutcome::Tools.text`): the text must reach the next
+    /// turn's transcript, not just the live TUI/ledger deltas.
+    pub fn assistant_tool_calls_text(calls: Vec<ToolCallRef>, text: String) -> Self {
         Self {
             role: Role::Assistant,
-            content: String::new(),
+            content: text,
             images: vec![],
             tool_calls: calls,
             tool_call_id: None,
