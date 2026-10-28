@@ -138,6 +138,19 @@ pub fn apply_delegation_section(
     }
 }
 
+/// All three config wirings for a fresh turn-serving session, as one
+/// call: [tools] enablement, [budget] tiers, and the [delegation]
+/// section. Every `Session::new` that serves turns must call this
+/// before the first turn; calling the three applies piecemeal is how
+/// headless paths silently drifted from the interactive session (the
+/// delivered `run` path applied none of them, swarm children missed
+/// the budget tiers, pipeline sessions missed budget + delegation).
+pub fn apply_session_config(session: &pantheon_runtime::session::Session, cfg: Option<&Config>) {
+    apply_tool_enablement(session, cfg);
+    apply_budget_tiers(session, cfg);
+    apply_delegation_section(session, cfg);
+}
+
 /// Resolve `[budget]` to the runtime [`pantheon_agent::Budget`].
 /// Absent section = the runtime defaults.
 pub fn resolve_budget_section(s: &BudgetSection) -> pantheon_agent::Budget {
@@ -1309,5 +1322,50 @@ mod build_model_policy_tests {
         assert_eq!(policy.default.provider, "cfg-provider");
         assert_eq!(policy.default.model, "cfg-model");
         clear_env();
+    }
+}
+
+#[cfg(test)]
+mod apply_session_config_tests {
+    use super::*;
+
+    #[test]
+    fn apply_session_config_threads_budget_tiers() {
+        // The regression this pins: headless turn paths built a Session
+        // and never applied the config, so a [budget] cap the TUI
+        // honored was silently ignored by `run --deliver`, swarm
+        // children, and pipeline sessions.
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-apply-session-config-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = Config {
+            budget: Some(BudgetSection {
+                max_turns: Some(3),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let session = pantheon_runtime::session::Session::new(
+            dir.clone(),
+            pantheon_api::capability::Policy::coder(),
+            build_model_policy(Some(&cfg), None, None),
+            chat_secrets(None),
+        )
+        .expect("session must open on a scratch dir");
+        assert_eq!(
+            session.budget_snapshot().max_turns,
+            16,
+            "precondition: a fresh session carries the runtime default"
+        );
+        apply_session_config(&session, Some(&cfg));
+        assert_eq!(
+            session.budget_snapshot().max_turns,
+            3,
+            "the [budget] tier must reach the session before its first turn"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

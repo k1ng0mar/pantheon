@@ -482,6 +482,45 @@ pub fn cmd_update(args: &[String]) {
         println!("{}", usage());
         return;
     }
+    // Unknown flags used to fall through to a network fetch: `update
+    // --bogus` cheerfully replaced the binary while ignoring whatever
+    // the operator thought they had asked for.
+    // --version/--repo take a value (`--version v1.2.3` or
+    // `--version=v1.2.3`, as `flag_val` reads them), so the value
+    // token is consumed here, not mistaken for a stray positional.
+    // --check/--rollback are boolean switches.
+    let rest: &[String] = args.get(2..).unwrap_or(&[]);
+    let mut i = 0;
+    while i < rest.len() {
+        let a = &rest[i];
+        if a.starts_with("--") {
+            let name = a.split('=').next().unwrap_or(a.as_str());
+            if !matches!(name, "--check" | "--version" | "--repo" | "--rollback") {
+                eprintln!("update: unknown flag '{a}'");
+                eprintln!("{}", usage());
+                std::process::exit(2);
+            }
+            if matches!(name, "--version" | "--repo") && !a.contains('=') {
+                match rest.get(i + 1) {
+                    Some(v) if !v.starts_with("--") => i += 1,
+                    _ => {
+                        eprintln!("update: {name} needs a value");
+                        eprintln!("{}", usage());
+                        std::process::exit(2);
+                    }
+                }
+            }
+        } else if a.starts_with('-') {
+            eprintln!("update: unknown flag '{a}'");
+            eprintln!("{}", usage());
+            std::process::exit(2);
+        } else {
+            eprintln!("update: unexpected argument '{a}'");
+            eprintln!("{}", usage());
+            std::process::exit(2);
+        }
+        i += 1;
+    }
     let flag_val = |name: &str| {
         let mut it = args.iter().peekable();
         while let Some(a) = it.next() {

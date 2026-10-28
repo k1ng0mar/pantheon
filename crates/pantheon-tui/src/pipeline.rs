@@ -118,13 +118,16 @@ fn open_session(
     // the session reads the selection, or the sync lands a session late.
     crate::config::sync_memory_selection(data_dir, cfg.as_ref());
     pantheon_runtime::session::Session::new(data_dir.to_path_buf(), policy, model_policy, secrets)
-        .inspect(|s| crate::config::apply_tool_enablement(s, cfg.as_ref()))
+        .inspect(|s| crate::config::apply_session_config(s, cfg.as_ref()))
 }
 
 pub fn cmd_pipeline(args: &[String]) {
     let parsed = crate::args::Args::parse(&args[2.min(args.len())..]);
     if parsed.has("help") || parsed.has("h") {
-        eprintln!(
+        // Help goes to stdout like every other verb's help, not stderr:
+        // the old stderr print exited 0, so `pipeline --help` looked
+        // like a failed run to anything capturing streams separately.
+        println!(
             "usage: pantheon pipeline [--spec \"task\"] | <run_id> --approve <stage> | <run_id> --deny <stage>"
         );
         return;
