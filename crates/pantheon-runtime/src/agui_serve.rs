@@ -41,8 +41,9 @@ pub struct AguiServeConfig {
     pub genui_base: String,
     /// Bearer token for every /agui route except /agui/health. Enforced by
     /// the gateway's auth layer (`AuthGroup::Agui`): `Authorization: Bearer`,
-    /// `X-Pantheon-Token`, or `?token=` on `/agui/stream` (EventSource
-    /// cannot set headers). `None` means the embedder authenticates some
+    /// `X-Pantheon-Token`, or the session cookie (EventSource and
+    /// WebSocket clients cannot set headers, but the browser sends the
+    /// cookie automatically). `None` means the embedder authenticates some
     /// other way - the old shim generated a one-time token here, which is
     /// now the gateway's job.
     pub auth_token: Option<String>,
@@ -124,7 +125,7 @@ let rpcId=1, run='', thread='', cursor=0, es;
 const TOKEN=__PANTHEON_TOKEN__;
 async function rpc(method,params={}){let r=await fetch('/agui/rpc',{method:'POST',headers:{'content-type':'application/json','x-pantheon-token':TOKEN},body:JSON.stringify({jsonrpc:'2.0',id:rpcId++,method,params})});let j=await r.json();if(j.error)throw Error(j.error.message);return j.result}
 function showActions(f){if(f.name!=='requested')return;const actions=$('#actions');actions.innerHTML='';for(const [label,answer] of [['Grant','grant'],['Deny','deny']]){const b=document.createElement('button');b.textContent=label;b.onclick=async()=>{try{await rpc('agui.'+answer,{run_id:run,scope:f.text});actions.innerHTML=''}catch(e){log(e.message)}};actions.appendChild(b)}}
-function openStream(){if(es)es.close();es=new EventSource('/agui/stream?run='+encodeURIComponent(run)+'&thread='+encodeURIComponent(thread)+'&after='+cursor+(TOKEN?'&token='+encodeURIComponent(TOKEN):''));for(const kind of ['run','text','tool','state','genui'])es.addEventListener(kind,e=>{const f=JSON.parse(e.data);cursor=Math.max(cursor,f.id||0);log(kind+': '+f.text)});es.addEventListener('approval',e=>showActions(JSON.parse(e.data)))}
+function openStream(){if(es)es.close();es=new EventSource('/agui/stream?run='+encodeURIComponent(run)+'&thread='+encodeURIComponent(thread)+'&after='+cursor);for(const kind of ['run','text','tool','state','genui'])es.addEventListener(kind,e=>{const f=JSON.parse(e.data);cursor=Math.max(cursor,f.id||0);log(kind+': '+f.text)});es.addEventListener('approval',e=>showActions(JSON.parse(e.data)))}
 $('#cancel').onclick=async()=>{if(!run)return;try{await rpc('agui.cancel',{run_id:run});$('#cancel').disabled=true;log('run canceled')}catch(e){log(e.message)}};
 $('#send').onsubmit=async e=>{e.preventDefault();const text=$('#text').value;$('#text').value='';try{const r=await rpc('agui.send',run?{run_id:run,text}:{text});run=r.run_id;thread=r.thread_id;$('#cancel').disabled=false;openStream()}catch(e){log(e.message)}};
 /* Live voice mode: WS /agui/voice/live. Client -> server: text {start,end,stop}
@@ -212,7 +213,7 @@ async function lvStart(){
   lvEl('#voice-miclabel').textContent='Tap to talk';
   lvEl('#voice').hidden=false;lvStatus('Connecting...');
   const proto=location.protocol==='https:'?'wss:':'ws:';
-  const ws=new WebSocket(proto+'//'+location.host+'/agui/voice/live?token='+encodeURIComponent(TOKEN));
+  const ws=new WebSocket(proto+'//'+location.host+'/agui/voice/live');
   lv.ws=ws;ws.binaryType='arraybuffer';
   ws.onerror=()=>{if(!lv.closed)lvClose('Connection failed')};
   ws.onclose=()=>{if(!lv.closed)lvClose('Connection closed')};

@@ -115,8 +115,9 @@ fn cmd_dashboard(args: &[String]) {
     let auth = dash_mount.auth_ctx();
     let agui_cfg = crate::agui::build_agui_serve_parts(&dir, &bind, port, &token);
     let agui_mount = std::sync::Arc::new(pantheon_runtime::agui_serve::AguiMount { cfg: agui_cfg });
-    let url = format!("http://{bind}:{port}/?token={token}");
+    let url = format!("http://{bind}:{port}");
     println!("pantheon dashboard on {url}");
+    eprintln!("dashboard token: {token} (paste it in the browser; it never appears in the URL)");
     if bind_all {
         eprintln!(
             "WARNING: dashboard is bound to a non-loopback address. The token is the only \

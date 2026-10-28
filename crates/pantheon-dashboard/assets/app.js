@@ -6,11 +6,21 @@
 "use strict";
 
 /* ---------------- auth ---------------- */
-const qs = new URLSearchParams(location.search);
-let TOKEN = qs.get("token") || sessionStorage.getItem("pantheon_token") || "";
-if (qs.get("token")) {
-  sessionStorage.setItem("pantheon_token", TOKEN);
-  history.replaceState(null, "", location.pathname + location.hash);
+/* Auth: the token is NEVER in the URL (URLs leak into history, logs,
+   and referers). It lives in this tab only (sessionStorage) and is
+   sent as X-Pantheon-Token on fetch calls; pasting it also mints a
+   short-lived HttpOnly session cookie (POST /api/session) so
+   header-less browser clients - the log EventSource, downloads -
+   authenticate without a token in their URL. */
+let TOKEN = sessionStorage.getItem("pantheon_token") || "";
+async function mintSession() {
+  if (!TOKEN) return;
+  try {
+    await fetch("/api/session", {
+      method: "POST",
+      headers: { "X-Pantheon-Token": TOKEN },
+    });
+  } catch (e) { /* header auth still covers fetch calls */ }
 }
 
 /* 401 recovery (D-6): the token is per-instance and rotates on every
@@ -31,12 +41,13 @@ function showReauthGate() {
     '<button class="btn primary" type="submit" style="margin-top:10px">Reconnect</button></form>' +
     '<p class="gate-note">Stored in this tab only (sessionStorage), sent as X-Pantheon-Token.</p>' +
     "</div></div>";
-  $("#reauth-form").addEventListener("submit", (e) => {
+  $("#reauth-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const t = $("#reauth-token").value.trim();
     if (!t) return;
     TOKEN = t;
     sessionStorage.setItem("pantheon_token", TOKEN);
+    await mintSession();
     root.innerHTML = "";
     if (typeof refreshStatus === "function") refreshStatus();
     navigate();
@@ -71,13 +82,24 @@ async function api(method, path, body) {
   return res;
 }
 
-function download(path, filename) {
+/* Downloads go through fetch with the token header, never a URL:
+   an anchor href with the token would leak it into history. */
+async function download(path, filename) {
+  let res;
+  try {
+    res = await fetch(path, { headers: { "X-Pantheon-Token": TOKEN } });
+  } catch (e) { toast("download failed: " + e.message, "error"); return; }
+  if (res.status === 401) { showReauthGate(); return; }
+  if (!res.ok) { toast("download failed: HTTP " + res.status, "error"); return; }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN);
+  a.href = url;
   a.download = filename || "";
   document.body.appendChild(a);
   a.click();
   a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /* ---------------- formatting ---------------- */
@@ -1765,7 +1787,9 @@ renderers.logs = async function () {
     } catch (e) { $("#lg-lines").innerHTML = errorState(e.message, false); }
   };
   const startFollow = () => {
-    let url = "/api/logs/stream?source=" + source + "&token=" + encodeURIComponent(TOKEN);
+    // EventSource cannot set headers: it authenticates with the
+    // session cookie minted at login, never a token in the URL.
+    let url = "/api/logs/stream?source=" + source;
     if (level) url += "&level=" + level;
     if (grep) url += "&grep=" + encodeURIComponent(grep);
     $("#lg-lines").innerHTML = "";
@@ -3209,11 +3233,12 @@ renderers.experts = async function () {
   initTheme();
   if (!TOKEN) {
     $("#gate").hidden = false;
-    $("#gate-form").addEventListener("submit", (e) => {
+    $("#gate-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       TOKEN = $("#gate-token").value.trim();
       if (!TOKEN) return;
       sessionStorage.setItem("pantheon_token", TOKEN);
+      await mintSession();
       $("#gate").hidden = true;
       start();
     });

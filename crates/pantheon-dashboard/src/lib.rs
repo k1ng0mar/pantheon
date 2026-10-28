@@ -9,8 +9,12 @@
 //!
 //! Security model (hardened after past incidents):
 //! - A random 256-bit per-instance token is generated at startup and
-//!   printed as `http://<bind>:<port>/?token=...`. Every `/api/*`
-//!   request must carry it as `X-Pantheon-Token` or `?token=`.
+//!   printed on its own line (never in the URL: URLs leak into browser
+//!   history, server logs, and referers). Every `/api/*` request must
+//!   carry it as `X-Pantheon-Token`, or carry the short-lived session
+//!   cookie minted by `POST /api/session` (which is what the log
+//!   EventSource and the desktop WebSocket stream use, since they
+//!   cannot set headers).
 //! - `POST`/`PUT`/`PATCH`/`DELETE` additionally require the `Host` header to
 //!   match the bind address (DNS-rebinding guard) and reject a mismatched
 //!   `Origin`/`Referer` (an absent one means a non-browser client like
@@ -656,11 +660,11 @@ impl DashboardMount {
     /// token/bind the dashboard was configured with. The CLI hands this
     /// to the gateway's [`ServerConfig`](pantheon_gateway::http::ServerConfig).
     pub fn auth_ctx(&self) -> AuthCtx {
-        AuthCtx {
-            token: self.app.token.clone(),
-            bind: self.app.bind.clone(),
-            bind_all: self.app.bind_all,
-        }
+        AuthCtx::new(
+            self.app.token.clone(),
+            self.app.bind.clone(),
+            self.app.bind_all,
+        )
     }
 }
 
@@ -741,15 +745,16 @@ pub struct DashboardConfig {
 pub fn run(cfg: DashboardConfig) -> ! {
     let token = pantheon_gateway::http::generate_token();
     let bind_all = cfg.bind == "0.0.0.0" || cfg.bind == "::";
-    let url = format!("http://{}:{}/?token={}", cfg.bind, cfg.port, token);
+    let url = format!("http://{}:{}", cfg.bind, cfg.port);
     println!("pantheon dashboard on {url}");
+    eprintln!("dashboard token: {token} (paste it in the browser; it never appears in the URL)");
     if bind_all {
         eprintln!(
             "WARNING: dashboard is bound to a non-loopback address. The token is the only \
              protection. Put a reverse proxy with real auth in front, or keep it on 127.0.0.1."
         );
     } else {
-        eprintln!("keep this URL private: the token is the dashboard's password.");
+        eprintln!("keep this token private: it is the dashboard's password.");
     }
     if cfg.open_browser {
         open_browser(&url);
