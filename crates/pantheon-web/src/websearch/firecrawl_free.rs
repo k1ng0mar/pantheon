@@ -64,13 +64,28 @@ pub fn parse_firecrawl_free_response(body: &str) -> Result<Vec<SearchResult>, Se
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| SearchError::BadResponse(format!("response is not valid JSON: {e}")))?;
     let data = v.get("data");
-    let list = data
-        .and_then(|d| d.get("web"))
-        .or_else(|| data.and_then(|d| d.get("results")))
-        .or_else(|| data.filter(|d| d.is_array()))
-        .or_else(|| v.get("web"))
-        .or_else(|| v.get("results"))
-        .and_then(|r| r.as_array())
+    // Fall through on an empty list, not just on a missing key:
+    // `data.web: []` must not block the `data.results` fallback the
+    // docstring promises (or_else only fires on None).
+    let candidates = [
+        data.and_then(|d| d.get("web")),
+        data.and_then(|d| d.get("results")),
+        data.filter(|d| d.is_array()),
+        v.get("web"),
+        v.get("results"),
+    ];
+    let arrays: Vec<&Vec<serde_json::Value>> = candidates
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.as_array())
+        .collect();
+    // First non-empty list wins; if every present list is empty the
+    // result is genuinely empty, not a malformed envelope.
+    let list = arrays
+        .iter()
+        .copied()
+        .find(|a| !a.is_empty())
+        .or_else(|| arrays.first().copied())
         .ok_or_else(|| SearchError::BadResponse("response has no result list".to_string()))?;
     let mut out = Vec::with_capacity(list.len());
     for r in list {
@@ -109,6 +124,14 @@ mod tests {
         let hits = parse_firecrawl_free_response(body).expect("parse");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].snippet, "blazingly fast");
+    }
+
+    #[test]
+    fn empty_web_falls_through_to_results() {
+        let body = r#"{"data":{"web":[],"results":[{"url":"https://a.example","title":"A"}]}}"#;
+        let hits = parse_firecrawl_free_response(body).expect("parse");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://a.example");
     }
 
     #[test]
