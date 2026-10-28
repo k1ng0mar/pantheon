@@ -95,23 +95,102 @@ pub fn selection_path(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("memory-backend.toml")
 }
 
+/// Option names that carry credentials. These are never persisted to
+/// `memory-backend.toml` and never read back from it: keys live in the
+/// environment (`PANTHEON_MEMORY_<NAME>_KEY`) or the Secure Vault only.
+/// A selection file is a plain TOML file in the data dir - readable by
+/// anything that can read the project - so a key written there is a
+/// plaintext credential leak, not configuration.
+const CREDENTIAL_OPTION_KEYS: &[&str] = &[
+    "key",
+    "api_key",
+    "apikey",
+    "token",
+    "auth_token",
+    "secret",
+    "password",
+];
+
+/// A copy of `sel` with credential options removed.
+fn strip_credential_options(sel: &BackendSelection) -> BackendSelection {
+    let mut out = sel.clone();
+    for k in CREDENTIAL_OPTION_KEYS {
+        out.options.remove(*k);
+    }
+    out
+}
+
+/// Warn (loudly, on stderr) when a selection still carries credential
+/// options, e.g. one written by an older build. The value is never
+/// printed; only the file path and the env-var alternative are named.
+fn warn_credential_options(sel: &BackendSelection, path: &Path) {
+    let present: Vec<&str> = CREDENTIAL_OPTION_KEYS
+        .iter()
+        .copied()
+        .filter(|k| sel.options.contains_key(*k))
+        .collect();
+    if !present.is_empty() {
+        eprintln!(
+            "pantheon: WARNING: {} contains credential option(s) ({}) - \
+             keys are no longer read from this file and are ignored. \
+             Move the key to the PANTHEON_MEMORY_<NAME>_KEY environment \
+             variable (or the Secure Vault) and remove it from the file; \
+             the next save will drop it.",
+            path.display(),
+            present.join(", "),
+        );
+    }
+}
+
 /// Load the persisted selection; missing/unreadable file => default
 /// (native). Never fails: a broken selection must not brick a session,
 /// `open_selected` falls back to native with an error line instead.
+///
+/// A corrupt/unparseable file also falls back to native - see
+/// `load_selection_result` for the surfaced form, which `Session::new`
+/// uses to print the corruption instead of silently reading a
+/// different store.
 pub fn load_selection(data_dir: &Path) -> BackendSelection {
-    std::fs::read_to_string(selection_path(data_dir))
-        .ok()
-        .and_then(|s| toml::from_str::<BackendSelection>(&s).ok())
-        .unwrap_or_default()
+    match load_selection_result(data_dir) {
+        Ok(sel) => sel,
+        Err(_) => BackendSelection::default(),
+    }
 }
 
-/// Persist the selection (create dir as needed).
+/// Load the persisted selection, distinguishing "no file" (default, no
+/// error) from "file present but unparseable" (error naming the file).
+/// Callers that degrade to native on error must surface the error -
+/// silently reading a different store hides a corrupt config.
+pub fn load_selection_result(data_dir: &Path) -> Result<BackendSelection, PantheonError> {
+    let path = selection_path(data_dir);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Ok(BackendSelection::default()),
+    };
+    let sel: BackendSelection = toml::from_str(&text).map_err(|e| {
+        merr(
+            "MEM_SELECTION_PARSE",
+            format!(
+                "{} is not valid TOML ({}); ignoring it and using native",
+                path.display(),
+                e
+            ),
+        )
+    })?;
+    warn_credential_options(&sel, &path);
+    Ok(strip_credential_options(&sel))
+}
+
+/// Persist the selection (create dir as needed). Credential options
+/// are stripped before writing: a key passed in-memory is never written
+/// to the file, even if the caller put it in `options`.
 pub fn save_selection(data_dir: &Path, sel: &BackendSelection) -> Result<(), PantheonError> {
+    let sel = strip_credential_options(sel);
     std::fs::create_dir_all(data_dir)
         .and_then(|_| {
             std::fs::write(
                 selection_path(data_dir),
-                toml::to_string(sel).unwrap_or_default(),
+                toml::to_string(&sel).unwrap_or_default(),
             )
         })
         .map_err(|e| {
@@ -130,8 +209,12 @@ pub fn save_selection(data_dir: &Path, sel: &BackendSelection) -> Result<(), Pan
 ///   If instantiation fails (missing url, unreachable config), the error
 ///   is returned so callers can decide; `Session::new` logs and degrades
 ///   to no memory rather than pretending a backend is active.
+/// - a corrupt `memory-backend.toml` (present but unparseable) is an
+///   error (`MEM_SELECTION_PARSE`), NOT a silent fallback to native:
+///   silently reading a different store than the operator configured
+///   hides the corruption and mixes up which store holds the memories.
 pub fn open_selected(data_dir: &Path) -> Result<Arc<dyn MemoryBackend>, PantheonError> {
-    let sel = load_selection(data_dir);
+    let sel = load_selection_result(data_dir)?;
     if sel.name == "native" {
         let store = MemoryStore::open(&data_dir.join("memory.db")).map_err(|e| {
             merr(
@@ -186,9 +269,11 @@ struct PluginSpec {
 
 /// Registered HTTP-bridge plugin backends: each talks to a service that
 /// exposes (or is bridged to) Pantheon's small `/v1/memory` JSON API.
-/// URL/key come from selection options (`url`, `key`) or env
-/// `PANTHEON_MEMORY_<NAME>_URL` / `PANTHEON_MEMORY_<NAME>_KEY` (dashes in
-/// the name become underscores). Nothing ships a working bridge: no
+/// URL comes from selection options (`url`) or env
+/// `PANTHEON_MEMORY_<NAME>_URL` (dashes in the name become underscores);
+/// the key comes from env `PANTHEON_MEMORY_<NAME>_KEY` ONLY - never from
+/// the selection file (see `CREDENTIAL_OPTION_KEYS`: `save_selection`
+/// strips credential options and `load_selection` drops them).
 /// entry carries a default URL, so a backend with no configured `url`
 /// fails closed with `MEM_BACKEND_CONFIG` naming the missing piece and
 /// what a working setup needs (a thin bridge exposing Pantheon's
@@ -347,11 +432,20 @@ fn bridge_factory(
             }
         };
         let env_key = format!("PANTHEON_MEMORY_{prefix}_KEY");
-        let key = sel
-            .options
-            .get("key")
-            .cloned()
-            .or_else(|| std::env::var(&env_key).ok());
+        // Keys never come from the selection file: `load_selection`
+        // strips credential options and `save_selection` never writes
+        // them, so a `key` in `options` here can only be an in-memory
+        // leftover or a hand-edited file that bypassed the loader.
+        // Ignore it loudly rather than honouring a plaintext key.
+        if sel.options.contains_key("key") {
+            eprintln!(
+                "pantheon: WARNING: ignoring a `key` in the {} backend selection - \
+                 backend keys live in ${env_key} (or the Secure Vault) only, \
+                 never in memory-backend.toml",
+                spec.name,
+            );
+        }
+        let key = std::env::var(&env_key).ok();
         Ok(Arc::new(crate::http_backend::HttpBackend::new(base, key)) as Arc<dyn MemoryBackend>)
     }
 }
@@ -439,8 +533,9 @@ impl BackendRegistry {
     }
 
     /// Register a backend whose factory receives the persisted selection
-    /// (name + options). This is how a plugin reads `url`/`key` from
-    /// `memory-backend.toml` without the crate owning config parsing.
+    /// (name + options). This is how a plugin reads `url` from
+    /// `memory-backend.toml`; keys never travel this way (see
+    /// `CREDENTIAL_OPTION_KEYS`).
     pub fn register_with<F>(&mut self, info: BackendInfo, factory: F)
     where
         F: Fn(&BackendSelection) -> Result<Arc<dyn MemoryBackend>, PantheonError>
@@ -525,5 +620,80 @@ impl BackendRegistry {
     /// Has a backend with this name (aliases resolve first).
     pub fn contains(&self, name: &str) -> bool {
         self.entries.contains_key(Self::resolve_alias(name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmpdir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-backend-key-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sel_with_key() -> BackendSelection {
+        let mut options = HashMap::new();
+        options.insert("url".to_string(), "http://127.0.0.1:9000".to_string());
+        options.insert("key".to_string(), "sekrit-plaintext-key".to_string());
+        BackendSelection {
+            name: "mem0".to_string(),
+            options,
+        }
+    }
+
+    #[test]
+    fn save_selection_never_writes_a_key_value() {
+        let dir = tmpdir("save");
+        save_selection(&dir, &sel_with_key()).unwrap();
+        let text = std::fs::read_to_string(selection_path(&dir)).unwrap();
+        assert!(
+            !text.contains("sekrit-plaintext-key"),
+            "selection file must not contain the key value: {text}"
+        );
+        assert!(
+            text.contains("http://127.0.0.1:9000"),
+            "non-secret options survive: {text}"
+        );
+    }
+
+    #[test]
+    fn load_selection_strips_a_legacy_plaintext_key() {
+        let dir = tmpdir("load");
+        // A file written by an older build, key included.
+        std::fs::write(
+            selection_path(&dir),
+            "name = \"mem0\"\n[options]\nurl = \"http://127.0.0.1:9000\"\nkey = \"sekrit-plaintext-key\"\n",
+        )
+        .unwrap();
+        let sel = load_selection(&dir);
+        assert_eq!(sel.name, "mem0");
+        assert_eq!(
+            sel.options.get("url").map(String::as_str),
+            Some("http://127.0.0.1:9000")
+        );
+        assert!(
+            !sel.options.contains_key("key"),
+            "loaded selection must not carry the key"
+        );
+    }
+
+    #[test]
+    fn corrupt_selection_is_an_error_not_a_silent_native_fallback() {
+        let dir = tmpdir("corrupt");
+        std::fs::write(selection_path(&dir), "name = [\nthis is not toml").unwrap();
+        let err = load_selection_result(&dir).expect_err("corrupt file must error");
+        assert_eq!(err.code, "MEM_SELECTION_PARSE");
+        assert!(
+            open_selected(&dir).is_err(),
+            "open_selected must not silently fall back to native"
+        );
     }
 }

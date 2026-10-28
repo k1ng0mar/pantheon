@@ -2725,16 +2725,33 @@ impl Session {
         // that fails to open degrades to no memory rather than
         // pretending a backend is active - and the failure is reported
         // loudly here, so an outage is never discovered as "the agent
-        // forgot everything".
-        let memory_selection = pantheon_memory::load_selection(&data_dir);
-        let memory = match pantheon_memory::open_selected(&data_dir) {
-            Ok(mem) => Some(mem),
+        // forgot everything". A corrupt `memory-backend.toml` is the
+        // same: `open_selected` errors on it instead of silently
+        // reading the native store, and the error is surfaced here via
+        // `unavailable_message` before degrading to no memory.
+        let (memory, memory_backend_name) = match pantheon_memory::load_selection_result(&data_dir)
+        {
             Err(e) => {
-                eprintln!(
-                    "{}",
-                    pantheon_memory::unavailable_message(&memory_selection, &e)
-                );
-                None
+                let sel = pantheon_memory::BackendSelection {
+                    name: "corrupt memory-backend.toml".into(),
+                    options: Default::default(),
+                };
+                eprintln!("{}", pantheon_memory::unavailable_message(&sel, &e));
+                (None, sel.name)
+            }
+            Ok(memory_selection) => {
+                let name = memory_selection.name.clone();
+                let memory = match pantheon_memory::open_selected(&data_dir) {
+                    Ok(mem) => Some(mem),
+                    Err(e) => {
+                        eprintln!(
+                            "{}",
+                            pantheon_memory::unavailable_message(&memory_selection, &e)
+                        );
+                        None
+                    }
+                };
+                (memory, name)
             }
         };
         let sup = Supervisor::open(data_dir.clone())?;
@@ -2793,7 +2810,7 @@ impl Session {
             depth: 0,
             system_prompt: String::new(),
             memory,
-            memory_backend_name: memory_selection.name,
+            memory_backend_name,
             memory_namespace: "nyx".into(),
             on_event: None,
             cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
