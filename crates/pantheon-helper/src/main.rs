@@ -63,14 +63,15 @@ fn cmd_update(args: &[String]) {
     }
 
     // Staged update, keyed by tag in a stable temp dir (not by pid):
-    // an interrupted update leaves a complete, checksum-verified stage
+    // an interrupted update leaves a complete, signature-verified stage
     // behind, and the next run reuses it instead of re-downloading.
-    // A stage is only reused when its manifest matches this tag and
-    // both archives re-hash to the digests the manifest records; any
-    // mismatch, missing file, or corrupt manifest discards the stage
-    // and the update downloads cleanly from scratch. Nothing is
-    // installed from a partial stage: extraction and the swap happen
-    // only after verification, and the stage is removed on success.
+    // A stage is only reused when its manifest matches this tag,
+    // records sig_verified=1, and both archives re-hash to the digests
+    // the manifest records; any mismatch, missing file, unsigned
+    // stage, or corrupt manifest discards the stage and the update
+    // downloads cleanly from scratch. Nothing is installed from a
+    // partial stage: extraction and the swap happen only after
+    // verification, and the stage is removed on success.
     let stage = staging_dir(&tag);
     let (url, asset) = release_asset(&repo, &tag, "pantheon-helper");
     let (main_url, main_asset) = release_asset(&repo, &tag, "pantheon");
@@ -100,7 +101,12 @@ fn cmd_update(args: &[String]) {
                     std::process::exit(1);
                 }
             };
-            println!("✓ Checksum verified");
+            println!("✓ Checksum matches (corruption check only — not authentication)");
+            if let Err(e) = verify_signature_for(&url, &bytes) {
+                eprintln!("update: {e}");
+                std::process::exit(1);
+            }
+            println!("✓ Signature verified (minisign, pinned release key)");
 
             println!("· Downloading pantheon {tag}");
             let main_bytes = match download_bytes(&main_url) {
@@ -117,7 +123,12 @@ fn cmd_update(args: &[String]) {
                     std::process::exit(1);
                 }
             };
-            println!("✓ Checksum verified");
+            println!("✓ Checksum matches (corruption check only — not authentication)");
+            if let Err(e) = verify_signature_for(&main_url, &main_bytes) {
+                eprintln!("update: {e}");
+                std::process::exit(1);
+            }
+            println!("✓ Signature verified (minisign, pinned release key)");
 
             // Stage the verified archives before anything else runs,
             // so an interrupt after this point resumes, not restarts.
@@ -437,9 +448,9 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
 /// published digest when the digest itself is authentic. The
 /// `.sha256` file is fetched from the same origin as the binary, so
 /// a compromised release (or release process) can serve a matching
-/// pair. Real authentication needs signatures (see NEEDS DECISION
-/// in the security fix report); until then this is a corruption
-/// check, not a trust anchor, and it must never be described as one.
+/// pair. This is a corruption check, never authentication: real
+/// authentication is the minisign signature checked by
+/// [`verify_signature_for`], and no archive installs without it.
 fn parse_sha256_digest(text: &str, asset: &str) -> Option<String> {
     let tokens = |line: &str| -> Vec<String> {
         line.split_whitespace()
@@ -472,6 +483,11 @@ fn parse_sha256_digest(text: &str, asset: &str) -> Option<String> {
 /// verified digest on success, for the staging manifest. Fail-closed:
 /// a missing checksum file, an empty/unusable digest, or a mismatch
 /// is an error, never a silent skip.
+///
+/// CORRUPTION CHECK ONLY. This proves the bytes match the publisher's
+/// checksum file; it does not authenticate the publisher (same
+/// origin). Callers must also pass [`verify_signature_for`] before
+/// anything installs.
 fn verify_checksum(url: &str, bytes: &[u8]) -> Result<String, String> {
     let sha_url = format!("{url}.sha256");
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -494,6 +510,21 @@ fn verify_checksum(url: &str, bytes: &[u8]) -> Result<String, String> {
         return Err("verify failed: checksum mismatch".to_string());
     }
     Ok(expected)
+}
+
+/// Authenticate `bytes` against the pinned release signing key: fetch
+/// the `{url}.minisig` published alongside the archive and verify it
+/// offline. Fail-closed: a missing/unreadable signature, an absent
+/// pinned key, or a mismatch is an error, never a silent skip, and
+/// the checksum above is NOT a substitute - it runs first as a
+/// corruption check, and this check is what authorises installation.
+fn verify_signature_for(url: &str, bytes: &[u8]) -> Result<(), String> {
+    let sig_url = format!("{url}.minisig");
+    let sig_bytes = download_bytes(&sig_url)
+        .map_err(|e| format!("signature verification failed: cannot fetch {sig_url} ({e})"))?;
+    let sig_text = String::from_utf8(sig_bytes)
+        .map_err(|_| "signature verification failed: .minisig is not valid UTF-8".to_string())?;
+    pantheon_release_verify::verify_signature(bytes, &sig_text)
 }
 
 /// Run a short-output command with a deadline. Returns the output on
@@ -572,7 +603,9 @@ fn write_manifest(
     helper_sha: &str,
     main_sha: &str,
 ) -> Result<(), String> {
-    let text = format!("repo={repo}\ntag={tag}\nhelper_sha={helper_sha}\nmain_sha={main_sha}\n");
+    let text = format!(
+        "repo={repo}\ntag={tag}\nhelper_sha={helper_sha}\nmain_sha={main_sha}\nsig_verified=1\n"
+    );
     std::fs::write(manifest_path(stage), text).map_err(|e| format!("cannot write manifest ({e})"))
 }
 
@@ -581,6 +614,7 @@ fn parse_manifest(text: &str) -> Option<(String, String, String, String)> {
     let mut tag = None;
     let mut helper_sha = None;
     let mut main_sha = None;
+    let mut sig_verified = None;
     for line in text.lines() {
         let (k, v) = line.split_once('=')?;
         match k {
@@ -588,16 +622,25 @@ fn parse_manifest(text: &str) -> Option<(String, String, String, String)> {
             "tag" => tag = Some(v.to_string()),
             "helper_sha" => helper_sha = Some(v.to_string()),
             "main_sha" => main_sha = Some(v.to_string()),
+            // Stages written before signature verification existed
+            // carry no sig_verified line and must NOT be reused: a
+            // checksum-only stage is not an authenticated stage.
+            "sig_verified" => sig_verified = Some(v.to_string()),
             _ => return None,
         }
+    }
+    if sig_verified.as_deref() != Some("1") {
+        return None;
     }
     Some((repo?, tag?, helper_sha?, main_sha?))
 }
 
 /// Reuse a staged update only when the manifest matches this repo and
-/// tag, both archives exist and are non-empty, and both re-hash to
-/// the manifest digests. Returns the archive bytes on success, None
-/// on any mismatch (caller downloads cleanly from scratch).
+/// tag, records sig_verified=1 (a signature-verified stage, not a
+/// checksum-only one), both archives exist and are non-empty, and
+/// both re-hash to the manifest digests. Returns the archive bytes on
+/// success, None on any mismatch (caller downloads cleanly from
+/// scratch).
 fn reuse_staged_update(stage: &Path, repo: &str, tag: &str) -> Option<(Vec<u8>, Vec<u8>)> {
     let text = std::fs::read_to_string(manifest_path(stage)).ok()?;
     let (m_repo, m_tag, helper_sha, main_sha) = parse_manifest(&text)?;
@@ -1050,6 +1093,17 @@ mod tests {
         assert_eq!(main_sha, "c".repeat(64));
         assert_eq!(parse_manifest("bogus line without equals"), None);
         assert_eq!(parse_manifest("repo=x\ntag=y\nunknown=z\n"), None);
+        // Pre-signature stages (no sig_verified line) and explicitly
+        // unverified stages are never reused: a checksum-only stage
+        // is not an authenticated stage.
+        assert_eq!(
+            parse_manifest("repo=x\ntag=y\nhelper_sha=b\nmain_sha=c\n"),
+            None
+        );
+        assert_eq!(
+            parse_manifest("repo=x\ntag=y\nhelper_sha=b\nmain_sha=c\nsig_verified=0\n"),
+            None
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

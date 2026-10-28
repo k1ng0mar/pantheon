@@ -1,0 +1,9 @@
+[package]
+name = "pantheon-release-verify"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Pantheon"]
+
+[dependencies]
+minisign-verify.workspace = true

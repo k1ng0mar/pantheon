@@ -12,3 +12,4 @@ path = "src/main.rs"
 [dependencies]
 ureq = { workspace = true, features = ["gzip"] }
 serde_json.workspace = true
+pantheon-release-verify = { path = "../pantheon-release-verify" }

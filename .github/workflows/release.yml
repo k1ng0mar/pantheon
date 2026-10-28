@@ -93,6 +93,46 @@ jobs:
           "$hash  $asset" | Out-File -FilePath (Join-Path $env:RUNNER_TEMP "$asset.sha256") -Encoding ascii
           "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: sign asset (minisign)
+        # Guarded, not required: until MINISIGN_SECRET_KEY is provisioned
+        # (see docs/release-signing.md) this step skips and releases
+        # ship unsigned - and `pantheon update` then fails closed rather
+        # than installing them. Adding the step unconditionally would
+        # break every release before provisioning.
+        if: matrix.os != 'windows'
+        shell: bash
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            echo "no MINISIGN_SECRET_KEY secret; skipping signing (releases stay unsigned until the key is provisioned)"
+            exit 0
+          fi
+          case "${{ matrix.os }}" in
+            linux) sudo apt-get update -qq && sudo apt-get install -y -qq minisign ;;
+            darwin) brew install minisign ;;
+          esac
+          key="$RUNNER_TEMP/minisign.key"
+          printf '%s' "$MINISIGN_SECRET_KEY" > "$key"
+          chmod 600 "$key"
+          minisign -S -s "$key" -m "$RUNNER_TEMP/$ASSET"
+          rm -f "$key"
+          ls -la "$RUNNER_TEMP/$ASSET.minisig"
+
+      - name: sign asset (minisign, windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if (-not $env:MINISIGN_SECRET_KEY) { echo "no MINISIGN_SECRET_KEY secret; skipping signing"; exit 0 }
+          choco install minisign -y --no-progress
+          $key = Join-Path $env:RUNNER_TEMP "minisign.key"
+          $env:MINISIGN_SECRET_KEY | Out-File -FilePath $key -Encoding ascii -NoNewline
+          minisign -S -s $key -m (Join-Path $env:RUNNER_TEMP $env:ASSET)
+          Remove-Item $key -Force
+
       - name: smoke test the packaged binary
         shell: bash
         run: |
@@ -116,6 +156,7 @@ jobs:
             ${{ runner.temp }}/pantheon-*.tar.gz
             ${{ runner.temp }}/pantheon-*.zip
             ${{ runner.temp }}/pantheon-*.sha256
+            ${{ runner.temp }}/pantheon-*.minisig
 
   publish:
     name: publish release

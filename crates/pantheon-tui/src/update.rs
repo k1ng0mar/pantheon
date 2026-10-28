@@ -293,6 +293,12 @@ fn require_verified(verified: Result<bool, String>) -> Result<(), String> {
 
 /// Verify `asset_bytes` against the published `.sha256` file.
 ///
+/// CORRUPTION CHECK ONLY: the checksum file comes from the same
+/// origin as the asset, so it can never authenticate the publisher.
+/// Callers must also pass [`verify_signature`] before installing
+/// anything; the checksum proves the bytes are intact, the signature
+/// proves who published them.
+///
 /// Fail-closed: a missing checksum file (404), any network error, or an
 /// unreadable checksum file is an error, not a silent skip. Returns
 /// Ok(true) only when the digest matches; Ok(false) only when the
@@ -318,6 +324,22 @@ fn verify_checksum(asset_url: &str, asset_bytes: &[u8]) -> Result<bool, String> 
     let actual = hash_via_system(asset_bytes)?;
     let asset = asset_url.rsplit('/').next().unwrap_or("");
     checksum_line_matches(&text, &actual, asset)
+}
+
+/// Authenticate `asset_bytes` against the pinned release signing key:
+/// fetch the `{asset_url}.minisig` published alongside the asset and
+/// verify it offline. Fail-closed like the checksum path: a missing
+/// signature, an absent pinned key, or a mismatch aborts the install.
+/// The helper-bootstrap download (the only asset this binary installs
+/// directly - the main update is handed to the helper, which verifies
+/// both archives itself) must pass this before extraction.
+fn verify_signature(asset_url: &str, asset_bytes: &[u8]) -> Result<(), String> {
+    let sig_url = format!("{asset_url}.minisig");
+    let sig_bytes = download_bytes(&sig_url)
+        .map_err(|e| format!("signature verification failed: cannot fetch {sig_url} ({e})"))?;
+    let sig_text = String::from_utf8(sig_bytes)
+        .map_err(|_| "signature verification failed: .minisig is not valid UTF-8".to_string())?;
+    pantheon_release_verify::verify_signature(asset_bytes, &sig_text)
 }
 
 fn hash_via_system(bytes: &[u8]) -> Result<String, String> {
@@ -377,7 +399,7 @@ pub fn check_for_update() -> Option<String> {
 }
 
 pub fn usage() -> &'static str {
-    "usage: pantheon update [--check] [--version TAG] [--repo OWNER/REPO] [--rollback]\n  \n  Fetches the latest GitHub release and replaces this binary.\n  --check reports without changing anything.\n  --rollback restores the previous binary (pantheon.prev, kept next to\n  the binary by every update) without touching the network.\n  Verification is fail-closed: a missing, unreadable, digest-less, or mismatched\n  checksum aborts the update. There is no --allow-unverified flag: an unverified binary is never installed."
+    "usage: pantheon update [--check] [--version TAG] [--repo OWNER/REPO] [--rollback]\n  \n  Fetches the latest GitHub release and replaces this binary.\n  --check reports without changing anything.\n  --rollback restores the previous binary (pantheon.prev, kept next to\n  the binary by every update) without touching the network.\n  Verification is fail-closed: a missing, unreadable, or mismatched\n  minisign signature aborts the update (the checksum is a corruption\n  check only, never authentication). There is no --allow-unverified flag: an unverified binary is never installed."
 }
 
 /// `pantheon update --rollback`: restore the previous binary from the
@@ -548,6 +570,12 @@ pub fn cmd_update(args: &[String]) {
             eprintln!("update: {e}");
             std::process::exit(1);
         }
+        println!("✓ Checksum matches (corruption check only — not authentication)");
+        if let Err(e) = verify_signature(&helper_url, &helper_bytes) {
+            eprintln!("update: {e}");
+            std::process::exit(1);
+        }
+        println!("✓ Signature verified (minisign, pinned release key)");
         let tmp = std::env::temp_dir().join(format!("pantheon-helper-{}", std::process::id()));
         let helper_archive = tmp.join(&helper_asset);
         let _ = std::fs::create_dir_all(&tmp);
